@@ -845,8 +845,7 @@ async function loadRelocationPreparation(
   const row = result.rows[0];
   if (
     !row ||
-    !intent.actorId ||
-    row.actor_id !== intent.actorId ||
+    (intent.actorId !== null && row.actor_id !== intent.actorId) ||
     !intent.pageIds.includes(row.page_id) ||
     (row.direction !== 'to_confluence' && row.direction !== 'to_local')
   ) {
@@ -1786,6 +1785,27 @@ async function restorePreMoveStateOnClient(
     throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation state cannot be restored exactly');
   }
   if (!isOriginal) {
+    // The relocation publication removes every page ACE.  A later grant is
+    // therefore evidence that the ACL changed after cutover, not stale state
+    // that compensation may overwrite.  The admin ACE routes use direct
+    // INSERT/DELETE statements without a page lock, so take a relation lock:
+    // it waits for their ROW EXCLUSIVE locks and prevents a new grant/revoke
+    // between this exact-state check and the snapshot restoration.
+    await client.query('LOCK TABLE access_control_entries IN SHARE ROW EXCLUSIVE MODE');
+    const currentAces = await client.query<PageAce>(
+      `SELECT principal_type, principal_id, permission
+         FROM access_control_entries
+        WHERE resource_type = 'page' AND resource_id = $1
+        ORDER BY principal_type, principal_id, permission`,
+      [prep.id],
+    );
+    if (currentAces.rows.length !== 0) {
+      throw new PageWriteError(
+        409,
+        'intent_local_evidence_mismatch',
+        'The page access controls changed after relocation publication',
+      );
+    }
     await client.query(
       `UPDATE pages SET
          title = $2,
@@ -1828,18 +1848,14 @@ async function restorePreMoveStateOnClient(
       ],
     );
     await invalidateCollabDocAfterBodyWrite(prep.id, client);
-  }
-  await client.query(
-    "DELETE FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1",
-    [prep.id],
-  );
-  for (const ace of prep.aces) {
-    await client.query(
-      `INSERT INTO access_control_entries
-         (resource_type, resource_id, principal_type, principal_id, permission)
-       VALUES ('page', $1, $2, $3, $4)`,
-      [prep.id, ace.principal_type, ace.principal_id, ace.permission],
-    );
+    for (const ace of prep.aces) {
+      await client.query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, $2, $3, $4)`,
+        [prep.id, ace.principal_type, ace.principal_id, ace.permission],
+      );
+    }
   }
   if (prep.childIds.length > 0) {
     const restored = await client.query(
@@ -2294,7 +2310,10 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
     pageId === null ||
     !intent.pageIds.includes(pageId) ||
     (effect.target !== 'local' && effect.target !== 'confluence') ||
-    !intent.actorId
+    (
+      intent.actorId === null &&
+      (effect.target !== 'confluence' || intent.remoteEffectStartedAt !== null)
+    )
   ) {
     throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation identity is incomplete');
   }
@@ -2340,6 +2359,13 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
         spaceKey: effect.fromSpaceKey,
       });
     } else {
+      if (!intent.actorId) {
+        throw new PageWriteError(
+          409,
+          'intent_recovery_metadata_invalid',
+          'Relocation actor identity is unavailable',
+        );
+      }
       try {
         await assertCurrentRelocateAuthorityOnClient(
           client,
@@ -2393,6 +2419,17 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
       await verifyOriginalProviderState(confluence, prep);
       await restorePreMoveStateOnClient(client, prep);
     } else {
+      if (
+        prep.createdConfluenceId !== null ||
+        prep.createdPageReceipt !== null ||
+        prep.attachmentReceipts.length !== 0
+      ) {
+        throw new PageWriteError(
+          409,
+          'intent_terminal_evidence_mismatch',
+          'Relocation provider progress exists without a durable remote-start marker',
+        );
+      }
       await assertUnchangedToConfluenceSource(client, intent, prep.id, {
         source: prep.source,
         confluenceId: prep.confluence_id,

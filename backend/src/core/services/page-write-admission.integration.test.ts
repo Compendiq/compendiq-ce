@@ -776,6 +776,38 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       'SELECT recovery_history FROM page_write_intents WHERE id = $1',
       [staleToken.id],
     )).rows[0]?.recovery_history).toEqual([]);
+    expect((await query<{ count: number }>(
+      `SELECT COUNT(*)::integer AS count
+         FROM page_write_recovery_history_segments
+        WHERE intent_id = $1`,
+      [staleToken.id],
+    )).rows[0]?.count).toBe(0);
+
+    const unauthorizedPageId = await insertPage(originalWriter, 'Unauthorized recovery candidate');
+    const unauthorizedToken = await createFencedIntent(unauthorizedPageId);
+    await expect(reconcilePageWriteIntent(unauthorizedToken.id, {
+      actorId: originalWriter,
+      reason: 'An ordinary writer must not claim a pending recovery attempt',
+    })).rejects.toMatchObject({ statusCode: 403, reason: 'recovery_admin_required' });
+    const unauthorizedEvidence = await query<{
+      recovery_history: unknown[];
+      archived_segments: number;
+    }>(
+      `SELECT i.recovery_history,
+              (
+                SELECT COUNT(*)::integer
+                  FROM page_write_recovery_history_segments s
+                 WHERE s.intent_id = i.id
+              ) AS archived_segments
+         FROM page_write_intents i
+        WHERE i.id = $1`,
+      [unauthorizedToken.id],
+    );
+    expect(unauthorizedEvidence.rows[0]).toEqual({
+      recovery_history: [],
+      archived_segments: 0,
+    });
+    expect(repairRuns).toBe(1);
 
     const repairFixtureDirectory = await mkdtemp(join(tmpdir(), 'page-write-recovery-attribution-'));
     try {
@@ -833,6 +865,146 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       expect(await readFile(repairFixturePath, 'utf8')).toBe(
         `${claimantAdministrator}\n${retryingAdministrator}\n`,
       );
+
+      // Short reasons reach the entry-count bound independently of byte size.
+      const countPageId = await insertPage(originalWriter, 'Count-bounded recovery history');
+      const countToken = await createFencedIntent(countPageId);
+      const countAttempts = Array.from({ length: 34 }, (_, index) => ({
+        actorId: claimantAdministrator,
+        reason: `Recover count-bounded segment attempt ${index + 1}`,
+      }));
+      const countFailures = countAttempts.slice(0, -1);
+      for (const attempt of countFailures) {
+        await expect(reconcilePageWriteIntent(countToken.id, attempt))
+          .rejects.toThrow('fixture repair failed after its filesystem effect');
+      }
+      failingRepairFixture = null;
+      observedState = 'applied';
+      await expect(reconcilePageWriteIntent(countToken.id, countAttempts.at(-1)!))
+        .resolves.toEqual({ intentId: countToken.id, status: 'reconciled_applied' });
+      const countSegments = (await query<{
+        recovery_history: Array<{ actorId: string; reason: string }>;
+      }>(
+        'SELECT recovery_history FROM page_write_recovery_history_segments WHERE intent_id = $1 ORDER BY id',
+        [countToken.id],
+      )).rows;
+      const countActive = (await query<{
+        recovery_history: Array<{ actorId: string; reason: string }>;
+      }>(
+        'SELECT recovery_history FROM page_write_intents WHERE id = $1',
+        [countToken.id],
+      )).rows[0]!;
+      expect(countSegments.map(segment => segment.recovery_history.length)).toEqual([32]);
+      expect(countActive.recovery_history).toHaveLength(2);
+      expect([
+        ...countSegments.flatMap(segment => segment.recovery_history),
+        ...countActive.recovery_history,
+      ].map(({ actorId, reason }) => ({ actorId, reason }))).toEqual(countAttempts);
+      failingRepairFixture = repairFixturePath;
+
+      const archivedActor = await insertUser('admin');
+      const rolloverPageId = await insertPage(originalWriter, 'Segmented recovery history');
+      const rolloverToken = await createFencedIntent(rolloverPageId);
+      const multibyteRun = '界'.repeat(600);
+      const attempts = Array.from({ length: 34 }, (_, index) => {
+        const prefix = `Accepted recovery attempt ${String(index + 1).padStart(2, '0')}: `;
+        const reason = `${prefix}${multibyteRun}${'\u0001'.repeat(
+          1000 - prefix.length - multibyteRun.length,
+        )}`;
+        return {
+          actorId: index === 0
+            ? archivedActor
+            : index % 2 === 0
+              ? claimantAdministrator
+              : retryingAdministrator,
+          reason,
+        };
+      });
+      const transientAttempts = attempts.slice(0, -1);
+      expect(transientAttempts).toHaveLength(33);
+      expect(attempts.every(({ reason }) => reason.length === 1000)).toBe(true);
+
+      observedState = 'partial';
+      for (const attempt of transientAttempts) {
+        await expect(reconcilePageWriteIntent(rolloverToken.id, attempt))
+          .rejects.toThrow('fixture repair failed after its filesystem effect');
+      }
+      expect((await readFile(repairFixturePath, 'utf8')).trim().split('\n')).toEqual([
+        claimantAdministrator,
+        retryingAdministrator,
+        ...countFailures.map(({ actorId }) => actorId),
+        ...transientAttempts.map(({ actorId }) => actorId),
+      ]);
+      failingRepairFixture = null;
+      observedState = 'applied';
+      await expect(reconcilePageWriteIntent(rolloverToken.id, attempts.at(-1)!))
+        .resolves.toEqual({ intentId: rolloverToken.id, status: 'reconciled_applied' });
+
+      const archivedSegments = await query<{
+        id: string;
+        recovery_history: Array<{ actorId: string; reason: string }>;
+        encoded_bytes: number;
+      }>(
+        `SELECT id::text,
+                recovery_history,
+                octet_length(recovery_history::text) AS encoded_bytes
+           FROM page_write_recovery_history_segments
+          WHERE intent_id = $1
+          ORDER BY archived_at, id`,
+        [rolloverToken.id],
+      );
+      const activeSegment = await query<{
+        recovery_history: Array<{ actorId: string; reason: string }>;
+        encoded_bytes: number;
+      }>(
+        `SELECT recovery_history,
+                octet_length(recovery_history::text) AS encoded_bytes
+           FROM page_write_intents
+          WHERE id = $1`,
+        [rolloverToken.id],
+      );
+      expect(archivedSegments.rows.length).toBeGreaterThan(0);
+      expect(archivedSegments.rows.some(
+        ({ recovery_history }) => recovery_history.length < 32,
+      )).toBe(true);
+      expect([
+        ...archivedSegments.rows,
+        activeSegment.rows[0]!,
+      ].every(({ recovery_history, encoded_bytes }) =>
+        recovery_history.length <= 32 && encoded_bytes <= 65_536
+      )).toBe(true);
+
+      const recoveredAttempts = [
+        ...archivedSegments.rows.flatMap(({ recovery_history }) => recovery_history),
+        ...activeSegment.rows[0]!.recovery_history,
+      ];
+      expect(recoveredAttempts.map(({ actorId, reason }) => ({ actorId, reason })))
+        .toEqual(attempts);
+
+      await query('DELETE FROM users WHERE id = $1', [archivedActor]);
+      expect((await query<{
+        recovery_history: Array<{ actorId: string }>;
+      }>(
+        `SELECT recovery_history
+           FROM page_write_recovery_history_segments
+          WHERE id = $1`,
+        [archivedSegments.rows[0]!.id],
+      )).rows[0]?.recovery_history[0]?.actorId).toBe(archivedActor);
+
+      await expect(query(
+        `UPDATE page_write_recovery_history_segments
+            SET archived_at = archived_at
+          WHERE id = $1`,
+        [archivedSegments.rows[0]!.id],
+      )).rejects.toThrow('page write recovery history segments are append-only');
+      await expect(query(
+        'DELETE FROM page_write_recovery_history_segments WHERE id = $1',
+        [archivedSegments.rows[0]!.id],
+      )).rejects.toThrow('page write recovery history segments are append-only');
+      await expect(query(
+        'DELETE FROM page_write_intents WHERE id = $1',
+        [rolloverToken.id],
+      )).rejects.toMatchObject({ code: '23503' });
     } finally {
       failingRepairFixture = null;
       await rm(repairFixtureDirectory, { recursive: true, force: true });

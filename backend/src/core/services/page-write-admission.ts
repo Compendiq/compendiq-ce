@@ -10,6 +10,8 @@ import {
 
 const MAX_PAGE_ID = 2_147_483_647;
 const MAX_EFFECT_BYTES = 32 * 1024;
+const RECOVERY_HISTORY_MAX_ATTEMPTS = 32;
+const RECOVERY_HISTORY_MAX_BYTES = 64 * 1024;
 const KIND_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,99}$/;
 type IntentEffectClass = 'local' | 'remote';
 export type IntentRecoveryMode = 'local_verified' | 'remote_conditional' | 'remote_terminal_only';
@@ -1728,40 +1730,69 @@ export async function reconcilePageWriteIntent(
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
       await assertActiveRecoveryAdmin(client, authorization.actorId);
       // Commit the acting administrator before trusted verification or repair
-      // can mutate external state. Same-runtime retries consume the same
-      // bounded evidence budget as the original transfer.
-      if (durable.recovery_history.length >= 32) {
-        throw new PageWriteError(
-          409,
-          'intent_recovery_history_full',
-          'The bounded recovery history cannot accept another attempt',
-        );
-      }
+      // can mutate external state. The current segment stays bounded for token
+      // readers; a rollover archives the complete prior segment in this same
+      // locked claim statement, so neither half can commit without the other.
       const claimed = await client.query<IntentRow>(
-        `UPDATE page_write_intents
+        `WITH recovery_attempt(value) AS MATERIALIZED (
+           SELECT jsonb_build_object(
+             'attemptKind', CASE WHEN $6::boolean THEN 'same_runtime_retry' ELSE 'runtime_transfer' END,
+             'fromRuntimeId', $3::text,
+             'toRuntimeId', $2::text,
+             'attemptedAt', NOW(),
+             'transferredAt', CASE WHEN $6::boolean THEN NULL ELSE NOW() END,
+             'actorId', $4::text,
+             'reason', $5::text,
+             'observedState', 'verification_pending',
+             'priorEffectStartedAt', i.effect_started_at,
+             'priorEffectFinishedAt', i.effect_finished_at
+           )
+             FROM page_write_intents i
+            WHERE i.id = $1
+              AND i.runtime_id = $3
+              AND i.status = 'pending'
+         ),
+         claim_plan AS MATERIALIZED (
+           SELECT i.id,
+                  i.recovery_history,
+                  a.value AS recovery_attempt,
+                  (
+                    jsonb_array_length(i.recovery_history) + 1 > $7
+                    OR octet_length(
+                      (i.recovery_history || jsonb_build_array(a.value))::text
+                    ) > $8
+                  ) AS archive_required
+             FROM page_write_intents i
+             CROSS JOIN recovery_attempt a
+            WHERE i.id = $1
+              AND i.runtime_id = $3
+              AND i.status = 'pending'
+         ),
+         archived AS (
+           INSERT INTO page_write_recovery_history_segments (intent_id, recovery_history)
+           SELECT id, recovery_history
+             FROM claim_plan
+            WHERE archive_required
+           RETURNING intent_id
+         )
+         UPDATE page_write_intents i
             SET runtime_id = $2,
-                recovery_started_at = COALESCE(recovery_started_at, NOW()),
-                recovery_history = recovery_history || jsonb_build_array(
-                  jsonb_build_object(
-                    'attemptKind', CASE WHEN $6::boolean THEN 'same_runtime_retry' ELSE 'runtime_transfer' END,
-                    'fromRuntimeId', $3::text,
-                    'toRuntimeId', $2::text,
-                    'attemptedAt', NOW(),
-                    'transferredAt', CASE WHEN $6::boolean THEN NULL ELSE NOW() END,
-                    'actorId', $4::text,
-                    'reason', $5::text,
-                    'observedState', 'verification_pending',
-                    'priorEffectStartedAt', effect_started_at,
-                    'priorEffectFinishedAt', effect_finished_at
-                  )
-                )
-          WHERE id = $1
-            AND runtime_id = $3
-            AND status = 'pending'
-        RETURNING id, runtime_id, kind, actor_id, page_ids, revisions, deleted_page_ids,
-                  recovery_mode, effect, effect_started_at, effect_finished_at, recovery_started_at,
-                  remote_effect_started_at, remote_effects_completed_at, remote_terminal_result,
-                  cache_invalidation_pending, recovery_history, status, created_at`,
+                recovery_started_at = COALESCE(i.recovery_started_at, NOW()),
+                recovery_history = CASE
+                  WHEN p.archive_required THEN jsonb_build_array(p.recovery_attempt)
+                  ELSE p.recovery_history || jsonb_build_array(p.recovery_attempt)
+                END
+           FROM claim_plan p
+          WHERE i.id = p.id
+            AND (
+              NOT p.archive_required
+              OR EXISTS (SELECT 1 FROM archived WHERE intent_id = i.id)
+            )
+        RETURNING i.id, i.runtime_id, i.kind, i.actor_id, i.page_ids, i.revisions,
+                  i.deleted_page_ids, i.recovery_mode, i.effect, i.effect_started_at,
+                  i.effect_finished_at, i.recovery_started_at, i.remote_effect_started_at,
+                  i.remote_effects_completed_at, i.remote_terminal_result,
+                  i.cache_invalidation_pending, i.recovery_history, i.status, i.created_at`,
         [
           durable.id,
           currentRuntimeId,
@@ -1769,6 +1800,8 @@ export async function reconcilePageWriteIntent(
           authorization.actorId,
           authorization.reason.trim(),
           retryingHere,
+          RECOVERY_HISTORY_MAX_ATTEMPTS,
+          RECOVERY_HISTORY_MAX_BYTES,
         ],
       );
       if (claimed.rowCount !== 1) {

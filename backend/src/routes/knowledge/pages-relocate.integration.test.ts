@@ -494,6 +494,7 @@ async function seedInterruptedLocalCutover(
   pageId: number,
   confluenceId: string,
   actorId: string,
+  options: { cutover?: boolean; includeAttachment?: boolean } = {},
 ): Promise<string> {
   const original = (await query<{
     title: string;
@@ -520,31 +521,52 @@ async function seedInterruptedLocalCutover(
        FROM pages WHERE id = $1`,
     [pageId],
   )).rows[0]!;
+  const aces = (await query<{
+    principal_type: string;
+    principal_id: string;
+    permission: string;
+  }>(
+    `SELECT principal_type, principal_id, permission
+       FROM access_control_entries
+      WHERE resource_type = 'page' AND resource_id = $1
+      ORDER BY principal_type, principal_id, permission`,
+    [pageId],
+  )).rows;
+  const cutover = options.cutover ?? true;
+  const includeAttachment = options.includeAttachment ?? true;
   const attachmentBytes = Buffer.from('crash-bytes');
-  await writeStoreB(pageId, 'crash.png', attachmentBytes.toString(), actorId);
-  await query(
-    `UPDATE pages SET
-       source = 'standalone',
-       confluence_id = NULL,
-       space_key = 'LOCAL',
-       visibility = 'shared',
-       created_by_user_id = $2,
-       body_html = REPLACE(body_html, $3, $4),
-       inherit_perms = TRUE,
-       embedding_dirty = TRUE,
-       image_analysis_dirty = TRUE,
-       embedding_status = 'not_embedded',
-       embedded_at = NULL,
-       local_modified_at = NOW(),
-       local_modified_by = $2
-     WHERE id = $1`,
-    [
-      pageId,
-      actorId,
-      `/api/attachments/${confluenceId}/`,
-      `/api/local-attachments/${pageId}/`,
-    ],
-  );
+  if (includeAttachment) {
+    await writeStoreB(pageId, 'crash.png', attachmentBytes.toString(), actorId);
+  }
+  if (cutover) {
+    await query(
+      `UPDATE pages SET
+         source = 'standalone',
+         confluence_id = NULL,
+         space_key = 'LOCAL',
+         visibility = 'shared',
+         created_by_user_id = $2,
+         body_html = REPLACE(body_html, $3, $4),
+         inherit_perms = TRUE,
+         embedding_dirty = TRUE,
+         image_analysis_dirty = TRUE,
+         embedding_status = 'not_embedded',
+         embedded_at = NULL,
+         local_modified_at = NOW(),
+         local_modified_by = $2
+       WHERE id = $1`,
+      [
+        pageId,
+        actorId,
+        `/api/attachments/${confluenceId}/`,
+        `/api/local-attachments/${pageId}/`,
+      ],
+    );
+    await query(
+      "DELETE FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1",
+      [pageId],
+    );
+  }
   const revisions = (await query<{ content_revision: string; lifecycle_revision: string }>(
     'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
     [pageId],
@@ -607,8 +629,8 @@ async function seedInterruptedLocalCutover(
        $12, $13, $14,
        $15, $16, $17,
        $18, $19, $20,
-       $5, '{}'::integer[], '[]'::jsonb, $21::jsonb,
-       $22, $23, NULL
+       $5, '{}'::integer[], $21::jsonb, $22::jsonb,
+       $23, $24, NULL
      )`,
     [
       intent.rows[0]!.id,
@@ -631,13 +653,14 @@ async function seedInterruptedLocalCutover(
       original.image_analysis_dirty,
       original.embedding_status,
       original.embedded_at,
-      JSON.stringify([{
+      JSON.stringify(aces),
+      JSON.stringify(includeAttachment ? [{
         sourceName: 'crash.png',
         targetName: 'crash.png',
         contentType: 'image/png',
         size: attachmentBytes.length,
         sha256: createHash('sha256').update(attachmentBytes).digest('hex'),
-      }]),
+      }] : []),
       createHash('sha256').update(original.title).digest('hex'),
       createHash('sha256').update(original.body_storage ?? '').digest('hex'),
     ],
@@ -1564,12 +1587,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       expect(row.source).toBe('standalone');
     });
 
-    it('lets a second active recovery admin settle a marker-only preparation after the original actor is revoked', async () => {
+    it.each(['deactivated', 'deleted'] as const)('lets an active recovery admin settle marker-only preparation after the original actor is %s', async (actorState) => {
+      const contentOwnerId = await createUser(`marker-owner-${randomUUID()}`, 'user');
       const id = await createPage({
         title: 'Preparation marker only',
         source: 'standalone',
         spaceKey: 'LOCAL',
-        ownerId: userId,
+        ownerId: contentOwnerId,
         bodyHtml: '<p>exact marker-only body</p>',
         bodyStorage: '<p>exact marker-only storage</p>',
         visibility: 'private',
@@ -1579,19 +1603,19 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         source: 'standalone',
         spaceKey: 'LOCAL',
         parentRef: String(id),
-        ownerId: userId,
+        ownerId: contentOwnerId,
       });
       await query(
         `INSERT INTO access_control_entries
            (resource_type, resource_id, principal_type, principal_id, permission)
          VALUES ('page', $1, 'user', $2, 'edit')`,
-        [id, userId],
+        [id, contentOwnerId],
       );
       const unrelated = await createPage({
         title: 'Unrelated survivor',
         source: 'standalone',
         spaceKey: 'LOCAL',
-        ownerId: userId,
+        ownerId: contentOwnerId,
       });
       const originalRevisions = await getPageRevisions(id);
       resolveCreatedPage('900015');
@@ -1621,11 +1645,17 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         await query('SELECT pg_cancel_backend($1)', [preparationPid]);
         await holder.query('COMMIT');
         expect((await pending).statusCode).toBe(500);
-        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
         await query(
-          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          actorState === 'deleted' ? 'DELETE FROM users WHERE id = $1' : 'UPDATE users SET deactivated_at = NOW() WHERE id = $1',
           [userId],
         );
+        if (actorState === 'deactivated') {
+          await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
+        }
+        expect((await query<{ actor_id: string | null }>(
+          'SELECT actor_id FROM page_write_intents WHERE id = $1',
+          [intent!.id],
+        )).rows[0]?.actor_id).toBe(actorState === 'deleted' ? null : userId);
 
 
         await withFencedIntentRuntime(intent!, () =>
@@ -1657,7 +1687,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           `SELECT 1 FROM access_control_entries
             WHERE resource_type = 'page' AND resource_id = $1
               AND principal_type = 'user' AND principal_id = $2 AND permission = 'edit'`,
-          [id, userId],
+          [id, contentOwnerId],
         )).rowCount).toBe(1);
         await expect(query('DELETE FROM pages WHERE id = $1', [id])).resolves.toMatchObject({
           rowCount: 1,
@@ -1669,12 +1699,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       }
     });
 
-    it('lets a second active recovery admin remove a committed preparation after the original actor is revoked', async () => {
+    it.each(['deactivated', 'deleted'] as const)('lets an active recovery admin remove committed preparation after the original actor is %s', async (actorState) => {
+      const contentOwnerId = await createUser(`committed-owner-${randomUUID()}`, 'user');
       const id = await createPage({
         title: 'Committed preparation',
         source: 'standalone',
         spaceKey: 'LOCAL',
-        ownerId: userId,
+        ownerId: contentOwnerId,
         bodyHtml: '<p>exact original body</p>',
         bodyStorage: '<p>exact original storage</p>',
         visibility: 'private',
@@ -1684,13 +1715,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         source: 'standalone',
         spaceKey: 'LOCAL',
         parentRef: String(id),
-        ownerId: userId,
+        ownerId: contentOwnerId,
       });
       await query(
         `INSERT INTO access_control_entries
            (resource_type, resource_id, principal_type, principal_id, permission)
          VALUES ('page', $1, 'user', $2, 'edit')`,
-        [id, userId],
+        [id, contentOwnerId],
       );
       const originalRevisions = await getPageRevisions(id);
       resolveCreatedPage('900016');
@@ -1752,11 +1783,17 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           settled_at: null,
         });
         expect(await relocationProgress(intent!.id)).toBeDefined();
-        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
         await query(
-          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          actorState === 'deleted' ? 'DELETE FROM users WHERE id = $1' : 'UPDATE users SET deactivated_at = NOW() WHERE id = $1',
           [userId],
         );
+        if (actorState === 'deactivated') {
+          await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
+        }
+        expect((await query<{ actor_id: string | null }>(
+          'SELECT actor_id FROM page_write_intents WHERE id = $1',
+          [intent!.id],
+        )).rows[0]?.actor_id).toBe(actorState === 'deleted' ? null : userId);
 
 
         await withFencedIntentRuntime(intent!, () =>
@@ -1788,7 +1825,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           `SELECT 1 FROM access_control_entries
             WHERE resource_type = 'page' AND resource_id = $1
               AND principal_type = 'user' AND principal_id = $2 AND permission = 'edit'`,
-          [id, userId],
+          [id, contentOwnerId],
         )).rowCount).toBe(1);
 
         await expect(query('DELETE FROM pages WHERE id = $1', [id])).resolves.toMatchObject({
@@ -2162,6 +2199,135 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       });
     });
 
+    it('keeps the current ACL untouched when recovery finds no local cutover after an intervening revoke and grant', async () => {
+      const revokedPrincipal = await createUser(`revoked-before-recovery-${randomUUID()}`, 'user');
+      const grantedPrincipal = await createUser(`granted-before-recovery-${randomUUID()}`, 'user');
+      const id = await createPage({
+        title: 'No local cutover',
+        source: 'confluence',
+        confluenceId: '700064',
+        spaceKey: 'CONF',
+        bodyStorage: '<p>no-cutover provider body</p>',
+      });
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, revokedPrincipal],
+      );
+      const intentId = await seedInterruptedLocalCutover(id, '700064', userId, {
+        cutover: false,
+        includeAttachment: false,
+      });
+      await query(
+        `DELETE FROM access_control_entries
+          WHERE resource_type = 'page' AND resource_id = $1
+            AND principal_type = 'user' AND principal_id = $2 AND permission = 'edit'`,
+        [id, revokedPrincipal],
+      );
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'read')`,
+        [id, grantedPrincipal],
+      );
+      h.client.getPage.mockResolvedValue(
+        createdPage('700064', '<p>no-cutover provider body</p>', 'No local cutover'),
+      );
+
+      await expect(reconcilePageWriteIntent(intentId, {
+        actorId: recoveryAdminId,
+        reason: 'Preserve ACL changes because the local relocation cutover never occurred',
+      })).resolves.toEqual({ intentId, status: 'reconciled_not_applied' });
+
+      expect(await getRow(id)).toMatchObject({
+        source: 'confluence',
+        confluence_id: '700064',
+        space_key: 'CONF',
+      });
+      expect((await query<{
+        principal_id: string;
+        permission: string;
+      }>(
+        `SELECT principal_id, permission
+           FROM access_control_entries
+          WHERE resource_type = 'page' AND resource_id = $1
+          ORDER BY principal_id, permission`,
+        [id],
+      )).rows).toEqual([{ principal_id: grantedPrincipal, permission: 'read' }]);
+    });
+
+    it('refuses cutover restoration after a concurrent ACE grant and leaves page and ACL unchanged', async () => {
+      const originalPrincipal = await createUser(`original-cutover-ace-${randomUUID()}`, 'user');
+      const grantedPrincipal = await createUser(`concurrent-cutover-ace-${randomUUID()}`, 'user');
+      const id = await createPage({
+        title: 'Changed cutover ACL',
+        source: 'confluence',
+        confluenceId: '700065',
+        spaceKey: 'CONF',
+        bodyStorage: '<p>changed cutover provider body</p>',
+      });
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, originalPrincipal],
+      );
+      const intentId = await seedInterruptedLocalCutover(id, '700065', userId, {
+        includeAttachment: false,
+      });
+      h.client.getPage.mockResolvedValue(
+        createdPage('700065', '<p>changed cutover provider body</p>', 'Changed cutover ACL'),
+      );
+
+      const aceWriter = await getPool().connect();
+      try {
+        await aceWriter.query('BEGIN');
+        await aceWriter.query(
+          `INSERT INTO access_control_entries
+             (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ('page', $1, 'user', $2, 'read')`,
+          [id, grantedPrincipal],
+        );
+        const writerPid = (await aceWriter.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        )).rows[0]!.pid;
+        const recovery = expect(reconcilePageWriteIntent(intentId, {
+          actorId: recoveryAdminId,
+          reason: 'Refuse to overwrite an ACL grant committed after local cutover',
+        })).rejects.toMatchObject({
+          reason: 'intent_local_evidence_mismatch',
+        });
+        expect(await waitForBlockedDatabasePid(writerPid)).not.toBeNull();
+        await aceWriter.query('COMMIT');
+
+        await recovery;
+      } finally {
+        await aceWriter.query('ROLLBACK').catch(() => undefined);
+        aceWriter.release();
+      }
+
+      expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+        space_key: 'LOCAL',
+      });
+      expect((await query<{
+        principal_id: string;
+        permission: string;
+      }>(
+        `SELECT principal_id, permission
+           FROM access_control_entries
+          WHERE resource_type = 'page' AND resource_id = $1
+          ORDER BY principal_id, permission`,
+        [id],
+      )).rows).toEqual([{ principal_id: grantedPrincipal, permission: 'read' }]);
+      expect((await query(
+        'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+        [intentId],
+      )).rowCount).toBe(1);
+    });
+
     it('recovers a crash after local cutover but before delete without inventing remote dispatch', async () => {
       const id = await createPage({
         title: 'Crash before delete',
@@ -2171,6 +2337,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         bodyHtml: '<p><img src="/api/attachments/700061/crash.png" /></p>',
         bodyStorage: '<p>remote crash body</p>',
       });
+      const originalPrincipal = await createUser(`restored-cutover-ace-${randomUUID()}`, 'user');
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, originalPrincipal],
+      );
       await writeStoreA('700061', 'crash.png', 'crash-bytes');
       const intentId = await seedInterruptedLocalCutover(id, '700061', userId);
       expect(await getRow(id)).toMatchObject({
@@ -2178,6 +2351,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         confluence_id: null,
         space_key: 'LOCAL',
       });
+      expect((await query(
+        `SELECT 1 FROM access_control_entries
+          WHERE resource_type = 'page' AND resource_id = $1`,
+        [id],
+      )).rowCount).toBe(0);
       expect(await latestRelocateIntent(id)).toMatchObject({
         id: intentId,
         remote_effect_started_at: null,
@@ -2219,6 +2397,15 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       });
       expect(await storeBFiles(id)).toEqual([]);
       expect(await storeAFiles('700061')).toEqual(['crash.png']);
+      expect((await query<{
+        principal_id: string;
+        permission: string;
+      }>(
+        `SELECT principal_id, permission
+           FROM access_control_entries
+          WHERE resource_type = 'page' AND resource_id = $1`,
+        [id],
+      )).rows).toEqual([{ principal_id: originalPrincipal, permission: 'edit' }]);
       expect((await query(
         'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
         [intentId],
@@ -2588,12 +2775,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       }
     });
 
-    it('retains terminal remote creation when authority is revoked before local publication', async () => {
+    it.each(['deactivated', 'deleted'] as const)('retains terminal remote creation and refuses recovery when the original actor is %s', async (actorState) => {
+      const contentOwnerId = await createUser(`remote-start-owner-${randomUUID()}`, 'user');
       const id = await createPage({
         title: 'Revoked during upstream create',
         source: 'standalone',
         spaceKey: 'LOCAL',
-        ownerId: userId,
+        ownerId: contentOwnerId,
       });
       let notifyCreateStarted!: () => void;
       let releaseCreate!: () => void;
@@ -2611,19 +2799,35 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
 
       const pending = toConfluence(id);
       await createStarted;
-      await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+      await query(
+        actorState === 'deleted' ? 'DELETE FROM users WHERE id = $1' : 'UPDATE users SET deactivated_at = NOW() WHERE id = $1',
+        [userId],
+      );
       releaseCreate();
 
       const response = await pending;
       expect(response.statusCode).toBe(403);
       expect(h.client.deletePage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('standalone');
-      expect(await latestRelocateIntent(id)).toMatchObject({
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
         status: 'pending',
         remote_effect_started_at: expect.any(String),
         remote_effects_completed_at: expect.any(String),
         settled_at: null,
       });
+      expect((await query<{ actor_id: string | null }>(
+        'SELECT actor_id FROM page_write_intents WHERE id = $1',
+        [intent!.id],
+      )).rows[0]?.actor_id).toBe(actorState === 'deleted' ? null : userId);
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: recoveryAdminId,
+          reason: 'Remote-started relocation cannot be settled without its original actor',
+        })).rejects.toMatchObject({
+          reason: actorState === 'deleted' ? 'intent_recovery_metadata_invalid' : 'intent_access_changed',
+        }),
+      );
     });
 
     it('409s while a Confluence sync is in flight', async () => {
