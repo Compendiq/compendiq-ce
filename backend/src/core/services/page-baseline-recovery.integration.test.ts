@@ -23,10 +23,16 @@ async function interruptedPreparation(copiedFiles: number) {
   const suffix = randomUUID();
   const actor = await query<{ id: string }>(
     `INSERT INTO users (username, email, password_hash, role)
-     VALUES ($1, $2, 'not-used-for-login', 'admin') RETURNING id`,
-    [`baseline-recovery-${suffix}`, `${suffix}@baseline-recovery.test`],
+     VALUES ($1, $2, 'not-used-for-login', 'user') RETURNING id`,
+    [`baseline-writer-${suffix}`, `${suffix}@baseline-recovery.test`],
   );
   const actorId = actor.rows[0]!.id;
+  const administrator = await query<{ id: string }>(
+    `INSERT INTO users (username, email, password_hash, role)
+     VALUES ($1, $2, 'not-used-for-login', 'admin') RETURNING id`,
+    [`baseline-recovery-admin-${suffix}`, `${suffix}@baseline-recovery-admin.test`],
+  );
+  const administratorId = administrator.rows[0]!.id;
   const page = await query<{ id: number }>(
     `INSERT INTO pages (title, source, visibility, created_by_user_id, body_html, body_text, version)
      VALUES ('Recovery source', 'standalone', 'private', $1, '<p>initial</p>', 'initial', 4)
@@ -97,8 +103,14 @@ async function interruptedPreparation(copiedFiles: number) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.copyFile(path.join(sourceDir, attachment.filename), destination);
   }
-  await fencePageWriterRuntime({ runtimeId, mode: 'owner_ack', acknowledgmentId, actorId, reason: 'Fixture models a retired writer whose copy did not settle' });
-  return { actorId, pageId, baselineId, intentId, prepared, sourceDir, revision };
+  await fencePageWriterRuntime({
+    runtimeId,
+    mode: 'owner_ack',
+    acknowledgmentId,
+    actorId: administratorId,
+    reason: 'Fixture models a retired writer whose copy did not settle',
+  });
+  return { actorId, administratorId, pageId, baselineId, intentId, prepared, sourceDir, revision };
 }
 
 describe.skipIf(!available)('baseline preparation recovery over persisted crash states', () => {
@@ -125,9 +137,9 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
 
   it('recovers exact copied bytes into the same preview without changing authored content or revision', async () => {
     const fixture = await interruptedPreparation(2);
-    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.actorId, reason: 'Recover fully copied immutable preparation' }))
+    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.administratorId, reason: 'Recover fully copied immutable preparation' }))
       .toMatchObject({ status: 'reconciled_applied' });
-    await setPageBaselineCreationEnabled(fixture.actorId, true);
+    await setPageBaselineCreationEnabled(fixture.administratorId, true);
     const preview = await previewPageBaseline(fixture.pageId, fixture.actorId);
     expect(preview.baselineId).toBe(fixture.baselineId);
     expect(preview.manifestDigest).toBe(fixture.prepared.manifestDigest);
@@ -139,7 +151,7 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
   it('abandons partial bytes and releases only that reservation while preserving source and other retained bytes', async () => {
     const partial = await interruptedPreparation(1);
     const other = await interruptedPreparation(2);
-    expect(await reconcilePageWriteIntent(partial.intentId, { actorId: partial.actorId, reason: 'Discard an incomplete unpublished copy safely' }))
+    expect(await reconcilePageWriteIntent(partial.intentId, { actorId: partial.administratorId, reason: 'Discard an incomplete unpublished copy safely' }))
       .toMatchObject({ status: 'reconciled_not_applied' });
     expect(await isBaselinePreparationAbsent(partial.baselineId)).toBe(true);
     expect((await query('SELECT id FROM page_baselines WHERE id = $1', [partial.baselineId])).rows).toEqual([]);
@@ -152,7 +164,7 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
   it('never re-promotes an abandoned preparation even when all its bytes are valid', async () => {
     const fixture = await interruptedPreparation(2);
     await query("UPDATE page_baselines SET status = 'abandoned', abandoned_at = NOW() WHERE id = $1", [fixture.baselineId]);
-    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.actorId, reason: 'Resume committed abandonment without resurrecting evidence' }))
+    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.administratorId, reason: 'Resume committed abandonment without resurrecting evidence' }))
       .toMatchObject({ status: 'reconciled_not_applied' });
     expect(await isBaselinePreparationAbsent(fixture.baselineId)).toBe(true);
     expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows).toEqual([{ reserved_bytes: '0' }]);
@@ -162,7 +174,7 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
     const fixture = await interruptedPreparation(1);
     await query("UPDATE page_baselines SET status = 'abandoned', abandoned_at = NOW() WHERE id = $1", [fixture.baselineId]);
     await cleanupAbandonedBaselinePreparation(fixture.baselineId);
-    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.actorId, reason: 'Settle the already completed abandoned cleanup' }))
+    expect(await reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.administratorId, reason: 'Settle the already completed abandoned cleanup' }))
       .toMatchObject({ status: 'reconciled_not_applied' });
     expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows).toEqual([{ reserved_bytes: '0' }]);
   });
@@ -171,7 +183,7 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
     const fixture = await interruptedPreparation(1);
     await query("UPDATE page_baselines SET status = 'abandoned', abandoned_at = NOW() WHERE id = $1", [fixture.baselineId]);
     await query('DELETE FROM page_baselines WHERE id = $1', [fixture.baselineId]);
-    await expect(reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.actorId, reason: 'Inspect inconsistent orphaned retained bytes' }))
+    await expect(reconcilePageWriteIntent(fixture.intentId, { actorId: fixture.administratorId, reason: 'Inspect inconsistent orphaned retained bytes' }))
       .rejects.toMatchObject({ reason: 'baseline_recovery_invalid' });
     expect(await isBaselinePreparationAbsent(fixture.baselineId)).toBe(false);
     expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [fixture.intentId])).rows).toEqual([{ status: 'pending' }]);

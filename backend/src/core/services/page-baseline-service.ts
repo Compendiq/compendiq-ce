@@ -1011,18 +1011,6 @@ async function publishFreezeLocked(
     if (!permissions.canFreeze) throw new PageBaselineError(403, 'not_authorized', 'Freeze permission is required');
 
     if (page.baseline_id) {
-      const same = await client.query<{ id: string }>(
-        `SELECT id FROM page_baselines
-          WHERE id = $1 AND manifest_digest = $2 AND content_revision = $3::bigint
-            AND status = 'published'`,
-        [page.baseline_id, input.expectedManifestDigest, input.expectedContentRevision],
-      );
-      if (same.rows.length > 0) {
-        const state = await getPageLifecycleState(client, input.pageId, input.actorId);
-        await client.query('COMMIT');
-        committed = true;
-        return state;
-      }
       throw new PageBaselineError(423, 'page_is_frozen', 'Page is already frozen');
     }
 
@@ -1181,6 +1169,15 @@ async function publishFreezeLocked(
     if (published.rowCount !== 1) {
       throw new PageBaselineError(409, 'stale_manifest', 'The prepared baseline is no longer publishable');
     }
+    // Every other prepared identity belongs to the lifecycle just superseded.
+    // Commit abandonment with publication; verified maintenance removes only
+    // those unpublished bytes and releases their capacity after this commit.
+    await client.query(
+      `UPDATE page_baselines
+          SET status = 'abandoned', abandoned_at = NOW()
+        WHERE original_page_id = $1 AND status = 'prepared'`,
+      [input.pageId],
+    );
     await appendHistory(client, {
       page,
       baseline: prepared,

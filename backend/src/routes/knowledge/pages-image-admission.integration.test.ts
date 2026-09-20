@@ -35,6 +35,7 @@ const PNG_DATA_URI = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
 const dbAvailable = await isDbAvailable();
 let app: FastifyInstance;
 let userId: string;
+let recoveryAdminId: string;
 let redis: RedisClientType;
 let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
@@ -82,7 +83,7 @@ async function seedFencedImageRuntime(): Promise<string> {
     [
       runtimeId,
       JSON.stringify({ host: 'test-host', pid: 999999, startedAt: new Date().toISOString() }),
-      userId,
+      recoveryAdminId,
       JSON.stringify({ kind: 'verified_local_termination', deploymentIdentity: { host: 'test-host' } }),
     ],
   );
@@ -160,6 +161,8 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
     await truncateAllTables();
     await rm(attachmentsDir, { recursive: true, force: true });
     userId = await insertUser(`image-writer-${randomUUID()}`);
+    recoveryAdminId = await insertUser(`image-recovery-admin-${randomUUID()}`);
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [recoveryAdminId]);
     clearAllowedBaseUrls();
     addAllowedBaseUrlSilent('https://cdn.example.com');
     fetchMock = vi.fn<typeof globalThis.fetch>();
@@ -352,7 +355,7 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
     await expect(readFile(interrupted.livePath)).resolves.toEqual(PNG_BYTES);
 
     await expect(reconcilePageWriteIntent(interrupted.intentId, {
-      actorId: userId, reason: 'Verify the completed image after its writer was retired',
+      actorId: recoveryAdminId, reason: 'Verify the completed image after its writer was retired',
     })).resolves.toEqual({ intentId: interrupted.intentId, status: 'reconciled_applied' });
 
     const page = await query<{ content_revision: string; image_analysis_dirty: boolean }>(
@@ -377,7 +380,7 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
     await expect(readFile(interrupted.livePath)).resolves.toEqual(PNG_BYTES);
 
     await expect(reconcilePageWriteIntent(interrupted.intentId, {
-      actorId: userId, reason: 'Publish verified activated bytes under a fresh runtime epoch',
+      actorId: recoveryAdminId, reason: 'Publish verified activated bytes under a fresh runtime epoch',
     })).resolves.toEqual({ intentId: interrupted.intentId, status: 'reconciled_applied' });
 
     const page = await query<{ content_revision: string; image_analysis_dirty: boolean }>(
@@ -396,11 +399,9 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
     const pageId = await insertStandalonePage('Revoked image', 'private', userId, 'LOCAL');
     const interrupted = await interruptImageWrite(pageId, 'publication');
     await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
-    const administrator = await insertUser(`image-recovery-admin-${randomUUID()}`);
-    await query("UPDATE users SET role = 'admin' WHERE id = $1", [administrator]);
 
     await expect(reconcilePageWriteIntent(interrupted.intentId, {
-      actorId: administrator, reason: 'Recovery may not publish through revoked original authority',
+      actorId: recoveryAdminId, reason: 'Recovery may not publish through revoked original authority',
     })).rejects.toMatchObject({ statusCode: 403, reason: 'not_authorized' });
 
     const state = await query<{ content_revision: string; status: string }>(
@@ -420,7 +421,7 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
     await writeFile(interrupted.livePath, changedBytes);
 
     await expect(reconcilePageWriteIntent(interrupted.intentId, {
-      actorId: userId, reason: 'Conflicting local bytes are not evidence of the admitted image',
+      actorId: recoveryAdminId, reason: 'Conflicting local bytes are not evidence of the admitted image',
     })).rejects.toMatchObject({ statusCode: 409, reason: 'intent_local_evidence_mismatch' });
 
     expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [interrupted.intentId])).rows)
@@ -460,11 +461,9 @@ describe.skipIf(!dbAvailable)('page image writer admission — real PostgreSQL',
       ],
     );
     await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
-    const administrator = await insertUser(`image-stage-admin-${randomUUID()}`);
-    await query("UPDATE users SET role = 'admin' WHERE id = $1", [administrator]);
 
     await expect(reconcilePageWriteIntent(intentId, {
-      actorId: administrator, reason: 'Discard only the retired writer unpublished temporary image',
+      actorId: recoveryAdminId, reason: 'Discard only the retired writer unpublished temporary image',
     })).resolves.toEqual({ intentId, status: 'reconciled_not_applied' });
 
     await expect(readFile(livePath)).resolves.toEqual(original);

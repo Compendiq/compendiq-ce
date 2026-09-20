@@ -3,8 +3,12 @@ import { createClient, type RedisClientType } from 'redis';
 import type * as Undici from 'undici';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { confluenceToHtml, htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import {
+  lockPageLifecycle,
+  reconcilePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import {
@@ -38,6 +42,24 @@ let redis: RedisClientType;
 let userId: string;
 let otherUserId: string;
 let lastConfluenceRequest: { url: string; options: Record<string, unknown> } | null;
+let recoveryAdminId: string;
+
+async function waitForBlockedLifecycleLock(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'
+       ) AS waiting`,
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error('Apply writer did not reach the lifecycle admission barrier');
+}
 
 async function setPageContent(
   pageId: number,
@@ -55,6 +77,23 @@ async function setPageContent(
 }
 
 async function enableConfluence(enabled: boolean, configured = true): Promise<void> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ('OPS', 'OPS', 'confluence', NOW())
+     ON CONFLICT (space_key) DO NOTHING`,
+  );
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ('apply-editor', 'Apply editor', ARRAY['read', 'write'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ('OPS', 'user', $1, $2)
+     ON CONFLICT DO NOTHING`,
+    [userId, role.rows[0]!.id],
+  );
   await query(
     `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
      VALUES ($1, $2, $3, $4)
@@ -89,6 +128,31 @@ function acceptNextConfluenceUpdate(): void {
           title: sent.title,
           version: sent.version,
           body: { storage: { value: sent.body.storage.value, representation: 'storage' } },
+        }),
+      },
+    };
+  });
+}
+
+function acceptNextConfluenceReadback(input: {
+  id: string;
+  title: string;
+  version: number;
+  storage: string;
+}): void {
+  mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
+    lastConfluenceRequest = { url, options };
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        text: async () => JSON.stringify({
+          id: input.id,
+          type: 'page',
+          status: 'current',
+          title: input.title,
+          version: { number: input.version },
+          body: { storage: { value: input.storage, representation: 'storage' } },
         }),
       },
     };
@@ -150,6 +214,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       lastConfluenceRequest = null;
       userId = await insertUser(`apply-owner-${randomUUID()}`);
       otherUserId = await insertUser(`apply-other-${randomUUID()}`);
+      recoveryAdminId = await insertUser(`apply-recovery-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [recoveryAdminId]);
     });
 
     it('falls back to a numeric Confluence id only when no internal id matches', async () => {
@@ -360,18 +426,40 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const pageId = await insertConfluencePage('page-sparse', 'Sparse article', 'OPS');
       await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
       await enableConfluence(true);
-      mockHttpRequest.mockResolvedValueOnce({
+      let acceptedStorage = '';
+      mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
+        lastConfluenceRequest = { url, options };
+        const sent = JSON.parse(String(options.body)) as {
+          body: { storage: { value: string } };
+        };
+        acceptedStorage = sent.body.storage.value;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () => JSON.stringify({
+              id: 'page-sparse',
+              type: 'page',
+              title: 'Accepted sparse article',
+              version: { number: 6 },
+            }),
+          },
+        };
+      });
+      mockHttpRequest.mockImplementationOnce(async () => ({
         statusCode: 200,
         headers: {},
         body: {
           text: async () => JSON.stringify({
             id: 'page-sparse',
             type: 'page',
+            status: 'current',
             title: 'Accepted sparse article',
             version: { number: 6 },
+            body: { storage: { value: acceptedStorage, representation: 'storage' } },
           }),
         },
-      });
+      }));
 
       const response = await apply({
         pageId: 'page-sparse',
@@ -392,6 +480,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       });
       expect(saved.body_html).toContain('<h2>Accepted without expansion</h2>');
       expect(saved.body_storage).toContain('<p>Stored content.</p>');
+      expect(mockHttpRequest).toHaveBeenCalledTimes(2);
       const pending = await query<{ count: string }>(
         `SELECT COUNT(*)::text AS count FROM page_write_intents
           WHERE $1 = ANY(page_ids) AND status = 'pending'`,
@@ -399,6 +488,194 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       );
       expect(pending.rows[0]?.count).toBe('0');
     });
+    it('keeps a large successful provider body out of terminal metadata and publishes it exactly', async () => {
+      const pageId = await insertConfluencePage('page-large', 'Large article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      const authoredText = `large-${'x'.repeat(36_000)}-end`;
+      acceptNextConfluenceUpdate();
+
+      const response = await apply({
+        pageId: 'page-large',
+        improvedMarkdown: authoredText,
+        title: 'Large accepted title',
+        version: 5,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved).toMatchObject({
+        title: 'Large accepted title',
+        body_text: authoredText,
+        version: 6,
+      });
+      const intent = await query<{
+        status: string;
+        remote_terminal_result: Record<string, unknown>;
+      }>(
+        `SELECT status, remote_terminal_result
+           FROM page_write_intents
+          WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+        [pageId],
+      );
+      expect(intent.rows[0]?.status).toBe('completed');
+      expect(Buffer.byteLength(JSON.stringify(intent.rows[0]?.remote_terminal_result))).toBeLessThan(1024);
+      expect(JSON.stringify(intent.rows[0]?.remote_terminal_result)).not.toContain(authoredText.slice(0, 128));
+    });
+
+    it('retains a compact acknowledged Apply for recovery when readback fails without replaying the PUT', async () => {
+      const pageId = await insertConfluencePage('page-compact-failure', 'Compact article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      let acceptedStorage = '';
+      mockHttpRequest.mockImplementationOnce(async (_url: string, options: Record<string, unknown>) => {
+        const sent = JSON.parse(String(options.body)) as { body: { storage: { value: string } } };
+        acceptedStorage = sent.body.storage.value;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () => JSON.stringify({
+              id: 'page-compact-failure',
+              type: 'page',
+              title: 'Compact accepted',
+              version: { number: 6 },
+            }),
+          },
+        };
+      });
+      mockHttpRequest.mockResolvedValueOnce({
+        statusCode: 403,
+        headers: {},
+        body: { text: async () => JSON.stringify({ message: 'readback denied' }) },
+      });
+
+      const response = await apply({
+        pageId: 'page-compact-failure',
+        improvedMarkdown: 'Compact accepted body',
+        title: 'Compact accepted',
+        version: 5,
+      });
+      expect(response.statusCode).toBe(403);
+      const pending = await query<{
+        id: string;
+        remote_terminal_result: Record<string, unknown>;
+        remote_effects_completed_at: Date | null;
+      }>(
+        `SELECT id, remote_terminal_result, remote_effects_completed_at
+           FROM page_write_intents
+          WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+        [pageId],
+      );
+      expect(pending.rows[0]?.remote_effects_completed_at).toEqual(expect.any(Date));
+      expect(JSON.stringify(pending.rows[0]?.remote_terminal_result)).not.toContain('Compact accepted body');
+
+      const retiredRuntime = `retired-apply-${randomUUID()}`;
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+         VALUES ($1, '{"fixture":"retired Apply writer"}', NOW(), $2,
+                 'Fixture confirms the acknowledged writer stopped',
+                 '{"kind":"verified_local_termination"}')`,
+        [retiredRuntime, recoveryAdminId],
+      );
+      await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [
+        pending.rows[0]!.id,
+        retiredRuntime,
+      ]);
+      acceptNextConfluenceReadback({
+        id: 'page-compact-failure',
+        title: 'Compact accepted',
+        version: 6,
+        storage: acceptedStorage,
+      });
+      await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+        actorId: recoveryAdminId,
+        reason: 'Recover compact acknowledged Apply without repeating its remote mutation',
+      })).resolves.toEqual({
+        intentId: pending.rows[0]!.id,
+        status: 'reconciled_applied',
+      });
+      expect(await readPage(pageId)).toMatchObject({
+        title: 'Compact accepted',
+        body_text: 'Compact accepted body',
+        version: 6,
+      });
+      const methods = mockHttpRequest.mock.calls.map((call) =>
+        (call[1] as Record<string, unknown> | undefined)?.method);
+      expect(methods.filter((method) => method === 'PUT')).toHaveLength(1);
+    });
+
+    it('cancels an admitted Apply when Confluence is switched off while it waits', async () => {
+      const pageId = await insertConfluencePage('page-mode-race', 'Mode race', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = apply({
+          pageId: 'page-mode-race',
+          improvedMarkdown: 'Must remain local',
+          version: 5,
+        });
+        await waitForBlockedLifecycleLock();
+        await blocker.query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(409);
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect((await query(
+          `SELECT status FROM page_write_intents
+            WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+          [pageId],
+        )).rows).toEqual([{ status: 'cancelled' }]);
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
+    it('uses a PAT rotated while Apply waits for admission', async () => {
+      const pageId = await insertConfluencePage('page-pat-race', 'PAT race', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      acceptNextConfluenceUpdate();
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = apply({
+          pageId: 'page-pat-race',
+          improvedMarkdown: 'Uses rotated credentials',
+          version: 5,
+        });
+        await waitForBlockedLifecycleLock();
+        await blocker.query(
+          'UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1',
+          [userId, encryptPat('rotated-apply-pat')],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(200);
+        expect(
+          (lastConfluenceRequest?.options.headers as Record<string, string>).Authorization,
+        ).toBe('Bearer rotated-apply-pat');
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
 
     it('preserves protected draw.io and image markup even when the improvement drops every token', async () => {
       await insertLocalSpace('LOCAL', userId);

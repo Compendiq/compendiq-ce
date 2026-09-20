@@ -52,6 +52,7 @@ let redis: RedisClientType;
 let confluence: Server;
 let confluenceBaseUrl: string;
 let currentUserId: string;
+let recoveryAdminId: string;
 let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 let remoteVersion = 8;
@@ -251,6 +252,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     readbackCalls = 0;
     providerPage = null;
     currentUserId = await insertUser(`page-update-${randomUUID()}`);
+    recoveryAdminId = await insertUser(`page-update-recovery-admin-${randomUUID()}`);
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [recoveryAdminId]);
   });
 
   it('persists a standalone edit, advances the version, and re-queues derived work', async () => {
@@ -497,7 +500,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     ]);
     readbackStatus = 200;
     await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
-      actorId: currentUserId, reason: 'Recover known provider success without another page mutation',
+      actorId: recoveryAdminId, reason: 'Recover known provider success without another page mutation',
     })).resolves.toEqual({ intentId: pending.rows[0]!.id, status: 'reconciled_applied' });
     expect(await pageRow(pageId)).toMatchObject({
       title: 'Acknowledged title', body_text: 'acknowledged body', version: 8,

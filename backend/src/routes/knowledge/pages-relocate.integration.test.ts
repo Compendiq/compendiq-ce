@@ -38,6 +38,7 @@ import {
   PAGE_MOVE_ADVISORY_LOCK_ID,
 } from '../../core/db/advisory-locks.js';
 import {
+  fencePageWriterRuntime,
   lockPageLifecycle,
   reconcilePageWriteIntent,
 } from '../../core/services/page-write-admission.js';
@@ -172,6 +173,7 @@ const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedi
 // --- Fixtures ---
 
 let userId: string;
+let recoveryAdminId: string;
 let userRole: string;
 let redis: RedisClientType;
 
@@ -660,6 +662,22 @@ async function waitForDatabaseBlocker(blockerPid: number): Promise<boolean> {
   return false;
 }
 
+async function waitForBlockedDatabasePid(blockerPid: number): Promise<number | null> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ pid: number }>(
+      `SELECT pid
+         FROM pg_stat_activity
+        WHERE $1 = ANY(pg_blocking_pids(pid))
+        ORDER BY pid
+        LIMIT 1`,
+      [blockerPid],
+    );
+    if (result.rows[0]) return result.rows[0].pid;
+    await nextEventLoopTurn();
+  }
+  return null;
+}
+
 // --- Attachment store helpers ---
 
 /** Store A: the Confluence cache, `<root>/<key>/<file>`. */
@@ -775,6 +793,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
 
     userRole = 'admin';
     userId = await createUser('relocator', 'admin');
+    recoveryAdminId = await createUser(`relocation-recovery-admin-${randomUUID()}`, 'admin');
     await createSpace('CONF', 'confluence');
     await createSpace('LOCAL', 'local');
   });
@@ -1050,10 +1069,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         version: { number: 2, when: '' },
       });
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Changed provider page content must retain the interrupted relocation',
-        })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Changed provider page content must retain the interrupted relocation', })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
       );
 
       h.client.getPage.mockResolvedValue(
@@ -1066,10 +1082,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         size: 0,
       });
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Missing provider attachment receipt must retain the interrupted relocation',
-        })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Missing provider attachment receipt must retain the interrupted relocation', })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
       );
       expect(await latestRelocateIntent(id)).toMatchObject({ status: 'pending', settled_at: null });
       expect((await query(
@@ -1090,10 +1103,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         size: terminalAttachments.length,
       });
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Exact provider receipts permit the interrupted local publication',
-        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Exact provider receipts permit the interrupted local publication', })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
       );
       expect(await getRow(id)).toMatchObject({
         source: 'confluence',
@@ -1239,10 +1249,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         attachment_receipts: [],
       });
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'An unknown attachment upload cannot be inferred from current provider state',
-        })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'An unknown attachment upload cannot be inferred from current provider state', })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
       );
       expect(h.client.updateAttachment).toHaveBeenCalledTimes(1);
       expect(h.client.deletePage).not.toHaveBeenCalled();
@@ -1380,10 +1387,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         [intent!.id],
       );
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'A changed durable receipt cannot be adopted from matching current provider state',
-        })).rejects.toMatchObject({ reason: 'intent_terminal_result_invalid' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'A changed durable receipt cannot be adopted from matching current provider state', })).rejects.toMatchObject({ reason: 'intent_terminal_result_invalid' }),
       );
       expect((await getRow(id)).source).toBe('standalone');
       uploadedReceipts[0]!.version.number = 1;
@@ -1395,10 +1399,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       );
 
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Recover all acknowledged attachments without the generic metadata size limit',
-        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Recover all acknowledged attachments without the generic metadata size limit', })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
       );
       expect(h.client.createPage).toHaveBeenCalledTimes(1);
       expect(h.client.updateAttachment).toHaveBeenCalledTimes(filenames.length);
@@ -1451,10 +1452,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         createdPage('900004', acceptedStorage, 'Compact create'),
       );
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Read-only verification can publish an acknowledged compact create',
-        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Read-only verification can publish an acknowledged compact create', })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
       );
 
       expect(h.client.createPage).toHaveBeenCalledTimes(1);
@@ -1527,10 +1525,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       });
 
       await withFencedIntentRuntime(intent!, () =>
-        expect(reconcilePageWriteIntent(intent!.id, {
-          actorId: userId,
-          reason: 'Partial receipts cannot authorize replay or infer the later upload outcome',
-        })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
+        expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Partial receipts cannot authorize replay or infer the later upload outcome', })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
       );
       expect(h.client.updateAttachment).toHaveBeenCalledTimes(2);
       expect(h.client.getPage).not.toHaveBeenCalled();
@@ -1549,6 +1544,194 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       const row = await getRow(id);
       expect(row.confluence_id).toBeNull();
       expect(row.source).toBe('standalone');
+    });
+
+    it('reconciles an interrupted preparation marker that committed before its row', async () => {
+      const id = await createPage({
+        title: 'Preparation marker only',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      const unrelated = await createPage({
+        title: 'Unrelated survivor',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      resolveCreatedPage('900015');
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+        const holderPid = (await holder.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        )).rows[0]!.pid;
+
+        const pending = toConfluence(id);
+        const preparationPid = await waitForBlockedDatabasePid(holderPid);
+        expect(preparationPid).not.toBeNull();
+
+        const intent = await latestRelocateIntent(id);
+        expect(intent).toMatchObject({
+          status: 'pending',
+          effect_started_at: expect.any(String),
+          effect_finished_at: null,
+          remote_effect_started_at: null,
+          settled_at: null,
+        });
+        expect(await relocationProgress(intent!.id)).toBeUndefined();
+        expect(h.client.createPage).not.toHaveBeenCalled();
+
+        await query('SELECT pg_cancel_backend($1)', [preparationPid]);
+        await holder.query('COMMIT');
+        expect((await pending).statusCode).toBe(500);
+
+        await withFencedIntentRuntime(intent!, () =>
+          expect(reconcilePageWriteIntent(intent!.id, {
+            actorId: recoveryAdminId,
+            reason: 'The preparation transaction was interrupted before its durable snapshot row committed',
+          })).resolves.toEqual({
+            intentId: intent!.id,
+            status: 'reconciled_not_applied',
+          }),
+        );
+
+        expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(h.client.getPage).not.toHaveBeenCalled();
+        expect(await relocationProgress(intent!.id)).toBeUndefined();
+        await expect(query('DELETE FROM pages WHERE id = $1', [id])).resolves.toMatchObject({
+          rowCount: 1,
+        });
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [unrelated])).rowCount).toBe(1);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('retains a committed preparation through interruption, then releases its hard-delete fence on recovery', async () => {
+      const id = await createPage({
+        title: 'Committed preparation',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+        bodyHtml: '<p>exact original body</p>',
+        bodyStorage: '<p>exact original storage</p>',
+        visibility: 'private',
+      });
+      const child = await createPage({
+        title: 'Child survives preparation cleanup',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        parentRef: String(id),
+        ownerId: userId,
+      });
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, userId],
+      );
+      resolveCreatedPage('900016');
+      const moveHolder = await getPool().connect();
+      const lifecycleHolder = await getPool().connect();
+      try {
+        await moveHolder.query('BEGIN');
+        await moveHolder.query(
+          'SELECT pg_advisory_xact_lock($1)',
+          [PAGE_MOVE_ADVISORY_LOCK_ID],
+        );
+        const moveHolderPid = (await moveHolder.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        )).rows[0]!.pid;
+
+        const pending = toConfluence(id);
+        expect(await waitForDatabaseBlocker(moveHolderPid)).toBe(true);
+
+        await lifecycleHolder.query('BEGIN');
+        const lifecycleLock = lockPageLifecycle(lifecycleHolder, [id]);
+        await moveHolder.query('COMMIT');
+        await lifecycleLock;
+        const lifecycleHolderPid = (await lifecycleHolder.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        )).rows[0]!.pid;
+        const authorityPid = await waitForBlockedDatabasePid(lifecycleHolderPid);
+        expect(authorityPid).not.toBeNull();
+
+        const intent = await latestRelocateIntent(id);
+        expect(intent).toMatchObject({
+          status: 'pending',
+          effect_started_at: expect.any(String),
+          effect_finished_at: null,
+          remote_effect_started_at: null,
+          settled_at: null,
+        });
+        expect(await relocationProgress(intent!.id)).toMatchObject({
+          created_confluence_id: null,
+          created_page_receipt: null,
+          attachment_receipts: [],
+        });
+        expect(h.client.createPage).not.toHaveBeenCalled();
+
+        await expect(query('DELETE FROM pages WHERE id = $1', [id]))
+          .rejects.toMatchObject({ code: '23503' });
+        await query('SELECT pg_cancel_backend($1)', [authorityPid]);
+        await lifecycleHolder.query('COMMIT');
+        expect((await pending).statusCode).toBe(500);
+
+        await expect(fencePageWriterRuntime({
+          runtimeId: intent!.runtime_id,
+          actorId: recoveryAdminId,
+          mode: 'durable_no_started_effects',
+          reason: 'A retained relocation preparation is durable local progress',
+        })).rejects.toMatchObject({ reason: 'runtime_effects_started' });
+        expect(await latestRelocateIntent(id)).toMatchObject({
+          status: 'pending',
+          remote_effect_started_at: null,
+          settled_at: null,
+        });
+        expect(await relocationProgress(intent!.id)).toBeDefined();
+
+        await withFencedIntentRuntime(intent!, () =>
+          expect(reconcilePageWriteIntent(intent!.id, {
+            actorId: recoveryAdminId,
+            reason: 'Remove the retained preparation using durable no-remote-start evidence',
+          })).resolves.toEqual({
+            intentId: intent!.id,
+            status: 'reconciled_not_applied',
+          }),
+        );
+
+        expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(h.client.getPage).not.toHaveBeenCalled();
+        expect(await relocationProgress(intent!.id)).toBeUndefined();
+        expect(await getRow(id)).toMatchObject({
+          source: 'standalone',
+          confluence_id: null,
+          space_key: 'LOCAL',
+          visibility: 'private',
+          body_html: '<p>exact original body</p>',
+          body_storage: '<p>exact original storage</p>',
+        });
+        expect(await childrenViaTreeJoin(id)).toEqual([child]);
+        expect((await query(
+          `SELECT 1 FROM access_control_entries
+            WHERE resource_type = 'page' AND resource_id = $1
+              AND principal_type = 'user' AND principal_id = $2 AND permission = 'edit'`,
+          [id, userId],
+        )).rowCount).toBe(1);
+
+        await expect(query('DELETE FROM pages WHERE id = $1', [id])).resolves.toMatchObject({
+          rowCount: 1,
+        });
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [child])).rowCount).toBe(1);
+      } finally {
+        await lifecycleHolder.query('ROLLBACK').catch(() => undefined);
+        lifecycleHolder.release();
+        await moveHolder.query('ROLLBACK').catch(() => undefined);
+        moveHolder.release();
+      }
     });
   });
 
@@ -1955,10 +2138,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       });
       h.client.downloadAttachment.mockResolvedValue(Buffer.from('crash-bytes'));
 
-      await expect(reconcilePageWriteIntent(intentId, {
-        actorId: userId,
-        reason: 'Restore exact admitted state after crash before remote deletion dispatch',
-      })).resolves.toEqual({ intentId, status: 'reconciled_not_applied' });
+      await expect(reconcilePageWriteIntent(intentId, { actorId: recoveryAdminId, reason: 'Restore exact admitted state after crash before remote deletion dispatch', })).resolves.toEqual({ intentId, status: 'reconciled_not_applied' });
 
       expect(h.client.deletePage).not.toHaveBeenCalled();
       expect(await getRow(id)).toMatchObject({
@@ -2007,10 +2187,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         body: { storage: { value: '<p>restored upstream body</p>' } },
       });
 
-      await expect(reconcilePageWriteIntent(intentId, {
-        actorId: userId,
-        reason: 'A restored provider page must keep the relocation pending',
-      })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' });
+      await expect(reconcilePageWriteIntent(intentId, { actorId: recoveryAdminId, reason: 'A restored provider page must keep the relocation pending', })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' });
 
       expect(await getRow(id)).toMatchObject({
         source: 'standalone',
@@ -2204,15 +2381,32 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         });
         const intent = await latestRelocateIntent(id);
         expect(intent).toMatchObject({
-          status: 'cancelled',
-          effect_started_at: null,
+          status: 'pending',
+          effect_started_at: expect.any(String),
+          effect_finished_at: null,
+          remote_effect_started_at: null,
+          settled_at: null,
+        });
+        expect(await relocationProgress(intent!.id)).toMatchObject({
+          created_confluence_id: null,
+          created_page_receipt: null,
+          attachment_receipts: [],
+        });
+        await withFencedIntentRuntime(intent!, () =>
+          expect(reconcilePageWriteIntent(intent!.id, {
+            actorId: recoveryAdminId,
+            reason: 'Remove the committed preparation after current authority refused remote dispatch',
+          })).resolves.toEqual({
+            intentId: intent!.id,
+            status: 'reconciled_not_applied',
+          }),
+        );
+        expect(await latestRelocateIntent(id)).toMatchObject({
+          status: 'reconciled_not_applied',
           remote_effect_started_at: null,
           settled_at: expect.any(String),
         });
-        expect((await query(
-          'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
-          [intent!.id],
-        )).rowCount).toBe(0);
+        expect(await relocationProgress(intent!.id)).toBeUndefined();
       } finally {
         await holder.query('ROLLBACK').catch(() => undefined);
         holder.release();
@@ -2288,7 +2482,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         expect(intent).toMatchObject({
           status: 'pending',
           effect_started_at: expect.any(String),
-          effect_finished_at: expect.any(String),
+          effect_finished_at: null,
           remote_effect_started_at: null,
           remote_effects_completed_at: null,
           settled_at: null,
@@ -2306,10 +2500,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           createdPage('700063', '<p>provider body</p>', 'Disabled before delete'),
         );
         await withFencedIntentRuntime(intent!, () =>
-          expect(reconcilePageWriteIntent(intent!.id, {
-            actorId: userId,
-            reason: 'Restore the admitted provider state without replaying an undispatched delete',
-          })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_not_applied' }),
+          expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Restore the admitted provider state without replaying an undispatched delete', })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_not_applied' }),
         );
 
         expect(h.client.deletePage).not.toHaveBeenCalled();

@@ -182,7 +182,7 @@ describe.skipIf(!available)('administrative labels respect page write admission'
     }
   });
 
-  it('refuses a blocked label mutation without deadlocking a concurrent runtime fence', async () => {
+  it('refuses a blocked fence after committed administrator demotion without deadlocking label admission', async () => {
     const intent = await reservePageWriteIntent({
       pageIds: [pageIds[0]!], kind: 'attachment.local.put', actorId,
       effect: { effectClass: 'local', pageId: pageIds[0]!, files: [] },
@@ -226,16 +226,23 @@ describe.skipIf(!available)('administrative labels respect page write admission'
         );
         expect(waiting.rows[0]!.waiting).toBe(true);
       });
+      await blocker.query("UPDATE users SET role = 'user' WHERE id = $1", [actorId]);
       await blocker.query('COMMIT');
       const [renamed, fenced] = await completed;
       expect(renamed.status).toBe('fulfilled');
       if (renamed.status === 'fulfilled') expect(renamed.value.statusCode, renamed.value.body).toBe(409);
-      expect(fenced.status, fenced.status === 'rejected' ? String(fenced.reason) : undefined).toBe('fulfilled');
+      expect(fenced.status).toBe('rejected');
+      if (fenced.status === 'rejected') {
+        expect(fenced.reason).toMatchObject({
+          statusCode: 403,
+          reason: 'recovery_admin_required',
+        });
+      }
       expect(await labels()).toEqual([['review', 'keep'], ['review']]);
       expect((await query<{ retired: boolean }>(
         'SELECT fenced_at IS NOT NULL AS retired FROM page_writer_runtimes WHERE runtime_id = $1',
         [intent.runtimeId],
-      )).rows[0]!.retired).toBe(true);
+      )).rows[0]!.retired).toBe(false);
     } finally {
       await blocker.query('ROLLBACK').catch(() => undefined);
       blocker.release();

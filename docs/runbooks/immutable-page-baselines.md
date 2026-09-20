@@ -104,6 +104,10 @@ Deleting a page or user nulls only designated live foreign keys. The baseline's
 and retained files remain. Deleting an ordinary `page_versions` row may null
 `version_snapshot_id`; the baseline remains the authoritative snapshot.
 
+Migration 120 and migration 121 commit separately. The protected-write trigger
+is installed by 121 only after `baseline_id` exists; legacy updates and deletes
+remain usable in the interval. Neither migration invents historical approvals.
+
 ## Canonical manifest v1
 
 The digest is lowercase SHA-256 over this exact array encoded once with
@@ -157,9 +161,10 @@ that stores it.
 
 Inspection starts from both `body_html` and `body_storage`:
 
-- Internal `/api/local-attachments/<page>/<file>` and
-  `/api/attachments/<page-key>/<file>` URLs are recognized, including query or
-  fragment suffixes on a direct stored file.
+- Only root-relative `/api/local-attachments/<page>/<file>` and
+  `/api/attachments/<page-key>/<file>` prefixes identify internal files,
+  including query or fragment suffixes. An external or protocol-relative URL
+  containing such a route elsewhere remains external.
 - Media URL attributes cover `audio[src]`, `embed[src]`, SVG `image[href]` and
   `image[xlink:href]`, `img[src|srcset]`, image inputs, `object[data]`,
   `source[src|srcset]`, `track[src]`, and `video[src|poster]`.
@@ -291,6 +296,10 @@ The maintenance poll marks a `prepared` row abandoned if its preparing actor or
 live page link has been deleted, then applies the same guarded cleanup. It is not
 a TTL collector. `preparing`, uncertain, published, referenced, or malformed
 storage is not blindly removed.
+Publishing a baseline atomically abandons the page's other prepared previews,
+including another actor's preview. Maintenance removes their unpublished bytes
+and releases their reservations through the same guards; it never evicts the
+published baseline.
 
 Publication uses the preview's values:
 
@@ -318,6 +327,9 @@ content and lifecycle revisions, referenced source bytes, retained copies, and
 the persisted governance marker. The page link, published baseline, exact
 version snapshot reconciliation, history, audit row, and lifecycle outbox row
 commit atomically. A stale preview or media change refuses publication.
+An already-frozen page returns `423 page_is_frozen`, including an exact retry.
+Changing the caller, reason or reported signatories cannot return success for
+evidence that was not recorded.
 
 Thaw requires the current baseline and lifecycle revision:
 
@@ -445,7 +457,13 @@ nulls the actor ID while retaining the immutable display snapshot.
 ## Diagnosing blocked writers
 
 Every recovery route below is admin-only and rechecks that the caller is an
-active system administrator. Start with a read; it never changes state:
+active system administrator.
+The service repeats that check on the transaction client at fence, recovery
+claim, verification, repair and settlement boundaries; a prior route check is
+not sufficient. Original-writer authority is checked separately where the
+intent kind requires it.
+
+Start with a read; it never changes state:
 
 ```http
 GET /api/admin/page-write-recovery
@@ -555,6 +573,11 @@ Close collaboration connections cleanly and let their flush/release finish.
 An unproven final SQL settlement after a successful effect also retains local
 ownership. If that continuation cannot finish, terminate the owner and use
 independently verified termination; elapsed time does not make it drained.
+Quiescence first authorizes and audits the request, then closes the gate.
+It checks the administrator again after draining and before acknowledgment.
+If that authority was revoked meanwhile, the response is 403 and no durable
+acknowledgment is written; the process gate stays closed. An active system
+administrator can retry to finish retirement.
 A successful response is:
 
 ```json
@@ -702,6 +725,13 @@ Repair rechecks current authority where the intent kind requires it. Do not
 manually move, overwrite, or delete retained paths before reconciliation; that
 can destroy the observation the verifier needs.
 
+Local standalone, integration-off synced, and bulk hard-delete intents have
+registered recovery. Exact deletion tombstones prove which rows committed;
+cleanup retries attachments/icons, collaboration tombstones and durable cache
+publication without repeating the delete. Partial or conflicting evidence stays
+pending. Once deletion is committed, an active recovery administrator may finish
+cleanup even if the original writer is no longer active.
+
 ### `remote_conditional`
 
 Conditional recovery is read-only **at the provider**. The registered reconciler
@@ -717,10 +747,12 @@ Publication also deletes stale persisted collaborative bytes in that transaction
 and queues pages/search cache invalidation on the same intent. Delivery happens
 after commit and retries through the existing outbox worker; a Redis outage does
 not undo the publication or report the committed change as failed.
-The conditional publisher's normal successful PUT response may omit the optional
-storage expansion and use the storage body just submitted. Conditional recovery
-still requires an explicit expanded provider observation; it does not infer
-body content from a status code.
+Normal Apply and restore also persist bounded provider acknowledgment before
+confirming publication. Large replies never enter generic intent metadata.
+A compact reply requires exact provider readback, with current authority,
+integration mode and credentials re-resolved after admission and again before
+readback. A failed read leaves the acknowledgment recoverable rather than
+inventing body fingerprints from the submitted request.
 
 A different historical state at `E+1` proves not applied and changes no local
 authored state. A remote version that has not reached the expected result,
@@ -757,6 +789,10 @@ returned body fingerprint from the request. Publication requires the exact
 expected, non-trashed provider version and agreement with all returned
 fingerprints. A failed read can be retried through recovery without replaying
 PUT; a conflicting version or trashed page stays pending.
+For ordinary attachment uploads, the final per-file receipt and the
+all-remote-complete marker commit atomically. An interruption before the outer
+callback records completion therefore cannot strand a complete receipt set.
+Partial sets and ambiguous acknowledgments still remain pending.
 
 Remote phases recheck the original actor, source identity, page/space authority,
 integration mode and current credentials after admission waits. Stored
@@ -769,6 +805,11 @@ operation-owned preparation, not a full document stuffed into generic intent
 metadata. Failed recovery keeps it; terminal settlement removes it in the same
 transaction. A known-successful upstream creation is not deleted to compensate
 for a later local failure.
+Preparation persistence is itself a gated local effect. Recovery distinguishes
+an interrupted transaction that wrote no preparation from one that committed
+the preparation before the next phase. A to-Confluence preparation with proven
+no remote dispatch can be removed under current local authority even when the
+integration is now off. A to-local rollback still needs provider verification.
 The acknowledged create ID is committed before readback or uploads; each
 acknowledged attachment is committed before the next provider call. The receipt
 array is bounded by the admitted inventory, while the generic terminal result

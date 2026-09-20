@@ -1,8 +1,8 @@
 -- Shared page-write serialization and durable recovery state (#275 / #279).
 --
 -- Runtime-epoch row locks serialize fencing before sorted per-page advisory
--- locks. All page and subsystem row locks follow those two gates. The trigger
--- below remains defense in depth: it cannot establish cross-row lock order.
+-- locks. All page and subsystem row locks follow those two gates. The protected
+-- write trigger is installed by migration 121 after its baseline column exists.
 
 ALTER TABLE pages
   ADD COLUMN IF NOT EXISTS content_revision BIGINT NOT NULL DEFAULT 0,
@@ -307,8 +307,8 @@ DECLARE
   protected_change BOOLEAN;
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    -- baseline_id is added by 121_page_baselines.sql.  Migrations finish before
-    -- application startup, so every execution of this trigger sees that field.
+    -- Migration 121 installs this trigger in the same transaction that adds
+    -- baseline_id. Older runtimes may keep writing between migration commits.
     IF OLD.baseline_id IS NOT NULL THEN
       RAISE EXCEPTION USING
         ERRCODE = '55000',
@@ -363,10 +363,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS pages_protected_write_trigger ON pages;
-CREATE TRIGGER pages_protected_write_trigger
-  BEFORE UPDATE OR DELETE ON pages
-  FOR EACH ROW EXECUTE FUNCTION enforce_page_protected_write();
 
 -- SQL-only writers have no external-effect intent. Coalesce their committed
 -- read-model changes per page rather than retaining an audit row per autosave.

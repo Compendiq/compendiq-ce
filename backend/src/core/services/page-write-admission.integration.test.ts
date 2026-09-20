@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   isDbAvailable,
@@ -10,6 +9,7 @@ import {
 import { getPool, query } from '../db/postgres.js';
 import {
   type PageWriteIntent,
+  PageWriteError,
   admitPageRuntime,
   advancePageWriteIntent,
   assertPageFreezeIdle,
@@ -440,7 +440,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   });
 
   it('refuses to fence a DB-partitioned live runtime without owner quiescence proof', async () => {
-    const actor = await insertUser('admin');
+    const actor = await insertUser();
+    const administrator = await insertUser('admin');
     const pageId = await insertPage(actor);
     const runtimeId = `partitioned-${randomUUID()}`;
     await query(
@@ -460,7 +461,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         mode: 'owner_ack',
         runtimeId,
         acknowledgmentId: randomUUID(),
-        actorId: actor,
+        actorId: administrator,
         reason: 'Operator cannot substitute a DB flag for process quiescence',
       }),
     ).rejects.toMatchObject({ statusCode: 409, reason: 'runtime_not_quiesced' });
@@ -473,7 +474,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   });
 
   it('fences a crashed runtime from durable no-start evidence and blocks its late admission', async () => {
-    const actor = await insertUser('admin');
+    const actor = await insertUser();
+    const administrator = await insertUser('admin');
     const pageId = await insertPage(actor, 'Crashed pre-effect room');
     const revision = await revisionOf(pageId);
     const runtimeId = `crashed-pre-effect-${randomUUID()}`;
@@ -515,7 +517,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       fencePageWriterRuntime({
         mode: 'durable_no_started_effects',
         runtimeId,
-        actorId: actor,
+        actorId: administrator,
         reason: 'The durable runtime epoch proves that no protected work started',
       }),
     ).resolves.toEqual({ unresolvedIntents: 0 });
@@ -544,7 +546,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   });
 
   it('serializes a new-page reservation against a crash fence in both effect-start orders', async () => {
-    const actor = await insertUser('admin');
+    const actor = await insertUser();
+    const administrator = await insertUser('admin');
     for (const effectStarted of [false, true]) {
       const pageId = await insertPage(actor, effectStarted ? 'Started before fence' : 'Reserved before fence');
       const revision = await revisionOf(pageId);
@@ -588,7 +591,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         const fencing = fencePageWriterRuntime({
           mode: 'durable_no_started_effects',
           runtimeId,
-          actorId: actor,
+          actorId: administrator,
           reason: 'Deterministic runtime serialization race exercises the durable marker',
         });
         let fenceBlocked = false;
@@ -624,7 +627,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   });
 
   it('claims recovery before verification and preserves the prior epoch evidence', async () => {
-    const actor = await insertUser('admin');
+    const actor = await insertUser();
+    const administrator = await insertUser('admin');
     let observedState: 'partial' | 'applied' = 'partial';
     let repairRuns = 0;
     registerPageWriteIntentReconciler(
@@ -692,7 +696,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         mode: 'owner_ack',
         runtimeId,
         acknowledgmentId,
-        actorId: actor,
+        actorId: administrator,
         reason: 'The original test runtime acknowledged quiescence before local repair',
       });
       return {
@@ -709,7 +713,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const oldToken = await createFencedIntent(pageId);
     await expect(
       reconcilePageWriteIntent(oldToken.id, {
-        actorId: actor,
+        actorId: administrator,
         reason: 'Trusted icon verifier found exact partial state and selected its registered repairer',
       }),
     ).resolves.toEqual({ intentId: oldToken.id, status: 'reconciled_applied' });
@@ -744,15 +748,38 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     await query(`UPDATE pages SET title = 'Unexpected protected mutation' WHERE id = $1`, [stalePageId]);
     await expect(
       reconcilePageWriteIntent(staleToken.id, {
-        actorId: actor,
+        actorId: administrator,
         reason: 'Unexpected protected revision must block ownership transfer and repair',
       }),
     ).rejects.toMatchObject({ statusCode: 409, reason: 'stale_content_revision' });
     expect(repairRuns).toBe(1);
   });
 
+  it('refuses non-admin quiescence before closing the process write gate', async () => {
+    const actor = await insertUser();
+    const pageId = await insertPage(actor, 'Write after refused quiescence');
+
+    await expect(quiescePageWriterRuntime({
+      actorId: actor,
+      reason: 'An ordinary writer cannot retire the process epoch',
+    })).rejects.toMatchObject({ statusCode: 403, reason: 'recovery_admin_required' });
+
+    expect((await query(
+      `SELECT 1 FROM audit_log
+        WHERE user_id = $1 AND metadata->>'action' = 'page_writer_quiesce_requested'`,
+      [actor],
+    )).rows).toEqual([]);
+
+    await expect(withPageWriteTransaction([pageId], async (client) => {
+      await client.query(`UPDATE pages SET title = 'Gate remained usable' WHERE id = $1`, [pageId]);
+    })).resolves.toBeUndefined();
+    expect((await query<{ title: string }>('SELECT title FROM pages WHERE id = $1', [pageId]))
+      .rows[0]!.title).toBe('Gate remained usable');
+  });
+
   it('keeps admitted multi-phase continuations owned until final settlement during quiescence', async () => {
-    const actor = await insertUser('admin');
+    const actor = await insertUser();
+    const administrator = await insertUser('admin');
     const pageId = await insertPage(actor, 'Phased attachment');
     const completionPageId = await insertPage(actor, 'Completion retry');
     const cancelledPageId = await insertPage(actor, 'No-start cancellation');
@@ -882,13 +909,24 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       });
 
       let acknowledgmentResolved = false;
-      const quiescing = quiescePageWriterRuntime().then((acknowledgment) => {
+      const quiescing = quiescePageWriterRuntime({
+        actorId: administrator,
+        reason: 'Drain admitted continuations before retiring this process epoch',
+      }).then((acknowledgment) => {
         acknowledgmentResolved = true;
         return acknowledgment;
       });
-      // The event-loop turn is a scheduling barrier: quiescence has closed the
-      // process gate before this caller-owned reservation commits.
-      await nextEventLoopTurn();
+      // Authorization is asynchronous. Observe the closed gate rather than
+      // assuming one event-loop turn includes the administrator/audit commit.
+      await expect.poll(async () => {
+        try {
+          await withPageWriteTransaction([sqlPageId], async () => undefined);
+          return null;
+        } catch (error) {
+          if (!(error instanceof PageWriteError)) throw error;
+          return error.reason;
+        }
+      }).toBe('runtime_quiescing');
       await reservationClient.query('COMMIT');
       reservationClient.release();
       reservationClientReleased = true;
@@ -1004,7 +1042,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         mode: 'owner_ack',
         runtimeId: acknowledgment.runtimeId,
         acknowledgmentId: acknowledgment.acknowledgmentId,
-        actorId: actor,
+        actorId: administrator,
         reason: 'Owner process drained admitted continuations and closed its external-effect gate',
       });
     } finally {
@@ -1017,7 +1055,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     for (const intent of [terminalIntent, recoveryIntent]) {
       await expect(
         reconcilePageWriteIntent(intent.id, {
-          actorId: actor,
+          actorId: administrator,
           reason: 'A quiesced runtime must not start recovery callbacks for its own retired epoch',
         }),
       ).rejects.toMatchObject({ statusCode: 409, reason: 'runtime_quiescing' });

@@ -1263,6 +1263,10 @@ with a locale, normalize persisted HTML, or include a retained filesystem path
 in the digest. Retained media are exclusive verified copies, not hard links or
 a fallback to the live attachment store. Authorize every source page before
 inspecting its files, and stream the same file descriptor that was verified.
+Only root-relative attachment route prefixes identify internal media; an
+external URL containing that route in its path, query or fragment is not local.
+Install the protected-page trigger in migration 121, after `baseline_id` exists,
+so independently committed migration 120 does not break legacy writes.
 
 Writer lock order is runtime epoch, sorted lifecycle locks, then subsystem and
 page locks. A durable intent precedes external mutation; its effect gate must
@@ -1285,7 +1289,12 @@ with a durable `recovery_started_at` marker and local drain ownership covering
 verification through settlement/publication. No-start fencing must inspect that
 marker too. A fully failed callback may retry on the same owner; concurrent
 callbacks and recovery on a quiesced/fenced process are refused.
-Ordinary compact PUT replies record acknowledgment before provider readback;
+Recovery administration is checked on the mutation client at fencing, claim,
+verification, repair and settlement. Quiescence authorizes and audits before
+closing the gate, then rechecks after draining; revocation leaves the gate
+closed but cannot produce an acknowledgment. Original-writer authority remains
+a separate check.
+Ordinary, Apply and restore PUT replies retain bounded acknowledgment before readback;
 never invent returned body fingerprints from the request or lose known success
 because a later GET failed. Current authority, source identity, integration mode
 and credentials are re-read at each admitted remote phase.
@@ -1308,15 +1317,24 @@ Relocation's exact original state lives in its operation-owned preparation,
 not the generic intent metadata; keep it through failed recovery and remove it
 with settlement. Never delete a known-successful upstream creation as
 compensation for a failed local phase.
+Preparation persistence itself is a gated local effect. Proven no-remote-start
+cleanup of a to-Confluence preparation needs local authority, not credentials
+for a provider it never mutated. Local delete recovery uses exact tombstones
+and retries committed cleanup without repeating deletion.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered
 digest instead of duplicating the array. Compact readbacks re-resolve credentials.
+The final ordinary attachment receipt and all-remote-complete marker commit
+atomically; a complete receipt set must survive interruption of its wrapper.
 
 Creation defaults off and refuses activation until the writer-readiness
 provider certifies the deployment. The foundation alone does not certify sync,
 collaboration, purge or subtree writers. Published baseline bytes and history
 survive page/actor deletion; manual signatory text is not authenticated approval.
+An already-frozen request returns 423, never success for unrecorded assertions.
+Publication abandons other prepared previews of that page in the same commit;
+guarded cleanup releases only their unpublished bytes and capacity.
 A durable governed marker still vetoes direct manual freeze when EE is
 unavailable. It never prevents authorized audited thaw, including a manual
 baseline frozen before that policy was enabled.

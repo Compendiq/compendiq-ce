@@ -17,7 +17,7 @@ import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
 import { sniffImageFormat } from './image-validator.js';
 import { logger } from '../utils/logger.js';
-import { getUserAccessibleSpaces } from './rbac-service.js';
+import { getUserAccessibleSpaces, userCanAccessPage } from './rbac-service.js';
 import type { ImageFormat } from '@compendiq/contracts';
 import {
   advancePageWriteIntent,
@@ -242,6 +242,37 @@ export async function discardPageIconForDeletedPage(
   }
 }
 
+export interface PageIconAuthorityPage {
+  id: number;
+  source: string;
+  created_by_user_id: string | null;
+  visibility: string;
+  space_key: string | null;
+  inherit_perms: boolean;
+}
+
+/**
+ * The established icon-edit predicate. Standalone private/shared behavior
+ * remains identical to the page PUT route; Confluence pages additionally
+ * require the current space grant and any current page-level ACL override.
+ */
+export async function userCanMutatePageIcon(
+  userId: string,
+  page: PageIconAuthorityPage,
+  client?: PoolClient,
+): Promise<boolean> {
+  if (page.source === 'standalone') {
+    const establishedEdit =
+      page.created_by_user_id === userId || page.visibility === 'shared';
+    return establishedEdit && userCanAccessPage(userId, page.id, client);
+  }
+  if (page.space_key) {
+    const spaces = await getUserAccessibleSpaces(userId, client);
+    if (!spaces.includes(page.space_key)) return false;
+  }
+  return page.inherit_perms || userCanAccessPage(userId, page.id, client);
+}
+
 async function assertPageIconRepairAccess(
   client: PoolClient,
   intent: PageWriteRecoveryIntent,
@@ -250,36 +281,28 @@ async function assertPageIconRepairAccess(
   if (!intent.actorId) {
     throw new Error('Page icon repair has no active actor identity');
   }
-  const access = await client.query<{
-    source: string;
-    created_by_user_id: string | null;
-    visibility: string;
-    space_key: string | null;
-    deleted_at: Date | null;
-    deactivated_at: Date | null;
-  }>(
-    `SELECT p.source, p.created_by_user_id, p.visibility, p.space_key, p.deleted_at,
-            u.deactivated_at
-       FROM pages p
-       JOIN users u ON u.id = $2
-      WHERE p.id = $1`,
-    [pageId, intent.actorId],
+  const actor = await client.query(
+    `SELECT 1
+       FROM users
+      WHERE id = $1
+        AND deactivated_at IS NULL
+      FOR SHARE`,
+    [intent.actorId],
   );
-  const row = access.rows[0];
-  if (!row || row.deactivated_at || row.deleted_at) {
+  if (actor.rowCount !== 1) {
     throw new Error('Page icon repair actor is no longer authorized');
   }
-  if (row.source === 'standalone') {
-    if (row.created_by_user_id !== intent.actorId && row.visibility !== 'shared') {
-      throw new Error('Page icon repair actor is no longer authorized');
-    }
-    return;
-  }
-  if (row.space_key) {
-    const spaces = await getUserAccessibleSpaces(intent.actorId, client);
-    if (!spaces.includes(row.space_key)) {
-      throw new Error('Page icon repair actor is no longer authorized');
-    }
+  const access = await client.query<PageIconAuthorityPage>(
+    `SELECT id, source, created_by_user_id, visibility, space_key, inherit_perms
+       FROM pages
+      WHERE id = $1
+        AND deleted_at IS NULL
+      FOR UPDATE`,
+    [pageId],
+  );
+  const page = access.rows[0];
+  if (!page || !await userCanMutatePageIcon(intent.actorId, page, client)) {
+    throw new Error('Page icon repair actor is no longer authorized');
   }
 }
 

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 import { ZodError } from 'zod';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { reservePageWriteIntent } from '../../core/services/page-write-admission.js';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { pageWriteRecoveryRoutes } from './page-write-recovery.js';
@@ -27,7 +27,10 @@ describe.skipIf(!available)('page writer recovery administration', () => {
       request.userRole = 'admin';
     });
     app.setErrorHandler((error, _request, reply) => {
-      reply.status(error instanceof ZodError ? 400 : error.statusCode ?? 500).send({ error: error.message });
+      reply.status(error instanceof ZodError ? 400 : error.statusCode ?? 500).send({
+        error: error.message,
+        reason: 'reason' in error ? error.reason : undefined,
+      });
     });
     await app.register(pageWriteRecoveryRoutes, { prefix: '/api' });
     await app.ready();
@@ -39,14 +42,22 @@ describe.skipIf(!available)('page writer recovery administration', () => {
   });
 
   it('requires live admin authority and exact owner acknowledgment without accepting caller recovery proof', async () => {
+    const writer = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ($1, 'x', 'user') RETURNING id`,
+      [`recovery-original-writer-${randomUUID()}`],
+    );
+    const writerId = writer.rows[0]!.id;
     const page = await query<{ id: number }>(
       `INSERT INTO pages (source, title, body_html, body_storage, body_text, created_by_user_id, visibility)
        VALUES ('standalone', 'Recovery', '<p>Body</p>', '', 'Body', $1, 'shared') RETURNING id`,
-      [actorId],
+      [writerId],
     );
     const pageId = page.rows[0]!.id;
     const intent = await reservePageWriteIntent({
-      pageIds: [pageId], actorId, kind: 'attachment.local.put',
+      pageIds: [pageId],
+      actorId: writerId,
+      kind: 'attachment.local.put',
       effect: { effectClass: 'local', pageId, files: [], operatorPrivateNote: 'do-not-publish-this' },
     });
     const url = '/api/admin/page-write-recovery';
@@ -68,13 +79,13 @@ describe.skipIf(!available)('page writer recovery administration', () => {
     const otherPage = await query<{ id: number }>(
       `INSERT INTO pages (source, title, visibility, created_by_user_id)
        VALUES ('standalone', 'Other admitted page', 'shared', $1) RETURNING id`,
-      [actorId],
+      [writerId],
     );
     await query(
       `INSERT INTO page_runtime_admissions (runtime_id, page_id, actor_id, lifecycle_revision)
        SELECT runtime_id, $1, $2::uuid, 0 FROM page_writer_runtimes
         WHERE deployment_identity->>'host' = 'status-boundary-fixture'`,
-      [otherPage.rows[0]!.id, actorId],
+      [otherPage.rows[0]!.id, writerId],
     );
     const bounded = await app.inject({ method: 'GET', url });
     expect(bounded.statusCode, bounded.body).toBe(200);
@@ -93,6 +104,60 @@ describe.skipIf(!available)('page writer recovery administration', () => {
     const revoked = await app.inject({ method: 'GET', url });
     expect(revoked.statusCode, revoked.body).toBe(403);
     await query("UPDATE users SET role = 'admin' WHERE id = $1", [actorId]);
+
+    const guardedRuntimeId = `route-guard-${randomUUID()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+       VALUES ($1, $2::jsonb)`,
+      [
+        guardedRuntimeId,
+        JSON.stringify({ host: 'route-guard-fixture', pid: 999999, startedAt: new Date().toISOString() }),
+      ],
+    );
+
+    const authorityBlocker = await getPool().connect();
+    let waitingMutation: Promise<LightMyRequestResponse> | undefined;
+    try {
+      await authorityBlocker.query('BEGIN');
+      await authorityBlocker.query("UPDATE users SET role = 'user' WHERE id = $1", [actorId]);
+      const blockerPid = (await authorityBlocker.query<{ pid: number }>(
+        'SELECT pg_backend_pid() AS pid',
+      )).rows[0]!.pid;
+      waitingMutation = app.inject({
+        method: 'POST',
+        url: `${url}/runtimes/${guardedRuntimeId}/fence`,
+        payload: {
+          mode: 'durable_no_started_effects',
+          reason: 'Route admission cannot outlive committed administrator demotion',
+        },
+      });
+      await vi.waitFor(async () => {
+        const wait = await query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event_type = 'Lock'
+                AND $1 = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [blockerPid],
+        );
+        expect(wait.rows[0]!.waiting).toBe(true);
+      });
+      await authorityBlocker.query('COMMIT');
+      const demotedMutation = await waitingMutation;
+      expect(demotedMutation.statusCode, demotedMutation.body).toBe(403);
+      expect(demotedMutation.json().reason).toBe('recovery_admin_required');
+      expect((await query<{ retired: boolean }>(
+        'SELECT fenced_at IS NOT NULL AS retired FROM page_writer_runtimes WHERE runtime_id = $1',
+        [guardedRuntimeId],
+      )).rows[0]!.retired).toBe(false);
+    } finally {
+      await authorityBlocker.query('ROLLBACK').catch(() => undefined);
+      authorityBlocker.release();
+      await waitingMutation?.catch(() => undefined);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [actorId]).catch(() => undefined);
+      await query('DELETE FROM page_writer_runtimes WHERE runtime_id = $1', [guardedRuntimeId]).catch(() => undefined);
+    }
 
     const forgedProof = await app.inject({
       method: 'POST', url: `${url}/intents/${intent.id}/reconcile`,
@@ -138,7 +203,10 @@ describe.skipIf(!available)('page writer recovery administration', () => {
     expect(idleFence.json().unresolvedIntents).toBe(0);
 
     const quiet = await app.inject({
-      method: 'POST', url: `${url}/runtime/quiesce`,
+      method: 'POST',
+      url: `${url}/runtime/quiesce`,
+      remoteAddress: '203.0.113.17',
+      headers: { 'user-agent': 'page-write-recovery-test-agent' },
       payload: { expectedRuntimeId: intent.runtimeId, reason: 'Retire this backend after removing it from service' },
     });
     expect(quiet.statusCode, quiet.body).toBe(200);
@@ -153,11 +221,21 @@ describe.skipIf(!available)('page writer recovery administration', () => {
     const settled = await app.inject({ method: 'GET', url: `${url}?pageId=${pageId}` });
     expect(settled.statusCode, settled.body).toBe(200);
     expect(settled.json().intents).toEqual([]);
-    const audit = await query<{ metadata: { reason: string } }>(
-      `SELECT metadata FROM audit_log WHERE user_id = $1 AND resource_id = $2
-         AND metadata->>'action' = 'page_writer_quiesce_requested'`,
+    const audit = await query<{
+      metadata: { reason: string };
+      ip_address: string | null;
+      user_agent: string | null;
+    }>(
+      `SELECT metadata, ip_address, user_agent
+         FROM audit_log
+        WHERE user_id = $1 AND resource_id = $2
+          AND metadata->>'action' = 'page_writer_quiesce_requested'`,
       [actorId, intent.runtimeId],
     );
-    expect(audit.rows).toEqual([{ metadata: expect.objectContaining({ reason: 'Retire this backend after removing it from service' }) }]);
+    expect(audit.rows).toEqual([{
+      metadata: expect.objectContaining({ reason: 'Retire this backend after removing it from service' }),
+      ip_address: '203.0.113.17',
+      user_agent: 'page-write-recovery-test-agent',
+    }]);
   });
 });

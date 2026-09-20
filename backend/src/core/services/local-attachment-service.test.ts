@@ -23,6 +23,7 @@ import { exportPostgresSnapshot } from './backup-service.js';
 import {
   advancePageWriteIntent,
   fencePageWriterRuntime,
+  lockPageLifecycle,
   reconcilePageWriteIntent,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
@@ -80,6 +81,16 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
     return { userId, pageId: p.rows[0]!.id };
   }
 
+  async function seedRecoveryAdmin(): Promise<string> {
+    const admin = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ($1, 'hash', 'admin')
+       RETURNING id`,
+      [`attachment-recovery-admin-${randomUUID()}`],
+    );
+    return admin.rows[0]!.id;
+  }
+
   async function waitForSharedLockWaiter(blockerPid: number): Promise<boolean> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const result = await query<{ waiting: boolean }>(
@@ -99,6 +110,24 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       await nextEventLoopTurn();
     }
     return false;
+  }
+
+  async function waitForLifecycleWaiter(): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const waiting = await query<{ waiting: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+             FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND wait_event_type = 'Lock'
+              AND wait_event = 'advisory'
+              AND query LIKE '%pg_advisory_xact_lock%'
+         ) AS waiting`,
+      );
+      if (waiting.rows[0]?.waiting) return;
+      await nextEventLoopTurn();
+    }
+    throw new Error('local attachment writer did not reach the lifecycle lock barrier');
   }
 
   it('migration creates local_attachments with the expected shape', async () => {
@@ -228,6 +257,89 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       data: Buffer.from([0x89]), userId: other.rows[0]!.id,
     });
     expect(rec.createdBy).toBe(other.rows[0]!.id);
+  });
+
+  it('denies a deactivated actor after admission wait without publishing bytes or metadata', async () => {
+    const { userId, pageId } = await seedUserAndPage();
+    const before = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [pageId]);
+    try {
+      const pending = putLocalAttachment({
+        pageId,
+        filename: 'actor-revoked.txt',
+        contentType: 'text/plain',
+        data: Buffer.from('must not publish'),
+        userId,
+      });
+      await waitForLifecycleWaiter();
+      await blocker.query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+      await blocker.query('COMMIT');
+
+      await expect(pending).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(fs.access(path.join(tempBase, 'local', String(pageId), 'actor-revoked.txt')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      const rows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [pageId]);
+      expect(rows.rowCount).toBe(0);
+      const after = await query<{ content_revision: string }>(
+        'SELECT content_revision::text FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(after.rows[0]).toEqual(before.rows[0]);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('rechecks shared-page edit authority after admission wait before publishing bytes', async () => {
+    const owner = await seedUserAndPage({ visibility: 'shared' });
+    const actor = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ($1, 'h', 'user')
+       RETURNING id`,
+      [`attachment-shared-writer-${randomUUID()}`],
+    );
+    const actorId = actor.rows[0]!.id;
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [owner.pageId]);
+    try {
+      const pending = putLocalAttachment({
+        pageId: owner.pageId,
+        filename: 'access-revoked.txt',
+        contentType: 'text/plain',
+        data: Buffer.from('must not publish'),
+        userId: actorId,
+      });
+      await waitForLifecycleWaiter();
+      await blocker.query(
+        "UPDATE pages SET visibility = 'private' WHERE id = $1",
+        [owner.pageId],
+      );
+      await blocker.query('COMMIT');
+
+      await expect(pending).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(
+        fs.access(path.join(tempBase, 'local', String(owner.pageId), 'access-revoked.txt')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      const rows = await query(
+        'SELECT 1 FROM local_attachments WHERE page_id = $1',
+        [owner.pageId],
+      );
+      expect(rows.rowCount).toBe(0);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
   });
 
   it('rejects writes to a Confluence-backed page (forces the Confluence route)', async () => {
@@ -556,6 +668,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
   });
 
   it('repairs staged and partial local effects while mismatched bytes remain pending', async () => {
+    const recoveryAdminId = await seedRecoveryAdmin();
     const appliedPage = await seedUserAndPage();
     const mismatchPage = await seedUserAndPage();
     const stagedPage = await seedUserAndPage();
@@ -851,40 +964,40 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       runtimeId: oldRuntimeId,
       mode: 'owner_ack',
       acknowledgmentId,
-      actorId: appliedPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Test retired writer epoch acknowledged quiescence before local recovery',
     });
 
     await expect(reconcilePageWriteIntent(applied.id, {
-      actorId: appliedPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Exact attachment bytes and metadata match the durable descriptor',
     })).resolves.toMatchObject({ status: 'reconciled_applied' });
     await expect(reconcilePageWriteIntent(mismatch.id, {
-      actorId: mismatchPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Mismatched attachment bytes must remain unresolved for operator action',
     })).rejects.toThrow('incomplete or does not match');
     await expect(reconcilePageWriteIntent(appliedIcon.id, {
-      actorId: appliedIconPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Exact icon bytes and metadata match the durable descriptor',
     })).resolves.toMatchObject({ status: 'reconciled_applied' });
     await expect(reconcilePageWriteIntent(mismatchIcon.id, {
-      actorId: mismatchIconPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Mismatched icon bytes must remain unresolved for operator action',
     })).rejects.toThrow('incomplete or does not match');
     await expect(reconcilePageWriteIntent(stagedAttachment.id, {
-      actorId: stagedPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Intent-owned attachment staging is safely removed before settlement',
     })).resolves.toMatchObject({ status: 'reconciled_not_applied' });
     await expect(reconcilePageWriteIntent(stagedIcon.id, {
-      actorId: stagedIconPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Intent-owned icon staging is safely removed before settlement',
     })).resolves.toMatchObject({ status: 'reconciled_not_applied' });
     await expect(reconcilePageWriteIntent(partialAttachment.id, {
-      actorId: partialPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Partial attachment activation deterministically finishes exact remaining stages',
     })).resolves.toMatchObject({ status: 'reconciled_applied' });
     await expect(reconcilePageWriteIntent(partialIcon.id, {
-      actorId: partialIconPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Started icon activation deterministically finishes its exact stage',
     })).resolves.toMatchObject({ status: 'reconciled_applied' });
     await expect(
@@ -901,7 +1014,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       ),
     ).resolves.toEqual(partialIconBytes);
     await expect(reconcilePageWriteIntent(deniedRepair.id, {
-      actorId: appliedPage.userId,
+      actorId: recoveryAdminId,
       reason: 'Deactivated original actor cannot authorize completing a live attachment repair',
     })).rejects.toThrow('no longer active');
     const pending = await query<{ id: string; status: string }>(
@@ -913,7 +1026,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
 
   it('preserves unrelated icon bytes when repair authority is denied after the old icon vanished', async () => {
     const owner = await seedUserAndPage();
-    const recoveryActor = await seedUserAndPage();
+    const recoveryAdminId = await seedRecoveryAdmin();
     const previousBytes = Buffer.from('previous uploaded icon');
     const previousSha = createHash('sha256').update(previousBytes).digest('hex');
     const iconDir = path.join(tempBase, PAGE_ICON_STORE_DIRNAME, String(owner.pageId));
@@ -970,12 +1083,12 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       runtimeId: oldRuntimeId,
       mode: 'owner_ack',
       acknowledgmentId,
-      actorId: recoveryActor.userId,
+      actorId: recoveryAdminId,
       reason: 'Test retired icon metadata writer before authority-denied recovery',
     });
 
     await expect(reconcilePageWriteIntent(intent.id, {
-      actorId: recoveryActor.userId,
+      actorId: recoveryAdminId,
       reason: 'Recovery must preserve unknown icon bytes when the original actor is inactive',
     })).rejects.toThrow('no longer authorized');
     await expect(fs.readFile(unrelated, 'utf8')).resolves.toBe('must survive');
@@ -984,6 +1097,131 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       [owner.pageId],
     );
     expect(page.rows[0]).toMatchObject({ icon_kind: 'image', icon_value: previousSha });
+    const pending = await query<{ status: string }>(
+      'SELECT status FROM page_write_intents WHERE id = $1',
+      [intent.id],
+    );
+    expect(pending.rows[0]?.status).toBe('pending');
+  });
+
+  it('keeps a partial Confluence icon repair pending after its page ACE is revoked', async () => {
+    const actor = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ($1, 'hash', 'user')
+       RETURNING id`,
+      [`icon-repair-actor-${randomUUID()}`],
+    );
+    const actorId = actor.rows[0]!.id;
+    const recoveryAdminId = await seedRecoveryAdmin();
+    const spaceKey = `ICON_REPAIR_${randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, created_by, last_synced)
+       VALUES ($1, $1, 'confluence', $2, NOW())`,
+      [spaceKey, actorId],
+    );
+    const role = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ($1, 'Icon repair writer', ARRAY['read', 'edit']) RETURNING id`,
+      [spaceKey],
+    );
+    await query(
+      `INSERT INTO space_role_assignments
+         (space_key, principal_type, principal_id, role_id)
+       VALUES ($1, 'user', $2, $3)`,
+      [spaceKey, actorId, role.rows[0]!.id],
+    );
+    const page = await query<{ id: number }>(
+      `INSERT INTO pages
+         (confluence_id, source, space_key, title, body_storage, body_html,
+          body_text, inherit_perms, embedding_dirty)
+       VALUES ($1, 'confluence', $2, 'Repair target', '', '', '', FALSE, FALSE)
+       RETURNING id`,
+      [`icon-repair-${randomUUID()}`, spaceKey],
+    );
+    const pageId = page.rows[0]!.id;
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission)
+       VALUES ('page', $1, 'user', $2, 'edit')`,
+      [pageId, actorId],
+    );
+    const bytes = Buffer.from('partial Confluence icon');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const intent = await reservePageWriteIntent({
+      pageIds: [pageId],
+      kind: 'icon.image.put',
+      actorId,
+      effect: {
+        effectClass: 'local',
+        pageId,
+        sha256,
+        size: bytes.length,
+        format: 'png',
+        expectsMetadata: true,
+      },
+    });
+    const stageDir = path.join(
+      tempBase,
+      PAGE_ICON_STORE_DIRNAME,
+      '.staging',
+      String(pageId),
+    );
+    const stagePath = path.join(stageDir, `${intent.id}.png.stage`);
+    await runPageWriteIntentEffect(intent, { kind: 'local' }, async () => {
+      await fs.mkdir(stageDir, { recursive: true });
+      await fs.writeFile(stagePath, bytes);
+      await fs.writeFile(path.join(stageDir, `${intent.id}.activating`), 'activating');
+    });
+    await query(
+      `DELETE FROM access_control_entries
+        WHERE resource_type = 'page'
+          AND resource_id = $1
+          AND principal_type = 'user'
+          AND principal_id = $2`,
+      [pageId, actorId],
+    );
+
+    const oldRuntimeId = randomUUID();
+    const acknowledgmentId = randomUUID();
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
+       VALUES ($1, $2::jsonb, NOW(), $3)`,
+      [
+        oldRuntimeId,
+        JSON.stringify({
+          host: 'retired-icon-ace-writer',
+          pid: 44,
+          startedAt: new Date().toISOString(),
+        }),
+        acknowledgmentId,
+      ],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $1 WHERE id = $2', [
+      oldRuntimeId,
+      intent.id,
+    ]);
+    await fencePageWriterRuntime({
+      runtimeId: oldRuntimeId,
+      mode: 'owner_ack',
+      acknowledgmentId,
+      actorId: recoveryAdminId,
+      reason: 'Test retired partial icon writer before ACE-revoked recovery',
+    });
+
+    await expect(reconcilePageWriteIntent(intent.id, {
+      actorId: recoveryAdminId,
+      reason: 'Original actor must retain current page ACL authority for icon repair',
+    })).rejects.toThrow('no longer authorized');
+    await expect(fs.readFile(stagePath)).resolves.toEqual(bytes);
+    await expect(
+      fs.access(path.join(tempBase, PAGE_ICON_STORE_DIRNAME, String(pageId), `${sha256}.png`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    const stored = await query<{ icon_kind: string | null; icon_value: string | null }>(
+      'SELECT icon_kind, icon_value FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(stored.rows[0]).toEqual({ icon_kind: null, icon_value: null });
     const pending = await query<{ status: string }>(
       'SELECT status FROM page_write_intents WHERE id = $1',
       [intent.id],

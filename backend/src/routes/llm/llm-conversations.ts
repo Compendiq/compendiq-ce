@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
@@ -12,23 +13,37 @@ import {
   UpdateConversationSchema,
 } from '@compendiq/contracts';
 import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import {
+  CONFLUENCE_DISABLED_MESSAGE,
+  pageWriteStaysLocal,
+} from '../../domains/confluence/services/standalone-mode.js';
 import {
   describeConfluencePagePut,
   publishConfluencePagePut,
   registerConfluencePagePutIntentReconcilers,
 } from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import {
+  confirmPagePublication,
+  pagePublicationReceipt,
+} from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpaces,
+  getUserAccessibleSpacesMemoized,
+  userCanAccessPage,
+} from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
+  PageWriteError,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
   withPageWriteTransaction,
+  type PageWriteIntent,
 } from '../../core/services/page-write-admission.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { ImprovementsQuerySchema } from './_helpers.js';
@@ -247,12 +262,73 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // resolvePageRef in the improve route. The digit cap keeps long Confluence
     // ids out of the int4 cast (a 10+ digit id would error, not 404).
     type PageRow = {
-      id: number; version: number; title: string; space_key: string;
+      id: number; version: number; title: string; space_key: string | null;
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
+      contentRevision: string; lifecycleRevision: string;
     };
     const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
-              created_by_user_id, visibility`;
+              created_by_user_id, visibility, content_revision::text AS "contentRevision",
+              lifecycle_revision::text AS "lifecycleRevision"`;
+    const currentConfluenceClient = async (
+      client: PoolClient,
+      intent: PageWriteIntent,
+      expected: PageRow,
+    ): Promise<ConfluenceClient> => {
+      const actor = await client.query(
+        'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+        [userId],
+      );
+      if (actor.rowCount !== 1) {
+        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+      }
+      const result = await client.query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+        [expected.id],
+      );
+      const current = result.rows[0];
+      if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      const admittedRevision = intent.revisions[expected.id];
+      if (
+        !admittedRevision ||
+        current.contentRevision !== admittedRevision.contentRevision ||
+        current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
+        current.version !== expected.version ||
+        current.body_html !== expected.body_html ||
+        current.source !== 'confluence' ||
+        current.confluence_id !== expected.confluence_id
+      ) {
+        throw new PageWriteError(
+          409,
+          'stale_content_revision',
+          'Page has been modified since you loaded it. Please refresh and try again.',
+        );
+      }
+      const accessibleSpaces = await getUserAccessibleSpaces(userId, client);
+      if (
+        !current.space_key ||
+        !accessibleSpaces.includes(current.space_key) ||
+        !(await userCanAccessPage(userId, current.id, client))
+      ) {
+        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+      }
+      if (!(await isConfluenceEnabled(userId, client))) {
+        throw new PageWriteError(
+          409,
+          'confluence_integration_disabled',
+          CONFLUENCE_DISABLED_MESSAGE,
+        );
+      }
+      const confluence = await getClientForUser(userId, client);
+      if (!confluence) {
+        throw new PageWriteError(
+          409,
+          'confluence_connection_changed',
+          'Confluence credentials changed before the remote write',
+        );
+      }
+      return confluence;
+    };
     let existing: { rows: PageRow[] } = { rows: [] };
     if (/^\d{1,9}$/.test(pageId)) {
       existing = await query<PageRow>(
@@ -276,9 +352,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // unless it is explicitly shared — same rule as PATCH /pages/:id.
     // Respond 404 (not 403/409) so another user's private page never leaks
     // its existence, title, or version; this must run before the version
-    // check below to avoid a 404-vs-409 existence oracle. Confluence-sourced
-    // pages are not gated here: that branch pushes through the caller's own
-    // Confluence client, so Confluence ACLs apply.
+    // check below to avoid a 404-vs-409 existence oracle. The Confluence
+    // branch re-resolves active identity, local page/space authority, mode,
+    // and credentials under admission immediately before provider dispatch.
     if (
       existingPage.source === 'standalone' &&
       existingPage.created_by_user_id !== userId &&
@@ -427,8 +503,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       if (!existingPage.confluence_id) {
         throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       }
-      const client = await getClientForUser(userId);
-      if (!client) throw fastify.httpErrors.badRequest('Confluence not configured');
+      // Preserve the existing early configuration error. The post-admission
+      // resolver below is authoritative for dispatch.
+      if (!await getClientForUser(userId)) {
+        throw fastify.httpErrors.badRequest('Confluence not configured');
+      }
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml);
@@ -446,42 +525,64 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         pageIds: [existingPage.id],
         kind: publication.kind,
         actorId: userId,
+        expectedRevisions: {
+          [existingPage.id]: {
+            contentRevision: existingPage.contentRevision,
+            lifecycleRevision: existingPage.lifecycleRevision,
+          },
+        },
         effect: publication.effect,
       });
 
-      // The conversion above is pure, but it was derived from the pre-admission
-      // row. Refuse and safely cancel before effect if that row changed before
-      // the durable reservation won the lifecycle lock.
-      const fresh = await query<PageRow>(
-        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
-        [existingPage.id],
-      );
-      const current = fresh.rows[0];
-      if (
-        !current ||
-        current.version !== currentVersion ||
-        current.body_html !== existingPage.body_html ||
-        current.source !== 'confluence' ||
-        current.confluence_id !== confluenceId
-      ) {
-        await cancelPageWriteIntentBeforeEffect(intent);
-        if (!current) throw fastify.httpErrors.notFound('Page not found');
-        throw fastify.httpErrors.conflict(
-          'Page has been modified since you loaded it. Please refresh and try again.',
+      let admittedClient: ConfluenceClient;
+      try {
+        admittedClient = await withPageWriteTransaction(
+          [existingPage.id],
+          (lockedClient) => currentConfluenceClient(lockedClient, intent, existingPage),
+          { intent },
         );
+      } catch (error) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        throw error;
       }
 
-      // Remote-first. The durable effect stores only a payload digest and
-      // expected version; unknown outcomes remain pending for exact E+1 proof.
-      const page = await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, () =>
-        client.updatePage(confluenceId, pageTitle, storageBody, currentVersion),
+      // Persist only bounded identity/digests after provider success. A compact
+      // acknowledgment is durable before its confirming read, so a failed
+      // readback remains recoverable without replaying this PUT.
+      const publicationResult = await runPageWriteIntentEffect(
+        intent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (result) => result.receipt,
+        },
+        async () => {
+          const page = await admittedClient.updatePage(
+            confluenceId,
+            pageTitle,
+            storageBody,
+            currentVersion,
+          );
+          return {
+            page,
+            receipt: pagePublicationReceipt(confluenceId, currentVersion + 1, page),
+          };
+        },
       );
+      const confirmed = await withPageWriteTransaction([existingPage.id], async (lockedClient) => {
+        const currentClient = await currentConfluenceClient(lockedClient, intent, existingPage);
+        return confirmPagePublication(
+          currentClient,
+          publicationResult.receipt,
+          publicationResult.page,
+        );
+      }, { intent });
       const published = await completePageWriteIntent(intent, (lockedClient) =>
         publishConfluencePagePut(lockedClient, publication, {
-          confluenceId: page.id,
-          title: page.title,
-          bodyStorage: page.body?.storage?.value ?? storageBody,
-          remoteVersion: page.version?.number,
+          confluenceId: confirmed.id,
+          title: confirmed.title,
+          bodyStorage: confirmed.body.storage.value,
+          remoteVersion: confirmed.version.number,
         }, intent.id),
       );
       newVersion = published.newVersion;

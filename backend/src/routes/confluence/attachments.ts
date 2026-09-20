@@ -293,6 +293,86 @@ function terminalAttachmentReceipts(
   });
 }
 
+function attachmentTerminalResult(
+  remotePageId: string,
+  publicationContentRevision: string,
+  receipts: readonly AttachmentReceipt[],
+): Record<string, unknown> {
+  // The route admits at most two filesystem-bounded names, and receipt
+  // identity/version fields are length-bounded. File payloads remain in their
+  // bounded stages and are never copied into intent metadata.
+  return {
+    remotePageId,
+    publicationContentRevision,
+    receipts,
+  };
+}
+
+async function persistAttachmentReceipt(
+  intent: PageWriteIntent,
+  expected: readonly RecoverableAttachment[],
+  completed: readonly AttachmentReceipt[],
+  receipt: AttachmentReceipt,
+  remotePageId: string,
+  publicationContentRevision: string,
+): Promise<void> {
+  const receipts = [...completed, receipt];
+  if (receipts.length > expected.length) {
+    throw new PageWriteError(
+      409,
+      'intent_receipt_state_conflict',
+      'More attachment receipts were returned than the admitted inventory',
+    );
+  }
+  const completesRemoteWork = receipts.length === expected.length;
+  if (completesRemoteWork) {
+    // This re-validates count, order, filenames, and bounded provider fields
+    // against the original admitted inventory. The loop issues no further
+    // remote mutations after this final receipt; only read-only verification
+    // and local publication remain.
+    terminalAttachmentReceipts({ receipts }, expected);
+  }
+  const terminalResult = attachmentTerminalResult(
+    remotePageId,
+    publicationContentRevision,
+    receipts,
+  );
+  await advancePageWriteIntent(intent, async (client) => {
+    const updated = await client.query(
+      `UPDATE page_write_intents
+          SET effect = jsonb_set(effect, '{receipts}', $2::jsonb),
+              remote_effects_completed_at = CASE
+                WHEN $3::boolean THEN NOW()
+                ELSE remote_effects_completed_at
+              END,
+              remote_terminal_result = CASE
+                WHEN $3::boolean THEN $4::jsonb
+                ELSE remote_terminal_result
+              END
+        WHERE id = $1
+          AND status = 'pending'
+          AND remote_effects_completed_at IS NULL
+          AND effect->'files' = $6::jsonb
+          AND COALESCE(effect->'receipts', '[]'::jsonb) = $5::jsonb`,
+      [
+        intent.id,
+        JSON.stringify(receipts),
+        completesRemoteWork,
+        JSON.stringify(terminalResult),
+        JSON.stringify(completed),
+        JSON.stringify(expected),
+      ],
+    );
+    if (updated.rowCount !== 1) {
+      throw new PageWriteError(
+        409,
+        'intent_receipt_state_conflict',
+        'The durable attachment receipt sequence changed',
+      );
+    }
+  });
+}
+
 
 function exactAttachmentBytes(bytes: Buffer, expected: RecoverableAttachment): boolean {
   return bytes.length === expected.size &&
@@ -1039,11 +1119,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         {
           kind: 'remote',
           completesRemoteWork: true,
-          terminalResult: (completed) => ({
-            remotePageId: page.confluence_id,
-            publicationContentRevision: intent.revisions[page.id]!.contentRevision,
-            receipts: completed,
-          }),
+          terminalResult: (completed) => attachmentTerminalResult(
+            page.confluence_id!,
+            intent.revisions[page.id]!.contentRevision,
+            completed,
+          ),
         },
         async () => {
           const completed: AttachmentReceipt[] = [];
@@ -1064,19 +1144,14 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
               file.contentType,
             );
             const receipt = attachmentReceipt(recoverableFiles[index]!, uploaded);
-            await advancePageWriteIntent(intent, async (client) => {
-              await client.query(
-                `UPDATE page_write_intents
-                    SET effect = jsonb_set(
-                      effect,
-                      '{receipts}',
-                      COALESCE(effect->'receipts', '[]'::jsonb) || $2::jsonb
-                    )
-                  WHERE id = $1
-                    AND status = 'pending'`,
-                [intent.id, JSON.stringify([receipt])],
-              );
-            });
+            await persistAttachmentReceipt(
+              intent,
+              recoverableFiles,
+              completed,
+              receipt,
+              page.confluence_id!,
+              intent.revisions[page.id]!.contentRevision,
+            );
             completed.push(receipt);
           }
           return completed;

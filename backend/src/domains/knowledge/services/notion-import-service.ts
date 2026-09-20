@@ -46,6 +46,7 @@ import {
   deletedStandaloneNamespacesAbsent,
 } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
+import { userCanAccessPage } from '../../../core/services/rbac-service.js';
 import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError, isNotionObjectMissing } from './notion-client.js';
 import {
@@ -1017,21 +1018,34 @@ async function assertNotionTargetAuthority(
     expectedState: NotionTargetState;
   },
 ): Promise<void> {
-  const result = await client.query<{ body_html: string | null }>(
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL FOR SHARE',
+    [input.userId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new Error('Notion import actor is no longer active');
+  }
+  // Import identity is owner + Notion id, even when the article is shared.
+  // An ownership transfer cannot redirect an in-flight import into another owner.
+  const result = await client.query<{
+    body_html: string | null;
+  }>(
     `SELECT p.body_html
        FROM pages p
-       JOIN users u ON u.id = $2
       WHERE p.id = $1
-        AND p.created_by_user_id = $2
+        AND p.created_by_user_id = $3
         AND p.source = 'standalone'
         AND p.deleted_at IS NULL
         AND p.notion_page_id IS NOT NULL
-        AND lower(replace(p.notion_page_id, '-', '')) = $3
-      FOR UPDATE OF p, u`,
-    [input.pageId, input.userId, normalizeNotionId(input.notionPageId)],
+        AND lower(replace(p.notion_page_id, '-', '')) = $2
+      FOR UPDATE OF p`,
+    [input.pageId, normalizeNotionId(input.notionPageId), input.userId],
   );
   const row = result.rows[0];
-  if (!row) {
+  if (
+    !row ||
+    !await userCanAccessPage(input.userId, input.pageId, client)
+  ) {
     throw new Error('Notion import target authority changed before mutation');
   }
   const complete = Boolean(row.body_html && row.body_html.trim().length > 0);

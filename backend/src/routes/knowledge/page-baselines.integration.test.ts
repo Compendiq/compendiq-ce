@@ -13,6 +13,7 @@ import {
 import { getPool, query } from '../../core/db/postgres.js';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import { cleanupAbandonedBaselinePreparations } from '../../core/services/page-baseline-service.js';
 import { pageBaselineRoutes } from './page-baselines.js';
 import { createClient, type RedisClientType } from 'redis';
 import { setRedisClient } from '../../core/services/redis-cache.js';
@@ -173,6 +174,74 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
     const next = await preview();
     expect(next.baselineId).not.toBe(prepared.baselineId);
     expect((await thaw(state)).statusCode).toBe(409);
+  });
+
+  it('rejects completed freeze replays without claiming new evidence was recorded', async () => {
+    const prepared = await preview();
+    expect((await freeze(prepared)).statusCode).toBe(200);
+    const evidenceBefore = (await query(
+      'SELECT to_jsonb(b) AS evidence FROM page_baselines b WHERE id = $1', [prepared.baselineId],
+    )).rows;
+    const historyBefore = (await query(
+      'SELECT to_jsonb(h) AS entry FROM page_baseline_history h WHERE baseline_id = $1 ORDER BY created_at, id',
+      [prepared.baselineId],
+    )).rows;
+
+    const exactReplay = await freeze(prepared);
+    expect(exactReplay.statusCode, exactReplay.body).toBe(423);
+    const differentClaim = await app.inject({
+      method: 'POST', url: `/api/pages/${pageId}/freeze`, headers: { 'x-test-user': admin },
+      payload: {
+        reason: 'A different administrator supplied a different claim',
+        expectedContentRevision: prepared.contentRevision,
+        expectedManifestDigest: prepared.manifestDigest,
+        reportedSignatories: [{ displayName: 'Different reported approver' }],
+        reportedReference: 'review-board/different-decision',
+      },
+    });
+    expect(differentClaim.statusCode, differentClaim.body).toBe(423);
+    expect((await query(
+      'SELECT to_jsonb(b) AS evidence FROM page_baselines b WHERE id = $1', [prepared.baselineId],
+    )).rows).toEqual(evidenceBefore);
+    expect((await query(
+      'SELECT to_jsonb(h) AS entry FROM page_baseline_history h WHERE baseline_id = $1 ORDER BY created_at, id',
+      [prepared.baselineId],
+    )).rows).toEqual(historyBefore);
+  });
+
+  it('releases superseded preview capacity without removing published evidence', async () => {
+    const bytes = Buffer.from(REAL_PNG_40x30_BASE64, 'base64');
+    const liveUrl = `/api/local-attachments/${pageId}/capacity.png`;
+    const uploaded = await app.inject({
+      method: 'PUT', url: liveUrl, headers: { 'x-test-user': owner },
+      payload: { dataUri: `data:image/png;base64,${REAL_PNG_40x30_BASE64}` },
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(200);
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, `<img src="${liveUrl}">`]);
+    const selected = await preview();
+    const superseded = await preview(admin);
+    expect(superseded.baselineId).not.toBe(selected.baselineId);
+    expect(selected.totalBytes).toBe(bytes.length);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(bytes.length * 2) }]);
+
+    const frozen = await freeze(selected);
+    expect(frozen.statusCode, frozen.body).toBe(200);
+    await cleanupAbandonedBaselinePreparations();
+    expect((await query(
+      'SELECT id, status FROM page_baselines WHERE original_page_id = $1', [pageId],
+    )).rows).toEqual([{ id: selected.baselineId, status: 'published' }]);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(bytes.length) }]);
+    await expect(access(join(attachmentsDir, 'page-baselines', superseded.baselineId)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    const retained = await app.inject({
+      method: 'GET',
+      url: `/api/admin/page-baselines/${selected.baselineId}/attachments/${selected.attachments[0]!.identity}`,
+      headers: { 'x-test-user': admin },
+    });
+    expect(retained.statusCode, retained.body).toBe(200);
+    expect(retained.rawPayload).toEqual(bytes);
   });
 
   it('refuses published evidence rewrites, abandonment and ledger deletion at the database boundary', async () => {

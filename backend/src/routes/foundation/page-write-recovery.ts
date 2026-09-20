@@ -72,20 +72,12 @@ export async function pageWriteRecoveryRoutes(fastify: FastifyInstance) {
     if (expectedRuntimeId !== runtimeId) {
       throw new PageWriteError(409, 'runtime_not_local', 'Target the backend process identified by this runtime before retiring it.');
     }
-    // Audit the requested retirement durably BEFORE closing the gate. A failure
-    // here must not retire an unrecorded process; no success is claimed by this row.
-    await query(
-      `INSERT INTO audit_log (user_id, action, resource_type, resource_id, metadata, ip_address, user_agent)
-       VALUES ($1, 'ADMIN_ACTION', 'page_writer_runtime', $2, $3::jsonb, $4, $5)`,
-      [
-        request.userId,
-        runtimeId,
-        JSON.stringify({ action: 'page_writer_quiesce_requested', reason }),
-        request.ip,
-        request.headers['user-agent'] ?? null,
-      ],
-    );
-    return PageWriterQuiesceResultSchema.parse(await quiescePageWriterRuntime());
+    return PageWriterQuiesceResultSchema.parse(await quiescePageWriterRuntime({
+      actorId: request.userId,
+      reason,
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent'],
+    }));
   });
 
   fastify.post('/admin/page-write-recovery/runtimes/:runtimeId/fence', async (request) => {

@@ -580,7 +580,9 @@ erDiagram
 **Immutable baseline foundation (migrations 120–121, #275).** Migration 120 is
 additive: existing and new `pages` rows receive `content_revision = 0` and
 `lifecycle_revision = 0`; the backfill deliberately invents no historical
-freeze, approval or ledger entry. A database trigger rejects protected
+freeze, approval or ledger entry. Migration 121 installs the protected-write
+trigger after adding `baseline_id`, leaving legacy writers usable between the
+separately committed migrations. That trigger rejects protected
 title/body/storage/text/label/hierarchy/identity/icon/draft/deletion changes
 while `baseline_id` is set and advances `content_revision` exactly once for an
 editable protected update. Attachment-only writers explicitly touch the
@@ -603,6 +605,10 @@ Recovery transfers `runtime_id` and stamps `recovery_started_at` before invoking
 the verifier, not only before a local repair. That marker disqualifies no-start
 fencing/cancellation even if the original effect never began; phase timestamps
 and bounded recovery history remain intact across ownership changes.
+Each recovery mutation also holds a current active system administrator row
+on its transaction client; this does not substitute for original-writer access.
+Quiescence records its authorized request before closing the local gate and
+rechecks the administrator before persisting an acknowledgment.
 
 The page-table publication trigger writes one
 `page_cache_invalidation_queue` row per affected page in the same transaction.
@@ -620,6 +626,8 @@ Delivery clears either queue only after real cache invalidation succeeds.
 state outside the generic intent's 32 KiB metadata ceiling. Its source-page FK
 prevents deletion while preparation remains necessary. Settlement removes it
 in the transaction that settles the intent; failed recovery preserves it.
+Its insertion is itself a gated local effect, so a crash on either side of
+that commit cannot disguise a retained preparation as an unstarted intent.
 The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds
@@ -638,6 +646,9 @@ A preview owns one stable `page_baselines.id`. The partial unique index on
 `(original_page_id, prepared_by_user_id, content_revision,
 lifecycle_revision)` for `preparing`/`prepared` rows makes concurrent or
 retried previews reuse that preparation rather than reserve another copy.
+Publishing one preview atomically abandons the page's other prepared previews.
+Maintenance removes only these unpublished copies and releases their reservations;
+published evidence is never a capacity-cleanup candidate.
 Manifest v1 persists both its fixed JSON array and the exact UTF-8 bytes hashed
 into `manifest_digest`; authored title/HTML/storage/text, sorted labels,
 source-aware page/parent identity, raw icon tuple and complete attachment

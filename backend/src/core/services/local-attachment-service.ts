@@ -22,6 +22,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { markPageImagesDirty } from './image-analysis-dirty.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
+import { userCanAccessPage } from './rbac-service.js';
 import {
   advancePageWriteIntent,
   completePageWriteIntent,
@@ -154,29 +155,30 @@ async function assertLocalPageAccess(
   content_revision: string;
   lifecycle_revision: string;
 }> {
-  const statement = `SELECT id, source, visibility, created_by_user_id, deleted_at,
-                            content_revision::text, lifecycle_revision::text
+  const runQuery: typeof query = client ? client.query.bind(client) : query;
+  const actor = await runQuery(
+    `SELECT 1 FROM users
+      WHERE id = $1 AND deactivated_at IS NULL${client ? ' FOR SHARE' : ''}`,
+    [userId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new LocalAttachmentError('FORBIDDEN', 'The attachment writer is no longer active');
+  }
+  const res = await runQuery<{
+    id: number;
+    source: string;
+    visibility: string;
+    created_by_user_id: string | null;
+    deleted_at: Date | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT id, source, visibility, created_by_user_id, deleted_at,
+            content_revision::text, lifecycle_revision::text
        FROM pages
-      WHERE id = $1`;
-  const res = client
-    ? await client.query<{
-        id: number;
-        source: string;
-        visibility: string;
-        created_by_user_id: string | null;
-        deleted_at: Date | null;
-        content_revision: string;
-        lifecycle_revision: string;
-      }>(statement, [pageId])
-    : await query<{
-        id: number;
-        source: string;
-        visibility: string;
-        created_by_user_id: string | null;
-        deleted_at: Date | null;
-        content_revision: string;
-        lifecycle_revision: string;
-      }>(statement, [pageId]);
+      WHERE id = $1${client ? ' FOR UPDATE' : ''}`,
+    [pageId],
+  );
   const row = res.rows[0];
   if (!row) throw new LocalAttachmentError('PAGE_NOT_FOUND', 'Page not found');
   if (row.deleted_at) throw new LocalAttachmentError('PAGE_NOT_FOUND', 'Page is trashed');
@@ -186,11 +188,12 @@ async function assertLocalPageAccess(
       'Use /api/attachments/:confluenceId/... for Confluence-backed pages',
     );
   }
-  // Ownership / visibility gate: private pages are owner-only; shared
-  // pages are any authenticated user. Admins also pass through
-  // (the route layer has separate requireAdmin-style plumbing if needed;
-  // for read/write parity with page edits we mirror the PUT /pages rules).
-  if (row.visibility !== 'shared' && row.created_by_user_id !== userId) {
+  // Match the established standalone edit rule exactly: the owner or any
+  // authenticated reader of a shared page may write. The second predicate is
+  // the current page/enterprise ACL read and must use the held client so a
+  // completion or repair never consults a cached or second-connection view.
+  const canEdit = row.created_by_user_id === userId || row.visibility === 'shared';
+  if (!canEdit || !await userCanAccessPage(userId, pageId, client)) {
     throw new LocalAttachmentError('FORBIDDEN', 'Not authorised to access this page');
   }
   return row;

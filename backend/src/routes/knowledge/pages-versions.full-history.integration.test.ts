@@ -209,7 +209,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
     expect(Number(db.rows[0]!.count)).toBe(total);
   });
 
-  it('publishes a sparse successful restore response from the submitted representation without leaving recovery work', async () => {
+  it('confirms a sparse restore response with exact provider readback before publishing', async () => {
     const pageId = await seedConfluencePage('780restore', 5);
     await query(
       `UPDATE pages
@@ -260,13 +260,22 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluen
           },
         });
         expect(submittedStorage).toContain('restored');
-        // Confluence DC may omit the optional body.storage expansion on a
-        // successful PUT. The accepted version and submitted representation
-        // are still sufficient for ordinary publication.
+        // A compact acknowledgment proves the accepted command identity,
+        // not the body; publication must read the resulting provider state.
         return jsonResponse({
           id: '780restore',
           title: sent.title,
           version: sent.version,
+        });
+      }
+      if (url.pathname === '/rest/api/content/780restore' && options?.method === 'GET') {
+        return jsonResponse({
+          id: '780restore',
+          type: 'page',
+          status: 'current',
+          title: 'Restored title',
+          version: { number: 6 },
+          body: { storage: { value: submittedStorage, representation: 'storage' } },
         });
       }
       throw new Error(`Unexpected Confluence request in restore test: ${String(rawUrl)}`);

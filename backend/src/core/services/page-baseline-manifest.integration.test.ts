@@ -485,6 +485,23 @@ describe.skipIf(!dbAvailable)('page baseline manifest retained bytes', () => {
     });
   });
 
+  it.each([
+    'https://external.example/api/attachments/PAGE/evidence.png',
+    '//external.example/api/local-attachments/PAGE/evidence.png',
+    'https://external.example/image?next=/api/attachments/PAGE/evidence.png',
+    'https://external.example/image#/api/local-attachments/PAGE/evidence.png',
+  ])('does not substitute local evidence for the unpinned URL %s', async (template) => {
+    const pageId = await insertPage();
+    const url = template.replace('PAGE', String(pageId));
+    await writeStoredFile(String(pageId), 'evidence.png', Buffer.from('unrelated shared-store bytes'));
+    await writeStoredFile('local', String(pageId), 'evidence.png', Buffer.from('unrelated local-store bytes'));
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, `<img src="${url}">`]);
+    await expect(inspect(pageId)).rejects.toMatchObject({
+      reason: 'baseline_media_external_unpinned',
+      statusCode: 409,
+    });
+  });
+
 
   it('authorizes URL-prefix owners before reading foreign bytes and denies ambiguous scope without an oracle', async () => {
     const actorId = await insertUser('baseline-scope-actor');

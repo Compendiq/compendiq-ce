@@ -12,13 +12,14 @@ import {
   truncateAllTables,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 import {
   freezePage,
   previewPageBaseline,
   setPageBaselineCreationEnabled,
 } from '../../core/services/page-baseline-service.js';
+import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import {
   REAL_JPEG_40x30_BASE64,
@@ -26,6 +27,7 @@ import {
 } from '../../core/services/test-image-fixtures.js';
 import {
   buildKnowledgeTestApp,
+  insertConfluencePage,
   insertLocalSpace,
   insertStandalonePage,
   insertUser,
@@ -73,6 +75,23 @@ async function storedIcon(pageId: number): Promise<StoredIconRow> {
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+}
+
+async function waitForLifecycleWaiter(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'
+       ) AS waiting`,
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error('icon writer did not reach the lifecycle lock barrier');
 }
 
 async function seedPage(
@@ -431,6 +450,122 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(await storedIcon(pageId)).toMatchObject({
         icon_kind: 'emoji',
         icon_value: '📖',
+      });
+    });
+
+    it('denies a deactivated actor after admission wait without publishing icon bytes or metadata', async () => {
+      const pageId = await seedPage();
+      const before = await storedIcon(pageId);
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = uploadIcon(pageId);
+        await waitForLifecycleWaiter();
+        await blocker.query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(403);
+        expect(await storedIcon(pageId)).toEqual(before);
+        await expectMissing(iconPath(pageId, PNG_SHA, 'png'));
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
+    it('rechecks current Confluence page ACE authority after admission before metadata mutation', async () => {
+      const spaceKey = `ICON_CONF_${randomUUID().replaceAll('-', '').slice(0, 10)}`;
+      await insertLocalSpace(spaceKey, userId);
+      const pageId = await insertConfluencePage(`icon-${randomUUID()}`, 'ACE icon page', spaceKey);
+      const role = await query<{ id: number }>(
+        `INSERT INTO roles (name, display_name, permissions)
+         VALUES ($1, 'Icon writer', ARRAY['read', 'edit']) RETURNING id`,
+        [spaceKey],
+      );
+      await query(
+        `INSERT INTO space_role_assignments
+           (space_key, principal_type, principal_id, role_id)
+         VALUES ($1, 'user', $2, $3)`,
+        [spaceKey, userId, role.rows[0]!.id],
+      );
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [pageId, userId],
+      );
+      const before = await storedIcon(pageId);
+
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = app.inject({
+          method: 'PATCH',
+          url: `/api/pages/${pageId}/icon`,
+          payload: { icon: { kind: 'emoji', value: '🔐' } },
+        });
+        await waitForLifecycleWaiter();
+        await blocker.query(
+          `DELETE FROM access_control_entries
+            WHERE resource_type = 'page'
+              AND resource_id = $1
+              AND principal_type = 'user'
+              AND principal_id = $2`,
+          [pageId, userId],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(403);
+        expect(await storedIcon(pageId)).toEqual(before);
+        await expectMissing(iconDirectory(pageId));
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
+    it('publishes a Confluence icon while the current role and page ACE still authorize it', async () => {
+      const spaceKey = `ICON_OK_${randomUUID().replaceAll('-', '').slice(0, 10)}`;
+      await insertLocalSpace(spaceKey, userId);
+      const pageId = await insertConfluencePage(`icon-ok-${randomUUID()}`, 'Authorized icon page', spaceKey);
+      const role = await query<{ id: number }>(
+        `INSERT INTO roles (name, display_name, permissions)
+         VALUES ($1, 'Icon writer', ARRAY['read', 'edit']) RETURNING id`,
+        [spaceKey],
+      );
+      await query(
+        `INSERT INTO space_role_assignments
+           (space_key, principal_type, principal_id, role_id)
+         VALUES ($1, 'user', $2, $3)`,
+        [spaceKey, userId, role.rows[0]!.id],
+      );
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [pageId, userId],
+      );
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '✅' } },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'emoji',
+        icon_value: '✅',
       });
     });
 

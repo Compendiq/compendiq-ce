@@ -5,8 +5,13 @@ import sensible from '@fastify/sensible';
 import { createClient, type RedisClientType } from 'redis';
 import { ZodError } from 'zod';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import {
+  lockPageLifecycle,
+  reconcilePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
 import {
   isDbAvailable,
@@ -26,6 +31,23 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function waitForBlockedLifecycleLock(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'
+       ) AS waiting`,
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error('Version restore did not reach the lifecycle admission barrier');
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -53,11 +75,35 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
   let llmBaseUrl = '';
   let userId = '';
   let otherUserId = '';
+  let recoveryAdminId = '';
+  let confluenceBaseUrl = '';
+  let confluenceRequests: Array<{
+    method: string;
+    url: string;
+    authorization: string | undefined;
+    body?: {
+      title: string;
+      version: { number: number };
+      body: { storage: { value: string } };
+    };
+  }> = [];
+  let compactPutReply = false;
+  let readbackStatus = 200;
+  let providerPage: {
+    id: string;
+    type: string;
+    status: string;
+    title: string;
+    version: { number: number };
+    body: { storage: { value: string; representation: string } };
+  } | null = null;
+  let afterConfluencePut: (() => Promise<void>) | null = null;
   let llmRequests: Array<Record<string, unknown>> = [];
   const ownedRedisKeys = new Set<string>();
   const ownedUserIds = new Set<string>();
 
   beforeAll(async () => {
+    process.env.PAT_ENCRYPTION_KEY ??= 'pages-versions-test-key-32bytes';
     await setupTestDb();
     redis = createClient({
       url: process.env.REDIS_URL,
@@ -67,19 +113,62 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     setRedisClient(redis);
 
     llmServer = createServer(async (request, response) => {
-      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
-        sendJson(response, 404, { error: 'unexpected test endpoint' });
+      if (request.method === 'PUT' && request.url?.startsWith('/rest/api/content/')) {
+        const body = JSON.parse(await readRequestBody(request)) as {
+          title: string;
+          version: { number: number };
+          body: { storage: { value: string } };
+        };
+        const id = request.url.split('?')[0]!.split('/').at(-1)!;
+        confluenceRequests.push({
+          method: 'PUT',
+          url: request.url,
+          authorization: request.headers.authorization,
+          body,
+        });
+        providerPage = {
+          id,
+          type: 'page',
+          status: 'current',
+          title: body.title,
+          version: body.version,
+          body: { storage: { value: body.body.storage.value, representation: 'storage' } },
+        };
+        if (afterConfluencePut) await afterConfluencePut();
+        sendJson(response, 200, compactPutReply
+          ? { id, type: 'page', title: body.title, version: body.version }
+          : providerPage);
         return;
       }
-      llmRequests.push(JSON.parse(await readRequestBody(request)) as Record<string, unknown>);
-      sendJson(response, 200, {
-        choices: [{ message: { role: 'assistant', content: '- The introduction was expanded.' } }],
-        usage: { prompt_tokens: 20, completion_tokens: 7 },
-      });
+      if (request.method === 'GET' && request.url?.startsWith('/rest/api/content/')) {
+        confluenceRequests.push({
+          method: 'GET',
+          url: request.url,
+          authorization: request.headers.authorization,
+        });
+        if (readbackStatus !== 200) {
+          sendJson(response, readbackStatus, { message: 'readback refused by fixture' });
+        } else if (providerPage) {
+          sendJson(response, 200, providerPage);
+        } else {
+          sendJson(response, 404, { message: 'missing provider page' });
+        }
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/v1/chat/completions') {
+        llmRequests.push(JSON.parse(await readRequestBody(request)) as Record<string, unknown>);
+        sendJson(response, 200, {
+          choices: [{ message: { role: 'assistant', content: '- The introduction was expanded.' } }],
+          usage: { prompt_tokens: 20, completion_tokens: 7 },
+        });
+        return;
+      }
+      sendJson(response, 404, { error: 'unexpected test endpoint' });
     });
     await new Promise<void>((resolve) => llmServer.listen(0, '127.0.0.1', resolve));
     const address = llmServer.address() as AddressInfo;
     llmBaseUrl = `http://127.0.0.1:${address.port}/v1`;
+    confluenceBaseUrl = `http://127.0.0.1:${address.port}`;
 
     app = Fastify({ logger: false });
     await app.register(sensible);
@@ -106,19 +195,27 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     await truncateAllTables();
     await bumpProviderCacheVersion();
     llmRequests = [];
+    confluenceRequests = [];
+    compactPutReply = false;
+    readbackStatus = 200;
+    providerPage = null;
+    afterConfluencePut = null;
     ownedRedisKeys.clear();
     ownedUserIds.clear();
 
     const users = await query<{ id: string; username: string }>(
       `INSERT INTO users (username, email, password_hash, role)
        VALUES ('versions-owner', 'versions-owner@test', 'x', 'user'),
-              ('versions-other', 'versions-other@test', 'x', 'user')
+              ('versions-other', 'versions-other@test', 'x', 'user'),
+              ('versions-recovery', 'versions-recovery@test', 'x', 'admin')
        RETURNING id, username`,
     );
     userId = users.rows.find((row) => row.username === 'versions-owner')!.id;
     otherUserId = users.rows.find((row) => row.username === 'versions-other')!.id;
+    recoveryAdminId = users.rows.find((row) => row.username === 'versions-recovery')!.id;
     ownedUserIds.add(userId);
     ownedUserIds.add(otherUserId);
+    ownedUserIds.add(recoveryAdminId);
   });
 
   afterEach(async () => {
@@ -191,6 +288,36 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
         metadata.author ?? null,
         metadata.message ?? null,
       ],
+    );
+  }
+
+  async function configureConfluence(spaceKey: string, pat = 'restore-original-pat'): Promise<void> {
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ($1, $1, 'confluence', NOW())
+       ON CONFLICT (space_key) DO NOTHING`,
+      [spaceKey],
+    );
+    const role = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ('versions-editor', 'Versions editor', ARRAY['read', 'write'])
+       ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+       RETURNING id`,
+    );
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ($1, 'user', $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [spaceKey, userId, role.rows[0]!.id],
+    );
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (user_id) DO UPDATE SET
+         confluence_url = EXCLUDED.confluence_url,
+         confluence_pat = EXCLUDED.confluence_pat,
+         confluence_enabled = TRUE`,
+      [userId, confluenceBaseUrl, encryptPat(pat)],
     );
   }
 
@@ -408,6 +535,248 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       action: 'PAGE_VERSION_RESTORED',
       metadata: expect.objectContaining({ restoredFrom: 1, newVersion: 4, pushedToConfluence: false }),
     }]);
+  });
+
+  it('publishes a large Confluence restore exactly, records history, and keeps terminal metadata bounded', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-large',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live before restore',
+      bodyHtml: '<p>Live before restore</p>',
+      bodyText: 'Live before restore',
+    });
+    const restoredText = `restored-${'y'.repeat(36_000)}-end`;
+    await seedVersion(pageId, 1, 'Large historical title', `<p>${restoredText}</p>`, restoredText);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: pageId,
+      title: 'Large historical title',
+      version: 4,
+      restoredFrom: 1,
+      pushedToConfluence: true,
+    });
+    expect((await query(
+      'SELECT title, body_text, version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Large historical title',
+      body_text: restoredText,
+      version: 4,
+    }]);
+    expect((await query(
+      `SELECT title, body_html, body_text
+         FROM page_versions WHERE page_id = $1 AND version_number = 3`,
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Live before restore',
+      body_html: '<p>Live before restore</p>',
+      body_text: 'Live before restore',
+    }]);
+    const intent = await query<{
+      status: string;
+      remote_terminal_result: Record<string, unknown>;
+    }>(
+      `SELECT status, remote_terminal_result
+         FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(intent.rows[0]?.status).toBe('completed');
+    expect(Buffer.byteLength(JSON.stringify(intent.rows[0]?.remote_terminal_result))).toBeLessThan(1024);
+    expect(JSON.stringify(intent.rows[0]?.remote_terminal_result)).not.toContain(restoredText.slice(0, 128));
+    expect(confluenceRequests.map((entry) => entry.method)).toEqual(['PUT']);
+  });
+
+  it('recovers a compact acknowledged restore after readback failure without issuing a second PUT', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-compact',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live compact title',
+      bodyHtml: '<p>Live compact body</p>',
+      bodyText: 'Live compact body',
+    });
+    await seedVersion(pageId, 1, 'Compact historical', '<p>Compact restored body</p>', 'Compact restored body');
+    compactPutReply = true;
+    readbackStatus = 403;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+    expect(response.statusCode).toBe(403);
+    expect((await query(
+      'SELECT title, body_text, version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Live compact title',
+      body_text: 'Live compact body',
+      version: 3,
+    }]);
+    const pending = await query<{
+      id: string;
+      remote_terminal_result: Record<string, unknown>;
+      remote_effects_completed_at: Date | null;
+    }>(
+      `SELECT id, remote_terminal_result, remote_effects_completed_at
+         FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+      [pageId],
+    );
+    expect(pending.rows[0]?.remote_effects_completed_at).toEqual(expect.any(Date));
+    expect(JSON.stringify(pending.rows[0]?.remote_terminal_result)).not.toContain('Compact restored body');
+
+    const retiredRuntime = `retired-restore-${Date.now()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+       VALUES ($1, '{"fixture":"retired restore writer"}', NOW(), $2,
+               'Fixture confirms the acknowledged restore writer stopped',
+               '{"kind":"verified_local_termination"}')`,
+      [retiredRuntime, recoveryAdminId],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [
+      pending.rows[0]!.id,
+      retiredRuntime,
+    ]);
+    readbackStatus = 200;
+    await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+      actorId: recoveryAdminId,
+      reason: 'Recover compact acknowledged restore without replaying the provider mutation',
+    })).resolves.toEqual({
+      intentId: pending.rows[0]!.id,
+      status: 'reconciled_applied',
+    });
+    expect((await query(
+      'SELECT title, body_text, version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Compact historical',
+      body_text: 'Compact restored body',
+      version: 4,
+    }]);
+    expect((await query(
+      `SELECT title, body_html, body_text
+         FROM page_versions WHERE page_id = $1 AND version_number = 3`,
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Live compact title',
+      body_html: '<p>Live compact body</p>',
+      body_text: 'Live compact body',
+    }]);
+    expect(confluenceRequests.filter((entry) => entry.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('cancels a restore when its original actor is deactivated during the admission wait', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-revoked',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+    });
+    await seedVersion(pageId, 1, 'Revoked target', '<p>Revoked target</p>', 'Revoked target');
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [pageId]);
+    try {
+      const pending = app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/1/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 3 },
+      });
+      await waitForBlockedLifecycleLock();
+      await blocker.query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+      await blocker.query('COMMIT');
+
+      const response = await pending;
+      expect(response.statusCode).toBe(403);
+      expect(confluenceRequests).toEqual([]);
+      expect((await query(
+        `SELECT status FROM page_write_intents
+          WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+        [pageId],
+      )).rows).toEqual([{ status: 'cancelled' }]);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('uses a PAT rotated while restore waits and re-resolves credentials again for compact readback', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-rotated-pat',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+    });
+    await seedVersion(pageId, 1, 'Rotated target', '<p>Rotated target body</p>', 'Rotated target body');
+    compactPutReply = true;
+    afterConfluencePut = async () => {
+      await query(
+        'UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1',
+        [userId, encryptPat('restore-readback-pat')],
+      );
+    };
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [pageId]);
+    try {
+      const pending = app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/1/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 3 },
+      });
+      await waitForBlockedLifecycleLock();
+      await blocker.query(
+        'UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1',
+        [userId, encryptPat('restore-dispatch-pat')],
+      );
+      await blocker.query('COMMIT');
+
+      const response = await pending;
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests.map((entry) => ({
+        method: entry.method,
+        authorization: entry.authorization,
+      }))).toEqual([
+        { method: 'PUT', authorization: 'Bearer restore-dispatch-pat' },
+        { method: 'GET', authorization: 'Bearer restore-readback-pat' },
+      ]);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
   });
 
   it('refuses stale, collaborative, and unauthorized restores without changing authored state', async () => {

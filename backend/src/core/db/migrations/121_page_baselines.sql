@@ -108,6 +108,13 @@ ALTER TABLE pages ADD CONSTRAINT pages_freeze_state_complete CHECK (
 );
 CREATE INDEX pages_frozen_idx ON pages (id) WHERE baseline_id IS NOT NULL;
 
+-- Installation belongs with baseline_id: an older process can still write
+-- after migration 120 commits and before this migration acquires its locks.
+DROP TRIGGER IF EXISTS pages_protected_write_trigger ON pages;
+CREATE TRIGGER pages_protected_write_trigger
+  BEFORE UPDATE OR DELETE ON pages
+  FOR EACH ROW EXECUTE FUNCTION enforce_page_protected_write();
+
 CREATE TABLE page_baseline_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   page_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,

@@ -140,6 +140,13 @@ export type RuntimeQuiescenceAcknowledgment = {
   };
 };
 
+export type PageWriteRecoveryAuthorization = {
+  actorId: string;
+  reason: string;
+  ipAddress?: string;
+  userAgent?: string;
+};
+
 export type PageWriteReconciliationProof =
   | {
       kind: 'local_bytes_verified';
@@ -349,6 +356,7 @@ const localIntentRecoveryModes = new Map<string, IntentRecoveryMode>();
 const localIntentFailedRemotePhases = new Set<string>();
 const localAdmissions = new Set<string>();
 const localRecoveries = new Map<string, 'running' | 'failed'>();
+const localRecoveryAdmins = new Map<string, string>();
 const localDrainWaiters = new Set<() => void>();
 
 // Successful phases are continuations, not terminal work: only settlement
@@ -509,6 +517,35 @@ async function inTransaction<T>(operation: (client: PoolClient) => Promise<T>): 
     throw error;
   } finally {
     client.release(discard);
+  }
+}
+
+async function assertActiveRecoveryAdmin(client: PoolClient, actorId: string): Promise<void> {
+  const actor = await client.query(
+    `SELECT 1
+       FROM users
+      WHERE id = $1
+        AND role = 'admin'
+        AND deactivated_at IS NULL
+      FOR SHARE`,
+    [actorId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new PageWriteError(
+      403,
+      'recovery_admin_required',
+      'An active system administrator is required.',
+    );
+  }
+}
+
+async function assertRecoveryAdminForIntent(
+  client: PoolClient,
+  intent: PageWriteIntent,
+): Promise<void> {
+  const recoveryAdminId = localRecoveryAdmins.get(intent.id);
+  if (recoveryAdminId !== undefined) {
+    await assertActiveRecoveryAdmin(client, recoveryAdminId);
   }
 }
 
@@ -917,6 +954,7 @@ async function markPageWriteIntentEffectStarted<T>(
 ): Promise<IntentRow> {
   return inTransaction(async (client) => {
     await lockPageWrites(client, intent.pageIds, { intent });
+    await assertRecoveryAdminForIntent(client, intent);
     const durable = await loadPendingIntentForUpdate(client, intent);
     if (phase.kind === 'remote' && durable.remote_effects_completed_at !== null) {
       throw new PageWriteError(
@@ -954,6 +992,7 @@ async function markPageWriteIntentEffectFinished<T>(
       : null;
   await inTransaction(async (client) => {
     await lockPageWrites(client, intent.pageIds, { intent });
+    await assertRecoveryAdminForIntent(client, intent);
     const updated = await client.query(
       `UPDATE page_write_intents
           SET effect_finished_at = NOW(),
@@ -1179,6 +1218,7 @@ export async function advancePageWriteIntent<T>(
   try {
     const committed = await inTransaction(async (client) => {
       await lockPageWrites(client, intent.pageIds, { intent });
+      await assertRecoveryAdminForIntent(client, intent);
       const result = await operation(client);
       const rows = await loadPageStates(client, intent.pageIds, true);
       const liveIds = new Set(rows.map((row) => row.id));
@@ -1290,8 +1330,37 @@ export async function getPageWriterRuntimeId(): Promise<string> {
  * can still start, and durably acknowledge quiescence.  This is intentionally
  * irreversible for the process lifetime.
  */
-export async function quiescePageWriterRuntime(): Promise<RuntimeQuiescenceAcknowledgment> {
+export async function quiescePageWriterRuntime(
+  authorization: PageWriteRecoveryAuthorization,
+): Promise<RuntimeQuiescenceAcknowledgment> {
+  const reason = authorization.reason.trim();
+  if (reason.length < 10 || authorization.reason.length > 1000) {
+    throw new PageWriteError(
+      400,
+      'invalid_quiescence_reason',
+      'Runtime quiescence reason must be 10 to 1000 characters',
+    );
+  }
   const runtimeId = await getPageWriterRuntimeId();
+
+  // Accept and durably record the retirement request while the actor's admin
+  // row is SHARE-locked. Only a committed request may close the process gate.
+  await inTransaction(async (client) => {
+    await assertActiveRecoveryAdmin(client, authorization.actorId);
+    await client.query(
+      `INSERT INTO audit_log
+         (user_id, action, resource_type, resource_id, metadata, ip_address, user_agent)
+       VALUES ($1, 'ADMIN_ACTION', 'page_writer_runtime', $2, $3::jsonb, $4, $5)`,
+      [
+        authorization.actorId,
+        runtimeId,
+        JSON.stringify({ action: 'page_writer_quiesce_requested', reason }),
+        authorization.ipAddress ?? null,
+        authorization.userAgent ?? null,
+      ],
+    );
+  });
+
   processAcceptingEffects = false;
   await waitForLocalRuntimeDrain();
 
@@ -1347,6 +1416,9 @@ export async function quiescePageWriterRuntime(): Promise<RuntimeQuiescenceAckno
     if (noStartTargets.rows.length > 0) {
       await lockPageLifecycle(client, noStartTargets.rows.map((target) => target.page_id));
     }
+    // The actor may have been demoted or deactivated while this process
+    // drained. Hold the user row through cancellation and acknowledgment.
+    await assertActiveRecoveryAdmin(client, authorization.actorId);
     await client.query(
       `UPDATE page_write_intents
           SET status = 'cancelled', settled_at = NOW(), settlement_reason = 'before_effect',
@@ -1506,6 +1578,7 @@ export async function fencePageWriterRuntime(
     );
     const targets = targetResult.rows.map((target) => target.page_id);
     if (targets.length > 0) await lockPageLifecycle(client, targets);
+    await assertActiveRecoveryAdmin(client, input.actorId);
 
     if (!row.fenced_at) {
       const fenceProof =
@@ -1569,8 +1642,10 @@ export async function fencePageWriterRuntime(
  * Unversioned remote mutations are terminal-only and can never enter this
  * recovery path: losing durability after their response remains unresolved.
  */
-export async function reconcilePageWriteIntent(intentId: string,
-authorization: { actorId: string; reason: string },): Promise<{ intentId: string; status: 'reconciled_applied' | 'reconciled_not_applied' }> {
+export async function reconcilePageWriteIntent(
+  intentId: string,
+  authorization: Pick<PageWriteRecoveryAuthorization, 'actorId' | 'reason'>,
+): Promise<{ intentId: string; status: 'reconciled_applied' | 'reconciled_not_applied' }> {
   const previousRecoveryState = localRecoveries.get(intentId);
   if (previousRecoveryState === 'running') {
     throw new PageWriteError(409, 'intent_recovery_running', 'This runtime is already reconciling the intent');
@@ -1582,6 +1657,7 @@ authorization: { actorId: string; reason: string },): Promise<{ intentId: string
     if (authorization.reason.trim().length < 10 || authorization.reason.length > 1000) {
       throw new PageWriteError(400, 'invalid_reconciliation_reason', 'Reconciliation reason must be 10 to 1000 characters');
     }
+    localRecoveryAdmins.set(intentId, authorization.actorId);
     const discovered = await getPool().query<IntentRow>(
       `SELECT id, runtime_id, kind, actor_id, page_ids, revisions, deleted_page_ids, recovery_mode,
               effect, effect_started_at, effect_finished_at, remote_effect_started_at, recovery_started_at,
@@ -1649,6 +1725,7 @@ authorization: { actorId: string; reason: string },): Promise<{ intentId: string
       assertEditable(rows);
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
+      await assertActiveRecoveryAdmin(client, authorization.actorId);
       if (retryingHere) return recoveryIntentFromRow(durable);
       const transferred = await client.query<IntentRow>(
         `UPDATE page_write_intents
@@ -1713,6 +1790,7 @@ authorization: { actorId: string; reason: string },): Promise<{ intentId: string
       assertEditable(rows);
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
+      await assertActiveRecoveryAdmin(client, authorization.actorId);
   
       const reconciled = await verifier(client, recoveryIntentFromRow(durable));
       if (reconciled.outcome === 'repair_required') {
@@ -1889,6 +1967,12 @@ authorization: { actorId: string; reason: string },): Promise<{ intentId: string
         'The trusted local verifier found partial state but no repairer is registered',
       );
     }
+
+    // Do not dispatch trusted repair code from an authorization decision made
+    // before verification. Repair transactions repeat this guard through the
+    // effect-marker and advancePageWriteIntent boundaries without holding a
+    // connection across filesystem work.
+    await inTransaction((client) => assertActiveRecoveryAdmin(client, authorization.actorId));
   
     // Verification completed inside this admitted recovery. Its local repair
     // is a continuation, so an intervening quiesce waits rather than aborting it.
@@ -1917,6 +2001,7 @@ authorization: { actorId: string; reason: string },): Promise<{ intentId: string
     throw error;
   } finally {
     if (localRecoveries.get(intentId) === 'running') localRecoveries.delete(intentId);
+    localRecoveryAdmins.delete(intentId);
     finishLocalOperation();
   }
 }

@@ -45,8 +45,9 @@ function jsonResponse(data: unknown, statusCode = 200) {
   };
 }
 
-async function seedActorAndPage(input: { admin?: boolean } = {}): Promise<{
+async function seedActorAndPage(): Promise<{
   actorId: string;
+  recoveryAdminId: string;
   pageId: number;
   contentRevision: string;
   lifecycleRevision: string;
@@ -55,7 +56,7 @@ async function seedActorAndPage(input: { admin?: boolean } = {}): Promise<{
   const actor = await query<{ id: string }>(
     `INSERT INTO users (username, email, password_hash, role)
      VALUES ($1, $2, 'x', $3) RETURNING id`,
-    [`attachment-recovery-${suffix}`, `${suffix}@test.invalid`, input.admin === false ? 'user' : 'admin'],
+    [`attachment-recovery-${suffix}`, `${suffix}@test.invalid`, 'user'],
   );
   const actorId = actor.rows[0]!.id;
   ownedActors.add(actorId);
@@ -63,20 +64,25 @@ async function seedActorAndPage(input: { admin?: boolean } = {}): Promise<{
     `INSERT INTO spaces (space_key, space_name) VALUES ('REC', 'Recovery')
      ON CONFLICT (space_key) DO NOTHING`,
   );
-  if (input.admin === false) {
-    const roleName = `attachment-recovery-${suffix}`;
-    const role = await query<{ id: number }>(
-      `INSERT INTO roles (name, display_name, permissions)
-       VALUES ($1, 'Attachment recovery', ARRAY['read', 'write']) RETURNING id`,
-      [roleName],
-    );
-    ownedRoles.add(role.rows[0]!.id);
-    await query(
-      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
-       VALUES ('REC', 'user', $1, $2)`,
-      [actorId, role.rows[0]!.id],
-    );
-  }
+  const roleName = `attachment-recovery-${suffix}`;
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ($1, 'Attachment recovery writer', ARRAY['read', 'write']) RETURNING id`,
+    [roleName],
+  );
+  ownedRoles.add(role.rows[0]!.id);
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ('REC', 'user', $1, $2)`,
+    [actorId, role.rows[0]!.id],
+  );
+  const recoveryAdmin = await query<{ id: string }>(
+    `INSERT INTO users (username, email, password_hash, role)
+     VALUES ($1, $2, 'x', 'admin') RETURNING id`,
+    [`attachment-recovery-admin-${suffix}`, `${suffix}@admin.test.invalid`],
+  );
+  const recoveryAdminId = recoveryAdmin.rows[0]!.id;
+  ownedActors.add(recoveryAdminId);
   await query(
     `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
      VALUES ($1, 'https://confluence.example.com', $2, TRUE)`,
@@ -97,6 +103,7 @@ async function seedActorAndPage(input: { admin?: boolean } = {}): Promise<{
   ownedPages.add(row.id);
   return {
     actorId,
+    recoveryAdminId,
     pageId: row.id,
     contentRevision: row.content_revision,
     lifecycleRevision: row.lifecycle_revision,
@@ -105,6 +112,7 @@ async function seedActorAndPage(input: { admin?: boolean } = {}): Promise<{
 
 async function seedFencedIntent(input: {
   actorId: string;
+  recoveryAdminId: string;
   pageId: number;
   contentRevision: string;
   lifecycleRevision: string;
@@ -128,7 +136,7 @@ async function seedFencedIntent(input: {
     [
       runtimeId,
       JSON.stringify({ host: 'test-host', pid: 999999, startedAt: new Date().toISOString() }),
-      input.actorId,
+      input.recoveryAdminId,
       JSON.stringify({ kind: 'verified_local_termination', deploymentIdentity: { host: 'test-host' } }),
     ],
   );
@@ -284,7 +292,7 @@ describeDb('attachment.confluence.put recovery', () => {
     await writeFile(unrelated, 'unrelated');
 
     await expect(reconcilePageWriteIntent(staged.id, {
-      actorId: seeded.actorId,
+      actorId: seeded.recoveryAdminId,
       reason: 'The fenced writer crashed after exact local staging and before remote dispatch',
     })).resolves.toEqual({ intentId: staged.id, status: 'reconciled_not_applied' });
 
@@ -315,7 +323,7 @@ describeDb('attachment.confluence.put recovery', () => {
     ];
 
     await expect(reconcilePageWriteIntent(staged.id, {
-      actorId: seeded.actorId,
+      actorId: seeded.recoveryAdminId,
       reason: 'Verify every terminal provider identity before cache publication',
     })).rejects.toMatchObject({ reason: 'intent_remote_evidence_conflict' });
 
@@ -344,7 +352,7 @@ describeDb('attachment.confluence.put recovery', () => {
     });
 
     await expect(reconcilePageWriteIntent(staged.id, {
-      actorId: seeded.actorId,
+      actorId: seeded.recoveryAdminId,
       reason: 'Incomplete terminal evidence must remain pending',
     })).rejects.toMatchObject({ reason: 'intent_terminal_result_invalid' });
     await expect(stat(staged.stagePaths[0]!)).resolves.toBeDefined();
@@ -352,7 +360,7 @@ describeDb('attachment.confluence.put recovery', () => {
   });
 
   it('revalidates original authority before reading provider evidence or publishing files', async () => {
-    const seeded = await seedActorAndPage({ admin: false });
+    const seeded = await seedActorAndPage();
     const bytes = Buffer.from('authorized only before recovery');
     const staged = await seedFencedIntent({
       ...seeded,
@@ -367,7 +375,7 @@ describeDb('attachment.confluence.put recovery', () => {
     );
 
     await expect(reconcilePageWriteIntent(staged.id, {
-      actorId: seeded.actorId,
+      actorId: seeded.recoveryAdminId,
       reason: 'Authority was revoked after the remote response',
     })).rejects.toMatchObject({ reason: 'intent_access_changed' });
     expect(mockRequest).not.toHaveBeenCalled();
@@ -392,7 +400,7 @@ describeDb('attachment.confluence.put recovery', () => {
     await mkdir(staged.stagePaths[0]!);
 
     await expect(reconcilePageWriteIntent(staged.id, {
-      actorId: seeded.actorId,
+      actorId: seeded.recoveryAdminId,
       reason: 'A filesystem fault must remain recoverable',
     })).rejects.toMatchObject({ code: expect.stringMatching(/EISDIR|EACCES|EPERM/) });
     const pending = await query<{ status: string }>(

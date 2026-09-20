@@ -350,9 +350,8 @@ function parseInternalAttachmentUrl(value: string): StoredMediaSource | null {
     { marker: '/api/attachments/', store: 'confluence' as const },
   ];
   for (const { marker, store } of prefixes) {
-    const start = value.indexOf(marker);
-    if (start === -1) continue;
-    const tail = value.slice(start + marker.length).split(/[?#]/, 1)[0]!;
+    if (!value.startsWith(marker)) continue;
+    const tail = value.slice(marker.length).split(/[?#]/, 1)[0]!;
     const segments = tail.split('/');
     if (segments.length !== 2 || !segments[0] || !segments[1]) {
       throw new PageBaselineManifestError(

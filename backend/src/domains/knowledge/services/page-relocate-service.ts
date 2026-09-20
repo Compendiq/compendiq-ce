@@ -690,103 +690,107 @@ async function persistRelocationPreparation(
     parentConfluenceId: string | null;
   },
 ): Promise<RelocationPreparation> {
-  return withPageWriteTransaction(
-    intent.pageIds,
-    async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
-      const page = await lockAndReload(client, input.pageId);
-      await assertCurrentRelocateAuthorityOnClient(
-        client,
-        input.actorId,
-        input.pageId,
-        input.direction === 'to_confluence' ? input.targetSpaceKey : page.space_key,
-      );
-      const oldKey = parentKeyFor(page.source, page.id, page.confluence_id);
-      const children = await client.query<{ id: number }>(
-        'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
-        [oldKey, page.id],
-      );
-      const aces = await client.query<PageAce>(
-        `SELECT principal_type, principal_id, permission
-           FROM access_control_entries
-          WHERE resource_type = 'page' AND resource_id = $1
-          ORDER BY principal_type, principal_id, permission`,
-        [page.id],
-      );
-      const childIds = children.rows.map((row) => row.id);
-      await client.query(
-        `INSERT INTO page_relocation_preparations (
-           intent_id, page_id, direction, actor_id, target_space_key, target_visibility,
-           original_source, original_confluence_id, original_space_key, original_title,
-           original_body_html, original_body_storage, original_body_text, original_version,
-           original_visibility, original_created_by_user_id, original_inherit_perms,
-           original_local_modified_at, original_local_modified_by, original_embedding_dirty,
-           original_image_analysis_dirty, original_embedding_status, original_embedded_at,
-           original_key, child_ids, access_control_entries, attachments,
-           expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6,
-           $7, $8, $9, $10,
-           $11, $12, $13, $14,
-           $15, $16, $17,
-           $18, $19, $20,
-           $21, $22, $23,
-           $24, $25, $26::jsonb, $27::jsonb,
-           $28, $29, $30
-         )`,
-        [
-          intent.id,
-          page.id,
-          input.direction,
+  return runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => withPageWriteTransaction(
+      intent.pageIds,
+      async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+        const page = await lockAndReload(client, input.pageId);
+        await assertCurrentRelocateAuthorityOnClient(
+          client,
           input.actorId,
-          input.targetSpaceKey,
-          input.targetVisibility,
-          page.source,
-          page.confluence_id,
-          page.space_key,
-          page.title,
-          page.body_html,
-          page.body_storage,
-          page.body_text,
-          page.version,
-          page.visibility,
-          page.created_by_user_id,
-          page.inherit_perms,
-          page.local_modified_at,
-          page.local_modified_by,
-          page.embedding_dirty,
-          page.image_analysis_dirty,
-          page.embedding_status,
-          page.embedded_at,
-          oldKey,
+          input.pageId,
+          input.direction === 'to_confluence' ? input.targetSpaceKey : page.space_key,
+        );
+        const oldKey = parentKeyFor(page.source, page.id, page.confluence_id);
+        const children = await client.query<{ id: number }>(
+          'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
+          [oldKey, page.id],
+        );
+        const aces = await client.query<PageAce>(
+          `SELECT principal_type, principal_id, permission
+             FROM access_control_entries
+            WHERE resource_type = 'page' AND resource_id = $1
+            ORDER BY principal_type, principal_id, permission`,
+          [page.id],
+        );
+        const childIds = children.rows.map((row) => row.id);
+        await client.query(
+          `INSERT INTO page_relocation_preparations (
+             intent_id, page_id, direction, actor_id, target_space_key, target_visibility,
+             original_source, original_confluence_id, original_space_key, original_title,
+             original_body_html, original_body_storage, original_body_text, original_version,
+             original_visibility, original_created_by_user_id, original_inherit_perms,
+             original_local_modified_at, original_local_modified_by, original_embedding_dirty,
+             original_image_analysis_dirty, original_embedding_status, original_embedded_at,
+             original_key, child_ids, access_control_entries, attachments,
+             expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6,
+             $7, $8, $9, $10,
+             $11, $12, $13, $14,
+             $15, $16, $17,
+             $18, $19, $20,
+             $21, $22, $23,
+             $24, $25, $26::jsonb, $27::jsonb,
+             $28, $29, $30
+           )`,
+          [
+            intent.id,
+            page.id,
+            input.direction,
+            input.actorId,
+            input.targetSpaceKey,
+            input.targetVisibility,
+            page.source,
+            page.confluence_id,
+            page.space_key,
+            page.title,
+            page.body_html,
+            page.body_storage,
+            page.body_text,
+            page.version,
+            page.visibility,
+            page.created_by_user_id,
+            page.inherit_perms,
+            page.local_modified_at,
+            page.local_modified_by,
+            page.embedding_dirty,
+            page.image_analysis_dirty,
+            page.embedding_status,
+            page.embedded_at,
+            oldKey,
+            childIds,
+            JSON.stringify(aces.rows),
+            JSON.stringify(input.attachments),
+            input.expectedRemoteTitleSha256,
+            input.expectedRemoteBodyStorageSha256,
+            input.parentConfluenceId,
+          ],
+        );
+        return {
+          ...page,
+          intentId: intent.id,
+          direction: input.direction,
+          actorId: input.actorId,
+          targetSpaceKey: input.targetSpaceKey,
+          targetVisibility: input.targetVisibility,
+          attachments: input.attachments,
+          expectedRemoteTitleSha256: input.expectedRemoteTitleSha256,
+          expectedRemoteBodyStorageSha256: input.expectedRemoteBodyStorageSha256,
+          parentConfluenceId: input.parentConfluenceId,
+          createdConfluenceId: null,
+          createdPageReceipt: null,
+          attachmentReceipts: [],
           childIds,
-          JSON.stringify(aces.rows),
-          JSON.stringify(input.attachments),
-          input.expectedRemoteTitleSha256,
-          input.expectedRemoteBodyStorageSha256,
-          input.parentConfluenceId,
-        ],
-      );
-      return {
-        ...page,
-        intentId: intent.id,
-        direction: input.direction,
-        actorId: input.actorId,
-        targetSpaceKey: input.targetSpaceKey,
-        targetVisibility: input.targetVisibility,
-        attachments: input.attachments,
-        expectedRemoteTitleSha256: input.expectedRemoteTitleSha256,
-        expectedRemoteBodyStorageSha256: input.expectedRemoteBodyStorageSha256,
-        parentConfluenceId: input.parentConfluenceId,
-        createdConfluenceId: null,
-        createdPageReceipt: null,
-        attachmentReceipts: [],
-        childIds,
-        oldKey,
-        aces: aces.rows,
-      };
-    },
-    { intent },
+          oldKey,
+          aces: aces.rows,
+        };
+      },
+      { intent },
+    ),
   );
 }
 
@@ -1490,33 +1494,32 @@ async function relocateToConfluence(opts: {
     target: 'confluence',
     targetSpaceKey: spaceKey,
   });
-  let prep: RelocationPreparation;
   try {
     await assertCurrentRelocateAuthority(intent, userId, page.id, spaceKey);
-    prep = await persistRelocationPreparation(intent, {
-      pageId: page.id,
-      actorId: userId,
-      direction: 'to_confluence',
-      targetSpaceKey: spaceKey,
-      targetVisibility: null,
-      attachments: payloads.map(({ data: _data, ...descriptor }) => descriptor),
-      expectedRemoteTitleSha256: sha256(page.title),
-      expectedRemoteBodyStorageSha256: sha256(storageBody),
-      parentConfluenceId,
-    });
   } catch (error) {
     await cancelPageWriteIntentBeforeEffect(intent);
     throw error;
   }
+  const prep = await persistRelocationPreparation(intent, {
+    pageId: page.id,
+    actorId: userId,
+    direction: 'to_confluence',
+    targetSpaceKey: spaceKey,
+    targetVisibility: null,
+    attachments: payloads.map(({ data: _data, ...descriptor }) => descriptor),
+    expectedRemoteTitleSha256: sha256(page.title),
+    expectedRemoteBodyStorageSha256: sha256(storageBody),
+    parentConfluenceId,
+  });
 
-  let remoteClient: ConfluenceClient;
-  try {
-    remoteClient = await currentRelocationClient(intent, prep, 'original');
-  } catch (error) {
-    await cancelPageWriteIntentBeforeEffect(intent);
-    await query('DELETE FROM page_relocation_preparations WHERE intent_id = $1', [intent.id]);
-    throw error;
-  }
+  // Preparation is already a durable local phase. A refusal after this point
+  // must remain pending so recovery can remove the retained snapshot from
+  // no-remote-start evidence; cancelling it would orphan the restrictive FK.
+  const remoteClient = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => currentRelocationClient(intent, prep, 'original'),
+  );
 
   type RemoteOutcome = {
     kind: 'committed';
@@ -1905,24 +1908,23 @@ async function relocateToLocal(opts: {
     target: 'local',
     targetSpaceKey: spaceKey,
   });
-  let prep: RelocationPreparation;
   try {
     await assertCurrentRelocateAuthority(intent, userId, page.id, page.space_key);
-    prep = await persistRelocationPreparation(intent, {
-      pageId: page.id,
-      actorId: userId,
-      direction: 'to_local',
-      targetSpaceKey: spaceKey,
-      targetVisibility: visibility,
-      attachments: sourceFiles.map(({ data: _data, ...descriptor }) => descriptor),
-      expectedRemoteTitleSha256: sha256(page.title),
-      expectedRemoteBodyStorageSha256: sha256(page.body_storage ?? ''),
-      parentConfluenceId: null,
-    });
   } catch (error) {
     await cancelPageWriteIntentBeforeEffect(intent);
     throw error;
   }
+  const prep = await persistRelocationPreparation(intent, {
+    pageId: page.id,
+    actorId: userId,
+    direction: 'to_local',
+    targetSpaceKey: spaceKey,
+    targetVisibility: visibility,
+    attachments: sourceFiles.map(({ data: _data, ...descriptor }) => descriptor),
+    expectedRemoteTitleSha256: sha256(page.title),
+    expectedRemoteBodyStorageSha256: sha256(page.body_storage ?? ''),
+    parentConfluenceId: null,
+  });
 
   const result = await runPageWriteIntentEffect(
     intent,
@@ -1936,7 +1938,11 @@ async function relocateToLocal(opts: {
   // and filesystem locks. Resolve authority, mode, and credentials only after
   // it commits; a refusal here deliberately leaves the intent and preparation
   // pending rather than deleting upstream through the route's stale client.
-  const remoteClient = await currentRelocationClient(intent, prep, 'published_local');
+  const remoteClient = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => currentRelocationClient(intent, prep, 'published_local'),
+  );
 
   let deleteError: unknown;
   const deletionOutcome = await runPageWriteIntentEffect(
@@ -2232,6 +2238,67 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
   ) {
     throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation identity is incomplete');
   }
+  const preparation = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1
+     ) AS exists`,
+    [intent.id],
+  );
+  if (!preparation.rows[0]?.exists) {
+    if (
+      intent.effectStartedAt === null ||
+      intent.effectFinishedAt !== null ||
+      intent.remoteEffectStartedAt !== null
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'Relocation preparation is unavailable after a completed or remote phase',
+      );
+    }
+    if (
+      (effect.target === 'confluence' && typeof effect.targetSpaceKey !== 'string') ||
+      (effect.target === 'local' &&
+        effect.fromSpaceKey !== null &&
+        typeof effect.fromSpaceKey !== 'string')
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'Relocation authority metadata is unavailable',
+      );
+    }
+    const authoritySpace = effect.target === 'confluence'
+      ? (typeof effect.targetSpaceKey === 'string' ? effect.targetSpaceKey : null)
+      : (typeof effect.fromSpaceKey === 'string' ? effect.fromSpaceKey : null);
+    try {
+      await assertCurrentRelocateAuthorityOnClient(
+        client,
+        intent.actorId,
+        pageId,
+        authoritySpace,
+      );
+    } catch (error) {
+      if (error instanceof RelocateError && error.statusCode === 403) {
+        throw new PageWriteError(403, 'intent_access_changed', error.message);
+      }
+      throw error;
+    }
+    // The local gate commits its start marker before the preparation
+    // transaction. An absent row with an unfinished local phase therefore
+    // proves that transaction did not commit, while remote_effect_started_at
+    // independently proves that no provider call was dispatched.
+    return {
+      outcome: 'not_applied',
+      proof: {
+        kind: 'remote_effect_not_started',
+        observedAt: new Date().toISOString(),
+        reference: `page-relocate:${pageId}:preparation-not-committed`,
+        details: { syscallSettled: true, remoteEffectStarted: false, observedAbsent: true },
+      },
+      result: { pageId, outcome: 'not_prepared' },
+    };
+  }
   const prep = await loadRelocationPreparation(client, intent);
   if (
     prep.id !== pageId ||
@@ -2250,13 +2317,13 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
     }
     throw error;
   }
-  const confluence = await getClientForUser(prep.actorId, client);
-  if (!confluence) {
-    throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
-  }
 
   if (intent.remoteEffectStartedAt === null) {
     if (prep.direction === 'to_local') {
+      const confluence = await getClientForUser(prep.actorId, client);
+      if (!confluence) {
+        throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
+      }
       await verifyOriginalProviderState(confluence, prep);
       await restorePreMoveStateOnClient(client, prep);
     } else {
@@ -2284,6 +2351,10 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
       },
       result: { pageId, outcome: 'restored' },
     };
+  }
+  const confluence = await getClientForUser(prep.actorId, client);
+  if (!confluence) {
+    throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
   }
   if (prep.direction === 'to_confluence') {
     if (intent.remoteEffectsCompletedAt === null || !intent.remoteTerminalResult) {

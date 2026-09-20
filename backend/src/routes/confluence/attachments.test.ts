@@ -18,6 +18,7 @@ import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 
 vi.mock('undici', async (importOriginal) => ({
@@ -526,6 +527,163 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     })]);
   });
 
+  it('recovers a sparse final receipt after wrapper completion fails without replaying the upload', async () => {
+    const page = await seedPage();
+    let posts = 0;
+    let attachmentReads = 0;
+    let downloads = 0;
+    respondHttp = async (url, options) => {
+      if ((options.method ?? 'GET') === 'POST') {
+        posts += 1;
+        return jsonResponse({
+          results: [{ id: 'crash-window-id', title: 'crash-window.png' }],
+        });
+      }
+      if (url.pathname.endsWith('/child/attachment')) {
+        attachmentReads += 1;
+        return jsonResponse({
+          results: [{
+            id: 'crash-window-id',
+            title: 'crash-window.png',
+            _links: { download: '/download/crash-window-id' },
+          }],
+          start: 0,
+          limit: 100,
+          size: 1,
+        });
+      }
+      if (url.pathname === '/download/crash-window-id') {
+        downloads += 1;
+        return bufferResponse(PNG);
+      }
+      throw new Error(`Unexpected request ${url.pathname}`);
+    };
+
+    // Fail the generic wrapper's effect_finished_at write after the route has
+    // atomically committed the final receipt and remote terminal marker.
+    const suffix = randomUUID().replaceAll('-', '_');
+    const functionName = `att_wrap_fn_${suffix}`;
+    const triggerName = `att_wrap_trg_${suffix}`;
+    await query(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger
+       LANGUAGE plpgsql AS $$
+       BEGIN
+         IF OLD.effect_finished_at IS NULL
+            AND NEW.effect_finished_at IS NOT NULL
+            AND OLD.remote_effects_completed_at IS NOT NULL
+            AND OLD.effect->>'remotePageId' = TG_ARGV[0]
+         THEN
+           RAISE EXCEPTION 'injected wrapper completion fault';
+         END IF;
+         RETURN NEW;
+       END
+       $$`,
+    );
+    await query(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE UPDATE ON page_write_intents
+       FOR EACH ROW EXECUTE FUNCTION ${functionName}('${page.remoteId}')`,
+    );
+    const response = await (async () => {
+      try {
+        return await app.inject({
+          method: 'PUT',
+          url: `/api/attachments/${page.remoteId}/crash-window.png`,
+          payload: { dataUri: PNG_DATA_URI },
+        });
+      } finally {
+        await query(`DROP TRIGGER ${triggerName} ON page_write_intents`);
+        await query(`DROP FUNCTION ${functionName}()`);
+      }
+    })();
+
+    expect(response.statusCode).toBe(500);
+    expect(posts).toBe(1);
+    expect(attachmentReads).toBe(0);
+    const intent = await query<{
+      id: string;
+      status: string;
+      effect_finished_at: Date | null;
+      remote_effects_completed_at: Date | null;
+      effect: { receipts: unknown[] };
+      remote_terminal_result: Record<string, unknown> & { receipts: unknown[] };
+    }>(
+      `SELECT id, status, effect_finished_at, remote_effects_completed_at,
+              effect, remote_terminal_result
+         FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::int[] AND kind = 'attachment.confluence.put'`,
+      [page.id],
+    );
+    const crashed = intent.rows[0]!;
+    expect(crashed).toMatchObject({
+      status: 'pending',
+      effect_finished_at: null,
+      remote_effects_completed_at: expect.any(Date),
+    });
+    expect(crashed.remote_terminal_result).toEqual({
+      remotePageId: page.remoteId,
+      publicationContentRevision: '0',
+      receipts: [{
+        filename: 'crash-window.png',
+        serverId: 'crash-window-id',
+        versionNumber: null,
+        versionWhen: null,
+      }],
+    });
+    expect(crashed.remote_terminal_result.receipts).toEqual(crashed.effect.receipts);
+    const encodedTerminal = JSON.stringify(crashed.remote_terminal_result);
+    expect(Buffer.byteLength(encodedTerminal)).toBeLessThan(4 * 1024);
+    expect(encodedTerminal).not.toContain(PNG.toString('base64'));
+    await expect(stat(join(
+      attachmentRoot,
+      page.remoteId,
+      `.page-write-${crashed.id}-0.stage`,
+    ))).resolves.toBeDefined();
+
+    const recoveryAdminId = await seedUser({ admin: true });
+    const fencedRuntime = `fenced-attachment-${randomUUID()}`;
+    ownedRuntimes.add(fencedRuntime);
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+       VALUES ($1, $2::jsonb, NOW(), $3, 'Injected post-receipt writer crash', $4::jsonb)`,
+      [
+        fencedRuntime,
+        JSON.stringify({ host: 'attachment-crash-test', pid: 999999, startedAt: new Date().toISOString() }),
+        recoveryAdminId,
+        JSON.stringify({
+          kind: 'verified_local_termination',
+          deploymentIdentity: { host: 'attachment-crash-test', pid: 999999 },
+        }),
+      ],
+    );
+    // The HTTP request and its runtime have ended at this point. Rebind only
+    // the test row to the fenced epoch because Vitest itself remains in the
+    // same process and cannot actually restart around this crash-window case.
+    await query(
+      'UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1',
+      [crashed.id, fencedRuntime],
+    );
+
+    await expect(reconcilePageWriteIntent(crashed.id, {
+      actorId: recoveryAdminId,
+      reason: 'Recover the exact final attachment receipt after verified writer termination',
+    })).resolves.toEqual({
+      intentId: crashed.id,
+      status: 'reconciled_applied',
+    });
+    expect(posts).toBe(1);
+    expect(attachmentReads).toBe(1);
+    expect(downloads).toBe(1);
+    await expect(readFile(join(attachmentRoot, page.remoteId, 'crash-window.png')))
+      .resolves.toEqual(PNG);
+    const recovered = await query<{ status: string }>(
+      'SELECT status FROM page_write_intents WHERE id = $1',
+      [crashed.id],
+    );
+    expect(recovered.rows[0]!.status).toBe('reconciled_applied');
+  });
+
   it('stops before the second remote upload when original authority is revoked', async () => {
     const page = await seedPage();
     let posts = 0;
@@ -554,12 +712,22 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     expect(posts).toBe(1);
     await expect(stat(join(attachmentRoot, page.remoteId, 'diagram.png')))
       .rejects.toMatchObject({ code: 'ENOENT' });
-    const intent = await query<{ status: string; effect: { receipts: unknown[] } }>(
-      `SELECT status, effect FROM page_write_intents
+    const intent = await query<{
+      status: string;
+      effect: { receipts: unknown[] };
+      remote_effects_completed_at: Date | null;
+      remote_terminal_result: Record<string, unknown> | null;
+    }>(
+      `SELECT status, effect, remote_effects_completed_at, remote_terminal_result
+         FROM page_write_intents
         WHERE page_ids = ARRAY[$1]::int[] AND kind = 'attachment.confluence.put'`,
       [page.id],
     );
-    expect(intent.rows[0]!.status).toBe('pending');
+    expect(intent.rows[0]).toMatchObject({
+      status: 'pending',
+      remote_effects_completed_at: null,
+      remote_terminal_result: null,
+    });
     expect(intent.rows[0]!.effect.receipts).toHaveLength(1);
   });
 
@@ -587,12 +755,22 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     expect(response.statusCode).toBe(500);
     await expect(stat(join(attachmentRoot, page.remoteId, 'diagram.png')))
       .rejects.toMatchObject({ code: 'ENOENT' });
-    const pending = await query<{ id: string; status: string }>(
-      `SELECT id, status FROM page_write_intents
+    const pending = await query<{
+      id: string;
+      status: string;
+      remote_effects_completed_at: Date | null;
+      remote_terminal_result: Record<string, unknown> | null;
+    }>(
+      `SELECT id, status, remote_effects_completed_at, remote_terminal_result
+         FROM page_write_intents
         WHERE page_ids = ARRAY[$1]::int[] AND kind = 'attachment.confluence.put'`,
       [page.id],
     );
-    expect(pending.rows[0]!.status).toBe('pending');
+    expect(pending.rows[0]).toMatchObject({
+      status: 'pending',
+      remote_effects_completed_at: null,
+      remote_terminal_result: null,
+    });
     await expect(stat(join(
       attachmentRoot,
       page.remoteId,
@@ -605,6 +783,49 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
       `.page-write-${pending.rows[0]!.id}-1.stage`,
     ))).resolves.toBeDefined();
   });
+
+  it('keeps an acknowledged remote mutation pending when its receipt is malformed', async () => {
+    const page = await seedPage();
+    respondHttp = async (_url, options) => {
+      if ((options.method ?? 'GET') !== 'POST') throw new Error('Unexpected evidence read');
+      return jsonResponse({
+        results: [{ id: '', title: 'malformed.png' }],
+      });
+    };
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/attachments/${page.remoteId}/malformed.png`,
+      payload: { dataUri: PNG_DATA_URI },
+    });
+    expect(response.statusCode).toBe(502);
+    const pending = await query<{
+      id: string;
+      status: string;
+      effect: { receipts: unknown[] };
+      remote_effects_completed_at: Date | null;
+      remote_terminal_result: Record<string, unknown> | null;
+    }>(
+      `SELECT id, status, effect, remote_effects_completed_at, remote_terminal_result
+         FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::int[] AND kind = 'attachment.confluence.put'`,
+      [page.id],
+    );
+    expect(pending.rows[0]).toMatchObject({
+      status: 'pending',
+      effect: { receipts: [] },
+      remote_effects_completed_at: null,
+      remote_terminal_result: null,
+    });
+    await expect(stat(join(
+      attachmentRoot,
+      page.remoteId,
+      `.page-write-${pending.rows[0]!.id}-0.stage`,
+    ))).resolves.toBeDefined();
+    await expect(stat(join(attachmentRoot, page.remoteId, 'malformed.png')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('keeps the existing 400 contract when the actor has no Confluence credentials', async () => {
     const page = await seedPage();
     await query(

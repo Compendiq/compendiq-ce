@@ -1,13 +1,25 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
 import type { PoolClient } from 'pg';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
-import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
+import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
+import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
+import {
+  discardPageIconForDeletedPage,
+  pageIconDirectoryAbsent,
+} from '../../../core/services/page-icon-store.js';
+import {
+  cleanupStandalonePageAttachmentDirs,
+  deletedStandaloneNamespacesAbsent,
+} from '../../../core/services/standalone-attachment-cleanup.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
   PageWriteError,
+  advancePageWriteIntent,
   registerPageWriteIntentReconciler,
   type PageWriteIntentReconciler,
   type PageWriteRecoveryIntent,
+  type PageWriteIntentRepairer,
 } from '../../../core/services/page-write-admission.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../../core/services/rbac-service.js';
 import { ConfluenceError, type ConfluenceClient } from './confluence-client.js';
@@ -353,6 +365,299 @@ const reconcileDelete: PageWriteIntentReconciler = async (client, intent) => {
     result: { pageId },
   };
 };
+const LOCAL_DELETE_KINDS = [
+  'pages.delete.standalone',
+  'pages.delete.local',
+  'pages.bulk.delete.local',
+] as const;
+
+function sameIds(left: readonly number[], right: readonly number[]): boolean {
+  const a = [...left].sort((first, second) => first - second);
+  const b = [...right].sort((first, second) => first - second);
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+function requireCommittedDeletion(intent: PageWriteRecoveryIntent): number[] {
+  if (intent.effect.effectClass !== 'local') {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The local delete effect class is invalid');
+  }
+  if (
+    intent.pageIds.length === 0 ||
+    new Set(intent.pageIds).size !== intent.pageIds.length ||
+    intent.pageIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The local delete page identity is invalid');
+  }
+  if (
+    new Set(intent.deletedPageIds).size !== intent.deletedPageIds.length ||
+    intent.deletedPageIds.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+    intent.deletedPageIds.some((id) => !intent.pageIds.includes(id))
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The committed delete tombstone is invalid');
+  }
+  return [...intent.deletedPageIds].sort((first, second) => first - second);
+}
+
+function standaloneDeleteIds(intent: PageWriteRecoveryIntent): number[] {
+  const deletedIds = requireCommittedDeletion(intent);
+  const rootPageId = intent.effect.rootPageId;
+  const targetCount = intent.effect.targetCount;
+  const stores = intent.effect.attachmentStores;
+  if (
+    typeof rootPageId !== 'number' ||
+    !Number.isSafeInteger(rootPageId) ||
+    !intent.pageIds.includes(rootPageId) ||
+    targetCount !== intent.pageIds.length ||
+    !Array.isArray(stores) ||
+    stores.length !== 3 ||
+    stores[0] !== 'attachment-cache' ||
+    stores[1] !== 'local' ||
+    stores[2] !== 'page-icons'
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The standalone delete descriptor does not identify the admitted deletion',
+    );
+  }
+  return deletedIds;
+}
+
+function syncedDeleteIdentity(intent: PageWriteRecoveryIntent): {
+  pageId: number;
+  confluenceId: string;
+  spaceKey: string;
+  deleted: boolean;
+} {
+  const deletedIds = requireCommittedDeletion(intent);
+  const pageId = intent.pageIds[0];
+  if (
+    pageId === undefined ||
+    intent.pageIds.length !== 1 ||
+    deletedIds.length > 1 ||
+    (deletedIds.length === 1 && deletedIds[0] !== pageId) ||
+    intent.effect.upstreamDelete !== false ||
+    intent.effect.attachmentStore !== 'confluence' ||
+    intent.effect.iconStore !== 'page-icons'
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The local Confluence-page delete descriptor is invalid',
+    );
+  }
+  return {
+    pageId,
+    confluenceId: stringValue(intent.effect.confluenceId, 'confluenceId'),
+    spaceKey: stringValue(intent.effect.spaceKey, 'spaceKey'),
+    deleted: deletedIds.length === 1,
+  };
+}
+
+async function assertConfluenceAttachmentKeyUnclaimed(
+  client: PoolClient,
+  identity: { pageId: number; confluenceId: string },
+): Promise<void> {
+  const claim = await client.query<{ id: number }>(
+    `SELECT id FROM pages WHERE confluence_id = $1 LIMIT 1`,
+    [identity.confluenceId],
+  );
+  if (claim.rows[0]) {
+    throw new PageWriteError(
+      409,
+      'intent_local_identity_changed',
+      'A current page now owns the deleted page attachment key',
+    );
+  }
+}
+
+async function attachmentCacheDirectoryAbsent(confluenceId: string): Promise<boolean> {
+  try {
+    await fs.stat(attachmentCacheDir(confluenceId));
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+function localDeleteNotApplied(reference: string, result: unknown) {
+  return {
+    outcome: 'not_applied' as const,
+    proof: {
+      kind: 'local_effect_absence_verified' as const,
+      observedAt: new Date().toISOString(),
+      reference,
+      details: { syscallSettled: true as const, observedAbsent: true as const },
+    },
+    result,
+  };
+}
+
+const reconcileLocalDelete: PageWriteIntentReconciler = async (client, intent) => {
+  if (intent.kind === 'pages.delete.standalone') {
+    const deletedIds = standaloneDeleteIds(intent);
+    const identity = createHash('sha256')
+      .update(JSON.stringify([
+        intent.id,
+        intent.kind,
+        intent.effect.rootPageId,
+        [...intent.pageIds].sort((first, second) => first - second),
+      ]))
+      .digest('hex');
+    const reference = `standalone-pages:${identity}`;
+    if (deletedIds.length === 0) {
+      if (intent.effectStartedAt !== null) {
+        throw new PageWriteError(
+          409,
+          'intent_local_evidence_mismatch',
+          'The standalone delete started without a complete committed tombstone',
+        );
+      }
+      return localDeleteNotApplied(reference, { deletedCount: 0 });
+    }
+    if (!sameIds(deletedIds, intent.pageIds)) {
+      throw new PageWriteError(
+        409,
+        'intent_local_evidence_mismatch',
+        'The standalone delete committed only part of its admitted page set',
+      );
+    }
+    for (const pageId of deletedIds) {
+      if (!await deletedStandaloneNamespacesAbsent({ id: pageId }, client)) {
+        return { outcome: 'repair_required' as const, observedState: 'partially_applied' as const };
+      }
+    }
+    // The shared cache namespace is deliberately not part of the proof: a live
+    // Confluence key claim or the first-sync grace window requires preserving
+    // it. Re-running the existing cleanup applies those rules without guessing.
+    for (const pageId of deletedIds) {
+      await cleanupStandalonePageAttachmentDirs({ id: pageId }, client);
+      await tombstoneCollabRoomAfterCommit(pageId);
+    }
+    await enqueuePageWriteInvalidation(client, intent.id);
+    return {
+      outcome: 'applied' as const,
+      proof: {
+        kind: 'local_intended_absence_verified' as const,
+        observedAt: new Date().toISOString(),
+        reference,
+        details: {
+          syscallSettled: true as const,
+          observedAbsent: true as const,
+          intendedIdentity: `deleted-pages:${identity}`,
+        },
+      },
+      result: { deletedCount: deletedIds.length },
+    };
+  }
+
+  const identity = syncedDeleteIdentity(intent);
+  const identityDigest = createHash('sha256')
+    .update(JSON.stringify([
+      intent.id,
+      intent.kind,
+      identity.pageId,
+      identity.confluenceId,
+      identity.spaceKey,
+    ]))
+    .digest('hex');
+  const reference = `local-confluence-page:${identityDigest}`;
+  if (!identity.deleted) {
+    const current = await client.query<{
+      source: string;
+      confluence_id: string | null;
+      space_key: string | null;
+      deleted_at: Date | null;
+    }>(
+      `SELECT source, confluence_id, space_key, deleted_at
+         FROM pages
+        WHERE id = $1`,
+      [identity.pageId],
+    );
+    const row = current.rows[0];
+    if (
+      !row ||
+      row.source !== 'confluence' ||
+      row.confluence_id !== identity.confluenceId ||
+      row.space_key !== identity.spaceKey
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_local_identity_changed',
+        'The local page identity changed after delete admission',
+      );
+    }
+    // These kinds first hide the row, then hard-delete it. A crash before the
+    // atomic DELETE proves the final mutation was not applied; undo only that
+    // exact preparatory tombstone, never a row inferred from current config.
+    if (row.deleted_at !== null) {
+      await client.query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [identity.pageId]);
+      await enqueuePageWriteInvalidation(client, intent.id);
+    }
+    return localDeleteNotApplied(reference, { pageId: identity.pageId });
+  }
+
+  await assertConfluenceAttachmentKeyUnclaimed(client, identity);
+  if (
+    !await attachmentCacheDirectoryAbsent(identity.confluenceId) ||
+    !await pageIconDirectoryAbsent(identity.pageId)
+  ) {
+    return { outcome: 'repair_required' as const, observedState: 'partially_applied' as const };
+  }
+  // Even with the directory already absent, repeat the cleanup service so its
+  // Redis failure counters converge too. It is identity-bound and idempotent.
+  await cleanPageAttachments(identity.confluenceId, { client, strict: true });
+  await tombstoneCollabRoomAfterCommit(identity.pageId);
+  await enqueuePageWriteInvalidation(client, intent.id);
+  return {
+    outcome: 'applied' as const,
+    proof: {
+      kind: 'local_intended_absence_verified' as const,
+      observedAt: new Date().toISOString(),
+      reference,
+      details: {
+        syscallSettled: true as const,
+        observedAbsent: true as const,
+        intendedIdentity: `deleted-page:${identityDigest}`,
+      },
+    },
+    result: { pageId: identity.pageId },
+  };
+};
+
+const repairLocalDelete: PageWriteIntentRepairer = async (intent) => {
+  await advancePageWriteIntent(intent, async (client) => {
+    if (intent.kind === 'pages.delete.standalone') {
+      const deletedIds = standaloneDeleteIds(intent);
+      if (!sameIds(deletedIds, intent.pageIds)) {
+        throw new Error('Standalone deletion repair has no complete committed-page tombstone');
+      }
+      for (const pageId of deletedIds) {
+        await cleanupStandalonePageAttachmentDirs({ id: pageId }, client);
+        if (!await deletedStandaloneNamespacesAbsent({ id: pageId }, client)) {
+          throw new Error(`Standalone deletion repair did not remove page ${pageId} namespaces`);
+        }
+      }
+      return;
+    }
+
+    const identity = syncedDeleteIdentity(intent);
+    if (!identity.deleted) {
+      throw new Error('Local Confluence-page deletion repair has no committed-page tombstone');
+    }
+    await assertConfluenceAttachmentKeyUnclaimed(client, identity);
+    await cleanPageAttachments(identity.confluenceId, { client, strict: true });
+    await discardPageIconForDeletedPage({ id: identity.pageId }, client);
+    if (
+      !await attachmentCacheDirectoryAbsent(identity.confluenceId) ||
+      !await pageIconDirectoryAbsent(identity.pageId)
+    ) {
+      throw new Error('Local Confluence-page deletion repair did not remove its exact namespaces');
+    }
+  });
+};
+
 
 let registered = false;
 
@@ -362,6 +667,9 @@ export function registerOrdinaryPageWriteReconcilers(): void {
   registerPageWriteIntentReconciler('pages.update.confluence', reconcilePagePut);
   registerPageWriteIntentReconciler('pages.draft.publish.confluence', reconcilePagePut);
   registerPageWriteIntentReconciler('pages.delete.confluence', reconcileDelete);
+  for (const kind of LOCAL_DELETE_KINDS) {
+    registerPageWriteIntentReconciler(kind, reconcileLocalDelete, repairLocalDelete);
+  }
   registerPageWriteIntentReconciler('pages.bulk.delete.remote', reconcileDelete);
   registered = true;
 }

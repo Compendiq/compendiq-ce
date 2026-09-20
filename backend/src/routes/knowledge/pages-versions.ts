@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import {
@@ -8,14 +9,20 @@ import {
   restoreVersion,
   type RestoreResult,
 } from '../../domains/knowledge/services/version-tracker.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
 import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
 import { htmlToConfluence } from '../../core/services/content-converter.js';
 import {
   describeConfluencePagePut,
   publishConfluencePagePut,
   registerConfluencePagePutIntentReconcilers,
 } from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import {
+  confirmPagePublication,
+  pagePublicationReceipt,
+} from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import {
   backfillVersionHistory,
   getHistoricalBody,
@@ -27,9 +34,11 @@ import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../..
 import {
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
+  PageWriteError,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
   withPageWriteTransaction,
+  type PageWriteIntent,
 } from '../../core/services/page-write-admission.js';
 import {
   RestoreVersionSchema,
@@ -74,6 +83,80 @@ interface PageContext {
   visibility: string;
   createdByUserId: string | null;
   version: number;
+  contentRevision: string;
+  lifecycleRevision: string;
+}
+
+async function currentRestoreClient(
+  client: PoolClient,
+  intent: PageWriteIntent,
+  context: PageContext,
+  userId: string,
+): Promise<ConfluenceClient> {
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+    [userId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new PageWriteError(403, 'not_authorized', 'Not authorized to restore this page');
+  }
+  const page = await client.query<{
+    version: number;
+    source: string;
+    confluence_id: string | null;
+    space_key: string | null;
+    contentRevision: string;
+    lifecycleRevision: string;
+  }>(
+    `SELECT version, source, confluence_id, space_key,
+            content_revision::text AS "contentRevision",
+            lifecycle_revision::text AS "lifecycleRevision"
+       FROM pages
+      WHERE id = $1 AND deleted_at IS NULL
+      FOR UPDATE`,
+    [context.id],
+  );
+  const current = page.rows[0];
+  if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  const admittedRevision = intent.revisions[context.id];
+  if (
+    !admittedRevision ||
+    current.contentRevision !== admittedRevision.contentRevision ||
+    current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
+    current.version !== context.version ||
+    current.source !== 'confluence' ||
+    current.confluence_id !== context.confluenceId
+  ) {
+    throw new PageWriteError(
+      409,
+      'stale_content_revision',
+      'Page has been modified since you loaded it. Please refresh and try again.',
+    );
+  }
+  const spaces = await getUserAccessibleSpaces(userId, client);
+  if (
+    !current.space_key ||
+    !spaces.includes(current.space_key) ||
+    !(await userCanAccessPage(userId, context.id, client))
+  ) {
+    throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+  }
+  if (!(await isConfluenceEnabled(userId, client))) {
+    throw new PageWriteError(
+      409,
+      'confluence_integration_disabled',
+      CONFLUENCE_DISABLED_MESSAGE,
+    );
+  }
+  const confluence = await getClientForUser(userId, client);
+  if (!confluence) {
+    throw new PageWriteError(
+      409,
+      'confluence_connection_changed',
+      'Confluence credentials changed before the remote write',
+    );
+  }
+  return confluence;
 }
 
 export async function pagesVersionRoutes(fastify: FastifyInstance) {
@@ -100,8 +183,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       visibility: string;
       created_by_user_id: string | null;
       version: number;
+      contentRevision: string;
+      lifecycleRevision: string;
     }>(
-      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id, version
+      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id, version,
+              content_revision::text AS "contentRevision",
+              lifecycle_revision::text AS "lifecycleRevision"
        FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
       [isNumericId ? parseInt(id, 10) : id],
     );
@@ -127,6 +214,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       visibility: page.visibility,
       createdByUserId: page.created_by_user_id,
       version: page.version,
+      contentRevision: page.contentRevision,
+      lifecycleRevision: page.lifecycleRevision,
     };
   }
 
@@ -413,8 +502,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       });
     } else {
       if (!ctx.confluenceId) throw fastify.httpErrors.badRequest('Page is missing confluence_id');
-      const client = await getClientForUser(userId);
-      if (!client) throw fastify.httpErrors.badRequest('Confluence not configured');
+      // Preserve the existing early configuration error. The admitted resolver
+      // below re-reads mode and credentials from its held transaction.
+      if (!await getClientForUser(userId)) {
+        throw fastify.httpErrors.badRequest('Confluence not configured');
+      }
 
       const intendedTarget = await query<{ title: string; body_html: string | null }>(
         'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
@@ -438,71 +530,93 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         expectedRemoteVersion: ctx.version,
         targetVersion,
       });
-
-      // Durable conditional recovery metadata commits before updatePage. It
-      // identifies the immutable history target and digest, never authored
-      // title/body payload.
       const intent = await reservePageWriteIntent({
         pageIds: [ctx.id],
         kind: publication.kind,
         actorId: userId,
+        expectedRevisions: {
+          [ctx.id]: {
+            contentRevision: ctx.contentRevision,
+            lifecycleRevision: ctx.lifecycleRevision,
+          },
+        },
         effect: publication.effect,
       });
 
-      const current = await query<{
-        version: number;
-        source: string;
-        confluence_id: string | null;
-      }>(
-        'SELECT version, source, confluence_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
-        [ctx.id],
-      );
-      const fresh = current.rows[0];
-      if (
-        !fresh ||
-        fresh.source !== 'confluence' ||
-        fresh.confluence_id !== ctx.confluenceId ||
-        fresh.version !== ctx.version ||
-        (expectedVersion !== undefined && expectedVersion < fresh.version) ||
-        targetVersion === fresh.version
-      ) {
+      let admittedClient: ConfluenceClient;
+      try {
+        admittedClient = await withPageWriteTransaction([ctx.id], async (lockedClient) => {
+          const confluence = await currentRestoreClient(lockedClient, intent, ctx, userId);
+          if (expectedVersion !== undefined && expectedVersion < ctx.version) {
+            throw new PageWriteError(
+              409,
+              'stale_content_revision',
+              'Page has been modified since you loaded it. Please refresh and try again.',
+            );
+          }
+          if (targetVersion === ctx.version) {
+            throw new PageWriteError(400, 'current_version', 'Cannot restore the current version');
+          }
+          const target = await lockedClient.query<{ title: string; body_html: string | null }>(
+            'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
+            [ctx.id, targetVersion],
+          );
+          const historical = target.rows[0];
+          if (
+            !historical ||
+            historical.body_html !== intendedHistorical.body_html ||
+            historical.title !== intendedHistorical.title
+          ) {
+            throw new PageWriteError(
+              409,
+              'restore_target_changed',
+              'Historical version changed before restore could begin',
+            );
+          }
+          return confluence;
+        }, { intent });
+      } catch (error) {
         await cancelPageWriteIntentBeforeEffect(intent);
-        if (!fresh) throw fastify.httpErrors.notFound('Page not found');
-        if (targetVersion === fresh.version) {
-          throw fastify.httpErrors.badRequest('Cannot restore the current version');
-        }
-        throw fastify.httpErrors.conflict(
-          'Page has been modified since you loaded it. Please refresh and try again.',
-        );
+        throw error;
       }
 
-      const target = await query<{ title: string; body_html: string | null }>(
-        'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
-        [ctx.id, targetVersion],
+      // Store only the bounded acknowledgment receipt. Compact successful
+      // responses are confirmed after the terminal marker is durable, so a
+      // failed readback leaves recovery proof and never permits a second PUT.
+      const publicationResult = await runPageWriteIntentEffect(
+        intent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (remote) => remote.receipt,
+        },
+        async () => {
+          const page = await admittedClient.updatePage(
+            ctx.confluenceId!,
+            intendedHistorical.title,
+            storageBody,
+            ctx.version,
+          );
+          return {
+            page,
+            receipt: pagePublicationReceipt(ctx.confluenceId!, ctx.version + 1, page),
+          };
+        },
       );
-      const historical = target.rows[0];
-      if (
-        !historical ||
-        historical.body_html !== intendedHistorical.body_html ||
-        historical.title !== intendedHistorical.title
-      ) {
-        await cancelPageWriteIntentBeforeEffect(intent);
-        throw fastify.httpErrors.conflict('Historical version changed before restore could begin');
-      }
-      // Remote-first: if this fails, no local authored state changed. The
-      // unresolved intent records that the remote outcome may be unknown.
-      const confPage = await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, () => client.updatePage(
-        ctx.confluenceId!,
-        historical.title,
-        storageBody,
-        fresh.version,
-      ));
+      const confirmed = await withPageWriteTransaction([ctx.id], async (lockedClient) => {
+        const currentClient = await currentRestoreClient(lockedClient, intent, ctx, userId);
+        return confirmPagePublication(
+          currentClient,
+          publicationResult.receipt,
+          publicationResult.page,
+        );
+      }, { intent });
       result = await completePageWriteIntent(intent, (lockedClient) =>
         publishConfluencePagePut(lockedClient, publication, {
-          confluenceId: confPage.id,
-          title: confPage.title,
-          bodyStorage: confPage.body?.storage?.value ?? storageBody,
-          remoteVersion: confPage.version?.number,
+          confluenceId: confirmed.id,
+          title: confirmed.title,
+          bodyStorage: confirmed.body.storage.value,
+          remoteVersion: confirmed.version.number,
         }, intent.id),
       );
       pushedToConfluence = true;

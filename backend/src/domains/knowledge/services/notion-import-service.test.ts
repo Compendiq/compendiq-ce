@@ -1042,6 +1042,58 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     });
   });
 
+  it('denies a deactivated actor immediately before the final authored overwrite', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      lookupDelayMs: 150,
+      pages: {
+        'inactive-race': {
+          object: 'page',
+          id: 'inactive-race',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Remote replacement'),
+        },
+      },
+      blockChildren: {
+        'inactive-race': [paragraph('replacement', 'Remote replacement body')],
+      },
+    });
+    const original = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, notion_page_id)
+       VALUES ('Active original', '<p>Active original</p>', 'Active original', 1, 'standalone', $1, 'inactive-race')
+       RETURNING id`,
+      [userId],
+    );
+    const pageId = original.rows[0]!.id;
+
+    const importing = runNotionImport({
+      userId,
+      client,
+      pageIds: ['inactive-race'],
+      visibility: 'shared',
+      overwriteExisting: true,
+    });
+    await waitForNotionRequest('/v1/blocks/inactive-race/children');
+    await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+
+    const result = await importing;
+    expect(result[0]).toMatchObject({
+      notionPageId: 'inactive-race',
+      status: 'fail',
+    });
+    expect(result[0]?.reason).toContain('no longer active');
+    const preserved = await query<{ title: string; body_text: string }>(
+      'SELECT title, body_text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(preserved.rows[0]).toEqual({
+      title: 'Active original',
+      body_text: 'Active original',
+    });
+  });
+
+
   it('does not delete a complete page when overwriteExisting hits a Notion 404', async () => {
     const client = await start({
       validToken: TOKEN,

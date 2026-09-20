@@ -55,17 +55,22 @@ describe.skipIf(!available)('SQL-only writer epoch — real PostgreSQL', () => {
 
   it('drains an admitted SQL commit before fencing and refuses later writes', async () => {
     const actor = await query<{ id: string }>(
+      "INSERT INTO users (username, password_hash, role) VALUES ($1, 'hash', 'user') RETURNING id",
+      [`epoch-writer-${randomUUID()}`],
+    );
+    const actorId = actor.rows[0]!.id;
+    const administrator = await query<{ id: string }>(
       "INSERT INTO users (username, password_hash, role) VALUES ($1, 'hash', 'admin') RETURNING id",
       [`epoch-admin-${randomUUID()}`],
     );
-    const actorId = actor.rows[0]!.id;
+    const administratorId = administrator.rows[0]!.id;
     const page = await query<{ id: number }>(
       `INSERT INTO pages (title, body_html, source, visibility, created_by_user_id)
        VALUES ('Original', '<p>Original</p>', 'standalone', 'private', $1) RETURNING id`,
       [actorId],
     );
     const pageId = page.rows[0]!.id;
-    await setPageBaselineCreationEnabled(actorId, true);
+    await setPageBaselineCreationEnabled(administratorId, true);
     const lifecyclePages = await query<{ id: number; title: string }>(
       `INSERT INTO pages (title, body_html, source, visibility, created_by_user_id)
        VALUES ('Frozen', '<p>Frozen</p>', 'standalone', 'private', $1),
@@ -97,7 +102,7 @@ describe.skipIf(!available)('SQL-only writer epoch — real PostgreSQL', () => {
     let fenceCompleted = false;
     const fence = fencePageWriterRuntime({
       runtimeId,
-      actorId,
+      actorId: administratorId,
       mode: 'durable_no_started_effects',
       reason: 'Retire an epoch containing an admitted SQL-only writer',
     }).then((result) => {

@@ -123,6 +123,19 @@ describe('baseline rendering-only media projection', () => {
     expect(html).toContain('/api/attachments/9001/diagram.png');
   });
 
+  it('preserves external link origins even when their URLs contain internal route names', () => {
+    const external = 'https://external.example/api/attachments/9001/manual.pdf';
+    const protocolRelative = '//external.example/api/local-attachments/42/local.png';
+    const html = `<a href="${external}">External evidence</a><a href="${protocolRelative}">External image</a>`;
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [
+      attachment('confluence', '9001', 'manual.pdf'),
+      attachment('local', '42', 'local.png'),
+    ], '9001');
+    expect(rendered).toContain(`href="${external}"`);
+    expect(rendered).toContain(`href="${protocolRelative}"`);
+    expect(rendered).not.toContain(`/api/pages/42/baselines/${BASELINE_ID}/media/`);
+  });
+
   it('refuses rendering a recognized live reference absent from the retained inventory', () => {
     expect(() =>
       renderBaselineBodyHtml(

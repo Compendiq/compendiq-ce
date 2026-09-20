@@ -243,9 +243,19 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
   beforeEach(async () => {
     vi.clearAllMocks();
     await truncateAllTables();
-    originalActorId = await insertUser('admin');
+    originalActorId = await insertUser('user');
     administratorId = await insertUser('admin');
     await query(`INSERT INTO spaces (space_key, space_name) VALUES ('REC', 'Recovery')`);
+    const writerRole = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ($1, 'Conditional recovery writer', ARRAY['read', 'write']) RETURNING id`,
+      [`conditional-recovery-writer-${randomUUID()}`],
+    );
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('REC', 'user', $1, $2)`,
+      [originalActorId, writerRole.rows[0]!.id],
+    );
     await query(
       `INSERT INTO user_settings (user_id, confluence_url, confluence_pat)
        VALUES ($1, 'https://confluence.example.com', $2)`,
@@ -410,7 +420,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
           [intent.intentId],
         )).rows[0]?.cache_invalidation_pending,
       ).toBe(false);
-      const preview = await previewPageBaseline(intent.pageId, originalActorId);
+      const preview = await previewPageBaseline(intent.pageId, administratorId);
       expect(preview.version).toBe(6);
       const baseline = await query<{
         title: string;
