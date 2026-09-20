@@ -67,7 +67,7 @@ Quick reference for what to update when:
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
-| Collab gateway and enforcement (`pages-collab.ts`, `collab-room-service.ts`, `collab-persistence.ts`, Redis `collab:*`, `page_runtime_admissions`, migrations `124`/`127`/`128`) or `page_collaborative_docs` | `03-backend-domains.md`, `06-data-model.md`, `12-realtime-collaboration.md` |
+| Collab gateway and enforcement (`pages-collab.ts`, `collab-room-service.ts`, `collab-persistence.ts`, `admin_settings.collab_editing_enabled`, Redis `collab:*`, `page_runtime_admissions`, migrations `124`/`127`/`128`) or `page_collaborative_docs` | `03-backend-domains.md`, `06-data-model.md`, `12-realtime-collaboration.md` |
 | Collab editor/recovery (`frontend/src/features/pages/PageViewPage.tsx`, `use-collab-provider.ts`, Editor Collaboration + Caret, snapshot-bound Save, draft guards/Download/Open current, PresenceAvatarStack) | `04-frontend-structure.md`, `12-realtime-collaboration.md` |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
