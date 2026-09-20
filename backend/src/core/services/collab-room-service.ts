@@ -41,6 +41,8 @@ export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
 export const COLLAB_COMMIT_DUMP_TIMEOUT_MS = vitestIntOr('COLLAB_COMMIT_DUMP_TIMEOUT_MS', 2_000);
+/** Rounds allowed for the owner set to hold still before a read is refused. */
+const OWNER_CORRELATION_ATTEMPTS = 3;
 
 const CHANNEL_PREFIX = prefixedRedisChannel('collab:doc:');
 const CHANNEL_PATTERN = `${CHANNEL_PREFIX}*`;
@@ -341,6 +343,18 @@ export async function createCollabRuntime(
     }
   }
 
+  /**
+   * Correlate every room owner's state before the caller reads the document.
+   *
+   * The owner set is re-read after the dump round because a snapshot that
+   * misses an owner is not the current state. A set that CHANGED, though, is
+   * ordinary rather than fatal: another pod joining or leaving while the round
+   * is in flight is exactly what this service exists to handle, and failing
+   * the first attempt turned a concurrent join into a 503 for a legitimate
+   * writable join. Only a set that will not hold still across
+   * `OWNER_CORRELATION_ATTEMPTS` rounds is genuinely unconfirmable — each
+   * attempt still requires one stable set, so the commit guarantee is intact.
+   */
   async function withFreshRoomState<T>(
     room: CollabRoom,
     admission: PageRuntimeAdmission,
@@ -352,51 +366,55 @@ export async function createCollabRuntime(
         || rooms.get(room.pageId) !== room || room.isFrozen || room.demotionReason !== null
         || room.lifecycleRevision !== admission.lifecycleRevision) throw unavailableSnapshot();
     };
-    assertCurrent();
-    const owners = await withPageWriteTransaction([room.pageId], async (client) => {
-      const currentOwners = await roomOwners(client, room);
-      if (currentOwners.length === 0) throw unavailableSnapshot();
-      await mergePersistedRoom(client, room);
+    for (let attempt = 1; ; attempt += 1) {
       assertCurrent();
-      return currentOwners;
-    }, { admission });
-    const remaining = new Set<string>();
-    for (const owner of owners) {
-      if (owner.id !== room.admission?.id) remaining.add(owner.id);
-    }
-    if (remaining.size > 0) {
-      const requestId = randomUUID();
-      let timer: NodeJS.Timeout;
-      const received = new Promise<boolean>((resolve) => {
-        const finish = (ok: boolean): void => {
-          clearTimeout(timer);
-          if (dumpRounds.get(room.pageId)?.id === requestId) dumpRounds.delete(room.pageId);
-          resolve(ok);
-        };
-        timer = setTimeout(() => finish(false), COLLAB_COMMIT_DUMP_TIMEOUT_MS);
-        timer.unref();
-        dumpRounds.set(room.pageId, {
-          id: requestId, lifecycleRevision: room.lifecycleRevision, remaining, finish,
+      const owners = await withPageWriteTransaction([room.pageId], async (client) => {
+        const currentOwners = await roomOwners(client, room);
+        if (currentOwners.length === 0) throw unavailableSnapshot();
+        await mergePersistedRoom(client, room);
+        assertCurrent();
+        return currentOwners;
+      }, { admission });
+      const remaining = new Set<string>();
+      for (const owner of owners) {
+        if (owner.id !== room.admission?.id) remaining.add(owner.id);
+      }
+      if (remaining.size > 0) {
+        const requestId = randomUUID();
+        let timer: NodeJS.Timeout;
+        const received = new Promise<boolean>((resolve) => {
+          const finish = (ok: boolean): void => {
+            clearTimeout(timer);
+            if (dumpRounds.get(room.pageId)?.id === requestId) dumpRounds.delete(room.pageId);
+            resolve(ok);
+          };
+          timer = setTimeout(() => finish(false), COLLAB_COMMIT_DUMP_TIMEOUT_MS);
+          timer.unref();
+          dumpRounds.set(room.pageId, {
+            id: requestId, lifecycleRevision: room.lifecycleRevision, remaining, finish,
+          });
         });
-      });
-      // Never await a Redis offline queue past this round's deadline.
-      void main.publish(docChannel(room.pageId), JSON.stringify({
-        origin: podId, kind: 'state_dump_request', requestId,
-        requestedAdmissions: [...remaining], lifecycleRevision: room.lifecycleRevision,
-      } satisfies CollabBusMessage)).catch(() => {
-        const round = dumpRounds.get(room.pageId);
-        if (round?.id === requestId) round.finish(false);
-      });
-      if (!(await received)) throw unavailableSnapshot();
+        // Never await a Redis offline queue past this round's deadline.
+        void main.publish(docChannel(room.pageId), JSON.stringify({
+          origin: podId, kind: 'state_dump_request', requestId,
+          requestedAdmissions: [...remaining], lifecycleRevision: room.lifecycleRevision,
+        } satisfies CollabBusMessage)).catch(() => {
+          const round = dumpRounds.get(room.pageId);
+          if (round?.id === requestId) round.finish(false);
+        });
+        if (!(await received)) throw unavailableSnapshot();
+      }
+      const settled = await withPageWriteTransaction([room.pageId], async (client) => {
+        const currentOwners = await roomOwners(client, room);
+        if (currentOwners.length !== owners.length
+          || currentOwners.some((owner, index) => owner.id !== owners[index]!.id)) return null;
+        await mergePersistedRoom(client, room);
+        assertCurrent();
+        return { value: snapshot() };
+      }, { admission });
+      if (settled) return settled.value;
+      if (attempt >= OWNER_CORRELATION_ATTEMPTS) throw unavailableSnapshot();
     }
-    return withPageWriteTransaction([room.pageId], async (client) => {
-      const currentOwners = await roomOwners(client, room);
-      if (currentOwners.length !== owners.length
-        || currentOwners.some((owner, index) => owner.id !== owners[index]!.id)) throw unavailableSnapshot();
-      await mergePersistedRoom(client, room);
-      assertCurrent();
-      return snapshot();
-    }, { admission });
   }
 
   async function refreshReaderRoom(room: CollabRoom): Promise<void> {
