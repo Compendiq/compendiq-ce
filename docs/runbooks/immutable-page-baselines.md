@@ -709,8 +709,14 @@ request to an active replacement.
 Every accepted attempt, including a same-runtime retry, appends its actual
 administrator and reason before verifier or repair work. Failed attempts retain
 that attribution even when a later administrator settles the intent. The
-existing 32-entry recovery-history bound applies to accepted attempts; an
-exhausted history refuses before another callback runs.
+in-row history is a current segment, bounded to 32 entries and 64 KiB of
+PostgreSQL JSONB text, not a lifetime attempt budget. Before another entry
+would cross either bound, migration 122's
+`page_write_recovery_history_segments` receives the complete previous segment
+and the intent starts a new one in the same locked claim transaction.
+Archived segments are append-only, retain actor identities after account
+deletion, and prevent deletion of their parent intent. No accepted attempt is
+discarded; a transient failure cannot permanently exhaust recovery attempts.
 
 ### `local_verified`
 
@@ -828,10 +834,19 @@ Preparation persistence is itself a gated local effect. Recovery distinguishes
 an interrupted transaction that wrote no preparation from one that committed
 the preparation before the next phase. With exact unchanged local identity and
 revisions plus no remote-start marker, an active recovery administrator can
-remove a to-Confluence preparation even after the original actor is revoked or
-its connection is disabled. No authored publication is authorized by this
-cleanup. A to-local rollback still needs original-writer authority and provider
-verification.
+remove a to-Confluence preparation even after the original actor is revoked,
+its connection is disabled, or its account is deleted and the intent's live
+actor link becomes NULL. This covers both an interrupted preparation marker
+and a committed preparation with no provider progress. No authored publication
+is authorized by this cleanup. A to-local rollback or any remote-started
+relocation still requires the original actor's current authority.
+A to-local recovery that finds no local cutover leaves current page ACLs
+untouched: intervening grants and revocations are not relocation effects.
+After an actual cutover, recovery restores the snapshot only while the current
+ACL remains the empty set produced by that cutover. It serializes that check
+and restoration with ordinary ACL writers using a short
+`SHARE ROW EXCLUSIVE` lock on `access_control_entries`; changed ACLs refuse
+recovery rather than being overwritten.
 The acknowledged create ID is committed before readback or uploads; each
 acknowledged attachment is committed before the next provider call. The receipt
 array is bounded by the admitted inventory, while the generic terminal result

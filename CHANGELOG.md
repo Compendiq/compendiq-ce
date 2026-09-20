@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Immutable article baseline foundation (#275).** Added canonical manifest-v1
   digests, exclusive retained copies of referenced media, append-only
   freeze/thaw evidence, shared writer intents and conservative admin recovery.
+  Recovery attempts retain append-only attribution without a lifetime retry
+  cap; relocation cleanup preserves intervening ACL changes and remains
+  available after the original actor's deletion when no remote work started.
   Creation remains fail-closed with
   `protected_writer_enforcement_not_registered` until #276 completes and
   registers every remaining collaboration/sync/cascade writer; signed

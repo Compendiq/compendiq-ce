@@ -40,6 +40,7 @@ erDiagram
     page_writer_runtimes ||--o{ page_write_intents : "owns; RESTRICT"
     page_write_intents ||--o{ page_baselines : "preparation intent; RESTRICT"
     page_write_intents ||--o| page_relocation_preparations : "operation preparation; RESTRICT"
+    page_write_intents ||--o{ page_write_recovery_history_segments : "append-only attempts; RESTRICT"
     pages ||--o{ page_relocation_preparations : "preserves source until settlement; RESTRICT"
     page_versions o|--o{ page_baselines : "snapshot locator; SET NULL"
     page_baselines ||--o{ page_baseline_history : "evidence; RESTRICT"
@@ -194,12 +195,19 @@ erDiagram
         timestamptz remote_effects_completed_at "all remote phases succeeded"
         jsonb remote_terminal_result "bounded server-owned terminal identity"
         boolean cache_invalidation_pending "retry until pages/search eviction succeeds"
-        jsonb recovery_history "bounded ownership-transfer and retry-attempt record"
+        jsonb recovery_history "current segment; at most 32 entries / 64 KiB"
         timestamptz recovery_started_at "claimed before any verifier callback"
         timestamptz settled_at
         uuid settled_by FK "users; ON DELETE SET NULL"
         text settlement_reason
         jsonb settlement_proof
+    }
+
+    page_write_recovery_history_segments {
+        bigserial id PK
+        uuid intent_id FK "page_write_intents; ON DELETE RESTRICT"
+        jsonb recovery_history "complete immutable segment; 1..32 entries / 64 KiB"
+        timestamptz archived_at "DEFAULT NOW; ordered with id"
     }
 
     page_cache_invalidation_queue {
@@ -604,13 +612,20 @@ NULL`.
 Recovery transfers `runtime_id` and stamps `recovery_started_at` before invoking
 the verifier, not only before a local repair. That marker disqualifies no-start
 fencing/cancellation even if the original effect never began; phase timestamps
-and bounded recovery history remain intact across ownership changes.
+and all recovery attempts remain intact across ownership changes.
 Each recovery mutation also holds a current active system administrator row
 on its transaction client; this does not substitute for original-writer access.
 Quiescence records its authorized request before closing the local gate and
 rechecks the administrator before persisting an acknowledgment.
 Each accepted same-runtime retry also appends the actual administrator and
 reason before callbacks; quiescence cancellation writes its `settled_by`.
+Migration 122 rolls the bounded current `recovery_history` segment into
+`page_write_recovery_history_segments` before appending would exceed 32 entries
+or 64 KiB of PostgreSQL JSONB text. Archive insertion and the next current
+segment commit atomically before callbacks. Archived rows reject UPDATE and
+DELETE and restrict parent-intent deletion; their actor identities are JSON
+evidence, not nullable live-user foreign keys. There is no lifetime attempt
+limit and no discarded attribution.
 
 The page-table publication trigger writes one
 `page_cache_invalidation_queue` row per affected page in the same transaction.
@@ -632,7 +647,11 @@ Its insertion is itself a gated local effect, so a crash on either side of
 that commit cannot disguise a retained preparation as an unstarted intent.
 Exact unchanged local state plus absent remote-start evidence permits an active
 recovery administrator to remove a to-Confluence preparation after original-actor
-revocation; it authorizes no publication or to-local restoration.
+revocation or deletion; it authorizes no publication or to-local restoration.
+A to-local recovery with no cutover leaves current grants and revocations intact.
+After a cutover, a `SHARE ROW EXCLUSIVE` lock on `access_control_entries`
+serializes ordinary grant/revoke writers with verification of the still-empty
+cutover ACL and exact snapshot restoration. A changed ACL refuses restoration.
 The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds

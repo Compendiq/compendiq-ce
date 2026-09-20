@@ -1297,6 +1297,10 @@ a separate check.
 Every accepted recovery attempt, including a same-runtime retry by a different
 admin, records that actor and reason before callbacks. Quiescence cancellation
 records the acting admin in `settled_by`, not the original writer.
+The history's 32-entry / 64 KiB bound is per segment, never a lifetime attempt
+cap. Archive a full segment atomically before claiming the next attempt;
+`page_write_recovery_history_segments` is append-only and retains every actor
+and reason. Keep the latest attempt in-row for current-owner cleanup checks.
 Ordinary, Apply and restore PUT replies retain bounded acknowledgment before readback;
 never invent returned body fingerprints from the request or lose known success
 because a later GET failed. Current authority, source identity, integration mode
@@ -1328,7 +1332,12 @@ compensation for a failed local phase.
 Preparation persistence itself is a gated local effect. With exact unchanged
 local identity/revisions and no remote-start marker, an active recovery admin
 can discard a to-Confluence preparation even after the original actor loses
-authority or credentials. This is cleanup, not publication or to-local rollback.
+authority, credentials or its account. A NULL live actor link is permitted
+only for that exact no-remote-start cleanup, never publication or to-local
+rollback. With no local cutover, recovery leaves current ACLs untouched.
+After a cutover, restore the snapshot only from the still-empty cutover ACL,
+serializing the check and write with ordinary grant/revoke statements using
+the relation lock; a changed ACL must refuse rather than be overwritten.
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.
 Persist the create identity and each upload receipt before further provider work.
