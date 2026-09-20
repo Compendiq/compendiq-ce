@@ -19,6 +19,7 @@ import {
   useUploadPageIcon,
 } from '../../shared/hooks/use-pages';
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
+import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
@@ -1238,18 +1239,34 @@ export function PageViewPage() {
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
                     <PresenceAvatarStack viewers={mergedViewers} />
-                    <Button
-                      type="button"
-                      onClick={handleStartEditing}
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
-                      data-testid="edit-page-btn"
-                      leftIcon={<Pencil size={13} aria-hidden />}
-                      rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
-                    >
-                      <span>Edit</span>
-                    </Button>
+                    {page.isFrozen === true ? (
+                      // Not a disabled Edit button: a native-disabled control
+                      // takes no focus and no touch, so its `title` is the one
+                      // place the explanation could live and neither keyboard
+                      // nor touch users can reach it. A frozen article states
+                      // its state as text, and Details carries the rest.
+                      <span
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--radius-md)]
+                          border border-border px-2.5 text-xs font-medium text-muted-foreground"
+                        data-testid="article-frozen-status"
+                      >
+                        <FrozenBadge frozenVersion={page.frozenVersion} compact />
+                        <span>Frozen — open Details for the baseline</span>
+                      </span>
+                    ) : (
+                      <Button
+                        type="button"
+                        onClick={handleStartEditing}
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
+                        data-testid="edit-page-btn"
+                        leftIcon={<Pencil size={13} aria-hidden />}
+                        rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
+                      >
+                        <span>Edit</span>
+                      </Button>
+                    )}
                   </div>
                 </>
               )}

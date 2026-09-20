@@ -167,6 +167,13 @@ export interface PageTreeItem {
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
   icon?: PageIcon | null;
+  // #277: the tree renders a frozen row's lock from the same summary fields
+  // the contract already puts on every page shape. Optional here because a
+  // server that predates the field sends none, and absent must read as
+  // "not known to be frozen" rather than as frozen.
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
 interface PageTreeResponse {
