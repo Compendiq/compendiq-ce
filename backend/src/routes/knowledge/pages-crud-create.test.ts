@@ -1,662 +1,702 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { z, ZodError } from 'zod';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 import { pagesCrudRoutes } from './pages-crud.js';
-// `vi.mock` below is hoisted, so this static import already resolves to the
-// mocked module.
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
+interface CreateResponse {
+  id: number | string;
+  title: string;
+  version: number;
+  source: 'standalone' | 'confluence';
+  pageType?: 'page' | 'folder';
+}
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    // Creating a shared/Confluence page clears every user's cache (#893).
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-  },
-}));
+interface ErrorResponse {
+  error: string;
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+interface PageRow {
+  id: number;
+  confluence_id: string | null;
+  title: string;
+  body_html: string;
+  body_text: string;
+  source: string;
+  space_key: string | null;
+  parent_id: string | null;
+  path: string | null;
+  depth: number;
+  labels: string[];
+  page_type: string;
+  embedding_dirty: boolean;
+  image_analysis_dirty: boolean;
+}
 
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+interface UpstreamRequest {
+  method: string;
+  url: string;
+  authorization: string | undefined;
+  body: unknown;
+}
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+const ConfluenceCreatePayloadSchema = z.object({
+  title: z.string(),
+  body: z.object({ storage: z.object({ value: z.string() }) }),
+});
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn((html: string) => html),
-  confluenceToHtml: vi.fn((html: string) => html),
-  htmlToText: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
-}));
+const available = (await isDbAvailable()) && (await isRedisAvailable());
+const upstreamRequests: UpstreamRequest[] = [];
+const upstreamPageIds: string[] = [];
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let upstream: Server;
+let upstreamBaseUrl = '';
+let currentUserId = '';
+let otherUserId = '';
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  let raw = '';
+  for await (const chunk of request) raw += chunk.toString();
+  return raw.length === 0 ? null : JSON.parse(raw);
+}
 
-// The Confluence-create branch now runs an RBAC space guard (#892); grant the
-// spaces these tests target so they still reach getClientForUser as before.
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['CONFSPACE', 'LOCALSPACE']),
-}));
+function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(payload));
+}
 
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
+async function handleUpstream(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  try {
+    const payload = await readJson(request);
+    const recorded: UpstreamRequest = {
+      method: request.method ?? 'GET',
+      url: request.url ?? '/',
+      authorization: request.headers.authorization,
+      body: payload,
+    };
+    upstreamRequests.push(recorded);
 
-describe('POST /api/pages - parentId validation', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({
-        error: error.message,
-        statusCode: error.statusCode ?? 500,
+    if (recorded.method === 'POST' && recorded.url === '/rest/api/content') {
+      const create = ConfluenceCreatePayloadSchema.parse(payload);
+      const id = upstreamPageIds.shift() ?? `remote-${upstreamRequests.length}`;
+      sendJson(response, 200, {
+        id,
+        title: create.title,
+        status: 'current',
+        type: 'page',
+        version: { number: 1, when: '2026-09-20T00:00:00.000Z' },
+        body: { storage: { value: create.body.storage.value } },
       });
-    });
+      return;
+    }
 
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
+    if (recorded.method === 'POST' && /^\/rest\/api\/content\/[^/]+\/label$/.test(recorded.url)) {
+      sendJson(response, 200, {});
+      return;
+    }
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+    sendJson(response, 404, { message: 'Unexpected Confluence fixture request' });
+  } catch (error) {
+    sendJson(response, 500, { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function startUpstream(): Promise<void> {
+  upstream = createServer((request, response) => {
+    void handleUpstream(request, response);
   });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    upstream.once('error', onError);
+    upstream.listen(0, '127.0.0.1', () => {
+      upstream.off('error', onError);
+      resolve();
+    });
+  });
+  const address = upstream.address();
+  if (address === null || typeof address === 'string') throw new Error('Confluence fixture did not bind a TCP port');
+  upstreamBaseUrl = `http://127.0.0.1:${address.port}`;
+}
+
+async function stopUpstream(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    upstream.close(() => resolve());
+    upstream.closeAllConnections();
+  });
+}
+
+async function buildApp(): Promise<FastifyInstance> {
+  const instance = Fastify({ logger: false });
+  await instance.register(sensible);
+  instance.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) return reply.status(400).send({ error: 'Validation failed' });
+    return reply.status(error.statusCode ?? 500).send({ error: error.message });
+  });
+  instance.decorate('authenticate', async (request) => {
+    request.userId = currentUserId;
+    request.username = 'create-route-user';
+    request.userRole = 'user';
+  });
+  instance.decorate('requireAdmin', async (request) => {
+    request.userId = currentUserId;
+    request.username = 'create-route-user';
+    request.userRole = 'admin';
+  });
+  instance.decorate('redis', redis);
+  await instance.register(pagesCrudRoutes, { prefix: '/api' });
+  await instance.ready();
+  return instance;
+}
+
+async function insertConfluenceSpace(spaceKey: string): Promise<void> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ($1, $1, 'confluence', NOW())`,
+    [spaceKey],
+  );
+}
+
+async function configureConfluence(userId: string, enabled = true): Promise<void> {
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id) DO UPDATE SET
+       confluence_url = EXCLUDED.confluence_url,
+       confluence_pat = EXCLUDED.confluence_pat,
+       confluence_enabled = EXCLUDED.confluence_enabled`,
+    [userId, upstreamBaseUrl, encryptPat('fixture-confluence-pat'), enabled],
+  );
+}
+
+async function grantSpace(userId: string, spaceKey: string): Promise<void> {
+  const roleResult = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('create_route_writer', 'Create route writer', FALSE, ARRAY['read', 'write'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  const role = roleResult.rows[0];
+  if (!role) throw new Error('RBAC role fixture was not created');
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.id],
+  );
+}
+
+async function seedParent(title: string, spaceKey: string): Promise<number> {
+  const id = await insertStandalonePage(title, 'shared', currentUserId, spaceKey);
+  await query('UPDATE pages SET path = $1, depth = 0 WHERE id = $2', [`/${id}`, id]);
+  return id;
+}
+
+async function rowsByTitle(title: string): Promise<PageRow[]> {
+  const result = await query<PageRow>(
+    `SELECT id, confluence_id, title, body_html, body_text, source, space_key,
+            parent_id, path, depth, labels, page_type, embedding_dirty, image_analysis_dirty
+       FROM pages WHERE title = $1 ORDER BY id`,
+    [title],
+  );
+  return result.rows;
+}
+
+async function oneRowByTitle(title: string): Promise<PageRow> {
+  const rows = await rowsByTitle(title);
+  expect(rows).toHaveLength(1);
+  const row = rows[0];
+  if (!row) throw new Error(`Page fixture ${title} was not persisted`);
+  return row;
+}
+
+function createRequests(): UpstreamRequest[] {
+  return upstreamRequests.filter((request) => request.url === '/rest/api/content');
+}
+
+describe.skipIf(!available)('POST /api/pages with real admission boundaries', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { connectTimeout: 1_000, reconnectStrategy: false },
+    });
+    redis.on('error', () => undefined);
+    await redis.connect();
+    setRedisClient(redis);
+    await startUpstream();
+    app = await buildApp();
+  }, 30_000);
 
   afterAll(async () => {
     await app.close();
+    await truncateAllTables();
+    await redis.flushDb();
+    await stopUpstream();
+    setRedisClient(null);
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    upstreamRequests.length = 0;
+    upstreamPageIds.length = 0;
+    currentUserId = await insertUser('create_route_user');
+    otherUserId = await insertUser('create_route_other');
+    await insertLocalSpace('LOCAL_A', currentUserId);
+    await insertLocalSpace('LOCAL_B', currentUserId);
+    await insertConfluenceSpace('CONF');
   });
 
-  it('should create a standalone page without parentId', async () => {
-    // INSERT returns new page
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 42, title: 'Test Page', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  it('persists a standalone page with its converted text, root path, and default fields', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: {
-        title: 'Test Page',
-        bodyHtml: '<p>Hello</p>',
-        source: 'standalone',
-      },
+      payload: { title: 'Root note', bodyHtml: '<p>Hello <strong>world</strong></p>', source: 'standalone' },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(42);
-    expect(body.source).toBe('standalone');
+    const body = response.json<CreateResponse>();
+    const row = await oneRowByTitle('Root note');
+    expect(body).toMatchObject({ id: row.id, source: 'standalone', version: 1, pageType: 'page' });
+    expect(row).toMatchObject({
+      body_html: '<p>Hello <strong>world</strong></p>',
+      body_text: 'Hello world',
+      source: 'standalone',
+      space_key: null,
+      parent_id: null,
+      path: `/${row.id}`,
+      depth: 0,
+      labels: [],
+    });
+    expect(createRequests()).toEqual([]);
   });
 
-  it('should return 400 when parentId does not exist', async () => {
-    // Parent lookup returns nothing
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  it('rejects a missing parent without inserting a page', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Child Page',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Missing-parent child',
+        bodyHtml: '<p>child</p>',
         source: 'standalone',
-        parentId: '999',
+        spaceKey: 'LOCAL_A',
+        parentId: '999999',
       },
     });
+    const error = response.json<ErrorResponse>();
+    const persisted = await rowsByTitle('Missing-parent child');
 
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toContain('Parent page not found');
+    expect(error.error).toContain('Parent page not found');
+    expect(persisted).toEqual([]);
   });
 
-  it('should return 400 when parent belongs to a different space', async () => {
-    // Space check: body.spaceKey is MYSPACE and it's a local space
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // Parent lookup: parent exists but in a different space
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ path: '/5', space_key: 'OTHER_SPACE' }] });
-
+  it('rejects a parent from another local space', async () => {
+    const parentId = await seedParent('Other-space parent', 'LOCAL_B');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Child Page',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Cross-space child',
+        bodyHtml: '<p>child</p>',
         source: 'standalone',
-        spaceKey: 'MYSPACE',
-        parentId: '5',
+        spaceKey: 'LOCAL_A',
+        parentId: String(parentId),
       },
     });
+    const error = response.json<ErrorResponse>();
+    const persisted = await rowsByTitle('Cross-space child');
 
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toContain('same space');
+    expect(error.error).toContain('same space');
+    expect(persisted).toEqual([]);
   });
 
-  it('should create a page with valid parentId in the same space', async () => {
-    // Space check: MYSPACE is local
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // Parent lookup: parent exists in MYSPACE
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ path: '/5', space_key: 'MYSPACE' }] });
-    // INSERT returns new page
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 43, title: 'Child Page', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  it('persists a child under a valid parent in the same local space', async () => {
+    const parentId = await seedParent('Same-space parent', 'LOCAL_A');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Child Page',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Nested child',
+        bodyHtml: '<p>child</p>',
         source: 'standalone',
-        spaceKey: 'MYSPACE',
-        parentId: '5',
+        spaceKey: 'LOCAL_A',
+        parentId: String(parentId),
       },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(43);
+    const row = await oneRowByTitle('Nested child');
+    expect(row).toMatchObject({
+      space_key: 'LOCAL_A',
+      parent_id: String(parentId),
+      path: `/${parentId}/${row.id}`,
+      depth: 1,
+    });
   });
 
-  it('should allow parentId without spaceKey (no cross-space check needed)', async () => {
-    // Parent lookup: parent exists (no spaceKey in body so no cross-space check)
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ path: '/10', space_key: 'ANY' }] });
-    // INSERT returns new page
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 44, title: 'Orphan Child', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  it('allows a valid parent when the new page is not assigned to a space', async () => {
+    const parentId = await seedParent('Parent with a space', 'LOCAL_A');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Orphan Child',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Spaceless child',
+        bodyHtml: '<p>child</p>',
         source: 'standalone',
-        parentId: '10',
+        parentId: String(parentId),
       },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(44);
+    const row = await oneRowByTitle('Spaceless child');
+    expect(row.space_key).toBeNull();
+    expect(row.parent_id).toBe(String(parentId));
+    expect(row.path).toBe(`/${parentId}/${row.id}`);
   });
 
-  it('should fall back to standalone when spaceKey does not exist in spaces table', async () => {
-    // Space lookup returns no rows (unknown space) -> auto-detects as standalone
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // INSERT returns new page (standalone path, no Confluence API call)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 99, title: 'Page In Unknown Space', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+  it('auto-selects standalone storage for local, unknown, sentinel, and absent spaces', async () => {
+    const fixtures = [
+      { title: 'Detected local', spaceKey: 'LOCAL_A', expectedSpace: 'LOCAL_A' },
+      { title: 'Unknown space', spaceKey: 'UNKNOWN', expectedSpace: null },
+      { title: 'Local sentinel', spaceKey: '__local__', expectedSpace: null },
+      { title: 'No space', expectedSpace: null },
+    ];
 
+    for (const fixture of fixtures) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { title: fixture.title, bodyHtml: '<p>local</p>', spaceKey: fixture.spaceKey },
+      });
+      expect(response.statusCode).toBe(200);
+      const row = await oneRowByTitle(fixture.title);
+      expect(row.source).toBe('standalone');
+      expect(row.space_key).toBe(fixture.expectedSpace);
+    }
+    expect(createRequests()).toEqual([]);
+  });
+
+  it('honours explicit standalone source even when the selected space is Confluence-backed', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: {
-        title: 'Page In Unknown Space',
-        bodyHtml: '<p>Hello</p>',
-        spaceKey: 'NONEXISTENT',
-      },
+      payload: { title: 'Local override', bodyHtml: '<p>local</p>', source: 'standalone', spaceKey: 'CONF' },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(99);
-    expect(body.source).toBe('standalone');
+    const row = await oneRowByTitle('Local override');
+    expect(row.source).toBe('standalone');
+    expect(row.space_key).toBeNull();
+    expect(createRequests()).toEqual([]);
   });
 
-  it('should stay standalone when explicit source is standalone even with Confluence spaceKey', async () => {
-    // Space lookup: space exists and is confluence
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    // INSERT returns new page (standalone path, no Confluence API call)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 50, title: 'Standalone Override', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+  it('auto-selects Confluence for a Confluence space and honours an explicit Confluence override', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    await grantSpace(currentUserId, 'LOCAL_A');
+    upstreamPageIds.push('auto-remote', 'explicit-remote');
 
-    const response = await app.inject({
+    const automatic = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Automatic remote', bodyHtml: '<p>auto</p>', spaceKey: 'CONF' },
+    });
+    const explicit = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Standalone Override',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Explicit remote',
+        bodyHtml: '<p>explicit</p>',
+        source: 'confluence',
+        spaceKey: 'LOCAL_A',
+      },
+    });
+    const automaticBody = automatic.json<CreateResponse>();
+    const explicitBody = explicit.json<CreateResponse>();
+    const automaticRow = await oneRowByTitle('Automatic remote');
+    const explicitRow = await oneRowByTitle('Explicit remote');
+
+    expect(automatic.statusCode).toBe(200);
+    expect(explicit.statusCode).toBe(200);
+    expect(automaticBody.source).toBe('confluence');
+    expect(explicitBody.source).toBe('confluence');
+    expect(automaticRow.confluence_id).toBe('auto-remote');
+    expect(explicitRow.confluence_id).toBe('explicit-remote');
+    const requests = createRequests();
+    expect(requests).toHaveLength(2);
+    const automaticRequest = requests[0];
+    const explicitRequest = requests[1];
+    if (!automaticRequest || !explicitRequest) throw new Error('Expected two Confluence create requests');
+    expect(automaticRequest).toMatchObject({ authorization: 'Bearer fixture-confluence-pat' });
+    expect(automaticRequest.body).toMatchObject({
+      title: 'Automatic remote',
+      space: { key: 'CONF' },
+      body: { storage: { value: '<p>auto</p>', representation: 'storage' } },
+    });
+    expect(explicitRequest.body).toMatchObject({
+      title: 'Explicit remote',
+      space: { key: 'LOCAL_A' },
+      body: { storage: { value: '<p>explicit</p>', representation: 'storage' } },
+    });
+  });
+
+  it('treats missing integration settings as enabled but unconfigured', async () => {
+    await grantSpace(currentUserId, 'CONF');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'No credentials', bodyHtml: '<p>x</p>', spaceKey: 'CONF' },
+    });
+    const error = response.json<ErrorResponse>();
+    const persisted = await rowsByTitle('No credentials');
+
+    expect(response.statusCode).toBe(400);
+    expect(error.error).toBe('Confluence not configured');
+    expect(upstreamRequests).toEqual([]);
+    expect(persisted).toEqual([]);
+  });
+
+  it('refuses Confluence creation while integration is off without making an external request', async () => {
+    await configureConfluence(currentUserId, false);
+    await grantSpace(currentUserId, 'CONF');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Integration off', bodyHtml: '<p>x</p>', spaceKey: 'CONF' },
+    });
+    const error = response.json<ErrorResponse>();
+    const persisted = await rowsByTitle('Integration off');
+
+    expect(response.statusCode).toBe(400);
+    expect(error.error).toBe('Confluence integration is disabled');
+    expect(upstreamRequests).toEqual([]);
+    expect(persisted).toEqual([]);
+  });
+
+  it('persists supplied standalone labels, defaults omitted labels, and rejects the contract overflow', async () => {
+    const labelled = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Labelled local',
+        bodyHtml: '<p>x</p>',
         source: 'standalone',
-        spaceKey: 'CONFSPACE',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(50);
-    expect(body.source).toBe('standalone');
-  });
-
-  // Labels at creation (#1133). They used to be applied by a follow-up
-  // PUT /pages/:id/labels keyed on the id this route returns — which for a
-  // Confluence create is the Confluence content id, numeric, and therefore
-  // read by that route as a database primary key. The follow-up labelled a
-  // different page. Carrying them on the create removes the ambiguity.
-  it('stores labels supplied with a standalone create', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 70, title: 'Labelled', version: 1 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'Labelled',
-        bodyHtml: '<p>Hello</p>',
-        spaceKey: 'LOCALSPACE',
+        spaceKey: 'LOCAL_A',
         labels: ['api', 'guide'],
       },
     });
-
-    expect(response.statusCode).toBe(200);
-    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
-    expect(insert).toBeDefined();
-    expect(String(insert![0])).toContain('labels');
-    expect((insert![1] as unknown[]).at(-1)).toEqual(['api', 'guide']);
-  });
-
-  it('defaults to no labels when the create omits them', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 71, title: 'Plain', version: 1 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    await app.inject({
+    const plain = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: { title: 'Plain', bodyHtml: '<p>Hello</p>', spaceKey: 'LOCALSPACE' },
+      payload: { title: 'Plain local', bodyHtml: '<p>x</p>', source: 'standalone' },
     });
-
-    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
-    expect((insert![1] as unknown[]).at(-1)).toEqual([]);
-  });
-
-  it('rejects more labels than the contract allows', async () => {
-    const response = await app.inject({
+    const overflow = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Too many',
-        bodyHtml: '<p>Hello</p>',
-        labels: Array.from({ length: 51 }, (_, i) => `label-${i}`),
+        title: 'Too many labels',
+        bodyHtml: '<p>x</p>',
+        source: 'standalone',
+        labels: Array.from({ length: 51 }, (_, index) => `label-${index}`),
       },
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(labelled.statusCode).toBe(200);
+    expect(plain.statusCode).toBe(200);
+    expect(overflow.statusCode).toBe(400);
+    expect((await oneRowByTitle('Labelled local')).labels).toEqual(['api', 'guide']);
+    expect((await oneRowByTitle('Plain local')).labels).toEqual([]);
+    expect(await rowsByTitle('Too many labels')).toEqual([]);
   });
 
-  it('should auto-detect confluence when source is omitted and space is confluence', async () => {
-    // Space lookup: space exists and is confluence
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-
-    // Ensure getClientForUser returns null (no Confluence configured)
-    const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
-    vi.mocked(getClientForUser).mockResolvedValueOnce(null);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'Auto Detect Confluence',
-        bodyHtml: '<p>Hello</p>',
-        // source intentionally omitted — should auto-detect from space
-        spaceKey: 'CONFSPACE',
-      },
-    });
-
-    // Goes down confluence path; getClientForUser returns null → 400
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toContain('Confluence not configured');
-  });
-
-  // #1623 — creating a page IN a Confluence space is Confluence work: a local
-  // row cannot even carry a Confluence space key, so there is no local path to
-  // fall back to. It must name the integration, never ask for credentials.
-  it('refuses a create in a Confluence space with the integration-off message', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'Should not reach Confluence',
-        bodyHtml: '<p>Hello</p>',
-        spaceKey: 'CONFSPACE',
-      },
-    });
-
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toBe('Confluence integration is disabled');
-    expect(body.error).not.toContain('not configured');
-    expect(getClientForUser).not.toHaveBeenCalled();
-  });
-
-  it('should auto-detect standalone when source is omitted and space is local', async () => {
-    // Space lookup: space exists and is local
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // INSERT returns new page (standalone path)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 60, title: 'Auto Detect Local', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'Auto Detect Local',
-        bodyHtml: '<p>Hello</p>',
-        // source intentionally omitted — should auto-detect from space
-        spaceKey: 'LOCALSPACE',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(60);
-    expect(body.source).toBe('standalone');
-  });
-
-  it('should auto-detect standalone when source is omitted and no spaceKey', async () => {
-    // No space lookup needed (no spaceKey)
-    // INSERT returns new page (standalone path)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 61, title: 'No Space Auto', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'No Space Auto',
-        bodyHtml: '<p>Hello</p>',
-        // source AND spaceKey both omitted — defaults to standalone
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(61);
-    expect(body.source).toBe('standalone');
-  });
-
-  it('should treat __local__ sentinel as standalone and skip space lookup', async () => {
-    // No space lookup — __local__ is a sentinel, not a real space key.
-    // INSERT returns new page (standalone path)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 70, title: 'Local Sentinel Page', version: 1 }],
-    });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages',
-      payload: {
-        title: 'Local Sentinel Page',
-        bodyHtml: '<p>Hello from local</p>',
-        spaceKey: '__local__',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.id).toBe(70);
-    expect(body.source).toBe('standalone');
-
-    // Verify the INSERT was called with null space_key (6th param)
-    const insertCall = mockQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO pages'),
+  it('resolves a Confluence parent from its database id and stores the upstream parent identity', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    const parentResult = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES ('3000000000', 'confluence', 'CONF', 'Remote parent', 'x', '<p>x</p>', '<p>x</p>')
+       RETURNING id`,
     );
-    expect(insertCall).toBeDefined();
-    // space_key is the 6th parameter ($6) in the INSERT
-    expect(insertCall![1][5]).toBeNull();
-  });
-
-  it('should use confluence when explicit source is confluence', async () => {
-    // Space lookup: space exists and is local
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    const parent = parentResult.rows[0];
+    if (!parent) throw new Error('Confluence parent fixture was not created');
+    upstreamPageIds.push('remote-child');
 
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
       payload: {
-        title: 'Confluence Override',
-        bodyHtml: '<p>Hello</p>',
+        title: 'Remote child',
+        bodyHtml: '<p>child</p>',
         source: 'confluence',
-        spaceKey: 'LOCALSPACE',
+        spaceKey: 'CONF',
+        parentId: String(parent.id),
       },
     });
 
-    // This will fail with 400 because getClientForUser mock returns null (no Confluence configured)
-    // but the important thing is it did NOT go down the standalone path
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toContain('Confluence not configured');
+    expect(response.statusCode).toBe(200);
+    const request = createRequests()[0];
+    expect(request?.body).toMatchObject({ ancestors: [{ id: '3000000000' }] });
+    expect((await oneRowByTitle('Remote child')).parent_id).toBe('3000000000');
   });
 
-  // #893 review follow-up: a newly created shared/Confluence page appears in
-  // every user's lists/trees, so only invalidating the creator's cache leaves
-  // the page missing for other users for up to the cache TTL (15 min).
-  /**
-   * #1115 P2 (review r2) — a CREATE is a `body_html` writer too.
-   *
-   * Round 1 swept the four UPDATE paths and stopped there, which left the
-   * writer list this feature ships — ADR-025's, the runbook's and
-   * `image-embedding-dirty.ts`'s — reading as an audit while the create arms
-   * The Confluence arm is the one that matters most:
-   * `confluenceToHtml` emits `/api/attachments/<id>/<file>` for any
-   * `<ac:image><ri:attachment>` the created storage carries. A create collision
-   * must not rewrite an existing protected row; reconciliation handles it.
-   *
-   * Unconditional TRUE, matching `embedding_dirty` beside it rather than the
-   * `IS DISTINCT FROM` gate the UPDATE paths use: there is no previous body to
-   * diff against on an INSERT, and a page created with no image at all costs
-   * exactly one scan that enumerates nothing and clears the flag.
-   */
-  describe('queues the image index on create (#1115 P2)', () => {
-    function insertPagesSql(): string {
-      const call = mockQueryFn.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO pages'),
-      );
-      if (!call) throw new Error('no INSERT INTO pages call');
-      return call[0] as string;
-    }
+  it('applies Confluence labels to the created row when its numeric content id collides with another row id', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    const localId = await insertStandalonePage('Collision target', 'shared', currentUserId, 'LOCAL_A');
+    upstreamPageIds.push(String(localId));
 
-    it('marks a standalone create image_analysis_dirty, excluding folders', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, title: 'T', version: 1 }] });
-      mockQueryFn.mockResolvedValue({ rows: [] });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: { title: 'T', bodyHtml: '<p>Hello</p>', source: 'standalone' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const sql = insertPagesSql();
-      expect(sql).toContain('image_analysis_dirty');
-      expect(sql).not.toContain('image_embedding_dirty');
-      // Bound to the SAME parameter as `embedding_dirty` (`!isFolder`), so a
-      // folder cannot be queued for a scan whose own WHERE excludes it — a
-      // flag no worker can ever clear reads as a backlog that never drains.
-      // ADR-027 D4: the analysis flag rides that parameter now that #1618 has
-      // retired the legacy one that used to sit between them.
-      expect(sql).toMatch(/embedding_dirty,\s*image_analysis_dirty/);
-      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
-      expect(embeddingDirtyParam).not.toBeNull();
-      expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![2]);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Collision-safe remote',
+        bodyHtml: '<p>remote</p>',
+        source: 'confluence',
+        spaceKey: 'CONF',
+        labels: ['remote-label'],
+      },
     });
 
-    it('marks a Confluence create image_analysis_dirty without overwriting a colliding row', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-      mockQueryFn.mockResolvedValue({ rows: [] });
+    expect(response.statusCode).toBe(200);
+    const localResult = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [localId]);
+    const remoteResult = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE confluence_id = $1', [String(localId)]);
+    expect(localResult.rows[0]?.labels).toEqual([]);
+    expect(remoteResult.rows[0]?.labels).toEqual(['remote-label']);
+    const labelRequest = upstreamRequests.find((request) => request.url.endsWith('/label'));
+    expect(labelRequest?.body).toEqual([{ prefix: 'global', name: 'remote-label' }]);
+  });
 
-      const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
-      vi.mocked(getClientForUser).mockResolvedValueOnce({
-        createPage: vi.fn().mockResolvedValue({
-          id: 'conf-100',
-          title: 'New Conf Page',
-          version: { number: 1 },
-          body: { storage: { value: '<p>Hello</p>' } },
-        }),
-      } as never);
+  it('queues embedding and image analysis for standalone pages but not folders', async () => {
+    const pageResponse = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Indexed page', bodyHtml: '<p>x</p>', source: 'standalone' },
+    });
+    const folderResponse = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Folder', bodyHtml: '<p>discarded</p>', source: 'standalone', pageType: 'folder' },
+    });
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: { title: 'New Conf Page', bodyHtml: '<p>Hello</p>', spaceKey: 'CONFSPACE' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const sql = insertPagesSql();
-      expect(sql).toMatch(/embedding_dirty,\s*image_analysis_dirty,\s*embedding_status/);
-      expect(sql).toMatch(/ON CONFLICT[\s\S]*DO NOTHING/);
-      expect(sql).not.toContain('image_embedding_dirty');
+    expect(pageResponse.statusCode).toBe(200);
+    expect(folderResponse.statusCode).toBe(200);
+    const page = await oneRowByTitle('Indexed page');
+    const folder = await oneRowByTitle('Folder');
+    expect(page).toMatchObject({ embedding_dirty: true, image_analysis_dirty: true, page_type: 'page' });
+    expect(folder).toMatchObject({
+      body_html: '',
+      body_text: '',
+      embedding_dirty: false,
+      image_analysis_dirty: false,
+      page_type: 'folder',
     });
   });
 
-  describe('cache invalidation (#893)', () => {
-    it('invalidates the pages cache across all users when creating a standalone page with default (shared) visibility', async () => {
-      // INSERT returns new page
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 80, title: 'Shared note', version: 1 }],
-      });
-      // UPDATE path
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+  it('refuses a colliding Confluence create without changing the existing article or its image work', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    upstreamPageIds.push('stable-content-id', 'stable-content-id');
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: {
-          title: 'Shared note',
-          bodyHtml: '<p>Hello</p>',
-          source: 'standalone',
-          // visibility omitted — CreatePageSchema defaults to 'shared'
-        },
-      });
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'First remote title', bodyHtml: '<p>one</p>', spaceKey: 'CONF' },
+    });
+    expect(first.statusCode).toBe(200);
+    await query("UPDATE pages SET image_analysis_dirty = FALSE WHERE confluence_id = 'stable-content-id'");
 
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalledWith('test-user-id', 'pages');
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Second remote title', bodyHtml: '<p>two</p>', spaceKey: 'CONF' },
     });
 
-    it('keeps per-user invalidation when creating a private standalone page', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 81, title: 'Private note', version: 1 }],
-      });
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    expect(second.statusCode).toBe(409);
+    const result = await query<{ title: string; body_html: string; image_analysis_dirty: boolean }>(
+      "SELECT title, body_html, image_analysis_dirty FROM pages WHERE confluence_id = 'stable-content-id'",
+    );
+    expect(result.rows).toEqual([{
+      title: 'First remote title',
+      body_html: '<p>one</p>',
+      image_analysis_dirty: false,
+    }]);
+  });
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: {
-          title: 'Private note',
-          bodyHtml: '<p>Hello</p>',
-          source: 'standalone',
-          visibility: 'private',
-        },
-      });
+  it('invalidates every user page cache for shared creates and only the creator cache for private creates', async () => {
+    const creatorKey = `kb:${currentUserId}:pages:list`;
+    const otherKey = `kb:${otherUserId}:pages:tree`;
+    await redis.mSet({ [creatorKey]: 'creator-stale', [otherKey]: 'other-stale' });
 
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(mockCacheInvalidate).toHaveBeenCalledWith('test-user-id', 'pages');
+    const shared = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Shared cache change', bodyHtml: '<p>x</p>', source: 'standalone' },
+    });
+    expect(shared.statusCode).toBe(200);
+    expect(await redis.mGet([creatorKey, otherKey])).toEqual([null, null]);
+
+    await redis.mSet({ [creatorKey]: 'creator-stale', [otherKey]: 'other-stale' });
+    const privateResponse = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Private cache change',
+        bodyHtml: '<p>x</p>',
+        source: 'standalone',
+        visibility: 'private',
+      },
+    });
+    expect(privateResponse.statusCode).toBe(200);
+    expect(await redis.mGet([creatorKey, otherKey])).toEqual([null, 'other-stale']);
+  });
+
+  it('invalidates page and space caches across users after a Confluence create', async () => {
+    await configureConfluence(currentUserId);
+    await grantSpace(currentUserId, 'CONF');
+    upstreamPageIds.push('cache-remote');
+    const creatorPagesKey = `kb:${currentUserId}:pages:list`;
+    const otherPagesKey = `kb:${otherUserId}:pages:tree`;
+    const creatorSpacesKey = `kb:${currentUserId}:spaces:list`;
+    const otherSpacesKey = `kb:${otherUserId}:spaces:available`;
+    const keys = [creatorPagesKey, otherPagesKey, creatorSpacesKey, otherSpacesKey];
+    await redis.mSet({
+      [creatorPagesKey]: 'creator-pages',
+      [otherPagesKey]: 'other-pages',
+      [creatorSpacesKey]: 'creator-spaces',
+      [otherSpacesKey]: 'other-spaces',
     });
 
-    it('invalidates pages AND spaces caches across all users when creating a Confluence page', async () => {
-      // Space lookup: CONFSPACE is a Confluence space
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-      // Local cache INSERT + anything after
-      mockQueryFn.mockResolvedValue({ rows: [] });
-
-      const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
-      vi.mocked(getClientForUser).mockResolvedValueOnce({
-        createPage: vi.fn().mockResolvedValue({
-          id: 'conf-100',
-          title: 'New Conf Page',
-          version: { number: 1 },
-          body: { storage: { value: '<p>Hello</p>' } },
-        }),
-      } as never);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: {
-          title: 'New Conf Page',
-          bodyHtml: '<p>Hello</p>',
-          spaceKey: 'CONFSPACE',
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      // The cached GET /api/spaces payload carries per-space pageCount, which
-      // this create just changed for every user with access to the space.
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Remote cache change', bodyHtml: '<p>x</p>', spaceKey: 'CONF' },
     });
+
+    expect(response.statusCode).toBe(200);
+    expect(await redis.mGet(keys)).toEqual([null, null, null, null]);
   });
 });

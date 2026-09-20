@@ -10,12 +10,14 @@
  * materialized `path` is NULL) and drive the real route, so a SQL defect in
  * the CTE (wrong cast, inverted logic, join mismatch) fails here.
  *
- * Only infrastructure side-channels are stubbed (Redis cache wrapper, audit
- * log). RBAC is real: the test user is an admin, so `userCanAccessPage`
- * passes via the system-admin bypass without extra fixtures.
+ * PostgreSQL, Redis, audit writes and RBAC are real. Only authentication is
+ * supplied by the fixture; the persisted admin role grants its page access.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import { createClient } from 'redis';
+import type { RedisClientType } from 'redis';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import {
@@ -23,26 +25,14 @@ import {
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { query, getPool } from '../../core/db/postgres.js';
-import { PAGE_MOVE_ADVISORY_LOCK_ID } from './local-spaces.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { localSpacesRoutes, PAGE_MOVE_ADVISORY_LOCK_ID } from './local-spaces.js';
 
-// --- Boundary mocks (everything else is real) ---
-
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  },
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-const dbAvailable = await isDbAvailable();
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
 // --- Fixtures ---
 
@@ -297,11 +287,15 @@ async function subpageChildIds(parentKey: string): Promise<number[]> {
 
 // --- Tests ---
 
-describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against real Postgres (#891)', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id/move — cycle guard against real Postgres (#891)', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
 
   beforeAll(async () => {
     await setupTestDb();
+    redis = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' });
+    await redis.connect();
+    setRedisClient(redis);
 
     app = Fastify({ logger: false });
     await app.register(sensible);
@@ -317,19 +311,20 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
     app.decorate('requireAdmin', async (request: { userId: string }) => {
       request.userId = userId;
     });
-    app.decorate('redis', {});
-    const { localSpacesRoutes } = await import('./local-spaces.js');
+    app.decorate('redis', redis);
     await app.register(localSpacesRoutes, { prefix: '/api' });
     await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    setRedisClient(null);
+    await redis.quit();
     await teardownTestDb();
   });
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    await redis.flushDb();
     await truncateAllTables();
     // Admin user: userCanAccessPage passes via the system-admin bypass, so the
     // move route's RBAC checks run for real without per-space fixtures.
@@ -752,18 +747,25 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
       await holder.query('BEGIN');
       await holder.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
 
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
       const pending = movePage(a!, b!);
-      const raced = await Promise.race([
-        pending.then(() => 'completed' as const),
-        new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 300)),
-      ]);
-      // The handler must be waiting on the lock — nothing committed yet.
-      expect(raced).toBe('blocked');
-      expect((await getPageRow(a!)).parent_id).toBeNull();
+      const blocked = await waitForDatabaseCondition(async () => {
+        const state = await query<{ blocked: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity
+             WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))
+           ) AS blocked`,
+          [holderPid],
+        );
+        return state.rows[0]!.blocked;
+      });
+      const parentBeforeRelease = (await getPageRow(a!)).parent_id;
 
       await holder.query('COMMIT'); // xact-scoped lock released here
 
       const response = await pending;
+      expect(blocked).toBe(true);
+      expect(parentBeforeRelease).toBeNull();
       expect(response.statusCode).toBe(200);
       expect((await getPageRow(a!)).parent_id).toBe(String(b));
     } finally {
@@ -778,18 +780,19 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
 
     const [r1, r2] = await Promise.all([movePage(a!, b!), movePage(b!, a!)]);
 
-    // Serialized on the advisory lock: whichever move wins commits, and the
-    // loser re-runs its cycle check against the winner's committed state and
-    // is rejected. Exactly one 200 and one 400 — never two 200s.
-    expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 400]);
+    // One move commits. Its peer either detects the new cycle or loses its
+    // preflight hierarchy snapshot at admission; both are safe refusals.
+    const responses = [r1, r2];
+    expect(responses.filter((response) => response.statusCode === 200)).toHaveLength(1);
+    const refusal = responses.find((response) => response.statusCode !== 200)!;
+    expect([400, 409]).toContain(refusal.statusCode);
 
-    // No mutual cycle was persisted.
+    // The winner's hierarchy is exact, and its peer has no partial mutation.
     const rowA = await getPageRow(a!);
     const rowB = await getPageRow(b!);
-    expect(rowA.parent_id === String(b) && rowB.parent_id === String(a)).toBe(false);
-
-    // Walking parents from either page terminates (throws on a revisit).
-    await expect(walkParents(a!)).resolves.toBeDefined();
-    await expect(walkParents(b!)).resolves.toBeDefined();
+    expect(rowA.parent_id).toBe(r1.statusCode === 200 ? String(b) : null);
+    expect(rowB.parent_id).toBe(r2.statusCode === 200 ? String(a) : null);
+    expect(await walkParents(a!)).toEqual(r1.statusCode === 200 ? [a, b] : [a]);
+    expect(await walkParents(b!)).toEqual(r2.statusCode === 200 ? [b, a] : [b]);
   });
 });

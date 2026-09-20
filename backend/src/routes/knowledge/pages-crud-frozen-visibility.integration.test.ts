@@ -85,8 +85,18 @@ describe.skipIf(!dbAvailable)('frozen page visibility admission — real Postgre
     setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
     const admin = await insertUser(`baseline-admin-${randomUUID()}`);
     await query("UPDATE users SET role = 'admin' WHERE id = $1", [admin]);
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled)
+       VALUES ($1, FALSE)`,
+      [admin],
+    );
     await setPageBaselineCreationEnabled(admin, true);
     userId = await insertUser(`frozen-visibility-${randomUUID()}`);
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled)
+       VALUES ($1, FALSE)`,
+      [userId],
+    );
     await insertLocalSpace('NOTES', userId);
     pageId = await insertStandalonePage('Frozen', 'private', userId, 'NOTES');
     const prepared = await previewPageBaseline(pageId, userId);

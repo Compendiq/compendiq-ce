@@ -1,12 +1,13 @@
 /**
- * Competing-writer guard (#1444/#1445). 409s when `collab:active:{pageId}` is
- * non-empty. Wired on PUT, restore, Apply, and draft-publish.
+ * Competing-writer guard (#1444/#1445/#276). PostgreSQL runtime admissions
+ * are authoritative; Redis membership is only a fast liveness signal.
  */
 import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import * as redisCache from './redis-cache.js';
 import type { RedisClientType } from 'redis';
+import { withPageWriteTransaction } from './page-write-admission.js';
 
 export class CollabSessionActiveError extends Error {
   readonly statusCode = 409;
@@ -35,9 +36,7 @@ export async function rejectIfLiveCollabRoom(
 
 function readRedisClient(): RedisClientType | null {
   try {
-    const fn = (redisCache as { getRedisClient?: () => RedisClientType | null }).getRedisClient;
-    if (typeof fn !== 'function') return null;
-    const client = fn();
+    const client = redisCache.getRedisClient();
     if (!client || typeof client.sCard !== 'function') return null;
     return client;
   } catch {
@@ -48,15 +47,22 @@ function readRedisClient(): RedisClientType | null {
 
 export async function isLiveCollabRoom(pageId: number): Promise<boolean> {
   const redis = readRedisClient();
-  if (!redis) return false;
-  try {
-    return Number(await redis.sCard(`collab:active:${pageId}`)) > 0;
-  } catch {
-    // Redis blip: fail open (treat as empty) so inbound sync does not skip forever.
-    return false;
+  if (redis) {
+    try {
+      if (Number(await redis.sCard(`collab:active:${pageId}`)) > 0) return true;
+    } catch {
+      // PostgreSQL admissions are the authority; keep checking below.
+    }
   }
+  const active = await query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL
+     ) AS present`,
+    [pageId],
+  );
+  return active.rows[0]?.present === true;
 }
-
 export async function assertNoLiveCollabRoom(pageId: number): Promise<void> {
   if (await isLiveCollabRoom(pageId)) {
     throw new CollabSessionActiveError();
@@ -73,6 +79,8 @@ export async function invalidateCollabDocAfterBodyWrite(
     await client.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
     return;
   }
-  // PUT / restore / Apply / inbound sync mock `query()`, not `getPool()`.
-  await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+  await withPageWriteTransaction([pageId], async (writeClient) => {
+    await writeClient.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+    await writeClient.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+  });
 }

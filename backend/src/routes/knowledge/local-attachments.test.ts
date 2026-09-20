@@ -70,6 +70,12 @@ async function upload(pageId: number, filename: string, dataUri = PNG_DATA_URI, 
 async function publishBaseline(pageId: number): Promise<void> {
   const adminId = await insertUser(`attachment-admin-${randomUUID()}`);
   await query("UPDATE users SET role = 'admin' WHERE id = $1", [adminId]);
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_enabled)
+     VALUES ($1, FALSE), ($2, FALSE)
+     ON CONFLICT (user_id) DO UPDATE SET confluence_enabled = FALSE`,
+    [adminId, userId],
+  );
   await setPageBaselineCreationEnabled(adminId, true);
   const prepared = await previewPageBaseline(pageId, userId);
   await freezePage({

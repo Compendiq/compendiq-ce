@@ -76,6 +76,10 @@ describe.skipIf(!dbAvailable)('search canonical page provenance', () => {
       "INSERT INTO users (username, email, password_hash, role) VALUES ('origin', 'origin@test', 'x', 'admin') RETURNING id",
     );
     userId = user.rows[0]!.id;
+    await query(
+      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      [userId],
+    );
     await query("INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'Development')");
     // A historical external key and a named space must not turn a local page into a Confluence result.
     const pages = await query<{ id: number; source: PageSource }>(

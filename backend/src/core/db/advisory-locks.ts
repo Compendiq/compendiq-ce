@@ -80,3 +80,11 @@ export const PAGE_GOVERNANCE_POLICY_LOCK_KEY = 279_002;
  * flag is always delivered after an earlier scan.
  */
 export const PAGE_WRITE_INVALIDATION_LOCK_ID = 279_003;
+
+/**
+ * Transaction fence for hierarchy expansion. Every protected lifecycle/write
+ * takes SHARE before page locks; a cascade takes EXCLUSIVE before discovering
+ * its authorized component. Runtime epoch locks always precede this fence.
+ * This also covers creation, whose new page has no lifecycle key yet.
+ */
+export const PAGE_HIERARCHY_LOCK_ID = 279_004;

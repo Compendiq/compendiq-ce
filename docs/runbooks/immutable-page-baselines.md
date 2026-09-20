@@ -1,37 +1,132 @@
 # Immutable Page Baselines: Operations and Recovery
 
-This runbook covers the Community Edition foundation introduced by #275: the
-canonical manifest, retained attachment copies, lifecycle evidence, activation
-gate, writer-runtime fencing, and conservative reconciliation of interrupted
-writes.
+This runbook covers the Community Edition baseline lifecycle introduced by
+#275 and the protected-writer enforcement completed by #276: the canonical
+manifest, retained attachment copies, lifecycle evidence, activation and
+eligibility gates, distributed writer fencing, collaborative-save recovery,
+and conservative reconciliation of interrupted writes.
 
 ## Current release state
 
-> **Baseline creation is not ready for activation in the #275 foundation.**
-> Migrations 120 and 121, the immutable storage primitives, lifecycle APIs, and
-> recovery APIs are present, but #276 has not yet registered complete
-> collaboration, sync, purge, and subtree-writer enforcement. The readiness
-> response therefore fails closed with
-> `protected_writer_enforcement_not_registered`, and creation remains off.
+> **#276 enforcement is installed, but baseline creation remains default-off.**
+> The application registers protected-writer enforcement version `1` at startup.
+> A clean, single-version deployment can therefore report
+> `deploymentReady: true` with no blockers, while the independent persisted
+> `creationEnabled` flag remains `false` until an administrator explicitly
+> activates it.
 
-There is no published admin UI or end-user freeze UI in this foundation.
-Operators may inspect the authenticated HTTP APIs described below, but must not
-turn creation on until #276 is deployed on every writer process and its
-readiness provider reports no blockers.
+Activation is not a statement that every process in an arbitrary deployment
+was discovered. Operators must deploy the enforcement build to every HTTP,
+collaboration, job, sync, and maintenance writer runtime, drain older
+runtimes, and verify the API state described below. The backend is
+authoritative; do not bypass it with a direct database update.
 
-The dependent work is deliberately separate:
+There is no published admin activation UI or end-user freeze/thaw workflow in
+this release. Operators may use the authenticated HTTP APIs below. #276 does
+ship enforcement for existing frozen pages and the editor's recoverable
+collaborative-draft behavior; neither depends on exposing a freeze button.
 
-- **#276** completes collaboration, sync, remote-resolution, purge, cascade, and
-  cross-process writer enforcement, then supplies deployment readiness.
-- **#278** adds Enterprise authenticated approval, signatures, independently
-  trusted keys, archive protection, and governed evidence. None of those are a
-  property of a #275 baseline.
-- **#277** adds the shared CE frontend and runtime-gated Enterprise workflow.
+The dependent work remains deliberately separate:
+
+- **#276 is installed here.** It supplies collaboration, sync, remote-write,
+  purge, subtree/cascade, and cross-process writer enforcement plus deployment
+  readiness.
+- **#278 is not implemented.** Governed proposal/approval and signing remain
+  later work; a current CE baseline has neither.
+- **#277 is not implemented.** The full baseline administration and article
+  workflow UI remains later work.
 - **#285** is a separate AI-policy project. A frozen page is not an AI-policy
-  control, and this foundation does not add `no_ai` or `local_only` guarantees.
+  control, and this release does not add `no_ai` or `local_only` guarantees.
 
-Do not describe the foundation as having all writers fenced, signed evidence,
-a certification, or a released freeze control.
+Do not describe this release as signed, certified, or as having a shipped
+proposal/approval UI.
+
+## #276 eligibility and protected-writer enforcement
+
+New preview and freeze operations require **both** of these facts at the final
+admission transaction:
+
+1. The row's authoritative `pages.source` is exactly `standalone`.
+2. The acting user's `user_settings.confluence_enabled` is explicitly `false`.
+
+The corresponding `409` denial reasons are
+`standalone_article_required` and `confluence_integration_enabled`. A missing
+settings row means enabled, and a settings read failure propagates; neither is
+treated as explicit-off. Historical `confluence_id`, a space key, credentials,
+or attachment metadata cannot make a non-standalone row eligible. Conversely,
+ordinary Confluence sync remains an ordinary sync path and must not treat a
+standalone row carrying a historical `confluence_id` as Confluence-origin.
+
+The canonical toggle reader is
+`core/services/confluence-integration.ts:isConfluenceEnabled`. Admission
+mutations pass `lockSettings=true` only while holding their read-write
+transaction so an existing explicit-off row stays locked through commit.
+Read-only lifecycle/capability reads use the transaction client without that
+lock. Direct callers must not re-query the column or infer the mode from a null
+Confluence client.
+
+Eligibility gates creation, not durable enforcement. A published baseline
+continues to block protected updates and deletes when creation is disabled,
+when the acting user later re-enables Confluence, and when governance features
+are unavailable. Re-enabling the integration never thaws a page, replays a
+write, or removes retained evidence. Authorized thaw, history/evidence reads,
+and baseline attachment export/download remain independent of the current
+integration mode and creation flag; the attachment read path still verifies
+the retained descriptor, containment, size, and SHA-256 before streaming.
+
+The database trigger is the final guard for protected page fields and deletion.
+Application writers also take the runtime epoch and sorted lifecycle locks
+before subsystem/page locks. Standalone delete, restore, and bulk cascades
+expand the exact source-and-owner-authorized mutation component under the
+hierarchy fence. A frozen root returns `423 page_is_frozen`; an authorized
+frozen descendant returns `409 subtree_contains_frozen_page` with only
+`blockedCount`, not the descendant's identity or title. The walk crosses
+deleted, synced, and foreign-owned intermediates, but rows outside the
+authorized standalone mutation set neither block the caller nor leak through
+the refusal.
+
+### Collaborative Save and recoverable drafts
+
+`POST /api/pages/:id/collab/commit` accepts a bounded base64 Yjs Snapshot in
+`expectedDocumentState` (maximum 1,048,576 characters within the route's 2 MiB
+body limit). It is the Save-start state vector **and delete set**, not document
+content. The server decodes it canonically and refuses malformed input as
+`400 invalid_collab_snapshot`.
+
+Before publication, the collaboration runtime:
+
+1. verifies that Redis transport, the room object, lifecycle revision, writable
+   admission, and transport generation are still current;
+2. merges the persisted Yjs document, requests a correlated state dump from
+   every other active room admission, and refuses on a missing or timed-out
+   owner;
+3. re-reads the exact owner set, merges persisted state again under admission,
+   and only then snapshots HTML and the Yjs document; and
+4. proves that the fresh snapshot covers every requested clock **and** the
+   requested delete set.
+
+An unconfirmed cross-process state is `503 collab_state_unavailable`; missing
+Save-start edits are `409 collab_snapshot_not_received`. The final write
+transaction rechecks page identity/lifecycle and current edit authority.
+Identity changes return `409 collab_commit_identity_changed`, lost authority
+returns `403 collab_commit_authority_changed`, and a frozen page returns
+`423 page_is_frozen`.
+
+A successful acknowledgment covers only the captured snapshot. If title,
+labels, or the Yjs document changed while Save was in flight, the editor stays
+open and reports that the captured version was saved; later local edits are not
+discarded.
+
+The editor treats transient offline state and lifecycle loss differently.
+Same-lifecycle offline edits remain in the open tab, navigation and unload are
+guarded while the collaborative draft is dirty, and Save stays blocked until a
+writable connection returns. A freeze, lifecycle change, permission loss,
+document reset, or deletion disconnects the provider and leaves the existing
+Y.Doc mounted as an inert, recoverable draft. It is not automatically
+reconnected or replayed after a later thaw or reconnect. The recovery strip
+offers **Download draft** and **Open current version**. The latter requires a
+successful fresh page read before discarding the open draft and asks for
+explicit confirmation; a failed read leaves the draft in place.
 
 ## Trust and retention boundary
 
@@ -44,9 +139,9 @@ both evidence and digest, or authenticated identity attestation.
 
 `manual_assertion` provenance means exactly that. `reportedSignatories` and
 `reportedReference` on the manual freeze request are caller assertions; names,
-emails, and references are not independent approvals. Cryptographic signatures
-and authenticated multi-party approval belong to #278 and are not available
-here.
+emails, and references are not independent approvals. This release implements
+no cryptographic signature or authenticated multi-party approval; those remain
+#278 scope.
 
 Published baselines and their freeze/thaw history have no product TTL, automatic
 expiry, capacity eviction, baseline-delete API, or ordinary-retention deletion
@@ -153,9 +248,9 @@ instead of normalizing them. HTML and Unicode are not normalized; the original
 persisted strings are bound as stored.
 
 The manifest digest binds the inventory's logical identities, sizes, media
-types, and byte digests. It does not include filesystem paths and, without
-#278's independent signature/trust material, does not authenticate the database
-that stores it.
+types, and byte digests. It does not include filesystem paths. This release has
+no signature or external trust material that authenticates the database that
+stores the manifest.
 
 ## Referenced-media coverage
 
@@ -351,11 +446,12 @@ Authorization: Bearer <token>
 The reason is 10–1000 trimmed characters. Thaw clears only the live freeze
 fields and advances lifecycle revision; it appends a `thaw` history row using
 the original baseline version and digest. It never deletes or rewrites evidence
-and never applies a remote sync candidate.
+and never replays a local or remote write.
 
 An enabled governance policy vetoes a new direct manual freeze, not an
-authorized audited thaw. Thaw remains available when EE is unavailable and
-when a manual baseline predates the policy. Its historical provenance stays
+authorized audited thaw. Thaw remains available regardless of the creation
+flag or acting user's Confluence mode, when EE is unavailable, and when a
+manual baseline predates the policy. Its historical provenance stays
 `manual_assertion`; reopening never upgrades that assertion into approval.
 
 ## Activation and rollback gate
@@ -370,33 +466,40 @@ Authorization: Bearer <system-admin-token>
 ```json
 {
   "creationEnabled": false,
-  "deploymentReady": false,
-  "blockers": ["protected_writer_enforcement_not_registered"],
+  "deploymentReady": true,
+  "blockers": [],
   "activatedAt": null,
   "activatedBy": null,
   "activatedByName": null
 }
 ```
 
-The #275 foundation's expected response is the blocked response above. A
-readiness-provider failure instead reports `deployment_readiness_unavailable`.
-Do not work around either blocker in the database or send an activation request
-against a test-only readiness override.
+That is the expected default for a clean #276-only deployment: readiness is
+available, but creation is still off. The readiness provider selects active
+(not fenced and not quiesced) `page_writer_runtimes` and requires
+`enforcement_version = 1`. Any other active version reports
+`incompatible_page_writer_runtime`. A missing provider reports
+`protected_writer_enforcement_not_registered`; an exception while reading
+readiness reports `deployment_readiness_unavailable`. Do not work around a
+blocker in the database or use a test-only readiness override.
 
-After #276 is released, activation requires all of the following:
+Activation requires all of the following:
 
 1. Back up PostgreSQL and the complete `ATTACHMENTS_DIR` together.
-2. Deploy migrations and the compatible enforcement build to every HTTP,
-   collaboration, job, sync, and maintenance process.
+2. Deploy the #276 migrations and enforcement-version-`1` build to every HTTP,
+   collaboration, job, sync, and maintenance process that can write pages or
+   page media.
 3. Stop and drain every older process and job image. Do not activate in a
-   mixed-version cluster.
+   mixed-version cluster. Readiness checks registered runtime epochs; it is not
+   service discovery for an unstarted, disconnected, or separately configured
+   writer.
 4. Resolve or conservatively retain every item returned by
    `GET /api/admin/page-write-recovery`; no admission or pending intent may be
    treated as expired.
-5. Confirm every live process reports the #276 readiness contract and the
-   activation GET returns `deploymentReady: true` with an empty `blockers`
-   array.
-6. Only then enable creation:
+5. Turn Confluence integration explicitly off for the system administrator
+   making the activation request. A missing settings row is enabled, not off.
+6. Confirm the activation GET returns `deploymentReady: true` with an empty
+   `blockers` array, then enable creation:
 
 ```http
 PUT /api/admin/page-baselines/activation
@@ -405,6 +508,13 @@ Authorization: Bearer <system-admin-token>
 
 { "creationEnabled": true }
 ```
+
+Enabling while the acting administrator's integration is on returns
+`409 confluence_integration_enabled`. Enabling while readiness is false returns
+`409 deployment_not_ready`. The activation-row lock and runtime-registration
+lock close the check/activation race. After creation is enabled—or after any
+published baseline exists—migration 124 also refuses registration of an older
+runtime that does not implement enforcement version `1`.
 
 The same route with `false` disables **new** previews/finalizations. Once any
 baseline exists, never roll back to a binary that lacks lock, read, retention,
@@ -419,11 +529,12 @@ an Enterprise hook is installed.
 
 | Operation | Required current authority |
 |---|---|
-| Preview or manual freeze | Active actor, current page visibility, and system admin, space `manage`, or owner of that standalone page |
-| Thaw | Active actor, current page visibility, and system admin or space `manage`; standalone owner alone is insufficient |
+| Preview or manual freeze | Active actor, current page visibility, `pages.source = 'standalone'`, the actor's Confluence integration explicitly off, and system admin, space `manage`, or owner of that standalone page |
+| Thaw | Active actor, current page visibility, and system admin or space `manage`; standalone owner alone is insufficient; creation and Confluence mode do not gate it |
 | Live page history | Active actor and current access to the existing, non-deleted page |
 | Frozen page media | Active actor and current access to the existing page; exact original page, baseline UUID, and inventory identity must match |
-| Activation, deleted-source evidence, baseline attachment download | Active system admin, rechecked from PostgreSQL |
+| Activation | Active system admin whose Confluence integration is explicitly off when enabling |
+| Deleted-source evidence and baseline attachment download | Active system admin, rechecked from PostgreSQL; creation and Confluence mode do not gate reads |
 | Writer recovery, quiescence, fencing, reconciliation | Active system admin; page ownership or space administration is not sufficient |
 
 Media publication uses current authority on its mutation client. Inherited
@@ -787,9 +898,9 @@ authored state. A remote version that has not reached the expected result,
 missing historical version, failed provider read or ambiguous response remains
 pending. A successful HTTP status observed by a caller is not proof.
 
-The foundation's closed policy assigns this mode only to remote writes with the
-required conditional-version evidence, currently AI Apply and version restore.
-It does not permit replaying the write during reconciliation.
+The closed policy assigns this mode only to remote writes with the required
+conditional-version evidence, currently AI Apply and version restore. It does
+not permit replaying the write during reconciliation.
 
 ### `remote_terminal_only`
 
@@ -824,6 +935,17 @@ Partial sets and ambiguous acknowledgments still remain pending.
 The first upload resolves current authority and credentials inside the remote
 callback, just like every later sibling. Its earlier read-only preflight client
 is never reused as dispatch authority after an admission wait.
+
+Collaborative Confluence commits with pasted images use
+`collab.commit.confluence.media` and an immutable ordered image plan. Recovery
+requires one positional `{ accepted: true, filename, attachmentVersion? }`
+receipt for every planned image plus the compatible page acknowledgment.
+`attachmentVersion` is provider metadata; the marker proves only that the
+upload returned a valid attachment object and is not provider byte attestation.
+An incomplete, malformed, reordered, or mismatched set is
+`intent_terminal_result_invalid`. The complete set is bounded against the
+admitted inventory before dispatch and preserved durably for read-only recovery;
+an unknown upload outcome is never replayed.
 
 Remote phases recheck the original actor, source identity, page/space authority,
 integration mode and current credentials after admission waits. Stored
@@ -891,6 +1013,10 @@ cache fills cannot reinsert a snapshot whose generation was invalidated while
 the query was loading. Global invalidation covers other readers; targeted
 user invalidation does not evict unrelated users.
 
+These queues and generation checks protect application reads; they are not a
+claim that a production reverse proxy, CDN, browser cache, or separately
+configured deployment cache invalidates immediately.
+
 Shutdown cancels PostgreSQL pool checkout and lock waits as well as Redis
 delivery. An acquired transaction is rolled back by destroying its connection;
 a lease arriving after cancellation is returned without starting SQL. Pending
@@ -920,6 +1046,6 @@ A missing or changed retained file is `baseline_storage_unavailable`, not a
 reason to regenerate or silently fall back to the live attachment store.
 
 Backups are the protection against storage loss; application permanence is not
-a substitute for tested off-instance retention. #278 will add separate signing
-key and trust-material backup requirements when signed governance is actually
-implemented. Do not create or advertise such keys for the #275 foundation.
+a substitute for tested off-instance retention. #278 is not implemented in
+this release, so this runbook defines no signing-key or trust-material backup
+procedure and operators must not advertise one.

@@ -12,6 +12,7 @@ import {
   waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { closePool, getPool, query } from '../db/postgres.js';
+import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import {
   type PageWriteIntent,
   PageWriteError,
@@ -20,6 +21,7 @@ import {
   assertPageFreezeIdle,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
+  deferPageRequestAdmissionRelease,
   fencePageWriterRuntime,
   lockPageLifecycle,
   quiescePageWriterRuntime,
@@ -245,6 +247,125 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     expect(state.rows[0]).toEqual({ visibility: 'shared', inherit_perms: false, content_revision: '0' });
   });
 
+  it('allows child publication beneath a frozen hierarchy reference', async () => {
+    const actor = await insertUser();
+    const parentId = await insertPage(actor, 'Frozen Confluence parent');
+    await query(
+      `UPDATE pages SET source = 'confluence', confluence_id = 'parent-frozen',
+                        space_key = 'SPACE' WHERE id = $1`,
+      [parentId],
+    );
+    await freezePage(parentId, actor);
+    const intent = await reservePageWriteIntent({
+      pageIds: [parentId],
+      kind: 'pages.create.confluence',
+      actorId: actor,
+      effect: {
+        effectClass: 'remote',
+        parentPageId: parentId,
+        parentConfluenceId: 'parent-frozen',
+        spaceKey: 'SPACE',
+        titleSha256: 'a'.repeat(64),
+        storageSha256: 'b'.repeat(64),
+      },
+    });
+    await runPageWriteIntentEffect(
+      intent,
+      {
+        kind: 'remote',
+        completesRemoteWork: true,
+        terminalResult: () => ({
+          accepted: true,
+          confluenceId: 'child-frozen',
+          expectedVersion: 1,
+        }),
+      },
+      async () => undefined,
+    );
+
+    const childId = await completePageWriteIntent(intent, async (client) => {
+      const created = await client.query<{ id: number }>(
+        `INSERT INTO pages
+           (title, body_html, body_storage, body_text, version, source,
+            confluence_id, space_key, parent_id, embedding_dirty, embedding_status)
+         VALUES ('Child', '<p>child</p>', '<p>child</p>', 'child', 1,
+                 'confluence', 'child-frozen', 'SPACE', 'parent-frozen',
+                 TRUE, 'not_embedded')
+         RETURNING id`,
+      );
+      return created.rows[0]!.id;
+    });
+
+    const child = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE id = $1',
+      [childId],
+    );
+    expect(child.rows[0]?.parent_id).toBe('parent-frozen');
+  });
+
+  it('blocks a parent cascade while a child-create reference remains pending', async () => {
+    const actor = await insertUser();
+    const parentId = await insertPage(actor, 'Referenced parent');
+    const intent = await reservePageWriteIntent({
+      pageIds: [parentId],
+      kind: 'pages.create.confluence',
+      actorId: actor,
+      effect: {
+        effectClass: 'remote',
+        parentPageId: parentId,
+        parentConfluenceId: 'parent-pending',
+        spaceKey: 'SPACE',
+        titleSha256: 'a'.repeat(64),
+        storageSha256: 'b'.repeat(64),
+      },
+    });
+
+    await expect(
+      withPageWriteTransaction([parentId], async () => undefined),
+    ).rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+    await cancelPageWriteIntentBeforeEffect(intent);
+  });
+
+  it('rolls back a hierarchy-reference completion callback that mutates its parent', async () => {
+    const actor = await insertUser();
+    const parentId = await insertPage(actor, 'Unchanged parent');
+    const intent = await reservePageWriteIntent({
+      pageIds: [parentId],
+      kind: 'pages.create.confluence',
+      actorId: actor,
+      effect: {
+        effectClass: 'remote',
+        parentPageId: parentId,
+        parentConfluenceId: 'parent-immutable',
+        spaceKey: 'SPACE',
+        titleSha256: 'a'.repeat(64),
+        storageSha256: 'b'.repeat(64),
+      },
+    });
+    await runPageWriteIntentEffect(
+      intent,
+      {
+        kind: 'remote',
+        completesRemoteWork: true,
+        terminalResult: () => ({
+          accepted: true,
+          confluenceId: 'child-immutable',
+          expectedVersion: 1,
+        }),
+      },
+      async () => undefined,
+    );
+
+    await expect(
+      completePageWriteIntent(intent, (client) =>
+        client.query(`UPDATE pages SET title = 'Mutated parent' WHERE id = $1`, [parentId])),
+    ).rejects.toMatchObject({ statusCode: 409, reason: 'stale_content_revision' });
+    const parent = await query<{ title: string }>('SELECT title FROM pages WHERE id = $1', [parentId]);
+    expect(parent.rows[0]?.title).toBe('Unchanged parent');
+    expect(await intentState(intent.id)).toMatchObject({ status: 'pending' });
+    await completePageWriteIntent(intent, async () => undefined);
+  });
+
   it('sorts multi-page locks, exposes try-lock busy, and serializes reversed callers without deadlock', async () => {
     const actor = await insertUser();
     const low = await insertPage(actor, 'Low');
@@ -430,7 +551,9 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   it('fences stale room tokens by lifecycle revision and clean release, never by TTL', async () => {
     const actor = await insertUser();
     const pageId = await insertPage(actor);
-    const admission = await admitPageRuntime(pageId, actor);
+    const admission = await admitPageRuntime(pageId, actor, 'collab_room');
+    expect(() => deferPageRequestAdmissionRelease(admission))
+      .toThrow(expect.objectContaining({ reason: 'invalid_admission_purpose' }));
     await assertFreezeBusy(pageId);
 
     await query(`UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1`, [pageId]);
@@ -451,6 +574,71 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       await client.query('ROLLBACK');
     } finally {
       client.release();
+    }
+  });
+
+  it('confirms a released admission after PostgreSQL loses its COMMIT acknowledgement', async () => {
+    const actor = await insertUser();
+    const pageId = await insertPage(actor, 'Release acknowledgement loss');
+    const admission = await admitPageRuntime(pageId, actor, 'collab_request');
+    await withLostCommitAcknowledgment(async () => {
+      await releasePageRuntime(admission);
+    });
+    await releasePageRuntime(admission);
+    await expect(withPageWriteTransaction([pageId], async () => undefined, { admission }))
+      .rejects.toMatchObject({ reason: 'admission_token_mismatch' });
+    await withPageWriteTransaction([pageId], (client) => assertPageFreezeIdle(client, pageId));
+  });
+
+  it('retains a finished request admission until deferred cleanup survives a real connection failure', async () => {
+    const actor = await insertUser();
+    const pageId = await insertPage(actor, 'Deferred request cleanup');
+    const admission = await admitPageRuntime(pageId, actor, 'collab_request');
+    const holder = await getPool().connect();
+    let releaseAttempt: Promise<unknown> | undefined;
+    let holderReleased = false;
+    try {
+      await holder.query('BEGIN');
+      await lockPageLifecycle(holder, [pageId]);
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      releaseAttempt = releasePageRuntime(admission).then(() => null, (error: unknown) => error);
+      let blockedPid: number | undefined;
+      expect(await waitForDatabaseCondition(async () => {
+        const blocked = await query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+            WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+          [holderPid],
+        );
+        blockedPid = blocked.rows[0]?.pid;
+        return blockedPid !== undefined;
+      })).toBe(true);
+      const terminated = await query<{ terminated: boolean }>(
+        'SELECT pg_terminate_backend($1) AS terminated',
+        [blockedPid],
+      );
+      expect(terminated.rows[0]!.terminated).toBe(true);
+      expect(await releaseAttempt).toBeInstanceOf(Error);
+      const stillOwned = await query<{ released_at: Date | null }>(
+        'SELECT released_at FROM page_runtime_admissions WHERE id = $1',
+        [admission.id],
+      );
+      expect(stillOwned.rows[0]!.released_at).toBeNull();
+      deferPageRequestAdmissionRelease(admission);
+      await holder.query('ROLLBACK');
+      holderReleased = true;
+      expect(await waitForDatabaseCondition(async () => {
+        const released = await query<{ released: boolean }>(
+          'SELECT released_at IS NOT NULL AS released FROM page_runtime_admissions WHERE id = $1',
+          [admission.id],
+        );
+        return released.rows[0]?.released === true;
+      }, 5_000)).toBe(true);
+      await withPageWriteTransaction([pageId], (client) => assertPageFreezeIdle(client, pageId));
+    } finally {
+      if (!holderReleased) await holder.query('ROLLBACK');
+      holder.release();
+      await releaseAttempt;
+      await releasePageRuntime(admission);
     }
   });
 
@@ -496,9 +684,9 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
   it('refuses a retirement row without a named server-proof kind', async () => {
     await expect(query(
       `INSERT INTO page_writer_runtimes
-         (runtime_id, deployment_identity, fenced_at, fence_reason, fence_proof)
-       VALUES ($1, '{}'::jsonb, NOW(), 'An empty object is not retirement evidence', '{}'::jsonb)`,
-      [`incomplete-proof-${randomUUID()}`],
+         (runtime_id, deployment_identity, enforcement_version, fenced_at, fence_reason, fence_proof)
+       VALUES ($1, '{}'::jsonb, $2, NOW(), 'An empty object is not retirement evidence', '{}'::jsonb)`,
+      [`incomplete-proof-${randomUUID()}`, PAGE_WRITER_ENFORCEMENT_VERSION],
     )).rejects.toMatchObject({ code: '23514' });
   });
 
@@ -508,9 +696,9 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const pageId = await insertPage(actor);
     const runtimeId = `partitioned-${randomUUID()}`;
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
-      [runtimeId, JSON.stringify({ host: 'partitioned-pod', pid: 41, startedAt: new Date().toISOString() })],
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
+       VALUES ($1, $2::jsonb, $3)`,
+      [runtimeId, JSON.stringify({ host: 'partitioned-pod', pid: 41, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
     );
     await query(
       `INSERT INTO page_runtime_admissions
@@ -544,9 +732,9 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const runtimeId = `crashed-pre-effect-${randomUUID()}`;
     const intentId = randomUUID();
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
-      [runtimeId, JSON.stringify({ host: 'same-db-runtime', pid: 42, startedAt: new Date().toISOString() })],
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
+       VALUES ($1, $2::jsonb, $3)`,
+      [runtimeId, JSON.stringify({ host: 'same-db-runtime', pid: 42, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
     );
     await query(
       `INSERT INTO page_runtime_admissions
@@ -593,7 +781,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     );
     expect(admission.rows[0]?.released_at).toBeInstanceOf(Date);
     expect(admission.rows[0]?.release_kind).toBe('runtime_fenced');
-    await expect(admitPageRuntime(pageId, actor, runtimeId)).rejects.toMatchObject({
+    await expect(admitPageRuntime(pageId, actor, 'collab_room', runtimeId)).rejects.toMatchObject({
       statusCode: 409,
       reason: 'runtime_fenced',
     });
@@ -617,9 +805,9 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       const runtimeId = `race-${effectStarted ? 'started' : 'reserved'}-${randomUUID()}`;
       const intentId = randomUUID();
       await query(
-        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-         VALUES ($1, $2::jsonb)`,
-        [runtimeId, JSON.stringify({ host: 'partitioned-live', pid: 43, startedAt: new Date().toISOString() })],
+        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
+         VALUES ($1, $2::jsonb, $3)`,
+        [runtimeId, JSON.stringify({ host: 'partitioned-live', pid: 43, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
       );
       const writer = await getPool().connect();
       try {
@@ -738,12 +926,13 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       const intentId = randomUUID();
       await query(
         `INSERT INTO page_writer_runtimes
-           (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
-         VALUES ($1, $2::jsonb, NOW(), $3)`,
+           (runtime_id, deployment_identity, quiesced_at, quiescence_ack, enforcement_version)
+         VALUES ($1, $2::jsonb, NOW(), $3, $4)`,
         [
           runtimeId,
           JSON.stringify({ host: 'terminated-origin', pid: 44, startedAt: new Date().toISOString() }),
           acknowledgmentId,
+          PAGE_WRITER_ENFORCEMENT_VERSION,
         ],
       );
       await query(
@@ -1292,7 +1481,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       await expect(
         withPageWriteTransaction([sqlPageId], async () => undefined),
       ).rejects.toMatchObject({ statusCode: 409, reason: 'runtime_quiescing' });
-      await expect(admitPageRuntime(sqlPageId, actor)).rejects.toMatchObject({
+      await expect(admitPageRuntime(sqlPageId, actor, 'collab_room')).rejects.toMatchObject({
         statusCode: 409,
         reason: 'runtime_quiescing',
       });

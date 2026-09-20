@@ -24,7 +24,11 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_HIERARCHY_LOCK_ID,
+} from '../../core/db/advisory-locks.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
@@ -108,6 +112,103 @@ async function seedStandaloneTree(owner: string, visibility: 'private' | 'shared
   return { root, child, grandchild };
 }
 
+async function freezePage(pageId: number, actorId: string, secretTitle = 'FROZEN PRIVATE TITLE'): Promise<void> {
+  await query(
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+     VALUES ('cascade-freeze-fixture', '{"kind":"test"}'::jsonb)
+     ON CONFLICT (runtime_id) DO NOTHING`,
+  );
+  const fixture = await query<{ intent_id: string; baseline_id: string }>(
+    `WITH ids AS (
+       SELECT gen_random_uuid() AS intent_id, gen_random_uuid() AS baseline_id
+     ), inserted AS (
+       INSERT INTO page_write_intents (
+         id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode,
+         effect, status, settled_at, settlement_reason, settlement_proof
+       )
+       SELECT ids.intent_id, 'cascade-freeze-fixture', 'baseline.prepare', $2,
+              ARRAY[p.id], jsonb_build_object(
+                p.id::text,
+                jsonb_build_object(
+                  'contentRevision', p.content_revision::text,
+                  'lifecycleRevision', p.lifecycle_revision::text
+                )
+              ),
+              'local_verified',
+              jsonb_build_object('effectClass', 'local', 'baselineId', ids.baseline_id::text),
+              'completed', NOW(), 'effect_committed', '{}'::jsonb
+         FROM ids
+         JOIN pages p ON p.id = $1
+       RETURNING id, (effect->>'baselineId')::uuid AS baseline_id
+     )
+     SELECT id::text AS intent_id, baseline_id::text FROM inserted`,
+    [pageId, actorId],
+  );
+  const page = await query<{
+    version: number;
+    content_revision: string;
+    lifecycle_revision: string;
+    body_html: string | null;
+  }>(
+    `SELECT version, content_revision::text, lifecycle_revision::text, body_html
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  const baseline = fixture.rows[0]!;
+  const state = page.rows[0]!;
+  await query(
+    `INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version,
+       content_revision, lifecycle_revision, manifest_digest, manifest,
+       manifest_bytes, title, body_html, total_bytes, reserved_bytes,
+       status, prepared_by_user_id, prepared_by_name, preparation_intent_id,
+       published_by_user_id, published_by_name, published_at, provenance, freeze_reason
+     ) VALUES (
+       $2, $1, $1, '[]'::jsonb, $3,
+       $4::bigint, $5::bigint, $6, '[]'::jsonb,
+       convert_to('[]', 'UTF8'), $7, $8, 0, 0,
+       'published', $9, 'Cascade fixture', $10,
+       $9, 'Cascade fixture', NOW(), 'manual_assertion', 'Regression freeze'
+     )`,
+    [
+      pageId,
+      baseline.baseline_id,
+      state.version,
+      state.content_revision,
+      state.lifecycle_revision,
+      '7'.repeat(64),
+      secretTitle,
+      state.body_html,
+      actorId,
+      baseline.intent_id,
+    ],
+  );
+  await query(
+    `UPDATE pages SET baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+       frozen_by_user_id = $3, frozen_by_name = 'Cascade fixture',
+       freeze_reason = 'Regression freeze', freeze_provenance = 'manual_assertion',
+       freeze_reported_signatories = '[]'::jsonb
+     WHERE id = $1`,
+    [pageId, baseline.baseline_id, actorId],
+  );
+}
+
+async function waitForAdvisoryWaiter(lockId: number, description: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND objid = $1
+            AND NOT granted
+       ) AS waiting`,
+      [lockId],
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error(`request did not wait for ${description}`);
+}
+
 /**
  * The batch key is `deleted_at` EQUALITY, so assert it in SQL:
  * `COUNT(DISTINCT deleted_at)` is exact at microsecond precision, which a JS
@@ -163,6 +264,7 @@ let currentUserId: string;
 let redis: RedisClientType;
 let confluenceServer: Server;
 let confluenceBaseUrl: string;
+let confluenceCreateBodies: Array<Record<string, unknown>> = [];
 
 describe.skipIf(!available)('cascading standalone trash (#1636) — real PostgreSQL', () => {
   beforeAll(async () => {
@@ -173,7 +275,14 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
     }) as RedisClientType;
     await redis.connect();
     setRedisClient(redis);
-    confluenceServer = createServer((_request, response) => {
+    confluenceServer = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      if (request.method === 'POST' && request.url === '/rest/api/content') {
+        confluenceCreateBodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>);
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
         id: '987654321',
@@ -203,6 +312,7 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
   beforeEach(async () => {
     await truncateAllTables();
     await redis.flushDb();
+    confluenceCreateBodies = [];
     userA = await insertUser('cascade_a');
     userB = await insertUser('cascade_b');
     currentUserId = userA;
@@ -699,9 +809,10 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
      * `source = 'standalone'` on the cascade's UPDATE is not decoration, and
      * the subtree it protects is not source-pure: a Confluence-sourced page can
      * sit inside a standalone one (`PUT /pages/:id/move` re-parents a synced
-     * page under a standalone parent and keeps its source; `POST /pages` never
-     * checks the parent's source either). Confluence owns that row's lifecycle
-     * and its sync upsert would resurrect it, so the cascade walks THROUGH it —
+     * page under a standalone parent and keeps its source; `POST /pages`
+     * deliberately permits the same source-aware local hierarchy). Confluence
+     * owns that row's lifecycle, and its sync upsert would resurrect it, so the
+     * cascade walks THROUGH it —
      * the standalone grandchild below it must still be trashed — while leaving
      * the row itself alone.
      */
@@ -713,9 +824,11 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       const local = await insertStandalonePage('Local grandchild', 'private', userA, 'NOTES', {
         parentId: 'conf-in-tree',
       });
+      await freezePage(synced, userA, 'SYNCED FROZEN SECRET');
 
       const response = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
       expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain('SYNCED FROZEN SECRET');
 
       // The standalone row below the synced one went with the cascade…
       expect(await liveIds([root, local])).toEqual([]);
@@ -726,9 +839,10 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
 
     /**
      * The same shape created the way a person reaches it: `POST /api/pages`
-     * with a Confluence-sourced body under a standalone parent never checks the
-     * parent's source, and stores `parent_id = <parent PK>` with
-     * `source = 'confluence'` (`PUT /pages/:id/move` re-parents identically).
+     * with a Confluence-sourced body under a standalone parent preserves that
+     * local hierarchy without sending the unrelated local PK to Confluence,
+     * and stores `parent_id = <parent PK>` with `source = 'confluence'`
+     * (`PUT /pages/:id/move` re-parents identically).
      *
      * Two consequences, both STATED LIMITATIONS of this PR rather than bugs to
      * fix here — a bigger blast radius than #1636 (a synced subtree belongs to
@@ -762,6 +876,8 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         },
       });
       expect(created.statusCode).toBe(200);
+      expect(confluenceCreateBodies).toHaveLength(1);
+      expect(confluenceCreateBodies[0]).not.toHaveProperty('ancestors');
 
       const syncedRows = await query<{ id: number; source: string; parent_id: string | null }>(
         'SELECT id, source, parent_id FROM pages WHERE confluence_id = $1',
@@ -864,6 +980,102 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       expect(items.find((item) => item.id === String(theirs))?.parentId).toBeNull();
     });
 
+    it('returns 423 for a frozen root and leaves the subtree unchanged', async () => {
+      const tree = await seedStandaloneTree(userA);
+      await freezePage(tree.root, userA);
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${tree.root}` });
+
+      expect(response.statusCode).toBe(423);
+      expect(response.json()).toMatchObject({ reason: 'page_is_frozen' });
+      expect((await liveIds([tree.root, tree.child, tree.grandchild])).sort()).toEqual(
+        [tree.root, tree.child, tree.grandchild].sort(),
+      );
+    });
+
+    it('refuses an authorized frozen descendant without leaking its identity or title', async () => {
+      const tree = await seedStandaloneTree(userA);
+      const privateTitle = 'AUTHORIZED FROZEN PAYROLL';
+      await freezePage(tree.grandchild, userA, privateTitle);
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${tree.root}` });
+
+      expect(response.statusCode).toBe(409);
+      const body = response.json() as { reason: string; message: string; blockedCount: number };
+      expect(body.reason).toBe('subtree_contains_frozen_page');
+      expect(body.blockedCount).toBe(1);
+      expect(body.message).toBe(
+        'This subtree contains frozen pages that are part of the authorized operation.',
+      );
+      expect(response.body).not.toContain(String(tree.grandchild));
+      expect(response.body).not.toContain(privateTitle);
+      expect((await liveIds([tree.root, tree.child, tree.grandchild])).sort()).toEqual(
+        [tree.root, tree.child, tree.grandchild].sort(),
+      );
+    });
+
+    it('walks through a deleted intermediate when checking frozen descendants', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      const deletedMiddle = await insertStandalonePage('Deleted middle', 'private', userA, 'NOTES', {
+        parentId: String(root),
+        deletedAt: new Date(),
+      });
+      const frozenLeaf = await insertStandalonePage('Frozen leaf', 'private', userA, 'NOTES', {
+        parentId: String(deletedMiddle),
+      });
+      await freezePage(frozenLeaf, userA);
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ reason: 'subtree_contains_frozen_page' });
+      expect((await liveIds([root, frozenLeaf])).sort()).toEqual([root, frozenLeaf].sort());
+    });
+
+    it('does not let a frozen foreign-owned descendant block or leak into the caller’s cascade', async () => {
+      const root = await insertStandalonePage('Alice root', 'shared', userA, 'NOTES');
+      const foreign = await insertStandalonePage('BOB PRIVATE FROZEN LEDGER', 'private', userB, 'NOTES', {
+        parentId: String(root),
+      });
+      await freezePage(foreign, userB, 'BOB PRIVATE FROZEN LEDGER');
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain(String(foreign));
+      expect(response.body).not.toContain('BOB PRIVATE FROZEN LEDGER');
+      expect(await liveIds([root])).toEqual([]);
+      expect(await liveIds([foreign])).toEqual([foreign]);
+    });
+
+    it('re-expands after a concurrent reparent holding hierarchy SHARE commits', async () => {
+      const root = await insertStandalonePage('Delete root', 'private', userA, 'NOTES');
+      const destination = await insertStandalonePage('Destination', 'private', userA, 'NOTES');
+      const child = await insertStandalonePage('Moving child', 'private', userA, 'NOTES', {
+        parentId: String(root),
+      });
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock_shared($1)', [PAGE_HIERARCHY_LOCK_ID]);
+        const pendingDelete = app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+        await waitForAdvisoryWaiter(PAGE_HIERARCHY_LOCK_ID, 'the hierarchy fence');
+        await holder.query('UPDATE pages SET parent_id = $1 WHERE id = $2', [
+          String(destination),
+          child,
+        ]);
+        await holder.query('COMMIT');
+
+        const response = await pendingDelete;
+        expect(response.statusCode).toBe(200);
+        expect(await liveIds([root])).toEqual([]);
+        expect((await liveIds([destination, child])).sort()).toEqual([destination, child].sort());
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
     /**
      * CRITICAL 3 — the ambiguity refusal. It pins the `const ambiguity = await
      * findSubtreeKeyAmbiguity(existingPage.id)` pre-flight and its 409 in the
@@ -895,13 +1107,10 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       expect(response.statusCode).toBe(409);
       const body = response.json() as { reason?: string; message?: string };
       expect(body.reason).toBe('subtree_identifier_ambiguous');
-      // The message names the page inside the CALLER'S OWN subtree and the key
-      // it stores, and deliberately NOT the colliding row: the caller has no
-      // access check against that row, so echoing its id or title would make
-      // this refusal the existence-and-name oracle the restore refusal was
-      // corrected for. Its detail goes to the log instead.
-      expect(body.message).toContain(String(PARKED_PK));
-      expect(body.message).not.toContain('DECOY LEDGER');
+      // No identifier or title is echoed: the ambiguous member itself may be
+      // an inaccessible traversal node.
+      expect(response.body).not.toContain(String(PARKED_PK));
+      expect(response.body).not.toContain('DECOY LEDGER');
       // Nothing was trashed anywhere — a refusal, not a partial cascade, and
       // in particular nothing in the decoy's tree, which is what a cascade
       // that followed the shared key would have reached.
@@ -994,18 +1203,47 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       expect(await liveIds([theirs])).toEqual([theirs]);
     });
 
+    it('coalesces overlapping selections, refuses their frozen component, and applies a safe component', async () => {
+      const root = await insertStandalonePage('Blocked root', 'private', userA, 'NOTES');
+      const selectedChild = await insertStandalonePage('Selected child', 'private', userA, 'NOTES', {
+        parentId: String(root),
+      });
+      const frozenLeaf = await insertStandalonePage(
+        'SECRET OVERLAP FROZEN LEAF',
+        'private',
+        userA,
+        'NOTES',
+        { parentId: String(selectedChild) },
+      );
+      const safe = await insertStandalonePage('Safe disjoint root', 'private', userA, 'NOTES');
+      await freezePage(frozenLeaf, userA, 'SECRET OVERLAP FROZEN LEAF');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: [String(root), String(selectedChild), String(safe)] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { succeeded: number; failed: number; errors: string[] };
+      expect(body).toMatchObject({ succeeded: 1, failed: 2 });
+      expect(body.errors).toEqual([
+        expect.stringContaining('2 selected page(s):'),
+      ]);
+      expect(body.errors[0]).toContain('Frozen page count: 1');
+      expect(body.errors.join(' ')).not.toContain(String(frozenLeaf));
+      expect(body.errors.join(' ')).not.toContain('SECRET OVERLAP FROZEN LEAF');
+      expect((await liveIds([root, selectedChild, frozenLeaf])).sort()).toEqual(
+        [root, selectedChild, frozenLeaf].sort(),
+      );
+      expect(await liveIds([safe])).toEqual([]);
+    });
+
     /**
-     * CRITICAL 3, bulk half — it pins `const ambiguity = await
-     * findSubtreeKeyAmbiguity(standaloneNumericIds)` and its 409 in
-     * `POST /pages/bulk/delete`.
-     *
-     * The ambiguity sits on a DESCENDANT of the selection, not on a selected
-     * id: `resolveBulkSelection` already refuses an ambiguous SELECTED
-     * identifier per id (#1167, reported as a `Page <id>: ambiguous
-     * identifier` failure, not a 409), and it never looks at the descendants
-     * the cascade then reaches. This case is exactly the gap between the two.
+     * An ambiguity blocks only its coalesced component. It is a descendant,
+     * not a selected id: `resolveBulkSelection` therefore cannot see it.
      */
-    it('refuses the whole batch when a descendant’s key names two pages', async () => {
+    it('refuses an ambiguous descendant’s component without leaking its identity', async () => {
       const root = await insertStandalonePage('Clean root', 'private', userA, 'NOTES');
       const middle = await insertStandalonePage('Middle', 'private', userA, 'NOTES', {
         parentId: String(root),
@@ -1021,14 +1259,12 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         url: '/api/pages/bulk/delete',
         payload: { ids: [String(root)] },
       });
-
-      expect(response.statusCode).toBe(409);
-      const body = response.json() as { reason?: string; message?: string };
-      expect(body.reason).toBe('subtree_identifier_ambiguous');
-      expect(body.message).not.toContain('DECOY LEDGER');
-      // The refusal is whole-batch and pre-cascade: the clean root the caller
-      // did select is untouched too, because one statement covers the union of
-      // the walks and there is no safe half to run.
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { succeeded: number; failed: number; errors: string[] };
+      expect(body).toMatchObject({ succeeded: 0, failed: 1 });
+      expect(body.errors.join(' ')).not.toContain(String(PARKED_PK));
+      expect(body.errors.join(' ')).not.toContain('DECOY LEDGER');
+      // The refused component is atomic.
       expect((await liveIds([root, PARKED_PK, leaf])).sort()).toEqual(
         [root, PARKED_PK, leaf].sort(),
       );
@@ -1058,6 +1294,65 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         permanent: true,
         cascadedCount: 2,
       });
+    });
+
+    it('refuses permanent destruction when an authorized descendant is frozen', async () => {
+      const tree = await seedStandaloneTree(userA);
+      await freezePage(tree.child, userA, 'PERMANENT SECRET FROZEN CHILD');
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${tree.root}?permanent=true`,
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        reason: 'subtree_contains_frozen_page',
+        blockedCount: 1,
+      });
+      expect(response.body).not.toContain(String(tree.child));
+      expect(response.body).not.toContain('PERMANENT SECRET FROZEN CHILD');
+      expect((await existingIds([tree.root, tree.child, tree.grandchild])).sort()).toEqual(
+        [tree.root, tree.child, tree.grandchild].sort(),
+      );
+    });
+
+    it('acquires lifecycle and hierarchy before waiting on the attachment barrier', async () => {
+      const page = await insertStandalonePage('Permanent lock order', 'private', userA, 'NOTES');
+      const attachmentBlocker = await getPool().connect();
+      const hierarchyProbe = await getPool().connect();
+      let pendingDelete: Promise<{ statusCode: number }> | undefined;
+      try {
+        await attachmentBlocker.query('SELECT pg_advisory_lock($1)', [
+          ATTACHMENT_SNAPSHOT_LOCK_ID,
+        ]);
+        pendingDelete = app.inject({
+          method: 'DELETE',
+          url: `/api/pages/${page}?permanent=true`,
+        });
+        await waitForAdvisoryWaiter(ATTACHMENT_SNAPSHOT_LOCK_ID, 'the attachment barrier');
+
+        const probe = await hierarchyProbe.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [PAGE_HIERARCHY_LOCK_ID],
+        );
+        if (probe.rows[0]?.acquired) {
+          await hierarchyProbe.query('SELECT pg_advisory_unlock($1)', [
+            PAGE_HIERARCHY_LOCK_ID,
+          ]);
+        }
+        expect(probe.rows[0]?.acquired).toBe(false);
+      } finally {
+        await attachmentBlocker.query('SELECT pg_advisory_unlock($1)', [
+          ATTACHMENT_SNAPSHOT_LOCK_ID,
+        ]);
+        attachmentBlocker.release();
+        hierarchyProbe.release();
+      }
+
+      const response = await pendingDelete!;
+      expect(response.statusCode).toBe(200);
+      expect(await existingIds([page])).toEqual([]);
     });
 
     it('sees a trashed subtree too — the row and its descendants are gone for good', async () => {
@@ -1241,6 +1536,20 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       expect(audits).toHaveLength(1);
       expect(audits[0]!.resource_id).toBe(String(tree.root));
       expect(audits[0]!.metadata).toMatchObject({ source: 'standalone', restoredCount: 3 });
+    });
+
+    it('returns 423 rather than restoring a frozen page', async () => {
+      const page = await insertStandalonePage('Frozen trashed page', 'private', userA, 'NOTES', {
+        deletedAt: new Date(),
+      });
+      await freezePage(page, userA);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${page}/restore` });
+
+      expect(response.statusCode).toBe(423);
+      expect(response.json()).toMatchObject({ reason: 'page_is_frozen' });
+      expect(await liveIds([page])).toEqual([]);
+      expect(await auditRows('PAGE_RESTORED')).toHaveLength(0);
     });
 
     it('leaves a descendant that was trashed separately in the trash', async () => {
@@ -1437,13 +1746,11 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       await seedPageCache(redis, [userA, userB]);
 
       const response = await app.inject({ method: 'POST', url: `/api/pages/${child}/restore` });
-
       expect(response.statusCode).toBe(409);
       const body = response.json() as { message?: string; reason?: string };
       expect(body.reason).toBe('restore_parent_ambiguous');
-      // The key is named (the caller stores it); the candidate rows are not —
-      // the caller has no access check against them.
-      expect(body.message).toContain(String(PARKED_PK));
+      // Stored keys and candidate identities remain operator-log detail.
+      expect(body.message).not.toContain(String(PARKED_PK));
       expect(body.message).not.toContain('DECOY LEDGER');
       // Still trashed: the refusal is the whole point, a silent 200 was the bug.
       expect(await liveIds([child])).toEqual([]);

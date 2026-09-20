@@ -4,6 +4,10 @@ import type {
   PageLifecycleDenialReason,
 } from '@compendiq/contracts';
 import { PAGE_GOVERNANCE_POLICY_LOCK_KEY } from '../db/advisory-locks.js';
+import { isConfluenceEnabled } from './confluence-integration.js';
+
+/** Increment only with a reviewed, migration-backed protected-writer cutover. */
+export const PAGE_WRITER_ENFORCEMENT_VERSION = 1;
 
 export interface PageBaselineGovernancePage {
   id: number;
@@ -32,6 +36,28 @@ export interface PageBaselineGovernanceCapabilities {
   proposalId: string | null;
   canApprove: boolean;
   approveDeniedReason: PageLifecycleDenialReason | null;
+}
+
+/**
+ * Shared CE admission policy for baseline creation and governed approval.
+ * Page provenance is authoritative: historical Confluence identifiers, space
+ * keys and credentials never make a non-standalone row eligible.
+ *
+ * Admission callers lock an existing explicit-off settings row through commit.
+ * Capability reads explicitly opt out, including read-only transactions.
+ * Read failures propagate; only a persisted `false` is standalone mode.
+ */
+export async function pageBaselineEligibilityDenialReason(
+  client: PoolClient,
+  input: { actorId: string; pageSource: string; lockSettings: boolean },
+): Promise<Extract<
+  PageLifecycleDenialReason,
+  'standalone_article_required' | 'confluence_integration_enabled'
+> | null> {
+  if (input.pageSource !== 'standalone') return 'standalone_article_required';
+  return await isConfluenceEnabled(input.actorId, client, input.lockSettings)
+    ? 'confluence_integration_enabled'
+    : null;
 }
 
 export interface PreparedGovernanceEvidence {
@@ -148,7 +174,7 @@ export interface DeploymentReadiness {
   blockers: string[];
 }
 
-export type PageBaselineReadinessProvider = () => Promise<DeploymentReadiness>;
+export type PageBaselineReadinessProvider = (client: PoolClient) => Promise<DeploymentReadiness>;
 
 let readinessProvider: PageBaselineReadinessProvider | null = null;
 
@@ -159,8 +185,25 @@ export function setPageBaselineReadinessProvider(
   readinessProvider = provider;
 }
 
+/** Install only after the collaboration, sync and cascade writers are registered. */
+export function registerPageBaselineEnforcementReadiness(): void {
+  setPageBaselineReadinessProvider(async (client) => {
+    const incompatible = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM page_writer_runtimes
+          WHERE fenced_at IS NULL AND quiesced_at IS NULL
+            AND enforcement_version <> $1
+       ) AS exists`,
+      [PAGE_WRITER_ENFORCEMENT_VERSION],
+    );
+    return incompatible.rows[0]?.exists === false
+      ? { ready: true, blockers: [] }
+      : { ready: false, blockers: ['incompatible_page_writer_runtime'] };
+  });
+}
+
 /** Default is deliberately disabled; no startup path activates creation. */
-export async function getPageBaselineDeploymentReadiness(): Promise<DeploymentReadiness> {
+export async function getPageBaselineDeploymentReadiness(client: PoolClient): Promise<DeploymentReadiness> {
   if (!readinessProvider) {
     return {
       ready: false,
@@ -168,7 +211,7 @@ export async function getPageBaselineDeploymentReadiness(): Promise<DeploymentRe
     };
   }
   try {
-    const result = await readinessProvider();
+    const result = await readinessProvider(client);
     const blockers = Array.from(new Set(result.blockers.filter((item) => item.length > 0))).slice(0, 100);
     return {
       ready: result.ready && blockers.length === 0,

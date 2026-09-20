@@ -82,6 +82,11 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
     admin = users.rows.find((row) => row.username === 'baseline-admin')!.id;
     owner = users.rows.find((row) => row.username === 'baseline-owner')!.id;
     reader = users.rows.find((row) => row.username === 'baseline-reader')!.id;
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled)
+       SELECT id, FALSE FROM users WHERE id = ANY($1::uuid[])`,
+      [[admin, owner, reader]],
+    );
     const page = await query<{ id: number }>(
       `INSERT INTO pages (source, title, body_html, body_storage, body_text, visibility, created_by_user_id)
        VALUES ('standalone', 'Reviewed document', '<p>Approved text</p>', '<p>Approved text</p>', 'Approved text', 'shared', $1)
@@ -135,6 +140,68 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
       },
     });
   }
+
+  it('keeps advertised lifecycle capabilities aligned with direct preview admission', async () => {
+    await query(
+      'UPDATE user_settings SET confluence_enabled = TRUE WHERE user_id = $1',
+      [owner],
+    );
+    const enabledDetail = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}`,
+      headers: { 'x-test-user': owner },
+    });
+    expect(enabledDetail.statusCode, enabledDetail.body).toBe(200);
+    expect(enabledDetail.json()).toMatchObject({
+      canFreeze: false,
+      freezeDeniedReason: 'confluence_integration_enabled',
+      canApprove: false,
+      approveDeniedReason: 'confluence_integration_enabled',
+    });
+    expect((await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/freeze-preview`,
+      headers: { 'x-test-user': owner },
+    })).statusCode).toBe(409);
+
+    await query(
+      'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+      [owner],
+    );
+    await query(
+      `WITH role AS (
+         INSERT INTO roles (name, display_name, permissions)
+         VALUES ('imported-baseline-manager', 'Imported baseline manager', ARRAY['read', 'edit', 'manage'])
+         RETURNING id
+       )
+       INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       SELECT 'IMPORTED-BASELINE', 'user', $1, id FROM role`,
+      [owner],
+    );
+    await query(
+      `UPDATE pages
+          SET source = 'confluence', confluence_id = 'previously-synced-route', space_key = 'IMPORTED-BASELINE'
+        WHERE id = $1`,
+      [pageId],
+    );
+    const importedDetail = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}`,
+      headers: { 'x-test-user': owner },
+    });
+    expect(importedDetail.statusCode, importedDetail.body).toBe(200);
+    expect(importedDetail.json()).toMatchObject({
+      canFreeze: false,
+      freezeDeniedReason: 'standalone_article_required',
+      canApprove: false,
+      approveDeniedReason: 'standalone_article_required',
+    });
+    expect((await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/freeze-preview`,
+      headers: { 'x-test-user': owner },
+    })).statusCode).toBe(409);
+  });
 
   it('serializes repeated freeze/thaw requests without duplicate transitions or rewriting a same-version snapshot', async () => {
     const existing = await query<{ id: string }>(
@@ -656,7 +723,7 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
       pageIds: [pageId], actorId: owner, kind: 'attachment.local.put',
       effect: { effectClass: 'local', pageId, files: [] },
     }) : null;
-    const admission = kind === 'editor' ? await admitPageRuntime(pageId, owner) : null;
+    const admission = kind === 'editor' ? await admitPageRuntime(pageId, owner, 'collab_room') : null;
     try {
       expect((await freeze(prepared)).statusCode).toBe(409);
       expect((await query(

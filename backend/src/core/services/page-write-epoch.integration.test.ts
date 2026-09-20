@@ -64,6 +64,11 @@ describe.skipIf(!available)('SQL-only writer epoch — real PostgreSQL', () => {
       [`epoch-admin-${randomUUID()}`],
     );
     const administratorId = administrator.rows[0]!.id;
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled)
+       VALUES ($1, FALSE), ($2, FALSE)`,
+      [actorId, administratorId],
+    );
     const page = await query<{ id: number }>(
       `INSERT INTO pages (title, body_html, source, visibility, created_by_user_id)
        VALUES ('Original', '<p>Original</p>', 'standalone', 'private', $1) RETURNING id`,

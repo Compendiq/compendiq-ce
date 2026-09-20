@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
-import { syncUser, getSyncStatus, setSyncStatus, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
+import { syncUser, getSyncStatus, setSyncStatus } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';

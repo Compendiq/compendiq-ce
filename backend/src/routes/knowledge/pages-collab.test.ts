@@ -7,11 +7,14 @@
  * refresh, second connection syncs. This file fails if the server 401s the
  * handshake (`onRequest authenticate` throw → close 1006).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import * as jose from 'jose';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
@@ -33,7 +36,7 @@ import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
-import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
+import { COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
@@ -49,7 +52,7 @@ import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { __internal as syncInternal } from '../../domains/confluence/services/sync-service.js';
+import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
@@ -61,6 +64,8 @@ const SYNC_UPDATE = 2;
 const MESSAGE_AWARENESS = 1;
 
 let app: FastifyInstance;
+const writableSessionRevisions = new WeakMap<object, string>();
+const EMPTY_DOCUMENT_STATE = Buffer.from(Y.encodeSnapshot(Y.emptySnapshot)).toString('base64');
 let baseWs: string;
 
 async function createUser(
@@ -103,7 +108,17 @@ async function insertStandalone(opts: {
       opts.deleted ? new Date() : null,
     ],
   );
+
   return r.rows[0]!.id;
+}
+async function pageLifecycleRevision(pageId: number): Promise<string> {
+  const state = await query<{ lifecycle_revision: string }>(
+    'SELECT lifecycle_revision::text FROM pages WHERE id = $1',
+    [pageId],
+  );
+  const revision = state.rows[0]?.lifecycle_revision;
+  if (!revision) throw new Error('collaboration test page is missing');
+  return revision;
 }
 
 async function insertConfluencePage(opts: {
@@ -137,19 +152,6 @@ async function seedConfluenceCredentials(userId: string): Promise<void> {
   );
 }
 
-function typeParagraphIntoRoom(pageId: number, text: string): void {
-  const room = getDefaultCollabRuntime()?.getRoom(pageId);
-  expect(room).toBeDefined();
-  room!.doc.transact(() => {
-    const fragment = room!.doc.getXmlFragment('default');
-    const p = new Y.XmlElement('paragraph');
-    const t = new Y.XmlText();
-    t.insert(0, text);
-    p.insert(0, [t]);
-    fragment.push([p]);
-  });
-}
-
 async function grantSpaceRead(userId: string, spaceKey: string): Promise<void> {
   await query(
     `INSERT INTO roles (name, display_name, is_system, permissions)
@@ -166,15 +168,11 @@ async function grantSpaceRead(userId: string, spaceKey: string): Promise<void> {
     [spaceKey, userId, roleRes.rows[0]!.id],
   );
 }
-
 async function openAndSync(pageId: number, token: string): Promise<WebSocket> {
-  const ws = openWhatwg(pageId, token);
+  const ws = await openWritableWhatwg(pageId, token);
   await waitOpen(ws);
   const doc = new Y.Doc();
-  ws.send(encodeSyncStep1(doc));
-  const reply = await waitMessage(ws);
-  expect(reply[0]).toBe(MESSAGE_SYNC);
-  expect(reply[1]).toBe(SYNC_STEP2);
+  await exchangeSyncStep1(ws, doc);
   return ws;
 }
 
@@ -249,30 +247,47 @@ function waitOpen(ws: WebSocket, timeoutMs = 8_000): Promise<void> {
     });
   });
 }
+function waitMessage(
+  ws: WebSocket,
+  accept: (frame: Uint8Array) => boolean = () => true,
+  timeoutMs = 8_000,
+): Promise<Uint8Array> {
+  const { promise, resolve, reject } = Promise.withResolvers<Uint8Array>();
+  const timer = setTimeout(() => reject(new Error('timeout waiting for websocket message')), timeoutMs);
+  const finish = (frame: Uint8Array): void => {
+    if (!accept(frame)) return;
+    clearTimeout(timer);
+    ws.removeEventListener('message', onMsg);
+    resolve(frame);
+  };
+  const onMsg = (ev: MessageEvent) => {
+    const data = ev.data;
+    if (data instanceof ArrayBuffer) {
+      finish(new Uint8Array(data));
+      return;
+    }
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      void data.arrayBuffer().then((buf) => finish(new Uint8Array(buf)), reject);
+      return;
+    }
+    if (typeof data === 'string') finish(new TextEncoder().encode(data));
+  };
+  ws.addEventListener('message', onMsg);
+  return promise;
+}
 
-function waitMessage(ws: WebSocket, timeoutMs = 8_000): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout waiting for websocket message')), timeoutMs);
-    const onMsg = (ev: MessageEvent) => {
-      clearTimeout(timer);
-      ws.removeEventListener('message', onMsg);
-      const data = ev.data;
-      if (data instanceof ArrayBuffer) {
-        resolve(new Uint8Array(data));
-        return;
-      }
-      if (typeof Blob !== 'undefined' && data instanceof Blob) {
-        void data.arrayBuffer().then((buf) => resolve(new Uint8Array(buf)));
-        return;
-      }
-      if (typeof data === 'string') {
-        resolve(new TextEncoder().encode(data));
-        return;
-      }
-      reject(new Error(`unexpected message type ${typeof data}`));
-    };
-    ws.addEventListener('message', onMsg);
-  });
+function waitSyncStep2(ws: WebSocket, timeoutMs = 8_000): Promise<Uint8Array> {
+  return waitMessage(
+    ws,
+    (frame) => frame[0] === MESSAGE_SYNC && frame[1] === SYNC_STEP2,
+    timeoutMs,
+  );
+}
+
+function exchangeSyncStep1(ws: WebSocket, doc: Y.Doc): Promise<Uint8Array> {
+  const reply = waitSyncStep2(ws);
+  ws.send(encodeSyncStep1(doc));
+  return reply;
 }
 
 function openWhatwg(pageId: number, token: string, extraQuery = ''): WebSocket {
@@ -280,6 +295,34 @@ function openWhatwg(pageId: number, token: string, extraQuery = ''): WebSocket {
   const ws = new WebSocket(url, [COLLAB_WS_PROTOCOL, token]);
   ws.binaryType = 'arraybuffer';
   return ws;
+}
+
+async function openWritableWhatwg(pageId: number, token: string): Promise<WebSocket> {
+  const revision = await pageLifecycleRevision(pageId);
+  const ws = openWhatwg(
+    pageId,
+    token,
+    `?expectedLifecycleRevision=${encodeURIComponent(revision)}`,
+  );
+  const admitted = await waitControl(
+    ws,
+    (control) => control.type === 'writable_admission',
+  );
+  if (admitted.lifecycleRevision !== revision) {
+    throw new Error('writable acknowledgement lifecycle revision changed during join');
+  }
+  writableSessionRevisions.set(ws, revision);
+  return ws;
+}
+
+function commitPayload(ws: WebSocket, title: string, documentState = Y.emptySnapshot): CollabCommit {
+  const expectedLifecycleRevision = writableSessionRevisions.get(ws);
+  if (!expectedLifecycleRevision) throw new Error('writable test session revision is missing');
+  return {
+    title,
+    expectedLifecycleRevision,
+    expectedDocumentState: Buffer.from(Y.encodeSnapshot(documentState)).toString('base64'),
+  };
 }
 
 beforeAll(async () => {
@@ -302,6 +345,7 @@ beforeEach(async () => {
   if (!canRun) return;
   await _resetCollabRoomsForTest();
   await truncateAllTables();
+  await withPageWriteTransaction([], async () => undefined);
   await disableCollabFlag();
 });
 
@@ -348,10 +392,7 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     expect(second.protocol).not.toBe(token);
 
     const doc = new Y.Doc();
-    second.send(encodeSyncStep1(doc));
-    const reply = await waitMessage(second);
-    expect(reply[0]).toBe(MESSAGE_SYNC);
-    expect(reply[1]).toBe(SYNC_STEP2);
+    await exchangeSyncStep1(second, doc);
     second.close();
   });
 
@@ -427,14 +468,19 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     });
     expect(ws.protocol).not.toBe(token);
     const doc = new Y.Doc();
+    const { promise: replyPromise, resolve: resolveReply, reject: rejectReply } =
+      Promise.withResolvers<Uint8Array>();
+    const t = setTimeout(() => rejectReply(new Error('auth header ws message timeout')), 8_000);
+    const onMessage = (data: unknown): void => {
+      const frame = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+      if (frame[0] !== MESSAGE_SYNC || frame[1] !== SYNC_STEP2) return;
+      clearTimeout(t);
+      ws.off('message', onMessage);
+      resolveReply(frame);
+    };
+    ws.on('message', onMessage);
     ws.send(encodeSyncStep1(doc));
-    const reply = await new Promise<Uint8Array>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('auth header ws message timeout')), 8_000);
-      ws.once('message', (data) => {
-        clearTimeout(t);
-        resolve(data instanceof Uint8Array ? data : new Uint8Array(data as Buffer));
-      });
-    });
+    const reply = await replyPromise;
     expect(reply[0]).toBe(MESSAGE_SYNC);
     ws.close();
   });
@@ -483,14 +529,23 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
     );
     await enableCollabFlag();
 
+    const controls: TestControl[] = [];
     const ws = openWhatwg(pageId, viewer.token);
+    ws.addEventListener('message', (event) => {
+      if (!(event.data instanceof ArrayBuffer)) return;
+      const control = decodeControl(new Uint8Array(event.data));
+      if (control) controls.push(control);
+    });
     await waitOpen(ws);
-
+    await vi.waitFor(() => {
+      expect(controls).toContainEqual({
+        type: 'permission_loss',
+        reason: 'edit_permission_revoked',
+      });
+      expect(controls.some((control) => control.type === 'writable_admission')).toBe(false);
+    });
     const doc = new Y.Doc();
-    ws.send(encodeSyncStep1(doc));
-    const step2 = await waitMessage(ws);
-    expect(step2[0]).toBe(MESSAGE_SYNC);
-    expect(step2[1]).toBe(SYNC_STEP2);
+    await exchangeSyncStep1(ws, doc);
 
     const update = encodeSyncUpdate(new Uint8Array([1, 2, 3, 4]));
     const step2Frame = new Uint8Array([MESSAGE_SYNC, SYNC_STEP2, 0]);
@@ -560,16 +615,32 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
     const closedP = waitClose(ws);
 
     const { __internal } = await import('../../domains/confluence/services/sync-service.js');
-    const client = {
-      async getAllPageIds() { return new Set<string>(); },
-      async getPage() { throw new ConfluenceError('Resource not found', 404); },
-    };
-    await __internal.detectDeletedPages(client as never, spaceKey, {
-      pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0,
+    const upstream = createServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://confluence.test');
+      response.setHeader('content-type', 'application/json');
+      if (url.pathname === '/rest/api/content' && url.searchParams.get('spaceKey') === spaceKey) {
+        response.end(JSON.stringify({ results: [], _links: {} }));
+      } else if (url.pathname === `/rest/api/content/${confluenceId}`) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: 'Page removed' }));
+      } else {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ message: 'Unexpected Confluence request' }));
+      }
     });
-
-    const closed = await closedP;
-    expect(closed.code).toBe(4404);
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = upstream.address();
+      if (!address || typeof address === 'string') throw new Error('Confluence HTTP fixture did not bind TCP');
+      const client = new ConfluenceClient(`http://127.0.0.1:${address.port}`, 'disposable-pat');
+      await __internal.detectDeletedPages(client, spaceKey, {
+        pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0,
+      });
+      const closed = await closedP;
+      expect(closed.code).toBe(4404);
+    } finally {
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('Confluence-intent rollback does not 4404 permanently', async () => {
@@ -590,9 +661,7 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
     expect(ws.readyState).toBe(WebSocket.OPEN);
 
     const doc = new Y.Doc();
-    ws.send(encodeSyncStep1(doc));
-    const reply = await waitMessage(ws);
-    expect(reply[0]).toBe(MESSAGE_SYNC);
+    await exchangeSyncStep1(ws, doc);
 
     const closedP = waitClose(ws);
     await tombstoneCollabRoomAfterCommit(pageId);
@@ -607,7 +676,7 @@ describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
     await enableCollabFlag();
 
-    const ws = openWhatwg(pageId, token);
+    const ws = await openWritableWhatwg(pageId, token);
     await waitOpen(ws);
 
     // Wait longer than half the TTL. Without ping renewal remaining TTL
@@ -667,31 +736,106 @@ function applySyncFrame(doc: Y.Doc, buf: Uint8Array): void {
   syncProtocol.readSyncMessage(decoder, encoder, doc, 'client');
 }
 
-function decodeControl(buf: Uint8Array): { type: string; version?: number } | null {
+type TestControl = { type: string; version?: number; [key: string]: unknown };
+
+function decodeControl(buf: Uint8Array): TestControl | null {
   const decoder = decoding.createDecoder(buf);
   const type = decoding.readVarUint(decoder);
   if (type !== MESSAGE_CONTROL) return null;
-  return JSON.parse(decoding.readVarString(decoder)) as { type: string; version?: number };
+  return JSON.parse(decoding.readVarString(decoder)) as TestControl;
 }
 
-function waitControl(ws: WebSocket, timeoutMs = 8_000): Promise<{ type: string; version?: number }> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout waiting for type-4 control')), timeoutMs);
-    const onMsg = (ev: MessageEvent) => {
-      const data = ev.data;
-      const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : null;
-      if (!buf) return;
-      const control = decodeControl(buf);
-      if (!control) return;
-      clearTimeout(timer);
-      ws.removeEventListener('message', onMsg);
-      resolve(control);
-    };
-    ws.addEventListener('message', onMsg);
-  });
+function waitControl(
+  ws: WebSocket,
+  accept: (control: TestControl) => boolean = () => true,
+  timeoutMs = 8_000,
+): Promise<TestControl> {
+  const { promise, resolve, reject } = Promise.withResolvers<TestControl>();
+  const timer = setTimeout(() => reject(new Error('timeout waiting for type-4 control')), timeoutMs);
+  const onMsg = (ev: MessageEvent) => {
+    const data = ev.data;
+    const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+    if (!buf) return;
+    const control = decodeControl(buf);
+    if (!control || !accept(control)) return;
+    clearTimeout(timer);
+    ws.removeEventListener('message', onMsg);
+    resolve(control);
+  };
+  ws.addEventListener('message', onMsg);
+  return promise;
 }
 
 describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit standalone (#1445)', () => {
+  it.each(['insert', 'delete'] as const)(
+    'does not acknowledge a client %s until the snapshot includes it',
+    async (change) => {
+      const { token, userId } = await createUser(`collab_unreceived_${change}`);
+      const pageId = await insertStandalone({
+        ownerId: userId,
+        bodyHtml: '<p>not-yet-deleted</p>',
+      });
+      await enableCollabFlag();
+      const ws = await openWritableWhatwg(pageId, token);
+      const doc = new Y.Doc();
+      try {
+        applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+        const fragment = doc.getXmlFragment('default');
+        if (change === 'insert') {
+          const paragraph = new Y.XmlElement('paragraph');
+          const text = new Y.XmlText();
+          text.insert(0, 'inserted locally');
+          paragraph.insert(0, [text]);
+          fragment.insert(fragment.length, [paragraph]);
+        } else {
+          const clocksBefore = Y.encodeStateVector(doc);
+          const paragraph = fragment.get(0);
+          if (!(paragraph instanceof Y.XmlElement)) throw new Error('Expected a paragraph');
+          const text = paragraph.get(0);
+          if (!(text instanceof Y.XmlText)) throw new Error('Expected paragraph text');
+          text.delete(0, text.length);
+          // A vector-only guard would miss this real local mutation.
+          expect(Y.encodeStateVector(doc)).toEqual(clocksBefore);
+        }
+        const payload = commitPayload(ws, 'Captured draft', Y.snapshot(doc));
+        const missing = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload,
+        });
+        expect(missing.statusCode).toBe(409);
+        expect(missing.json().reason).toBe('collab_snapshot_not_received');
+        const unchanged = await query<{ body_html: string; version: number }>(
+          'SELECT body_html, version FROM pages WHERE id = $1',
+          [pageId],
+        );
+        expect(unchanged.rows[0]).toEqual({ body_html: '<p>not-yet-deleted</p>', version: 1 });
+
+        ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+        // The reply is ordered after the update on the same socket/frame chain.
+        applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+        const committed = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload,
+        });
+        expect(committed.statusCode).toBe(200);
+        const saved = await query<{ body_text: string; version: number }>(
+          'SELECT body_text, version FROM pages WHERE id = $1',
+          [pageId],
+        );
+        expect(saved.rows[0]!.version).toBe(2);
+        if (change === 'insert') expect(saved.rows[0]!.body_text).toContain('inserted locally');
+        else expect(saved.rows[0]!.body_text.trim()).toBe('');
+      } finally {
+        ws.close();
+        doc.destroy();
+      }
+    },
+  );
+
   it('two concurrent commits do not 409 each other (retry once) and broadcast pages_version', async () => {
     const { token, userId } = await createUser('collab_commit');
     const pageId = await insertStandalone({
@@ -701,11 +845,10 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit standalone (#1445)',
     });
     await enableCollabFlag();
 
-    const ws = openWhatwg(pageId, token);
+    const ws = await openWritableWhatwg(pageId, token);
     await waitOpen(ws);
     const ydoc = new Y.Doc();
-    ws.send(encodeSyncStep1(ydoc));
-    const reply = await waitMessage(ws);
+    const reply = await exchangeSyncStep1(ws, ydoc);
     applySyncFrame(ydoc, reply);
 
     const controlP = waitControl(ws);
@@ -714,13 +857,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit standalone (#1445)',
         method: 'POST',
         url: `/api/pages/${pageId}/collab/commit`,
         headers: { authorization: `Bearer ${token}` },
-        payload: { title: 'Committed A' },
+        payload: commitPayload(ws, 'Committed A'),
       }),
       app.inject({
         method: 'POST',
         url: `/api/pages/${pageId}/collab/commit`,
         headers: { authorization: `Bearer ${token}` },
-        payload: { title: 'Committed B' },
+        payload: commitPayload(ws, 'Committed B'),
       }),
     ]);
 
@@ -741,6 +884,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit standalone (#1445)',
     expect(page.rows[0]!.version).toBe(3);
     expect(page.rows[0]!.summary_status).toBe('pending');
     expect(page.rows[0]!.quality_status).toBe('pending');
+    const activeAdmissions = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL`,
+      [pageId],
+    );
+    expect(activeAdmissions.rows[0]?.count).toBe('1');
     ws.close();
   });
 });
@@ -848,8 +998,7 @@ describe.skipIf(!canRun)('competing writers 409 while room live (#1445)', () => 
     const second = openWhatwg(pageId, token);
     await waitOpen(second);
     const doc = new Y.Doc();
-    second.send(encodeSyncStep1(doc));
-    const reply = await waitMessage(second);
+    const reply = await exchangeSyncStep1(second, doc);
     applySyncFrame(doc, reply);
     const xml = doc.getXmlFragment('default').toString();
     expect(xml).toContain('AFTER_HTML_WRITE');
@@ -961,11 +1110,19 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
       bodyHtml: '<p>ORIGINAL_HTML</p>',
     });
     await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
 
     const redis = getRedisClient()!;
     const podA = await createCollabRuntime(redis, 'commit-pod-a');
     try {
-      const roomA = await podA.getOrCreateRoom(pageId);
+      await podA.attachSocket(pageId, {
+        id: 'pod-a-writer',
+        ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+        userId,
+        writable: true,
+        expectedLifecycleRevision: editingRevision,
+      });
+      const roomA = podA.getRoom(pageId)!;
       const frag = roomA.doc.getXmlFragment('default');
       const walk = (n: Y.XmlFragment | Y.XmlElement): boolean => {
         for (let i = 0; i < n.length; i++) {
@@ -984,7 +1141,11 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
         method: 'POST',
         url: `/api/pages/${pageId}/collab/commit`,
         headers: { authorization: `Bearer ${token}` },
-        payload: { title: 'From B' },
+        payload: {
+          title: 'From B',
+          expectedLifecycleRevision: editingRevision,
+          expectedDocumentState: Buffer.from(Y.encodeSnapshot(Y.snapshot(roomA.doc))).toString('base64'),
+        },
       });
       expect(res.statusCode).toBe(200);
       const page = await query<{ body_html: string }>(
@@ -992,12 +1153,82 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
         [pageId],
       );
       expect(page.rows[0]!.body_html).toContain('FROM_POD_A');
+      const activeAdmissions = await query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM page_runtime_admissions
+          WHERE page_id = $1 AND released_at IS NULL`,
+        [pageId],
+      );
+      expect(activeAdmissions.rows[0]?.count).toBe('1');
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      expect(yDocToHtml(roomA.doc)).toContain('FROM_POD_A');
     } finally {
       await podA.close();
     }
   });
 
-  it('commit times out waiting for dump with 503, not a stale BYTEA 200', async () => {
+  it('stale cross-pod commit is refused before requesting a state dump', async () => {
+    const { token, userId } = await createUser('collab_dump_stale');
+    const pageId = await insertStandalone({
+      ownerId: userId,
+      visibility: 'shared',
+      bodyHtml: '<p>SESSION_BODY</p>',
+    });
+    await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
+    const redis = getRedisClient()!;
+    const podA = await createCollabRuntime(redis, 'stale-commit-pod-a');
+    const publish = vi.spyOn(redis, 'publish');
+    try {
+      await podA.attachSocket(pageId, {
+        id: 'stale-pod-a-writer',
+        ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+        userId,
+        writable: true,
+        expectedLifecycleRevision: editingRevision,
+      });
+      await query(
+        'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+        [pageId],
+      );
+      publish.mockClear();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          title: 'Must not request state',
+          expectedLifecycleRevision: editingRevision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().reason).toBe('stale_lifecycle');
+      expect(publish.mock.calls.some(([, value]) => {
+        try {
+          const parsed: unknown = JSON.parse(String(value));
+          return parsed !== null
+            && typeof parsed === 'object'
+            && 'kind' in parsed
+            && parsed.kind === 'state_dump_request';
+        } catch {
+          return false;
+        }
+      })).toBe(false);
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+    } finally {
+      await query(
+        'UPDATE pages SET lifecycle_revision = $2::bigint WHERE id = $1',
+        [pageId, editingRevision],
+      );
+      publish.mockRestore();
+      await podA.close();
+    }
+  });
+
+  it('ignores Redis liveness when fresh snapshot ownership cannot be proven', async () => {
     const { token, userId } = await createUser('collab_dump_503');
     const pageId = await insertStandalone({
       ownerId: userId,
@@ -1005,6 +1236,7 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
       bodyHtml: '<p>STALE_BYTEA_BODY</p>',
     });
     await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
     const doc = new Y.Doc();
     doc.getXmlFragment('default');
     await query(
@@ -1019,19 +1251,23 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Should 503' },
+      payload: {
+        title: 'Must not trust Redis liveness',
+        expectedLifecycleRevision: editingRevision,
+        expectedDocumentState: EMPTY_DOCUMENT_STATE,
+      },
     });
     expect(res.statusCode).toBe(503);
+    expect(res.json().reason).toBe('collab_state_unavailable');
     const page = await query<{ title: string; body_html: string }>(
       'SELECT title, body_html FROM pages WHERE id = $1',
       [pageId],
     );
-    expect(page.rows[0]!.title).not.toBe('Should 503');
+    expect(page.rows[0]!.title).not.toBe('Must not trust Redis liveness');
     expect(page.rows[0]!.body_html).toContain('STALE_BYTEA_BODY');
 
-    // Dump-wait must not leave an unattached persistable heap room or this
-    // pod's :room member; a leftover room would 200 the next commit from
-    // stale BYTEA and 409 PUT even after the ghost is gone.
+    // No request-local room/admission may turn the Redis member into proof of
+    // a writable collaborator or make stale BYTEA publishable.
     const runtime = getDefaultCollabRuntime();
     expect(runtime?.getRoom(pageId)).toBeUndefined();
     const members = await getRedisClient()!.sMembers(`collab:active:${pageId}`);
@@ -1042,19 +1278,28 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Should 503 again' },
+      payload: {
+        title: 'Must still not trust Redis liveness',
+        expectedLifecycleRevision: editingRevision,
+        expectedDocumentState: EMPTY_DOCUMENT_STATE,
+      },
     });
     expect(again.statusCode).toBe(503);
+    expect(again.json().reason).toBe('collab_state_unavailable');
 
     await getRedisClient()!.sRem(`collab:active:${pageId}`, 'ghost-pod:conn');
     const afterGhost = await app.inject({
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Bytea fallback' },
+      payload: {
+        title: 'BYTEA fallback remains forbidden',
+        expectedLifecycleRevision: editingRevision,
+        expectedDocumentState: EMPTY_DOCUMENT_STATE,
+      },
     });
-    expect(afterGhost.statusCode).toBe(200);
-    expect(afterGhost.json().version).toBe(2);
+    expect(afterGhost.statusCode).toBe(503);
+    expect(afterGhost.json().reason).toBe('collab_state_unavailable');
 
     const put = await app.inject({
       method: 'PUT',
@@ -1077,6 +1322,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     userId: string;
     pageId: number;
     confluenceId: string;
+    spaceKey: string;
     ws: WebSocket;
   }> {
     const { token, userId } = await createUser(`collab_cf_${pageIdEntropy()}`);
@@ -1092,8 +1338,73 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     await seedConfluenceCredentials(userId);
     await enableCollabFlag();
     const ws = await openAndSync(pageId, token);
-    return { token, userId, pageId, confluenceId, ws };
+    return { token, userId, pageId, confluenceId, spaceKey, ws };
   }
+
+  async function createPastedImageRoot(filename = 'pasted.png'): Promise<{
+    root: string;
+    priorRoot: string | undefined;
+  }> {
+    const root = await fs.promises.mkdtemp(path.join(tmpdir(), 'collab-media-'));
+    await fs.promises.mkdir(path.join(root, 'local-src'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(root, 'local-src', filename),
+      Buffer.from('planned pasted image bytes'),
+    );
+    const priorRoot = process.env.ATTACHMENTS_DIR;
+    process.env.ATTACHMENTS_DIR = root;
+    return { root, priorRoot };
+  }
+
+  async function removePastedImageRoot(
+    root: string,
+    priorRoot: string | undefined,
+  ): Promise<void> {
+    if (priorRoot === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = priorRoot;
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+
+
+  it('stale session lifecycle is refused before Confluence effects and retains the room', async () => {
+    const { token, pageId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const sessionRevision = writableSessionRevisions.get(ws);
+    if (!sessionRevision) throw new Error('writable test session revision is missing');
+    await query(
+      'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+      [pageId],
+    );
+    const getPage = vi.spyOn(ConfluenceClient.prototype, 'getPage');
+    const updateAttachment = vi.spyOn(ConfluenceClient.prototype, 'updateAttachment');
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage');
+
+    try {
+      const commit = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          title: 'Stale session must not publish',
+          expectedLifecycleRevision: sessionRevision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        },
+      });
+
+      expect(commit.statusCode).toBe(409);
+      expect(commit.json().reason).toBe('stale_lifecycle');
+      expect(getPage).not.toHaveBeenCalled();
+      expect(updateAttachment).not.toHaveBeenCalled();
+      expect(updatePage).not.toHaveBeenCalled();
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)?.doc).toBeDefined();
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      await query(
+        'UPDATE pages SET lifecycle_revision = $2::bigint WHERE id = $1',
+        [pageId, sessionRevision],
+      );
+      ws.close();
+    }
+  });
 
   it('remote version moved → 409 confluence_modified, no updatePage, local version unchanged, room live', async () => {
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
@@ -1112,7 +1423,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Should not land' },
+      payload: commitPayload(ws, 'Should not land'),
     });
 
     expect(res.statusCode).toBe(409);
@@ -1143,7 +1454,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         version: { number: 4, when: '2026-08-24T00:00:00Z' },
       } as never;
     });
-    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async () => {
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
       order.push('updatePage');
       const still = await query<{ version: number; last_synced: Date | null }>(
         'SELECT version, last_synced FROM pages WHERE id = $1',
@@ -1152,11 +1463,11 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       expect(still.rows[0]!.version).toBe(4);
       return {
         id: confluenceId,
-        title: 'Pushed',
+        title,
         status: 'current',
         type: 'page',
         version: { number: 5, when: '2026-08-24T00:01:00Z' },
-        body: { storage: { value: '<p>from-confluence</p>' } },
+        body: { storage: { value: storage } },
       } as never;
     });
 
@@ -1164,10 +1475,10 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Pushed' },
+      payload: commitPayload(ws, 'Pushed'),
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toMatchObject({
       id: pageId,
       title: 'Pushed',
@@ -1196,13 +1507,321 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     );
     expect(page.rows[0]!.version).toBe(5);
     expect(page.rows[0]!.title).toBe('Pushed');
-    expect(page.rows[0]!.body_storage).toBeTruthy();
+    expect(page.rows[0]!.body_storage).toBe('<p>commit-seed</p>');
     expect(page.rows[0]!.last_synced).not.toBeNull();
     expect(page.rows[0]!.local_modified_at).toBeNull();
     expect(page.rows[0]!.summary_status).toBe('pending');
     expect(page.rows[0]!.quality_status).toBe('pending');
     expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
     ws.close();
+  });
+
+  it('reserves terminal-only durable ownership before the first pasted-image mutation', async () => {
+    const fixture = await createPastedImageRoot();
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({
+      version: 4,
+      bodyHtml: '<p>image</p><img src="/api/attachments/local-src/pasted.png">',
+    });
+    try {
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: 4, when: '2026-09-20T00:00:00Z' },
+      } as never);
+      const updateAttachment = vi.spyOn(
+        ConfluenceClient.prototype,
+        'updateAttachment',
+      ).mockImplementation(async (_id, filename) => {
+        const pending = await query<{
+          kind: string;
+          recovery_mode: string;
+          effect: {
+            expectedRemoteVersion?: string;
+            intendedStateDigest?: string;
+            images?: Array<{ filename: string; contentSha256: string }>;
+          };
+          remote_effect_started_at: Date | null;
+        }>(
+          `SELECT kind, recovery_mode, effect, remote_effect_started_at
+             FROM page_write_intents
+            WHERE page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+          [pageId],
+        );
+        expect(pending.rows).toHaveLength(1);
+        expect(pending.rows[0]).toMatchObject({
+          kind: 'collab.commit.confluence.media',
+          recovery_mode: 'remote_terminal_only',
+          effect: {
+            expectedRemoteVersion: '4',
+            intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+        });
+        expect(pending.rows[0]!.effect.images?.[0]).toMatchObject({
+          filename: 'pasted.png',
+          contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        expect(pending.rows[0]!.remote_effect_started_at).not.toBeNull();
+        return {
+          id: 'attachment-1',
+          title: filename,
+          mediaType: 'image/png',
+          version: { number: 1, when: '2026-09-20T00:00:01Z' },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+        async (_id, title, storage) => ({
+          id: confluenceId,
+          title,
+          status: 'current',
+          type: 'page',
+          version: { number: 5, when: '2026-09-20T00:00:02Z' },
+          body: { storage: { value: storage } },
+        }) as never,
+      );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, 'Pasted image committed'),
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(updateAttachment).toHaveBeenCalledTimes(1);
+      const settled = await query<{
+        status: string;
+        remote_terminal_result: { attachments?: unknown[] };
+      }>(
+        `SELECT status, remote_terminal_result
+           FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[]
+          ORDER BY created_at DESC LIMIT 1`,
+        [pageId],
+      );
+      expect(settled.rows[0]?.status).toBe('completed');
+      expect(settled.rows[0]?.remote_terminal_result.attachments).toHaveLength(1);
+    } finally {
+      ws.close();
+      await removePastedImageRoot(fixture.root, fixture.priorRoot);
+    }
+  });
+
+  it('cancels before remote dispatch when planned pasted-image bytes change', async () => {
+    const fixture = await createPastedImageRoot();
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({
+      version: 4,
+      bodyHtml: '<p>image</p><img src="/api/attachments/local-src/pasted.png">',
+    });
+    try {
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        await fs.promises.writeFile(
+          path.join(fixture.root, 'local-src', 'pasted.png'),
+          Buffer.from('bytes changed after planning'),
+        );
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: 4, when: '2026-09-20T00:00:00Z' },
+        } as never;
+      });
+      const updateAttachment = vi.spyOn(ConfluenceClient.prototype, 'updateAttachment');
+      const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, 'Changed pasted image'),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().reason).toBe('pasted_image_unavailable');
+      expect(updateAttachment).not.toHaveBeenCalled();
+      expect(updatePage).not.toHaveBeenCalled();
+      const cancelled = await query<{
+        status: string;
+        remote_effect_started_at: Date | null;
+      }>(
+        `SELECT status, remote_effect_started_at
+           FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[]
+          ORDER BY created_at DESC LIMIT 1`,
+        [pageId],
+      );
+      expect(cancelled.rows[0]).toEqual({
+        status: 'cancelled',
+        remote_effect_started_at: null,
+      });
+    } finally {
+      ws.close();
+      await removePastedImageRoot(fixture.root, fixture.priorRoot);
+    }
+  });
+
+  it('keeps an unknown pasted-image acknowledgment pending and never issues the page PUT', async () => {
+    const fixture = await createPastedImageRoot();
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({
+      version: 4,
+      bodyHtml: '<p>image</p><img src="/api/attachments/local-src/pasted.png">',
+    });
+    try {
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: 4, when: '2026-09-20T00:00:00Z' },
+      } as never);
+      vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockRejectedValue(
+        new Error('connection reset after attachment bytes were sent'),
+      );
+      const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, 'Unknown image outcome'),
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(updatePage).not.toHaveBeenCalled();
+      const pending = await query<{
+        kind: string;
+        status: string;
+        recovery_mode: string;
+        remote_effect_started_at: Date | null;
+        remote_effects_completed_at: Date | null;
+      }>(
+        `SELECT kind, status, recovery_mode, remote_effect_started_at,
+                remote_effects_completed_at
+           FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[]
+          ORDER BY created_at DESC LIMIT 1`,
+        [pageId],
+      );
+      expect(pending.rows[0]).toMatchObject({
+        kind: 'collab.commit.confluence.media',
+        status: 'pending',
+        recovery_mode: 'remote_terminal_only',
+        remote_effects_completed_at: null,
+      });
+      expect(pending.rows[0]!.remote_effect_started_at).not.toBeNull();
+    } finally {
+      ws.close();
+      await removePastedImageRoot(fixture.root, fixture.priorRoot);
+    }
+  });
+
+  it.each(['actor', 'acl', 'lifecycle'] as const)(
+    'rechecks %s after the remote read and before any remote mutation',
+    async (revocation) => {
+      const fixture = await createPastedImageRoot();
+      const {
+        token, userId, pageId, confluenceId, spaceKey, ws,
+      } = await seedLiveConfluencePage({
+        version: 4,
+        bodyHtml: '<p>image</p><img src="/api/attachments/local-src/pasted.png">',
+      });
+      try {
+        vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+          if (revocation === 'actor') {
+            await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+          } else if (revocation === 'acl') {
+            await query(
+              `DELETE FROM space_role_assignments
+                WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
+              [spaceKey, userId],
+            );
+          } else {
+            await query(
+              'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+              [pageId],
+            );
+          }
+          return {
+            id: confluenceId,
+            title: 'Conf page',
+            status: 'current',
+            type: 'page',
+            version: { number: 4, when: '2026-09-20T00:00:00Z' },
+          } as never;
+        });
+        const updateAttachment = vi.spyOn(ConfluenceClient.prototype, 'updateAttachment');
+        const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage');
+
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/collab/commit`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: commitPayload(ws, 'Revoked after read'),
+        });
+
+        expect(response.statusCode).toBe(revocation === 'lifecycle' ? 409 : 403);
+        expect(response.json().reason).toBe(
+          revocation === 'lifecycle' ? 'stale_lifecycle' : 'collab_commit_authority_changed',
+        );
+        expect(updateAttachment).not.toHaveBeenCalled();
+        expect(updatePage).not.toHaveBeenCalled();
+      } finally {
+        ws.close();
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    },
+  );
+
+  it('refuses final local publication when authority is revoked after the page PUT', async () => {
+    const {
+      token, userId, pageId, confluenceId, spaceKey, ws,
+    } = await seedLiveConfluencePage({ version: 4 });
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+      id: confluenceId,
+      title: 'Conf page',
+      status: 'current',
+      type: 'page',
+      version: { number: 4, when: '2026-09-20T00:00:00Z' },
+    } as never);
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+      async (_id, title, storage) => {
+        await query(
+          `DELETE FROM space_role_assignments
+            WHERE space_key = $1 AND principal_type = 'user' AND principal_id = $2`,
+          [spaceKey, userId],
+        );
+        return {
+          id: confluenceId,
+          title,
+          status: 'current',
+          type: 'page',
+          version: { number: 5, when: '2026-09-20T00:00:01Z' },
+          body: { storage: { value: storage } },
+        } as never;
+      },
+    );
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: commitPayload(ws, 'Remote accepted before revocation'),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().reason).toBe('intent_actor_authority_unavailable');
+      expect(updatePage).toHaveBeenCalledTimes(1);
+      const local = await query<{ version: number; title: string }>(
+        'SELECT version, title FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(local.rows[0]).toMatchObject({ version: 4, title: 'Conf page' });
+    } finally {
+      ws.close();
+    }
   });
 
   it('updatePage 409 re-GETs the real remote version', async () => {
@@ -1226,7 +1845,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Should not land' },
+      payload: commitPayload(ws, 'Should not land'),
     });
 
     expect(res.statusCode).toBe(409);
@@ -1256,7 +1875,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'No write' },
+      payload: commitPayload(ws, 'No write'),
     });
 
     expect(res.statusCode).toBe(503);
@@ -1287,7 +1906,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'Saved offline' },
+      payload: commitPayload(ws, 'Saved offline'),
     });
 
     expect(res.statusCode).toBe(200);
@@ -1340,7 +1959,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       method: 'POST',
       url: `/api/pages/${pageId}/collab/commit`,
       headers: { authorization: `Bearer ${token}` },
-      payload: { title: 'No credentials' },
+      payload: commitPayload(ws, 'No credentials'),
     });
 
     expect(res.statusCode).toBe(400);
@@ -1351,110 +1970,4 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
   });
 });
 
-describe.skipIf(!canRun)('inbound sync while collab:active (#1448)', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('unchanged remote version skips confluence-wins overwrite so the typed paragraph stays in the Y.Doc', async () => {
-    const { token, userId } = await createUser(`collab_sync_skip_${pageIdEntropy()}`);
-    const spaceKey = `SK${pageIdEntropy().slice(0, 6).toUpperCase()}`;
-    const confluenceId = `c-skip-${pageIdEntropy()}`;
-    const pageId = await insertConfluencePage({
-      spaceKey,
-      confluenceId,
-      version: 3,
-      bodyHtml: '<p>seed-html</p>',
-    });
-    await grantSpaceRead(userId, spaceKey);
-    await enableCollabFlag();
-    const ws = await openAndSync(pageId, token);
-    typeParagraphIntoRoom(pageId, 'COLLAB_TYPED_PARAGRAPH');
-    expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('COLLAB_TYPED_PARAGRAPH');
-
-    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
-    await syncInternal.applyConflictPolicyForExistingPage({
-      confluenceId,
-      confluenceVersion: 3,
-      pageDbTitle: 'Conf page',
-      bodyStorage: 'INCOMING-STORAGE',
-      bodyHtml: '<p>confluence-conversion-mismatch</p>',
-      bodyText: 'confluence-conversion-mismatch',
-      parentId: null,
-      labels: [],
-      author: 'remote',
-      lastModified: new Date('2026-08-24T12:00:00Z'),
-      syncRunId: '1448-skip-run',
-      counts,
-    });
-
-    expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('COLLAB_TYPED_PARAGRAPH');
-    const row = await query<{ body_html: string; version: number }>(
-      'SELECT body_html, version FROM pages WHERE id = $1',
-      [pageId],
-    );
-    expect(row.rows[0]!.body_html).not.toBe('<p>confluence-conversion-mismatch</p>');
-    expect(row.rows[0]!.version).toBe(3);
-    expect(counts.pagesUpdated).toBe(0);
-    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-    ws.close();
-  });
-
-  it('remote version increased while live: rebuild Y.Doc, BYTEA, doc_reset, close 1001', async () => {
-    const { token, userId } = await createUser(`collab_sync_inc_${pageIdEntropy()}`);
-    const spaceKey = `IN${pageIdEntropy().slice(0, 6).toUpperCase()}`;
-    const confluenceId = `c-inc-${pageIdEntropy()}`;
-    const pageId = await insertConfluencePage({
-      spaceKey,
-      confluenceId,
-      version: 3,
-      bodyHtml: '<p>seed-html</p>',
-    });
-    await grantSpaceRead(userId, spaceKey);
-    await enableCollabFlag();
-    const ws = await openAndSync(pageId, token);
-    typeParagraphIntoRoom(pageId, 'COLLAB_TYPED_PARAGRAPH');
-    const closedP = waitClose(ws);
-    const controlP = waitControl(ws);
-
-    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
-    await syncInternal.applyConflictPolicyForExistingPage({
-      confluenceId,
-      confluenceVersion: 4,
-      pageDbTitle: 'Conf page',
-      bodyStorage: '<p>REMOTE_WINS</p>',
-      bodyHtml: '<p>REMOTE_WINS</p>',
-      bodyText: 'REMOTE_WINS',
-      parentId: null,
-      labels: [],
-      author: 'remote',
-      lastModified: new Date('2026-08-24T12:00:00Z'),
-      syncRunId: '1448-inc-run',
-      counts,
-    });
-
-    const closed = await closedP;
-    expect(closed.code).toBe(1001);
-    const control = await controlP;
-    expect(control.type).toBe('doc_reset');
-    expect(counts.pagesUpdated).toBe(1);
-    expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
-
-    const persisted = await persist.htmlFromPersistedDoc(pageId);
-    expect(persisted).toContain('REMOTE_WINS');
-    expect(persisted).not.toContain('COLLAB_TYPED_PARAGRAPH');
-
-    const second = openWhatwg(pageId, token);
-    await waitOpen(second);
-    const doc = new Y.Doc();
-    second.send(encodeSyncStep1(doc));
-    const reply = await waitMessage(second);
-    applySyncFrame(doc, reply);
-    const html = yDocToHtml(doc);
-    expect(html).toContain('REMOTE_WINS');
-    expect(html).not.toContain('COLLAB_TYPED_PARAGRAPH');
-    second.close();
-  }, 20_000);
-});
 

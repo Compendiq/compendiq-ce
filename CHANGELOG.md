@@ -9,16 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Immutable article baseline foundation (#275).** Added canonical manifest-v1
-  digests, exclusive retained copies of referenced media, append-only
-  freeze/thaw evidence, shared writer intents and conservative admin recovery.
-  Recovery attempts retain append-only attribution without a lifetime retry
-  cap; relocation cleanup preserves intervening ACL changes and remains
-  available after the original actor's deletion when no remote work started.
-  Creation remains fail-closed with
-  `protected_writer_enforcement_not_registered` until #276 completes and
-  registers every remaining collaboration/sync/cascade writer; signed
-  governance (#278) and UI controls (#277) are not included.
+- **Immutable article baselines and protected-writer enforcement (#275,
+  #276).** Added canonical manifest-v1 digests, exclusive retained media,
+  append-only freeze/thaw evidence, shared writer intents, and conservative
+  recovery, then registered enforcement version 1 across collaboration, sync,
+  purge, and subtree/cascade writers. Creation is installed but default-off:
+  activation requires a ready single-protocol writer deployment and the acting
+  administrator's Confluence integration explicitly off; new baselines also
+  require standalone page provenance and the acting user's integration off.
+  Existing freeze enforcement, thaw, and evidence access remain independent of
+  that mode. Governed signing/approval (#278) and the full UI (#277) are not
+  included.
 
 - **An analysis whose only schema violation is inside `structured` is kept
   (#1615).** Measured while driving #1619's arm B backfill over the 187-image

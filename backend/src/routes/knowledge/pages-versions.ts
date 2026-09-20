@@ -10,7 +10,8 @@ import {
   type RestoreResult,
 } from '../../domains/knowledge/services/version-tracker.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
 import { htmlToConfluence } from '../../core/services/content-converter.js';

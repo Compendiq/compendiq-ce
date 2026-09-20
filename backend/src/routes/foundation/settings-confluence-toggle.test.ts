@@ -38,6 +38,9 @@ const mockGetClientForUser = vi.fn().mockResolvedValue(null);
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
   isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 

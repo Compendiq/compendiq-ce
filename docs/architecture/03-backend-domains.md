@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry,<br/>page lifecycle advisory namespace"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, confluence-integration,<br/>page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service/persistence/schema,<br/>collab-flag/tombstone/guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -106,10 +106,11 @@ unchanged. Explicit links and hierarchy do not depend on embeddings; current
 bodies and parent IDs recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
 
-### Immutable page baselines (#275 foundation)
+### Immutable page baselines (#275 foundation, #276 enforcement)
 
-Immutable baselines are a CE `core` facility because every route/domain writer
-must share one serialization boundary. `routes/knowledge/page-baselines.ts`
+Immutable baselines and their #276 writer enforcement are CE `core` facilities
+because every route/domain writer and every backend process must share one
+serialization and readiness boundary. `routes/knowledge/page-baselines.ts`
 exposes authenticated preview, freeze, thaw, current-page history and frozen
 media reads; its baseline evidence/history and activation endpoints add a
 system-admin gate. `routes/foundation/page-write-recovery.ts` is the separate
@@ -119,7 +120,7 @@ domains never import the route implementation.
 
 ```mermaid
 flowchart TD
-    writer["Protected SQL / file / remote writer"] --> runtime["Runtime epoch row<br/>SHARE before page work"]
+    writer["Protected SQL / file / remote writer"] --> runtime["Versioned runtime epoch row<br/>SHARE before page work"]
     runtime --> locks["Advisory xact locks<br/>namespace 279001, page ids ascending"]
     locks --> subsystem["Collaboration-init / attachment / move locks<br/>then pages rows"]
     subsystem --> sql["SQL-only: validate + mutate<br/>on the same PoolClient"]
@@ -127,7 +128,15 @@ flowchart TD
     intent --> effect["runPageWriteIntentEffect<br/>durable started → effect → durable finished"]
     effect --> settle["complete or reconcile under<br/>the same locks and revision fence"]
 
-    preview["Authorized freeze preview"] --> inspect["Source-aware manifest inspection<br/>authored fields + local/Confluence/icon bytes"]
+    room["Writable collab room<br/>durable collab_room admission"] --> save["Save sends bounded Yjs Snapshot<br/>clocks + delete-set"]
+    save --> owners["Read every active room owner<br/>exclude collab_request admission"]
+    owners --> dumps["Correlated state_dump round<br/>request id + admission + lifecycle"]
+    dumps --> fence["Re-read identical owner set<br/>and transport generation"]
+    fence --> commitSnapshot["Fresh merged HTML + server Snapshot<br/>under current request admission"]
+    commitSnapshot --> sql
+
+    preview["Authorized freeze preview"] --> eligible["Standalone row + acting user's<br/>Confluence integration explicitly off"]
+    eligible --> inspect["Source-aware manifest inspection<br/>authored fields + local/Confluence/icon bytes"]
     inspect --> reserve["Capacity row + preparing baseline<br/>+ baseline.prepare intent, one transaction"]
     reserve --> copy["Exclusive retained copy<br/>stream/hash/fsync/verify"]
     copy --> prepared["prepared baseline UUID/digest"]
@@ -213,14 +222,20 @@ intent payload. Terminal settlement removes that preparation transactionally.
 A successful upstream creation is never compensated by deleting the created
 page when a later local phase fails; its known result is recovered instead.
 
-Writable room admissions are durable runtime tokens, not Redis-liveness claims.
-Normal release requires a clean flush/disconnect. Runtime fencing takes the
-runtime row for update before discovering and locking the union of affected page
-IDs; accepted proof is limited to the owner's quiescence acknowledgement,
-durable proof that no effect started, or independently verified local process
-termination. Started work remains pending for reconciliation. This foundation
-provides the admission/runtime protocol, but #276 still owns complete
-collaboration, sync and cascade participation.
+Writable room ownership is now end-to-end #276 enforcement, not a Redis
+liveness claim. Every writable backend owns a durable `collab_room` admission;
+the HTTP Save owns a separate `collab_request` admission and must collect all
+room owners recorded in PostgreSQL. A correlated Redis dump round names the
+request, lifecycle revision and exact admission IDs. The coordinator merges
+each fenced owner dump, then re-reads the identical owner set and checks the
+Redis transport generation before producing HTML and a server-side Yjs
+Snapshot. Any missing, stale, quiesced/fenced or newly appearing owner fails
+closed. Client Save supplies a bounded base64 Yjs Snapshot containing clocks
+and the delete-set; the server refuses until its fresh distributed snapshot
+includes both. Runtime fencing takes the runtime row for update before
+discovering and locking the union of affected page IDs; accepted proof remains
+limited to the owner's quiescence acknowledgment, durable proof that no effect
+started, or independently verified local process termination.
 
 Manifest v1 is the SHA-256 of canonical UTF-8 bytes for one fixed JSON array
 tree; it preserves authored strings/nullability and sorts labels and attachment
@@ -232,7 +247,7 @@ read and again before retention; mutable owner pages join the sorted lock/intent
 set, while an already-frozen foreign owner contributes its verified retained
 copy. The source-aware page/parent/store identity is persisted rather than
 inferred from a nullable Confluence ID. Frozen rendering rewrites only the
-authorized projection to an exact baseline/media route; signed authored HTML
+authorized projection to an exact baseline/media route; authored HTML
 and manifest bytes remain unchanged.
 
 Retained bytes live under the reserved
@@ -257,13 +272,27 @@ display snapshots and original page IDs survive page or actor deletion.
 
 The durable CE governance marker is independent of plugin/license state. When it
 is enabled, manual publication is vetoed and a missing/failing hook denies
-finalization. The hook is only an extension boundary here: #278 owns proposals,
-votes, signatures and archive workflow, none of which #275 claims to deliver.
-Likewise #277 owns the consuming UI.
+finalization. The hook is only an extension boundary here: #278's proposal,
+approval, signing and archive workflow is not implemented by this slice, and no
+caller-reported signatory is authenticated or signed evidence. Likewise #277
+owns the full baseline-management UI.
 
-**Activation remains off.** Migration 121 seeds `creation_enabled = false`, and
-without #276's readiness provider the blocker is
-`protected_writer_enforcement_not_registered`; no startup path enables it.
+New activation requires the acting system administrator's Confluence integration
+to be explicitly off. Preview, freeze and future governed proposal/approval
+additionally require `pages.source = 'standalone'`; a Confluence-origin row
+remains ineligible even with integration off. Historical `confluence_id` values
+never change page provenance. Missing settings and read failures never mean
+“off”; mutation admission locks an existing explicit-off row through commit,
+while capability reads are read-only and never request that lock. Re-enabling
+integration neither thaws an existing baseline nor deletes retained evidence.
+Existing frozen-page enforcement, authorized evidence reads/export/verification
+and explicit audited thaw remain mode-independent.
+
+Migration 121 still seeds `creation_enabled = false`, so activation is an
+explicit system-admin operation. #276 now registers the readiness provider at
+startup. It reports ready only when every active, non-quiesced runtime carries
+the current `enforcement_version`; migration 124 also prevents an older runtime
+from registering once creation is enabled or published evidence exists.
 Operational activation, capacity, storage and recovery procedures are kept in
 the canonical
 [`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md)

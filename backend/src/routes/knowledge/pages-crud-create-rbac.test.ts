@@ -1,180 +1,283 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { z, ZodError } from 'zod';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { insertUser } from './pages.test-helpers.js';
 import { pagesCrudRoutes } from './pages-crud.js';
 
-// --- Mocks ---
+interface CreateResponse {
+  id: number | string;
+  source: 'standalone' | 'confluence';
+}
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
-}));
+interface ErrorResponse {
+  error: string;
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+interface PersistedPage {
+  confluence_id: string | null;
+  source: string;
+  space_key: string | null;
+  title: string;
+}
 
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+interface UpstreamRequest {
+  method: string;
+  url: string;
+  authorization: string | undefined;
+  body: unknown;
+}
 
-const mockGetClientForUser = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
+const ConfluenceCreatePayloadSchema = z.object({
+  title: z.string(),
+  body: z.object({ storage: z.object({ value: z.string() }) }),
+});
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn((html: string) => html),
-  confluenceToHtml: vi.fn((html: string) => html),
-  htmlToText: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
-}));
+const available = (await isDbAvailable()) && (await isRedisAvailable());
+const upstreamRequests: UpstreamRequest[] = [];
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let upstream: Server;
+let upstreamBaseUrl = '';
+let currentUserId = '';
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  let raw = '';
+  for await (const chunk of request) raw += chunk.toString();
+  return raw.length === 0 ? null : JSON.parse(raw);
+}
 
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
+function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(payload));
+}
 
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-const TEST_USER = 'user-1';
-
-describe('POST /api/pages RBAC space access checks (Confluence create)', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed', details: error.errors });
-      }
-      const statusCode = error.statusCode ?? 500;
-      return reply.status(statusCode).send({ error: error.message });
+async function handleUpstream(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  try {
+    const payload = await readJson(request);
+    upstreamRequests.push({
+      method: request.method ?? 'GET',
+      url: request.url ?? '/',
+      authorization: request.headers.authorization,
+      body: payload,
     });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = TEST_USER;
-      request.username = 'testuser';
-      request.userRole = 'user';
+    if (request.method !== 'POST' || request.url !== '/rest/api/content') {
+      sendJson(response, 404, { message: 'Unexpected Confluence fixture request' });
+      return;
+    }
+    const create = ConfluenceCreatePayloadSchema.parse(payload);
+    sendJson(response, 200, {
+      id: 'rbac-created-page',
+      title: create.title,
+      status: 'current',
+      type: 'page',
+      version: { number: 1, when: '2026-09-20T00:00:00.000Z' },
+      body: { storage: { value: create.body.storage.value } },
     });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = TEST_USER;
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
+  } catch (error) {
+    sendJson(response, 500, { message: error instanceof Error ? error.message : String(error) });
+  }
+}
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+async function startUpstream(): Promise<void> {
+  upstream = createServer((request, response) => {
+    void handleUpstream(request, response);
   });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    upstream.once('error', onError);
+    upstream.listen(0, '127.0.0.1', () => {
+      upstream.off('error', onError);
+      resolve();
+    });
+  });
+  const address = upstream.address();
+  if (address === null || typeof address === 'string') throw new Error('Confluence fixture did not bind a TCP port');
+  upstreamBaseUrl = `http://127.0.0.1:${address.port}`;
+}
+
+async function buildApp(): Promise<FastifyInstance> {
+  const instance = Fastify({ logger: false });
+  await instance.register(sensible);
+  instance.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) return reply.status(400).send({ error: 'Validation failed' });
+    return reply.status(error.statusCode ?? 500).send({ error: error.message });
+  });
+  instance.decorate('authenticate', async (request) => {
+    request.userId = currentUserId;
+    request.username = 'rbac-create-user';
+    request.userRole = 'user';
+  });
+  instance.decorate('requireAdmin', async (request) => {
+    request.userId = currentUserId;
+    request.username = 'rbac-create-user';
+    request.userRole = 'admin';
+  });
+  instance.decorate('redis', redis);
+  await instance.register(pagesCrudRoutes, { prefix: '/api' });
+  await instance.ready();
+  return instance;
+}
+
+async function insertSpace(spaceKey: string, source: 'confluence' | 'local'): Promise<void> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ($1, $1, $2, NOW())`,
+    [spaceKey, source],
+  );
+}
+
+async function configureConfluence(): Promise<void> {
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, TRUE)`,
+    [currentUserId, upstreamBaseUrl, encryptPat('rbac-fixture-confluence-pat')],
+  );
+}
+
+async function grantSpace(spaceKey: string): Promise<void> {
+  const roleResult = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('rbac_create_writer', 'RBAC create writer', FALSE, ARRAY['read', 'write'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  const role = roleResult.rows[0];
+  if (!role) throw new Error('RBAC role fixture was not created');
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, currentUserId, role.id],
+  );
+}
+
+async function persistedPages(): Promise<PersistedPage[]> {
+  const result = await query<PersistedPage>(
+    'SELECT confluence_id, source, space_key, title FROM pages ORDER BY id',
+  );
+  return result.rows;
+}
+
+describe.skipIf(!available)('POST /api/pages Confluence RBAC admission with real grants', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { connectTimeout: 1_000, reconnectStrategy: false },
+    });
+    redis.on('error', () => undefined);
+    await redis.connect();
+    setRedisClient(redis);
+    await startUpstream();
+    app = await buildApp();
+  }, 30_000);
 
   afterAll(async () => {
     await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-    mockQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
-  });
-
-  it('returns 403 when creating a Confluence page in a space the user cannot access, and createPage is not called', async () => {
-    const mockCreatePage = vi.fn().mockResolvedValue({
-      id: 'new-1',
-      title: 'T',
-      version: { number: 1 },
-      body: { storage: { value: '<p>x</p>' } },
+    await truncateAllTables();
+    await redis.flushDb();
+    await new Promise<void>((resolve) => {
+      upstream.close(() => resolve());
+      upstream.closeAllConnections();
     });
-    mockGetClientForUser.mockResolvedValue({ createPage: mockCreatePage });
+    setRedisClient(null);
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
+  });
 
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    upstreamRequests.length = 0;
+    currentUserId = await insertUser('rbac_create_user');
+    await insertSpace('DEV', 'confluence');
+    await insertSpace('HR', 'confluence');
+    await configureConfluence();
+  });
+
+  it('returns 403 before transport or persistence when the user has no grant for the target space', async () => {
+    await grantSpace('DEV');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: {
-        title: 'T',
-        bodyHtml: '<p>x</p>',
-        source: 'confluence',
-        spaceKey: 'HR',
-      },
+      payload: { title: 'Forbidden HR page', bodyHtml: '<p>x</p>', source: 'confluence', spaceKey: 'HR' },
     });
+    const error = response.json<ErrorResponse>();
+    const pages = await persistedPages();
 
     expect(response.statusCode).toBe(403);
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-    // Critical security assertion: createPage must NOT be called for unauthorized spaces
-    expect(mockCreatePage).not.toHaveBeenCalled();
+    expect(error.error).toBe('Access denied to this space');
+    expect(upstreamRequests).toEqual([]);
+    expect(pages).toEqual([]);
   });
 
-  it('allows creating a Confluence page in an accessible space', async () => {
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'HR']);
-    const mockCreatePage = vi.fn().mockResolvedValue({
-      id: 'new-1',
-      title: 'T',
-      version: { number: 1 },
-      body: { storage: { value: '<p>x</p>' } },
-    });
-    mockGetClientForUser.mockResolvedValue({ createPage: mockCreatePage });
-
+  it('creates upstream and persists locally when an actual space grant admits the request', async () => {
+    await grantSpace('HR');
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: {
-        title: 'T',
-        bodyHtml: '<p>x</p>',
+      payload: { title: 'Permitted HR page', bodyHtml: '<p>allowed</p>', source: 'confluence', spaceKey: 'HR' },
+    });
+    const body = response.json<CreateResponse>();
+    const pages = await persistedPages();
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toMatchObject({ id: 'rbac-created-page', source: 'confluence' });
+    expect(upstreamRequests).toHaveLength(1);
+    const request = upstreamRequests[0];
+    if (!request) throw new Error('Expected one Confluence create request');
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: '/rest/api/content',
+      authorization: 'Bearer rbac-fixture-confluence-pat',
+      body: {
+        title: 'Permitted HR page',
+        space: { key: 'HR' },
+        body: { storage: { value: '<p>allowed</p>', representation: 'storage' } },
+      },
+    });
+    expect(pages).toEqual([
+      {
+        confluence_id: 'rbac-created-page',
         source: 'confluence',
-        spaceKey: 'DEV',
+        space_key: 'HR',
+        title: 'Permitted HR page',
       },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCreatePage).toHaveBeenCalledWith('DEV', 'T', expect.any(String), undefined);
-    const body = JSON.parse(response.payload);
-    expect(body.source).toBe('confluence');
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+    ]);
   });
 
-  it('does not run the RBAC space check for standalone create', async () => {
-    // INSERT returns new page (standalone path)
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, title: 'T', version: 1 }] });
-    // UPDATE path
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  it('creates standalone content without any space grant or external request', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages',
-      payload: {
-        title: 'T',
-        bodyHtml: '<p>x</p>',
-        source: 'standalone',
-      },
+      payload: { title: 'Standalone note', bodyHtml: '<p>local</p>', source: 'standalone' },
     });
+    const body = response.json<CreateResponse>();
+    const pages = await persistedPages();
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
     expect(body.source).toBe('standalone');
-    // The Confluence-branch RBAC guard must not touch the standalone path
-    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
+    expect(upstreamRequests).toEqual([]);
+    expect(pages).toEqual([
+      {
+        confluence_id: null,
+        source: 'standalone',
+        space_key: null,
+        title: 'Standalone note',
+      },
+    ]);
   });
 });

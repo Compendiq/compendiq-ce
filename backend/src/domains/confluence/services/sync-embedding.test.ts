@@ -1,523 +1,527 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../../test-db-helper.js';
+import { query } from '../../../core/db/postgres.js';
+import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
+import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
+import { encryptPat } from '../../../core/utils/crypto.js';
+import { ConfluenceClient, type ConfluencePage } from './confluence-client.js';
+import { __internal, getSyncStatus, syncUser } from './sync-service.js';
 
-const mocks = vi.hoisted(() => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
-  runImageAnalysisBatch: vi.fn().mockResolvedValue({ processed: 0, reason: 'unassigned' }),
-  getSpaces: vi.fn().mockResolvedValue({ results: [] }),
-  getAllPagesInSpace: vi.fn().mockResolvedValue([]),
-  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
-  getModifiedPages: vi.fn().mockResolvedValue([]),
-  getPage: vi.fn().mockResolvedValue(undefined),
-  getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
-  getMissingAttachments: vi.fn().mockResolvedValue([]),
-  query: vi.fn(),
-}));
+// The ordinary Confluence cache captures its root at module initialization.
+// Set the fixture root before the production import graph is evaluated.
+// Vitest runs this before static imports, so its built-ins must load here.
+const { attachmentsRoot, originalAttachmentsRoot } = await vi.hoisted(async () => {
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const attachmentsRoot = join(tmpdir(), `sync-embedding-${globalThis.crypto.randomUUID()}`);
+  const originalAttachmentsRoot = process.env.ATTACHMENTS_DIR;
+  process.env.ATTACHMENTS_DIR = attachmentsRoot;
+  return { attachmentsRoot, originalAttachmentsRoot };
+});
 
-vi.mock('../../llm/services/embedding-service.js', () => ({
-  processDirtyPages: mocks.processDirtyPages,
-}));
+const canRun = await isDbAvailable();
+const SPACE_KEY = 'DEV';
+const EMBEDDING_MODEL = 'fixture-embedding-model';
+const requestedPaths: string[] = [];
+const embeddingModels: string[] = [];
+const embeddingInputs: string[][] = [];
+const upstreamPages = new Map<string, ConfluencePage>();
+const upstreamAttachments = new Map<string, Map<string, Buffer>>();
+let modifiedPages: ConfluencePage[] = [];
+let embeddingWait: Promise<void> | null = null;
+let releaseEmbeddingWait: (() => void) | null = null;
+let embeddingFailureStatus: number | null = null;
+let baseUrl: string;
+let client: ConfluenceClient;
 
-// ADR-027 D13 (#1616) — the analysis worker has its OWN repeatable job
-// (`image-analysis`), so sync must not kick it: a per-user kick beside the
-// repeat is N+1 lease contests per cycle (#1626 review r1). Mocked so the
-// assertion below fails if the kick is ever re-added. #1618 retired the
-// legacy image index whose only scheduled trigger WAS this cadence, so there
-// is no post-sync image call left to assert for.
-vi.mock('../../llm/services/image-analysis-worker.js', () => ({
-  runImageAnalysisBatch: mocks.runImageAnalysisBatch,
-}));
-
-vi.mock('./confluence-client.js', () => ({
-  ConfluenceClient: class MockConfluenceClient {
-    getSpaces = mocks.getSpaces;
-    getAllSpaces = vi.fn().mockResolvedValue([]);
-    getAllPagesInSpace = mocks.getAllPagesInSpace;
-    getAllPageIds = mocks.getAllPageIds;
-    getModifiedPages = mocks.getModifiedPages;
-    getPage = mocks.getPage;
-    getPageAttachments = mocks.getPageAttachments;
-  },
-}));
-
-vi.mock('../../../core/services/content-converter.js', () => ({
-  confluenceToHtml: vi.fn().mockReturnValue('<p>html</p>'),
-  htmlToText: vi.fn().mockReturnValue('plain text'),
-}));
-
-vi.mock('./attachment-handler.js', () => ({
-  syncDrawioAttachments: vi.fn().mockResolvedValue(undefined),
-  syncImageAttachments: vi.fn().mockResolvedValue(undefined),
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-  getMissingAttachments: mocks.getMissingAttachments,
-}));
-
-vi.mock('../../knowledge/services/version-tracker.js', () => ({
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-// #1448 inbound sync invalidates leftover BYTEA (or resets a live room).
-// Those calls are extra `query()` / Redis hits this queue does not model —
-// an unqueued DELETE shifts `purgeDeletedPages` onto undefined.
-vi.mock('../../../core/services/collab-guard.js', () => ({
-  isLiveCollabRoom: vi.fn().mockResolvedValue(false),
-  invalidateCollabDocAfterBodyWrite: vi.fn().mockResolvedValue(undefined),
-}));
-vi.mock('../../../core/services/collab-room-service.js', () => ({
-  resetCollabRoomFromHtml: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../../core/utils/crypto.js', () => ({
-  decryptPat: vi.fn().mockReturnValue('decrypted-pat'),
-}));
-
-vi.mock('../../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-// Every queue in this file is POSITIONAL (`mockResolvedValueOnce` chains), so
-// any new SELECT on the `syncUser` path silently shifts all of them by one.
-// The #1623 toggle read (`SELECT confluence_enabled FROM user_settings`) runs
-// as step 0 of `syncUser` and is answered HERE, by SQL content, so it never
-// consumes a queue slot. Add further content-routed reads the same way rather
-// than prepending to a dozen queues.
-function routeQuery(...args: unknown[]) {
-  const sql = typeof args[0] === 'string' ? args[0] : '';
-  // `isConfluenceEnabled` only — `getClientForUser` also selects the column,
-  // but alongside `confluence_url`, and it IS modelled in the queues.
-  if (sql.includes('confluence_enabled') && !sql.includes('confluence_url')) {
-    return Promise.resolve({ rows: [{ confluence_enabled: true }], rowCount: 1 });
-  }
-  return mocks.query(...args);
+function json(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(value));
 }
 
-vi.mock('../../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => routeQuery(...args),
-  // EE #118 conflict-detection wraps the htmlChanged-path UPDATE in a
-  // transaction with `SELECT ... FOR UPDATE`. The transaction goes
-  // through `getPool().connect()` rather than the global `query`. We
-  // stub the pool with a single shared connection that delegates every
-  // `query` call back to the same `mocks.query` so the test's existing
-  // `mockResolvedValueOnce` queue still drives the order.
-  getPool: () => ({
-    connect: async () => ({
-      query: (...args: unknown[]) => routeQuery(...args),
-      release: () => {},
-    }),
-  }),
-}));
+async function requestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
+}
 
-const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV']);
-vi.mock('../../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
+function pageResponse(results: unknown[]): Record<string, unknown> {
+  return { results, start: 0, limit: 200, size: results.length, _links: {} };
+}
 
-import { syncUser, getSyncStatus } from './sync-service.js';
+async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const url = new URL(request.url ?? '/', 'http://fixture.test');
+  requestedPaths.push(url.pathname);
 
-describe('syncUser auto-embedding', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.processDirtyPages.mockResolvedValue({ processed: 3, errors: 0 });
-  });
-
-  function setupSuccessfulSync() {
-    mocks.query
-      // 1. getClientForUser: user_settings
-      .mockResolvedValueOnce({
-        rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
-      })
-      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
-      // 3. last_synced (no previous sync -> full sync)
-      .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: revival cross-check UPDATE (none revived)
-      .mockResolvedValueOnce({ rows: [] })
-      // 5. detectDeletedPages: existing pages (none → no deletion candidates)
-      .mockResolvedValueOnce({ rows: [] })
-      // 6. purgeDeletedPages: candidate SELECT (none expired)
-      .mockResolvedValueOnce({ rows: [] })
-      // 7. update space sync timestamp
-      .mockResolvedValueOnce({ rows: [] });
-
-    mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
-    mocks.getAllPageIds.mockResolvedValueOnce(new Set());
-  }
-
-  it('should call processDirtyPages after successful sync', async () => {
-    setupSuccessfulSync();
-
-    await syncUser('user-1');
-
-    await vi.waitFor(() => {
-      expect(mocks.processDirtyPages).toHaveBeenCalledWith('user-1');
-    });
-  });
-
-  it('never kicks the image-analysis worker after a sync — it has its own repeatable job', async () => {
-    // ADR-027 D13. The retired image index had no repeatable job, so `syncUser`
-    // carried its whole automatic cadence in one fire-and-forget line; #1618
-    // removed both. The analysis worker is the opposite: it has a repeat, so a
-    // kick here would be a second trigger per cadence and N+1 lease contests.
-    setupSuccessfulSync();
-
-    await syncUser('user-img-1');
-
-    await vi.waitFor(() => {
-      expect(mocks.processDirtyPages).toHaveBeenCalled();
-    });
-    expect(mocks.runImageAnalysisBatch).not.toHaveBeenCalled();
-  });
-
-  it('should set status to embedding after sync completes', async () => {
-    // Use a deferred promise to control when processDirtyPages resolves
-    let resolveEmbedding!: (value: { processed: number; errors: number }) => void;
-    mocks.processDirtyPages.mockReturnValueOnce(
-      new Promise((resolve) => { resolveEmbedding = resolve; }),
-    );
-
-    setupSuccessfulSync();
-
-    await syncUser('user-5');
-
-    // Status should be 'embedding' while processDirtyPages is still running
-    const statusDuringEmbed = await getSyncStatus('user-5');
-    expect(statusDuringEmbed.status).toBe('embedding');
-
-    // Resolve embedding
-    resolveEmbedding({ processed: 3, errors: 0 });
-
-    // After embedding completes, status should be 'idle'
-    await vi.waitFor(async () => {
-      const statusAfter = await getSyncStatus('user-5');
-      expect(statusAfter.status).toBe('idle');
-    });
-  });
-
-  it('should set status to idle even if embedding fails', async () => {
-    mocks.processDirtyPages.mockRejectedValueOnce(new Error('Ollama offline'));
-    setupSuccessfulSync();
-
-    await syncUser('user-6');
-
-    // Wait for the rejected promise to settle
-    await vi.waitFor(async () => {
-      const status = await getSyncStatus('user-6');
-      expect(status.status).toBe('idle');
-    });
-  });
-
-  it('should not call processDirtyPages when no credentials configured', async () => {
-    mocks.query.mockResolvedValueOnce({
-      rows: [{ confluence_url: null, confluence_pat: null }],
-    });
-
-    await syncUser('user-2');
-
-    expect(mocks.processDirtyPages).not.toHaveBeenCalled();
-  });
-
-  it('should not call processDirtyPages when no spaces selected', async () => {
-    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]); // No spaces for this test
-    mocks.query
-      .mockResolvedValueOnce({
-        rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
-      });
-
-    await syncUser('user-3');
-
-    expect(mocks.processDirtyPages).not.toHaveBeenCalled();
-  });
-
-  it('should not block sync completion if embedding fails', async () => {
-    mocks.processDirtyPages.mockRejectedValueOnce(new Error('Ollama offline'));
-    setupSuccessfulSync();
-
-    await expect(syncUser('user-4')).resolves.toBeUndefined();
-  });
-});
-
-describe('syncPage attachment cache invalidation', () => {
-  const mockPage = {
-    id: 'page-1',
-    title: 'Test Page',
-    version: { number: 2, when: '2024-01-02T00:00:00Z', by: { displayName: 'Alice' } },
-    space: { key: 'DEV' },
-    ancestors: [],
-    metadata: { labels: { results: [] } },
-    body: { storage: { value: '<p>content</p>' } },
-  };
-
-  function setupSyncWithPage(
-    existingVersion: number | null,
-    existingBodyHtml = '<p>old</p>',
-    existingBodyText = 'old',
-    /**
-     * When true (the default), enqueue the four extra DB responses the
-     * EE #118 conflict-detection branch consumes (BEGIN, SELECT ... FOR
-     * UPDATE re-read, UPDATE pages, COMMIT) AFTER the initial existing-
-     * page SELECT. Tests that exercise the htmlChanged path (incoming
-     * version equals existing version with different body) MUST set this
-     * — otherwise the conflict branch reads garbage from a later mock.
-     *
-     * Tests that exercise the new-version path (existing version <
-     * incoming version) flow through the bottom-of-`syncPage` upsert,
-     * not the conflict branch, and should pass `enqueueConflictBranch:
-     * false` so we don't leak the unused queued responses to the next
-     * test (vi.clearAllMocks does not clear `mockResolvedValueOnce`
-     * queues, only call history).
-     */
-    enqueueConflictBranch = false,
-  ) {
-    mocks.query
-      // 1. getClientForUser: user_settings
-      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
-      // 3. last_synced (no previous sync -> full sync; space=undefined so no upsert)
-      .mockResolvedValueOnce({ rows: [] })
-      // 4. syncPage: existing page version check (extended SELECT-list per
-      //    EE #118 — also pulls local_modified_at + last_synced; both
-      //    null here means "no local edits", so the conflict-detection
-      //    branch falls through to confluence-wins.
-      .mockResolvedValueOnce(
-        existingVersion !== null
-          ? {
-              rows: [{
-                id: 1,
-                version: existingVersion,
-                title: 'Old',
-                body_html: existingBodyHtml,
-                body_text: existingBodyText,
-                local_modified_at: null,
-                last_synced: null,
-              }],
-            }
-          : { rows: [] },
-      );
-
-    if (enqueueConflictBranch) {
-      mocks.query
-        // EE #118 conflict-detection branch order:
-        // BEGIN, SELECT ... FOR UPDATE re-read, UPDATE pages
-        // (confluence-wins default path), COMMIT.
-        .mockResolvedValueOnce({ rows: [] })  // BEGIN
-        .mockResolvedValueOnce({
-          rows: [{
-            id: 1,
-            version: existingVersion,
-            body_html: existingBodyHtml,
-            body_text: existingBodyText,
-            local_modified_at: null,
-            last_synced: null,
-          }],
-        })                                    // SELECT ... FOR UPDATE
-        .mockResolvedValueOnce({ rows: [] })  // UPDATE pages
-        .mockResolvedValueOnce({ rows: [] }); // COMMIT
-    } else {
-      // The fresh-create / new-version path takes the bottom-of-`syncPage`
-      // INSERT. Only enqueue this when we know the test is going there —
-      // the htmlChanged path returns BEFORE this query, so leaving the
-      // mock queued in that case leaks a stale response into the next
-      // test (vi.clearAllMocks does not clear `.mockResolvedValueOnce`
-      // queues, only call history).
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT (upsert)
+  if (request.method === 'POST' && url.pathname === '/v1/embeddings') {
+    const body = JSON.parse(await requestBody(request)) as { model: string; input: string[] };
+    embeddingModels.push(body.model);
+    embeddingInputs.push(body.input);
+    if (embeddingFailureStatus !== null) {
+      json(response, embeddingFailureStatus, { error: { message: 'fixture provider unavailable' } });
+      return;
     }
-
-    mocks.query
-      // 6. detectDeletedPages: revival cross-check UPDATE (none revived)
-      .mockResolvedValueOnce({ rows: [] })
-      // 7. detectDeletedPages: existing page ids (none → no deletion candidates)
-      .mockResolvedValueOnce({ rows: [] })
-      // 8. purgeDeletedPages: candidate SELECT (none expired)
-      .mockResolvedValueOnce({ rows: [] })
-      // 9. update space last_synced
-      .mockResolvedValueOnce({ rows: [] });
-
-    mocks.getAllPagesInSpace.mockResolvedValueOnce([mockPage]);
-    mocks.getAllPageIds.mockResolvedValueOnce(new Set([mockPage.id]));
-    mocks.getPage.mockResolvedValueOnce(mockPage);
-    mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.processDirtyPages.mockResolvedValue({ processed: 0, errors: 0 });
-  });
-
-  it('clears attachment cache when an existing page has a new version', async () => {
-    setupSyncWithPage(1); // existing version 1, new version 2
-
-    await syncUser('user-cache-clear');
-
-    const { cleanPageAttachments } = await import('./attachment-handler.js');
-    expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
-  });
-
-  it('does not clear attachment cache for brand-new pages', async () => {
-    setupSyncWithPage(null); // no existing row
-
-    await syncUser('user-cache-new');
-
-    const { cleanPageAttachments } = await import('./attachment-handler.js');
-    expect(cleanPageAttachments).not.toHaveBeenCalled();
-  });
-
-  it('refreshes cached HTML for unchanged pages when the rendered output changes', async () => {
-    // Same incoming version (2) as existing → htmlChanged path → conflict
-    // branch (default policy 'confluence-wins'). Pass true so the helper
-    // enqueues the BEGIN/SELECT FOR UPDATE/UPDATE/COMMIT responses.
-    setupSyncWithPage(2, '<p>old</p>', 'old', true);
-
-    await syncUser('user-html-refresh');
-
-    expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE pages'),
-      expect.arrayContaining(['page-1', 'Test Page', '<p>content</p>', '<p>html</p>', 'plain text']),
-    );
-  });
-});
-
-describe('incremental sync with missing attachments', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.processDirtyPages.mockResolvedValue({ processed: 0, errors: 0 });
-    mocks.getMissingAttachments.mockResolvedValue([]);
-  });
-
-  function setupIncrementalSync(opts: {
-    modifiedPages?: Array<{ id: string; title: string }>;
-    cachedPages?: Array<{ confluence_id: string; body_storage: string }>;
-    missingAttachments?: string[];
-  } = {}) {
-    const recentDate = new Date(Date.now() - 1000 * 60 * 5); // 5 minutes ago
-
-    mocks.query
-      // 1. getClientForUser
-      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
-      // 3. spaces.last_synced -> recent -> incremental sync
-      .mockResolvedValueOnce({ rows: [{ last_synced: recentDate }] });
-
-    // syncPage calls for each modified page
-    for (let i = 0; i < (opts.modifiedPages ?? []).length; i++) {
-      mocks.query
-        // existing page version check
-        .mockResolvedValueOnce({ rows: [] })
-        // upsert page
-        .mockResolvedValueOnce({ rows: [] });
-    }
-
-    // syncMissingAttachments: SELECT pages WHERE space_key
-    mocks.query.mockResolvedValueOnce({
-      rows: opts.cachedPages ?? [],
-    });
-
-    // detectDeletedPages now runs on incremental syncs too (#706):
-    // revival cross-check UPDATE (none revived), then existing page ids in
-    // the space (none → no deletion candidates).
-    mocks.query.mockResolvedValueOnce({ rows: [] });
-    mocks.query.mockResolvedValueOnce({ rows: [] });
-    mocks.getAllPageIds.mockResolvedValueOnce(
-      new Set((opts.modifiedPages ?? []).map((p) => p.id)),
-    );
-
-    // purgeDeletedPages: candidate SELECT (none expired)
-    mocks.query.mockResolvedValueOnce({ rows: [] });
-
-    // update space last_synced
-    mocks.query.mockResolvedValueOnce({ rows: [] });
-
-    mocks.getModifiedPages.mockResolvedValueOnce(
-      (opts.modifiedPages ?? []).map((p) => ({
-        id: p.id,
-        title: p.title,
-        version: { number: 1 },
-        space: { key: 'DEV' },
+    const gate = embeddingWait;
+    if (gate) await gate;
+    json(response, 200, {
+      data: body.input.map((text, inputIndex) => ({
+        embedding: Array.from(
+          { length: 1024 },
+          (_, dimension) => ((text.length + inputIndex + dimension) % 31) / 100,
+        ),
       })),
-    );
-
-    // Mock getPage + getPageAttachments for each modified page
-    for (const page of opts.modifiedPages ?? []) {
-      mocks.getPage.mockResolvedValueOnce({
-        id: page.id,
-        title: page.title,
-        version: { number: 1, when: new Date().toISOString(), by: { displayName: 'Test' } },
-        ancestors: [],
-        metadata: { labels: { results: [] } },
-        body: { storage: { value: '<p>content</p>' } },
-      });
-      mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
-    }
-
-    if (opts.missingAttachments && opts.missingAttachments.length > 0) {
-      mocks.getMissingAttachments.mockResolvedValue(opts.missingAttachments);
-      // getPageAttachments for missing attachment retry
-      mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
-    }
+    });
+    return;
   }
 
-  it('retries missing attachments for cached pages during incremental sync', async () => {
-    setupIncrementalSync({
-      cachedPages: [
-        { confluence_id: 'page-old', body_storage: '<ac:image><ri:attachment ri:filename="lost.png" /></ac:image>' },
-      ],
-      missingAttachments: ['lost.png'],
-    });
+  if (url.pathname === '/rest/api/space') {
+    json(response, 200, pageResponse([
+      { key: SPACE_KEY, name: 'Development', type: 'global', status: 'current' },
+    ]));
+    return;
+  }
 
-    await syncUser('user-inc');
+  if (url.pathname === '/rest/api/content/search') {
+    json(response, 200, pageResponse(modifiedPages));
+    return;
+  }
 
-    const { syncImageAttachments, syncDrawioAttachments } = await import('./attachment-handler.js');
-    // syncImageAttachments should be called for the page with missing attachments
-    expect(syncImageAttachments).toHaveBeenCalled();
-    expect(syncDrawioAttachments).toHaveBeenCalled();
+  if (url.pathname === '/rest/api/content') {
+    const pages = [...upstreamPages.values()];
+    if (url.searchParams.has('expand')) json(response, 200, pageResponse(pages));
+    else json(response, 200, pageResponse(pages.map(({ id }) => ({ id }))));
+    return;
+  }
+
+  const attachmentList = url.pathname.match(/^\/rest\/api\/content\/([^/]+)\/child\/attachment$/);
+  if (attachmentList) {
+    const pageId = decodeURIComponent(attachmentList[1]!);
+    const files = upstreamAttachments.get(pageId) ?? new Map<string, Buffer>();
+    json(response, 200, pageResponse([...files].map(([filename, bytes], index) => ({
+      id: `attachment-${index + 1}`,
+      title: filename,
+      mediaType: 'image/png',
+      metadata: { mediaType: 'image/png' },
+      extensions: { mediaType: 'image/png', fileSize: bytes.length },
+      _links: { download: `/download/${encodeURIComponent(pageId)}/${encodeURIComponent(filename)}` },
+      version: { number: 1, when: '2026-09-01T00:00:00.000Z' },
+    }))));
+    return;
+  }
+
+  const download = url.pathname.match(/^\/download\/([^/]+)\/([^/]+)$/);
+  if (download) {
+    const pageId = decodeURIComponent(download[1]!);
+    const filename = decodeURIComponent(download[2]!);
+    const bytes = upstreamAttachments.get(pageId)?.get(filename);
+    if (!bytes) {
+      json(response, 404, { message: 'Missing fixture attachment' });
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'image/png', 'content-length': bytes.length });
+    response.end(bytes);
+    return;
+  }
+
+  const pageMatch = url.pathname.match(/^\/rest\/api\/content\/([^/]+)$/);
+  if (pageMatch) {
+    const page = upstreamPages.get(decodeURIComponent(pageMatch[1]!));
+    if (page) json(response, 200, page);
+    else json(response, 404, { message: 'Not found upstream' });
+    return;
+  }
+
+  json(response, 404, { message: `Unhandled fixture path ${url.pathname}` });
+}
+
+const upstream = createServer((request, response) => {
+  void handleRequest(request, response).catch((error: unknown) => {
+    if (!response.headersSent) response.writeHead(500, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ message: error instanceof Error ? error.message : String(error) }));
+  });
+});
+
+function remotePage(id: string, version: number, bodyStorage: string, title = `Page ${id}`): ConfluencePage {
+  return {
+    id,
+    title,
+    status: 'current',
+    type: 'page',
+    version: {
+      number: version,
+      when: '2026-09-01T00:00:00.000Z',
+      by: { displayName: 'Fixture Author' },
+    },
+    body: { storage: { value: bodyStorage } },
+    ancestors: [],
+    metadata: { labels: { results: [{ name: 'fixture' }] } },
+  };
+}
+
+async function seedActor(): Promise<string> {
+  const user = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ('sync-embedding-actor', 'unused', 'admin')
+     RETURNING id`,
+  );
+  const userId = user.rows[0]!.id;
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, TRUE)`,
+    [userId, baseUrl, encryptPat('fixture-pat')],
+  );
+  await query(
+    `INSERT INTO spaces (space_key, space_name) VALUES ($1, 'Development')`,
+    [SPACE_KEY],
+  );
+  return userId;
+}
+
+async function seedEmbeddingProvider(): Promise<void> {
+  const provider = await query<{ id: string }>(
+    `INSERT INTO llm_providers
+       (name, base_url, auth_type, verify_ssl, is_default, default_model)
+     VALUES ('sync-embedding-fixture', $1, 'none', TRUE, TRUE, $2)
+     RETURNING id`,
+    [`${baseUrl}/v1`, EMBEDDING_MODEL],
+  );
+  await query(
+    `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+     VALUES ('embedding', $1, $2)
+     ON CONFLICT (usecase) DO UPDATE
+       SET provider_id = EXCLUDED.provider_id, model = EXCLUDED.model`,
+    [provider.rows[0]!.id, EMBEDDING_MODEL],
+  );
+}
+
+async function seedSyncedPage(options: {
+  confluenceId: string;
+  version: number;
+  bodyStorage: string;
+  bodyHtml?: string;
+  bodyText?: string;
+  source?: 'confluence' | 'standalone';
+  embeddingDirty?: boolean;
+}): Promise<number> {
+  const bodyHtml = options.bodyHtml
+    ?? confluenceToHtml(options.bodyStorage, options.confluenceId, SPACE_KEY);
+  const result = await query<{ id: number }>(
+    `INSERT INTO pages
+       (source, confluence_id, space_key, title, body_storage, body_html, body_text,
+        version, embedding_dirty, embedding_status, image_analysis_dirty, last_synced)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+             CASE WHEN $9 THEN 'not_embedded' ELSE 'embedded' END, FALSE, NOW())
+     RETURNING id`,
+    [
+      options.source ?? 'confluence',
+      options.confluenceId,
+      SPACE_KEY,
+      `Stored ${options.confluenceId}`,
+      options.bodyStorage,
+      bodyHtml,
+      options.bodyText ?? htmlToText(bodyHtml),
+      options.version,
+      options.embeddingDirty ?? false,
+    ],
+  );
+  return result.rows[0]!.id;
+}
+
+async function readPage(confluenceId: string): Promise<{
+  body_storage: string;
+  body_html: string;
+  body_text: string;
+  version: number;
+  source: string;
+  embedding_dirty: boolean;
+  embedding_status: string;
+  image_analysis_dirty: boolean;
+}> {
+  const result = await query<{
+    body_storage: string;
+    body_html: string;
+    body_text: string;
+    version: number;
+    source: string;
+    embedding_dirty: boolean;
+    embedding_status: string;
+    image_analysis_dirty: boolean;
+  }>(
+    `SELECT body_storage, body_html, body_text, version, source,
+            embedding_dirty, embedding_status, image_analysis_dirty
+       FROM pages WHERE confluence_id = $1`,
+    [confluenceId],
+  );
+  return result.rows[0]!;
+}
+
+function counts(): { pagesCreated: number; pagesUpdated: number; pagesDeleted: number } {
+  return { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+}
+
+describe.skipIf(!canRun)('sync and embedding persistence boundaries', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+    await mkdir(attachmentsRoot, { recursive: true });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('Confluence fixture did not bind TCP');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    client = new ConfluenceClient(baseUrl, 'fixture-pat');
+  }, 30_000);
+
+  beforeEach(async () => {
+    releaseEmbeddingWait?.();
+    releaseEmbeddingWait = null;
+    embeddingWait = null;
+    embeddingFailureStatus = null;
+    await truncateAllTables();
+    await rm(attachmentsRoot, { recursive: true, force: true });
+    await mkdir(attachmentsRoot, { recursive: true });
+    requestedPaths.length = 0;
+    embeddingModels.length = 0;
+    embeddingInputs.length = 0;
+    upstreamPages.clear();
+    upstreamAttachments.clear();
+    modifiedPages = [];
   });
 
-  it('skips attachment retry when all pages have complete attachments', async () => {
-    setupIncrementalSync({
-      cachedPages: [
-        { confluence_id: 'page-ok', body_storage: '<p>no images</p>' },
-      ],
-    });
-
-    await syncUser('user-inc-ok');
-
-    // getMissingAttachments returns [] (default), so no attachment retry calls
-    // getPageAttachments should not be called for cached pages during retry
-    // (it may be called 0 times or only for modified pages)
-    const { syncImageAttachments } = await import('./attachment-handler.js');
-    expect(syncImageAttachments).not.toHaveBeenCalled();
+  afterEach(() => {
+    releaseEmbeddingWait?.();
+    releaseEmbeddingWait = null;
+    embeddingWait = null;
   });
 
-  it('pre-filters pages by attachment markers in the SQL query (#888)', async () => {
-    setupIncrementalSync({ cachedPages: [] });
-    await syncUser('user-prefilter');
-    const selectCall = mocks.query.mock.calls.find(
-      ([sql]) => typeof sql === 'string' && sql.includes('FROM pages') && sql.includes('space_key'),
+  afterAll(async () => {
+    releaseEmbeddingWait?.();
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    await teardownTestDb();
+    if (originalAttachmentsRoot === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsRoot;
+    await rm(attachmentsRoot, { recursive: true, force: true });
+  });
+
+  it('keeps the sync in embedding state until the configured provider has indexed the dirty page', async () => {
+    const userId = await seedActor();
+    await seedEmbeddingProvider();
+    const page = remotePage(
+      'embed-1',
+      1,
+      '<h1>Indexing contract</h1><p>This substantive fixture text must reach the configured embedding provider and become searchable.</p>',
+      'Indexing contract',
     );
-    expect(selectCall).toBeDefined();
-    expect(selectCall![0]).toContain("LIKE '%<ac:image%'");
-    expect(selectCall![0]).toContain("LIKE '%drawio%'");
+    upstreamPages.set(page.id, page);
+
+    embeddingWait = new Promise<void>((resolve) => { releaseEmbeddingWait = resolve; });
+    try {
+      await syncUser(userId);
+      await expect.poll(() => embeddingInputs.length, { timeout: 10_000 }).toBe(1);
+
+      expect((await getSyncStatus(userId)).status).toBe('embedding');
+      expect(await readPage(page.id)).toMatchObject({
+        source: 'confluence',
+        version: 1,
+        embedding_dirty: true,
+        embedding_status: 'embedding',
+      });
+      expect(embeddingModels).toEqual([EMBEDDING_MODEL]);
+      expect(embeddingInputs[0]!.join('\n')).toContain('substantive fixture text');
+    } finally {
+      releaseEmbeddingWait?.();
+      releaseEmbeddingWait = null;
+      embeddingWait = null;
+    }
+
+    await expect.poll(async () => {
+      const pageState = await readPage(page.id);
+      const embeddings = await query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM page_embeddings pe JOIN pages p ON p.id = pe.page_id WHERE p.confluence_id = $1',
+        [page.id],
+      );
+      return {
+        dirty: pageState.embedding_dirty,
+        status: pageState.embedding_status,
+        embeddings: Number(embeddings.rows[0]!.count),
+        syncStatus: (await getSyncStatus(userId)).status,
+      };
+    }, { timeout: 10_000 }).toEqual({
+      dirty: false,
+      status: 'embedded',
+      embeddings: 1,
+      syncStatus: 'idle',
+    });
+  }, 20_000);
+
+  it('settles the sync to idle while retaining a dirty failed page when the provider rejects indexing', async () => {
+    const userId = await seedActor();
+    await seedEmbeddingProvider();
+    const page = remotePage(
+      'embed-failure',
+      1,
+      '<p>This page is persisted even when the configured embedding provider rejects the indexing request.</p>',
+      'Provider failure boundary',
+    );
+    upstreamPages.set(page.id, page);
+    embeddingFailureStatus = 500;
+
+    await syncUser(userId);
+
+    await expect.poll(async () => {
+      const pageState = await readPage(page.id);
+      const embeddings = await query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM page_embeddings pe JOIN pages p ON p.id = pe.page_id WHERE p.confluence_id = $1',
+        [page.id],
+      );
+      return {
+        requests: embeddingInputs.length,
+        dirty: pageState.embedding_dirty,
+        status: pageState.embedding_status,
+        embeddings: Number(embeddings.rows[0]!.count),
+        syncStatus: (await getSyncStatus(userId)).status,
+      };
+    }, { timeout: 10_000 }).toEqual({
+      requests: 1,
+      dirty: true,
+      status: 'failed',
+      embeddings: 0,
+      syncStatus: 'idle',
+    });
+    expect(embeddingModels).toEqual([EMBEDDING_MODEL]);
+  }, 20_000);
+
+  it('replaces an existing page attachment cache when a newer upstream version arrives', async () => {
+    const userId = await seedActor();
+    const pageId = 'cache-replace';
+    const filename = 'evidence.png';
+    const oldBody = '<p>Old body</p>';
+    const newBody = `<p>New body</p><ac:image><ri:attachment ri:filename="${filename}" /></ac:image>`;
+    await seedSyncedPage({ confluenceId: pageId, version: 1, bodyStorage: oldBody });
+    const cacheDir = attachmentCacheDir(pageId);
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, filename), Buffer.from('old cached bytes'));
+
+    const page = remotePage(pageId, 2, newBody);
+    upstreamPages.set(pageId, page);
+    upstreamAttachments.set(pageId, new Map([[filename, Buffer.from('new upstream bytes')]]));
+    const syncCounts = counts();
+
+    await __internal.syncPage(
+      client,
+      userId,
+      SPACE_KEY,
+      page,
+      new Date(),
+      new Map(),
+      syncCounts,
+      randomUUID(),
+    );
+
+    expect(await readFile(join(cacheDir, filename), 'utf8')).toBe('new upstream bytes');
+    expect(await readPage(pageId)).toMatchObject({
+      body_storage: newBody,
+      version: 2,
+      source: 'confluence',
+      embedding_dirty: true,
+      image_analysis_dirty: true,
+    });
+    expect(syncCounts).toEqual({ pagesCreated: 0, pagesUpdated: 1, pagesDeleted: 0 });
+    expect(requestedPaths).toContain(`/rest/api/content/${pageId}/child/attachment`);
+    expect(requestedPaths).toContain(`/download/${pageId}/${filename}`);
   });
 
-  it('does not run syncMissingAttachments during full sync', async () => {
-    mocks.query
-      // 1. getClientForUser
-      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
-      // 3. spaces.last_synced -> null -> full sync
-      .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: revival cross-check UPDATE (none revived)
-      .mockResolvedValueOnce({ rows: [] })
-      // 5. detectDeletedPages: existing page ids (none → no deletion candidates)
-      .mockResolvedValueOnce({ rows: [] })
-      // 6. purgeDeletedPages: candidate SELECT (none expired)
-      .mockResolvedValueOnce({ rows: [] })
-      // 7. update space last_synced
-      .mockResolvedValueOnce({ rows: [] });
+  it('recovers a missing file during an incremental scan without re-dirtying text or scanning standalone rows', async () => {
+    const userId = await seedActor();
+    const pageId = 'missing-cache';
+    const standaloneId = 'standalone-historical-id';
+    const filename = 'lost.png';
+    const bodyStorage = `<p>Unchanged body</p><ac:image><ri:attachment ri:filename="${filename}" /></ac:image>`;
+    await seedSyncedPage({ confluenceId: pageId, version: 4, bodyStorage });
+    await seedSyncedPage({
+      confluenceId: standaloneId,
+      version: 4,
+      bodyStorage: '<ac:image><ri:attachment ri:filename="local-only.png" /></ac:image>',
+      source: 'standalone',
+    });
+    await query(
+      `UPDATE spaces SET last_synced = NOW() - INTERVAL '5 minutes' WHERE space_key = $1`,
+      [SPACE_KEY],
+    );
 
-    mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
-    mocks.getAllPageIds.mockResolvedValueOnce(new Set());
+    upstreamPages.set(pageId, remotePage(pageId, 4, bodyStorage));
+    upstreamAttachments.set(pageId, new Map([[filename, Buffer.from('recovered bytes')]]));
 
-    await syncUser('user-full');
+    await __internal.syncSpace(
+      client,
+      userId,
+      SPACE_KEY,
+      undefined,
+      new Date(),
+      new Map(),
+      randomUUID(),
+    );
 
-    // getMissingAttachments should NOT be called — full sync doesn't trigger syncMissingAttachments
-    expect(mocks.getMissingAttachments).not.toHaveBeenCalled();
+    expect(await readFile(join(attachmentCacheDir(pageId), filename), 'utf8')).toBe('recovered bytes');
+    expect(await readPage(pageId)).toMatchObject({
+      version: 4,
+      body_storage: bodyStorage,
+      embedding_dirty: false,
+      embedding_status: 'embedded',
+      image_analysis_dirty: true,
+    });
+    expect(await readPage(standaloneId)).toMatchObject({
+      source: 'standalone',
+      embedding_dirty: false,
+      image_analysis_dirty: false,
+    });
+    expect(requestedPaths).toContain(`/rest/api/content/${pageId}/child/attachment`);
+    expect(requestedPaths).not.toContain(`/rest/api/content/${standaloneId}/child/attachment`);
+  });
+
+  it('persists a changed rendered body at the same upstream version and marks it for re-indexing', async () => {
+    const userId = await seedActor();
+    const pageId = 'render-refresh';
+    const bodyStorage = '<p>Converter output now contains the current rendered content.</p>';
+    await seedSyncedPage({
+      confluenceId: pageId,
+      version: 7,
+      bodyStorage,
+      bodyHtml: '<p>stale rendered body</p>',
+      bodyText: 'stale rendered body',
+    });
+    const page = remotePage(pageId, 7, bodyStorage, 'Refreshed rendering');
+    upstreamPages.set(pageId, page);
+    const expectedHtml = confluenceToHtml(bodyStorage, pageId, SPACE_KEY);
+    const expectedText = htmlToText(expectedHtml);
+    const syncCounts = counts();
+
+    await __internal.syncPage(
+      client,
+      userId,
+      SPACE_KEY,
+      page,
+      new Date(),
+      new Map(),
+      syncCounts,
+      randomUUID(),
+    );
+
+    expect(await readPage(pageId)).toMatchObject({
+      body_storage: bodyStorage,
+      body_html: expectedHtml,
+      body_text: expectedText,
+      version: 7,
+      embedding_dirty: true,
+    });
+    expect(syncCounts).toEqual({ pagesCreated: 0, pagesUpdated: 1, pagesDeleted: 0 });
   });
 });

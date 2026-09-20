@@ -23,6 +23,7 @@ import {
 import { PAGE_GOVERNANCE_POLICY_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { isConfluenceEnabled } from './confluence-integration.js';
 import {
   getUserAccessibleSpaces,
   isSystemAdmin,
@@ -59,6 +60,7 @@ import {
 } from './page-baseline-manifest.js';
 import {
   getPageBaselineDeploymentReadiness,
+  pageBaselineEligibilityDenialReason,
   getPageBaselineGovernanceHook,
   readPageGovernanceMarker,
   type PageBaselineGovernanceActor,
@@ -235,7 +237,7 @@ async function authority(
   return { canFreeze: admin || manager || owner, canUnfreeze: admin || manager };
 }
 
-async function activationRow(client: PoolClient): Promise<{
+async function activationRow(client: PoolClient, lock?: 'shared' | 'exclusive'): Promise<{
   creation_enabled: boolean;
   activated_at: Date | null;
   activated_by_user_id: string | null;
@@ -249,7 +251,8 @@ async function activationRow(client: PoolClient): Promise<{
   }>(
     `SELECT creation_enabled, activated_at, activated_by_user_id, activated_by_name
        FROM page_baseline_feature_state
-      WHERE singleton = TRUE`,
+      WHERE singleton = TRUE
+      ${lock === 'shared' ? 'FOR SHARE' : lock === 'exclusive' ? 'FOR UPDATE' : ''}`,
   );
   const row = result.rows[0];
   if (!row) throw new PageBaselineError(503, 'baseline_configuration_error', 'Baseline activation state is unavailable');
@@ -257,13 +260,39 @@ async function activationRow(client: PoolClient): Promise<{
 }
 
 async function assertCreationAvailable(client: PoolClient): Promise<void> {
-  const activation = await activationRow(client);
+  const activation = await activationRow(client, 'shared');
   if (!activation.creation_enabled) {
     throw new PageBaselineError(503, 'baseline_creation_disabled', 'Baseline creation is disabled');
   }
-  const readiness = await getPageBaselineDeploymentReadiness();
+  const readiness = await getPageBaselineDeploymentReadiness(client);
   if (!readiness.ready) {
     throw new PageBaselineError(503, 'deployment_not_ready', 'Baseline writer enforcement is not ready');
+  }
+}
+
+async function assertPageBaselineEligible(
+  client: PoolClient,
+  page: PageRow,
+  actorId: string,
+): Promise<void> {
+  const reason = await pageBaselineEligibilityDenialReason(client, {
+    actorId,
+    pageSource: page.source,
+    lockSettings: true,
+  });
+  if (reason === 'standalone_article_required') {
+    throw new PageBaselineError(
+      409,
+      reason,
+      'Only standalone articles can use baseline freeze and approval',
+    );
+  }
+  if (reason === 'confluence_integration_enabled') {
+    throw new PageBaselineError(
+      409,
+      reason,
+      'Turn off Confluence integration before using baseline freeze and approval',
+    );
   }
 }
 
@@ -343,13 +372,19 @@ export async function getPageLifecycleState(
   const canMutateContent = page.source === 'standalone'
     ? page.created_by_user_id === actorId || page.visibility === 'shared'
     : !page.space_key || (await getUserAccessibleSpaces(actorId, client)).includes(page.space_key);
+  const eligibilityDeniedReason = await pageBaselineEligibilityDenialReason(client, {
+    actorId,
+    pageSource: page.source,
+    lockSettings: false,
+  });
   const activation = await activationRow(client);
-  const readiness = await getPageBaselineDeploymentReadiness();
+  const readiness = await getPageBaselineDeploymentReadiness(client);
   const governance = await governanceCapabilities(client, page, actor);
   const summary = freezeSummary(page);
 
   let freezeDeniedReason: PageLifecycleDenialReason | null = null;
   if (summary.isFrozen) freezeDeniedReason = 'page_is_frozen';
+  else if (eligibilityDeniedReason) freezeDeniedReason = eligibilityDeniedReason;
   else if (!permissions.canFreeze) freezeDeniedReason = 'not_authorized';
   else if (!activation.creation_enabled) freezeDeniedReason = 'baseline_creation_disabled';
   else if (!readiness.ready) freezeDeniedReason = 'deployment_not_ready';
@@ -374,14 +409,13 @@ export async function getPageLifecycleState(
     freezeDeniedReason,
     canUnfreeze: unfreezeDeniedReason === null,
     unfreezeDeniedReason,
-    canApprove: governance.canApprove,
-    approveDeniedReason: governance.approveDeniedReason,
+    canApprove: eligibilityDeniedReason === null && governance.canApprove,
+    approveDeniedReason: eligibilityDeniedReason ?? governance.approveDeniedReason,
     canMutateContent: !summary.isFrozen && canMutateContent,
     mutateContentDeniedReason: summary.isFrozen
       ? 'page_is_frozen' as const
       : canMutateContent ? null : 'not_authorized' as const,
     governanceProposalStatus: governance.proposalStatus,
-    pendingDivergence: null,
   };
   return PageFreezeDetailFieldsSchema.parse(state);
 }
@@ -782,6 +816,7 @@ export async function previewPageBaseline(
       await assertPageVisible(client, page, actorId);
       if (page.deleted_at) throw new PageBaselineError(409, 'page_deleted', 'A deleted page cannot be frozen');
       if (page.baseline_id) throw new PageBaselineError(423, 'page_is_frozen', 'Page is already frozen');
+      await assertPageBaselineEligible(client, page, actorId);
       const permissions = await authority(client, page, actorId);
       if (!permissions.canFreeze) throw new PageBaselineError(403, 'not_authorized', 'Freeze permission is required');
       await assertCreationAvailable(client);
@@ -1017,6 +1052,7 @@ async function publishFreezeLocked(
     let page = await loadPage(client, input.pageId, true);
     await assertPageVisible(client, page, input.actorId);
     if (page.deleted_at) throw new PageBaselineError(409, 'page_deleted', 'A deleted page cannot be frozen');
+    await assertPageBaselineEligible(client, page, input.actorId);
     const permissions = await authority(client, page, input.actorId);
     if (!permissions.canFreeze) throw new PageBaselineError(403, 'not_authorized', 'Freeze permission is required');
 
@@ -1074,6 +1110,7 @@ async function publishFreezeLocked(
     const finalActor = await loadActiveActor(client, input.actorId);
     page = await loadPage(client, input.pageId, true);
     await assertPageVisible(client, page, input.actorId);
+    await assertPageBaselineEligible(client, page, input.actorId);
     const finalPermissions = await authority(client, page, input.actorId);
     if (!finalPermissions.canFreeze) throw new PageBaselineError(403, 'not_authorized', 'Freeze permission changed');
     if (page.baseline_id) throw new PageBaselineError(423, 'page_is_frozen', 'Page is already frozen');
@@ -1798,7 +1835,7 @@ export async function getPageBaselineActivationState(
   try {
     await assertFreshAdmin(client, actorId);
     const row = await activationRow(client);
-    const readiness = await getPageBaselineDeploymentReadiness();
+    const readiness = await getPageBaselineDeploymentReadiness(client);
     return {
       creationEnabled: row.creation_enabled,
       deploymentReady: readiness.ready,
@@ -1820,7 +1857,17 @@ export async function setPageBaselineCreationEnabled(
   try {
     await client.query('BEGIN');
     const actor = await assertFreshAdmin(client, actorId);
-    const readiness = await getPageBaselineDeploymentReadiness();
+    if (creationEnabled && await isConfluenceEnabled(actorId, client, true)) {
+      throw new PageBaselineError(
+        409,
+        'confluence_integration_enabled',
+        'Turn off Confluence integration before enabling baseline creation',
+      );
+    }
+    // Registration takes SHARE on this row: no incompatible runtime can appear
+    // between the compatibility read and activation.
+    await activationRow(client, 'exclusive');
+    const readiness = await getPageBaselineDeploymentReadiness(client);
     if (creationEnabled && !readiness.ready) {
       throw new PageBaselineError(409, 'deployment_not_ready', 'All protected writers must report readiness before activation');
     }

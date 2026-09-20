@@ -139,6 +139,12 @@ async function freeze(pageId: number, actorId: string): Promise<void> {
   setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
   const admin = await insertUser(`page-update-admin-${randomUUID()}`);
   await query("UPDATE users SET role = 'admin' WHERE id = $1", [admin]);
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_enabled)
+     VALUES ($1, FALSE), ($2, FALSE)
+     ON CONFLICT (user_id) DO UPDATE SET confluence_enabled = FALSE`,
+    [admin, actorId],
+  );
   await setPageBaselineCreationEnabled(admin, true);
   const prepared = await previewPageBaseline(pageId, actorId);
   await freezePage({

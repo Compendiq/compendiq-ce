@@ -26,8 +26,11 @@ const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
   unsyncSpace: (...args: unknown[]) => mockUnsyncSpace(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({

@@ -108,6 +108,97 @@ export async function confirmPagePublication(
   return observed as ConfirmedPagePublication;
 }
 
+export interface CreatedConfluencePagePublication {
+  confluenceId: string;
+  spaceKey: string;
+  parentConfluenceId: string | null;
+  title: string;
+  storage: string;
+  version: number;
+}
+
+export interface PublishedConfluencePage {
+  id: number;
+  labels: string[] | null;
+  contentRevision: string;
+  lifecycleRevision: string;
+}
+
+/**
+ * Publish an acknowledged upstream create into the local corpus. Re-running
+ * after an acknowledgement loss accepts only the exact already-published row;
+ * an unrelated collision is never overwritten.
+ */
+export async function publishCreatedConfluencePage(
+  client: PoolClient,
+  publication: CreatedConfluencePagePublication,
+): Promise<PublishedConfluencePage> {
+  const bodyHtml = confluenceToHtml(
+    publication.storage,
+    publication.confluenceId,
+    publication.spaceKey,
+  );
+  const bodyText = htmlToText(bodyHtml);
+  const inserted = await client.query<PublishedConfluencePage>(
+    `INSERT INTO pages
+       (confluence_id, space_key, title, body_storage, body_html, body_text,
+        version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
+     ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO NOTHING
+     RETURNING id, labels, content_revision::text AS "contentRevision",
+               lifecycle_revision::text AS "lifecycleRevision"`,
+    [
+      publication.confluenceId,
+      publication.spaceKey,
+      publication.title,
+      publication.storage,
+      bodyHtml,
+      bodyText,
+      publication.version,
+      publication.parentConfluenceId,
+    ],
+  );
+  if (inserted.rows[0]) return inserted.rows[0];
+  const existing = await client.query<PublishedConfluencePage & {
+    spaceKey: string | null;
+    parentId: string | null;
+    title: string;
+    storage: string | null;
+    bodyHtml: string | null;
+    bodyText: string | null;
+    version: number;
+    source: string;
+  }>(
+    `SELECT id, labels, content_revision::text AS "contentRevision",
+            lifecycle_revision::text AS "lifecycleRevision",
+            space_key AS "spaceKey", parent_id AS "parentId", title,
+            body_storage AS storage, body_html AS "bodyHtml",
+            body_text AS "bodyText", version, source
+       FROM pages
+      WHERE confluence_id = $1`,
+    [publication.confluenceId],
+  );
+  const row = existing.rows[0];
+  if (
+    !row ||
+    row.source !== 'confluence' ||
+    row.spaceKey !== publication.spaceKey ||
+    row.parentId !== publication.parentConfluenceId ||
+    row.bodyHtml !== bodyHtml ||
+    row.bodyText !== bodyText ||
+    row.title !== publication.title ||
+    row.storage !== publication.storage ||
+    row.version !== publication.version
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_local_identity_changed',
+      'The acknowledged Confluence page conflicts with an existing local row',
+    );
+  }
+  return row;
+}
+
 const LABEL_KINDS = [
   'page.labels',
   'pages.bulk.replace_tags',
@@ -117,6 +208,20 @@ const LABEL_KINDS = [
 
 function stringValue(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', `Missing ${field}`);
+  }
+  return value;
+}
+
+function positiveInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', `Missing ${field}`);
+  }
+  return value;
+}
+
+function sha256Value(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
     throw new PageWriteError(409, 'intent_recovery_metadata_invalid', `Missing ${field}`);
   }
   return value;
@@ -193,6 +298,104 @@ function remoteNotStarted(reference: string, result: unknown) {
   };
 }
 
+
+const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) => {
+  const parentPageId = intent.pageIds[0];
+  if (parentPageId === undefined || intent.pageIds.length !== 1) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'A Confluence child create must reference one local parent',
+    );
+  }
+  if (positiveInteger(intent.effect.parentPageId, 'parentPageId') !== parentPageId) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The referenced parent does not match the durable target',
+    );
+  }
+  const actorId = await assertPageAccess(client, intent, parentPageId);
+  const rawParentConfluenceId = intent.effect.parentConfluenceId;
+  if (
+    rawParentConfluenceId !== null &&
+    (typeof rawParentConfluenceId !== 'string' || rawParentConfluenceId.length === 0)
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Missing parentConfluenceId');
+  }
+  const parentConfluenceId = rawParentConfluenceId as string | null;
+  const parentSource = parentConfluenceId === null ? 'standalone' : 'confluence';
+  const parentReferenceId = parentConfluenceId ?? String(parentPageId);
+  const spaceKey = stringValue(intent.effect.spaceKey, 'spaceKey');
+  const expectedTitleDigest = sha256Value(intent.effect.titleSha256, 'titleSha256');
+  const expectedStorageDigest = sha256Value(intent.effect.storageSha256, 'storageSha256');
+  const parent = await client.query(
+    `SELECT 1 FROM pages
+      WHERE id = $1 AND source = $2
+        AND ($3::text IS NULL OR confluence_id = $3)
+        AND space_key = $4 AND deleted_at IS NULL`,
+    [parentPageId, parentSource, parentConfluenceId, spaceKey],
+  );
+  if (parent.rowCount !== 1) {
+    throw new PageWriteError(
+      409,
+      'intent_parent_identity_changed',
+      'The referenced parent is no longer available',
+    );
+  }
+  if (intent.remoteEffectStartedAt === null) {
+    return remoteNotStarted(
+      `confluence-page-create:${parentReferenceId}:not-dispatched`,
+      { parentPageId },
+    );
+  }
+  if (intent.remoteEffectsCompletedAt === null) {
+    throw new PageWriteError(
+      409,
+      'intent_outcome_unrecoverable',
+      'The remote page creation outcome is unknown',
+    );
+  }
+  const terminal = terminalResult(intent);
+  const confluence = await getClientForUser(actorId, client);
+  if (!confluence) {
+    throw new PageWriteError(
+      409,
+      'intent_provider_unavailable',
+      'The original Confluence connection is unavailable',
+    );
+  }
+  const observed = await confirmPagePublication(confluence, terminal);
+  const storage = observed.body.storage.value;
+  const titleDigest = createHash('sha256').update(observed.title).digest('hex');
+  const storageDigest = createHash('sha256').update(storage).digest('hex');
+  if (titleDigest !== expectedTitleDigest || storageDigest !== expectedStorageDigest) {
+    throw new PageWriteError(
+      409,
+      'intent_terminal_evidence_mismatch',
+      'The acknowledged Confluence child differs from the requested publication',
+    );
+  }
+  const published = await publishCreatedConfluencePage(client, {
+    confluenceId: terminal.confluenceId,
+    spaceKey,
+    parentConfluenceId: parentReferenceId,
+    title: observed.title,
+    storage,
+    version: observed.version.number,
+  });
+  await enqueuePageWriteInvalidation(client, intent.id);
+  return {
+    outcome: 'applied',
+    proof: {
+      kind: 'remote_terminal_effect_verified',
+      observedAt: new Date().toISOString(),
+      reference: `confluence-page-create:${terminal.confluenceId}:${storageDigest}`,
+      details: { remoteEffectsCompleted: true, terminalEvidence: storageDigest },
+    },
+    result: { pageId: published.id, confluenceId: terminal.confluenceId },
+  };
+};
 
 const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   const pageId = intent.pageIds[0];
@@ -664,6 +867,7 @@ let registered = false;
 export function registerOrdinaryPageWriteReconcilers(): void {
   if (registered) return;
   for (const kind of LABEL_KINDS) registerPageWriteIntentReconciler(kind, reconcileLabels);
+  registerPageWriteIntentReconciler('pages.create.confluence', reconcilePageCreate);
   registerPageWriteIntentReconciler('pages.update.confluence', reconcilePagePut);
   registerPageWriteIntentReconciler('pages.draft.publish.confluence', reconcilePagePut);
   registerPageWriteIntentReconciler('pages.delete.confluence', reconcileDelete);

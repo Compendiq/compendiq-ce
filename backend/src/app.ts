@@ -93,10 +93,11 @@ import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-boots
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { registerOrdinaryPageWriteReconcilers } from './domains/confluence/services/ordinary-page-write-reconciler.js';
 import { registerPageRelocateReconciler } from './domains/knowledge/services/page-relocate-service.js';
+import { registerCollabCommitIntentReconciler } from './domains/confluence/services/collab-commit-intent-reconciler.js';
 import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
-import { initCollabBus } from './core/services/collab-room-service.js';
+import { initCollabBus, initCollabLifecycleBus } from './core/services/collab-room-service.js';
 import { initCollabFlag } from './core/services/collab-flag.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
@@ -109,6 +110,8 @@ import {
   initPageBaselineOutbox,
 } from './core/services/page-baseline-outbox.js';
 import { getPageWriterRuntimeId, PageWriteError } from './core/services/page-write-admission.js';
+import { PageSubtreeFrozenError } from './core/services/page-subtree.js';
+import { registerPageBaselineEnforcementReadiness } from './core/services/page-baseline-governance.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
   initIpAllowlistService,
@@ -133,6 +136,7 @@ export async function buildApp() {
   await getPageWriterRuntimeId();
   registerOrdinaryPageWriteReconcilers();
   registerPageRelocateReconciler();
+  registerCollabCommitIntentReconciler();
 
   const app = Fastify({
     logger: false, // We use our own pino instance
@@ -302,6 +306,10 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+  const teardownCollabLifecycleBus = await initCollabLifecycleBus();
+  app.addHook('onClose', async () => {
+    await teardownCollabLifecycleBus();
+  });
 
   const teardownPageBaselineOutbox = await initPageBaselineOutbox();
   app.addHook('onClose', async () => {
@@ -313,6 +321,7 @@ export async function buildApp() {
   });
 
   await initCollabFlag();
+  registerPageBaselineEnforcementReadiness();
 
   // ── User security cache bus (#737) ───────────────────────────────
   // Subscribes the per-user liveness/role cache (checked by `authenticate`
@@ -446,6 +455,9 @@ export async function buildApp() {
       reply.status(statusCode).send({
         error: error.name,
         reason: error.reason,
+        ...(error instanceof PageSubtreeFrozenError
+          ? { message: error.message, blockedCount: error.blockedCount }
+          : {}),
         ...(error instanceof PageBaselineError && error.state ? { state: error.state } : {}),
       });
       return;

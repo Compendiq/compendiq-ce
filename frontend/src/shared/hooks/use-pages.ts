@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
+import type { PageIcon, PageLifecycleState, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 import { useOnboardingActions } from './use-onboarding';
 
@@ -44,7 +44,7 @@ interface PageSummary {
   icon?: PageIcon | null;
 }
 
-interface PageDetail extends PageSummary {
+interface PageDetail extends PageSummary, Partial<PageLifecycleState> {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;

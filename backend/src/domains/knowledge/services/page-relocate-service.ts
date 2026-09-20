@@ -81,12 +81,14 @@ import {
 import { withLocalAttachmentMutationLock } from '../../../core/services/attachment-snapshot-lock.js';
 import {
   advancePageWriteIntent,
+  assertPageHierarchyParentsAvailable,
   cancelPageWriteIntentBeforeEffect,
   completePageWriteIntent,
   PageWriteError,
   registerPageWriteIntentReconciler,
   withPageWriteTransaction,
-  reservePageWriteIntent,
+  withPageHierarchyWriteTransaction,
+  reservePageWriteIntentInTransaction,
   runPageWriteIntentEffect,
   type PageWriteIntent,
   type PageWriteIntentReconciler,
@@ -418,7 +420,7 @@ async function reserveRelocateIntent(input: {
   userId: string;
   target: 'confluence' | 'local';
   targetSpaceKey: string | null;
-}): Promise<PageWriteIntent> {
+}): Promise<{ intent: PageWriteIntent; parentConfluenceId: string | null }> {
   const oldKey = parentKeyFor(input.page.source, input.page.id, input.page.confluence_id);
   const affected = await query<{
     id: number;
@@ -449,58 +451,77 @@ async function reserveRelocateIntent(input: {
   ) {
     throw new RelocateError(409, 'Page changed while relocation was being prepared. Reload and try again.');
   }
-  const intent = await reservePageWriteIntent({
-    pageIds,
-    kind: 'page.relocate',
-    actorId: input.userId,
-    expectedRevisions,
-    effect: {
-      effectClass: 'remote',
-      pageId: input.page.id,
-      target: input.target,
-      fromSource: input.page.source,
-      fromConfluenceId: input.page.confluence_id,
-      fromSpaceKey: input.page.space_key,
-      targetSpaceKey: input.targetSpaceKey,
-      affectedPageIds: pageIds,
-    },
-  });
 
-  // Reserving the root prevents participating reparent writers from crossing
-  // this point. Re-expand and re-read the payload before any file/remote effect
-  // so a waiter never operates on the pre-lock hierarchy or body.
-  const reexpanded = await query<{ id: number }>(
-    `SELECT id FROM pages
-      WHERE id = $1 OR (parent_id = $2 AND id <> $1)
-      ORDER BY id`,
-    [input.page.id, oldKey],
-  );
-  const current = await query<Pick<
-    RelocatablePage,
-    'source' | 'confluence_id' | 'space_key' | 'version' | 'title' | 'body_html' | 'body_storage'
-  >>(
-    `SELECT source, confluence_id, space_key, version, title, body_html, body_storage
-       FROM pages WHERE id = $1 AND deleted_at IS NULL`,
-    [input.page.id],
-  );
-  const ids = reexpanded.rows.map((row) => row.id);
-  const page = current.rows[0];
-  const changed =
-    ids.length !== pageIds.length ||
-    ids.some((pageId, index) => pageId !== pageIds[index]) ||
-    !page ||
-    page.source !== input.page.source ||
-    page.confluence_id !== input.page.confluence_id ||
-    page.space_key !== input.page.space_key ||
-    page.version !== input.page.version ||
-    page.title !== input.page.title ||
-    page.body_html !== input.page.body_html ||
-    page.body_storage !== input.page.body_storage;
-  if (changed) {
-    await cancelPageWriteIntentBeforeEffect(intent);
-    throw new RelocateError(409, 'Page or hierarchy changed while relocation was waiting. Reload and try again.');
-  }
-  return intent;
+  return withPageHierarchyWriteTransaction(async (client) => {
+    const reexpanded = await client.query<{ id: number }>(
+      `SELECT id FROM pages
+        WHERE id = $1 OR (parent_id = $2 AND id <> $1)
+        ORDER BY id`,
+      [input.page.id, oldKey],
+    );
+    const current = await client.query<Pick<
+      RelocatablePage,
+      'source' | 'confluence_id' | 'space_key' | 'version' | 'title' | 'body_html' | 'body_storage'
+    >>(
+      `SELECT source, confluence_id, space_key, version, title, body_html, body_storage
+         FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      [input.page.id],
+    );
+    const ids = reexpanded.rows.map((row) => row.id);
+    const page = current.rows[0];
+    const changed =
+      ids.length !== pageIds.length ||
+      ids.some((pageId, index) => pageId !== pageIds[index]) ||
+      !page ||
+      page.source !== input.page.source ||
+      page.confluence_id !== input.page.confluence_id ||
+      page.space_key !== input.page.space_key ||
+      page.version !== input.page.version ||
+      page.title !== input.page.title ||
+      page.body_html !== input.page.body_html ||
+      page.body_storage !== input.page.body_storage;
+    if (changed) {
+      throw new RelocateError(409, 'Page or hierarchy changed while relocation was waiting. Reload and try again.');
+    }
+
+    let parentConfluenceId: string | null = null;
+    if (input.target === 'confluence') {
+      const parent = await client.query<{ id: number; confluence_id: string }>(
+        `SELECT parent.id, parent.confluence_id
+           FROM pages child
+           JOIN pages parent
+             ON (parent.confluence_id = child.parent_id OR parent.id::text = child.parent_id)
+          WHERE child.id = $1
+            AND parent.deleted_at IS NULL
+            AND parent.confluence_id IS NOT NULL
+          ORDER BY parent.id
+          LIMIT 1`,
+        [input.page.id],
+      );
+      if (parent.rows[0]) {
+        await assertPageHierarchyParentsAvailable(client, [parent.rows[0].id]);
+        parentConfluenceId = parent.rows[0].confluence_id;
+      }
+    }
+
+    const intent = await reservePageWriteIntentInTransaction(client, {
+      pageIds,
+      kind: 'page.relocate',
+      actorId: input.userId,
+      expectedRevisions,
+      effect: {
+        effectClass: 'remote',
+        pageId: input.page.id,
+        target: input.target,
+        fromSource: input.page.source,
+        fromConfluenceId: input.page.confluence_id,
+        fromSpaceKey: input.page.space_key,
+        targetSpaceKey: input.targetSpaceKey,
+        affectedPageIds: pageIds,
+      },
+    });
+    return { intent, parentConfluenceId };
+  });
 }
 
 /**
@@ -1289,23 +1310,6 @@ async function lockAndReload(txClient: PoolClient, pageId: number): Promise<Relo
   return row;
 }
 
-/**
- * Resolve the Confluence id of a page's parent, if the parent is itself a
- * Confluence page. A standalone parent has no upstream counterpart, so the
- * relocated page is created at the target space's root.
- */
-async function resolveConfluenceParent(pageId: number): Promise<string | null> {
-  const res = await query<{ confluence_id: string | null }>(
-    `SELECT parent.confluence_id
-       FROM pages child
-       JOIN pages parent
-         ON (parent.confluence_id = child.parent_id OR parent.id::text = child.parent_id)
-      WHERE child.id = $1 AND parent.deleted_at IS NULL AND parent.confluence_id IS NOT NULL
-      LIMIT 1`,
-    [pageId],
-  );
-  return res.rows[0]?.confluence_id ?? null;
-}
 
 async function publishToConfluenceOnClient(
   client: PoolClient,
@@ -1486,8 +1490,10 @@ async function relocateToConfluence(opts: {
     );
   }
 
-  const parentConfluenceId = await resolveConfluenceParent(page.id);
-  const intent = await reserveRelocateIntent({
+  const {
+    intent,
+    parentConfluenceId,
+  } = await reserveRelocateIntent({
     page,
     userId,
     target: 'confluence',
@@ -1917,7 +1923,7 @@ async function relocateToLocal(opts: {
     }
   }
 
-  const intent = await reserveRelocateIntent({
+  const { intent } = await reserveRelocateIntent({
     page,
     userId,
     target: 'local',

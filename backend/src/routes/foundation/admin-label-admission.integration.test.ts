@@ -70,6 +70,10 @@ describe.skipIf(!available)('administrative labels respect page write admission'
       "INSERT INTO users (username, password_hash, role) VALUES ('label-admin', 'x', 'admin') RETURNING id",
     );
     actorId = actor.rows[0]!.id;
+    await query(
+      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      [actorId],
+    );
     pageIds = [await seedPage('First', ['review', 'keep']), await seedPage('Second', ['review'])];
     stopOutbox = await initPageBaselineOutbox();
   });

@@ -21,14 +21,22 @@ import {
   previewPageBaseline,
   setPageBaselineCreationEnabled,
 } from '../../../core/services/page-baseline-service.js';
-import { setPageBaselineReadinessProvider } from '../../../core/services/page-baseline-governance.js';
+import {
+  PAGE_WRITER_ENFORCEMENT_VERSION,
+  registerPageBaselineEnforcementReadiness,
+  setPageBaselineReadinessProvider,
+} from '../../../core/services/page-baseline-governance.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
-import { isConfluenceEnabled } from './sync-service.js';
+import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
 import {
   confluencePagePutDigest,
   registerConfluencePagePutIntentReconcilers,
 } from './page-put-intent-reconciler.js';
+import {
+  registerCollabCommitIntentReconciler,
+  type CollabCommitImage,
+} from './collab-commit-intent-reconciler.js';
 
 vi.mock('undici', async (importOriginal) => ({
   ...(await importOriginal<typeof Undici>()),
@@ -59,12 +67,17 @@ async function insertUser(role: 'user' | 'admin'): Promise<string> {
 }
 
 async function seedPendingIntent(input: {
-  kind: 'page.ai_apply' | 'page.version_restore';
+  kind:
+    | 'page.ai_apply'
+    | 'page.version_restore'
+    | 'collab.commit.confluence'
+    | 'collab.commit.confluence.media';
   actorId: string;
   fencedBy: string;
   expectedRemoteVersion: number;
   intendedTitle: string;
   intendedStorage: string;
+  mediaImages?: CollabCommitImage[];
 }): Promise<{
   intentId: string;
   pageId: number;
@@ -100,9 +113,9 @@ async function seedPendingIntent(input: {
   await query(
     `INSERT INTO page_writer_runtimes
        (runtime_id, deployment_identity, quiesced_at, quiescence_ack, fenced_at,
-        fenced_by, fence_reason, fence_proof)
+        fenced_by, fence_reason, fence_proof, enforcement_version)
      VALUES ($1, $2::jsonb, NOW(), $3, NOW(), $4,
-             'Owner runtime quiesced before conditional recovery', $5::jsonb)`,
+             'Owner runtime quiesced before conditional recovery', $5::jsonb, $6)`,
     [
       runtimeId,
       JSON.stringify({ host: 'recovery-test', pid: sequence, startedAt: new Date().toISOString() }),
@@ -113,6 +126,7 @@ async function seedPendingIntent(input: {
         acknowledgmentId,
         deploymentIdentity: { host: 'recovery-test' },
       }),
+      PAGE_WRITER_ENFORCEMENT_VERSION,
     ],
   );
   const intentId = randomUUID();
@@ -135,7 +149,7 @@ async function seedPendingIntent(input: {
     );
     improvementId = improvement.rows[0]!.id;
     publicationEffect = { improvementId };
-  } else {
+  } else if (input.kind === 'page.version_restore') {
     targetVersion = 2;
     await query(
       `INSERT INTO page_versions
@@ -144,6 +158,17 @@ async function seedPendingIntent(input: {
       [pageRow.id, targetVersion, input.intendedTitle, input.intendedStorage],
     );
     publicationEffect = { targetVersion };
+  } else if (input.kind === 'collab.commit.confluence.media') {
+    publicationEffect = {
+      images: input.mediaImages ?? [{
+        filename: 'planned.png',
+        mimeType: 'image/png',
+        size: 17,
+        contentSha256: 'a'.repeat(64),
+      }],
+    };
+  } else {
+    publicationEffect = {};
   }
   const effect = {
     effectClass: 'remote',
@@ -157,7 +182,7 @@ async function seedPendingIntent(input: {
     `INSERT INTO page_write_intents
        (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)
      VALUES ($1, $2, $3, $4, ARRAY[$5]::integer[], $6::jsonb,
-             'remote_conditional', $7::jsonb)`,
+             $7, $8::jsonb)`,
     [
       intentId,
       runtimeId,
@@ -165,6 +190,9 @@ async function seedPendingIntent(input: {
       input.actorId,
       pageRow.id,
       JSON.stringify(revisions),
+      input.kind === 'collab.commit.confluence.media'
+        ? 'remote_terminal_only'
+        : 'remote_conditional',
       JSON.stringify(effect),
     ],
   );
@@ -229,8 +257,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
     await setupTestDb();
     attachmentsDir = await mkdtemp(join(tmpdir(), 'conditional-publication-'));
     vi.stubEnv('ATTACHMENTS_DIR', attachmentsDir);
-    setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+    registerPageBaselineEnforcementReadiness();
     registerConfluencePagePutIntentReconcilers();
+    registerCollabCommitIntentReconciler();
     cacheProducer = createClient({
       url: process.env.REDIS_URL,
       socket: { reconnectStrategy: false },
@@ -260,6 +289,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
       `INSERT INTO user_settings (user_id, confluence_url, confluence_pat)
        VALUES ($1, 'https://confluence.example.com', $2)`,
       [originalActorId, encryptPat('original-actor-pat')],
+    );
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled)
+       VALUES ($1, FALSE)`,
+      [administratorId],
     );
     await setPageBaselineCreationEnabled(administratorId, true);
   });
@@ -420,31 +454,283 @@ describe.skipIf(!dbAvailable || !redisAvailable)('conditional Confluence page PU
           [intent.intentId],
         )).rows[0]?.cache_invalidation_pending,
       ).toBe(false);
-      const preview = await previewPageBaseline(intent.pageId, administratorId);
-      expect(preview.version).toBe(6);
-      const baseline = await query<{
-        title: string;
-        body_html: string;
-        body_storage: string;
-        body_text: string;
-        version: number;
-      }>(
-        `SELECT title, body_html, body_storage, body_text, version
-           FROM page_baselines WHERE id = $1`,
-        [preview.baselineId],
-      );
-      expect(baseline.rows[0]).toEqual({
-        title: intendedTitle,
-        body_html: intendedStorage,
-        body_storage: intendedStorage,
-        body_text: 'intended storage',
-        version: 6,
+      await expect(previewPageBaseline(intent.pageId, administratorId)).rejects.toMatchObject({
+        statusCode: 409,
+        reason: 'standalone_article_required',
       });
+      expect((await query(
+        `SELECT id FROM page_baselines WHERE original_page_id = $1`,
+        [intent.pageId],
+      )).rows).toEqual([]);
       expect(mockRequest.mock.calls[0]?.[1]).toMatchObject({
         headers: { Authorization: 'Bearer original-actor-pat' },
       });
     },
   );
+
+  it('recovers an accepted collaborative commit without deleting its durable Yjs state', async () => {
+    const expectedRemoteVersion = 5;
+    const intendedTitle = 'Recovered collaborative title';
+    const intendedStorage = '<p>recovered collaborative body</p>';
+    const intent = await seedPendingIntent({
+      kind: 'collab.commit.confluence',
+      actorId: originalActorId,
+      fencedBy: administratorId,
+      expectedRemoteVersion,
+      intendedTitle,
+      intendedStorage,
+    });
+    await query(
+      `INSERT INTO page_collaborative_docs (page_id, doc_state)
+       VALUES ($1, $2)`,
+      [intent.pageId, Buffer.from('retained-yjs-state')],
+    );
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: intent.confluenceId,
+      type: 'page',
+      status: 'current',
+      title: intendedTitle,
+      version: { number: expectedRemoteVersion + 1, when: '2026-09-01T00:00:00Z' },
+      body: { storage: { value: intendedStorage } },
+    }) as never);
+
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'Recover the exact conditional collaborative page update after restart',
+    })).resolves.toEqual({
+      intentId: intent.intentId,
+      status: 'reconciled_applied',
+    });
+
+    expect(await localPageState(intent.pageId)).toEqual({
+      title: intendedTitle,
+      body_html: intendedStorage,
+      body_storage: intendedStorage,
+      body_text: 'recovered collaborative body',
+      version: expectedRemoteVersion + 1,
+      embedding_dirty: true,
+      image_analysis_dirty: true,
+    });
+    expect(
+      (await query('SELECT 1 FROM page_collaborative_docs WHERE page_id = $1', [intent.pageId])).rows,
+    ).toHaveLength(1);
+    expect((await statusAndProof(intent.intentId)).status).toBe('reconciled_applied');
+  });
+
+  it('keeps a proven collaborative commit pending when the original editor is deactivated', async () => {
+    const expectedRemoteVersion = 5;
+    const intendedTitle = 'Accepted but no longer authorized';
+    const intendedStorage = '<p>accepted remote collaboration</p>';
+    const intent = await seedPendingIntent({
+      kind: 'collab.commit.confluence',
+      actorId: originalActorId,
+      fencedBy: administratorId,
+      expectedRemoteVersion,
+      intendedTitle,
+      intendedStorage,
+    });
+    const staleDoc = Buffer.from('retained after authority refusal');
+    await query(
+      `INSERT INTO page_collaborative_docs (page_id, doc_state)
+       VALUES ($1, $2)`,
+      [intent.pageId, staleDoc],
+    );
+    await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [originalActorId]);
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: intent.confluenceId,
+      type: 'page',
+      status: 'current',
+      title: intendedTitle,
+      version: { number: expectedRemoteVersion + 1, when: '2026-09-01T00:00:00Z' },
+      body: { storage: { value: intendedStorage } },
+    }) as never);
+
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'Do not publish collaborative state after the original editor lost authority',
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      reason: 'intent_actor_authority_unavailable',
+    });
+    expect((await statusAndProof(intent.intentId)).status).toBe('pending');
+    expect(await localPageState(intent.pageId)).toMatchObject({
+      title: 'Local title',
+      body_html: '<p>local</p>',
+      body_storage: '<p>local</p>',
+      version: expectedRemoteVersion,
+    });
+    const persistedDoc = await query<{ doc_state: Buffer }>(
+      'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
+      [intent.pageId],
+    );
+    expect(persistedDoc.rows[0]?.doc_state).toEqual(staleDoc);
+  });
+
+  it('settles a terminal-only media intent only when no remote mutation started', async () => {
+    const intent = await seedPendingIntent({
+      kind: 'collab.commit.confluence.media',
+      actorId: originalActorId,
+      fencedBy: administratorId,
+      expectedRemoteVersion: 5,
+      intendedTitle: 'Undispatched media commit',
+      intendedStorage: '<ac:image><ri:attachment ri:filename="planned.png"/></ac:image>',
+    });
+
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'The fenced owner never dispatched the planned attachment mutation',
+    })).resolves.toEqual({
+      intentId: intent.intentId,
+      status: 'reconciled_not_applied',
+    });
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    const settled = await statusAndProof(intent.intentId);
+    expect(settled.status).toBe('reconciled_not_applied');
+    expect(settled.settlement_proof?.details).toMatchObject({
+      remoteEffectStarted: false,
+      observedAbsent: true,
+    });
+  });
+
+  it('recovers ordered compact media acknowledgments including an unversioned reply', async () => {
+    const intendedTitle = 'Acknowledged media commit';
+    const intendedStorage =
+      '<ac:image><ri:attachment ri:filename="planned.png"/></ac:image>'
+      + '<ac:image><ri:attachment ri:filename="second.png"/></ac:image>';
+    const mediaImages: CollabCommitImage[] = [
+      {
+        filename: 'planned.png',
+        mimeType: 'image/png',
+        size: 17,
+        contentSha256: 'a'.repeat(64),
+      },
+      {
+        filename: 'second.png',
+        mimeType: 'image/png',
+        size: 23,
+        contentSha256: 'b'.repeat(64),
+      },
+    ];
+    const intent = await seedPendingIntent({
+      kind: 'collab.commit.confluence.media',
+      actorId: originalActorId,
+      fencedBy: administratorId,
+      expectedRemoteVersion: 5,
+      intendedTitle,
+      intendedStorage,
+      mediaImages,
+    });
+    await query(
+      `UPDATE page_write_intents
+          SET effect_started_at = NOW(),
+              effect_finished_at = NOW(),
+              remote_effect_started_at = NOW(),
+              remote_effects_completed_at = NOW(),
+              remote_terminal_result = $2::jsonb
+        WHERE id = $1`,
+      [
+        intent.intentId,
+        JSON.stringify({
+          accepted: true,
+          confluenceId: intent.confluenceId,
+          expectedVersion: 6,
+          observedConfluenceId: intent.confluenceId,
+          version: 6,
+          attachments: [
+            {
+              accepted: true,
+              filename: 'second.png',
+              attachmentVersion: 2,
+            },
+            {
+              accepted: true,
+              filename: 'planned.png',
+            },
+          ],
+        }),
+      ],
+    );
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'Reject terminal media receipts that do not follow the immutable plan order',
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      reason: 'intent_terminal_result_invalid',
+    });
+    expect(mockRequest).not.toHaveBeenCalled();
+    await query(
+      `UPDATE page_write_intents
+          SET remote_terminal_result = jsonb_set(
+            remote_terminal_result,
+            '{attachments}',
+            $2::jsonb
+          )
+        WHERE id = $1`,
+      [
+        intent.intentId,
+        JSON.stringify([
+          { accepted: true, filename: 'planned.png' },
+          { accepted: true, filename: 'second.png', attachmentVersion: 2 },
+        ]),
+      ],
+    );
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: intent.confluenceId,
+      type: 'page',
+      status: 'current',
+      title: intendedTitle,
+      version: { number: 6, when: '2026-09-01T00:00:00Z' },
+      body: { storage: { value: intendedStorage } },
+    }) as never);
+
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'Verify the complete terminal response before local media publication',
+    })).resolves.toEqual({
+      intentId: intent.intentId,
+      status: 'reconciled_applied',
+    });
+
+    expect(await localPageState(intent.pageId)).toMatchObject({
+      title: intendedTitle,
+      body_storage: intendedStorage,
+      version: 6,
+    });
+    expect((await statusAndProof(intent.intentId)).status).toBe('reconciled_applied');
+  });
+
+  it('never conditionally reconciles an unversioned pasted-image mutation with an unknown acknowledgment', async () => {
+    const intent = await seedPendingIntent({
+      kind: 'collab.commit.confluence.media',
+      actorId: originalActorId,
+      fencedBy: administratorId,
+      expectedRemoteVersion: 5,
+      intendedTitle: 'Media commit',
+      intendedStorage: '<ac:image><ri:attachment ri:filename="planned.png"/></ac:image>',
+    });
+    await query(
+      `UPDATE page_write_intents
+          SET effect_started_at = NOW(), remote_effect_started_at = NOW()
+        WHERE id = $1`,
+      [intent.intentId],
+    );
+
+    await expect(reconcilePageWriteIntent(intent.intentId, {
+      actorId: administratorId,
+      reason: 'The attachment acknowledgment was lost after provider dispatch',
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      reason: 'intent_outcome_unrecoverable',
+    });
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect((await statusAndProof(intent.intentId)).status).toBe('pending');
+    expect(await localPageState(intent.pageId)).toMatchObject({
+      title: 'Local title',
+      version: 5,
+    });
+  });
 
   it('completes reconciliation when the locked transaction owns the only available connection', async () => {
     const expectedRemoteVersion = 5;

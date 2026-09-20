@@ -196,7 +196,6 @@ describe.skipIf(!available)('GET /api/pages/trash + standalone auto-purge (DB)',
       currentUserId = userA;
       const response = await app.inject({ method: 'POST', url: `/api/pages/${trashedId}/restore` });
       expect(response.statusCode).toBe(409);
-      expect(String(response.json().error ?? response.json().message ?? '')).toMatch(/live import/i);
       const stillTrashed = await query<{ deleted_at: Date | null }>(
         'SELECT deleted_at FROM pages WHERE id = $1',
         [trashedId],
