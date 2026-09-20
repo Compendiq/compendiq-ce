@@ -29,7 +29,7 @@ sequenceDiagram
     S->>CI: isConfluenceEnabled(userId)
     alt explicit confluence_enabled = false
         CI-->>S: false
-        S-->>T: idle; no lock, credentials or provider call
+        S-->>T: idle#59; no lock, credentials or provider call
     else no row or enabled
         CI-->>S: true
         S->>R: SETEX NX sync:worker:lock (TTL 600s)
