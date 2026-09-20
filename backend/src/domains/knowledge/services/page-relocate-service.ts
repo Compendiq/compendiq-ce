@@ -2227,6 +2227,66 @@ async function verifyLocalPublicationAttachments(
   }
 }
 
+async function assertUnchangedToConfluenceSource(
+  client: PoolClient,
+  intent: PageWriteIntent,
+  pageId: number,
+  expected: {
+    source: unknown;
+    confluenceId: unknown;
+    spaceKey: unknown;
+  },
+): Promise<void> {
+  if (
+    expected.source !== 'standalone' ||
+    expected.confluenceId !== null ||
+    (expected.spaceKey !== null && typeof expected.spaceKey !== 'string')
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The original local relocation identity is unavailable',
+    );
+  }
+  const revision = intent.revisions[pageId];
+  if (!revision) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The original local relocation revisions are unavailable',
+    );
+  }
+  const current = await client.query<{
+    source: string;
+    confluence_id: string | null;
+    space_key: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT source, confluence_id, space_key,
+            content_revision::text, lifecycle_revision::text
+       FROM pages
+      WHERE id = $1 AND deleted_at IS NULL`,
+    [pageId],
+  );
+  const row = current.rows[0];
+  if (
+    !row ||
+    row.source !== expected.source ||
+    row.confluence_id !== expected.confluenceId ||
+    row.space_key !== expected.spaceKey ||
+    row.content_revision !== String(revision.contentRevision) ||
+    row.lifecycle_revision !== String(revision.lifecycleRevision)
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_local_evidence_mismatch',
+      'A non-dispatched relocation changed locally',
+    );
+  }
+}
+
+
 const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
   const effect = intent.effect;
   const pageId = typeof effect.pageId === 'number' ? effect.pageId : null;
@@ -2257,7 +2317,12 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
       );
     }
     if (
-      (effect.target === 'confluence' && typeof effect.targetSpaceKey !== 'string') ||
+      (effect.target === 'confluence' && (
+        typeof effect.targetSpaceKey !== 'string' ||
+        effect.fromSource !== 'standalone' ||
+        effect.fromConfluenceId !== null ||
+        (effect.fromSpaceKey !== null && typeof effect.fromSpaceKey !== 'string')
+      )) ||
       (effect.target === 'local' &&
         effect.fromSpaceKey !== null &&
         typeof effect.fromSpaceKey !== 'string')
@@ -2268,21 +2333,26 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
         'Relocation authority metadata is unavailable',
       );
     }
-    const authoritySpace = effect.target === 'confluence'
-      ? (typeof effect.targetSpaceKey === 'string' ? effect.targetSpaceKey : null)
-      : (typeof effect.fromSpaceKey === 'string' ? effect.fromSpaceKey : null);
-    try {
-      await assertCurrentRelocateAuthorityOnClient(
-        client,
-        intent.actorId,
-        pageId,
-        authoritySpace,
-      );
-    } catch (error) {
-      if (error instanceof RelocateError && error.statusCode === 403) {
-        throw new PageWriteError(403, 'intent_access_changed', error.message);
+    if (effect.target === 'confluence') {
+      await assertUnchangedToConfluenceSource(client, intent, pageId, {
+        source: effect.fromSource,
+        confluenceId: effect.fromConfluenceId,
+        spaceKey: effect.fromSpaceKey,
+      });
+    } else {
+      try {
+        await assertCurrentRelocateAuthorityOnClient(
+          client,
+          intent.actorId,
+          pageId,
+          typeof effect.fromSpaceKey === 'string' ? effect.fromSpaceKey : null,
+        );
+      } catch (error) {
+        if (error instanceof RelocateError && error.statusCode === 403) {
+          throw new PageWriteError(403, 'intent_access_changed', error.message);
+        }
+        throw error;
       }
-      throw error;
     }
     // The local gate commits its start marker before the preparation
     // transaction. An absent row with an unfinished local phase therefore
@@ -2306,20 +2376,16 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
   ) {
     throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation preparation does not match its intent');
   }
-  const authoritySpace = prep.direction === 'to_confluence'
-    ? prep.targetSpaceKey
-    : prep.space_key;
-  try {
-    await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, authoritySpace);
-  } catch (error) {
-    if (error instanceof RelocateError && error.statusCode === 403) {
-      throw new PageWriteError(403, 'intent_access_changed', error.message);
-    }
-    throw error;
-  }
-
   if (intent.remoteEffectStartedAt === null) {
     if (prep.direction === 'to_local') {
+      try {
+        await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, prep.space_key);
+      } catch (error) {
+        if (error instanceof RelocateError && error.statusCode === 403) {
+          throw new PageWriteError(403, 'intent_access_changed', error.message);
+        }
+        throw error;
+      }
       const confluence = await getClientForUser(prep.actorId, client);
       if (!confluence) {
         throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
@@ -2327,18 +2393,11 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
       await verifyOriginalProviderState(confluence, prep);
       await restorePreMoveStateOnClient(client, prep);
     } else {
-      const current = await client.query<{
-        source: string;
-        confluence_id: string | null;
-        space_key: string | null;
-      }>('SELECT source, confluence_id, space_key FROM pages WHERE id = $1', [prep.id]);
-      if (
-        current.rows[0]?.source !== prep.source ||
-        current.rows[0]?.confluence_id !== prep.confluence_id ||
-        current.rows[0]?.space_key !== prep.space_key
-      ) {
-        throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'A non-dispatched relocation changed locally');
-      }
+      await assertUnchangedToConfluenceSource(client, intent, prep.id, {
+        source: prep.source,
+        confluenceId: prep.confluence_id,
+        spaceKey: prep.space_key,
+      });
     }
     await deleteRelocationPreparation(client, intent.id);
     return {
@@ -2351,6 +2410,17 @@ const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
       },
       result: { pageId, outcome: 'restored' },
     };
+  }
+  const authoritySpace = prep.direction === 'to_confluence'
+    ? prep.targetSpaceKey
+    : prep.space_key;
+  try {
+    await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, authoritySpace);
+  } catch (error) {
+    if (error instanceof RelocateError && error.statusCode === 403) {
+      throw new PageWriteError(403, 'intent_access_changed', error.message);
+    }
+    throw error;
   }
   const confluence = await getClientForUser(prep.actorId, client);
   if (!confluence) {

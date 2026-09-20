@@ -10,6 +10,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
@@ -19,7 +20,11 @@ import {
   previewPageBaseline,
   setPageBaselineCreationEnabled,
 } from '../../core/services/page-baseline-service.js';
-import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
+import {
+  fencePageWriterRuntime,
+  lockPageLifecycle,
+  reconcilePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import {
   REAL_JPEG_40x30_BASE64,
@@ -78,7 +83,7 @@ async function expectMissing(path: string): Promise<void> {
 }
 
 async function waitForLifecycleWaiter(): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const waiting = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -89,9 +94,11 @@ async function waitForLifecycleWaiter(): Promise<void> {
             AND query LIKE '%pg_advisory_xact_lock%'
        ) AS waiting`,
     );
-    if (waiting.rows[0]?.waiting) return;
+    return waiting.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('icon writer did not reach the lifecycle lock barrier');
   }
-  throw new Error('icon writer did not reach the lifecycle lock barrier');
 }
 
 async function seedPage(
@@ -475,6 +482,80 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       } finally {
         blocker.release();
       }
+    });
+
+    it.each(['metadata', 'image'] as const)(
+      'refuses %s publication on an inherited Confluence page without current page access',
+      async (kind) => {
+        const spaceKey = `ICON_ORPHAN_${randomUUID().replaceAll('-', '').slice(0, 10)}`;
+        await insertLocalSpace(spaceKey, userId);
+        const pageId = await insertConfluencePage(`icon-orphan-${randomUUID()}`, 'Orphaned icon page', spaceKey);
+        await query('UPDATE pages SET space_key = NULL, inherit_perms = TRUE WHERE id = $1', [pageId]);
+        const before = await storedIcon(pageId);
+
+        const response = kind === 'image'
+          ? await uploadIcon(pageId)
+          : await app.inject({
+            method: 'PATCH',
+            url: `/api/pages/${pageId}/icon`,
+            payload: { icon: { kind: 'lucide', value: 'rocket' } },
+          });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(await storedIcon(pageId)).toEqual(before);
+        await expectMissing(iconDirectory(pageId));
+      },
+    );
+
+    it('refuses recovery of a legacy inherited icon intent without current page access', async () => {
+      const spaceKey = `ICON_REPAIR_${randomUUID().replaceAll('-', '').slice(0, 10)}`;
+      await insertLocalSpace(spaceKey, userId);
+      const pageId = await insertConfluencePage(`icon-repair-${randomUUID()}`, 'Orphaned legacy icon', spaceKey);
+      await query(
+        `UPDATE pages SET space_key = NULL, inherit_perms = TRUE, icon_kind = 'image', icon_value = $2 WHERE id = $1`,
+        [pageId, PNG_SHA],
+      );
+      await mkdir(iconDirectory(pageId), { recursive: true });
+      await writeFile(iconPath(pageId, PNG_SHA, 'png'), PNG_BYTES);
+      const before = await storedIcon(pageId);
+      const revision = (await query<{ content_revision: string; lifecycle_revision: string }>(
+        'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1', [pageId],
+      )).rows[0]!;
+      const administratorId = await insertUser(`icon-repair-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [administratorId]);
+      const runtimeId = randomUUID();
+      const acknowledgmentId = randomUUID();
+      const intentId = randomUUID();
+      await query(
+        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
+         VALUES ($1, $2::jsonb, NOW(), $3)`,
+        [runtimeId, JSON.stringify({ host: 'retired-icon-fixture', pid: 42, startedAt: new Date().toISOString() }), acknowledgmentId],
+      );
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect, effect_started_at)
+         VALUES ($1, $2, 'icon.metadata.patch', $3, ARRAY[$4]::integer[], $5::jsonb, 'local_verified', $6::jsonb, NOW())`,
+        [
+          intentId, runtimeId, userId, pageId,
+          JSON.stringify({ [pageId]: { contentRevision: revision.content_revision, lifecycleRevision: revision.lifecycle_revision } }),
+          JSON.stringify({
+            effectClass: 'local', pageId, iconKind: 'lucide', iconValue: 'rocket',
+            iconColor: null, iconFilled: false, removesUploadedImage: true, previousSha256: PNG_SHA,
+          }),
+        ],
+      );
+      await fencePageWriterRuntime({
+        runtimeId, mode: 'owner_ack', acknowledgmentId, actorId: administratorId,
+        reason: 'Recover a retired legacy icon writer without extending its authority',
+      });
+
+      await expect(reconcilePageWriteIntent(intentId, {
+        actorId: administratorId, reason: 'Current page access must still authorize icon publication',
+      })).rejects.toThrow('Page icon repair actor is no longer authorized');
+      expect(await storedIcon(pageId)).toEqual(before);
+      expect(await readFile(iconPath(pageId, PNG_SHA, 'png'))).toEqual(PNG_BYTES);
+      expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [intentId])).rows)
+        .toEqual([{ status: 'pending' }]);
     });
 
     it('rechecks current Confluence page ACE authority after admission before metadata mutation', async () => {

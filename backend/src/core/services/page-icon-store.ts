@@ -270,7 +270,7 @@ export async function userCanMutatePageIcon(
     const spaces = await getUserAccessibleSpaces(userId, client);
     if (!spaces.includes(page.space_key)) return false;
   }
-  return page.inherit_perms || userCanAccessPage(userId, page.id, client);
+  return userCanAccessPage(userId, page.id, client);
 }
 
 async function assertPageIconRepairAccess(

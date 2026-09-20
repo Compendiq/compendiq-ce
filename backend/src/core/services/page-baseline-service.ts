@@ -541,11 +541,21 @@ export async function cleanupAbandonedBaselinePreparation(baselineId: string): P
   }
 }
 export async function cleanupAbandonedBaselinePreparations(limit = 25): Promise<number> {
+  // The reservation commits before copying starts. A settled no-start
+  // cancellation is durable absence evidence, not an age-based expiry.
   await getPool().query(
-    `UPDATE page_baselines
+    `UPDATE page_baselines b
         SET status = 'abandoned', abandoned_at = NOW()
-      WHERE status = 'prepared'
-        AND (prepared_by_user_id IS NULL OR page_id IS NULL)`,
+      WHERE (b.status = 'prepared'
+             AND (b.prepared_by_user_id IS NULL OR b.page_id IS NULL))
+         OR (b.status = 'preparing' AND EXISTS (
+           SELECT 1 FROM page_write_intents i
+            WHERE i.id = b.preparation_intent_id
+              AND i.kind = 'baseline.prepare' AND i.status = 'cancelled'
+              AND i.settled_at IS NOT NULL
+              AND i.effect_started_at IS NULL
+              AND i.remote_effect_started_at IS NULL
+         ))`,
   );
   const selected = await getPool().query<{ id: string }>(
     `SELECT id FROM page_baselines

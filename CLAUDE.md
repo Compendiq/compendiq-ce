@@ -1294,10 +1294,18 @@ verification, repair and settlement. Quiescence authorizes and audits before
 closing the gate, then rechecks after draining; revocation leaves the gate
 closed but cannot produce an acknowledgment. Original-writer authority remains
 a separate check.
+Every accepted recovery attempt, including a same-runtime retry by a different
+admin, records that actor and reason before callbacks. Quiescence cancellation
+records the acting admin in `settled_by`, not the original writer.
 Ordinary, Apply and restore PUT replies retain bounded acknowledgment before readback;
 never invent returned body fingerprints from the request or lose known success
 because a later GET failed. Current authority, source identity, integration mode
 and credentials are re-read at each admitted remote phase.
+The first attachment upload resolves authority inside the remote callback too;
+an earlier client preflight is not dispatch authority. Notion media carries its
+original owner and normalized source-ID binding through normal publication and
+recovery. Generic shared-page edit permission must not replace that identity.
+Icon publication always checks current page access, even with inherited perms.
 Conditional E+1 recovery is read-only at Confluence, not locally: the same
 kind-owned publisher used by normal completion must commit verified authored
 state and exact AI/restore metadata before settling the intent. A missing or
@@ -1317,10 +1325,12 @@ Relocation's exact original state lives in its operation-owned preparation,
 not the generic intent metadata; keep it through failed recovery and remove it
 with settlement. Never delete a known-successful upstream creation as
 compensation for a failed local phase.
-Preparation persistence itself is a gated local effect. Proven no-remote-start
-cleanup of a to-Confluence preparation needs local authority, not credentials
-for a provider it never mutated. Local delete recovery uses exact tombstones
-and retries committed cleanup without repeating deletion.
+Preparation persistence itself is a gated local effect. With exact unchanged
+local identity/revisions and no remote-start marker, an active recovery admin
+can discard a to-Confluence preparation even after the original actor loses
+authority or credentials. This is cleanup, not publication or to-local rollback.
+Local delete recovery uses exact tombstones and retries committed cleanup
+without repeating deletion.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered
@@ -1335,6 +1345,8 @@ survive page/actor deletion; manual signatory text is not authenticated approval
 An already-frozen request returns 423, never success for unrecorded assertions.
 Publication abandons other prepared previews of that page in the same commit;
 guarded cleanup releases only their unpublished bytes and capacity.
+A `preparing` reservation whose intent was durably cancelled before any effect
+is also reclaimable. Pending or started preparations never expire by age.
 A durable governed marker still vetoes direct manual freeze when EE is
 unavailable. It never prevents authorized audited thaw, including a manual
 baseline frozen before that policy was enabled.

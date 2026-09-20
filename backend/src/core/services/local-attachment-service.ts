@@ -8,9 +8,9 @@
  * numeric PK, and metadata rows go in the `local_attachments` table created
  * in migration 064.
  *
- * Authorisation is enforced at the route layer (Confluence-RBAC doesn't
- * apply here because local pages have no `space_key`; ownership + visibility
- * from the pages table is used instead).
+ * Authorisation is enforced here as well as at the route boundary. Generic
+ * local writes retain the established owner-or-shared rule; import-bound
+ * writes additionally retain their original owner and source identity.
  */
 
 import fs from 'node:fs/promises';
@@ -152,6 +152,7 @@ async function assertLocalPageAccess(
   source: string;
   visibility: string;
   created_by_user_id: string | null;
+  notion_page_id: string | null;
   content_revision: string;
   lifecycle_revision: string;
 }> {
@@ -169,11 +170,12 @@ async function assertLocalPageAccess(
     source: string;
     visibility: string;
     created_by_user_id: string | null;
+    notion_page_id: string | null;
     deleted_at: Date | null;
     content_revision: string;
     lifecycle_revision: string;
   }>(
-    `SELECT id, source, visibility, created_by_user_id, deleted_at,
+    `SELECT id, source, visibility, created_by_user_id, notion_page_id, deleted_at,
             content_revision::text, lifecycle_revision::text
        FROM pages
       WHERE id = $1${client ? ' FOR UPDATE' : ''}`,
@@ -197,6 +199,43 @@ async function assertLocalPageAccess(
     throw new LocalAttachmentError('FORBIDDEN', 'Not authorised to access this page');
   }
   return row;
+}
+
+function isNormalizedNotionId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^[a-z0-9]+$/.test(value) &&
+    value === value.replaceAll('-', '').toLowerCase();
+}
+
+function expectedNotionIdForWrite(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isNormalizedNotionId(value)) {
+    throw new Error('Expected Notion attachment identity must be a normalized Notion id');
+  }
+  return value;
+}
+
+async function assertLocalAttachmentPublicationAuthority(
+  pageId: number,
+  userId: string,
+  client: PoolClient | undefined,
+  expectedNotionId: string | undefined,
+) {
+  const page = await assertLocalPageAccess(pageId, userId, client);
+  if (
+    expectedNotionId !== undefined &&
+    (
+      page.created_by_user_id !== userId ||
+      page.notion_page_id === null ||
+      page.notion_page_id.replaceAll('-', '').toLowerCase() !== expectedNotionId
+    )
+  ) {
+    throw new LocalAttachmentError(
+      'FORBIDDEN',
+      'Notion import target authority changed before attachment publication',
+    );
+  }
+  return page;
 }
 
 export interface LocalAttachmentWrite {
@@ -245,16 +284,22 @@ async function stageLocalAttachments(
  * reservation compares it under the lifecycle lock, and the returned revisions
  * come only from this operation's committed advance — never from a later
  * post-hoc page read.
+ *
+ * `expectedNotionId`, when present, is already normalized by the importer and
+ * is persisted in the intent so crash repair applies the same owner/source
+ * fence as the live publication.
  */
 export async function putLocalAttachments(opts: {
   pageId: number;
   attachments: readonly LocalAttachmentWrite[];
   userId: string;
   expectedRevisions?: Readonly<Record<number, PageRevision>>;
+  expectedNotionId?: string;
 }): Promise<{
   records: LocalAttachmentRecord[];
   revisions: Record<number, PageRevision>;
 }> {
+  const expectedNotionId = expectedNotionIdForWrite(opts.expectedNotionId);
   if (opts.attachments.length === 0) {
     return {
       records: [],
@@ -280,7 +325,12 @@ export async function putLocalAttachments(opts: {
 
   // Authorization is checked before admission so an ordinary denial performs
   // no filesystem work. It is checked again on the completion client.
-  const authorizedPage = await assertLocalPageAccess(opts.pageId, opts.userId);
+  const authorizedPage = await assertLocalAttachmentPublicationAuthority(
+    opts.pageId,
+    opts.userId,
+    undefined,
+    expectedNotionId,
+  );
   // A read-only preflight may refuse before admission without leaving an
   // unknown effect. Never translate errors after staging starts into this
   // verdict: permissions can change between this check and the actual write.
@@ -326,6 +376,7 @@ export async function putLocalAttachments(opts: {
         size: attachment.data.length,
         sha256: crypto.createHash('sha256').update(attachment.data).digest('hex'),
       })),
+      ...(expectedNotionId === undefined ? {} : { expectedNotionId }),
     },
   });
   if (!intent.pageIds.includes(opts.pageId)) {
@@ -335,7 +386,12 @@ export async function putLocalAttachments(opts: {
   const staged = await runPageWriteIntentEffect(intent, { kind: 'local' }, () => stageLocalAttachments(opts.pageId, intent, prepared));
   const records = await runPageWriteIntentEffect(intent, { kind: 'local' }, () => advancePageWriteIntent(intent, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
-    await assertLocalPageAccess(opts.pageId, opts.userId, client);
+    await assertLocalAttachmentPublicationAuthority(
+      opts.pageId,
+      opts.userId,
+      client,
+      expectedNotionId,
+    );
     for (const attachment of staged) {
       await fs.rename(
         attachment.stagePath,
@@ -671,9 +727,11 @@ type LocalAttachmentRecoveryFile = {
 function localAttachmentRecoveryEffect(intent: PageWriteRecoveryIntent): {
   pageId: number;
   files: LocalAttachmentRecoveryFile[];
+  expectedNotionId?: string;
 } {
   const pageId = intent.effect.pageId;
   const rawFiles = intent.effect.files;
+  const rawExpectedNotionId = intent.effect.expectedNotionId;
   if (
     typeof pageId !== 'number' ||
     !Number.isSafeInteger(pageId) ||
@@ -682,6 +740,9 @@ function localAttachmentRecoveryEffect(intent: PageWriteRecoveryIntent): {
     rawFiles.length === 0
   ) {
     throw new Error('Local attachment recovery descriptor is invalid');
+  }
+  if (rawExpectedNotionId !== undefined && !isNormalizedNotionId(rawExpectedNotionId)) {
+    throw new Error('Local attachment recovery descriptor has an invalid Notion identity');
   }
   const files = rawFiles.map((raw): LocalAttachmentRecoveryFile => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -716,7 +777,11 @@ function localAttachmentRecoveryEffect(intent: PageWriteRecoveryIntent): {
     throw new Error('Local attachment recovery stage indexes are invalid');
   }
   files.sort((left, right) => left.filename.localeCompare(right.filename));
-  return { pageId, files };
+  return {
+    pageId,
+    files,
+    ...(rawExpectedNotionId === undefined ? {} : { expectedNotionId: rawExpectedNotionId }),
+  };
 }
 
 function attachmentStateDigest(files: LocalAttachmentRecoveryFile[]): string {
@@ -891,14 +956,12 @@ async function repairLocalAttachmentPut(intent: PageWriteRecoveryIntent): Promis
     if (!intent.actorId) {
       throw new Error('Local attachment repair has no active actor identity');
     }
-    const activeActor = await client.query(
-      'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
-      [intent.actorId],
+    await assertLocalAttachmentPublicationAuthority(
+      observed.expected.pageId,
+      intent.actorId,
+      client,
+      observed.expected.expectedNotionId,
     );
-    if (activeActor.rowCount !== 1) {
-      throw new Error('Local attachment repair actor is no longer active');
-    }
-    await assertLocalPageAccess(observed.expected.pageId, intent.actorId, client);
     for (const { file, stageState } of observed.files) {
       if (stageState === 'exact') {
         await fs.rename(

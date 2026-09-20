@@ -25,6 +25,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
@@ -131,7 +132,7 @@ async function auditMetadata(action: string): Promise<Record<string, unknown>[]>
 }
 
 async function waitForBlockedLifecycleLock(holderPid: number): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -149,9 +150,11 @@ async function waitForBlockedLifecycleLock(holderPid: number): Promise<void> {
        ) AS waiting`,
       [holderPid],
     );
-    if (result.rows[0]?.waiting) return;
+    return result.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('bulk delete did not reach the held page lifecycle lock');
   }
-  throw new Error('bulk delete did not reach the held page lifecycle lock');
 }
 
 async function pageState(id: number): Promise<{

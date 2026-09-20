@@ -12,12 +12,12 @@ import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
@@ -156,7 +156,7 @@ async function iconExists(pageId: number): Promise<boolean> {
 }
 
 async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -170,10 +170,8 @@ async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<bool
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting ?? false;
+  });
 }
 
 // --- Tests ---

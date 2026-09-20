@@ -2,9 +2,13 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { isDbAvailable, setupTestDb, teardownTestDb } from '../../test-db-helper.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  waitForDatabaseCondition,
+} from '../../test-db-helper.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import { getPool, query } from '../db/postgres.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
@@ -13,7 +17,7 @@ import { deletePageIconImage } from './page-icon-store.js';
 const dbAvailable = await isDbAvailable();
 
 async function waitForSharedWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -27,10 +31,8 @@ async function waitForSharedWaiter(blockerPid: number): Promise<boolean> {
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting === true;
+  });
 }
 
 describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {

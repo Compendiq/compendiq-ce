@@ -194,7 +194,7 @@ erDiagram
         timestamptz remote_effects_completed_at "all remote phases succeeded"
         jsonb remote_terminal_result "bounded server-owned terminal identity"
         boolean cache_invalidation_pending "retry until pages/search eviction succeeds"
-        jsonb recovery_history "bounded transfer/repair record"
+        jsonb recovery_history "bounded ownership-transfer and retry-attempt record"
         timestamptz recovery_started_at "claimed before any verifier callback"
         timestamptz settled_at
         uuid settled_by FK "users; ON DELETE SET NULL"
@@ -609,6 +609,8 @@ Each recovery mutation also holds a current active system administrator row
 on its transaction client; this does not substitute for original-writer access.
 Quiescence records its authorized request before closing the local gate and
 rechecks the administrator before persisting an acknowledgment.
+Each accepted same-runtime retry also appends the actual administrator and
+reason before callbacks; quiescence cancellation writes its `settled_by`.
 
 The page-table publication trigger writes one
 `page_cache_invalidation_queue` row per affected page in the same transaction.
@@ -628,6 +630,9 @@ prevents deletion while preparation remains necessary. Settlement removes it
 in the transaction that settles the intent; failed recovery preserves it.
 Its insertion is itself a gated local effect, so a crash on either side of
 that commit cannot disguise a retained preparation as an unstarted intent.
+Exact unchanged local state plus absent remote-start evidence permits an active
+recovery administrator to remove a to-Confluence preparation after original-actor
+revocation; it authorizes no publication or to-local restoration.
 The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt
 capacity scales with the admitted inventory; the generic terminal result holds
@@ -649,6 +654,9 @@ retried previews reuse that preparation rather than reserve another copy.
 Publishing one preview atomically abandons the page's other prepared previews.
 Maintenance removes only these unpublished copies and releases their reservations;
 published evidence is never a capacity-cleanup candidate.
+The same cleanup also releases `preparing` reservations whose intents were
+durably cancelled before effect-start. Pending and started reservations are
+never made reclaimable by age alone.
 Manifest v1 persists both its fixed JSON array and the exact UTF-8 bytes hashed
 into `manifest_digest`; authored title/HTML/storage/text, sorted labels,
 source-aware page/parent identity, raw icon tuple and complete attachment

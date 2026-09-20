@@ -1,10 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+import {
+  setupTestDb,
+  truncateAllTables,
+  teardownTestDb,
+  isDbAvailable,
+  waitForDatabaseCondition,
+} from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
@@ -92,7 +97,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
   }
 
   async function waitForSharedLockWaiter(blockerPid: number): Promise<boolean> {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    return waitForDatabaseCondition(async () => {
       const result = await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1
@@ -106,14 +111,12 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
          ) AS waiting`,
         [EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
       );
-      if (result.rows[0]?.waiting) return true;
-      await nextEventLoopTurn();
-    }
-    return false;
+      return result.rows[0]?.waiting === true;
+    });
   }
 
   async function waitForLifecycleWaiter(): Promise<void> {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    const reachedBarrier = await waitForDatabaseCondition(async () => {
       const waiting = await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1
@@ -124,10 +127,11 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
               AND query LIKE '%pg_advisory_xact_lock%'
          ) AS waiting`,
       );
-      if (waiting.rows[0]?.waiting) return;
-      await nextEventLoopTurn();
+      return waiting.rows[0]?.waiting === true;
+    });
+    if (!reachedBarrier) {
+      throw new Error('local attachment writer did not reach the lifecycle lock barrier');
     }
-    throw new Error('local attachment writer did not reach the lifecycle lock barrier');
   }
 
   it('migration creates local_attachments with the expected shape', async () => {
@@ -334,6 +338,60 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
         [owner.pageId],
       );
       expect(rows.rowCount).toBe(0);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('rechecks the durable Notion source binding on the publication client', async () => {
+    const owner = await seedUserAndPage({ visibility: 'shared' });
+    await query('UPDATE pages SET notion_page_id = $2 WHERE id = $1', [
+      owner.pageId,
+      'original-source',
+    ]);
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [owner.pageId]);
+    try {
+      const pending = putLocalAttachments({
+        pageId: owner.pageId,
+        attachments: [{
+          filename: 'notion-source.png',
+          contentType: 'image/png',
+          data: Buffer.from('must remain staged'),
+        }],
+        userId: owner.userId,
+        expectedNotionId: 'originalsource',
+      });
+      await waitForLifecycleWaiter();
+      await blocker.query('UPDATE pages SET notion_page_id = $2 WHERE id = $1', [
+        owner.pageId,
+        'different-source',
+      ]);
+      await blocker.query('COMMIT');
+
+      await expect(pending).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(
+        fs.access(path.join(tempBase, 'local', String(owner.pageId), 'notion-source.png')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      const rows = await query(
+        'SELECT 1 FROM local_attachments WHERE page_id = $1',
+        [owner.pageId],
+      );
+      expect(rows.rowCount).toBe(0);
+      const descriptor = await query<{ expected_notion_id: string | null }>(
+        `SELECT effect->>'expectedNotionId' AS expected_notion_id
+           FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[]
+            AND kind = 'attachment.local.put'
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [owner.pageId],
+      );
+      expect(descriptor.rows[0]?.expected_notion_id).toBe('originalsource');
     } catch (error) {
       await blocker.query('ROLLBACK').catch(() => undefined);
       throw error;
@@ -1022,6 +1080,155 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       [[mismatch.id, mismatchIcon.id, deniedRepair.id]],
     );
     expect(pending.rows).toHaveLength(3);
+  });
+
+  it('consumes durable Notion identity during repair and rejects malformed identity evidence', async () => {
+    const recoveryAdminId = await seedRecoveryAdmin();
+    const boundPage = await seedUserAndPage({ visibility: 'shared' });
+    const malformedPage = await seedUserAndPage({ visibility: 'shared' });
+    await query('UPDATE pages SET notion_page_id = $2 WHERE id = $1', [
+      boundPage.pageId,
+      'bound-source',
+    ]);
+    await query('UPDATE pages SET notion_page_id = $2 WHERE id = $1', [
+      malformedPage.pageId,
+      'malformed-source',
+    ]);
+
+    const firstBytes = Buffer.from('already activated media');
+    const secondBytes = Buffer.from('media awaiting repair');
+    const firstSha = createHash('sha256').update(firstBytes).digest('hex');
+    const secondSha = createHash('sha256').update(secondBytes).digest('hex');
+    const boundIntent = await reservePageWriteIntent({
+      pageIds: [boundPage.pageId],
+      kind: 'attachment.local.put',
+      actorId: boundPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: boundPage.pageId,
+        expectedNotionId: 'boundsource',
+        files: [
+          {
+            filename: 'first.png',
+            contentType: 'image/png',
+            stageIndex: 0,
+            size: firstBytes.length,
+            sha256: firstSha,
+          },
+          {
+            filename: 'second.png',
+            contentType: 'image/png',
+            stageIndex: 1,
+            size: secondBytes.length,
+            sha256: secondSha,
+          },
+        ],
+      },
+    });
+    const boundDir = path.join(tempBase, 'local', String(boundPage.pageId));
+    const secondStage = path.join(boundDir, `.page-write-${boundIntent.id}-1.stage`);
+    await runPageWriteIntentEffect(boundIntent, { kind: 'local' }, async () => {
+      await fs.mkdir(boundDir, { recursive: true });
+      await fs.writeFile(path.join(boundDir, 'first.png'), firstBytes);
+      await fs.writeFile(secondStage, secondBytes);
+    });
+    await query(
+      `INSERT INTO local_attachments
+         (page_id, filename, content_type, size_bytes, sha256, created_by)
+       VALUES ($1, 'first.png', 'image/png', $2, $3, $4)`,
+      [boundPage.pageId, firstBytes.length, firstSha, boundPage.userId],
+    );
+    await query('UPDATE pages SET notion_page_id = $2 WHERE id = $1', [
+      boundPage.pageId,
+      'different-source',
+    ]);
+
+    const malformedBytes = Buffer.from('malformed descriptor stage');
+    const malformedIntent = await reservePageWriteIntent({
+      pageIds: [malformedPage.pageId],
+      kind: 'attachment.local.put',
+      actorId: malformedPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: malformedPage.pageId,
+        expectedNotionId: 'Malformed-Source',
+        files: [{
+          filename: 'malformed.png',
+          contentType: 'image/png',
+          stageIndex: 0,
+          size: malformedBytes.length,
+          sha256: createHash('sha256').update(malformedBytes).digest('hex'),
+        }],
+      },
+    });
+    const malformedDir = path.join(tempBase, 'local', String(malformedPage.pageId));
+    const malformedStage = path.join(
+      malformedDir,
+      `.page-write-${malformedIntent.id}-0.stage`,
+    );
+    await runPageWriteIntentEffect(malformedIntent, { kind: 'local' }, async () => {
+      await fs.mkdir(malformedDir, { recursive: true });
+      await fs.writeFile(malformedStage, malformedBytes);
+    });
+
+    const oldRuntimeId = randomUUID();
+    const acknowledgmentId = randomUUID();
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
+       VALUES ($1, $2::jsonb, NOW(), $3)`,
+      [
+        oldRuntimeId,
+        JSON.stringify({
+          host: 'retired-notion-media-writer',
+          pid: 45,
+          startedAt: new Date().toISOString(),
+        }),
+        acknowledgmentId,
+      ],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $1 WHERE id = ANY($2::uuid[])', [
+      oldRuntimeId,
+      [boundIntent.id, malformedIntent.id],
+    ]);
+    await fencePageWriterRuntime({
+      runtimeId: oldRuntimeId,
+      mode: 'owner_ack',
+      acknowledgmentId,
+      actorId: recoveryAdminId,
+      reason: 'Test retired Notion media writer before identity-bound recovery',
+    });
+
+    await expect(reconcilePageWriteIntent(boundIntent.id, {
+      actorId: recoveryAdminId,
+      reason: 'Recovered media must stay bound to the original normalized Notion identity',
+    })).rejects.toThrow('Notion import target authority changed');
+    await expect(fs.readFile(path.join(boundDir, 'first.png'))).resolves.toEqual(firstBytes);
+    await expect(fs.readFile(secondStage)).resolves.toEqual(secondBytes);
+    await expect(fs.access(path.join(boundDir, 'second.png')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    const boundRows = await query<{ filename: string; sha256: string }>(
+      'SELECT filename, sha256 FROM local_attachments WHERE page_id = $1 ORDER BY filename',
+      [boundPage.pageId],
+    );
+    expect(boundRows.rows).toEqual([{ filename: 'first.png', sha256: firstSha }]);
+
+    await expect(reconcilePageWriteIntent(malformedIntent.id, {
+      actorId: recoveryAdminId,
+      reason: 'Malformed durable identity evidence must fail closed',
+    })).rejects.toThrow('invalid Notion identity');
+    await expect(fs.readFile(malformedStage)).resolves.toEqual(malformedBytes);
+    const pending = await query<{ id: string; status: string }>(
+      `SELECT id, status
+         FROM page_write_intents
+        WHERE id = ANY($1::uuid[])
+        ORDER BY id`,
+      [[boundIntent.id, malformedIntent.id]],
+    );
+    expect(pending.rows).toEqual([
+      { id: boundIntent.id, status: 'pending' },
+      { id: malformedIntent.id, status: 'pending' },
+    ].sort((left, right) => left.id.localeCompare(right.id)));
   });
 
   it('preserves unrelated icon bytes when repair authority is denied after the old icon vanished', async () => {

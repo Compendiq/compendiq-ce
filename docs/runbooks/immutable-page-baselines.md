@@ -293,9 +293,12 @@ live or history row references it. The row and capacity reservation are removed
 only after byte cleanup succeeds.
 
 The maintenance poll marks a `prepared` row abandoned if its preparing actor or
-live page link has been deleted, then applies the same guarded cleanup. It is not
-a TTL collector. `preparing`, uncertain, published, referenced, or malformed
-storage is not blindly removed.
+live page link has been deleted. It also reclaims a `preparing` reservation
+whose intent was durably cancelled before either local or remote effect-start:
+reservation and effect-start are separate commits, so a crashed writer can leave
+this state. Both use the same guarded byte cleanup and capacity release. It is
+not a TTL collector; pending, started, published, referenced or malformed
+preparations are not blindly removed.
 Publishing a baseline atomically abandons the page's other prepared previews,
 including another actor's preview. Maintenance removes their unpublished bytes
 and releases their reservations through the same guards; it never evicts the
@@ -422,6 +425,12 @@ an Enterprise hook is installed.
 | Frozen page media | Active actor and current access to the existing page; exact original page, baseline UUID, and inventory identity must match |
 | Activation, deleted-source evidence, baseline attachment download | Active system admin, rechecked from PostgreSQL |
 | Writer recovery, quiescence, fencing, reconciliation | Active system admin; page ownership or space administration is not sufficient |
+
+Media publication uses current authority on its mutation client. Inherited
+Confluence icon permissions do not bypass the page-access verdict. A Notion
+media batch additionally retains the original owner and normalized Notion ID in
+its durable descriptor; normal publication and recovery must match that import
+identity, not merely generic shared-page edit permission.
 
 Page-level history is chronological using an opaque `(created_at,id)` cursor:
 
@@ -578,6 +587,8 @@ It checks the administrator again after draining and before acknowledgment.
 If that authority was revoked meanwhile, the response is 403 and no durable
 acknowledgment is written; the process gate stays closed. An active system
 administrator can retry to finish retirement.
+Committed no-start cancellations record that administrator in `settled_by`;
+the original writer remains `actor_id`.
 A successful response is:
 
 ```json
@@ -695,6 +706,11 @@ process may retry it. If the recovering process crashes, the displayed
 `runtimeId` now identifies the owner that must be fenced before another process
 can continue. A quiesced or fenced process cannot start recovery; send the
 request to an active replacement.
+Every accepted attempt, including a same-runtime retry, appends its actual
+administrator and reason before verifier or repair work. Failed attempts retain
+that attribution even when a later administrator settles the intent. The
+existing 32-entry recovery-history bound applies to accepted attempts; an
+exhausted history refuses before another callback runs.
 
 ### `local_verified`
 
@@ -793,6 +809,9 @@ For ordinary attachment uploads, the final per-file receipt and the
 all-remote-complete marker commit atomically. An interruption before the outer
 callback records completion therefore cannot strand a complete receipt set.
 Partial sets and ambiguous acknowledgments still remain pending.
+The first upload resolves current authority and credentials inside the remote
+callback, just like every later sibling. Its earlier read-only preflight client
+is never reused as dispatch authority after an admission wait.
 
 Remote phases recheck the original actor, source identity, page/space authority,
 integration mode and current credentials after admission waits. Stored
@@ -807,9 +826,12 @@ transaction. A known-successful upstream creation is not deleted to compensate
 for a later local failure.
 Preparation persistence is itself a gated local effect. Recovery distinguishes
 an interrupted transaction that wrote no preparation from one that committed
-the preparation before the next phase. A to-Confluence preparation with proven
-no remote dispatch can be removed under current local authority even when the
-integration is now off. A to-local rollback still needs provider verification.
+the preparation before the next phase. With exact unchanged local identity and
+revisions plus no remote-start marker, an active recovery administrator can
+remove a to-Confluence preparation even after the original actor is revoked or
+its connection is disabled. No authored publication is authorized by this
+cleanup. A to-local rollback still needs original-writer authority and provider
+verification.
 The acknowledged create ID is committed before readback or uploads; each
 acknowledged attachment is committed before the next provider call. The receipt
 array is bounded by the admitted inventory, while the generic terminal result

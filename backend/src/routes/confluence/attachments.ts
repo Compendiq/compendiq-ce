@@ -1106,14 +1106,6 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         () => stageConfluenceCacheFiles(page.confluence_id!, intent, files),
       );
 
-      // Re-resolve the original actor's current credentials on the same
-      // authoritative DB snapshot used for the phase authorization.
-      const remoteClient = await currentAttachmentClient(intent, {
-        actorId: userId,
-        pageId: page.id,
-        remotePageId: page.confluence_id,
-        spaceKey: page.space_key,
-      });
       const receipts = await runPageWriteIntentEffect(
         intent,
         {
@@ -1129,14 +1121,14 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
           const completed: AttachmentReceipt[] = [];
           for (let index = 0; index < files.length; index++) {
             const file = files[index]!;
-            const phaseClient = index === 0
-              ? remoteClient
-              : await currentAttachmentClient(intent, {
-                  actorId: userId,
-                  pageId: page.id,
-                  remotePageId: page.confluence_id!,
-                  spaceKey: page.space_key,
-                });
+            // Do not hoist this lookup above the remote phase gate: its
+            // durable start can wait while the actor's mode, grants, or PAT changes.
+            const phaseClient = await currentAttachmentClient(intent, {
+              actorId: userId,
+              pageId: page.id,
+              remotePageId: page.confluence_id!,
+              spaceKey: page.space_key,
+            });
             const uploaded = await phaseClient.updateAttachment(
               page.confluence_id!,
               file.filename,

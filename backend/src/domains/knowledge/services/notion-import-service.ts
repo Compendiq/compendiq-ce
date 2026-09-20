@@ -639,6 +639,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           attachments: files,
           userId: input.userId,
           expectedRevisions: job.expectedRevisions,
+          expectedNotionId: normalizeNotionId(job.id),
         });
         job.expectedRevisions = stored.revisions;
       }

@@ -18,6 +18,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { pagesVersionRoutes } from './pages-versions.js';
@@ -34,7 +35,7 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
 }
 
 async function waitForBlockedLifecycleLock(): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const waiting = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -45,9 +46,11 @@ async function waitForBlockedLifecycleLock(): Promise<void> {
             AND query LIKE '%pg_advisory_xact_lock%'
        ) AS waiting`,
     );
-    if (waiting.rows[0]?.waiting) return;
+    return waiting.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('Version restore did not reach the lifecycle admission barrier');
   }
-  throw new Error('Version restore did not reach the lifecycle admission barrier');
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

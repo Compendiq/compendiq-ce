@@ -10,6 +10,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { lockPageLifecycle, reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
@@ -52,7 +53,7 @@ function pngResponse(): Response {
 }
 
 async function waitForBlockedLifecycleLock(): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const waiting = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -63,9 +64,11 @@ async function waitForBlockedLifecycleLock(): Promise<void> {
             AND query LIKE '%pg_advisory_xact_lock%'
        ) AS waiting`,
     );
-    if (waiting.rows[0]?.waiting) return;
+    return waiting.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('image writer did not reach the lifecycle lock barrier');
   }
-  throw new Error('image writer did not reach the lifecycle lock barrier');
 }
 
 async function expectAttachmentAbsent(pageKey: string, filename: string): Promise<void> {

@@ -14,6 +14,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
@@ -64,7 +65,7 @@ async function readRequestBody(request: IncomingMessage): Promise<ConfluencePayl
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as ConfluencePayload;
 }
 async function waitForBlockedLifecycleLock(minimumWaiters = 1): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const waiting = await query<{ waiting: number }>(
       `SELECT COUNT(*)::int AS waiting
          FROM pg_stat_activity
@@ -73,9 +74,11 @@ async function waitForBlockedLifecycleLock(minimumWaiters = 1): Promise<void> {
           AND wait_event = 'advisory'
           AND query LIKE '%pg_advisory_xact_lock%'`,
     );
-    if ((waiting.rows[0]?.waiting ?? 0) >= minimumWaiters) return;
+    return (waiting.rows[0]?.waiting ?? 0) >= minimumWaiters;
+  });
+  if (!reachedBarrier) {
+    throw new Error('stale draft writer did not reach the lifecycle lock barrier');
   }
-  throw new Error('stale draft writer did not reach the lifecycle lock barrier');
 }
 
 

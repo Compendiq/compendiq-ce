@@ -10,6 +10,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
@@ -37,7 +38,7 @@ let attachmentsDir: string;
 
 
 async function waitForBlockedLifecycleLock(): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
     const waiting = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -48,11 +49,11 @@ async function waitForBlockedLifecycleLock(): Promise<void> {
             AND query LIKE '%pg_advisory_xact_lock%'
        ) AS waiting`,
     );
-    if (waiting.rows[0]?.waiting) return;
-    // The awaited catalog query yields to the blocked request; the lock wait
-    // state itself is the deterministic barrier, not elapsed wall-clock time.
+    return waiting.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('stale writer did not reach the lifecycle lock barrier');
   }
-  throw new Error('stale writer did not reach the lifecycle lock barrier');
 }
 
 describe.skipIf(!dbAvailable)('frozen page visibility admission — real PostgreSQL', () => {

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -8,6 +7,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
@@ -66,7 +66,8 @@ async function persistEvent(event: WebhookEvent): Promise<void> {
 }
 
 async function readEvents(expectedCount: number): Promise<PersistedEvent[]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  let rows: PersistedEvent[] = [];
+  await waitForDatabaseCondition(async () => {
     const result = await query<PersistedEvent>(
       `SELECT event_type, payload, status
          FROM webhook_outbox
@@ -74,10 +75,10 @@ async function readEvents(expectedCount: number): Promise<PersistedEvent[]> {
         ORDER BY created_at, id`,
       [subscriptionId],
     );
-    if (result.rows.length >= expectedCount) return result.rows;
-    await nextEventLoopTurn();
-  }
-  throw new Error(`Expected ${expectedCount} persisted webhook event(s)`);
+    rows = result.rows;
+    return rows.length >= expectedCount;
+  });
+  return rows;
 }
 
 async function persistedPage(pageId: number): Promise<{

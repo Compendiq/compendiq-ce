@@ -10,6 +10,7 @@ import { inspectBaselineManifest, isBaselinePreparationAbsent, verifyBaselineAtt
 import { setPageBaselineReadinessProvider } from './page-baseline-governance.js';
 import {
   cleanupAbandonedBaselinePreparation,
+  cleanupAbandonedBaselinePreparations,
   previewPageBaseline,
   setPageBaselineCreationEnabled,
 } from './page-baseline-service.js';
@@ -19,7 +20,10 @@ const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
 let attachmentsDir = '';
 
 /** Persist a crash-state fixture, not a mock of the recovery service or DB. */
-async function interruptedPreparation(copiedFiles: number) {
+async function interruptedPreparation(
+  copiedFiles: number,
+  options: { effectStarted?: boolean; fenced?: boolean } = {},
+) {
   const suffix = randomUUID();
   const actor = await query<{ id: string }>(
     `INSERT INTO users (username, email, password_hash, role)
@@ -72,10 +76,12 @@ async function interruptedPreparation(copiedFiles: number) {
   await query(
     `INSERT INTO page_write_intents
        (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect, effect_started_at)
-     VALUES ($1, $2, 'baseline.prepare', $3, ARRAY[$4]::integer[], $5::jsonb, 'local_verified', $6::jsonb, NOW())`,
+     VALUES ($1, $2, 'baseline.prepare', $3, ARRAY[$4]::integer[], $5::jsonb, 'local_verified', $6::jsonb,
+             CASE WHEN $7::boolean THEN NOW() END)`,
     [intentId, runtimeId, actorId, pageId,
       JSON.stringify({ [pageId]: { contentRevision: revision.content_revision, lifecycleRevision: revision.lifecycle_revision } }),
       JSON.stringify({ effectClass: 'local', baselineId, pageId, sourcePageIds: [pageId], manifestDigest: prepared.manifestDigest, totalBytes: prepared.totalBytes }),
+      options.effectStarted !== false,
     ],
   );
   const manifest = prepared.manifest;
@@ -103,13 +109,15 @@ async function interruptedPreparation(copiedFiles: number) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.copyFile(path.join(sourceDir, attachment.filename), destination);
   }
-  await fencePageWriterRuntime({
-    runtimeId,
-    mode: 'owner_ack',
-    acknowledgmentId,
-    actorId: administratorId,
-    reason: 'Fixture models a retired writer whose copy did not settle',
-  });
+  if (options.fenced !== false) {
+    await fencePageWriterRuntime({
+      runtimeId,
+      mode: options.effectStarted === false ? 'durable_no_started_effects' : 'owner_ack',
+      acknowledgmentId,
+      actorId: administratorId,
+      reason: 'Fixture models a retired writer whose copy did not settle',
+    });
+  }
   return { actorId, administratorId, pageId, baselineId, intentId, prepared, sourceDir, revision };
 }
 
@@ -133,6 +141,35 @@ describe.skipIf(!available)('baseline preparation recovery over persisted crash 
     else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
     await fs.rm(attachmentsDir, { recursive: true, force: true });
     await teardownTestDb();
+  });
+
+  it('reclaims cancelled pre-copy reservations without touching active or interrupted preparations', async () => {
+    const cancelled = await interruptedPreparation(0, { effectStarted: false });
+    const active = await interruptedPreparation(0, { effectStarted: false, fenced: false });
+    const interrupted = await interruptedPreparation(1);
+    expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [cancelled.intentId])).rows)
+      .toEqual([{ status: 'cancelled' }]);
+
+    expect(await cleanupAbandonedBaselinePreparations()).toBe(1);
+    expect((await query('SELECT id FROM page_baselines WHERE id = $1', [cancelled.baselineId])).rows).toEqual([]);
+    expect(await isBaselinePreparationAbsent(cancelled.baselineId)).toBe(true);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(active.prepared.totalBytes + interrupted.prepared.totalBytes) }]);
+    expect((await query('SELECT id FROM page_baselines WHERE id = ANY($1::uuid[]) ORDER BY id', [
+      [active.baselineId, interrupted.baselineId],
+    ])).rows.map((row) => row.id)).toEqual([active.baselineId, interrupted.baselineId].sort());
+    const retained = interrupted.prepared.attachments[0]!;
+    expect(await fs.readFile(path.join(attachmentsDir, ...retained.retainedPath.split('/')), 'utf8'))
+      .toBe(await fs.readFile(path.join(interrupted.sourceDir, retained.filename), 'utf8'));
+    expect(await fs.readFile(path.join(cancelled.sourceDir, 'a.txt'), 'utf8')).toBe('first retained source');
+
+    expect(await cleanupAbandonedBaselinePreparations()).toBe(0);
+    await setPageBaselineCreationEnabled(cancelled.administratorId, true);
+    const retry = await previewPageBaseline(cancelled.pageId, cancelled.actorId);
+    expect(retry.baselineId).not.toBe(cancelled.baselineId);
+    expect(retry.contentRevision).toBe(cancelled.revision.content_revision);
+    expect((await query('SELECT reserved_bytes::text FROM page_baseline_capacity')).rows)
+      .toEqual([{ reserved_bytes: String(active.prepared.totalBytes + interrupted.prepared.totalBytes + retry.totalBytes) }]);
   });
 
   it('recovers exact copied bytes into the same preview without changing authored content or revision', async () => {

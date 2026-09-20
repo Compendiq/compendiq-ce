@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   isDbAvailable,
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import {
@@ -199,15 +203,13 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       await contender.query('BEGIN');
       const contenderPid = await contender.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
       const waiting = lockPageLifecycle(contender, [low, high]);
-      let waitingOnLifecycleLock = false;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
+      const waitingOnLifecycleLock = await waitForDatabaseCondition(async () => {
         const activity = await query<{ wait_event_type: string | null }>(
           'SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1',
           [contenderPid.rows[0]!.pid],
         );
-        waitingOnLifecycleLock = activity.rows[0]?.wait_event_type === 'Lock';
-        if (waitingOnLifecycleLock) break;
-      }
+        return activity.rows[0]?.wait_event_type === 'Lock';
+      });
       expect(waitingOnLifecycleLock).toBe(true);
       await holder.query('COMMIT');
       await waiting;
@@ -594,8 +596,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
           actorId: administrator,
           reason: 'Deterministic runtime serialization race exercises the durable marker',
         });
-        let fenceBlocked = false;
-        for (let attempt = 0; attempt < 100; attempt += 1) {
+        const fenceBlocked = await waitForDatabaseCondition(async () => {
           const activity = await query<{ exists: boolean }>(
             `SELECT EXISTS (
                SELECT 1 FROM pg_stat_activity
@@ -603,9 +604,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
                   AND query LIKE '%SELECT fenced_at, quiescence_ack::text, deployment_identity%'
              ) AS exists`,
           );
-          fenceBlocked = activity.rows[0]?.exists === true;
-          if (fenceBlocked) break;
-        }
+          return activity.rows[0]?.exists === true;
+        });
         expect(fenceBlocked).toBe(true);
         await writer.query('COMMIT');
         if (effectStarted) {
@@ -626,11 +626,14 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     }
   });
 
-  it('claims recovery before verification and preserves the prior epoch evidence', async () => {
-    const actor = await insertUser();
-    const administrator = await insertUser('admin');
+  it('claims recovery before verification and durably attributes same-runtime retries', async () => {
+    const originalWriter = await insertUser();
+    const fenceAdministrator = await insertUser('admin');
+    const claimantAdministrator = await insertUser('admin');
+    const retryingAdministrator = await insertUser('admin');
     let observedState: 'partial' | 'applied' = 'partial';
     let repairRuns = 0;
+    let failingRepairFixture: string | null = null;
     registerPageWriteIntentReconciler(
       'icon.image.put',
       async () => {
@@ -654,8 +657,13 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
           result: undefined,
         };
       },
-      async () => {
+      async (intent) => {
         repairRuns += 1;
+        if (failingRepairFixture) {
+          const actingAdministrator = intent.recoveryHistory.at(-1)?.actorId;
+          await appendFile(failingRepairFixture, `${String(actingAdministrator)}\n`);
+          throw new Error('fixture repair failed after its filesystem effect');
+        }
         observedState = 'applied';
       },
     );
@@ -684,7 +692,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         [
           intentId,
           runtimeId,
-          actor,
+          originalWriter,
           pageId,
           JSON.stringify({
             [pageId]: { contentRevision: revision.content, lifecycleRevision: revision.lifecycle },
@@ -696,7 +704,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
         mode: 'owner_ack',
         runtimeId,
         acknowledgmentId,
-        actorId: administrator,
+        actorId: fenceAdministrator,
         reason: 'The original test runtime acknowledged quiescence before local repair',
       });
       return {
@@ -709,29 +717,40 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       };
     };
 
-    const pageId = await insertPage(actor, 'Repairable local icon');
+    const pageId = await insertPage(originalWriter, 'Repairable local icon');
     const oldToken = await createFencedIntent(pageId);
+    const successfulClaimReason =
+      'Trusted icon verifier found exact partial state and selected its registered repairer';
     await expect(
       reconcilePageWriteIntent(oldToken.id, {
-        actorId: administrator,
-        reason: 'Trusted icon verifier found exact partial state and selected its registered repairer',
+        actorId: claimantAdministrator,
+        reason: successfulClaimReason,
       }),
     ).resolves.toEqual({ intentId: oldToken.id, status: 'reconciled_applied' });
     expect(repairRuns).toBe(1);
     const repaired = await query<{
+      actor_id: string;
       runtime_id: string;
       recovery_history: Array<Record<string, unknown>>;
       effect_started_at: Date | null;
+      settled_by: string | null;
     }>(
-      `SELECT runtime_id, recovery_history, effect_started_at
+      `SELECT actor_id, runtime_id, recovery_history, effect_started_at, settled_by
          FROM page_write_intents WHERE id = $1`,
       [oldToken.id],
     );
     expect(repaired.rows[0]?.runtime_id).not.toBe(oldToken.runtimeId);
     expect(repaired.rows[0]?.effect_started_at).toBeInstanceOf(Date);
+    expect(repaired.rows[0]).toMatchObject({
+      actor_id: originalWriter,
+      settled_by: claimantAdministrator,
+    });
     expect(repaired.rows[0]?.recovery_history).toEqual([
       expect.objectContaining({
+        attemptKind: 'runtime_transfer',
         fromRuntimeId: oldToken.runtimeId,
+        actorId: claimantAdministrator,
+        reason: successfulClaimReason,
       }),
     ]);
     let staleCallbackRan = false;
@@ -743,16 +762,81 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     expect(staleCallbackRan).toBe(false);
 
     observedState = 'partial';
-    const stalePageId = await insertPage(actor, 'Stale repair candidate');
+    const stalePageId = await insertPage(originalWriter, 'Stale repair candidate');
     const staleToken = await createFencedIntent(stalePageId);
     await query(`UPDATE pages SET title = 'Unexpected protected mutation' WHERE id = $1`, [stalePageId]);
     await expect(
       reconcilePageWriteIntent(staleToken.id, {
-        actorId: administrator,
+        actorId: claimantAdministrator,
         reason: 'Unexpected protected revision must block ownership transfer and repair',
       }),
     ).rejects.toMatchObject({ statusCode: 409, reason: 'stale_content_revision' });
     expect(repairRuns).toBe(1);
+    expect((await query<{ recovery_history: unknown[] }>(
+      'SELECT recovery_history FROM page_write_intents WHERE id = $1',
+      [staleToken.id],
+    )).rows[0]?.recovery_history).toEqual([]);
+
+    const repairFixtureDirectory = await mkdtemp(join(tmpdir(), 'page-write-recovery-attribution-'));
+    try {
+      const repairFixturePath = join(repairFixtureDirectory, 'entered-repairs');
+      failingRepairFixture = repairFixturePath;
+      observedState = 'partial';
+      const retryPageId = await insertPage(originalWriter, 'Same-runtime recovery retry');
+      const retryToken = await createFencedIntent(retryPageId);
+      const claimantReason = 'Claim recovery and enter the fixture repair before its simulated failure';
+      const retryReason = 'Retry recovery under a second administrator before its simulated failure';
+
+      await expect(reconcilePageWriteIntent(retryToken.id, {
+        actorId: claimantAdministrator,
+        reason: claimantReason,
+      })).rejects.toThrow('fixture repair failed after its filesystem effect');
+      await expect(reconcilePageWriteIntent(retryToken.id, {
+        actorId: retryingAdministrator,
+        reason: retryReason,
+      })).rejects.toThrow('fixture repair failed after its filesystem effect');
+
+      const unresolved = await query<{
+        actor_id: string;
+        runtime_id: string;
+        status: string;
+        settled_by: string | null;
+        recovery_history: Array<Record<string, unknown>>;
+      }>(
+        `SELECT actor_id, runtime_id, status, settled_by, recovery_history
+           FROM page_write_intents
+          WHERE id = $1`,
+        [retryToken.id],
+      );
+      expect(unresolved.rows[0]).toMatchObject({
+        actor_id: originalWriter,
+        status: 'pending',
+        settled_by: null,
+        recovery_history: [
+          expect.objectContaining({
+            attemptKind: 'runtime_transfer',
+            fromRuntimeId: retryToken.runtimeId,
+            actorId: claimantAdministrator,
+            reason: claimantReason,
+          }),
+          expect.objectContaining({
+            attemptKind: 'same_runtime_retry',
+            actorId: retryingAdministrator,
+            reason: retryReason,
+          }),
+        ],
+      });
+      expect(unresolved.rows[0]?.recovery_history[1]).toMatchObject({
+        fromRuntimeId: unresolved.rows[0]?.runtime_id,
+        toRuntimeId: unresolved.rows[0]?.runtime_id,
+      });
+      expect(await readFile(repairFixturePath, 'utf8')).toBe(
+        `${claimantAdministrator}\n${retryingAdministrator}\n`,
+      );
+    } finally {
+      failingRepairFixture = null;
+      await rm(repairFixtureDirectory, { recursive: true, force: true });
+    }
   });
 
   it('refuses non-admin quiescence before closing the process write gate', async () => {
@@ -1019,6 +1103,32 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       expect(await intentState(completionIntent.id)).toMatchObject({ status: 'completed' });
       expect(await intentState(cancelledIntent.id)).toMatchObject({ status: 'cancelled' });
       expect(await intentState(uncommittedIntent.id)).toMatchObject({ status: 'cancelled' });
+      const quiescenceCancellations = await query<{
+        id: string;
+        actor_id: string;
+        settled_by: string | null;
+        settlement_reason: string | null;
+      }>(
+        `SELECT id, actor_id, settled_by, settlement_reason
+           FROM page_write_intents
+          WHERE id = ANY($1::uuid[])`,
+        [[cancelledIntent.id, uncommittedIntent.id]],
+      );
+      expect(quiescenceCancellations.rows).toHaveLength(2);
+      expect(quiescenceCancellations.rows).toEqual(expect.arrayContaining([
+        {
+          id: cancelledIntent.id,
+          actor_id: actor,
+          settled_by: administrator,
+          settlement_reason: 'before_effect',
+        },
+        {
+          id: uncommittedIntent.id,
+          actor_id: actor,
+          settled_by: administrator,
+          settlement_reason: 'before_effect',
+        },
+      ]));
       expect(
         (await query<{ title: string; body_text: string; content_revision: string }>(
           'SELECT title, body_text, content_revision::text FROM pages WHERE id = $1',

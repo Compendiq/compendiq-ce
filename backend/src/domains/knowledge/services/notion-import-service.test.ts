@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -1040,6 +1040,133 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       title: 'Owned original',
       body_text: 'Owned original',
     });
+  });
+
+  it('does not publish fetched media after a shared Notion page changes owner', async () => {
+    const fileRequested = Promise.withResolvers<void>();
+    const releaseFile = Promise.withResolvers<void>();
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'media-owner-race': {
+          object: 'page',
+          id: 'media-owner-race',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Remote media replacement'),
+        },
+      },
+      blockChildren: {
+        'media-owner-race': [],
+      },
+      files: {
+        '/files/media-owner-race.png': { contentType: 'image/png', body: PNG },
+      },
+      beforeFileResponse: async (path) => {
+        if (path === '/files/media-owner-race.png') {
+          fileRequested.resolve();
+          await releaseFile.promise;
+        }
+      },
+    });
+    server.state.blockChildren!['media-owner-race'] = [{
+      id: 'remote-image',
+      type: 'image',
+      image: {
+        type: 'file',
+        file: { url: `${server.baseUrl}/files/media-owner-race.png` },
+      },
+    }];
+    const nextOwner = await query<{ id: string }>(
+      `INSERT INTO users (username, email, password_hash, role)
+       VALUES ($1, $2, 'x', 'user')
+       RETURNING id`,
+      [`notion-media-owner-${Date.now()}`, `notion-media-owner-${Date.now()}@test`],
+    );
+    const original = await query<{
+      id: number;
+      content_revision: string;
+      lifecycle_revision: string;
+    }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, visibility,
+          created_by_user_id, notion_page_id)
+       VALUES ('Prior media page', '<p>Prior media page</p>', 'Prior media page',
+               1, 'standalone', 'shared', $1, 'media-owner-race')
+       RETURNING id, content_revision::text, lifecycle_revision::text`,
+      [userId],
+    );
+    const pageId = original.rows[0]!.id;
+    const priorBytes = Buffer.from('prior attachment bytes');
+    const pageDir = join(attachmentsDir, 'local', String(pageId));
+    await mkdir(pageDir, { recursive: true });
+    await writeFile(join(pageDir, 'prior.png'), priorBytes);
+    await query(
+      `INSERT INTO local_attachments
+         (page_id, filename, content_type, size_bytes, sha256, created_by)
+       VALUES ($1, 'prior.png', 'image/png', $2, $3, $4)`,
+      [pageId, priorBytes.length, '0'.repeat(64), userId],
+    );
+
+    const importing = runNotionImport({
+      userId,
+      client,
+      pageIds: ['media-owner-race'],
+      visibility: 'shared',
+      overwriteExisting: true,
+    });
+    try {
+      await fileRequested.promise;
+      await query('UPDATE pages SET created_by_user_id = $1 WHERE id = $2', [
+        nextOwner.rows[0]!.id,
+        pageId,
+      ]);
+      releaseFile.resolve();
+
+      const result = await importing;
+      expect(result[0]).toMatchObject({
+        notionPageId: 'media-owner-race',
+        status: 'fail',
+      });
+      const page = await query<{
+        created_by_user_id: string;
+        body_html: string;
+        content_revision: string;
+        lifecycle_revision: string;
+      }>(
+        `SELECT created_by_user_id, body_html,
+                content_revision::text, lifecycle_revision::text
+           FROM pages
+          WHERE id = $1`,
+        [pageId],
+      );
+      expect(page.rows[0]).toEqual({
+        created_by_user_id: nextOwner.rows[0]!.id,
+        body_html: '<p>Prior media page</p>',
+        content_revision: original.rows[0]!.content_revision,
+        lifecycle_revision: original.rows[0]!.lifecycle_revision,
+      });
+      const attachments = await query<{
+        filename: string;
+        size_bytes: string;
+        created_by: string;
+      }>(
+        `SELECT filename, size_bytes::text, created_by
+           FROM local_attachments
+          WHERE page_id = $1
+          ORDER BY filename`,
+        [pageId],
+      );
+      expect(attachments.rows).toEqual([{
+        filename: 'prior.png',
+        size_bytes: String(priorBytes.length),
+        created_by: userId,
+      }]);
+      expect(await readdir(pageDir)).toEqual(['prior.png']);
+      expect(readFileSync(join(pageDir, 'prior.png'))).toEqual(priorBytes);
+    } finally {
+      releaseFile.resolve();
+      await importing.catch(() => undefined);
+    }
   });
 
   it('denies a deactivated actor immediately before the final authored overwrite', async () => {

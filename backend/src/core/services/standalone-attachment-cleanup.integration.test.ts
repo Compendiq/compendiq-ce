@@ -19,8 +19,13 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+import {
+  setupTestDb,
+  truncateAllTables,
+  teardownTestDb,
+  isDbAvailable,
+  waitForDatabaseCondition,
+} from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
 import { purgeExpiredStandalonePages } from './data-retention-service.js';
@@ -100,7 +105,7 @@ async function seedConfluencePage(userId: string, confluenceId: string): Promise
 }
 
 async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -114,10 +119,8 @@ async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<bool
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting === true;
+  });
 }
 
 describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {

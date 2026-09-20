@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 import sensible from '@fastify/sensible';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,7 @@ import {
   truncateAllTables,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
@@ -682,6 +682,168 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
       [crashed.id],
     );
     expect(recovered.rows[0]!.status).toBe('reconciled_applied');
+  });
+
+  it('rechecks current connection authority after remote-start admission before the first upload', async () => {
+    const page = await seedPage();
+    const pageBefore = (await query<{
+      content_revision: string;
+      lifecycle_revision: string;
+      image_analysis_dirty: boolean;
+    }>(
+      `SELECT content_revision::text, lifecycle_revision::text, image_analysis_dirty
+         FROM pages
+        WHERE id = $1`,
+      [page.id],
+    )).rows[0]!;
+    const suffix = randomUUID().replaceAll('-', '_');
+    const functionName = `att_remote_start_wait_fn_${suffix}`;
+    const triggerName = `att_remote_start_wait_trg_${suffix}`;
+    const barrier = await getPool().connect();
+    let pending: Promise<LightMyRequestResponse> | undefined;
+    let posts = 0;
+
+    respondHttp = async (_url, options) => {
+      if ((options.method ?? 'GET') !== 'POST') throw new Error('No provider evidence read expected');
+      posts += 1;
+      return jsonResponse({
+        results: [{
+          id: 'stale-first-upload-id',
+          title: 'authority-race.png',
+          version: { number: 1, when: 'stale-v1' },
+        }],
+      });
+    };
+    await query(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger
+       LANGUAGE plpgsql AS $$
+       BEGIN
+         IF OLD.remote_effect_started_at IS NULL
+            AND NEW.remote_effect_started_at IS NOT NULL
+            AND NEW.kind = 'attachment.confluence.put'
+            AND NEW.effect->>'remotePageId' = TG_ARGV[0]
+         THEN
+           PERFORM pg_advisory_xact_lock(275, NEW.page_ids[1]);
+         END IF;
+         RETURN NEW;
+       END
+       $$`,
+    );
+    await query(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE UPDATE OF remote_effect_started_at ON page_write_intents
+       FOR EACH ROW EXECUTE FUNCTION ${functionName}('${page.remoteId}')`,
+    );
+
+    try {
+      await barrier.query('SELECT pg_advisory_lock($1, $2)', [275, page.id]);
+      const barrierPid = (await barrier.query<{ pid: number }>(
+        'SELECT pg_backend_pid() AS pid',
+      )).rows[0]!.pid;
+      pending = app.inject({
+        method: 'PUT',
+        url: `/api/attachments/${page.remoteId}/authority-race.png`,
+        payload: { dataUri: PNG_DATA_URI },
+      });
+      await vi.waitFor(async () => {
+        const blocked = await query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1
+               FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event_type = 'Lock'
+                AND $1 = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [barrierPid],
+        );
+        expect(blocked.rows[0]!.waiting).toBe(true);
+      });
+
+      await query(
+        `UPDATE user_settings
+            SET confluence_enabled = FALSE,
+                confluence_url = 'https://rotated.example.com',
+                confluence_pat = $2
+          WHERE user_id = $1`,
+        [currentUserId, encryptPat('rotated-after-remote-start-admission')],
+      );
+      await barrier.query('SELECT pg_advisory_unlock($1, $2)', [275, page.id]);
+
+      const response = await pending;
+      expect(response.statusCode, response.body).toBe(403);
+      expect(response.json().reason).toBe('intent_connection_changed');
+    } finally {
+      await barrier.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
+      await pending?.catch(() => undefined);
+      barrier.release();
+      await query(`DROP TRIGGER IF EXISTS ${triggerName} ON page_write_intents`);
+      await query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    }
+
+    expect(posts).toBe(0);
+    expect(mockRequest).not.toHaveBeenCalled();
+    await expect(stat(join(attachmentRoot, page.remoteId, 'authority-race.png')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    const pageAfter = (await query<{
+      content_revision: string;
+      lifecycle_revision: string;
+      image_analysis_dirty: boolean;
+    }>(
+      `SELECT content_revision::text, lifecycle_revision::text, image_analysis_dirty
+         FROM pages
+        WHERE id = $1`,
+      [page.id],
+    )).rows[0]!;
+    expect(pageAfter).toEqual(pageBefore);
+    expect((await query(
+      'SELECT 1 FROM local_attachments WHERE page_id = $1',
+      [page.id],
+    )).rowCount).toBe(0);
+
+    const intent = (await query<{
+      id: string;
+      status: string;
+      recovery_mode: string;
+      effect_started_at: Date | null;
+      effect_finished_at: Date | null;
+      remote_effect_started_at: Date | null;
+      remote_effects_completed_at: Date | null;
+      remote_terminal_result: Record<string, unknown> | null;
+      effect: {
+        files: Array<{ filename: string; size: number; sha256: string }>;
+        receipts: unknown[];
+      };
+    }>(
+      `SELECT id, status, recovery_mode, effect_started_at, effect_finished_at,
+              remote_effect_started_at, remote_effects_completed_at,
+              remote_terminal_result, effect
+         FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::int[]
+          AND kind = 'attachment.confluence.put'`,
+      [page.id],
+    )).rows[0]!;
+    expect(intent).toMatchObject({
+      status: 'pending',
+      recovery_mode: 'remote_terminal_only',
+      effect_started_at: expect.any(Date),
+      effect_finished_at: null,
+      remote_effect_started_at: expect.any(Date),
+      remote_effects_completed_at: null,
+      remote_terminal_result: null,
+      effect: {
+        files: [{
+          filename: 'authority-race.png',
+          size: PNG.length,
+          sha256: createHash('sha256').update(PNG).digest('hex'),
+        }],
+        receipts: [],
+      },
+    });
+    await expect(readFile(join(
+      attachmentRoot,
+      page.remoteId,
+      `.page-write-${intent.id}-0.stage`,
+    ))).resolves.toEqual(PNG);
   });
 
   it('stops before the second remote upload when original authority is revoked', async () => {

@@ -1421,13 +1421,14 @@ export async function quiescePageWriterRuntime(
     await assertActiveRecoveryAdmin(client, authorization.actorId);
     await client.query(
       `UPDATE page_write_intents
-          SET status = 'cancelled', settled_at = NOW(), settlement_reason = 'before_effect',
+          SET status = 'cancelled', settled_at = NOW(), settled_by = $2,
+              settlement_reason = 'before_effect',
               settlement_proof = '{"assertion":"no_io_began"}'::jsonb
         WHERE runtime_id = $1
           AND status = 'pending'
           AND effect_started_at IS NULL
           AND recovery_started_at IS NULL`,
-      [runtimeId],
+      [runtimeId, authorization.actorId],
     );
     if (current.rows[0].quiescence_ack) return current.rows[0].quiescence_ack;
     const ack = randomUUID();
@@ -1726,16 +1727,27 @@ export async function reconcilePageWriteIntent(
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
       await assertActiveRecoveryAdmin(client, authorization.actorId);
-      if (retryingHere) return recoveryIntentFromRow(durable);
-      const transferred = await client.query<IntentRow>(
+      // Commit the acting administrator before trusted verification or repair
+      // can mutate external state. Same-runtime retries consume the same
+      // bounded evidence budget as the original transfer.
+      if (durable.recovery_history.length >= 32) {
+        throw new PageWriteError(
+          409,
+          'intent_recovery_history_full',
+          'The bounded recovery history cannot accept another attempt',
+        );
+      }
+      const claimed = await client.query<IntentRow>(
         `UPDATE page_write_intents
             SET runtime_id = $2,
-                recovery_started_at = NOW(),
+                recovery_started_at = COALESCE(recovery_started_at, NOW()),
                 recovery_history = recovery_history || jsonb_build_array(
                   jsonb_build_object(
+                    'attemptKind', CASE WHEN $6::boolean THEN 'same_runtime_retry' ELSE 'runtime_transfer' END,
                     'fromRuntimeId', $3::text,
                     'toRuntimeId', $2::text,
-                    'transferredAt', NOW(),
+                    'attemptedAt', NOW(),
+                    'transferredAt', CASE WHEN $6::boolean THEN NULL ELSE NOW() END,
                     'actorId', $4::text,
                     'reason', $5::text,
                     'observedState', 'verification_pending',
@@ -1756,12 +1768,13 @@ export async function reconcilePageWriteIntent(
           token.runtimeId,
           authorization.actorId,
           authorization.reason.trim(),
+          retryingHere,
         ],
       );
-      if (transferred.rowCount !== 1) {
+      if (claimed.rowCount !== 1) {
         throw new PageWriteError(409, 'intent_transfer_conflict', 'The recovery intent was transferred concurrently');
       }
-      return recoveryIntentFromRow(transferred.rows[0]!);
+      return recoveryIntentFromRow(claimed.rows[0]!);
     });
     recoveryClaimed = true;
     // The durable claim survives a connection loss or process death while a

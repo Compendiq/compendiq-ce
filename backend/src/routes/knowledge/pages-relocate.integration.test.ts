@@ -30,6 +30,7 @@ import {
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query, getPool } from '../../core/db/postgres.js';
@@ -411,6 +412,22 @@ async function getRow(id: number) {
   return res.rows[0]!;
 }
 
+async function getPageRevisions(id: number): Promise<{
+  content_revision: string;
+  lifecycle_revision: string;
+}> {
+  const result = await query<{
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT content_revision::text, lifecycle_revision::text
+       FROM pages
+      WHERE id = $1`,
+    [id],
+  );
+  return result.rows[0]!;
+}
+
 async function latestRelocateIntent(pageId: number) {
   const result = await query<{
     id: string;
@@ -647,7 +664,7 @@ async function childrenViaTreeJoin(parentId: number): Promise<number[]> {
 }
 
 async function waitForDatabaseBlocker(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -656,14 +673,13 @@ async function waitForDatabaseBlocker(blockerPid: number): Promise<boolean> {
        ) AS waiting`,
       [blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting ?? false;
+  });
 }
 
 async function waitForBlockedDatabasePid(blockerPid: number): Promise<number | null> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  let blockedPid: number | null = null;
+  await waitForDatabaseCondition(async () => {
     const result = await query<{ pid: number }>(
       `SELECT pid
          FROM pg_stat_activity
@@ -672,10 +688,10 @@ async function waitForBlockedDatabasePid(blockerPid: number): Promise<number | n
         LIMIT 1`,
       [blockerPid],
     );
-    if (result.rows[0]) return result.rows[0].pid;
-    await nextEventLoopTurn();
-  }
-  return null;
+    blockedPid = result.rows[0]?.pid ?? null;
+    return blockedPid !== null;
+  });
+  return blockedPid;
 }
 
 // --- Attachment store helpers ---
@@ -1523,6 +1539,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           version: 1,
         }],
       });
+      await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+
 
       await withFencedIntentRuntime(intent!, () =>
         expect(reconcilePageWriteIntent(intent!.id, { actorId: recoveryAdminId, reason: 'Partial receipts cannot authorize replay or infer the later upload outcome', })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
@@ -1546,19 +1564,36 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       expect(row.source).toBe('standalone');
     });
 
-    it('reconciles an interrupted preparation marker that committed before its row', async () => {
+    it('lets a second active recovery admin settle a marker-only preparation after the original actor is revoked', async () => {
       const id = await createPage({
         title: 'Preparation marker only',
         source: 'standalone',
         spaceKey: 'LOCAL',
         ownerId: userId,
+        bodyHtml: '<p>exact marker-only body</p>',
+        bodyStorage: '<p>exact marker-only storage</p>',
+        visibility: 'private',
       });
+      const child = await createPage({
+        title: 'Marker-only child survives cleanup',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        parentRef: String(id),
+        ownerId: userId,
+      });
+      await query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [id, userId],
+      );
       const unrelated = await createPage({
         title: 'Unrelated survivor',
         source: 'standalone',
         spaceKey: 'LOCAL',
         ownerId: userId,
       });
+      const originalRevisions = await getPageRevisions(id);
       resolveCreatedPage('900015');
       const holder = await getPool().connect();
       try {
@@ -1586,6 +1621,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         await query('SELECT pg_cancel_backend($1)', [preparationPid]);
         await holder.query('COMMIT');
         expect((await pending).statusCode).toBe(500);
+        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+        await query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+
 
         await withFencedIntentRuntime(intent!, () =>
           expect(reconcilePageWriteIntent(intent!.id, {
@@ -1598,8 +1639,26 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         );
 
         expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(h.client.updateAttachment).not.toHaveBeenCalled();
         expect(h.client.getPage).not.toHaveBeenCalled();
+        expect(h.client.deletePage).not.toHaveBeenCalled();
         expect(await relocationProgress(intent!.id)).toBeUndefined();
+        expect(await getRow(id)).toMatchObject({
+          source: 'standalone',
+          confluence_id: null,
+          space_key: 'LOCAL',
+          visibility: 'private',
+          body_html: '<p>exact marker-only body</p>',
+          body_storage: '<p>exact marker-only storage</p>',
+        });
+        expect(await getPageRevisions(id)).toEqual(originalRevisions);
+        expect(await childrenViaTreeJoin(id)).toEqual([child]);
+        expect((await query(
+          `SELECT 1 FROM access_control_entries
+            WHERE resource_type = 'page' AND resource_id = $1
+              AND principal_type = 'user' AND principal_id = $2 AND permission = 'edit'`,
+          [id, userId],
+        )).rowCount).toBe(1);
         await expect(query('DELETE FROM pages WHERE id = $1', [id])).resolves.toMatchObject({
           rowCount: 1,
         });
@@ -1610,7 +1669,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       }
     });
 
-    it('retains a committed preparation through interruption, then releases its hard-delete fence on recovery', async () => {
+    it('lets a second active recovery admin remove a committed preparation after the original actor is revoked', async () => {
       const id = await createPage({
         title: 'Committed preparation',
         source: 'standalone',
@@ -1633,6 +1692,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
          VALUES ('page', $1, 'user', $2, 'edit')`,
         [id, userId],
       );
+      const originalRevisions = await getPageRevisions(id);
       resolveCreatedPage('900016');
       const moveHolder = await getPool().connect();
       const lifecycleHolder = await getPool().connect();
@@ -1692,6 +1752,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           settled_at: null,
         });
         expect(await relocationProgress(intent!.id)).toBeDefined();
+        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+        await query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+
 
         await withFencedIntentRuntime(intent!, () =>
           expect(reconcilePageWriteIntent(intent!.id, {
@@ -1704,7 +1770,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         );
 
         expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(h.client.updateAttachment).not.toHaveBeenCalled();
         expect(h.client.getPage).not.toHaveBeenCalled();
+        expect(h.client.deletePage).not.toHaveBeenCalled();
         expect(await relocationProgress(intent!.id)).toBeUndefined();
         expect(await getRow(id)).toMatchObject({
           source: 'standalone',
@@ -1714,6 +1782,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
           body_html: '<p>exact original body</p>',
           body_storage: '<p>exact original storage</p>',
         });
+        expect(await getPageRevisions(id)).toEqual(originalRevisions);
         expect(await childrenViaTreeJoin(id)).toEqual([child]);
         expect((await query(
           `SELECT 1 FROM access_control_entries
