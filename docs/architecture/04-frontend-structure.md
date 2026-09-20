@@ -148,6 +148,37 @@ enters the viewport, not on ordinary re-renders or background refetches.
   Chassis **AI** is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
   the inspector tab is **Assistant**. The laptop-width force-collapse of the
   page tree is gone: 768–1439 keeps the user's tree preference.
+- **Baseline lifecycle is a Details section, a badge and a tree glyph (#277).**
+  `PageLifecycleSection` sits below Document health, not in a banner above the
+  article: a frozen page already says so in its header and by having no Edit
+  control, and a dominant card would push the document down on every frozen
+  page. It keeps four claims apart, because collapsing them is how the
+  interface starts overstating its evidence — *frozen* (a fact about `pages`),
+  *frozen by* (who performed it), the *reason*, and *authenticated approval*,
+  which renders only for `provenance === 'authenticated_approval'` and is
+  never inferred from `isFrozen`. Governed proposal state renders only when
+  `useEnterprise().isEnterprise` is true; the same bundle ships in both
+  editions.
+- Capabilities come from the server. `canFreeze` / `canUnfreeze` are read off
+  the page, never derived, and an absent page — an in-flight or failed read —
+  is UNKNOWN, which offers no control at all. A refusal is rendered as prose
+  from the typed denial reason, because a native-disabled button takes no
+  focus and no touch, so its `title` would be unreachable for exactly the
+  users who need it. Read mode therefore replaces Edit with a
+  non-interactive status rather than a disabled control.
+- Freeze and thaw are **never optimistic**: the modals send the previewed
+  manifest identity (`expectedManifestDigest` + `expectedContentRevision`),
+  and the badge, the editor gate and the tree follow the re-read page. A
+  refusal keeps the operator's typed text so a stale preview or a busy room
+  is retried, not retyped. The dialogs restore focus to the control that
+  opened them **after** the portal unmounts — focusing in the same tick lands
+  on `body`, which a browser run caught and jsdom did not.
+- `FrozenBadge` is neutral ink plus a lock glyph in both forms. It is not a
+  status hue: amber, green and red stay reserved pipeline signals, and the
+  glyph is the channel that survives `forced-colors` and colour blindness.
+  Tree rows use the compact form — one glyph with an accessible name, no
+  extra tab stop and no second icon column, in `SidebarTreeView` and
+  `DndLocalSpaceTree` together.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**
