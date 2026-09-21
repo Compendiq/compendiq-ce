@@ -812,6 +812,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       const writer = await getPool().connect();
       try {
         await writer.query('BEGIN');
+        const writerPid = (await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
         await writer.query(
           `SELECT runtime_id FROM page_writer_runtimes WHERE runtime_id = $1 FOR SHARE`,
           [runtimeId],
@@ -839,33 +840,44 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
             effectStarted,
           ],
         );
+        // Settled into a value at creation, never left as a bare promise: the
+        // server releases the writer's locks BEFORE it answers the COMMIT, so
+        // on a loaded box the fence can finish its remaining round trip and
+        // reject before the COMMIT reply is processed — an unhandled
+        // rejection that fails the run while every assertion below passes.
         const fencing = fencePageWriterRuntime({
           mode: 'durable_no_started_effects',
           runtimeId,
           actorId: administrator,
           reason: 'Deterministic runtime serialization race exercises the durable marker',
-        });
+        }).then(
+          (value) => ({ settled: 'resolved' as const, value }),
+          (error: unknown) => ({ settled: 'rejected' as const, error }),
+        );
+        // Scoped to the backend THIS writer blocks: pg_stat_activity spans
+        // every worker's database, and a sibling file's fence waiting on its
+        // own lock matched the previous query-text predicate.
         const fenceBlocked = await waitForDatabaseCondition(async () => {
-          const activity = await query<{ exists: boolean }>(
+          const blocked = await query<{ exists: boolean }>(
             `SELECT EXISTS (
                SELECT 1 FROM pg_stat_activity
-                WHERE wait_event_type = 'Lock'
-                  AND query LIKE '%SELECT fenced_at, quiescence_ack::text, deployment_identity%'
+                WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))
              ) AS exists`,
+            [writerPid],
           );
-          return activity.rows[0]?.exists === true;
+          return blocked.rows[0]?.exists === true;
         });
         expect(fenceBlocked).toBe(true);
         await writer.query('COMMIT');
         if (effectStarted) {
-          await expect(fencing).rejects.toMatchObject({
-            statusCode: 409,
-            reason: 'runtime_effects_started',
+          expect(await fencing).toMatchObject({
+            settled: 'rejected',
+            error: { statusCode: 409, reason: 'runtime_effects_started' },
           });
           expect((await intentState(intentId)).status).toBe('pending');
           await assertFreezeBusy(pageId);
         } else {
-          await expect(fencing).resolves.toEqual({ unresolvedIntents: 0 });
+          expect(await fencing).toEqual({ settled: 'resolved', value: { unresolvedIntents: 0 } });
           expect((await intentState(intentId)).status).toBe('cancelled');
         }
       } finally {
