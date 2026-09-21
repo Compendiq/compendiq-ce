@@ -37,6 +37,11 @@ async function interruptedPreparation(
     [`baseline-recovery-admin-${suffix}`, `${suffix}@baseline-recovery-admin.test`],
   );
   const administratorId = administrator.rows[0]!.id;
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_enabled)
+     VALUES ($1, FALSE), ($2, FALSE)`,
+    [actorId, administratorId],
+  );
   const page = await query<{ id: number }>(
     `INSERT INTO pages (title, source, visibility, created_by_user_id, body_html, body_text, version)
      VALUES ('Recovery source', 'standalone', 'private', $1, '<p>initial</p>', 'initial', 4)

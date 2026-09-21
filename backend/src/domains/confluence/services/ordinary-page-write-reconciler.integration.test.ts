@@ -225,6 +225,86 @@ async function seedPendingPublicationIntent(
   return { actorId, recoveryAdminId, intentId, pageId: pageRow.id, confluenceId, remote };
 }
 
+async function seedPendingCreateIntent(
+  parentSource: 'confluence' | 'standalone' = 'confluence',
+): Promise<{
+  recoveryAdminId: string;
+  intentId: string;
+  parentId: number;
+  parentConfluenceId: string | null;
+  remote: { id: string; title: string; storage: string; version: number };
+}> {
+  const actorId = await seedRecoveryActor('create-recovery');
+  const recoveryAdminId = await seedRecoveryAdmin('create-recovery');
+  const parentConfluenceId = parentSource === 'confluence'
+    ? `parent-${randomUUID()}`
+    : null;
+  const parent = await query<{
+    id: number;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `INSERT INTO pages
+       (confluence_id, space_key, title, source, visibility, created_by_user_id)
+     VALUES ($1, 'REC', 'Create parent', $2, 'private', $3)
+     RETURNING id, content_revision::text, lifecycle_revision::text`,
+    [parentConfluenceId, parentSource, actorId],
+  );
+  const parentRow = parent.rows[0]!;
+  const runtimeId = await seedFencedRuntime(recoveryAdminId);
+  const intentId = randomUUID();
+  const remote = {
+    id: `created-${randomUUID()}`,
+    title: 'Recovered child',
+    storage: '<p>Recovered child body</p>',
+    version: 1,
+  };
+  await query(
+    `INSERT INTO page_write_intents
+       (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+        effect_started_at, effect_finished_at, remote_effect_started_at,
+        remote_effects_completed_at, remote_terminal_result)
+     VALUES ($1, $2, 'pages.create.confluence', $3, ARRAY[$4]::int[], $5::jsonb,
+             'remote_terminal_only', $6::jsonb, NOW(), NOW(), NOW(), NOW(), $7::jsonb)`,
+    [
+      intentId,
+      runtimeId,
+      actorId,
+      parentRow.id,
+      JSON.stringify({
+        [parentRow.id]: {
+          contentRevision: parentRow.content_revision,
+          lifecycleRevision: parentRow.lifecycle_revision,
+        },
+      }),
+      JSON.stringify({
+        effectClass: 'remote',
+        parentPageId: parentRow.id,
+        parentConfluenceId,
+        spaceKey: 'REC',
+        titleSha256: createHash('sha256').update(remote.title).digest('hex'),
+        storageSha256: createHash('sha256').update(remote.storage).digest('hex'),
+      }),
+      JSON.stringify({
+        accepted: true,
+        confluenceId: remote.id,
+        expectedVersion: remote.version,
+        observedConfluenceId: remote.id,
+        version: remote.version,
+        titleSha256: createHash('sha256').update(remote.title).digest('hex'),
+        storageSha256: createHash('sha256').update(remote.storage).digest('hex'),
+      }),
+    ],
+  );
+  return {
+    recoveryAdminId,
+    intentId,
+    parentId: parentRow.id,
+    parentConfluenceId,
+    remote,
+  };
+}
+
 async function seedPendingDeleteIntent(): Promise<{
   actorId: string;
   recoveryAdminId: string;
@@ -467,6 +547,67 @@ describeDb('ordinary page-write reconciliation', () => {
     }]);
   });
 
+
+  it('publishes an acknowledged child create during recovery without reissuing it upstream', async () => {
+    const seeded = await seedPendingCreateIntent();
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: seeded.remote.id,
+      title: seeded.remote.title,
+      status: 'current',
+      version: { number: seeded.remote.version },
+      body: { storage: { value: seeded.remote.storage } },
+    }) as never);
+
+    await expect(reconcilePageWriteIntent(seeded.intentId, {
+      actorId: seeded.recoveryAdminId,
+      reason: 'Publish the exact terminal child creation without another POST',
+    })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+    const child = await query<{
+      confluence_id: string;
+      parent_id: string | null;
+      title: string;
+      body_storage: string;
+      version: number;
+    }>(
+      `SELECT confluence_id, parent_id, title, body_storage, version
+         FROM pages WHERE confluence_id = $1`,
+      [seeded.remote.id],
+    );
+    expect(child.rows).toEqual([{
+      confluence_id: seeded.remote.id,
+      parent_id: seeded.parentConfluenceId,
+      title: seeded.remote.title,
+      body_storage: seeded.remote.storage,
+      version: seeded.remote.version,
+    }]);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    expect(String(mockRequest.mock.calls[0]?.[1]?.method ?? 'GET')).toBe('GET');
+  });
+
+  it('recovers a Confluence child under a standalone parent with the canonical local parent key', async () => {
+    const seeded = await seedPendingCreateIntent('standalone');
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: seeded.remote.id,
+      title: seeded.remote.title,
+      status: 'current',
+      version: { number: seeded.remote.version },
+      body: { storage: { value: seeded.remote.storage } },
+    }) as never);
+
+    await expect(reconcilePageWriteIntent(seeded.intentId, {
+      actorId: seeded.recoveryAdminId,
+      reason: 'Publish the terminal child beneath its unchanged standalone parent',
+    })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
+
+    const child = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE confluence_id = $1',
+      [seeded.remote.id],
+    );
+    expect(child.rows).toEqual([{ parent_id: String(seeded.parentId) }]);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    expect(String(mockRequest.mock.calls[0]?.[1]?.method ?? 'GET')).toBe('GET');
+  });
 
   it('resets derived work when recovering an ordinary body publication', async () => {
     const seeded = await seedPendingPublicationIntent('pages.update.confluence');

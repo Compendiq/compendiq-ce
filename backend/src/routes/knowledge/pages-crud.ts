@@ -4,13 +4,15 @@ import { createHash } from 'node:crypto';
 import { query, getPool } from '../../core/db/postgres.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import {
   CONFLUENCE_DISABLED_MESSAGE,
   pageWriteStaysLocal,
 } from '../../domains/confluence/services/standalone-mode.js';
 import { htmlToConfluence, confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -31,16 +33,21 @@ import { withLocalAttachmentMutationLock } from '../../core/services/attachment-
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
 import {
-  PAGE_SUBTREE_CTE,
-  PAGE_SUBTREE_CTE_MANY_ROOTS,
+  authorizedSubtreeComponents,
   activeDescendantCount,
   findSubtreeKeyAmbiguity,
   resolveParentOf,
   trashBatchIds,
+  type AuthorizedSubtreeComponent,
   type SubtreeKeyAmbiguity,
+  PageSubtreeFrozenError,
 } from '../../core/services/page-subtree.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_HIERARCHY_LOCK_ID,
+} from '../../core/db/advisory-locks.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
@@ -51,10 +58,11 @@ import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
 import { ConfluenceError, type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
-import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import {
   confirmPagePublication,
   pagePublicationReceipt,
+  publishCreatedConfluencePage,
+  type PublishedConfluencePage,
 } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import {
   freezeSummary,
@@ -66,6 +74,8 @@ import {
   type PageRevision,
   PageWriteError,
   advancePageWriteIntent,
+  advancePageWriteIntentInTransaction,
+  assertPageHierarchyParentsAvailable,
   completePageWriteIntent,
   cancelPageWriteIntentBeforeEffect,
   getPageWriterRuntimeId,
@@ -74,6 +84,7 @@ import {
   lockPageWrites,
   reservePageWriteIntent,
   reservePageWriteIntentInTransaction,
+  withPageHierarchyWriteTransaction,
   runPageWriteIntentEffect,
   withPageWriteTransaction,
 } from '../../core/services/page-write-admission.js';
@@ -443,13 +454,11 @@ async function readBodyWithSizeCap(
  * stays ambiguous whichever candidate is picked, so a cascade that guessed
  * would trash or destroy rows in an unrelated tree.
  *
- * The message names only the page INSIDE the caller's own subtree and the key.
- * The colliding row is deliberately not named: the caller has no access check
- * against it, so echoing its id or title would make this refusal the same
- * existence-and-name oracle the restore refusal was corrected for. Its detail
- * goes to the log, where an operator who can already read every row needs it to
- * break the tie. `reason` is a slug the client branches on, distinct from the
- * transient `restore_ancestor_trashed`, because this refusal is not retryable.
+ * The response names no page, key, id, or title: an ambiguity can be reached
+ * through an inaccessible traversal row, so even the member inside the walk
+ * is not necessarily visible to the caller. Operator-only detail stays in the
+ * log. `reason` is a slug the client branches on, distinct from the transient
+ * `restore_ancestor_trashed`, because this refusal is not retryable.
  */
 function ambiguousSubtreeConflict(
   ambiguity: SubtreeKeyAmbiguity,
@@ -468,11 +477,48 @@ function ambiguousSubtreeConflict(
     statusCode: 409,
     error: 'Conflict',
     message:
-      `Cannot act on this subtree: page ${ambiguity.pageId}'s child identifier ` +
-      `"${ambiguity.key}" is not unique, so its sub-articles cannot be told apart ` +
-      `from another page's. Move or relocate one of them first.`,
+      'Cannot act on this subtree because its stored parent identifiers are ambiguous. ' +
+      'Move or relocate the affected pages first.',
     reason: 'subtree_identifier_ambiguous',
   };
+}
+
+
+
+function assertSingleCascadeEditable(component: AuthorizedSubtreeComponent, rootId: number): void {
+  const frozenCount = component.members
+    .filter((member) => member.baselineId !== null)
+    .length;
+  if (frozenCount === 0) return;
+  if (component.members.some((member) => member.id === rootId && member.baselineId !== null)) {
+    throw new PageWriteError(423, 'page_is_frozen', 'Protected page content is frozen');
+  }
+  throw new PageSubtreeFrozenError(frozenCount);
+}
+
+/**
+ * Hierarchy cascades take the process epoch first, then the global hierarchy
+ * fence exclusively. Expansion, lifecycle admission and the SQL mutation (or
+ * durable whole-component intent reservation) all happen before this commits.
+ */
+async function withHierarchyCascadeTransaction<T>(
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const runtimeId = await getPageWriterRuntimeId();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockPageWriterRuntime(client, runtimeId);
+    await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+    const result = await operation(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
@@ -1352,136 +1398,135 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    const existing = await query<{
-      id: number; title: string; source: string; parent_id: string | null;
-      created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
-      notion_page_id: string | null;
-    }>(
-      `SELECT id, title, source, parent_id, created_by_user_id, deleted_at, visibility,
-              notion_page_id
-         FROM pages WHERE id = $1`,
-      [id],
-    );
-    if (existing.rows.length === 0) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
-
-    const page = existing.rows[0]!;
-    if (page.source !== 'standalone') {
-      throw fastify.httpErrors.badRequest('Only standalone articles can be restored');
-    }
-    if (page.created_by_user_id !== userId) {
-      throw fastify.httpErrors.forbidden('Not the owner');
-    }
-    if (!page.deleted_at) {
-      // #1636: already live, so the desired end state already holds. A bulk
-      // restore fires ONE request per selected row, and a cascade batch spans
-      // several rows: whichever request lands first restores all of them, so
-      // its siblings arrive here. Reporting a failure for work that is already
-      // done would make the Trash toast lie about the outcome.
-      return { id: page.id, title: page.title, restored: false };
-    }
-
-    // #1636: restoring a page whose DIRECT parent is still in the trash would
-    // put it back with a `parent_id` pointing at a hidden row, and `GET
-    // /api/pages/tree` renders that as a top-level page — the orphan this issue
-    // is about, re-created inside Trash.
-    //
-    // The DIRECT parent, deliberately, not the nearest trashed ancestor at any
-    // depth. The invariant is a statement about `parent_id` alone: a live
-    // parent means the restored page reappears beneath it and orphans nothing,
-    // whatever is happening further up the chain. Refusing on a distant
-    // ancestor — the shape this replaced — refused restores that were safe, and
-    // when that ancestor belonged to another user it blocked the page until the
-    // 30-day purge destroyed it.
-    //
-    // And refuse only when the caller can actually clear the blocker: their own
-    // standalone parent. Nothing else is restorable through this route (a
-    // non-standalone row is refused above, another user's row is not the
-    // caller's to restore), so refusing there would trade a visible orphan for
-    // silent data loss at the retention deadline. The title is safe to echo
-    // precisely because the caller owns that row — which is why this no longer
-    // needs a readability gate to decide whether it may name a page.
-    const parentResolution = await resolveParentOf(page.parent_id);
-    if (parentResolution.kind === 'ambiguous') {
-      // The candidate ids stay in the log, not on the wire: the caller has no
-      // access check against those rows, and naming them would turn this
-      // refusal into an existence oracle.
-      fastify.log.warn(
-        { pageId: page.id, key: parentResolution.key, candidateIds: parentResolution.candidateIds },
-        'pages: refused a restore whose parent identifier names more than one page (#1636)',
+    const restored = await withHierarchyCascadeTransaction(async (client) => {
+      const existing = await client.query<{
+        id: number; title: string; source: string; parent_id: string | null;
+        created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
+        notion_page_id: string | null;
+      }>(
+        `SELECT id, title, source, parent_id, created_by_user_id, deleted_at, visibility,
+                notion_page_id
+           FROM pages WHERE id = $1`,
+        [id],
       );
-      return reply.status(409).send({
-        statusCode: 409,
-        error: 'Conflict',
-        message:
-          `Cannot restore: this page's parent identifier "${parentResolution.key}" names ` +
-          `more than one page, so it is unclear where the page belongs. Move or relocate ` +
-          `one of them first.`,
-        reason: 'restore_parent_ambiguous',
-      });
-    }
-    if (
-      parentResolution.kind === 'resolved' &&
-      parentResolution.parent.deletedAt &&
-      parentResolution.parent.source === 'standalone' &&
-      parentResolution.parent.createdByUserId === userId
-    ) {
-      return reply.status(409).send({
-        statusCode: 409,
-        error: 'Conflict',
-        message: `Restore "${parentResolution.parent.title}" first`,
-        reason: 'restore_ancestor_trashed',
-      });
-    }
-
-    if (page.notion_page_id) {
-      const clash = await query<{ id: number }>(
-        `SELECT id FROM pages
-          WHERE created_by_user_id = $1
-            AND deleted_at IS NULL
-            AND id <> $2
-            AND notion_page_id IS NOT NULL
-            AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
-          LIMIT 1`,
-        [page.created_by_user_id, page.id, page.notion_page_id],
-      );
-      if (clash.rows.length > 0) {
-        throw fastify.httpErrors.conflict('A live import of this page already exists');
+      const page = existing.rows[0];
+      if (!page) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      if (page.source !== 'standalone') {
+        throw new PageWriteError(400, 'restore_source_invalid', 'Only standalone articles can be restored');
       }
-    }
+      if (page.created_by_user_id !== userId) {
+        throw new PageWriteError(403, 'not_authorized', 'Not the owner');
+      }
+      if (!page.deleted_at) {
+        return { page, restored: false, restoredCount: 0, rows: [] as Array<{ visibility: string }> };
+      }
 
-    // Restore the exact delete batch. #276 will add serialized re-expansion for
-    // concurrent reparenting; every currently selected protected row is already
-    // admitted and mutated in this one transaction.
-    const batchAmbiguity = await findSubtreeKeyAmbiguity(page.id);
-    if (batchAmbiguity) {
-      return reply.status(409).send(ambiguousSubtreeConflict(batchAmbiguity, fastify.log));
-    }
-    const batchIds = await trashBatchIds(page.id, userId);
-    const restoredRows = await withPageWriteTransaction(batchIds, (writeClient) =>
-      writeClient.query<{ visibility: string }>(
+      const parentResolution = await resolveParentOf(page.parent_id, client);
+      if (parentResolution.kind === 'ambiguous') {
+        fastify.log.warn(
+          { pageId: page.id, key: parentResolution.key, candidateIds: parentResolution.candidateIds },
+          'pages: refused a restore whose parent identifier names more than one page (#1636)',
+        );
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            message:
+              'Cannot restore because the stored parent identifier is ambiguous. ' +
+              'Move or relocate the affected pages first.',
+            reason: 'restore_parent_ambiguous',
+          },
+        };
+      }
+      if (
+        parentResolution.kind === 'resolved' &&
+        parentResolution.parent.deletedAt &&
+        parentResolution.parent.source === 'standalone' &&
+        parentResolution.parent.createdByUserId === userId
+      ) {
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            message: `Restore "${parentResolution.parent.title}" first`,
+            reason: 'restore_ancestor_trashed',
+          },
+        };
+      }
+      if (
+        parentResolution.kind === 'resolved' &&
+        parentResolution.parent.deletedAt === null
+      ) {
+        await assertPageHierarchyParentsAvailable(client, [parentResolution.parent.id]);
+      }
+
+      if (page.notion_page_id) {
+        const clash = await client.query<{ id: number }>(
+          `SELECT id FROM pages
+            WHERE created_by_user_id = $1
+              AND deleted_at IS NULL
+              AND id <> $2
+              AND notion_page_id IS NOT NULL
+              AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
+            LIMIT 1`,
+          [page.created_by_user_id, page.id, page.notion_page_id],
+        );
+        if (clash.rows.length > 0) {
+          throw new PageWriteError(409, 'restore_import_conflict', 'A live import of this page already exists');
+        }
+      }
+
+      const ambiguity = await findSubtreeKeyAmbiguity(page.id, client);
+      if (ambiguity) {
+        return { refusal: ambiguousSubtreeConflict(ambiguity, fastify.log) };
+      }
+      const batchIds = await trashBatchIds(page.id, userId, client);
+      await lockPageLifecycle(client, batchIds);
+      const batch = await client.query<{
+        id: number;
+        visibility: string;
+        baseline_id: string | null;
+      }>(
+        `SELECT id, visibility, baseline_id
+           FROM pages
+          WHERE id = ANY($1::int[])
+          ORDER BY id`,
+        [batchIds],
+      );
+      const component: AuthorizedSubtreeComponent = {
+        rootIds: [page.id],
+        members: batch.rows.map((row) => ({
+          id: row.id,
+          visibility: row.visibility,
+          baselineId: row.baseline_id,
+        })),
+      };
+      assertSingleCascadeEditable(component, page.id);
+      await lockPageWrites(client, batchIds);
+      const rows = await client.query<{ visibility: string }>(
         'UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[]) RETURNING visibility',
         [batchIds],
-      ),
-    );
+      );
+      return { page, restored: true, restoredCount: batchIds.length, rows: rows.rows };
+    });
 
-    // A restored shared page reappears in every user's lists/trees (#893) —
-    // mirror the delete path: clear all users' caches. Read off the ROWS the
-    // UPDATE touched, not off the target: visibility is per page, so a private
-    // page's batch can contain a shared descendant, and keying the scope on the
-    // target alone left every other user holding a stale tree.
-    if (restoredRows.rows.some((row) => row.visibility === 'shared')) {
+    if (restored.refusal) {
+      return reply.status(restored.refusal.statusCode).send(restored.refusal);
+    }
+    if (!restored.restored) {
+      return { id: restored.page.id, title: restored.page.title, restored: false };
+    }
+    if (restored.rows.some((row) => row.visibility === 'shared')) {
       await cache.invalidateAcrossUsers('pages');
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    // ONE audit row for the target, covering the whole batch — the ids
-    // themselves would make an unbounded payload (same rule as the cascade).
-    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id),
-      { source: 'standalone', title: page.title, restoredCount: batchIds.length }, request);
-
-    return { id: page.id, title: page.title, restored: true };
+    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id), {
+      source: 'standalone',
+      title: restored.page.title,
+      restoredCount: restored.restoredCount,
+    }, request);
+    return { id: restored.page.id, title: restored.page.title, restored: true };
   });
 
   // POST /api/pages - create page (standalone local or Confluence + local cache)
@@ -1528,50 +1573,48 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Use space key only for local spaces (already looked up above)
       const spaceKey: string | null = spaceSource === 'local' ? body.spaceKey! : null;
 
-      // Validate and compute path if parentId is provided
-      let parentPath: string | null = null;
-      if (body.parentId) {
-        const parentResult = await query<{ path: string | null; space_key: string | null }>(
-          'SELECT path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
-          [body.parentId],
+      // Creation is a hierarchy write even though it has no existing page id.
+      // The empty protected transaction holds hierarchy SHARE; only then do we
+      // resolve the parent and reject a pending destructive component.
+      const newPage = await withPageWriteTransaction([], async (client) => {
+        let parentPath: string | null = null;
+        if (body.parentId) {
+          const parentResult = await client.query<{
+            id: number;
+            path: string | null;
+            space_key: string | null;
+          }>(
+            'SELECT id, path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [body.parentId],
+          );
+          const parent = parentResult.rows[0];
+          if (!parent) throw fastify.httpErrors.badRequest('Parent page not found');
+          if (spaceKey && parent.space_key !== spaceKey) {
+            throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
+          }
+          await assertPageHierarchyParentsAvailable(client, [parent.id]);
+          parentPath = parent.path;
+        }
+
+        const result = await client.query<{ id: number; title: string; version: number }>(
+          `INSERT INTO pages
+             (title, body_html, body_text, body_storage, source, created_by_user_id,
+              visibility, version, space_key, confluence_id, parent_id,
+              page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
+           VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
+                   $8, $9, $9, 'not_embedded', NOW(), $10)
+           RETURNING id, title, version`,
+          [body.title, effectiveBodyHtml, bodyText, userId,
+           visibility, spaceKey, body.parentId ?? null,
+           pageType, !isFolder, body.labels ?? []],
         );
-        if (parentResult.rows.length === 0) {
-          throw fastify.httpErrors.badRequest('Parent page not found');
-        }
-        // Verify parent belongs to the same space (when a space is specified)
-        if (spaceKey && parentResult.rows[0]!.space_key !== spaceKey) {
-          throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
-        }
-        parentPath = parentResult.rows[0]!.path;
-      }
-
-      const result = await query<{ id: number; title: string; version: number }>(
-        // #1115 P2 (review r2) — a create is a body writer, so it queues the
-        // image index too. Bound to the SAME `!isFolder` parameter as
-        // `embedding_dirty`: a folder is excluded by the image worker's own
-        // WHERE, so flagging one is a backlog entry no scan can ever clear.
-        // Unconditional rather than gated: there is no previous body to diff
-        // against, and a create with no image costs one scan that enumerates
-        // nothing and clears the flag.
-        `INSERT INTO pages
-           (title, body_html, body_text, body_storage, source, created_by_user_id,
-            visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
-         VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, $9, 'not_embedded', NOW(), $10)
-         RETURNING id, title, version`,
-        [body.title, effectiveBodyHtml, bodyText, userId,
-         visibility, spaceKey, body.parentId ?? null,
-         pageType, !isFolder, body.labels ?? []],
-      );
-
-      const newPage = result.rows[0]!;
-
-      // Compute and set materialized path now that we have the page id
-      const newPath = parentPath ? `${parentPath}/${newPage.id}` : `/${newPage.id}`;
-      const depth = newPath.split('/').filter(Boolean).length - 1;
-      await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
-        [newPath, depth, newPage.id]);
+        const created = result.rows[0]!;
+        const newPath = parentPath ? `${parentPath}/${created.id}` : `/${created.id}`;
+        const depth = newPath.split('/').filter(Boolean).length - 1;
+        await client.query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
+          [newPath, depth, created.id]);
+        return created;
+      });
 
       // A new shared page appears in every user's lists/trees (#893) — clear
       // all users' caches so it isn't missing for them until the TTL expires.
@@ -1626,62 +1669,152 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Convert TipTap HTML to Confluence storage format
     const storageBody = htmlToConfluence(body.bodyHtml);
 
-    // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
-    //
-    // #1167: the id arm compares `id::text`, not `$1::int`. `pages.id` is
-    // SERIAL (int4), so casting the parameter overflowed on any Confluence
-    // content id above 2^31 — and because the cast is evaluated before the OR
-    // can match, the `confluence_id` arm never got the chance to rescue it:
-    // the whole statement aborted with 22003 and the create 500ed even though
-    // the parent row was right there.
-    //
-    // `toPageIdText` keeps the numeric normalisation the cast used to provide
-    // (see the children route above). It matters more here than anywhere else:
-    // an unresolved lookup leaves `confluenceParentId` holding the caller's raw
-    // input, which then goes upstream to `client.createPage` as a parent id, so
-    // a silent miss misplaces the page in Confluence rather than 404ing.
-    let confluenceParentId = body.parentId;
-    if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
-      const parentLookup = await query<{ confluence_id: string | null }>(
-        'SELECT confluence_id FROM pages WHERE id::text = $1 OR confluence_id = $2',
-        [toPageIdText(confluenceParentId), confluenceParentId],
-      );
-      if (parentLookup.rows[0]?.confluence_id) {
-        confluenceParentId = parentLookup.rows[0].confluence_id;
-      }
+    // A child create claims the resolved local parent as a hierarchy reference
+    // before dispatch. The source-aware parent key is the Confluence id for a
+    // synced parent and the local PK for a standalone parent. The reference is
+    // not an authored target, so a frozen unchanged parent remains a legal
+    // place to create a child; its revision and competing destructive intents
+    // are still fenced.
+    let remoteParentConfluenceId: string | null = null;
+    let localParentReferenceId: string | null = null;
+    let createIntent: PageWriteIntent | undefined;
+    if (body.parentId) {
+      const rawParentId = body.parentId;
+      createIntent = await withPageWriteTransaction([], async (writeClient) => {
+        const lookupId = /^\d+$/.test(rawParentId) ? toPageIdText(rawParentId) : rawParentId;
+        const parentLookup = await writeClient.query<{
+          id: number;
+          confluence_id: string | null;
+          space_key: string | null;
+          source: string;
+          deleted_at: Date | null;
+        }>(
+          `SELECT id, confluence_id, space_key, source, deleted_at
+             FROM pages
+            WHERE id::text = $1 OR confluence_id = $2
+            ORDER BY id`,
+          [lookupId, rawParentId],
+        );
+        if (parentLookup.rows.length !== 1) {
+          throw new PageWriteError(
+            409,
+            parentLookup.rows.length === 0 ? 'parent_not_found' : 'parent_identifier_ambiguous',
+            'The requested parent is unavailable',
+          );
+        }
+        const parent = parentLookup.rows[0]!;
+        const parentIsConfluence = parent.source === 'confluence';
+        const resolvedLocalParentReference = parentIsConfluence
+          ? parent.confluence_id
+          : parent.source === 'standalone'
+            ? String(parent.id)
+            : null;
+        if (
+          !resolvedLocalParentReference ||
+          parent.deleted_at !== null ||
+          parent.space_key !== body.spaceKey
+        ) {
+          throw new PageWriteError(
+            409,
+            'parent_identity_mismatch',
+            'The requested parent is unavailable',
+          );
+        }
+        if (!(await userCanAccessPage(userId, parent.id, writeClient))) {
+          throw new PageWriteError(403, 'parent_access_denied', 'Access denied to the parent page');
+        }
+        await assertPageHierarchyParentsAvailable(writeClient, [parent.id]);
+        remoteParentConfluenceId = parentIsConfluence ? parent.confluence_id : null;
+        localParentReferenceId = resolvedLocalParentReference;
+        return reservePageWriteIntentInTransaction(writeClient, {
+          pageIds: [parent.id],
+          kind: 'pages.create.confluence',
+          actorId: userId,
+          effect: {
+            effectClass: 'remote',
+            parentPageId: parent.id,
+            parentConfluenceId: remoteParentConfluenceId,
+            spaceKey: body.spaceKey!,
+            titleSha256: createHash('sha256').update(body.title).digest('hex'),
+            storageSha256: createHash('sha256').update(storageBody).digest('hex'),
+          },
+        });
+      });
     }
 
-    const page = await client.createPage(body.spaceKey!, body.title, storageBody, confluenceParentId);
-
-    // Convert back to clean HTML for local cache
-    const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey!);
-    const bodyText = htmlToText(bodyHtml);
-
-    // Store in local cache (shared table, no user_id)
-    const insertedPage = await query<PageRevision & { id: number; labels: string[] | null }>(
-      `INSERT INTO pages
-         (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
-       ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO NOTHING
-       RETURNING id, labels, content_revision::text AS "contentRevision",
-                 lifecycle_revision::text AS "lifecycleRevision"`,
-      // #1123: bind the RESOLVED `confluenceParentId`, not the raw
-      // `body.parentId`. A Confluence-sourced child must store its parent's
-      // `confluence_id`.
-      [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
-       bodyHtml, bodyText, page.version.number, confluenceParentId ?? null],
-    );
-    const createdPageState = insertedPage.rows[0];
-    const localPageId = insertedPage.rows[0]?.id;
-    if (localPageId === undefined) {
-      // Never turn a create into an unadmitted overwrite of a pre-existing
-      // (possibly frozen) row. Sync reconciliation can classify the conflict.
-      logger.error(
-        { confluenceId: page.id },
-        'Created Confluence page but refused to overwrite an existing local cache row',
+    const page = createIntent
+      ? await runPageWriteIntentEffect(
+          createIntent,
+          {
+            kind: 'remote',
+            completesRemoteWork: true,
+            terminalResult: (created) =>
+              pagePublicationReceipt(created.id, created.version.number, created),
+          },
+          () => client.createPage(
+            body.spaceKey!,
+            body.title,
+            storageBody,
+            remoteParentConfluenceId ?? undefined,
+          ),
+        )
+      : await client.createPage(body.spaceKey!, body.title, storageBody, undefined);
+    const publishedStorage = page.body?.storage?.value ?? storageBody;
+    if (
+      createIntent &&
+      (createHash('sha256').update(page.title).digest('hex') !==
+        createHash('sha256').update(body.title).digest('hex') ||
+        createHash('sha256').update(publishedStorage).digest('hex') !==
+          createHash('sha256').update(storageBody).digest('hex'))
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_terminal_evidence_mismatch',
+        'The acknowledged Confluence child differs from the requested publication',
       );
     }
+    const publication = {
+      confluenceId: page.id,
+      spaceKey: body.spaceKey!,
+      parentConfluenceId: localParentReferenceId,
+      title: page.title,
+      storage: publishedStorage,
+      version: page.version.number,
+    };
+    let createdPageState: PublishedConfluencePage;
+    if (createIntent) {
+      const admittedCreateIntent = createIntent;
+      createdPageState = await completePageWriteIntent(
+        admittedCreateIntent,
+        async (writeClient) => {
+          const actor = await writeClient.query<{ active: boolean }>(
+            'SELECT deactivated_at IS NULL AS active FROM users WHERE id = $1',
+            [userId],
+          );
+          if (
+            actor.rows[0]?.active !== true ||
+            !(await userCanAccessPage(
+              userId,
+              admittedCreateIntent.pageIds[0]!,
+              writeClient,
+            ))
+          ) {
+            throw new PageWriteError(
+              403,
+              'parent_access_changed',
+              'Access to the Confluence parent changed before local publication',
+            );
+          }
+          const published = await publishCreatedConfluencePage(writeClient, publication);
+          await enqueuePageWriteInvalidation(writeClient, admittedCreateIntent.id);
+          return published;
+        },
+      );
+    } else {
+      createdPageState = await withPageWriteTransaction([], (writeClient) =>
+        publishCreatedConfluencePage(writeClient, publication));
+    }
+    const localPageId = createdPageState.id;
 
     // A new Confluence page is visible to every user with space access (#893),
     // and the cached spaces payload carries per-space pageCount which this
@@ -2200,130 +2333,182 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
       const isPermanent = queryParams.permanent === 'true';
 
-      // #1636 — refuse an ambiguous subtree instead of cascading into an
-      // unrelated tree. `parent_id` is read against either `confluence_id` or
-      // `id::text`, so one key can name two pages; on a delete path a guess
-      // trashes or destroys rows nobody named. Same rule as `/move` and
-      // `/relocate` (`assertIdentifierUnambiguous`, #1166) and the bulk
-      // selection resolver (#1167).
-      const ambiguity = await findSubtreeKeyAmbiguity(existingPage.id);
-      if (ambiguity) {
-        return reply.status(409).send(ambiguousSubtreeConflict(ambiguity, fastify.log));
-      }
-
-      // The ids this request actually affected, and whether any of them was
-      // shared. Every per-page side effect (tombstone, webhook, attachment and
-      // icon cleanup) AND the cache scope key off THIS set, never off the
-      // target alone: a cascade hides or destroys rows, and a row nothing told
-      // anyone about is the leak #1636's review would find.
-      let affectedIds: number[] = [];
-      let touchedSharedPage = false;
-
-      // Both branches carry the SAME two guards on the rows they change, and
-      // both are ONE data-modifying statement, so the walk and the write cannot
-      // disagree and no child committed in between is walked but not written.
-      //
-      // - `source = 'standalone'` keeps a Confluence-sourced row out:
-      //   Confluence owns its lifecycle and the sync upsert would resurrect
-      //   anything trashed locally.
-      // - `created_by_user_id = $2` keeps ANOTHER USER'S row out. `POST /pages`
-      //   validates `parentId` for existence and space but never for
-      //   ownership, so someone else's article can legitimately sit inside this
-      //   subtree, and only its owner may trash or destroy it — irreversibly so
-      //   on the permanent branch, and on the soft branch it would land in a
-      //   trash its owner cannot restore from (the parent they would have to
-      //   restore first is not theirs) until the 30-day purge destroyed it.
-      //
-      // Residual cost, stated plainly: a row either guard skips stays LIVE with
-      // `parent_id` pointing at a trashed parent, so the tree renders it at the
-      // root. That is #1636's own orphan, deliberately preferred over acting on
-      // rows this caller has no authority over.
-      const targetRows = await query<{ id: number; visibility: string }>(
-        `${PAGE_SUBTREE_CTE}
-         SELECT id, visibility
-           FROM pages
-          WHERE id IN (
-            SELECT id FROM d
-             WHERE source = 'standalone'
-               AND created_by_user_id = $2
-               ${isPermanent ? '' : 'AND deleted_at IS NULL'}
-          )`,
-        [existingPage.id, userId],
-      );
-      const targetIds = targetRows.rows.map((row) => row.id);
-
-      if (isPermanent) {
-        const deleteIntent = await reservePageWriteIntent({
-          pageIds: targetIds,
-          kind: 'pages.delete.standalone',
-          actorId: userId,
-          effect: {
-            effectClass: 'local',
-            rootPageId: existingPage.id,
-            targetCount: targetIds.length,
-            attachmentStores: ['attachment-cache', 'local', 'page-icons'],
-          },
-        });
-        let ambiguousUnderLock: SubtreeKeyAmbiguity | null = null;
-        let destroyed: Array<{ id: number; visibility: string }> = [];
-        await withLocalAttachmentMutationLock(async (cleanupClient) => {
-          ambiguousUnderLock = await findSubtreeKeyAmbiguity(existingPage.id, cleanupClient);
-          if (ambiguousUnderLock) return;
-
-          destroyed = await advancePageWriteIntent(deleteIntent, async (writeClient) => {
-            const result = await writeClient.query<{ id: number; visibility: string }>(
-              `${PAGE_SUBTREE_CTE}
-               DELETE FROM pages
-                WHERE id IN (SELECT id FROM d
-                              WHERE source = 'standalone' AND created_by_user_id = $2)
-                RETURNING id, visibility`,
-              [existingPage.id, userId],
-            );
-            const destroyedIds = result.rows.map((row) => row.id);
-            await writeClient.query(
-              'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
-              [userId, destroyedIds],
-            );
-            await enqueuePageWriteInvalidation(writeClient, deleteIntent.id);
-            return result.rows;
-          });
-          // A rollback must never lose the only copy of an icon or attachment.
-          // The committed DELETE ... RETURNING set is the sole filesystem input,
-          // and the backup barrier stays held through post-commit cleanup.
-          await runPageWriteIntentEffect(deleteIntent, { kind: 'local' }, async () => {
-            for (const row of destroyed) {
-              await cleanupStandalonePageAttachmentDirs(row, cleanupClient);
-            }
-          });
-        });
-        if (ambiguousUnderLock) {
-          await cancelPageWriteIntentBeforeEffect(deleteIntent);
-          return reply.status(409).send(ambiguousSubtreeConflict(ambiguousUnderLock, fastify.log));
+      // Expansion, ambiguity/freeze checks and either the SQL mutation or the
+      // durable whole-component reservation share one hierarchy-exclusive
+      // transaction. Foreign-owned and synced descendants remain traversal
+      // links only and therefore cannot block or leak through the refusal.
+      const admitted = await withHierarchyCascadeTransaction(async (client) => {
+        const root = await client.query<{
+          id: number;
+          source: string;
+          created_by_user_id: string | null;
+          baseline_id: string | null;
+        }>(
+          'SELECT id, source, created_by_user_id, baseline_id FROM pages WHERE id = $1',
+          [existingPage.id],
+        );
+        const currentRoot = root.rows[0];
+        if (!currentRoot) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        if (currentRoot.source !== 'standalone' || currentRoot.created_by_user_id !== userId) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to delete this page');
         }
-        await completePageWriteIntent(deleteIntent, async () => undefined);
-        affectedIds = destroyed.map((row) => row.id);
-        touchedSharedPage = destroyed.some((row) => row.visibility === 'shared');
-      } else {
-        const cascaded = await withPageWriteTransaction(targetIds, async (writeClient) => {
-          const result = await writeClient.query<{ id: number; visibility: string }>(
-            `${PAGE_SUBTREE_CTE}
-             UPDATE pages SET deleted_at = NOW()
-              WHERE id IN (SELECT id FROM d
-                            WHERE deleted_at IS NULL AND source = 'standalone'
-                              AND created_by_user_id = $2)
-              RETURNING id, visibility`,
-            [existingPage.id, userId],
-          );
-          const trashedIds = result.rows.map((row) => row.id);
-          await writeClient.query(
-            'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
-            [userId, trashedIds],
-          );
-          return result.rows;
-        });
-        affectedIds = cascaded.map((row) => row.id);
-        touchedSharedPage = cascaded.some((row) => row.visibility === 'shared');
+        if (currentRoot.baseline_id !== null) {
+          throw new PageWriteError(423, 'page_is_frozen', 'Protected page content is frozen');
+        }
+        const ambiguity = await findSubtreeKeyAmbiguity(existingPage.id, client);
+        if (ambiguity) {
+          return { refusal: ambiguousSubtreeConflict(ambiguity, fastify.log) };
+        }
+        const component = (await authorizedSubtreeComponents(
+          client,
+          [existingPage.id],
+          userId,
+          isPermanent,
+        ))[0];
+        if (!component) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        const targetIds = component.members.map((member) => member.id);
+        await lockPageLifecycle(client, targetIds);
+        assertSingleCascadeEditable(component, existingPage.id);
+
+        if (isPermanent) {
+          const intent = await reservePageWriteIntentInTransaction(client, {
+            pageIds: targetIds,
+            kind: 'pages.delete.standalone',
+            actorId: userId,
+            effect: {
+              effectClass: 'local',
+              rootPageId: existingPage.id,
+              targetCount: targetIds.length,
+              attachmentStores: ['attachment-cache', 'local', 'page-icons'],
+            },
+          });
+          return { component, intent, rows: null };
+        }
+
+        await lockPageWrites(client, targetIds);
+        const result = await client.query<{ id: number; visibility: string }>(
+          `UPDATE pages
+              SET deleted_at = NOW()
+            WHERE id = ANY($1::int[])
+              AND deleted_at IS NULL
+              AND source = 'standalone'
+              AND created_by_user_id = $2
+            RETURNING id, visibility`,
+          [targetIds, userId],
+        );
+        if (result.rows.length !== targetIds.length) {
+          throw new PageWriteError(409, 'subtree_changed', 'The authorized subtree changed before deletion');
+        }
+        await client.query(
+          'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+          [userId, targetIds],
+        );
+        return { component, intent: null, rows: result.rows };
+      });
+      if (admitted.refusal) {
+        return reply.status(admitted.refusal.statusCode).send(admitted.refusal);
       }
+
+      let affectedRows: Array<{ id: number; visibility: string }>;
+      if (admitted.intent) {
+        const deleteIntent = admitted.intent;
+        let destroyed: Array<{ id: number; visibility: string }> = [];
+        await runPageWriteIntentEffect(deleteIntent, { kind: 'local' }, async () => {
+          const cleanupClient = await getPool().connect();
+          let transactionOpen = false;
+          let attachmentLockHeld = false;
+          let discardClient: Error | undefined;
+          const onClientError = (error: Error) => {
+            discardClient ??= error;
+          };
+          cleanupClient.on('error', onClientError);
+          try {
+            await cleanupClient.query('SET statement_timeout = 0');
+            await cleanupClient.query('BEGIN');
+            transactionOpen = true;
+            // Lifecycle/hierarchy acquisition precedes the filesystem barrier:
+            // backup takes these in the opposite direction.
+            await lockPageWrites(cleanupClient, deleteIntent.pageIds, { intent: deleteIntent });
+            await cleanupClient.query('SELECT pg_advisory_lock_shared($1)', [
+              ATTACHMENT_SNAPSHOT_LOCK_ID,
+            ]);
+            attachmentLockHeld = true;
+            await withLocalAttachmentMutationLock(async (writeClient) => {
+              const advanced = await advancePageWriteIntentInTransaction(
+                writeClient,
+                deleteIntent,
+                async (client) => {
+                  const result = await client.query<{ id: number; visibility: string }>(
+                    `DELETE FROM pages
+                      WHERE id = ANY($1::int[])
+                        AND source = 'standalone'
+                        AND created_by_user_id = $2
+                      RETURNING id, visibility`,
+                    [deleteIntent.pageIds, userId],
+                  );
+                  if (result.rows.length !== deleteIntent.pageIds.length) {
+                    throw new PageWriteError(
+                      409,
+                      'subtree_changed',
+                      'The admitted subtree changed before permanent deletion',
+                    );
+                  }
+                  await client.query(
+                    'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+                    [userId, deleteIntent.pageIds],
+                  );
+                  await enqueuePageWriteInvalidation(client, deleteIntent.id);
+                  return result.rows;
+                },
+              );
+              await writeClient.query('COMMIT');
+              transactionOpen = false;
+              deleteIntent.revisions = advanced.revisions;
+              destroyed = advanced.result;
+              for (const row of destroyed) {
+                await cleanupStandalonePageAttachmentDirs(row, writeClient);
+              }
+            }, cleanupClient);
+          } catch (error) {
+            if (transactionOpen) {
+              try {
+                await cleanupClient.query('ROLLBACK');
+              } catch (rollbackError) {
+                discardClient ??=
+                  rollbackError instanceof Error
+                    ? rollbackError
+                    : new Error(String(rollbackError));
+              }
+            }
+            throw error;
+          } finally {
+            if (attachmentLockHeld) {
+              try {
+                await cleanupClient.query('SELECT pg_advisory_unlock_shared($1)', [
+                  ATTACHMENT_SNAPSHOT_LOCK_ID,
+                ]);
+              } catch (unlockError) {
+                discardClient ??=
+                  unlockError instanceof Error ? unlockError : new Error(String(unlockError));
+              }
+            }
+            try {
+              await cleanupClient.query('RESET statement_timeout');
+            } catch (resetError) {
+              discardClient ??=
+                resetError instanceof Error ? resetError : new Error(String(resetError));
+            }
+            cleanupClient.removeListener('error', onClientError);
+            cleanupClient.release(discardClient);
+          }
+        });
+        await completePageWriteIntent(deleteIntent, async () => undefined);
+        affectedRows = destroyed;
+      } else {
+        affectedRows = admitted.rows ?? [];
+      }
+      const affectedIds = affectedRows.map((row) => row.id);
+      const touchedSharedPage = affectedRows.some((row) => row.visibility === 'shared');
 
       // Per-id side effects for a cascade that has ALREADY COMMITTED, so none
       // of them may abort the rest. `allSettled`, not a bare loop: an unguarded
@@ -2398,24 +2583,46 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    const deleteIntent = await reservePageWriteIntent({
-      pageIds: [existingPage.id],
-      kind: staysLocal ? 'pages.delete.local' : 'pages.delete.confluence',
-      actorId: userId,
-      expectedRevisions: {
-        [existingPage.id]: {
+    const deleteIntent = await withPageHierarchyWriteTransaction(async (writeClient) => {
+      const current = await loadAuthorizedContentWriteState(
+        writeClient,
+        existingPage.id,
+        userId,
+        {
           contentRevision: existingPage.content_revision,
           lifecycleRevision: existingPage.lifecycle_revision,
         },
-      },
-      effect: {
-        effectClass: staysLocal ? 'local' : 'remote',
-        confluenceId: existingPage.confluence_id,
-        spaceKey: existingPage.space_key,
-        upstreamDelete: !staysLocal,
-        attachmentStore: 'confluence',
-        iconStore: 'page-icons',
-      },
+        true,
+      );
+      if (
+        current.source !== existingPage.source ||
+        current.confluenceId !== existingPage.confluence_id
+      ) {
+        throw new PageWriteError(
+          409,
+          'page_source_changed',
+          'The page source changed before deletion',
+        );
+      }
+      return reservePageWriteIntentInTransaction(writeClient, {
+        pageIds: [existingPage.id],
+        kind: staysLocal ? 'pages.delete.local' : 'pages.delete.confluence',
+        actorId: userId,
+        expectedRevisions: {
+          [existingPage.id]: {
+            contentRevision: existingPage.content_revision,
+            lifecycleRevision: existingPage.lifecycle_revision,
+          },
+        },
+        effect: {
+          effectClass: staysLocal ? 'local' : 'remote',
+          confluenceId: existingPage.confluence_id,
+          spaceKey: existingPage.space_key,
+          upstreamDelete: !staysLocal,
+          attachmentStore: 'confluence',
+          iconStore: 'page-icons',
+        },
+      });
     });
 
     // Preserve the established local-first ordering, but make it a fenced,
@@ -2920,44 +3127,110 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         contentRevision: r.contentRevision, lifecycleRevision: r.lifecycleRevision,
       }));
 
-    // Soft-delete standalone pages (move to trash). Resolve the currently
-    // affected descendants first so every protected row is admitted, then
-    // re-expand and write inside the same admitted transaction. #276 will add
-    // serialized re-expansion for descendants created after this snapshot.
-    const standaloneNumericIds = standalonePages.map((r) => r.id);
+    // Expand and coalesce under one hierarchy-exclusive transaction. A
+    // selected descendant of another selected root belongs to the same
+    // component, so a frozen member refuses that component once; disjoint
+    // components continue independently.
+    const standaloneNumericIds = standalonePages.map((row) => row.id);
+    let standaloneSucceeded = 0;
     if (standaloneNumericIds.length > 0) {
-      const ambiguity = await findSubtreeKeyAmbiguity(standaloneNumericIds);
-      if (ambiguity) {
-        return reply.status(409).send(ambiguousSubtreeConflict(ambiguity, fastify.log));
-      }
-      const targets = await query<{ id: number }>(
-        `${PAGE_SUBTREE_CTE_MANY_ROOTS}
-         SELECT id FROM pages
-          WHERE id IN (SELECT id FROM d
-                        WHERE deleted_at IS NULL AND source = 'standalone'
-                          AND created_by_user_id = $2)`,
-        [standaloneNumericIds, userId],
-      );
-      const targetIds = targets.rows.map((row) => row.id);
-      const cascaded = await withPageWriteTransaction(targetIds, async (writeClient) => {
-        const result = await writeClient.query<{ id: number }>(
-          `${PAGE_SUBTREE_CTE_MANY_ROOTS}
-           UPDATE pages SET deleted_at = NOW()
-            WHERE id IN (SELECT id FROM d
-                          WHERE deleted_at IS NULL AND source = 'standalone'
-                            AND created_by_user_id = $2)
-           RETURNING id`,
-          [standaloneNumericIds, userId],
+      const cascadeResult = await withHierarchyCascadeTransaction(async (client) => {
+        const components = await authorizedSubtreeComponents(
+          client,
+          standaloneNumericIds,
+          userId,
+          false,
         );
-        const trashedIds = result.rows.map((row) => row.id);
-        await writeClient.query(
-          'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
-          [userId, trashedIds],
+        await lockPageLifecycle(
+          client,
+          [...new Set(components.flatMap((component) =>
+            component.members.map((member) => member.id)))].sort((left, right) => left - right),
         );
-        return trashedIds;
+        const affectedIds: number[] = [];
+        let succeededRoots = 0;
+        let failedRoots = 0;
+        const componentErrors: string[] = [];
+
+        for (const component of components) {
+          const memberIds = component.members.map((member) => member.id);
+          const memberIdSet = new Set(memberIds);
+          const rootAuthorityChanged = component.rootIds.some((rootId) => !memberIdSet.has(rootId));
+          if (rootAuthorityChanged) {
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the authorized subtree changed before deletion`,
+            );
+            continue;
+          }
+
+          const ambiguity = await findSubtreeKeyAmbiguity(component.rootIds, client);
+          if (ambiguity) {
+            ambiguousSubtreeConflict(ambiguity, fastify.log);
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the subtree parent identifiers are ambiguous`,
+            );
+            continue;
+          }
+
+          // Lifecycle locks for every authorized component were taken above in
+          // global id order while the hierarchy fence remained exclusive.
+          const frozenCount = component.members
+            .filter((member) => member.baselineId !== null)
+            .length;
+          if (frozenCount > 0) {
+            const refusal = new PageSubtreeFrozenError(frozenCount);
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): ${refusal.message} ` +
+              `Frozen page count: ${refusal.blockedCount}.`,
+            );
+            continue;
+          }
+
+          try {
+            await lockPageWrites(client, memberIds);
+          } catch (error) {
+            if (!(error instanceof PageWriteError)) throw error;
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the subtree is busy and was not changed`,
+            );
+            continue;
+          }
+
+          const result = await client.query<{ id: number }>(
+            `UPDATE pages
+                SET deleted_at = NOW()
+              WHERE id = ANY($1::int[])
+                AND deleted_at IS NULL
+                AND source = 'standalone'
+                AND created_by_user_id = $2
+              RETURNING id`,
+            [memberIds, userId],
+          );
+          if (result.rows.length !== memberIds.length) {
+            throw new PageWriteError(
+              409,
+              'subtree_changed',
+              'An authorized subtree changed during bulk deletion',
+            );
+          }
+          await client.query(
+            'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+            [userId, memberIds],
+          );
+          affectedIds.push(...result.rows.map((row) => row.id));
+          succeededRoots += component.rootIds.length;
+        }
+        return { affectedIds, succeededRoots, failedRoots, componentErrors };
       });
+
+      standaloneSucceeded = cascadeResult.succeededRoots;
+      failed += cascadeResult.failedRoots;
+      errors.push(...cascadeResult.componentErrors);
       const sideEffects = await Promise.allSettled(
-        cascaded.map(async (pageId) => {
+        cascadeResult.affectedIds.map(async (pageId) => {
           await tombstoneCollabRoomAfterCommit(pageId);
           emitWebhookEvent({
             eventType: 'page.deleted',
@@ -2974,7 +3247,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         }
       }
     }
-    const standaloneSucceeded = standaloneNumericIds.length;
 
     // A Confluence-row delete is a local-first distributed write. Each row gets
     // its own durable intent so partial bulk outcomes remain independently

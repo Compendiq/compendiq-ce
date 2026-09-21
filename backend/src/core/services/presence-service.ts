@@ -21,6 +21,7 @@
  */
 
 import type { RedisClientType } from 'redis';
+import { PageLifecycleEventSchema, type PageLifecycleEvent } from '@compendiq/contracts';
 import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 import { logger } from '../utils/logger.js';
 
@@ -73,6 +74,7 @@ let _mainClient: RedisClientType | null = null;
 let _subscriber: RedisClientType | null = null;
 let _subscriberReady: Promise<void> | null = null;
 const _listeners: Map<string, Set<PresenceListener>> = new Map();
+const _lifecycleListeners = new Map<number, Set<(event: PageLifecycleEvent) => void>>();
 
 /**
  * Minimum interval between recompute-and-publish cycles for a single page
@@ -110,6 +112,7 @@ export async function initPresenceBus(main: RedisClientType): Promise<() => Prom
         logger.error({ err }, 'presence-service: subscriber client error');
       });
       await subscriber.connect();
+      _subscriber = subscriber;
       await subscriber.pSubscribe(CHANNEL_PATTERN, (message, channel) => {
         const pageId = parseChannel(channel);
         if (!pageId) return;
@@ -130,10 +133,18 @@ export async function initPresenceBus(main: RedisClientType): Promise<() => Prom
           }
         }
       });
-      _subscriber = subscriber;
+      await subscriber.subscribe(prefixedRedisChannel('page:lifecycle'), (message) => {
+        try {
+          const event = PageLifecycleEventSchema.parse(JSON.parse(message));
+          for (const listener of _lifecycleListeners.get(event.pageId) ?? []) listener(event);
+        } catch (err) {
+          logger.warn({ err }, 'presence-service: lifecycle event could not be delivered');
+        }
+      });
       logger.info('presence-service: subscriber active');
     } catch (err) {
       logger.warn({ err }, 'presence-service: subscriber init failed — falling back to single-pod mode');
+      try { _subscriber?.destroy(); } catch { /* Already disconnected. */ }
       _subscriber = null;
     }
   })();
@@ -147,10 +158,12 @@ async function teardown(): Promise<void> {
   _subscriber = null;
   _subscriberReady = null;
   _listeners.clear();
+  _lifecycleListeners.clear();
   _clearPublishTimersForTest();
   if (!sub) return;
   try {
     await sub.pUnsubscribe(CHANNEL_PATTERN);
+    await sub.unsubscribe(prefixedRedisChannel('page:lifecycle'));
     await sub.quit();
   } catch (err) {
     logger.warn({ err }, 'presence-service: teardown failed');
@@ -340,6 +353,24 @@ export function subscribeToPage(pageId: string, onUpdate: PresenceListener): () 
     if (!current) return;
     current.delete(onUpdate);
     if (current.size === 0) _listeners.delete(pageId);
+  };
+}
+
+/** Reuse the authenticated page stream for lifecycle changes, even without collaboration. */
+export function subscribeToPageLifecycle(
+  pageId: number,
+  listener: (event: PageLifecycleEvent) => void,
+): () => void {
+  let listeners = _lifecycleListeners.get(pageId);
+  if (!listeners) {
+    listeners = new Set();
+    _lifecycleListeners.set(pageId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    const current = _lifecycleListeners.get(pageId);
+    current?.delete(listener);
+    if (current?.size === 0) _lifecycleListeners.delete(pageId);
   };
 }
 

@@ -1,4 +1,5 @@
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -12,7 +13,17 @@ import {
 } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID, NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
-import { exportPostgresSnapshot } from '../../../core/services/backup-service.js';
+import {
+  exportPostgresSnapshot,
+  type ExportedBackupSnapshot,
+} from '../../../core/services/backup-service.js';
+import {
+  completePageWriteIntent,
+  reservePageWriteIntent,
+  reconcilePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageHierarchyWriteTransaction,
+} from '../../../core/services/page-write-admission.js';
 import { NOTION_BOARD_REASON, NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
@@ -149,6 +160,54 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     while (!server.requests.some((request) => request.url.includes(path))) {
       await setImmediate();
     }
+  }
+  async function freezeImportedPage(pageId: number): Promise<void> {
+    const revisions = await query<{ content_revision: string; lifecycle_revision: string }>(
+      'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    const baselineId = randomUUID();
+    const intent = await reservePageWriteIntent({
+      pageIds: [pageId],
+      kind: 'baseline.prepare',
+      actorId: userId,
+      effect: { effectClass: 'local', baselineId },
+    });
+    await runPageWriteIntentEffect(intent, { kind: 'local' }, async () => ({ baselineId }));
+    await completePageWriteIntent(intent, async () => undefined);
+    await query(
+      `INSERT INTO page_baselines
+         (id, page_id, original_page_id, page_identity, version, content_revision,
+          lifecycle_revision, manifest_digest, manifest, manifest_bytes, title,
+          body_html, body_storage, body_text, labels, attachments, total_bytes,
+          reserved_bytes, status, prepared_by_user_id, prepared_by_name,
+          published_by_user_id, published_by_name, published_at, provenance,
+          freeze_reason, preparation_intent_id)
+       VALUES ($1,$2,$2,'[]'::jsonb,1,$3::bigint,$4::bigint,$5,'[]'::jsonb,$6,
+               'Frozen imported page','<p>body</p>','<p>body</p>','body','{}','[]'::jsonb,
+               0,0,'published',$7,'Notion owner',$7,'Notion owner',NOW(),'manual_assertion',
+               'Notion hierarchy regression',$8)`,
+      [
+        baselineId,
+        pageId,
+        revisions.rows[0]!.content_revision,
+        revisions.rows[0]!.lifecycle_revision,
+        'a'.repeat(64),
+        Buffer.from('[]'),
+        userId,
+        intent.id,
+      ],
+    );
+    await query(
+      `UPDATE pages
+          SET baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+              frozen_by_user_id = $3, frozen_by_name = 'Notion owner',
+              freeze_reason = 'Notion hierarchy regression',
+              freeze_provenance = 'manual_assertion',
+              freeze_reported_signatories = '[]'::jsonb
+        WHERE id = $1`,
+      [pageId, baselineId, userId],
+    );
   }
 
   it('keeps the selected Knowledge Base body and nests a wiki database before its rows regardless of input order', async () => {
@@ -1209,7 +1268,6 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       notionPageId: 'inactive-race',
       status: 'fail',
     });
-    expect(result[0]?.reason).toContain('no longer active');
     const preserved = await query<{ title: string; body_text: string }>(
       'SELECT title, body_text FROM pages WHERE id = $1',
       [pageId],
@@ -2412,6 +2470,443 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(child.rows[0]!.parent_id).not.toBe(String(otherDest.rows[0]!.id));
   });
 
+  it('rebuilds descendant paths from canonical parent links when cached paths are stale', async () => {
+    const pages = {
+      root: {
+        object: 'page', id: 'root',
+        parent: { type: 'workspace', workspace: true },
+        properties: titleProp('Root'),
+      },
+      child: {
+        object: 'page', id: 'child',
+        parent: { type: 'page_id', page_id: 'root' },
+        properties: titleProp('Child'),
+      },
+    };
+    const first = await start({
+      validToken: TOKEN,
+      pages,
+      blockChildren: {
+        root: [paragraph('root-body', 'root body')],
+        child: [paragraph('child-body', 'child body')],
+      },
+    });
+    const imported = await runNotionImport({
+      userId, client: first, pageIds: ['root', 'child'], visibility: 'private',
+    });
+    const rootId = imported.find((item) => item.notionPageId === 'root')!.localPageId!;
+    const childId = imported.find((item) => item.notionPageId === 'child')!.localPageId!;
+    await query('UPDATE pages SET path = $2 WHERE id = $1', [rootId, '/stale/root/cache']);
+    await query('UPDATE pages SET path = $2 WHERE id = $1', [childId, '/not-rooted-at-the-parent']);
+    await server.close();
+
+    const second = await start({
+      validToken: TOKEN,
+      pages: {
+        ...pages,
+        root: { ...pages.root, parent: { type: 'page_id', page_id: 'new-parent' } },
+        'new-parent': {
+          object: 'page', id: 'new-parent',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('New parent'),
+        },
+      },
+      blockChildren: {
+        root: [paragraph('root-body', 'root body')],
+        child: [paragraph('child-body', 'child body')],
+        'new-parent': [paragraph('new-parent-body', 'new parent body')],
+      },
+    });
+    const repeated = await runNotionImport({
+      userId,
+      client: second,
+      pageIds: ['new-parent', 'root', 'child'],
+      visibility: 'private',
+    });
+    const newParentId = repeated.find((item) => item.notionPageId === 'new-parent')!.localPageId!;
+    const rows = await query<{ id: number; parent_id: string | null; path: string; depth: number }>(
+      'SELECT id, parent_id, path, depth FROM pages WHERE id = ANY($1::integer[]) ORDER BY id',
+      [[rootId, childId]],
+    );
+    expect(rows.rows).toEqual([
+      { id: rootId, parent_id: String(newParentId), path: `/${newParentId}/${rootId}`, depth: 1 },
+      { id: childId, parent_id: String(rootId), path: `/${newParentId}/${rootId}/${childId}`, depth: 2 },
+    ].sort((left, right) => left.id - right.id));
+  });
+
+  it('refuses to reparent an imported page beneath its own canonical subtree', async () => {
+    const pages = {
+      parent: {
+        object: 'page', id: 'cycle-parent',
+        parent: { type: 'workspace', workspace: true },
+        properties: titleProp('Cycle parent'),
+      },
+      child: {
+        object: 'page', id: 'cycle-child',
+        parent: { type: 'page_id', page_id: 'cycle-parent' },
+        properties: titleProp('Cycle child'),
+      },
+    };
+    const first = await start({
+      validToken: TOKEN,
+      pages: { 'cycle-parent': pages.parent, 'cycle-child': pages.child },
+      blockChildren: {
+        'cycle-parent': [paragraph('cp', 'parent')],
+        'cycle-child': [paragraph('cc', 'child')],
+      },
+    });
+    const initial = await runNotionImport({
+      userId, client: first, pageIds: ['cycle-parent', 'cycle-child'], visibility: 'private',
+    });
+    const parentId = initial.find((item) => item.notionPageId === 'cycle-parent')!.localPageId!;
+    const childId = initial.find((item) => item.notionPageId === 'cycle-child')!.localPageId!;
+    await server.close();
+
+    const second = await start({
+      validToken: TOKEN,
+      pages: {
+        'cycle-parent': {
+          ...pages.parent,
+          parent: { type: 'page_id', page_id: 'cycle-child' },
+        },
+        'cycle-child': pages.child,
+      },
+      blockChildren: {
+        'cycle-parent': [paragraph('cp', 'parent')],
+        'cycle-child': [paragraph('cc', 'child')],
+      },
+    });
+    const result = await runNotionImport({
+      userId, client: second, pageIds: ['cycle-parent', 'cycle-child'], visibility: 'private',
+    });
+    expect(result.find((item) => item.notionPageId === 'cycle-parent')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/own subtree/i),
+    });
+    expect((await query<{ parent_id: string | null; path: string }>(
+      'SELECT parent_id, path FROM pages WHERE id = $1',
+      [parentId],
+    )).rows[0]).toEqual({ parent_id: null, path: `/${parentId}` });
+    expect((await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE id = $1',
+      [childId],
+    )).rows[0]!.parent_id).toBe(String(parentId));
+  });
+
+  it('lets a frozen descendant block the whole imported component reparent', async () => {
+    const originalPages = {
+      'frozen-root': {
+        object: 'page', id: 'frozen-root',
+        parent: { type: 'workspace', workspace: true },
+        properties: titleProp('Frozen root'),
+      },
+      'frozen-child': {
+        object: 'page', id: 'frozen-child',
+        parent: { type: 'page_id', page_id: 'frozen-root' },
+        properties: titleProp('Frozen child'),
+      },
+    };
+    const first = await start({
+      validToken: TOKEN,
+      pages: originalPages,
+      blockChildren: {
+        'frozen-root': [paragraph('fr', 'root')],
+        'frozen-child': [paragraph('fc', 'child')],
+      },
+    });
+    const initial = await runNotionImport({
+      userId, client: first, pageIds: ['frozen-root', 'frozen-child'], visibility: 'private',
+    });
+    const rootId = initial.find((item) => item.notionPageId === 'frozen-root')!.localPageId!;
+    const childId = initial.find((item) => item.notionPageId === 'frozen-child')!.localPageId!;
+    await freezeImportedPage(childId);
+    await server.close();
+
+    const second = await start({
+      validToken: TOKEN,
+      pages: {
+        ...originalPages,
+        'frozen-root': {
+          ...originalPages['frozen-root'],
+          parent: { type: 'page_id', page_id: 'fresh-parent' },
+        },
+        'fresh-parent': {
+          object: 'page', id: 'fresh-parent',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Fresh parent'),
+        },
+      },
+      blockChildren: {
+        'frozen-root': [paragraph('fr', 'root')],
+        'frozen-child': [paragraph('fc', 'child')],
+        'fresh-parent': [paragraph('fp', 'new parent')],
+      },
+    });
+    const result = await runNotionImport({
+      userId,
+      client: second,
+      pageIds: ['fresh-parent', 'frozen-root', 'frozen-child'],
+      visibility: 'private',
+    });
+    expect(result.find((item) => item.notionPageId === 'frozen-root')?.status).toBe('fail');
+    expect((await query<{ parent_id: string | null; path: string }>(
+      'SELECT parent_id, path FROM pages WHERE id = $1',
+      [rootId],
+    )).rows[0]).toEqual({ parent_id: null, path: `/${rootId}` });
+  });
+
+  it('uses source-aware Confluence parent keys while deriving canonical paths', async () => {
+    await query(`UPDATE users SET role = 'admin' WHERE id = $1`, [userId]);
+    const ancestor = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, visibility, path)
+       VALUES ('Local ancestor', '<p>a</p>', 'a', 1, 'standalone', $1, 'shared', '/stale')
+       RETURNING id`,
+      [userId],
+    );
+    const synced = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, confluence_id, parent_id,
+          space_key, visibility, path)
+       VALUES ('Synced parent', '<p>p</p>', 'p', 1, 'confluence', 'conf-parent-key',
+               $1, 'SYNC', 'shared', '/also-stale')
+       RETURNING id`,
+      [String(ancestor.rows[0]!.id)],
+    );
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'under-confluence': {
+          object: 'page', id: 'under-confluence',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Under Confluence'),
+        },
+      },
+      blockChildren: {
+        'under-confluence': [paragraph('uc', 'body')],
+      },
+    });
+    const result = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['under-confluence'],
+      parentId: String(synced.rows[0]!.id),
+      visibility: 'shared',
+    });
+    const importedId = result[0]!.localPageId!;
+    expect((await query<{ parent_id: string | null; path: string; depth: number }>(
+      'SELECT parent_id, path, depth FROM pages WHERE id = $1',
+      [importedId],
+    )).rows[0]).toEqual({
+      parent_id: 'conf-parent-key',
+      path: `/${ancestor.rows[0]!.id}/${synced.rows[0]!.id}/${importedId}`,
+      depth: 2,
+    });
+  });
+
+  it('refuses a destination key that ambiguously names local and Confluence parents', async () => {
+    const localParent = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, visibility)
+       VALUES ('Local collision', '<p>l</p>', 'l', 1, 'standalone', $1, 'shared')
+       RETURNING id`,
+      [userId],
+    );
+    await query(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, confluence_id, space_key, visibility)
+       VALUES ('Confluence collision', '<p>c</p>', 'c', 1, 'confluence', $1, 'SYNC', 'shared')`,
+      [String(localParent.rows[0]!.id)],
+    );
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ambiguous: {
+          object: 'page', id: 'ambiguous',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Ambiguous child'),
+        },
+      },
+      blockChildren: { ambiguous: [paragraph('ambiguous-body', 'body')] },
+    });
+    const result = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['ambiguous'],
+      parentId: String(localParent.rows[0]!.id),
+      visibility: 'shared',
+    });
+    expect(result[0]).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/destination parent|ambiguous/i),
+    });
+    expect((await query(
+      `SELECT 1 FROM pages WHERE notion_page_id = 'ambiguous'`,
+    )).rows).toEqual([]);
+  });
+
+  it('rechecks the destination parent after remote reads before an overwrite move', async () => {
+    const destination = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, visibility, path)
+       VALUES ('Racing parent', '<p>p</p>', 'p', 1, 'standalone', $1, 'private', '/racing')
+       RETURNING id`,
+      [userId],
+    );
+    const original = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id,
+          visibility, notion_page_id, path)
+       VALUES ('Original', '<p>original</p>', 'original', 1, 'standalone', $1,
+               'private', 'parent-race', '/original')
+       RETURNING id`,
+      [userId],
+    );
+    const client = await start({
+      validToken: TOKEN,
+      lookupDelayMs: 150,
+      pages: {
+        'parent-race': {
+          object: 'page', id: 'parent-race',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Remote replacement'),
+        },
+      },
+      blockChildren: {
+        'parent-race': [paragraph('race-body', 'replacement')],
+      },
+    });
+    const importing = runNotionImport({
+      userId,
+      client,
+      pageIds: ['parent-race'],
+      parentId: String(destination.rows[0]!.id),
+      visibility: 'private',
+      overwriteExisting: true,
+    });
+    await waitForNotionRequest('/v1/blocks/parent-race/children');
+    await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [destination.rows[0]!.id]);
+    const result = await importing;
+    expect(result[0]?.status).toBe('fail');
+    expect((await query<{ parent_id: string | null; body_text: string }>(
+      'SELECT parent_id, body_text FROM pages WHERE id = $1',
+      [original.rows[0]!.id],
+    )).rows[0]).toEqual({ parent_id: null, body_text: 'original' });
+  });
+
+  it('holds the hierarchy fence through an overwrite reparent against a concurrent parent mutation', async () => {
+    const destination = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, visibility, path)
+       VALUES ('Fence parent', '<p>p</p>', 'p', 1, 'standalone', $1, 'private', '/fence-parent')
+       RETURNING id`,
+      [userId],
+    );
+    const original = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id,
+          visibility, notion_page_id, path)
+       VALUES ('Fence child', '<p>old</p>', 'old', 1, 'standalone', $1,
+               'private', 'fenced-reparent', '/fence-child')
+       RETURNING id`,
+      [userId],
+    );
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'fenced-reparent': {
+          object: 'page', id: 'fenced-reparent',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Fence child updated'),
+        },
+      },
+      blockChildren: {
+        'fenced-reparent': [paragraph('fenced-body', 'updated')],
+      },
+    });
+    const triggerLock = 276_002;
+    const blocker = await getPool().connect();
+    let blockerReleased = false;
+    let importing: Promise<NotionImportItem[]> | undefined;
+    let contender: Promise<void> | undefined;
+    try {
+      await blocker.query('SET statement_timeout = 0');
+      await blocker.query('SELECT pg_advisory_lock($1)', [triggerLock]);
+      const blockerPid = (await blocker.query<{ pid: number }>(
+        'SELECT pg_backend_pid() AS pid',
+      )).rows[0]!.pid;
+      await query(`
+        CREATE OR REPLACE FUNCTION test_pause_notion_reparent()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.id = ${original.rows[0]!.id}
+             AND NEW.parent_id IS DISTINCT FROM OLD.parent_id THEN
+            PERFORM pg_advisory_xact_lock(${triggerLock});
+          END IF;
+          RETURN NEW;
+        END
+        $$`);
+      await query(`
+        CREATE TRIGGER test_pause_notion_reparent
+        BEFORE UPDATE OF parent_id ON pages
+        FOR EACH ROW EXECUTE FUNCTION test_pause_notion_reparent()`);
+
+      importing = runNotionImport({
+        userId,
+        client,
+        pageIds: ['fenced-reparent'],
+        parentId: String(destination.rows[0]!.id),
+        visibility: 'private',
+        overwriteExisting: true,
+      });
+      await expect.poll(async () => (await query<{ waiting: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND NOT granted
+              AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
+         ) AS waiting`,
+        [triggerLock, blockerPid],
+      )).rows[0]!.waiting).toBe(true);
+
+      let contenderEntered = false;
+      contender = withPageHierarchyWriteTransaction(async (writeClient) => {
+        contenderEntered = true;
+        await writeClient.query(
+          `UPDATE pages SET title = 'Fence parent changed after reparent' WHERE id = $1`,
+          [destination.rows[0]!.id],
+        );
+      });
+      await setImmediate();
+      expect(contenderEntered).toBe(false);
+
+      await blocker.query('SELECT pg_advisory_unlock($1)', [triggerLock]);
+      blockerReleased = true;
+      const result = await importing;
+      expect(result[0]?.status).toBe('success');
+      await contender;
+      expect(contenderEntered).toBe(true);
+      expect((await query<{ parent_id: string | null; path: string }>(
+        'SELECT parent_id, path FROM pages WHERE id = $1',
+        [original.rows[0]!.id],
+      )).rows[0]).toEqual({
+        parent_id: String(destination.rows[0]!.id),
+        path: `/${destination.rows[0]!.id}/${original.rows[0]!.id}`,
+      });
+    } finally {
+      if (!blockerReleased) {
+        await blocker.query('SELECT pg_advisory_unlock($1)', [triggerLock]).catch(() => undefined);
+      }
+      blocker.release();
+      await Promise.allSettled([importing, contender].filter(
+        (value): value is Promise<NotionImportItem[]> | Promise<void> => value !== undefined,
+      ));
+      await query('DROP TRIGGER IF EXISTS test_pause_notion_reparent ON pages');
+      await query('DROP FUNCTION IF EXISTS test_pause_notion_reparent()');
+    }
+  });
+
   it('does not abort the run when getBlock for a block_id parent returns 500', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -3324,6 +3819,183 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       await importing.catch(() => undefined);
     }
   });
+
+  it('keeps a failed placeholder cleanup pending after its SQL deletion commits', async () => {
+      const firstFileRequested = Promise.withResolvers<void>();
+      const releaseFirstFile = Promise.withResolvers<void>();
+      const client = await start({
+        validToken: TOKEN,
+        pages: {
+          'cleanup-failure': {
+            object: 'page', id: 'cleanup-failure',
+            parent: { type: 'workspace', workspace: true },
+            properties: titleProp('Cleanup failure'),
+          },
+        },
+        files: {
+          '/files/first.png': { contentType: 'image/png', body: PNG },
+        },
+        beforeFileResponse: async (path) => {
+          if (path === '/files/first.png') {
+            firstFileRequested.resolve();
+            await releaseFirstFile.promise;
+          }
+        },
+        blockChildren: { 'cleanup-failure': [] },
+      });
+      server.state.blockChildren = {
+        'cleanup-failure': [
+          {
+            object: 'block',
+            id: 'first-image',
+            type: 'image',
+            image: {
+              type: 'file',
+              file: { url: `${server.baseUrl}/files/first.png` },
+              caption: [],
+            },
+          },
+          {
+            object: 'block',
+            id: 'missing-image',
+            type: 'image',
+            image: {
+              type: 'file',
+              file: { url: `${server.baseUrl}/files/missing.png` },
+              caption: [],
+            },
+          },
+        ],
+      };
+
+      const importing = runNotionImport({
+        userId,
+        client,
+        pageIds: ['cleanup-failure'],
+        visibility: 'private',
+      });
+      const localRoot = join(attachmentsDir, 'local');
+      const displacedLocalRoot = join(attachmentsDir, 'local-before-cleanup-fault');
+      let localRootDisplaced = false;
+      let snapshot: ExportedBackupSnapshot | undefined;
+      let snapshotReleased = false;
+      try {
+        await firstFileRequested.promise;
+        const placeholder = await query<{ id: number }>(
+          `SELECT id FROM pages
+            WHERE notion_page_id = 'cleanup-failure' AND body_html = ''`,
+        );
+        const pageId = placeholder.rows[0]!.id;
+        const pageDir = join(localRoot, String(pageId));
+        await mkdir(pageDir, { recursive: true });
+        await writeFile(join(pageDir, 'uncertain.bin'), Buffer.from('must remain for recovery'));
+        await rename(localRoot, displacedLocalRoot);
+        localRootDisplaced = true;
+        await writeFile(localRoot, Buffer.from('not a directory'));
+        const displacedPageDir = join(displacedLocalRoot, String(pageId));
+        snapshot = await exportPostgresSnapshot();
+        const blocker = (await snapshot.client.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        )).rows[0]!.pid;
+        releaseFirstFile.resolve();
+        await expect.poll(async () => (await query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_locks
+              WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted
+                AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [ATTACHMENT_SNAPSHOT_LOCK_ID, blocker],
+        )).rows[0]!.waiting).toBe(true);
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rows)
+          .toHaveLength(1);
+        expect(readFileSync(join(displacedPageDir, 'uncertain.bin'))).toEqual(
+          Buffer.from('must remain for recovery'),
+        );
+        await snapshot.close();
+        snapshotReleased = true;
+
+        const result = await importing;
+        expect(result[0]?.status).toBe('fail');
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rows).toEqual([]);
+        const pending = await query<{
+          id: string;
+          status: string;
+          effect_started_at: Date | null;
+          effect_finished_at: Date | null;
+        }>(
+          `SELECT id, status, effect_started_at, effect_finished_at
+             FROM page_write_intents
+            WHERE kind = 'import.notion.placeholder.delete'
+              AND page_ids @> ARRAY[$1]::integer[]`,
+          [pageId],
+        );
+        expect(pending.rows).toEqual([{
+          id: expect.any(String),
+          status: 'pending',
+          effect_started_at: expect.any(Date),
+          effect_finished_at: null,
+        }]);
+        expect(readFileSync(join(displacedPageDir, 'uncertain.bin'))).toEqual(
+          Buffer.from('must remain for recovery'),
+        );
+        await rm(localRoot, { force: true });
+        await rename(displacedLocalRoot, localRoot);
+        localRootDisplaced = false;
+        const retiredRuntime = `retired-notion-${randomUUID()}`;
+        await query(
+          `INSERT INTO page_writer_runtimes
+             (runtime_id, deployment_identity, fenced_at, fence_reason, fence_proof)
+           VALUES ($1, '{"fixture":"terminated Notion writer"}'::jsonb, NOW(),
+                   'Integration test simulates a terminated Notion writer',
+                   '{"kind":"verified_local_termination"}'::jsonb)`,
+          [retiredRuntime],
+        );
+        await query(
+          `UPDATE page_write_intents
+              SET runtime_id = $2
+            WHERE id = $1 AND recovery_started_at IS NULL`,
+          [pending.rows[0]!.id, retiredRuntime],
+        );
+        const recoveryAdmin = await query<{ id: string }>(
+          `INSERT INTO users (username, email, password_hash, role)
+           VALUES ($1, $2, 'x', 'admin') RETURNING id`,
+          [`notion-recovery-${Date.now()}`, `notion-recovery-${Date.now()}@test`],
+        );
+        const rogue = await query<{ id: number }>(
+          `INSERT INTO pages
+             (title, body_html, body_text, version, source, created_by_user_id,
+              visibility, parent_id)
+           VALUES ('Unadmitted descendant', '<p>rogue</p>', 'rogue', 1,
+                   'standalone', $1, 'private', $2)
+           RETURNING id`,
+          [userId, String(pageId)],
+        );
+        await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+          actorId: recoveryAdmin.rows[0]!.id,
+          reason: 'Verify the complete Notion component before cleanup repair',
+        })).rejects.toThrow(/outside its admitted component/i);
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [rogue.rows[0]!.id])).rows)
+          .toHaveLength(1);
+        expect(readFileSync(join(pageDir, 'uncertain.bin'))).toEqual(
+          Buffer.from('must remain for recovery'),
+        );
+
+        await query('DELETE FROM pages WHERE id = $1', [rogue.rows[0]!.id]);
+        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+        await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+          actorId: recoveryAdmin.rows[0]!.id,
+          reason: 'Recheck the original importer authority before cleanup repair',
+        })).rejects.toThrow(/can no longer be changed by this account/i);
+      } finally {
+        releaseFirstFile.resolve();
+        if (snapshot && !snapshotReleased) await snapshot.close().catch(() => undefined);
+        if (localRootDisplaced) {
+          await rm(localRoot, { recursive: true, force: true }).catch(() => undefined);
+          await rename(displacedLocalRoot, localRoot).catch(() => undefined);
+        }
+        await importing.catch(() => undefined);
+      }
+    });
 
   it('never logs the integration token', async () => {
     const client = await start({

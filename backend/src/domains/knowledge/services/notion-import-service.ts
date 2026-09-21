@@ -23,8 +23,9 @@ import {
   type NotionImportItem,
 } from '@compendiq/contracts';
 import pLimit from 'p-limit';
-import type { PoolClient, QueryResultRow } from 'pg';
-import { query } from '../../../core/db/postgres.js';
+import type { PoolClient } from 'pg';
+import { getPool, query } from '../../../core/db/postgres.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import {
   LocalAttachmentError,
@@ -32,12 +33,17 @@ import {
   type LocalAttachmentWrite,
 } from '../../../core/services/local-attachment-service.js';
 import {
-  advancePageWriteIntent,
+  advancePageWriteIntentInTransaction,
+  assertPageHierarchyParentsAvailable,
   completePageWriteIntent,
-  reservePageWriteIntent,
   registerPageWriteIntentReconciler,
+  reservePageWriteIntentInTransaction,
   runPageWriteIntentEffect,
+  lockPageWrites,
+  withPageHierarchyWriteTransaction,
+  withPageWriteTransaction,
   type PageWriteIntent,
+  type PageWriteIntentInput,
   type PageRevision,
   type PageWriteRecoveryIntent,
 } from '../../../core/services/page-write-admission.js';
@@ -47,6 +53,13 @@ import {
 } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
 import { userCanAccessPage } from '../../../core/services/rbac-service.js';
+import {
+  PAGE_SUBTREE_CTE,
+  PAGE_SUBTREE_CTE_MANY_ROOTS,
+  findSubtreeKeyAmbiguity,
+  resolveParentOf,
+} from '../../../core/services/page-subtree.js';
+import { parentKeyFor } from './page-relocate-service.js';
 import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError, isNotionObjectMissing } from './notion-client.js';
 import {
@@ -555,7 +568,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       );
       if (!existing) {
         const wikiProps = extractWikiPageProperties(job.page);
-        const revision = await persistStandalonePage({
+        const revision = await withPageWriteTransaction([], (client) => persistStandalonePage({
           id: localPageId,
           reuse: false,
           userId: input.userId,
@@ -569,7 +582,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
           author: wikiProps.author,
           verifiedAt: wikiProps.verifiedAt,
-        });
+        }, client, []));
         job.expectedRevisions = { [localPageId]: revision };
       }
       job.localPageId = localPageId;
@@ -669,6 +682,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   for (const job of [...ordered].reverse()) {
     if (!job.prepared || !job.localPageId || items.has(job.id)) continue;
     let finalIntent: PageWriteIntent | undefined;
+    let finalHierarchyComponent = false;
     try {
       const childPageIds = directChildIds(job);
       const converted = convertNotionBlocks(job.blocks ?? [], {
@@ -706,8 +720,9 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
             input.userId,
           )
         : null;
-      finalIntent = await reservePageWriteIntent({
-        pageIds: [job.localPageId],
+      const reservation = await reserveNotionPageIntent({
+        pageId: job.localPageId,
+        ...(reusesExistingPage ? { parentId: parentLocal } : {}),
         kind: job.reuseComplete ? 'import.notion.overwrite' : 'import.notion.publish',
         actorId: input.userId,
         expectedRevisions: job.expectedRevisions,
@@ -719,7 +734,32 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           ...(reusesExistingPage ? { title: job.title, parentId: parentLocal } : {}),
         }),
       });
+      finalIntent = reservation.intent;
+      finalHierarchyComponent = reservation.hierarchyComponent;
       await completePageWriteIntent(finalIntent, async (client) => {
+        await assertNotionComponentAuthority(client, finalIntent!.pageIds, input.userId);
+        if (reusesExistingPage && finalHierarchyComponent) {
+          if (await findSubtreeKeyAmbiguity(job.localPageId!, client)) {
+            throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+          }
+          const currentComponent = await client.query<{ id: number }>(
+            `${PAGE_SUBTREE_CTE}
+             SELECT id FROM d WHERE deleted_at IS NULL ORDER BY id`,
+            [job.localPageId],
+          );
+          if (!samePageIds(currentComponent.rows.map((row) => row.id), finalIntent!.pageIds)) {
+            throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+          }
+          if (parentLocal) {
+            const destinationParent = await resolveParentOf(parentLocal, client);
+            if (destinationParent.kind !== 'resolved' || destinationParent.parent.deletedAt) {
+              throw new NotionImportError('The destination parent is no longer available', 409);
+            }
+            if (finalIntent!.pageIds.includes(destinationParent.parent.id)) {
+              throw new NotionImportError('An imported page cannot be moved beneath its own subtree', 409);
+            }
+          }
+        }
         await assertNotionTargetAuthority(client, {
           pageId: job.localPageId!,
           userId: input.userId,
@@ -741,7 +781,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
             labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
             author: wikiProps.author,
             verifiedAt: wikiProps.verifiedAt,
-          }, client);
+          }, client, finalIntent!.pageIds);
         } else {
           await client.query(
             `UPDATE pages
@@ -751,7 +791,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
             [job.localPageId, bodyHtml, bodyText],
           );
         }
-      });
+      }, { hierarchyExclusive: finalHierarchyComponent });
       // A row page carries its properties as a metadata callout, which is what
       // makes it an article rather than a bare page.
       const rowParent = isRecord(job.page.parent) ? job.page.parent : null;
@@ -865,10 +905,13 @@ async function resolveDestination(input: RunNotionImportInput): Promise<Destinat
     if (spaceRow.rows.length > 0) spaceSource = spaceRow.rows[0]!.source;
   }
   const spaceKey: string | null = spaceSource === 'local' ? input.spaceKey! : null;
+  let parentId = input.parentId ?? null;
 
   if (input.parentId) {
-    const parentResult = await query<{ path: string | null; space_key: string | null }>(
-      'SELECT path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+    const parentResult = await query<{
+      id: number; path: string | null; space_key: string | null; source: string; confluence_id: string | null;
+    }>(
+      'SELECT id, path, space_key, source, confluence_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [input.parentId],
     );
     if (parentResult.rows.length === 0) {
@@ -877,9 +920,11 @@ async function resolveDestination(input: RunNotionImportInput): Promise<Destinat
     if (spaceKey && parentResult.rows[0]!.space_key !== spaceKey) {
       throw new NotionImportError('Parent page must belong to the same space', 400);
     }
+    const parent = parentResult.rows[0]!;
+    parentId = parentKeyFor(parent.source, parent.id, parent.confluence_id);
   }
 
-  return { spaceKey, parentId: input.parentId ?? null, visibility: input.visibility };
+  return { spaceKey, parentId, visibility: input.visibility };
 }
 
 async function nextPageId(): Promise<number> {
@@ -905,6 +950,141 @@ function pageRevisionFromRow(row: RevisionRow | undefined): PageRevision {
   };
 }
 
+
+async function assertNotionComponentAuthority(
+  client: PoolClient,
+  pageIds: readonly number[],
+  actorId: string,
+): Promise<void> {
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL FOR SHARE',
+    [actorId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new NotionImportError('This imported hierarchy can no longer be changed by this account', 409);
+  }
+  const rows = await client.query<{ id: number; source: string; created_by_user_id: string | null }>(
+    'SELECT id, source, created_by_user_id FROM pages WHERE id = ANY($1::integer[]) AND deleted_at IS NULL',
+    [pageIds],
+  );
+  if (rows.rows.length !== pageIds.length || rows.rows.some(
+    (row) => row.source !== 'standalone' || row.created_by_user_id !== actorId,
+  )) {
+    throw new NotionImportError('This imported hierarchy can no longer be changed by this account', 409);
+  }
+  for (const row of rows.rows) {
+    if (!await userCanAccessPage(actorId, row.id, client)) {
+      throw new NotionImportError('This imported hierarchy can no longer be changed by this account', 409);
+    }
+  }
+}
+
+interface ReservedNotionPageIntent {
+  intent: PageWriteIntent;
+  hierarchyComponent: boolean;
+}
+
+async function reserveNotionPageIntent(
+  input: Omit<PageWriteIntentInput, 'pageIds'> & {
+    pageId: number;
+    actorId: string;
+    parentId?: string | null;
+    removePlaceholder?: boolean;
+  },
+): Promise<ReservedNotionPageIntent> {
+  return withPageHierarchyWriteTransaction(async (client) => {
+    const root = await client.query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [input.pageId],
+    );
+    if (!root.rows[0]) throw new NotionImportError('The imported page no longer exists', 409);
+    const movesHierarchy = input.removePlaceholder ||
+      (input.parentId !== undefined && input.parentId !== root.rows[0].parent_id);
+    if (movesHierarchy && await findSubtreeKeyAmbiguity(input.pageId, client)) {
+      throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+    }
+    const targets = await client.query<RevisionRow & { id: number }>(
+      movesHierarchy
+        ? `${PAGE_SUBTREE_CTE}
+           SELECT p.id, p.content_revision::text, p.lifecycle_revision::text
+             FROM pages p JOIN d ON d.id = p.id
+            WHERE p.deleted_at IS NULL ORDER BY p.id`
+        : `SELECT id, content_revision::text, lifecycle_revision::text
+             FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      [input.pageId],
+    );
+    const pageIds = targets.rows.map((row) => row.id);
+    if (movesHierarchy && input.parentId) {
+      const destination = await resolveParentOf(input.parentId, client);
+      if (
+        destination.kind !== 'resolved' ||
+        destination.parent.deletedAt ||
+        !await userCanAccessPage(input.actorId, destination.parent.id, client)
+      ) {
+        throw new NotionImportError('The destination parent is no longer available', 409);
+      }
+      if (pageIds.includes(destination.parent.id)) {
+        throw new NotionImportError('An imported page cannot be moved beneath its own subtree', 409);
+      }
+      await assertPageHierarchyParentsAvailable(client, [destination.parent.id]);
+    }
+    await assertNotionComponentAuthority(client, pageIds, input.actorId);
+    const revisions = Object.fromEntries(targets.rows.map((row) => [row.id, pageRevisionFromRow(row)]));
+    const intent = await reservePageWriteIntentInTransaction(client, {
+      pageIds,
+      kind: input.kind,
+      actorId: input.actorId,
+      effect: { ...input.effect, hierarchyComponent: movesHierarchy },
+      expectedRevisions: { ...revisions, ...input.expectedRevisions },
+    });
+    return { intent, hierarchyComponent: movesHierarchy };
+  });
+}
+
+async function notionParentPath(
+  client: PoolClient,
+  parentId: string | null,
+  actorId: string,
+): Promise<string | null> {
+  if (!parentId) return null;
+  const resolved = await resolveParentOf(parentId, client);
+  if (
+    resolved.kind !== 'resolved' ||
+    resolved.parent.deletedAt ||
+    !await userCanAccessPage(actorId, resolved.parent.id, client)
+  ) {
+    throw new NotionImportError('The destination parent is no longer available', 409);
+  }
+
+  const segments: number[] = [];
+  const seen = new Set<number>();
+  const parents: number[] = [];
+  let currentId = resolved.parent.id;
+  while (true) {
+    if (seen.has(currentId)) {
+      throw new NotionImportError('The destination hierarchy contains a cycle', 409);
+    }
+    seen.add(currentId);
+    const current = await client.query<{ id: number; parent_id: string | null }>(
+      'SELECT id, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [currentId],
+    );
+    const row = current.rows[0];
+    if (!row) {
+      throw new NotionImportError('The destination parent is no longer available', 409);
+    }
+    segments.unshift(row.id);
+    parents.push(row.id);
+    if (!row.parent_id) break;
+    const parent = await resolveParentOf(row.parent_id, client);
+    if (parent.kind !== 'resolved' || parent.parent.deletedAt) {
+      throw new NotionImportError('The destination hierarchy is ambiguous or unavailable', 409);
+    }
+    currentId = parent.parent.id;
+  }
+  await assertPageHierarchyParentsAvailable(client, parents);
+  return `/${segments.join('/')}`;
+}
 async function persistStandalonePage(opts: {
   id: number;
   reuse: boolean;
@@ -919,25 +1099,14 @@ async function persistStandalonePage(opts: {
   labels?: string[];
   author?: string | null;
   verifiedAt?: Date | null;
-}, client?: PoolClient): Promise<PageRevision> {
-  const runQuery = <T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: unknown[],
-  ) => client ? client.query<T>(text, values) : query<T>(text, values);
-  let parentPath: string | null = null;
-  if (opts.parentId) {
-    const parentResult = await runQuery<{ path: string | null }>(
-      'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [opts.parentId],
-    );
-    parentPath = parentResult.rows[0]?.path ?? `/${opts.parentId}`;
-  }
+}, client: PoolClient, protectedPageIds: readonly number[]): Promise<PageRevision> {
+  const parentPath = await notionParentPath(client, opts.parentId, opts.userId);
   const newPath = parentPath ? `${parentPath}/${opts.id}` : `/${opts.id}`;
   const depth = newPath.split('/').filter(Boolean).length - 1;
 
   if (opts.reuse) {
-    await rehomePage(opts.id, opts.parentId, client);
-    const updated = await runQuery<RevisionRow>(
+    await rehomePage(opts.id, opts.parentId, opts.userId, protectedPageIds, client);
+    const updated = await client.query<RevisionRow>(
       `UPDATE pages
           SET title = $2, body_html = $3, body_text = $4, space_key = $5, parent_id = $6,
               visibility = $7, path = $8, depth = $9, labels = $10,
@@ -956,7 +1125,7 @@ async function persistStandalonePage(opts: {
     return pageRevisionFromRow(updated.rows[0]);
   }
 
-  const inserted = await runQuery<RevisionRow>(
+  const inserted = await client.query<RevisionRow>(
     `INSERT INTO pages
        (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
@@ -1091,12 +1260,136 @@ function recoveryPageId(intent: PageWriteRecoveryIntent): number {
     typeof pageId !== 'number' ||
     !Number.isSafeInteger(pageId) ||
     pageId <= 0 ||
-    intent.pageIds.length !== 1 ||
-    intent.pageIds[0] !== pageId
+    !intent.pageIds.includes(pageId)
   ) {
     throw new Error('Notion recovery descriptor has an invalid page id');
   }
   return pageId;
+}
+function samePageIds(left: readonly number[], right: readonly number[]): boolean {
+  const normalizedLeft = [...new Set(left)].sort((a, b) => a - b);
+  const normalizedRight = [...new Set(right)].sort((a, b) => a - b);
+  return normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((pageId, index) => pageId === normalizedRight[index]);
+}
+function assertNotionHierarchyAcyclic(members: readonly NotionHierarchyMember[]): void {
+  const byKey = new Map<string, NotionHierarchyMember>();
+  for (const member of members) {
+    const key = parentKeyFor(member.source, member.id, member.confluence_id);
+    if (byKey.has(key)) {
+      throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+    }
+    byKey.set(key, member);
+  }
+  const visiting = new Set<number>();
+  const visited = new Set<number>();
+  const visit = (member: NotionHierarchyMember): void => {
+    if (visited.has(member.id)) return;
+    if (visiting.has(member.id)) {
+      throw new NotionImportError('The imported hierarchy contains a cycle', 409);
+    }
+    visiting.add(member.id);
+    const parent = member.parent_id ? byKey.get(member.parent_id) : undefined;
+    if (parent) visit(parent);
+    visiting.delete(member.id);
+    visited.add(member.id);
+  };
+  for (const member of members) visit(member);
+}
+
+async function assertNotionRecoveryScope(
+  client: PoolClient,
+  intent: PageWriteRecoveryIntent,
+  pageId: number,
+): Promise<void> {
+  if (typeof intent.actorId !== 'string' || intent.actorId.length === 0) {
+    throw new Error('Notion recovery has no original actor authority');
+  }
+  if (typeof intent.effect.hierarchyComponent !== 'boolean') {
+    throw new Error('Notion recovery descriptor has no hierarchy scope');
+  }
+  const deleted = new Set(intent.deletedPageIds);
+  const expectedLive = intent.pageIds.filter((id) => !deleted.has(id));
+  await assertNotionComponentAuthority(client, expectedLive, intent.actorId);
+
+  let observedIds: number[];
+  if (intent.effect.hierarchyComponent !== true) {
+    observedIds = expectedLive;
+  } else {
+    const root = await client.query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM pages WHERE id = $1 AND deleted_at IS NULL) AS exists',
+      [pageId],
+    );
+    if (root.rows[0]?.exists) {
+      if (await findSubtreeKeyAmbiguity(pageId, client)) {
+        throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+      }
+      const observed = await client.query<{ id: number }>(
+        `${PAGE_SUBTREE_CTE}
+         SELECT id FROM d WHERE deleted_at IS NULL ORDER BY id`,
+        [pageId],
+      );
+      observedIds = observed.rows.map((row) => row.id);
+    } else {
+      const dangling = await client.query<{ id: number }>(
+        `SELECT id FROM pages
+          WHERE parent_id = $1 AND deleted_at IS NULL
+          ORDER BY id`,
+        [String(pageId)],
+      );
+      const seeds = [...new Set([
+        ...expectedLive,
+        ...dangling.rows.map((row) => row.id),
+      ])];
+      if (seeds.length === 0) {
+        observedIds = [];
+      } else {
+        if (await findSubtreeKeyAmbiguity(seeds, client)) {
+          throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+        }
+        const observed = await client.query<{ id: number }>(
+          `${PAGE_SUBTREE_CTE_MANY_ROOTS}
+           SELECT DISTINCT id FROM d WHERE deleted_at IS NULL ORDER BY id`,
+          [seeds],
+        );
+        observedIds = observed.rows.map((row) => row.id);
+      }
+    }
+  }
+  if (!samePageIds(observedIds, expectedLive)) {
+    throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+  }
+  const members = expectedLive.length === 0
+    ? []
+    : (await client.query<NotionHierarchyMember>(
+        `SELECT id, parent_id, source, confluence_id
+           FROM pages
+          WHERE id = ANY($1::integer[]) AND deleted_at IS NULL`,
+        [expectedLive],
+      )).rows;
+  if (members.length !== expectedLive.length) {
+    throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+  }
+  assertNotionHierarchyAcyclic(members);
+  if (
+    intent.effect.hierarchyComponent === true &&
+    intent.deletedPageIds.includes(pageId) &&
+    expectedLive.length > 0
+  ) {
+    const destinationParentId = intent.effect.destinationParentId;
+    if (destinationParentId !== null && typeof destinationParentId !== 'string') {
+      throw new Error('Notion deletion recovery has an invalid destination parent');
+    }
+    const memberKeys = new Set(members.map((row) =>
+      parentKeyFor(row.source, row.id, row.confluence_id)));
+    const escapedRoot = members.some((row) => {
+      const parentInsideComponent = row.parent_id !== null && memberKeys.has(row.parent_id);
+      return !parentInsideComponent && row.parent_id !== destinationParentId;
+    });
+    if (escapedRoot) {
+      throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+    }
+  }
 }
 
 function revisionMatches(
@@ -1139,6 +1432,7 @@ async function reconcileNotionBodyWrite(
   ) {
     throw new Error('Notion body recovery descriptor is invalid');
   }
+  await assertNotionRecoveryScope(client, intent, pageId);
   const result = await client.query<{
     title: string;
     body_html: string | null;
@@ -1214,6 +1508,7 @@ async function reconcileNotionAtomicSql(
   ) {
     throw new Error('Notion reparent recovery descriptor is invalid');
   }
+  await assertNotionRecoveryScope(client, intent, pageId);
   const result = await client.query<{
     content_revision: string;
     lifecycle_revision: string;
@@ -1243,10 +1538,18 @@ async function reconcileNotionPlaceholderDelete(
   intent: PageWriteRecoveryIntent,
 ) {
   const pageId = recoveryPageId(intent);
+  const destinationParentId = intent.effect.destinationParentId;
   if (
     intent.effect.operation !== 'delete-standalone-namespaces' ||
-    !intent.deletedPageIds.includes(pageId)
+    (destinationParentId !== null && typeof destinationParentId !== 'string')
   ) {
+    throw new Error('Notion placeholder deletion recovery descriptor is invalid');
+  }
+  await assertNotionRecoveryScope(client, intent, pageId);
+  if (destinationParentId !== null) {
+    await notionParentPath(client, destinationParentId, intent.actorId!);
+  }
+  if (!intent.deletedPageIds.includes(pageId)) {
     const page = await client.query('SELECT 1 FROM pages WHERE id = $1', [pageId]);
     if (
       !intent.effectStartedAt &&
@@ -1295,17 +1598,96 @@ async function reconcileNotionPlaceholderDelete(
   };
 }
 
+async function runNotionPlaceholderCleanup<T>(
+  intent: PageWriteIntent,
+  pageId: number,
+  mutation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await getPool().connect();
+  let transactionOpen = false;
+  let attachmentLockHeld = false;
+  let discardClient: Error | undefined;
+  const onClientError = (error: Error) => {
+    discardClient ??= error;
+  };
+  client.on('error', onClientError);
+  try {
+    await client.query('SET statement_timeout = 0');
+    await client.query('BEGIN');
+    transactionOpen = true;
+    // Lifecycle admission precedes the session-level attachment barrier. The
+    // barrier then remains held after COMMIT until every namespace is verified.
+    await lockPageWrites(client, intent.pageIds, {
+      intent,
+      hierarchyExclusive: true,
+    });
+    await client.query('SELECT pg_advisory_lock_shared($1)', [
+      ATTACHMENT_SNAPSHOT_LOCK_ID,
+    ]);
+    attachmentLockHeld = true;
+    const advanced = await advancePageWriteIntentInTransaction(client, intent, mutation);
+    await client.query('COMMIT');
+    transactionOpen = false;
+    intent.revisions = advanced.revisions;
+
+    const deletion = { id: pageId };
+    await cleanupStandalonePageAttachmentDirs(deletion, client);
+    if (!await deletedStandaloneNamespacesAbsent(deletion, client)) {
+      throw new Error('Notion placeholder cleanup did not remove the intended namespaces');
+    }
+    return advanced.result;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        discardClient ??= rollbackError instanceof Error
+          ? rollbackError
+          : new Error(String(rollbackError));
+      }
+    }
+    throw error;
+  } finally {
+    if (attachmentLockHeld) {
+      try {
+        await client.query('SELECT pg_advisory_unlock_shared($1)', [
+          ATTACHMENT_SNAPSHOT_LOCK_ID,
+        ]);
+      } catch (unlockError) {
+        discardClient ??= unlockError instanceof Error
+          ? unlockError
+          : new Error(String(unlockError));
+      }
+    }
+    try {
+      await client.query('RESET statement_timeout');
+    } catch (resetError) {
+      discardClient ??= resetError instanceof Error
+        ? resetError
+        : new Error(String(resetError));
+    }
+    client.off('error', onClientError);
+    client.release(discardClient);
+  }
+}
+
 async function repairNotionPlaceholderDelete(intent: PageWriteRecoveryIntent): Promise<void> {
   const pageId = recoveryPageId(intent);
   if (!intent.deletedPageIds.includes(pageId)) {
     throw new Error('Notion deletion repair has no durable committed-page tombstone');
   }
-  await advancePageWriteIntent(intent, async (client) => {
-    const deletion = { id: pageId };
-    await cleanupStandalonePageAttachmentDirs(deletion, client);
-    if (!await deletedStandaloneNamespacesAbsent(deletion, client)) {
-      throw new Error('Notion deletion repair did not remove the intended namespaces');
+  await withPageHierarchyWriteTransaction(async (client) => {
+    await assertNotionRecoveryScope(client, intent, pageId);
+    const destinationParentId = intent.effect.destinationParentId;
+    if (destinationParentId !== null && typeof destinationParentId !== 'string') {
+      throw new Error('Notion deletion repair has an invalid destination parent');
     }
+    if (destinationParentId) {
+      await notionParentPath(client, destinationParentId, intent.actorId!);
+    }
+  });
+  await runNotionPlaceholderCleanup(intent, pageId, async (client) => {
+    await assertNotionRecoveryScope(client, intent, pageId);
   });
 }
 async function abandonPage(input: {
@@ -1316,8 +1698,10 @@ async function abandonPage(input: {
   expectedRevisions: Readonly<Record<number, PageRevision>>;
 }): Promise<void> {
   const { pageId, notionPageId, destinationParentId, userId, expectedRevisions } = input;
-  const intent = await reservePageWriteIntent({
-    pageIds: [pageId],
+  const reservation = await reserveNotionPageIntent({
+    pageId,
+    parentId: destinationParentId,
+    removePlaceholder: true,
     kind: 'import.notion.placeholder.delete',
     actorId: userId,
     expectedRevisions,
@@ -1326,57 +1710,59 @@ async function abandonPage(input: {
       pageId,
       notionPageId: normalizeNotionId(notionPageId),
       operation: 'delete-standalone-namespaces',
+      destinationParentId,
       namespaces: ['local-attachments', 'page-icons'],
     },
   });
-  const deletion = await advancePageWriteIntent(intent, async (client) => {
-    await assertNotionTargetAuthority(client, {
-      pageId,
-      userId,
-      notionPageId,
-      expectedState: 'incomplete',
-    });
-    const page = await client.query<{ path: string | null }>(
-      'SELECT path FROM pages WHERE id = $1',
-      [pageId],
-    );
-    const oldPath = page.rows[0]?.path ?? `/${pageId}`;
-    let destPath = '';
-    if (destinationParentId) {
-      const dest = await client.query<{ path: string | null }>(
-        'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-        [destinationParentId],
+  const intent = reservation.intent;
+  await runPageWriteIntentEffect(intent, { kind: 'local' }, () =>
+    runNotionPlaceholderCleanup(intent, pageId, async (client) => {
+      await assertNotionComponentAuthority(client, intent.pageIds, userId);
+      await assertNotionTargetAuthority(client, {
+        pageId,
+        userId,
+        notionPageId,
+        expectedState: 'incomplete',
+      });
+      const currentComponent = await client.query<{ id: number }>(
+        `${PAGE_SUBTREE_CTE}
+         SELECT id FROM d WHERE deleted_at IS NULL ORDER BY id`,
+        [pageId],
       );
-      destPath = dest.rows[0]?.path ?? `/${destinationParentId}`;
-    }
-    const descendants = await client.query<{ id: number; parent_id: string | null; path: string }>(
-      `SELECT id, parent_id, path FROM pages
-        WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
-      [`${oldPath}/%`],
-    );
-    for (const kid of descendants.rows) {
-      const suffix = kid.path.slice(oldPath.length);
-      const newPath = `${destPath}${suffix}` || `/${kid.id}`;
-      const depth = newPath.split('/').filter(Boolean).length - 1;
-      const parentId = kid.parent_id === String(pageId) ? destinationParentId : kid.parent_id;
-      await client.query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
-        parentId,
-        newPath,
-        depth,
-        kid.id,
-      ]);
-    }
-    const deleted = await client.query<{ id: number }>(
-      'DELETE FROM pages WHERE id = $1 RETURNING id',
-      [pageId],
-    );
-    const row = deleted.rows[0];
-    if (!row) {
-      throw new Error('Notion import placeholder disappeared before cleanup');
-    }
-    return row;
-  });
-  await runPageWriteIntentEffect(intent, { kind: 'local' }, () => cleanupStandalonePageAttachmentDirs(deletion));
+      if (!samePageIds(currentComponent.rows.map((row) => row.id), intent.pageIds)) {
+        throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+      }
+      const page = await client.query<NotionHierarchyMember>(
+        `SELECT id, parent_id, source, confluence_id
+           FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        [pageId],
+      );
+      const root = page.rows[0];
+      if (!root) throw new Error('Notion import placeholder disappeared before cleanup');
+      const rootKey = parentKeyFor(root.source, root.id, root.confluence_id);
+      const descendants = intent.pageIds.filter((id) => id !== pageId);
+      const directChildren = await client.query<{ id: number }>(
+        `SELECT id FROM pages
+          WHERE id = ANY($1::integer[]) AND parent_id = $2 AND deleted_at IS NULL
+          ORDER BY id`,
+        [descendants, rootKey],
+      );
+      const destinationPath = await notionParentPath(client, destinationParentId, userId);
+      await rewriteNotionHierarchyPaths({
+        client,
+        admittedPageIds: descendants,
+        rootIds: directChildren.rows.map((row) => row.id),
+        destinationParentId,
+        destinationParentPath: destinationPath,
+      });
+      const deleted = await client.query<{ id: number }>(
+        'DELETE FROM pages WHERE id = $1 RETURNING id',
+        [pageId],
+      );
+      const row = deleted.rows[0];
+      if (!row) throw new Error('Notion import placeholder disappeared before cleanup');
+      return row;
+    }));
   await completePageWriteIntent(intent, async () => undefined);
 }
 
@@ -1845,8 +2231,9 @@ async function rehomeAlreadyImported(
     }
     if (typeof parentLocal !== 'number') continue;
     try {
-      const intent = await reservePageWriteIntent({
-        pageIds: [row.localPageId],
+      const reservation = await reserveNotionPageIntent({
+        pageId: row.localPageId,
+        parentId: String(parentLocal),
         kind: 'import.notion.reparent',
         actorId: userId,
         expectedRevisions: row.expectedRevisions,
@@ -1857,20 +2244,42 @@ async function rehomeAlreadyImported(
           parentId: String(parentLocal),
         },
       });
+      const { intent, hierarchyComponent } = reservation;
       await completePageWriteIntent(intent, async (client) => {
+        await assertNotionComponentAuthority(client, intent.pageIds, userId);
+        if (hierarchyComponent) {
+          if (await findSubtreeKeyAmbiguity(row.localPageId, client)) {
+            throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+          }
+          const currentComponent = await client.query<{ id: number }>(
+            `${PAGE_SUBTREE_CTE}
+             SELECT id FROM d WHERE deleted_at IS NULL ORDER BY id`,
+            [row.localPageId],
+          );
+          if (!samePageIds(currentComponent.rows.map((member) => member.id), intent.pageIds)) {
+            throw new NotionImportError('The imported hierarchy changed outside its admitted component', 409);
+          }
+          const destination = await resolveParentOf(String(parentLocal), client);
+          if (destination.kind !== 'resolved' || destination.parent.deletedAt) {
+            throw new NotionImportError('The destination parent is no longer available', 409);
+          }
+          if (intent.pageIds.includes(destination.parent.id)) {
+            throw new NotionImportError('An imported page cannot be moved beneath its own subtree', 409);
+          }
+        }
         await assertNotionTargetAuthority(client, {
           pageId: row.localPageId,
           userId,
           notionPageId: row.notionPageId,
           expectedState: 'complete',
         });
-        if (await rehomePage(row.localPageId, String(parentLocal), client)) {
+        if (await rehomePage(row.localPageId, String(parentLocal), userId, intent.pageIds, client)) {
           await client.query(
             'UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1',
             [row.localPageId],
           );
         }
-      });
+      }, { hierarchyExclusive: hierarchyComponent });
     } catch (err) {
       items.set(row.notionPageId, {
         notionPageId: row.notionPageId,
@@ -1882,53 +2291,120 @@ async function rehomeAlreadyImported(
   }
 }
 
+type NotionHierarchyMember = {
+  id: number;
+  parent_id: string | null;
+  source: string;
+  confluence_id: string | null;
+};
+
+async function rewriteNotionHierarchyPaths(input: {
+  client: PoolClient;
+  admittedPageIds: readonly number[];
+  rootIds: readonly number[];
+  destinationParentId: string | null;
+  destinationParentPath: string | null;
+}): Promise<void> {
+  const admitted = [...new Set(input.admittedPageIds)].sort((left, right) => left - right);
+  const rootIds = [...new Set(input.rootIds)].sort((left, right) => left - right);
+  if (admitted.length === 0) {
+    if (rootIds.length !== 0) throw new Error('Notion hierarchy roots escaped their admitted component');
+    return;
+  }
+  const rows = await input.client.query<NotionHierarchyMember>(
+    `SELECT id, parent_id, source, confluence_id
+       FROM pages
+      WHERE id = ANY($1::integer[]) AND deleted_at IS NULL
+      ORDER BY id`,
+    [admitted],
+  );
+  if (
+    rows.rows.length !== admitted.length ||
+    rows.rows.some((row, index) => row.id !== admitted[index])
+  ) {
+    throw new NotionImportError('The imported hierarchy changed before its paths were rebuilt', 409);
+  }
+
+  const roots = new Set(rootIds);
+  if (rootIds.some((id) => !admitted.includes(id))) {
+    throw new Error('Notion hierarchy roots escaped their admitted component');
+  }
+  const byKey = new Map<string, NotionHierarchyMember>();
+  for (const row of rows.rows) {
+    const key = parentKeyFor(row.source, row.id, row.confluence_id);
+    if (byKey.has(key)) {
+      throw new NotionImportError('The imported hierarchy has an ambiguous parent identifier', 409);
+    }
+    byKey.set(key, row);
+  }
+  const children = new Map<number, NotionHierarchyMember[]>();
+  for (const row of rows.rows) {
+    if (roots.has(row.id)) continue;
+    const parent = row.parent_id ? byKey.get(row.parent_id) : undefined;
+    if (!parent) {
+      throw new NotionImportError('The imported hierarchy changed before its paths were rebuilt', 409);
+    }
+    const siblings = children.get(parent.id);
+    if (siblings) siblings.push(row);
+    else children.set(parent.id, [row]);
+  }
+
+  const visited = new Set<number>();
+  const writeBranch = async (row: NotionHierarchyMember, path: string): Promise<void> => {
+    if (visited.has(row.id)) {
+      throw new NotionImportError('The imported hierarchy contains a cycle', 409);
+    }
+    visited.add(row.id);
+    const depth = path.split('/').filter(Boolean).length - 1;
+    await input.client.query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [
+      path,
+      depth,
+      row.id,
+    ]);
+    for (const child of children.get(row.id) ?? []) {
+      await writeBranch(child, `${path}/${child.id}`);
+    }
+  };
+
+  for (const rootId of rootIds) {
+    const root = rows.rows.find((row) => row.id === rootId);
+    if (!root) throw new Error('Notion hierarchy root disappeared before its paths were rebuilt');
+    await input.client.query('UPDATE pages SET parent_id = $1 WHERE id = $2', [
+      input.destinationParentId,
+      root.id,
+    ]);
+    const path = input.destinationParentPath
+      ? `${input.destinationParentPath}/${root.id}`
+      : `/${root.id}`;
+    await writeBranch(root, path);
+  }
+  if (visited.size !== admitted.length) {
+    throw new NotionImportError('The imported hierarchy contains a cycle or disconnected descendant', 409);
+  }
+}
+
 async function rehomePage(
   pageId: number,
   parentId: string | null,
-  client?: PoolClient,
+  actorId: string,
+  protectedPageIds: readonly number[],
+  client: PoolClient,
 ): Promise<boolean> {
-  const runQuery = <T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: unknown[],
-  ) => client ? client.query<T>(text, values) : query<T>(text, values);
-  const current = await runQuery<{ parent_id: string | null; path: string | null }>(
-    'SELECT parent_id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+  const current = await client.query<{ parent_id: string | null }>(
+    'SELECT parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
     [pageId],
   );
   const row = current.rows[0];
   if (!row || (row.parent_id ?? null) === (parentId ?? null)) return false;
 
-  let parentPath: string | null = null;
-  if (parentId) {
-    const parent = await runQuery<{ path: string | null }>(
-      'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [parentId],
-    );
-    parentPath = parent.rows[0]?.path ?? `/${parentId}`;
-  }
-  const oldPath = row.path ?? `/${pageId}`;
-  const newPath = parentPath ? `${parentPath}/${pageId}` : `/${pageId}`;
-  const depth = newPath.split('/').filter(Boolean).length - 1;
-  await runQuery('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
-    parentId,
-    newPath,
-    depth,
-    pageId,
-  ]);
-  const descendants = await runQuery<{ id: number; path: string }>(
-    `SELECT id, path FROM pages WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
-    [`${oldPath}/%`],
-  );
-  for (const kid of descendants.rows) {
-    const suffix = kid.path.slice(oldPath.length);
-    const kidPath = `${newPath}${suffix}`;
-    const kidDepth = kidPath.split('/').filter(Boolean).length - 1;
-    await runQuery('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [
-      kidPath,
-      kidDepth,
-      kid.id,
-    ]);
-  }
+  const parentPath = await notionParentPath(client, parentId, actorId);
+  await rewriteNotionHierarchyPaths({
+    client,
+    admittedPageIds: protectedPageIds,
+    rootIds: [pageId],
+    destinationParentId: parentId,
+    destinationParentPath: parentPath,
+  });
   return true;
 }
 

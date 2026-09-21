@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor, cleanup } from '@testing-library/react';
+import { createElement } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { usePage } from '../../shared/hooks/use-pages';
 import { usePresence, type PresenceViewer } from './use-presence';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -38,8 +41,14 @@ function frame(viewers: PresenceViewer[], pageId = 'page-1'): string {
   return `event: presence\ndata: ${payload}\n\n`;
 }
 
+let queryClient: QueryClient;
+function Wrapper({ children }: { children: React.ReactNode }) {
+  return createElement(QueryClientProvider, { client: queryClient }, children);
+}
+
 describe('usePresence', () => {
   beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     useAuthStore.getState().setAuth('token-abc', { id: 'self', username: 'me', role: 'user' });
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
@@ -49,6 +58,7 @@ describe('usePresence', () => {
     // cleanup-path DELETE hits the spy rather than the real undici fetch (which
     // rejects relative URLs in Node).
     cleanup();
+    queryClient.clear();
     vi.useRealTimers();
     vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
@@ -65,7 +75,7 @@ describe('usePresence', () => {
       return response;
     });
 
-    const { result } = renderHook(() => usePresence('page-1'));
+    const { result } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
 
     await waitFor(() => expect(handle).not.toBeNull());
 
@@ -100,7 +110,7 @@ describe('usePresence', () => {
       return response;
     });
 
-    const { result, unmount } = renderHook(() => usePresence('page-1'));
+    const { result, unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
 
     // Immediate heartbeat on connect.
     await waitFor(() => expect(handle).not.toBeNull());
@@ -139,7 +149,7 @@ describe('usePresence', () => {
       return response;
     });
 
-    const { unmount } = renderHook(() => usePresence('page-1'));
+    const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
     await waitFor(() => expect(handle).not.toBeNull());
     await waitFor(() => expect(heartbeats).toBeGreaterThanOrEqual(1));
 
@@ -170,7 +180,7 @@ describe('usePresence', () => {
       return response;
     });
 
-    const { unmount } = renderHook(() => usePresence('page-1'));
+    const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
     await waitFor(() => expect(sseOpens).toBe(1));
 
     // Backoff is 1s for the first retry — advance past it.
@@ -200,7 +210,7 @@ describe('usePresence', () => {
       return makeSseResponse().response;
     });
 
-    const { unmount } = renderHook(() => usePresence('page-1'));
+    const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
     await waitFor(() => expect(sseOpens).toBe(1));
 
     // Refresh should fire, then the reconnect (1s backoff) should re-open.
@@ -226,7 +236,7 @@ describe('usePresence', () => {
       return new Response(null, { status: 401 });
     });
 
-    const { unmount } = renderHook(() => usePresence('page-1'));
+    const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
     await waitFor(() => expect(sseOpens).toBe(1));
 
     // Advance past the full 30s backoff cap — no reconnect should be scheduled.
@@ -248,7 +258,7 @@ describe('usePresence', () => {
       return new Response(null, { status: 403 });
     });
 
-    const { unmount } = renderHook(() => usePresence('page-1'));
+    const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
     await waitFor(() => expect(sseOpens).toBe(1));
 
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
@@ -259,9 +269,52 @@ describe('usePresence', () => {
 
   it('does not open a stream when pageId is null', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
-    const { result } = renderHook(() => usePresence(null));
+    const { result } = renderHook(() => usePresence(null), { wrapper: Wrapper });
     await act(async () => { await Promise.resolve(); });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(result.current.viewers).toEqual([]);
+  });
+
+  it('ignores stale lifecycle events and refreshes durable state after a missed freeze-thaw cycle', async () => {
+    const streams: StreamHandle[] = [];
+    let remoteRevision = '1';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const path = String(url);
+      if (init?.method === 'POST' || init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (path.endsWith('/presence')) {
+        const { response, handle } = makeSseResponse();
+        streams.push(handle);
+        return response;
+      }
+      if (path.endsWith('/pages/42')) return new Response(JSON.stringify({
+        id: '42', title: 'Durable page', bodyHtml: '<p>Current</p>', bodyText: 'Current',
+        lifecycleRevision: remoteRevision, isFrozen: false,
+      }), { headers: { 'content-type': 'application/json' } });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { result } = renderHook(() => ({
+      presence: usePresence('42'),
+      page: usePage('42'),
+    }), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.page.data?.lifecycleRevision).toBe('1'));
+    const event = (revision: string, frozen: boolean) => `event: page_lifecycle\ndata: ${JSON.stringify({
+      type: 'page_lifecycle', pageId: 42, lifecycleRevision: revision, isFrozen: frozen,
+      baselineId: frozen ? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' : null,
+    })}\n\n`;
+    remoteRevision = '3';
+    await act(async () => { streams[0]!.push(event('3', false)); });
+    await waitFor(() => expect(result.current.page.data?.lifecycleRevision).toBe('3'));
+    await act(async () => {
+      streams[0]!.push(event('2', true));
+      streams[0]!.push(event('3', false));
+    });
+    expect(result.current.presence.lifecycle).toMatchObject({ lifecycleRevision: '3', isFrozen: false });
+
+    remoteRevision = '5';
+    await act(async () => { streams[0]!.error(new Error('Disconnected while lifecycle changed')); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+    await waitFor(() => expect(streams).toHaveLength(2));
+    await waitFor(() => expect(result.current.page.data?.lifecycleRevision).toBe('5'));
+    expect(result.current.presence.lifecycle?.lifecycleRevision).toBe('3');
   });
 });

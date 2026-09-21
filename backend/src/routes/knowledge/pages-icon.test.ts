@@ -14,7 +14,7 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
-import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import { PAGE_WRITER_ENFORCEMENT_VERSION, setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 import {
   freezePage,
   previewPageBaseline,
@@ -193,8 +193,18 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
       const adminId = await insertUser(`icon-admin-${randomUUID()}`);
       await query("UPDATE users SET role = 'admin' WHERE id = $1", [adminId]);
+      await query(
+        `INSERT INTO user_settings (user_id, confluence_enabled)
+         VALUES ($1, FALSE)`,
+        [adminId],
+      );
       await setPageBaselineCreationEnabled(adminId, true);
       userId = await insertUser(`icon-user-${randomUUID()}`);
+      await query(
+        `INSERT INTO user_settings (user_id, confluence_enabled)
+         VALUES ($1, FALSE)`,
+        [userId],
+      );
     });
 
     it('sets an emoji and invalidates every consumer page cache for a shared page', async () => {
@@ -526,10 +536,17 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const runtimeId = randomUUID();
       const acknowledgmentId = randomUUID();
       const intentId = randomUUID();
+      // The effect shape is legacy; its retired runtime still declares the installed protocol.
       await query(
-        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
-         VALUES ($1, $2::jsonb, NOW(), $3)`,
-        [runtimeId, JSON.stringify({ host: 'retired-icon-fixture', pid: 42, startedAt: new Date().toISOString() }), acknowledgmentId],
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, quiesced_at, quiescence_ack, enforcement_version)
+         VALUES ($1, $2::jsonb, NOW(), $3, $4)`,
+        [
+          runtimeId,
+          JSON.stringify({ host: 'retired-icon-fixture', pid: 42, startedAt: new Date().toISOString() }),
+          acknowledgmentId,
+          PAGE_WRITER_ENFORCEMENT_VERSION,
+        ],
       );
       await query(
         `INSERT INTO page_write_intents

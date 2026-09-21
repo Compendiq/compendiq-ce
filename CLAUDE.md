@@ -812,13 +812,16 @@ pulled from Confluence. Six rules fall out, and none of them is negotiable.
    overview, while keeping the saved space selection listed and editable — a
    toggle must not look like it destroyed configuration.
 6. **One truth source, and it is read as `=== false`.**
-   `isConfluenceEnabled(userId)` in
-   `domains/confluence/services/sync-service.ts` is the only backend reader of
-   the column (`true` when no row exists); every other consumer imports it
-   rather than re-querying. `getClientForUser` returns `null` when the flag is
-   off — but it **also** returns `null` for enabled-but-unconfigured, so a
-   caller that must keep working locally may not infer the mode from a null
-   client; it has to ask `isConfluenceEnabled`. On the frontend the flag comes
+   `isConfluenceEnabled(userId, dbClient?, lockSettings?)` in
+   `core/services/confluence-integration.ts` is the only backend reader of the
+   column (`true` when no row exists); every other consumer imports it rather
+   than re-querying. `lockSettings=true` requires a read-write transaction
+   client and is only for mutation admission that must hold an existing
+   settings row through commit; read-only capability checks never request the
+   lock. `getClientForUser` returns `null` when the flag is off — but it **also**
+   returns `null` for enabled-but-unconfigured, so a caller that must keep
+   working locally may not infer the mode from a null client; it has to ask
+   `isConfluenceEnabled`. On the frontend the flag comes
    only from the `['settings']` query via `useSettings()`, and every read is
    `settings.confluenceEnabled === false`, never a falsy test: a payload from a
    backend that predates the field legitimately omits the key, and falsy would
@@ -1350,21 +1353,67 @@ without repeating deletion.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered
-digest instead of duplicating the array. Compact readbacks re-resolve credentials.
+digest instead of duplicating the array. Pasted-image receipts are positional
+accepted markers matched to the immutable plan; provider attachment versions
+are metadata, never byte attestation. Compact readbacks re-resolve credentials.
 The final ordinary attachment receipt and all-remote-complete marker commit
 atomically; a complete receipt set must survive interruption of its wrapper.
 
-Creation defaults off and refuses activation until the writer-readiness
-provider certifies the deployment. The foundation alone does not certify sync,
-collaboration, purge or subtree writers. Published baseline bytes and history
-survive page/actor deletion; manual signatory text is not authenticated approval.
-An already-frozen request returns 423, never success for unrecorded assertions.
+Creation defaults off. #276 registers the readiness provider and protected
+writer enforcement version `1` at application startup. Activation succeeds
+only when every active registered runtime is version `1`, the activation GET
+reports `deploymentReady: true` with no blockers, and the acting administrator's
+Confluence integration is explicitly off. `incompatible_page_writer_runtime`,
+`protected_writer_enforcement_not_registered`, and
+`deployment_readiness_unavailable` all fail closed; readiness is not service
+discovery, so operators must deploy and drain every HTTP, collaboration, job,
+sync and maintenance writer before activation. Once creation is enabled or any
+published baseline exists, migration 124 refuses a runtime on an older protocol.
+
+New preview/freeze and future governed proposal/approval require both
+`pages.source = 'standalone'` and the acting user's persisted
+`confluence_enabled = false`. The exact eligibility denials are
+`standalone_article_required` and `confluence_integration_enabled`. A missing
+settings row is enabled and a failed read is not off. Page provenance is
+authoritative: a historical `confluence_id`, space key or credentials cannot
+make a Confluence-origin row eligible, and ordinary sync must not claim a
+standalone row that merely carries a historical `confluence_id`.
+
+Eligibility and activation do not weaken existing enforcement. Published
+baseline bytes and history survive page/actor deletion; a frozen page remains
+protected if creation is disabled or Confluence is re-enabled. Re-enabling
+never thaws, removes evidence or replays a write. Authorized thaw,
+history/evidence reads, and baseline attachment export/download are independent
+of creation and integration mode; attachment reads still verify the retained
+descriptor, containment, size and SHA-256 before streaming. Manual signatory
+text is not authenticated approval. An already-frozen request returns 423,
+never success for unrecorded assertions.
+
+Collaborative Save posts a bounded base64 Yjs Snapshot containing clocks **and
+the delete set**, not document content. The server obtains a freshly correlated
+cross-process room snapshot, rechecks the exact active-owner set, transport
+generation, lifecycle and current authority, and refuses if the Save-start
+snapshot is not covered. A successful acknowledgment covers only that captured
+snapshot; later local edits keep the editor open. Dirty connected and offline
+drafts are navigation/unload guarded. Lifecycle/freeze/permission/document loss
+disconnects the provider but keeps an inert recoverable Y.Doc with **Download
+draft** and explicitly confirmed **Open current version**; thaw or reconnect
+never automatically replays that blocked draft.
+
+Subtree delete/restore/bulk cascades expand the exact authorized
+standalone-owner mutation component under the hierarchy fence. A frozen root is
+`423 page_is_frozen`; an authorized frozen descendant is
+`409 subtree_contains_frozen_page` with only `blockedCount`. Traversal crosses
+deleted, synced and foreign-owned intermediates, but rows outside the authorized
+component neither block nor leak.
+
 Publication abandons other prepared previews of that page in the same commit;
-guarded cleanup releases only their unpublished bytes and capacity.
-A `preparing` reservation whose intent was durably cancelled before any effect
-is also reclaimable. Pending or started preparations never expire by age.
+guarded cleanup releases only their unpublished bytes and capacity. A
+`preparing` reservation whose intent was durably cancelled before any effect is
+also reclaimable. Pending or started preparations never expire by age.
 A durable governed marker still vetoes direct manual freeze when EE is
 unavailable. It never prevents authorized audited thaw, including a manual
-baseline frozen before that policy was enabled.
+baseline frozen before that policy was enabled. #278 signing/governance and
+#277's full baseline UI are not implemented in this slice.
 Operations, capacity, retention and recovery:
 `docs/runbooks/immutable-page-baselines.md`.

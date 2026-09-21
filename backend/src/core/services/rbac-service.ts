@@ -439,12 +439,16 @@ export async function userCanAccessPage(
  * private standalone page today, and collab must not start allowing it.
  * Confluence: `space_key` ∈ `getUserAccessibleSpaces` (admins already union
  * every known space). Missing `space_key` is allowed, matching PUT.
+ * A supplied client keeps recovery-time authority checks inside their lock
+ * transaction and bypasses the request-scoped spaces cache.
  */
 export async function userCanEditPage(
   userId: string,
   pageId: number,
+  client?: PoolClient,
 ): Promise<boolean> {
-  const pageResult = await query<{
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
+  const pageResult = await readQuery<{
     source: string;
     created_by_user_id: string | null;
     visibility: string | null;
@@ -464,7 +468,7 @@ export async function userCanEditPage(
   }
 
   if (page.space_key) {
-    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId, client);
     return accessibleSpaces.includes(page.space_key);
   }
   return true;

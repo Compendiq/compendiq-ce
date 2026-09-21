@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
+import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool } from '../db/postgres.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
+import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import {
   capturePageWriterDeploymentIdentity,
   verifyLocalPageWriterTermination,
 } from './page-writer-process-identity.js';
 
 const MAX_PAGE_ID = 2_147_483_647;
-const MAX_EFFECT_BYTES = 32 * 1024;
+export const MAX_EFFECT_BYTES = 32 * 1024;
 const RECOVERY_HISTORY_MAX_ATTEMPTS = 32;
 const RECOVERY_HISTORY_MAX_BYTES = 64 * 1024;
 const KIND_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,99}$/;
@@ -19,6 +20,8 @@ export type IntentRecoveryMode = 'local_verified' | 'remote_conditional' | 'remo
 type IntentPolicy = {
   effectClass: IntentEffectClass;
   recoveryMode: IntentRecoveryMode;
+  targetMode?: 'hierarchy_reference';
+  recoveryHierarchy?: 'exclusive';
 };
 
 /**
@@ -32,10 +35,10 @@ const INTENT_POLICIES = {
   'icon.image.delete': { effectClass: 'local', recoveryMode: 'local_verified' },
   'icon.image.put': { effectClass: 'local', recoveryMode: 'local_verified' },
   'icon.metadata.patch': { effectClass: 'local', recoveryMode: 'local_verified' },
-  'import.notion.overwrite': { effectClass: 'local', recoveryMode: 'local_verified' },
-  'import.notion.placeholder.delete': { effectClass: 'local', recoveryMode: 'local_verified' },
-  'import.notion.publish': { effectClass: 'local', recoveryMode: 'local_verified' },
-  'import.notion.reparent': { effectClass: 'local', recoveryMode: 'local_verified' },
+  'import.notion.overwrite': { effectClass: 'local', recoveryMode: 'local_verified', recoveryHierarchy: 'exclusive' },
+  'import.notion.placeholder.delete': { effectClass: 'local', recoveryMode: 'local_verified', recoveryHierarchy: 'exclusive' },
+  'import.notion.publish': { effectClass: 'local', recoveryMode: 'local_verified', recoveryHierarchy: 'exclusive' },
+  'import.notion.reparent': { effectClass: 'local', recoveryMode: 'local_verified', recoveryHierarchy: 'exclusive' },
   'pages.bulk.delete.local': { effectClass: 'local', recoveryMode: 'local_verified' },
   'pages.delete.local': { effectClass: 'local', recoveryMode: 'local_verified' },
   'pages.delete.standalone': { effectClass: 'local', recoveryMode: 'local_verified' },
@@ -47,12 +50,19 @@ const INTENT_POLICIES = {
   'pages.bulk.delete.remote': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'pages.bulk.replace_tags': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'pages.bulk.tags': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
+  'pages.create.confluence': {
+    effectClass: 'remote',
+    recoveryMode: 'remote_terminal_only',
+    targetMode: 'hierarchy_reference',
+  },
   'pages.create.labels': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'pages.delete.confluence': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'pages.draft.publish.confluence': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'pages.update.confluence': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
   'page.ai_apply': { effectClass: 'remote', recoveryMode: 'remote_conditional' },
   'page.version_restore': { effectClass: 'remote', recoveryMode: 'remote_conditional' },
+  'collab.commit.confluence': { effectClass: 'remote', recoveryMode: 'remote_conditional' },
+  'collab.commit.confluence.media': { effectClass: 'remote', recoveryMode: 'remote_terminal_only' },
 } as const satisfies Record<string, IntentPolicy>;
 
 export type IntentKind = keyof typeof INTENT_POLICIES;
@@ -74,6 +84,25 @@ function policyForIntent(kind: string, effect: Record<string, unknown>): IntentP
       400,
       'intent_effect_class_mismatch',
       `Intent kind ${kind} requires effectClass ${policy.effectClass}`,
+    );
+  }
+  if (policy.targetMode === 'hierarchy_reference' && (
+    typeof effect.parentPageId !== 'number' ||
+    !Number.isSafeInteger(effect.parentPageId) ||
+    effect.parentPageId <= 0 ||
+    (effect.parentConfluenceId !== null &&
+      (typeof effect.parentConfluenceId !== 'string' || effect.parentConfluenceId.length === 0)) ||
+    typeof effect.spaceKey !== 'string' ||
+    effect.spaceKey.length === 0 ||
+    typeof effect.titleSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(effect.titleSha256) ||
+    typeof effect.storageSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(effect.storageSha256)
+  )) {
+    throw new PageWriteError(
+      400,
+      'invalid_hierarchy_reference_effect',
+      'A child-creation intent must identify its parent and the intended upstream content',
     );
   }
   if (policy.recoveryMode === 'remote_conditional') {
@@ -125,11 +154,14 @@ export type PageWriteIntent = {
   revisions: Record<number, PageRevision>;
 };
 
+export type PageRuntimeAdmissionPurpose = 'collab_room' | 'collab_request';
+
 export type PageRuntimeAdmission = {
   id: string;
   runtimeId: string;
   pageId: number;
   lifecycleRevision: string;
+  purpose: PageRuntimeAdmissionPurpose;
 };
 
 export type RuntimeQuiescenceAcknowledgment = {
@@ -332,6 +364,7 @@ type AdmissionRow = {
   page_id: number;
   actor_id: string | null;
   lifecycle_revision: string;
+  purpose: PageRuntimeAdmissionPurpose | 'legacy';
   admitted_at: Date;
   released_at: Date | null;
 };
@@ -357,6 +390,8 @@ const localIntentEffects = new Map<
 const localIntentRecoveryModes = new Map<string, IntentRecoveryMode>();
 const localIntentFailedRemotePhases = new Set<string>();
 const localAdmissions = new Set<string>();
+const deferredRequestReleases = new Map<string, PageRuntimeAdmission>();
+let deferredRequestReleaseTimer: NodeJS.Timeout | undefined;
 const localRecoveries = new Map<string, 'running' | 'failed'>();
 const localRecoveryAdmins = new Map<string, string>();
 const localDrainWaiters = new Set<() => void>();
@@ -400,6 +435,17 @@ async function waitForLocalRuntimeDrain(): Promise<void> {
     await new Promise<void>((resolve) => localDrainWaiters.add(resolve));
   }
 }
+
+/** Tracks drain only; the caller must still acquire durable epoch and resource guards. */
+export async function withPageWriterOperation<T>(operation: () => Promise<T>): Promise<T> {
+  beginLocalOperation(false);
+  try {
+    return await operation();
+  } finally {
+    finishLocalOperation();
+  }
+}
+
 function normalizePageIds(pageIds: readonly number[], allowEmpty = false): number[] {
   if (!allowEmpty && pageIds.length === 0) {
     throw new PageWriteError(400, 'invalid_page_ids', 'At least one page id is required');
@@ -562,10 +608,10 @@ async function registerRuntimeOnClient(client: PoolClient, runtimeId: string): P
     throw new PageWriteError(400, 'invalid_runtime_id', 'Runtime id is invalid');
   }
   await client.query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-     VALUES ($1, $2::jsonb)
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
+     VALUES ($1, $2::jsonb, $3)
      ON CONFLICT (runtime_id) DO NOTHING`,
-    [runtimeId, JSON.stringify(await processDeploymentIdentity)],
+    [runtimeId, JSON.stringify(await processDeploymentIdentity), PAGE_WRITER_ENFORCEMENT_VERSION],
   );
   const result = await client.query<{
     fenced_at: Date | null;
@@ -656,6 +702,22 @@ function assertEditable(rows: readonly PageStateRow[]): void {
   }
 }
 
+function assertIntentTargetState(rows: readonly PageStateRow[], intent: IntentRow): void {
+  if (policyForIntent(intent.kind, intent.effect).targetMode !== 'hierarchy_reference') {
+    assertEditable(rows);
+    return;
+  }
+  if (rows.length !== intent.page_ids.length) {
+    throw new PageWriteError(409, 'hierarchy_reference_missing', 'The referenced parent no longer exists');
+  }
+}
+
+function assertHierarchyReferenceUnchanged(rows: readonly PageStateRow[], intent: IntentRow): void {
+  if (policyForIntent(intent.kind, intent.effect).targetMode !== 'hierarchy_reference') return;
+  assertIntentTargetState(rows, intent);
+  assertExpectedRevisions(rows, intent.revisions);
+}
+
 function assertExpectedRevisions(
   rows: readonly PageStateRow[],
   expected: Readonly<Record<number, PageRevision>>,
@@ -728,13 +790,38 @@ async function assertNoCompetingIntent(
   }
 }
 
-/** Acquire only the shared per-page transaction advisory locks, in ascending order. */
+/**
+ * Guard a freshly resolved, unchanged hierarchy parent against an admitted
+ * destructive component. The caller already holds hierarchy SHARE and must
+ * validate the parent's existence/identity on this transaction. A frozen
+ * parent is not itself a mutation target merely because a child is added.
+ */
+export async function assertPageHierarchyParentsAvailable(
+  client: PoolClient,
+  parentIds: readonly number[],
+): Promise<void> {
+  await assertNoCompetingIntent(client, normalizePageIds(parentIds, true));
+}
+
+/** Acquire hierarchy SHARE, then per-page lifecycle locks in ascending order. */
 export async function lockPageLifecycle(
   client: PoolClient,
   pageIds: readonly number[],
   options: { tryLock?: boolean } = {},
 ): Promise<void> {
-  for (const pageId of normalizePageIds(pageIds, true)) {
+  const ids = normalizePageIds(pageIds, true);
+  if (options.tryLock) {
+    const hierarchy = await client.query<{ acquired: boolean }>(
+      'SELECT pg_try_advisory_xact_lock_shared($1) AS acquired',
+      [PAGE_HIERARCHY_LOCK_ID],
+    );
+    if (hierarchy.rows[0]?.acquired !== true) {
+      throw new PageWriteError(409, 'freeze_busy', 'A subtree mutation is currently committing');
+    }
+  } else {
+    await client.query('SELECT pg_advisory_xact_lock_shared($1)', [PAGE_HIERARCHY_LOCK_ID]);
+  }
+  for (const pageId of ids) {
     if (options.tryLock) {
       const result = await client.query<{ acquired: boolean }>(
         'SELECT pg_try_advisory_xact_lock($1, $2) AS acquired',
@@ -760,7 +847,7 @@ export async function lockPageLifecycle(
 export async function lockPageWrites(
   client: PoolClient,
   pageIds: readonly number[],
-  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission } = {},
+  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission; hierarchyExclusive?: boolean } = {},
 ): Promise<void> {
   if (options.intent && options.admission) {
     throw new PageWriteError(400, 'invalid_write_admission', 'A write cannot use two admission tokens');
@@ -777,15 +864,16 @@ export async function lockPageWrites(
       finishLocalOperation();
     }
   }
-  if (ids.length === 0) {
-    if (options.intent || options.admission) {
-      throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
-    }
-    return;
+  if (ids.length === 0 && (options.intent || options.admission)) {
+    throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
   }
   if (options.intent) await assertRuntimeActive(client, options.intent.runtimeId);
   if (options.admission) await assertRuntimeActive(client, options.admission.runtimeId);
+  if (options.hierarchyExclusive) {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+  }
   await lockPageLifecycle(client, ids);
+  if (ids.length === 0) return;
   if (options.intent) {
     const durable = await loadPendingIntentForUpdate(client, options.intent);
     const rows = await loadPageStates(client, ids, true);
@@ -802,7 +890,7 @@ export async function lockPageWrites(
         'A missing page was not deleted by this durable write intent',
       );
     }
-    assertEditable(rows);
+    assertIntentTargetState(rows, durable);
     // Runtime epoch was locked before the page lifecycle lock.
     assertExpectedRevisions(rows, intentFromRow(durable).revisions);
     await assertNoCompetingIntent(client, ids, durable.id);
@@ -817,7 +905,7 @@ export async function lockPageWrites(
       throw new PageWriteError(409, 'admission_token_mismatch', 'The room admission covers a different page');
     }
     const result = await client.query<AdmissionRow>(
-      `SELECT id, runtime_id, page_id, actor_id, lifecycle_revision::text, admitted_at, released_at
+      `SELECT id, runtime_id, page_id, actor_id, purpose, lifecycle_revision::text, admitted_at, released_at
          FROM page_runtime_admissions
         WHERE id = $1
         FOR UPDATE`,
@@ -829,6 +917,7 @@ export async function lockPageWrites(
       stored.released_at ||
       stored.runtime_id !== admission.runtimeId ||
       stored.page_id !== admission.pageId ||
+      stored.purpose !== admission.purpose ||
       String(stored.lifecycle_revision) !== admission.lifecycleRevision
     ) {
       throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission is stale');
@@ -860,6 +949,26 @@ export async function withPageWriteTransaction<T>(
   }
 }
 
+/**
+ * Plan an exact hierarchy component before taking any page lifecycle locks.
+ * The callback must then reserve or lock every affected page on this client;
+ * the hierarchy fence alone does not authorize a content mutation.
+ */
+export async function withPageHierarchyWriteTransaction<T>(
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  beginLocalOperation(false);
+  try {
+    return await inTransaction(async (client) => {
+      await lockPageWriterRuntime(client, processRuntimeId);
+      await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+      return operation(client);
+    });
+  } finally {
+    finishLocalOperation();
+  }
+}
+
 export type PageWriteIntentInput = {
   pageIds: readonly number[];
   kind: string;
@@ -877,10 +986,20 @@ async function reservePageWriteIntentOnClient(
   const pageIds = normalizePageIds(input.pageIds);
   const effect = cloneBoundedObject(input.effect, 'intent_effect');
   const policy = policyForIntent(input.kind, effect);
+  const hierarchyReference = policy.targetMode === 'hierarchy_reference';
+  if (hierarchyReference && (pageIds.length !== 1 || pageIds[0] !== effect.parentPageId)) {
+    throw new PageWriteError(
+      400,
+      'hierarchy_reference_mismatch',
+      'A child-creation intent must reserve exactly its unchanged parent',
+    );
+  }
   await registerRuntimeOnClient(client, runtimeId);
   await assertRuntimeActive(client, runtimeId);
-  await lockPageWrites(client, pageIds);
+  if (hierarchyReference) await lockPageLifecycle(client, pageIds);
+  else await lockPageWrites(client, pageIds);
   const rows = await loadPageStates(client, pageIds);
+  if (hierarchyReference) await assertNoCompetingIntent(client, pageIds);
   if (input.expectedRevisions) assertExpectedRevisions(rows, input.expectedRevisions);
   const revisions = revisionsForRows(rows);
   const id = randomUUID();
@@ -1092,11 +1211,12 @@ export async function runPageWriteIntentEffect<T>(
 export async function completePageWriteIntent<T>(
   intent: PageWriteIntent,
   operation: (client: PoolClient) => Promise<T>,
+  options?: { hierarchyExclusive?: boolean },
 ): Promise<T> {
   beginLocalOperation(true);
   try {
     const result = await inTransaction(async (client) => {
-      await lockPageWrites(client, intent.pageIds, { intent });
+      await lockPageWrites(client, intent.pageIds, { intent, hierarchyExclusive: options?.hierarchyExclusive });
       const durable = await loadPendingIntentForUpdate(client, intent);
       const effectClass = durable.effect.effectClass;
       const effectState = localIntentEffects.get(intent.id);
@@ -1119,6 +1239,7 @@ export async function completePageWriteIntent<T>(
            FROM pages WHERE id = ANY($1::integer[]) ORDER BY id`,
         [normalizePageIds(intent.pageIds)],
       );
+      assertHierarchyReferenceUnchanged(finalRows.rows, durable);
       const settlementProof = effectClass === 'remote'
         ? {
             kind: 'owning_runtime_terminal_response',
@@ -1217,6 +1338,43 @@ export async function cancelPageWriteIntentBeforeEffect(intent: PageWriteIntent)
   }
 }
 
+/**
+ * Advance SQL state on a caller-owned transaction. The caller retains its
+ * checked-out connection and adopts returned revisions only after COMMIT is
+ * acknowledged. This lets deletion hold its attachment snapshot barrier from
+ * before the SQL commit through subsequent file cleanup, in the correct lock
+ * order. External work still belongs inside runPageWriteIntentEffect.
+ */
+export async function advancePageWriteIntentInTransaction<T>(
+  client: PoolClient,
+  intent: PageWriteIntent,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<{ result: T; revisions: Record<number, PageRevision> }> {
+  await lockPageWrites(client, intent.pageIds, { intent });
+  await assertRecoveryAdminForIntent(client, intent);
+  const durable = await loadPendingIntentForUpdate(client, intent);
+  const result = await operation(client);
+  const rows = await loadPageStates(client, intent.pageIds, true);
+  assertHierarchyReferenceUnchanged(rows, durable);
+  const liveIds = new Set(rows.map((row) => row.id));
+  const deletedPageIds = intent.pageIds.filter((pageId) => !liveIds.has(pageId));
+  const revisions = {
+    ...intent.revisions,
+    ...revisionsForRows(rows),
+  };
+  const updated = await client.query(
+    `UPDATE page_write_intents
+        SET revisions = $2::jsonb, deleted_page_ids = $3::integer[],
+            effect_started_at = COALESCE(effect_started_at, NOW())
+      WHERE id = $1 AND status = 'pending'`,
+    [intent.id, JSON.stringify(revisions), deletedPageIds],
+  );
+  if (updated.rowCount !== 1) {
+    throw new PageWriteError(409, 'intent_not_pending', 'The write intent was settled concurrently');
+  }
+  return { result, revisions };
+}
+
 /** SQL progress starts owned work; only the enclosing effect gate can certify I/O completion. */
 export async function advancePageWriteIntent<T>(
   intent: PageWriteIntent,
@@ -1224,29 +1382,8 @@ export async function advancePageWriteIntent<T>(
 ): Promise<T> {
   beginLocalOperation(true);
   try {
-    const committed = await inTransaction(async (client) => {
-      await lockPageWrites(client, intent.pageIds, { intent });
-      await assertRecoveryAdminForIntent(client, intent);
-      const result = await operation(client);
-      const rows = await loadPageStates(client, intent.pageIds, true);
-      const liveIds = new Set(rows.map((row) => row.id));
-      const deletedPageIds = intent.pageIds.filter((pageId) => !liveIds.has(pageId));
-      const revisions = {
-        ...intent.revisions,
-        ...revisionsForRows(rows),
-      };
-      const updated = await client.query(
-        `UPDATE page_write_intents
-            SET revisions = $2::jsonb, deleted_page_ids = $3::integer[],
-                effect_started_at = COALESCE(effect_started_at, NOW())
-          WHERE id = $1 AND status = 'pending'`,
-        [intent.id, JSON.stringify(revisions), deletedPageIds],
-      );
-      if (updated.rowCount !== 1) {
-        throw new PageWriteError(409, 'intent_not_pending', 'The write intent was settled concurrently');
-      }
-      return { result, revisions };
-    });
+    const committed = await inTransaction((client) =>
+      advancePageWriteIntentInTransaction(client, intent, operation));
     intent.revisions = committed.revisions;
     return committed.result;
   } finally {
@@ -1257,6 +1394,7 @@ export async function advancePageWriteIntent<T>(
 export async function admitPageRuntime(
   pageId: number,
   actorId: string,
+  purpose: PageRuntimeAdmissionPurpose,
   runtimeId?: string,
 ): Promise<PageRuntimeAdmission> {
   beginLocalOperation(false);
@@ -1271,11 +1409,11 @@ export async function admitPageRuntime(
       const lifecycleRevision = String(rows[0]!.lifecycle_revision);
       await client.query(
         `INSERT INTO page_runtime_admissions
-           (id, runtime_id, page_id, actor_id, lifecycle_revision)
-         VALUES ($1, $2, $3, $4, $5::bigint)`,
-        [admissionId, id, pageId, actorId, lifecycleRevision],
+           (id, runtime_id, page_id, actor_id, lifecycle_revision, purpose)
+         VALUES ($1, $2, $3, $4, $5::bigint, $6)`,
+        [admissionId, id, pageId, actorId, lifecycleRevision, purpose],
       );
-      return { id: admissionId, runtimeId: id, pageId, lifecycleRevision };
+      return { id: admissionId, runtimeId: id, pageId, lifecycleRevision, purpose };
     });
     localAdmissions.add(admission.id);
     return admission;
@@ -1287,38 +1425,80 @@ export async function admitPageRuntime(
 export async function releasePageRuntime(admission: PageRuntimeAdmission): Promise<void> {
   beginLocalOperation(true);
   try {
-    await inTransaction(async (client) => {
-      await assertRuntimeActive(client, admission.runtimeId);
-      await lockPageLifecycle(client, [admission.pageId]);
-      const result = await client.query<AdmissionRow>(
-        `SELECT id, runtime_id, page_id, actor_id, lifecycle_revision::text, admitted_at, released_at
-           FROM page_runtime_admissions WHERE id = $1 FOR UPDATE`,
-        [admission.id],
-      );
-      const stored = result.rows[0];
-      if (!stored) {
-        throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission is unknown');
-      }
-      if (
-        stored.runtime_id !== admission.runtimeId ||
-        stored.page_id !== admission.pageId ||
-        String(stored.lifecycle_revision) !== admission.lifecycleRevision
-      ) {
-        throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission token is stale');
-      }
-      if (stored.released_at) return;
-      // Runtime epoch was locked before the page lifecycle lock.
-      await client.query(
-        `UPDATE page_runtime_admissions
-            SET released_at = NOW(), release_kind = 'clean_disconnect'
-          WHERE id = $1 AND released_at IS NULL`,
-        [admission.id],
-      );
-    });
+    try {
+      await inTransaction(async (client) => {
+        await assertRuntimeActive(client, admission.runtimeId);
+        await lockPageLifecycle(client, [admission.pageId]);
+        const result = await client.query<AdmissionRow>(
+          `SELECT id, runtime_id, page_id, actor_id, purpose, lifecycle_revision::text, admitted_at, released_at
+             FROM page_runtime_admissions WHERE id = $1 FOR UPDATE`,
+          [admission.id],
+        );
+        const stored = result.rows[0];
+        if (!stored) {
+          throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission is unknown');
+        }
+        if (
+          stored.runtime_id !== admission.runtimeId ||
+          stored.page_id !== admission.pageId ||
+          stored.purpose !== admission.purpose ||
+          String(stored.lifecycle_revision) !== admission.lifecycleRevision
+        ) {
+          throw new PageWriteError(409, 'admission_token_mismatch', 'The writable room admission token is stale');
+        }
+        if (stored.released_at) return;
+        // Runtime epoch was locked before the page lifecycle lock.
+        await client.query(
+          `UPDATE page_runtime_admissions
+              SET released_at = NOW(), release_kind = 'clean_disconnect'
+            WHERE id = $1 AND released_at IS NULL`,
+          [admission.id],
+        );
+      });
+    } catch (error) {
+      // COMMIT may have landed even when its response did not. Only this exact
+      // released tuple confirms cleanup; an unreadable or active row does not.
+      const confirmed = await getPool().query(
+        `SELECT 1 FROM page_runtime_admissions
+          WHERE id = $1 AND runtime_id = $2 AND page_id = $3
+            AND lifecycle_revision = $4::bigint AND purpose = $5 AND released_at IS NOT NULL`,
+        [admission.id, admission.runtimeId, admission.pageId, admission.lifecycleRevision, admission.purpose],
+      ).then((result) => result.rowCount === 1).catch(() => false);
+      if (!confirmed) throw error;
+    }
     localAdmissions.delete(admission.id);
   } finally {
     finishLocalOperation();
   }
+}
+
+/**
+ * Retain cleanup for a finished HTTP request's distinct admission. Never use
+ * this for a room admission: a room can still have writers or pending flushes.
+ */
+export function deferPageRequestAdmissionRelease(admission: PageRuntimeAdmission): void {
+  if (admission.purpose !== 'collab_request') {
+    throw new PageWriteError(
+      400, 'invalid_admission_purpose', 'Deferred request cleanup cannot retire a shared room admission',
+    );
+  }
+  deferredRequestReleases.set(admission.id, admission);
+  if (deferredRequestReleaseTimer) return;
+  deferredRequestReleaseTimer = setTimeout(async () => {
+    for (const [id, pending] of deferredRequestReleases) {
+      try {
+        await releasePageRuntime(pending);
+        deferredRequestReleases.delete(id);
+      } catch {
+        // The request already reported its own outcome. The durable admission
+        // and local drain ownership stay intact until cleanup is confirmed.
+      }
+    }
+    deferredRequestReleaseTimer = undefined;
+    const next = deferredRequestReleases.values().next().value;
+    if (next) deferPageRequestAdmissionRelease(next);
+  }, 1_000);
+  deferredRequestReleaseTimer.unref();
 }
 
 export async function getPageWriterRuntimeId(): Promise<string> {
@@ -1731,7 +1911,7 @@ export async function reconcilePageWriteIntent(
           'A missing page was not deleted by this durable write intent',
         );
       }
-      assertEditable(rows);
+      assertIntentTargetState(rows, durable);
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
       await assertActiveRecoveryAdmin(client, authorization.actorId);
@@ -1824,6 +2004,11 @@ export async function reconcilePageWriteIntent(
     // invented starts; recovery_started_at independently prevents a no-start fence.
     const verifyAndSettle = (attemptToken: PageWriteIntent) => inTransaction(async (client) => {
       await lockPageWriterRuntime(client, currentRuntimeId);
+      if (policyForIntent(recoveryToken.kind, recoveryToken.effect).recoveryHierarchy === 'exclusive') {
+        // Recovery re-derives the complete affected component. Its topology
+        // must stay fixed before any member's lifecycle lock is acquired.
+        await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+      }
       await lockPageLifecycle(client, attemptToken.pageIds);
       const durable = await loadPendingIntentForUpdate(client, attemptToken);
       const rows = await loadPageStates(client, durable.page_ids, true);
@@ -1842,12 +2027,15 @@ export async function reconcilePageWriteIntent(
           'A missing page was not deleted by this durable write intent',
         );
       }
-      assertEditable(rows);
+      assertIntentTargetState(rows, durable);
       assertExpectedRevisions(rows, intentFromRow(durable).revisions);
       await assertNoCompetingIntent(client, durable.page_ids, durable.id);
       await assertActiveRecoveryAdmin(client, authorization.actorId);
   
       const reconciled = await verifier(client, recoveryIntentFromRow(durable));
+      if (policyForIntent(durable.kind, durable.effect).targetMode === 'hierarchy_reference') {
+        assertHierarchyReferenceUnchanged(await loadPageStates(client, durable.page_ids, true), durable);
+      }
       if (reconciled.outcome === 'repair_required') {
         if (durable.recovery_mode !== 'local_verified') {
           throw new PageWriteError(400, 'invalid_repair_verdict', 'Only local verified intents may require repair');

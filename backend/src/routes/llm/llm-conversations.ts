@@ -13,7 +13,8 @@ import {
   UpdateConversationSchema,
 } from '@compendiq/contracts';
 import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import {
   CONFLUENCE_DISABLED_MESSAGE,

@@ -22,7 +22,7 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)<br/>collab provider · caret colours · unified presence (#1447)"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)<br/>collab provider · snapshot-bound Save<br/>inert-draft recovery controls · unified presence"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
@@ -192,41 +192,68 @@ enters the viewport, not on ordinary re-renders or background refetches.
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
-## Collaborative editing (#1447)
+## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →
-`collabEditingEnabled`). Flag off ≡ today's TipTap draft + #301 SSE presence.
-The gateway, BYTEA persist and nginx/Vite upgrade live in
+`collabEditingEnabled`). Flag off keeps the TipTap draft + #301 SSE presence
+path. The distributed gateway, durable admissions and BYTEA persistence live in
 [`12-realtime-collaboration.md`](./12-realtime-collaboration.md); this diagram
-is the editor wiring.
+shows the editor and recovery contract.
 
 ```mermaid
 flowchart TB
     page["PageViewPage"]
     cfg["GET /api/collab/config"]
-    hook["useCollabProvider<br/>y-websocket 3.1 protocols v1 plus JWT<br/>4401 closed connect · 4403/4404 destroy · disableBc"]
-    ed["Editor<br/>Collaboration plus CollaborationCaret<br/>StarterKit undoRedo false"]
+    hook["useCollabProvider<br/>joined lifecycle is immutable<br/>explicit writable_admission<br/>disableBc"]
+    ed["Editor<br/>Collaboration + CollaborationCaret<br/>StarterKit undoRedo false"]
+    save["Save start<br/>Y.snapshot clocks + delete-set<br/>base64 field ≤ 1,048,576 chars"]
+    api["POST /api/pages/:id/collab/commit<br/>expected lifecycle + document state"]
+    ack{"Server snapshot includes<br/>captured state?"}
+    stay["Keep editor open<br/>late local edits remain dirty"]
+    exit["Exit edit mode only if<br/>captured state + metadata still current"]
+    fence["Lifecycle / authority / document reset<br/>or connection loss"]
+    draft["Mounted inert or offline draft<br/>no automatic replay"]
+    recovery["Download draft<br/>or confirmed Open current version"]
     sse["usePresence SSE (issue 301)"]
     stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
 
     page --> cfg
     cfg -->|flag on and edit mode| hook --> ed
     cfg -->|flag off or read mode| sse
+    ed --> save --> api --> ack
+    ack -->|captured state changed meanwhile| stay
+    ack -->|unchanged| exit
+    hook --> fence --> draft --> recovery
     hook --> stack
     sse --> stack
 ```
 
 - **Provider mounts only in edit mode.** Read mode keeps the SSE heartbeat.
   `if (!token) return` — never `protocols: [compendiq.collab.v1, '']`.
-- **Save** goes to `POST /api/pages/:id/collab/commit` (title only) while
-  collab is live; the flag-off path still `PUT`s `bodyHtml` + `version`.
-- **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured ≥3:1 on
-  Graphite and Paper `--surface-card`. Steel and status hues are not a caret
-  palette. `@tiptap/extension-collaboration-caret` — not the v2
+- **Save is snapshot-bound, not socket-bound.** The request carries the
+  lifecycle revision captured at edit start and a canonical bounded Yjs
+  Snapshot, including clocks and deletions. A connected socket is not durable
+  acknowledgment. The server re-authorizes current actor/page/space access
+  under the current lifecycle and active request admission. Its fresh
+  correlated cross-process room snapshot must come from an unchanged owner set
+  and transport generation and contain the captured client state. If
+  title/labels or the Y.Doc change while the request is in flight, the
+  acknowledged capture is saved but the editor stays open with the later edits.
+- **Recovery preserves the tab's document.** Lifecycle, permission and document
+  resets disconnect and make the mounted provider/Y.Doc inert rather than
+  silently joining or replaying into a new lifecycle. Dirty connected and
+  offline drafts guard Cancel, app navigation, Back/Forward and unload.
+  `Download draft` exports page ID, title, body, labels and lifecycle as JSON.
+  `Open current version` requires explicit confirmation, then refetches and
+  discards only after a successful refetch; failure leaves the draft in place.
+  These are editor recovery controls, not #277's baseline-management UI.
+- **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
+  ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
+  caret palette. `@tiptap/extension-collaboration-caret` — not the v2
   `collaboration-cursor` name.
 - **Presence** is one stack. Awareness editors (`isEditing` if in the collab
-  room) merge with SSE viewers. The admin toggle on Diagnostics → System
-  status is muted, not amber.
+  room) merge with SSE viewers. The admin toggle on Diagnostics → System status
+  is muted, not amber.
 
 ## Article-editor inline completion (#1417)
 

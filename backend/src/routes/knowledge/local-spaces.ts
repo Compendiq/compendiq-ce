@@ -4,7 +4,10 @@ import type { PoolClient } from 'pg';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { lockPageWrites } from '../../core/services/page-write-admission.js';
+import {
+  assertPageHierarchyParentsAvailable,
+  lockPageWrites,
+} from '../../core/services/page-write-admission.js';
 // #1166: `/move` and `POST /pages/:id/relocate` are the two writers of
 // `pages.parent_id`; they must agree both on which identifier flavour a child
 // stores and on what makes an identifier too ambiguous to store, so both
@@ -97,12 +100,17 @@ function computeDepth(path: string): number {
   return path.split('/').filter(Boolean).length - 1;
 }
 
-async function expandedMoveIds(
+interface ExpandedMove {
+  mutationIds: number[];
+  parentIds: number[];
+}
+
+async function expandedMove(
   client: Pick<PoolClient, 'query'>,
   pageId: number,
   requestedParent: string | number | null,
-): Promise<number[]> {
-  const result = await client.query<{ id: number }>(
+): Promise<ExpandedMove> {
+  const result = await client.query<{ id: number; role: 'mutation' | 'parent' }>(
     `WITH root AS (
        SELECT id, path, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL
      ),
@@ -123,13 +131,20 @@ async function expandedMoveIds(
             OR p.confluence_id = $2::text OR p.id::text = $2::text
           )
      )
-     SELECT id FROM mutation_set
+     SELECT id, 'mutation'::text AS role FROM mutation_set
      UNION
-     SELECT id FROM serialization_roots
-     ORDER BY id`,
+     SELECT id, 'parent'::text AS role FROM serialization_roots
+     ORDER BY id, role`,
     [pageId, requestedParent === null ? null : String(requestedParent)],
   );
-  return result.rows.map((row) => row.id);
+  return {
+    mutationIds: result.rows
+      .filter((row) => row.role === 'mutation')
+      .map((row) => row.id),
+    parentIds: result.rows
+      .filter((row) => row.role === 'parent')
+      .map((row) => row.id),
+  };
 }
 
 export async function localSpacesRoutes(fastify: FastifyInstance) {
@@ -458,25 +473,28 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       path: string;
       depth: number;
     };
-    // Snapshot the exact rows the existing SQL can rewrite. The transaction
-    // locks these lifecycle IDs in ascending order before the older global move
-    // mutex, then re-expands under that mutex. A changed expansion aborts
-    // without a reparent/freeze gap.
-    const expectedMutationIds = await expandedMoveIds(getPool(), page.id, body.parentId);
+    // Snapshot rows that can actually be rewritten separately from unchanged
+    // old/new parents. The former are protected mutation targets; the latter
+    // are only checked for a pending destructive component after hierarchy
+    // SHARE, so a frozen unchanged parent does not forbid the move.
+    const expected = await expandedMove(getPool(), page.id, body.parentId);
     const txClient = await getPool().connect();
     try {
       await txClient.query('BEGIN');
-      await lockPageWrites(txClient, expectedMutationIds);
+      await lockPageWrites(txClient, expected.mutationIds);
       await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
-      const lockedMutationIds = await expandedMoveIds(txClient, page.id, body.parentId);
-      if (
-        lockedMutationIds.length !== expectedMutationIds.length ||
-        lockedMutationIds.some((pageId, index) => pageId !== expectedMutationIds[index])
-      ) {
+      const locked = await expandedMove(txClient, page.id, body.parentId);
+      const expansionChanged =
+        locked.mutationIds.length !== expected.mutationIds.length ||
+        locked.mutationIds.some((pageId, index) => pageId !== expected.mutationIds[index]) ||
+        locked.parentIds.length !== expected.parentIds.length ||
+        locked.parentIds.some((pageId, index) => pageId !== expected.parentIds[index]);
+      if (expansionChanged) {
         throw fastify.httpErrors.conflict(
           'Page hierarchy changed while the move was waiting. Reload and try again.',
         );
       }
+      await assertPageHierarchyParentsAvailable(txClient, locked.parentIds);
 
       // Re-read the page under the lock: a queued concurrent move may have
       // changed its parent/path/space between the pre-checks above and now,

@@ -158,6 +158,7 @@ erDiagram
     page_writer_runtimes {
         text runtime_id PK "one backend process epoch"
         jsonb deployment_identity "immutable host/pid/start identity"
+        int enforcement_version "migration 124; DEFAULT 0, current protocol = 1"
         timestamptz started_at "DEFAULT NOW"
         timestamptz quiesced_at
         uuid quiescence_ack
@@ -173,6 +174,7 @@ erDiagram
         int page_id "deliberately no FK; durable identity after deletion"
         uuid actor_id FK "users; ON DELETE SET NULL"
         bigint lifecycle_revision "admission fence"
+        text purpose "legacy | collab_room | collab_request (migration 127)"
         timestamptz admitted_at "DEFAULT NOW"
         timestamptz released_at
         text release_kind "clean_disconnect | runtime_fenced"
@@ -181,7 +183,7 @@ erDiagram
     page_write_intents {
         uuid id PK "DEFAULT gen_random_uuid"
         text runtime_id FK "page_writer_runtimes; ON DELETE RESTRICT"
-        text kind "closed effect/recovery policy"
+        text kind "closed effect/recovery policy; includes collab commit/media"
         uuid actor_id FK "users; ON DELETE SET NULL"
         int_array page_ids "sorted protected targets; no page FK"
         jsonb revisions "content + lifecycle revision per page"
@@ -585,8 +587,9 @@ erDiagram
     }
 ```
 
-**Immutable baseline foundation (migrations 120–121, #275).** Migration 120 is
-additive: existing and new `pages` rows receive `content_revision = 0` and
+**Immutable baseline foundation and enforcement (migrations 120–122,
+124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and
+new `pages` rows receive `content_revision = 0` and
 `lifecycle_revision = 0`; the backfill deliberately invents no historical
 freeze, approval or ledger entry. Migration 121 installs the protected-write
 trigger after adding `baseline_id`, leaving legacy writers usable between the
@@ -598,17 +601,24 @@ revision under the same lifecycle lock. `lifecycle_revision` advances on
 freeze/thaw; both revisions are non-negative `BIGINT`s and cross the API as
 decimal strings.
 
-`page_writer_runtimes` is one durable row per process epoch.
-`page_runtime_admissions` retains writable-room tokens until clean disconnect
-or proven runtime fencing. `page_write_intents` retains the exact target set,
-content/lifecycle revisions, dispatch/finish markers, deletion tombstones and
-settlement proof. Its `page_ids`/`deleted_page_ids` arrays intentionally have
-no page FK: a local delete can commit before the intent settles, and a missing
-row is accepted only when its ID appears in that intent's immutable tombstones.
-Only `pending` intents block writes/freeze; uncertain outcomes remain pending
-without TTL expiry. Runtime/admission/intent ownership uses `ON DELETE
-RESTRICT`; nullable human actor/settler/fencer references use `ON DELETE SET
-NULL`.
+`page_writer_runtimes` is one durable row per process epoch. Migration 124
+adds `enforcement_version`: old runtimes are version 0, current #276 writers
+register version 1, and the database rejects an incompatible registration once
+creation is enabled or any published baseline exists. The activation
+transaction locks the feature row before checking active, non-quiesced
+runtimes, closing the registration/readiness race.
+`page_runtime_admissions` retains writable-room and request tokens until clean
+release or proven runtime fencing. Migration 127 distinguishes durable
+`collab_room` owners from short-lived `collab_request` Save admissions; unknown
+historical rows remain `legacy` and cannot be silently treated as room owners.
+`page_write_intents` retains the exact target set, content/lifecycle revisions,
+dispatch/finish markers, deletion tombstones and settlement proof. Its
+`page_ids`/`deleted_page_ids` arrays intentionally have no page FK: a local
+delete can commit before the intent settles, and a missing row is accepted only
+when its ID appears in that intent's immutable tombstones. Only `pending`
+intents block writes/freeze; uncertain outcomes remain pending without TTL
+expiry. Runtime/admission/intent ownership uses `ON DELETE RESTRICT`; nullable
+human actor/settler/fencer references use `ON DELETE SET NULL`.
 Recovery transfers `runtime_id` and stamps `recovery_started_at` before invoking
 the verifier, not only before a local repair. That marker disqualifies no-start
 fencing/cancellation even if the original effect never began; phase timestamps
@@ -663,13 +673,29 @@ capacity scales with the admitted inventory; the generic terminal result holds
 only its count and canonical ordered SHA-256, never a second full receipt array.
 
 Migration 121 seeds exactly one feature-state row with
-`creation_enabled = false` and one zeroed capacity row. Enabling creation is
-separately gated by a registered deployment-readiness provider; the #275
-foundation intentionally has none, so its blocker is
-`protected_writer_enforcement_not_registered` until #276 supplies complete
-writer readiness. This schema does not claim #276's remaining sync,
-collaboration and cascade enforcement, #278's proposal/signature/archive
-tables, or #277's UI.
+`creation_enabled = false` and one zeroed capacity row. #276 registers the
+deployment-readiness provider at backend startup; readiness is true only when
+all active, non-quiesced runtimes report the current enforcement version.
+Activation remains an explicit system-admin write, also requiring that
+administrator's Confluence integration to be explicitly off. Preview/freeze
+and future governed proposal/approval additionally require
+`pages.source = 'standalone'`; a Confluence-origin row remains ineligible even
+when integration is off. Capability reads do not lock settings, whereas
+mutation admission uses `lockSettings = true` so the explicit-off row remains
+stable through commit. Missing settings or a failed read never means “off.”
+Existing frozen-page enforcement, retained evidence/history access and audited
+thaw do not depend on the current mode, and re-enabling Confluence does not
+auto-thaw or delete evidence. #278 proposal/signature/archive persistence and
+#277's full baseline UI remain outside this schema.
+
+Migrations 125 and 128 keep the intent policy closed in SQL as new #276
+writers arrive: `collab.commit.confluence` is remote-conditional, while a
+collaborative commit that first uploads Confluence media is terminal-only
+because an unversioned attachment mutation cannot be made conditionally
+recoverable by the later page PUT. No request body, PAT or full document is
+stored in the intent. Migrations numbered 123 and 126 were unshipped candidate
+workflows and are absent; there is no frozen-Confluence candidate
+capture/refresh/preview/accept/retention schema or EE adapter in this slice.
 
 A preview owns one stable `page_baselines.id`. The partial unique index on
 `(original_page_id, prepared_by_user_id, content_revision,
@@ -1244,12 +1270,21 @@ together, which matters most for #1114's query-side prefix.
   the target to the `__system__` sentinel user
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
-- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443).** `page_id`
-  is the PK and an `ON DELETE CASCADE` FK. `doc_state` is the full
-  `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental and
-  never this column). `version` is the BYTEA write generation for crash
+- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443 /
+  #276).** `page_id` is the PK and an `ON DELETE CASCADE` FK. `doc_state` is
+  the full `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental
+  and never this column). `version` is the BYTEA write generation for crash
   recovery — it is **not** `pages.version` and is never shown to editors.
-  Rows appear on first collab join; there is no backfill. The feature flag
+  Rows appear only when a writable admission initializes the document; a
+  read-only room does not create the row and there is no backfill. Multiple
+  processes may own one room through distinct unreleased `collab_room`
+  admissions. Save uses a fresh correlated state-dump round across exactly
+  those admission IDs, merges persisted and returned updates, rechecks the
+  owner set and Redis transport generation, then compares a server Yjs Snapshot
+  against the client's bounded Snapshot (state-vector clocks **and** delete-set).
+  `collab_request` admissions fence the Save but are not room owners. Lifecycle
+  changes retire room ownership and prevent a stale document from being
+  replayed into the next generation. The feature flag
   `admin_settings.collab_editing_enabled` defaults to `'0'`. Topology:
   [`12-realtime-collaboration.md`](./12-realtime-collaboration.md).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.

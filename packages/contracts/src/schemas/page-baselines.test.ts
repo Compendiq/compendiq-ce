@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   FreezePageRequestSchema,
   PageBaselineEvidenceSchema,
+  PageFreezeDetailFieldsSchema,
   PageFreezeHistoryEntrySchema,
   PageFreezePreviewResponseSchema,
+  PageLifecycleDenialReasonSchema,
 } from './page-baselines.js';
 
 const ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -45,6 +47,36 @@ describe('page baseline contracts', () => {
       expectedManifestDigest: DIGEST,
       baselineId: ID,
     }).success).toBe(false);
+  });
+
+  it('types standalone eligibility refusals in lifecycle detail', () => {
+    expect(PageLifecycleDenialReasonSchema.parse('standalone_article_required'))
+      .toBe('standalone_article_required');
+    expect(PageLifecycleDenialReasonSchema.parse('confluence_integration_enabled'))
+      .toBe('confluence_integration_enabled');
+
+    const state = {
+      isFrozen: false,
+      baselineId: null,
+      frozenVersion: null,
+      frozenAt: null,
+      frozenBy: null,
+      frozenByName: null,
+      freezeReason: null,
+      provenance: null,
+      contentRevision: '0',
+      lifecycleRevision: '0',
+      canFreeze: false,
+      freezeDeniedReason: 'confluence_integration_enabled',
+      canUnfreeze: false,
+      unfreezeDeniedReason: 'page_not_frozen',
+      canApprove: false,
+      approveDeniedReason: 'confluence_integration_enabled',
+      canMutateContent: true,
+      mutateContentDeniedReason: null,
+      governanceProposalStatus: 'none',
+    };
+    expect(PageFreezeDetailFieldsSchema.parse(state)).toEqual(state);
   });
 
   it('keeps signatory email out of ordinary history while retaining it in admin evidence', () => {

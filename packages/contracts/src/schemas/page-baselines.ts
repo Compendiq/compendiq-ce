@@ -16,6 +16,8 @@ export type PageFreezeSummary = z.infer<typeof PageFreezeSummaryFieldsSchema>;
 
 export const PageLifecycleDenialReasonSchema = z.enum([
   'baseline_creation_disabled',
+  'standalone_article_required',
+  'confluence_integration_enabled',
   'deployment_not_ready',
   'page_not_found',
   'page_deleted',
@@ -42,12 +44,6 @@ export const PageGovernanceProposalStatusSchema = z.enum([
 ]);
 export type PageGovernanceProposalStatus = z.infer<typeof PageGovernanceProposalStatusSchema>;
 
-export const PendingPageDivergenceSchema = z.object({
-  count: z.number().int().nonnegative(),
-  latestAt: z.string().datetime().nullable(),
-}).strict();
-export type PendingPageDivergence = z.infer<typeof PendingPageDivergenceSchema>;
-
 export const PageFreezeDetailFieldsSchema = PageFreezeSummaryFieldsSchema.extend({
   frozenAt: z.string().datetime().nullable(),
   frozenBy: z.string().uuid().nullable(),
@@ -65,7 +61,6 @@ export const PageFreezeDetailFieldsSchema = PageFreezeSummaryFieldsSchema.extend
   canMutateContent: z.boolean(),
   mutateContentDeniedReason: PageLifecycleDenialReasonSchema.nullable(),
   governanceProposalStatus: PageGovernanceProposalStatusSchema.nullable(),
-  pendingDivergence: PendingPageDivergenceSchema.nullable(),
 }).strict();
 export type PageLifecycleState = z.infer<typeof PageFreezeDetailFieldsSchema>;
 

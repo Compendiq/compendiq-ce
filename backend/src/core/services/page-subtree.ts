@@ -63,6 +63,7 @@
  */
 import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
+import { PageWriteError } from './page-write-admission.js';
 
 /**
  * The identifier a child stores in `parent_id` for the row aliased `alias`:
@@ -86,14 +87,21 @@ function parentKeySql(alias: string): string {
  * difference between the single-root and multi-root forms; it is a compile-time
  * literal from a closed union, never caller input.
  */
-function subtreeCte(seed: 'single-root' | 'many-roots'): string {
+function subtreeCte(
+  seed: 'single-root' | 'many-roots',
+  retainRoot = false,
+): string {
   const seedPredicate = seed === 'single-root' ? 'p.id = $1' : 'p.id = ANY($1::int[])';
+  const rootColumn = retainRoot ? 'p.id AS root_id, ' : '';
+  const recursiveRootColumn = retainRoot ? 'd.root_id, ' : '';
   return `WITH RECURSIVE d AS (
-      SELECT p.id, p.confluence_id, p.source, p.deleted_at, p.created_by_user_id
+      SELECT ${rootColumn}p.id, p.confluence_id, p.source, p.deleted_at,
+             p.created_by_user_id, p.visibility, p.baseline_id
         FROM pages p
        WHERE ${seedPredicate}
       UNION
-      SELECT p.id, p.confluence_id, p.source, p.deleted_at, p.created_by_user_id
+      SELECT ${recursiveRootColumn}p.id, p.confluence_id, p.source, p.deleted_at,
+             p.created_by_user_id, p.visibility, p.baseline_id
         FROM pages p
         JOIN d ON p.parent_id = ${parentKeySql('d')}
     )`;
@@ -104,6 +112,131 @@ export const PAGE_SUBTREE_CTE = subtreeCte('single-root');
 
 /** Walk rooted at every page in the id array bound to `$1::int[]`. */
 export const PAGE_SUBTREE_CTE_MANY_ROOTS = subtreeCte('many-roots');
+
+/**
+ * The same walk with seed provenance retained. Bulk cascades use it to merge
+ * selected roots whose authorized mutation sets overlap without running a
+ * second recursive hierarchy implementation.
+ */
+export const PAGE_SUBTREE_COMPONENT_CTE = subtreeCte('many-roots', true);
+
+export interface AuthorizedSubtreeMember {
+  id: number;
+  visibility: string;
+  baselineId: string | null;
+}
+
+export interface AuthorizedSubtreeComponent {
+  rootIds: number[];
+  members: AuthorizedSubtreeMember[];
+}
+
+export class PageSubtreeFrozenError extends PageWriteError {
+  readonly blockedCount: number;
+
+  constructor(blockedCount: number) {
+    super(
+      409,
+      'subtree_contains_frozen_page',
+      'This subtree contains frozen pages that are part of the authorized operation.',
+    );
+    this.name = 'PageSubtreeFrozenError';
+    this.blockedCount = blockedCount;
+  }
+}
+
+/**
+ * Expand the exact rows a standalone cascade may mutate and coalesce selected
+ * roots whose authorized sets overlap. The walk still traverses deleted,
+ * foreign-owned, and synced intermediates; only the returned mutation set is
+ * owner/source scoped. Consequently an inaccessible row can neither block the
+ * caller nor leak through a component result.
+ *
+ * Callers must hold the hierarchy fence exclusively before invoking this.
+ */
+export async function authorizedSubtreeComponents(
+  client: PoolClient,
+  roots: readonly number[],
+  ownerUserId: string,
+  includeDeleted: boolean,
+): Promise<AuthorizedSubtreeComponent[]> {
+  const normalizedRoots = [...new Set(roots)].sort((a, b) => a - b);
+  if (normalizedRoots.length === 0) return [];
+
+  const result = await client.query<{
+    root_id: number;
+    id: number;
+    visibility: string;
+    baseline_id: string | null;
+  }>(
+    `${PAGE_SUBTREE_COMPONENT_CTE}
+     SELECT root_id, id, visibility, baseline_id
+       FROM d
+      WHERE source = 'standalone'
+        AND created_by_user_id = $2
+        AND ($3::boolean OR deleted_at IS NULL)
+      ORDER BY root_id, id`,
+    [normalizedRoots, ownerUserId, includeDeleted],
+  );
+
+  const parent = new Map(normalizedRoots.map((rootId) => [rootId, rootId]));
+  const find = (rootId: number): number => {
+    const current = parent.get(rootId)!;
+    if (current === rootId) return rootId;
+    const representative = find(current);
+    parent.set(rootId, representative);
+    return representative;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    parent.set(Math.max(leftRoot, rightRoot), Math.min(leftRoot, rightRoot));
+  };
+
+  const rootsByMember = new Map<number, number[]>();
+  for (const row of result.rows) {
+    const memberRoots = rootsByMember.get(row.id);
+    if (memberRoots) memberRoots.push(row.root_id);
+    else rootsByMember.set(row.id, [row.root_id]);
+  }
+  for (const memberRoots of rootsByMember.values()) {
+    for (let index = 1; index < memberRoots.length; index++) {
+      union(memberRoots[0]!, memberRoots[index]!);
+    }
+  }
+
+  const groupedRoots = new Map<number, number[]>();
+  for (const rootId of normalizedRoots) {
+    const representative = find(rootId);
+    const componentRoots = groupedRoots.get(representative);
+    if (componentRoots) componentRoots.push(rootId);
+    else groupedRoots.set(representative, [rootId]);
+  }
+
+  const membersByRoot = new Map<number, Map<number, AuthorizedSubtreeMember>>();
+  for (const row of result.rows) {
+    const representative = find(row.root_id);
+    let members = membersByRoot.get(representative);
+    if (!members) {
+      members = new Map();
+      membersByRoot.set(representative, members);
+    }
+    members.set(row.id, {
+      id: row.id,
+      visibility: row.visibility,
+      baselineId: row.baseline_id,
+    });
+  }
+
+  return [...groupedRoots.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([representative, rootIds]) => ({
+      rootIds,
+      members: [...(membersByRoot.get(representative)?.values() ?? [])]
+        .sort((left, right) => left.id - right.id),
+    }));
+}
 
 async function selectIds(sql: string, values: unknown[], client?: PoolClient): Promise<number[]> {
   const result = client
@@ -208,14 +341,16 @@ export async function findSubtreeKeyAmbiguity(
 export async function activeDescendantCount(
   rootId: number,
   ownerUserId: string,
+  client?: PoolClient,
 ): Promise<number> {
-  const result = await query<{ count: string }>(
-    `${PAGE_SUBTREE_CTE}
+  const sql = `${PAGE_SUBTREE_CTE}
      SELECT COUNT(*)::text AS count FROM d
       WHERE deleted_at IS NULL AND source = 'standalone'
-        AND created_by_user_id = $2 AND id <> $1`,
-    [rootId, ownerUserId],
-  );
+        AND created_by_user_id = $2 AND id <> $1`;
+  const values = [rootId, ownerUserId];
+  const result = client
+    ? await client.query<{ count: string }>(sql, values)
+    : await query<{ count: string }>(sql, values);
   return parseInt(result.rows[0]!.count, 10);
 }
 
@@ -234,15 +369,20 @@ export async function activeDescendantCount(
  * cascade is owner-scoped, and it is what keeps a restore from resurrecting
  * another user's row out of a batch stamped before that scoping existed.
  */
-export async function trashBatchIds(rootId: number, ownerUserId: string): Promise<number[]> {
+export async function trashBatchIds(
+  rootId: number,
+  ownerUserId: string,
+  client?: PoolClient,
+): Promise<number[]> {
   return selectIds(
     `${PAGE_SUBTREE_CTE}
      SELECT d.id
        FROM d
        JOIN pages root ON root.id = $1
       WHERE d.deleted_at IS NOT NULL AND d.deleted_at = root.deleted_at
-        AND d.created_by_user_id = $2`,
+        AND d.source = 'standalone' AND d.created_by_user_id = $2`,
     [rootId, ownerUserId],
+    client,
   );
 }
 
@@ -286,23 +426,34 @@ export type ParentResolution =
  * missed the map read as "no parent at all" — the guard failing OPEN, which
  * re-created the very orphan it exists to prevent.
  */
-export async function resolveParentOf(parentId: string | null): Promise<ParentResolution> {
+export async function resolveParentOf(
+  parentId: string | null,
+  client?: PoolClient,
+): Promise<ParentResolution> {
   if (!parentId) return { kind: 'none' };
 
-  const result = await query<{
-    id: number;
-    title: string;
-    source: string;
-    visibility: string;
-    created_by_user_id: string | null;
-    deleted_at: Date | null;
-  }>(
-    `SELECT id, title, source, visibility, created_by_user_id, deleted_at
+  const sql = `SELECT id, title, source, visibility, created_by_user_id, deleted_at
        FROM pages
       WHERE confluence_id = $1 OR id::text = $1
-      ORDER BY id`,
-    [parentId],
-  );
+      ORDER BY id`;
+  const values = [parentId];
+  const result = client
+    ? await client.query<{
+        id: number;
+        title: string;
+        source: string;
+        visibility: string;
+        created_by_user_id: string | null;
+        deleted_at: Date | null;
+      }>(sql, values)
+    : await query<{
+        id: number;
+        title: string;
+        source: string;
+        visibility: string;
+        created_by_user_id: string | null;
+        deleted_at: Date | null;
+      }>(sql, values);
 
   if (result.rows.length === 0) return { kind: 'none' };
   if (result.rows.length > 1) {

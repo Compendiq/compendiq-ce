@@ -1,7 +1,9 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { UNSAFE_NavigationContext, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
+import * as Y from 'yjs';
+import { toBase64 } from 'lib0/buffer';
 import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -18,7 +20,7 @@ import {
 } from '../../shared/hooks/use-pages';
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
-import type { CollabConfig, SettablePageIcon } from '@compendiq/contracts';
+import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
@@ -35,6 +37,7 @@ import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { ArticleConnections } from '../../shared/components/article/ArticleConnections';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { triggerDownload } from '../../shared/lib/export-helpers';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
 import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
@@ -71,9 +74,25 @@ function scrollArticleToTop() {
   });
 }
 
+type GuardableNavigator = {
+  push: (...args: unknown[]) => void;
+  replace: (...args: unknown[]) => void;
+  go: (delta: number) => void;
+};
+
+function stateHistoryIndex(value: unknown): number | null {
+  if (!value || typeof value !== 'object' || !('idx' in value)) return null;
+  return typeof value.idx === 'number' ? value.idx : null;
+}
+
+function historyIndex(): number | null {
+  return stateHistoryIndex(window.history.state);
+}
+
 export function PageViewPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const navigationContext = useContext(UNSAFE_NavigationContext);
   const queryClient = useQueryClient();
 
   const { data: page, isLoading, isError, error: pageError, refetch: refetchPage, isFetching: isRefetchingPage } = usePage(id);
@@ -126,12 +145,24 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  const metadataRevisionRef = useRef(0);
+  const editSessionRef = useRef(0);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
   // this page.
   const [isDirty, setIsDirty] = useState(false);
+  const [editingBlocked, setEditingBlocked] = useState(false);
+  const [sessionLifecycleRevision, setSessionLifecycleRevision] = useState<string>();
+  const [confirmReloadOpen, setConfirmReloadOpen] = useState(false);
+  const recoveryFocusIntentRef = useRef<{ source: Element | null; shouldFocus: boolean } | null>(null);
+  const [openingCurrent, setOpeningCurrent] = useState(false);
+  const openingCurrentRequestRef = useRef(0);
   const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const currentArticleHeadingRef = useRef<HTMLHeadingElement>(null);
+  const recoveryNavigationGuardRef = useRef(false);
+  const pendingNavigationRef = useRef<(() => void) | null>(null);
+  const [confirmNavigationOpen, setConfirmNavigationOpen] = useState(false);
   const previousPageIdRef = useRef(id);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
@@ -163,7 +194,7 @@ export function PageViewPage() {
   // Real-time co-presence (#301). Propagates our editing flag to other viewers
   // via a 10s heartbeat so the pencil badge toggles for them within one tick.
   // When collab is live, awareness owns the pencil — stop sending SSE isEditing.
-  const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
+  const { viewers: presenceViewers, setEditing: setPresenceEditing, lifecycle } = usePresence(id);
   const { data: collabConfig } = useQuery<CollabConfig>({
     queryKey: ['collab-config'],
     queryFn: async () => {
@@ -177,16 +208,42 @@ export function PageViewPage() {
   const collab = useCollabProvider({
     pageId: id,
     enabled: collabSession,
+    expectedLifecycleRevision: page?.lifecycleRevision,
   });
   const collabLive = collabSession;
+  useLayoutEffect(() => {
+    const doc = collab.ydoc;
+    if (!collabLive || !collabHasSynced || !doc) return;
+    const fragment = doc.getXmlFragment('default');
+    const markLocalChange = (_events: unknown[], transaction: Y.Transaction) => {
+      if (transaction.local) setIsDirty(true);
+    };
+    fragment.observeDeep(markLocalChange);
+    return () => fragment.unobserveDeep(markLocalChange);
+  }, [collab.ydoc, collabHasSynced, collabLive]);
   useEffect(() => {
     if (!collabSession) {
       setCollabHasSynced(false);
       return;
     }
     if (collab.synced) setCollabHasSynced(true);
-    if (collab.error) setCollabHasSynced(false);
-  }, [collabSession, collab.synced, collab.error]);
+  }, [collabSession, collab.synced]);
+  useEffect(() => {
+    if (!editing) return;
+    const observed = lifecycle && (page?.lifecycleRevision === undefined ||
+      BigInt(lifecycle.lifecycleRevision) > BigInt(page.lifecycleRevision)) ? lifecycle : page;
+    const observedRevision = observed?.lifecycleRevision;
+    if (observed?.isFrozen === true || page?.canMutateContent === false ||
+        (sessionLifecycleRevision !== undefined && observedRevision !== undefined &&
+          observedRevision !== sessionLifecycleRevision)) {
+      setEditingBlocked(true);
+    }
+  }, [editing, lifecycle, page, sessionLifecycleRevision]);
+  const writeLocked = page?.isFrozen === true ||
+    (editing && (editingBlocked || collab.readOnlyReason != null));
+  const editorWritable = !writeLocked && (!collabLive || collab.writable ||
+    (collabHasSynced && !collab.connected));
+  const saveBlocked = writeLocked || (collabLive && (!collab.writable || !collab.connected));
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -237,12 +294,20 @@ export function PageViewPage() {
   useEffect(() => {
     if (previousPageIdRef.current !== id) {
       previousPageIdRef.current = id;
+      editSessionRef.current += 1;
+      setCollabSaving(false);
       // ArticleViewer publishes the destination headings asynchronously.
       // Clear page A's structure immediately so the app-level inspector cannot
       // expose a stale Outline while page B is loading or has no headings.
       setHeadings([]);
       setStoreHeadings([]);
       setEditing(false);
+      setEditingBlocked(false);
+      setSessionLifecycleRevision(undefined);
+      setConfirmReloadOpen(false);
+      openingCurrentRequestRef.current += 1;
+      recoveryFocusIntentRef.current = null;
+      setOpeningCurrent(false);
       setEditHtml('');
       setEditTitle('');
       setDraftLabels([]);
@@ -250,6 +315,8 @@ export function PageViewPage() {
       setPendingDraft(null);
       setEditorInstance(null);
       setConfirmDiscardOpen(false);
+      setConfirmNavigationOpen(false);
+      pendingNavigationRef.current = null;
       setConfirmTrashOpen(false);
       setConfluenceModified(null);
       setCollabSession(false);
@@ -353,6 +420,14 @@ export function PageViewPage() {
 
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
+    if (page.isFrozen === true || page.canMutateContent === false) {
+      toast.info('This page is read-only. Its content cannot be changed with your current access.');
+      return;
+    }
+    editSessionRef.current += 1;
+    setCollabSaving(false);
+    setEditingBlocked(false);
+    setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
     setEditTitle(page.title);
     setDraftLabels(page.labels ?? []);
@@ -412,13 +487,16 @@ export function PageViewPage() {
   }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
+    editSessionRef.current += 1;
+    setCollabSaving(false);
+    if (draftKey) clearDraft(draftKey);
     captureScrollOffset();
     setCollabSession(false);
     setCollabHasSynced(false);
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
-  }, [captureScrollOffset]);
+  }, [captureScrollOffset, draftKey]);
 
   const titleOrLabelsDiverged = useCallback(() => {
     if (!page) return false;
@@ -433,71 +511,246 @@ export function PageViewPage() {
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
-    if (collabSession) {
-      // Body lives on the Y.Doc; still confirm title/label divergence.
-      if (titleOrLabelsDiverged()) {
-        setConfirmDiscardOpen(true);
-        return;
-      }
-      discardAndExit();
-      return;
-    }
-    if (isEditorDirty()) {
+    // Connection and room admission do not acknowledge each local update.
+    const dirty = collabSession ? titleOrLabelsDiverged() || isDirty : isEditorDirty();
+    if (dirty) {
       setConfirmDiscardOpen(true);
       return;
     }
+    const source = document.activeElement;
     discardAndExit();
-  }, [collabSession, titleOrLabelsDiverged, isEditorDirty, discardAndExit]);
+    requestAnimationFrame(() => {
+      // Hand off only the focus lost with this editor, never a surviving
+      // control or a different article reached before the next paint.
+      if (previousPageIdRef.current === id && source && !source.isConnected &&
+          document.activeElement === document.body) {
+        currentArticleHeadingRef.current?.focus();
+      }
+    });
+  }, [collabSession, titleOrLabelsDiverged, isDirty, isEditorDirty, discardAndExit, id]);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscardOpen(false);
     discardAndExit();
   }, [discardAndExit]);
 
-  const handleSave = useCallback(async () => {
-    if (!id || !page) return;
+  const downloadOpenDraft = useCallback(() => {
+    const bodyHtml = editorInstance && !editorInstance.isDestroyed ? editorInstance.getHTML() : editHtml;
+    triggerDownload(new Blob([JSON.stringify({
+      pageId: id,
+      title: editTitle,
+      bodyHtml,
+      labels: draftLabels,
+      lifecycleRevision: sessionLifecycleRevision ?? null,
+    }, null, 2)], { type: 'application/json' }), `page-${id}-draft.json`);
+  }, [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
+
+  const openCurrentVersion = useCallback(async () => {
+    if (openingCurrent) return;
+    const requestId = openingCurrentRequestRef.current + 1;
+    openingCurrentRequestRef.current = requestId;
+    const source = document.activeElement;
+    setOpeningCurrent(true);
     try {
-      // Flush any pending draw.io diagrams edited inside the TipTap
-      // editor before we serialise + save (#302 Gap 3). Without this
-      // the edited PNG ships as a huge base64 data URI inside body_html;
-      // with it, the PNG is uploaded to the attachment store and the
-      // body_html references the small server URL instead.
+      const current = await refetchPage();
+      if (openingCurrentRequestRef.current !== requestId) return;
+      if (!current.isSuccess || !current.data) {
+        toast.error('The current page could not be opened. Your draft is still here.');
+        return;
+      }
+      recoveryFocusIntentRef.current = {
+        source,
+        shouldFocus: document.activeElement === source,
+      };
+      setConfirmReloadOpen(false);
+      discardAndExit();
+    } catch {
+      if (openingCurrentRequestRef.current === requestId) {
+        toast.error('The current page could not be opened. Your draft is still here.');
+      }
+    } finally {
+      if (openingCurrentRequestRef.current === requestId) setOpeningCurrent(false);
+    }
+  }, [discardAndExit, openingCurrent, refetchPage]);
+
+  // A connected socket is not durable acknowledgment. Preserve every changed
+  // local draft until a successful commit covers its captured Yjs state.
+  const recoveryDraftNeedsGuard = editing && collabLive && (titleOrLabelsDiverged() || isDirty);
+  recoveryNavigationGuardRef.current = recoveryDraftNeedsGuard;
+
+  useEffect(() => {
+    if (!recoveryDraftNeedsGuard) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [recoveryDraftNeedsGuard]);
+
+  const requestGuardedNavigation = useCallback((proceed: () => void) => {
+    if (!recoveryNavigationGuardRef.current) {
+      proceed();
+      return;
+    }
+    // Keep the first destination. A second click while the confirmation owns
+    // focus must not silently replace the action the user is deciding about.
+    if (pendingNavigationRef.current) return;
+    pendingNavigationRef.current = proceed;
+    setConfirmNavigationOpen(true);
+  }, []);
+
+  const cancelGuardedNavigation = useCallback(() => {
+    pendingNavigationRef.current = null;
+    setConfirmNavigationOpen(false);
+  }, []);
+
+  const confirmGuardedNavigation = useCallback(() => {
+    const proceed = pendingNavigationRef.current;
+    pendingNavigationRef.current = null;
+    setConfirmNavigationOpen(false);
+    discardAndExit();
+    proceed?.();
+  }, [discardAndExit]);
+
+  // BrowserRouter is the app's incumbent router and does not support
+  // react-router's data-router-only useBlocker. Guard its navigator methods,
+  // plus native Back/Forward POPs, so links, imperative navigation and browser
+  // history all share the same explicit discard decision.
+  useEffect(() => {
+    const navigator = navigationContext.navigator as unknown as GuardableNavigator;
+    const originalPush = navigator.push;
+    const originalReplace = navigator.replace;
+    const originalGo = navigator.go;
+    let currentIndex = historyIndex();
+    let restoringBlockedPop = false;
+    let allowNextPop = false;
+
+    const guardedPush: GuardableNavigator['push'] = (...args) => {
+      requestGuardedNavigation(() => {
+        Reflect.apply(originalPush, navigator, args);
+        currentIndex = historyIndex();
+      });
+    };
+    const guardedReplace: GuardableNavigator['replace'] = (...args) => {
+      requestGuardedNavigation(() => {
+        Reflect.apply(originalReplace, navigator, args);
+        currentIndex = historyIndex();
+      });
+    };
+    const guardedGo: GuardableNavigator['go'] = (delta) => {
+      if (!recoveryNavigationGuardRef.current) {
+        Reflect.apply(originalGo, navigator, [delta]);
+        return;
+      }
+      requestGuardedNavigation(() => {
+        allowNextPop = true;
+        Reflect.apply(originalGo, navigator, [delta]);
+      });
+    };
+
+    navigator.push = guardedPush;
+    navigator.replace = guardedReplace;
+    navigator.go = guardedGo;
+
+    const handlePopState = (event: PopStateEvent) => {
+      const nextIndex = stateHistoryIndex(event.state);
+      if (allowNextPop) {
+        allowNextPop = false;
+        currentIndex = nextIndex;
+        return;
+      }
+      if (restoringBlockedPop) {
+        restoringBlockedPop = false;
+        currentIndex = nextIndex;
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!recoveryNavigationGuardRef.current) {
+        currentIndex = nextIndex;
+        return;
+      }
+      if (currentIndex === null || nextIndex === null || nextIndex === currentIndex) return;
+
+      const delta = nextIndex - currentIndex;
+      event.stopImmediatePropagation();
+      restoringBlockedPop = true;
+      window.history.go(-delta);
+      requestGuardedNavigation(() => {
+        allowNextPop = true;
+        window.history.go(delta);
+      });
+    };
+
+    window.addEventListener('popstate', handlePopState, true);
+    return () => {
+      window.removeEventListener('popstate', handlePopState, true);
+      if (navigator.push === guardedPush) navigator.push = originalPush;
+      if (navigator.replace === guardedReplace) navigator.replace = originalReplace;
+      if (navigator.go === guardedGo) navigator.go = originalGo;
+    };
+  }, [navigationContext.navigator, requestGuardedNavigation]);
+
+  const handleRecoveryCloseAutoFocus = useCallback((event: Event) => {
+    const intent = recoveryFocusIntentRef.current;
+    recoveryFocusIntentRef.current = null;
+    if (!intent?.shouldFocus) return;
+    const active = document.activeElement;
+    if (active !== document.body && active !== intent.source) return;
+    const heading = currentArticleHeadingRef.current;
+    if (!heading) return;
+    event.preventDefault();
+    heading.focus();
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!id || !page || collabSaving) return;
+    if (saveBlocked) {
+      toast.info('This draft cannot be saved into the current session. Download it before opening the current version.');
+      return;
+    }
+    const session = editSessionRef.current;
+    const metadataRevision = metadataRevisionRef.current;
+    const document = collab.ydoc;
+    let submittedState: Y.Snapshot | undefined;
+    let pushedToConfluence = false;
+    try {
       if (collabLive) {
+        if (!document) throw new Error('The collaborative document is not ready. Keep this draft open.');
+        setCollabSaving(true);
         const drain = await drainPendingDrawioDiagrams(editorInstance, {
           attachmentPageId: page.confluenceId ?? id,
           pageSource: page.confluenceId ? 'confluence' : 'standalone',
         });
-        for (const msg of drain.errors) {
-          toast.warning(msg);
-        }
-        setCollabSaving(true);
-        try {
+        for (const msg of drain.errors) toast.warning(msg);
+        if (editSessionRef.current !== session) return;
+        submittedState = Y.snapshot(document);
+        const result = CollabCommitResponseSchema.parse(
           await apiFetch(`/pages/${id}/collab/commit`, {
             method: 'POST',
-            body: JSON.stringify({ title: editTitle }),
-          });
-          setConfluenceModified(null);
-          queryClient.invalidateQueries({ queryKey: ['pages', id] });
-        } finally {
-          setCollabSaving(false);
-        }
+            body: JSON.stringify({
+              title: editTitle,
+              expectedLifecycleRevision: sessionLifecycleRevision,
+              expectedDocumentState: toBase64(Y.encodeSnapshot(submittedState)),
+            }),
+          }),
+        );
+        void queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        if (editSessionRef.current !== session) return;
+        pushedToConfluence = result.pushedToConfluence === true;
+        setConfluenceModified(null);
       } else {
         const drain = await drainPendingDrawioDiagrams(editorInstance, {
           attachmentPageId: page.confluenceId ?? id,
           pageSource: page.confluenceId ? 'confluence' : 'standalone',
         });
-        for (const msg of drain.errors) {
-          toast.warning(msg);
-        }
+        for (const msg of drain.errors) toast.warning(msg);
+        if (editSessionRef.current !== session) return;
         if (!editorInstance) {
           toast.error('Editor instance is not ready. Please try again.');
           return;
         }
-        // Read the live HTML straight off the editor instance (#954) — it's the
-        // single source of truth for body content, and also reflects the
-        // newly-committed draw.io node attributes from the drain above.
         const bodyToSave = editorInstance.getHTML();
-
         await updateMutation.mutateAsync({
           id,
           title: editTitle,
@@ -505,6 +758,7 @@ export function PageViewPage() {
           version: page.version,
         });
       }
+      if (editSessionRef.current !== session) return;
       if (editing) {
         const currentLabels = page.labels ?? [];
         const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
@@ -513,15 +767,35 @@ export function PageViewPage() {
           await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
         }
       }
+      if (editSessionRef.current !== session) return;
+      if (collabLive && (
+        metadataRevisionRef.current !== metadataRevision ||
+        !document || document.isDestroyed || !submittedState ||
+        !Y.equalSnapshots(submittedState, Y.snapshot(document))
+      )) {
+        toast.info('Saved the captured version. The document changed while saving; it remains open.');
+        return;
+      }
       if (draftKey) clearDraft(draftKey);
       setCollabSession(false);
       setCollabHasSynced(false);
       setIsDirty(false);
       setDraftLabels([]);
       setEditing(false);
-      const isConfluence = page.source === 'confluence' || Boolean(page.confluenceId);
+      const isConfluence = collabLive
+        ? pushedToConfluence
+        : page.source === 'confluence' || Boolean(page.confluenceId);
       toast.success(isConfluence ? 'Page saved & synced to Confluence DC.' : 'Page saved.');
     } catch (error) {
+      if (editSessionRef.current !== session) return;
+      if (error instanceof ApiError && (
+        error.statusCode === 423 || error.reason === 'stale_lifecycle' ||
+        error.reason === 'admission_token_mismatch' || error.reason === 'page_is_frozen'
+      )) {
+        setEditingBlocked(true);
+        void queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        return;
+      }
       if (error instanceof ApiError && error.code === 'confluence_modified') {
         setConfluenceModified({
           remoteVersion: error.remoteVersion,
@@ -544,8 +818,10 @@ export function PageViewPage() {
       } else {
         toast.error(message);
       }
+    } finally {
+      if (editSessionRef.current === session) setCollabSaving(false);
     }
-  }, [collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
+  }, [collab.ydoc, collabLive, collabSaving, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -615,6 +891,7 @@ export function PageViewPage() {
     if (!id) return;
     if (editing) {
       if (!draftLabels.includes(tag)) {
+        metadataRevisionRef.current += 1;
         setDraftLabels((prev) => [...prev, tag]);
         setIsDirty(true);
       }
@@ -629,6 +906,7 @@ export function PageViewPage() {
   const handleRemoveTag = useCallback((tag: string) => {
     if (!id) return;
     if (editing) {
+      metadataRevisionRef.current += 1;
       setDraftLabels((prev) => prev.filter((t) => t !== tag));
       setIsDirty(true);
       return;
@@ -783,7 +1061,7 @@ export function PageViewPage() {
   // no page, keeps the existing not-found copy.
   const loadFailed = isError && !(pageError instanceof ApiError && pageError.statusCode === 404);
 
-  if (loadFailed) {
+  if (loadFailed && !editing) {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center" role="alert" data-testid="page-load-error">
         <div className="rounded-full bg-muted p-2.5">
@@ -826,7 +1104,9 @@ export function PageViewPage() {
     );
   }
 
-  const tagChip = (
+  const tagChip = writeLocked ? (
+    <span className="text-xs text-muted-foreground">{draftLabels.length ? draftLabels.join(', ') : 'Tags are read-only'}</span>
+  ) : (
     <TagPopover
       tags={editing ? draftLabels : (page.labels ?? [])}
       onAddTag={handleAddTag}
@@ -865,7 +1145,7 @@ export function PageViewPage() {
       )}
       <Button
         onClick={handleSave}
-        disabled={saving}
+        disabled={saving || saveBlocked}
         isLoading={saving}
         title="Save changes (Ctrl+S)"
         variant="primary"
@@ -909,7 +1189,7 @@ export function PageViewPage() {
           />
         )}
         <div className="relative w-full border-b border-border bg-card">
-          {editing && editorInstance ? (
+          {editing && editorInstance && editorWritable ? (
             <div className="px-2">
               <EditorToolbar
                 editor={editorInstance}
@@ -975,7 +1255,7 @@ export function PageViewPage() {
               )}
             </div>
           )}
-          {editing && editorInstance && (
+          {editing && editorInstance && editorWritable && (
             <EditorContextToolbars
               editor={editorInstance}
               innerClassName="px-2"
@@ -989,11 +1269,29 @@ export function PageViewPage() {
       >
         {editing ? (
           <Fragment key="article-edit">
+            <div role="status" aria-live="polite" className="mx-auto w-full max-w-[1200px] px-5 sm:px-10">
+              {(writeLocked || (collabLive && collabHasSynced && !collab.connected)) && (
+                <div className="my-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
+                  <p className="font-medium text-foreground">
+                    {writeLocked ? 'This editing session is now read-only' : 'Working offline'}
+                  </p>
+                  <p className="mt-1 leading-6 text-muted-foreground">
+                    {writeLocked
+                      ? 'The page or your access changed. Your open draft remains below and is not reapplied automatically.'
+                      : 'Changes stay in this tab while the connection is unavailable. Reconnect before saving.'}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" className="nm-button-ghost h-8" onClick={downloadOpenDraft}>Download draft</button>
+                    <button type="button" className="nm-button-ghost h-8" onClick={() => setConfirmReloadOpen(true)}>Open current version</button>
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
                 <PageTitleIcon
                   icon={page.icon}
                   pageId={page.id}
-                  editable
+                  editable={editorWritable}
                   onSelect={handleSelectIcon}
                   onUpload={handleUploadIcon}
                   onRemove={handleRemoveIcon}
@@ -1006,7 +1304,11 @@ export function PageViewPage() {
                     so the first line sits on the same baseline as the h1. */}
                 <AutoGrowTextarea
                   value={editTitle}
-                  onValueChange={setEditTitle}
+                  onValueChange={(value) => {
+                    metadataRevisionRef.current += 1;
+                    setEditTitle(value);
+                  }}
+                  readOnly={!editorWritable}
                   className="mb-4 min-w-0 flex-1 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
                   placeholder="Page title…"
                   aria-label="Page title"
@@ -1018,7 +1320,7 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
-                {collabLive && collab.error ? (
+                {collabLive && collab.error && !collabHasSynced ? (
                   <p
                     role="status"
                     className="py-8 text-sm leading-6 text-muted-foreground"
@@ -1036,12 +1338,15 @@ export function PageViewPage() {
                     className="py-8 text-sm leading-6 text-muted-foreground"
                     data-testid="collab-connecting"
                   >
-                    Connecting to the collaborative session…
+                    {collab.readOnlyReason
+                      ? 'This tab did not join a writable session. Open the current version to continue.'
+                      : 'Connecting to the collaborative session…'}
                   </p>
                 ) : (
                   <Editor
                     content={collabLive ? undefined : editHtml}
-                    onChange={() => setIsDirty(true)}
+                    editable={editorWritable}
+                    onChange={() => { if (!collabLive) setIsDirty(true); }}
                     draftKey={collabLive ? undefined : draftKey}
                     naked
                     onEditorReady={setEditorInstance}
@@ -1091,7 +1396,11 @@ export function PageViewPage() {
                 uploading={uploadIconMutation.isPending}
                 uploadError={iconUploadError}
               />
-              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+              <h1
+                ref={currentArticleHeadingRef}
+                tabIndex={-1}
+                className="nm-focus-ring min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl"
+              >
                 {page.title}
               </h1>
             </div>
@@ -1127,7 +1436,11 @@ export function PageViewPage() {
                 uploading={uploadIconMutation.isPending}
                 uploadError={iconUploadError}
               />
-              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+              <h1
+                ref={currentArticleHeadingRef}
+                tabIndex={-1}
+                className="nm-focus-ring min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl"
+              >
                 {page.title}
               </h1>
             </div>
@@ -1214,13 +1527,39 @@ export function PageViewPage() {
       <ConfirmDialog
         open={confirmDiscardOpen}
         title="Discard changes?"
-        description="This page has unsaved changes. Discarding them cannot be undone."
+        description={collabLive
+          ? 'This tab has edits not confirmed by Save. Leaving drops this tab’s copy; changes already shared with the server are not undone.'
+          : 'This page has unsaved changes. Discarding them cannot be undone.'}
         confirmLabel="Discard changes"
         cancelLabel="Keep editing"
         destructive
         onConfirm={handleConfirmDiscard}
         onCancel={() => setConfirmDiscardOpen(false)}
         onDismiss={() => setConfirmDiscardOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmNavigationOpen}
+        title="Discard draft and leave?"
+        description="This tab has edits not confirmed by Save. Leaving drops this tab’s copy; changes already shared with the server are not undone. Keep the draft open to save it."
+        confirmLabel="Discard draft and leave"
+        cancelLabel="Keep draft"
+        destructive
+        onConfirm={confirmGuardedNavigation}
+        onCancel={cancelGuardedNavigation}
+        onDismiss={cancelGuardedNavigation}
+      />
+
+      <ConfirmDialog
+        open={confirmReloadOpen}
+        title="Open the current version?"
+        description="Download a copy first if you need this draft. Opening the current version discards this tab’s open draft; it is not merged or reapplied automatically."
+        confirmLabel={openingCurrent ? 'Opening…' : 'Open current version'}
+        cancelLabel="Keep draft"
+        onConfirm={() => { void openCurrentVersion(); }}
+        onCancel={() => { if (!openingCurrent) setConfirmReloadOpen(false); }}
+        onDismiss={() => { if (!openingCurrent) setConfirmReloadOpen(false); }}
+        onCloseAutoFocus={handleRecoveryCloseAutoFocus}
       />
 
       {/* Draft restore — drafts are autosaved to localStorage on this device
