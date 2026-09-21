@@ -30,6 +30,7 @@ export const ENTERPRISE_FEATURES = {
   DATA_RETENTION_POLICIES: 'data_retention_policies',
   COMPLIANCE_REPORTS: 'compliance_reports',
   VERSION_SNAPSHOT_ARCHIVAL: 'version_snapshot_archival',
+  DOCUMENT_SIGN_OFF_GOVERNANCE: 'document_sign_off_governance',
 
   // ── Analytics & Reporting ──
   ADVANCED_ANALYTICS: 'advanced_analytics',

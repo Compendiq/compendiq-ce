@@ -173,7 +173,19 @@ export type AuditAction =
   | 'PAGE_FROZEN'
   | 'PAGE_THAWED'
   | 'PAGE_BASELINE_ACTIVATION_CHANGED'
-  | 'PAGE_GOVERNANCE_POLICY_CHANGED';
+  | 'PAGE_GOVERNANCE_POLICY_CHANGED'
+  // #278: the multi-party sign-off workflow. Metadata carries the proposal,
+  // the expected manifest digest and the approving role — never a signing key
+  // and never the signed bytes.
+  | 'PAGE_GOVERNANCE_REQUIREMENTS_CHANGED'
+  | 'PAGE_GOVERNANCE_ROLE_ASSIGNED'
+  | 'PAGE_GOVERNANCE_ROLE_UNASSIGNED'
+  | 'PAGE_GOVERNANCE_PROPOSAL_CREATED'
+  | 'PAGE_GOVERNANCE_PROPOSAL_APPROVED'
+  | 'PAGE_GOVERNANCE_PROPOSAL_REJECTED'
+  | 'PAGE_GOVERNANCE_PROPOSAL_WITHDRAWN'
+  | 'PAGE_GOVERNANCE_PROPOSAL_INVALIDATED'
+  | 'PAGE_GOVERNANCE_FINALIZE_FAILED';
 
 interface AuditLogEntry {
   id: string;

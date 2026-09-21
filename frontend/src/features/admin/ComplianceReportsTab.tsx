@@ -116,6 +116,13 @@ const CATALOGUE: readonly CatalogueEntry[] = [
     controls: 'SOC 2 CC6.6 / CC6.7 · ISO 27001 A.8.15',
   },
   {
+    id: 'document_governance',
+    title: 'Document Sign-Off Evidence',
+    description:
+      'Every article freeze and thaw in the window with its approvals, the recorded manifest digest and the outcome of re-verifying that manifest\u2019s signature and retained bytes. A verification failure is reported as failed evidence, never as a passed control, and no executive declaration is inferred from an approval.',
+    controls: 'SOC 2 CC7.2 \u00b7 ISO 27001 A.5.33',
+  },
+  {
     id: 'rbac_changes',
     title: 'RBAC Change Log',
     description:
