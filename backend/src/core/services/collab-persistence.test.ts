@@ -6,6 +6,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { createClient, type RedisClientType } from 'redis';
 import * as Y from 'yjs';
 import type { WebSocket } from 'ws';
+
+// test-setup pins COLLAB_COMMIT_DUMP_TIMEOUT_MS to 200 ms so the suites that
+// assert on an UNANSWERED dump round finish quickly. Nothing here asserts on
+// a timeout: the concurrent-init case correlates two real pods over Redis
+// and PostgreSQL, and inside 200 ms the responder must finish its own
+// admission and document load (advisory locks contended with the requester),
+// run a transaction and publish back. On a loaded shard that window lapsed
+// and a legitimate join answered 503 `collab_state_unavailable`. Read at
+// module load through `vitestIntOr`, so it has to be set before the import.
+vi.hoisted(() => {
+  process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS = '2000';
+});
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../db/postgres.js';
