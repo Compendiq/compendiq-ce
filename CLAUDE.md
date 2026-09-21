@@ -1252,3 +1252,119 @@ Department text fallback must not rewrite embedding, rerank or image analysis.
 by backend availability. Supplied artifact observations and current-registry
 checksum agreement are not execution or air-gap attestation; never infer an
 observation from a model name or invent missing browser audit coverage.
+
+## Immutable Page Baselines
+
+`core/services/page-baseline-service.ts` owns the CE lifecycle; the canonical
+manifest, retained storage and distributed writer admission also live in
+`core`, not in a route or an EE domain. The manifest is the versioned, framed
+UTF-8 array produced by its canonical encoder. Never concatenate fields, sort
+with a locale, normalize persisted HTML, or include a retained filesystem path
+in the digest. Retained media are exclusive verified copies, not hard links or
+a fallback to the live attachment store. Authorize every source page before
+inspecting its files, and stream the same file descriptor that was verified.
+Only root-relative attachment route prefixes identify internal media; an
+external URL containing that route in its path, query or fragment is not local.
+Install the protected-page trigger in migration 121, after `baseline_id` exists,
+so independently committed migration 120 does not break legacy writes.
+
+Writer lock order is runtime epoch, sorted lifecycle locks, then subsystem and
+page locks. A durable intent precedes external mutation; its effect gate must
+finish before settlement. Unknown outcomes stay pending without TTL expiry.
+Recovery requires server-observed fencing evidence, never a caller's assertion,
+a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable
+mutation intent: capture current authority and revisions, then check the same
+pair under admission before the final SQL write.
+Successful effect phases keep their continuation owned until final settlement;
+quiescence must not acknowledge a gap between staging and remote/activation
+work. It refuses new work, not an already-started intent's next phase. Only a
+proven committed settlement releases that ownership after a commit error.
+Effect phases explicitly distinguish local staging from remote dispatch. Keep
+the remote-start and all-remote-complete markers across later local phases;
+local filesystem work is never evidence that Confluence was contacted.
+Known terminal remote work may be published locally by its registered kind's
+reconciler. Unversioned work without a terminal result stays pending.
+Claim every recovery on the current active runtime before invoking any verifier,
+with a durable `recovery_started_at` marker and local drain ownership covering
+verification through settlement/publication. No-start fencing must inspect that
+marker too. A fully failed callback may retry on the same owner; concurrent
+callbacks and recovery on a quiesced/fenced process are refused.
+Retain local retry eligibility after a successful claim UPDATE, before awaiting
+COMMIT: its acknowledgment can be lost after ownership committed. The next
+attempt still checks durable ownership, so a real rollback cannot bypass the
+original-runtime fence. Handle checked-out pg client errors and discard broken
+connections; an unacknowledged transaction fails to its caller, never as an
+uncaught event.
+Recovery administration is checked on the mutation client at fencing, claim,
+verification, repair and settlement. Quiescence authorizes and audits before
+closing the gate, then rechecks after draining; revocation leaves the gate
+closed but cannot produce an acknowledgment. Original-writer authority remains
+a separate check.
+Every accepted recovery attempt, including a same-runtime retry by a different
+admin, records that actor and reason before callbacks. Quiescence cancellation
+records the acting admin in `settled_by`, not the original writer.
+The history's 32-entry / 64 KiB bound is per segment, never a lifetime attempt
+cap. Archive a full segment atomically before claiming the next attempt;
+`page_write_recovery_history_segments` is append-only and retains every actor
+and reason. Keep the latest attempt in-row for current-owner cleanup checks.
+Ordinary, Apply and restore PUT replies retain bounded acknowledgment before readback;
+never invent returned body fingerprints from the request or lose known success
+because a later GET failed. Current authority, source identity, integration mode
+and credentials are re-read at each admitted remote phase.
+The first attachment upload resolves authority inside the remote callback too;
+an earlier client preflight is not dispatch authority. Notion media carries its
+original owner and normalized source-ID binding through normal publication and
+recovery. Generic shared-page edit permission must not replace that identity.
+Icon publication always checks current page access, even with inherited perms.
+Conditional E+1 recovery is read-only at Confluence, not locally: the same
+kind-owned publisher used by normal completion must commit verified authored
+state and exact AI/restore metadata before settling the intent. A missing or
+deactivated original actor, missing metadata or conflicting history stays pending.
+Normal and recovered publication invalidate the collaborative document in the
+same SQL transaction and enqueue cache invalidation on that exact intent.
+Flush after a proven commit; Redis failure leaves durable work for the existing
+outbox worker, not a failed response for an already-committed page. Provider
+lookups inside a locked transaction use its client, never a second pool lease.
+SQL-only page changes use the transactional per-page cache publication queue;
+hard deletion must not erase its row. Coalescing must retain the existing queue
+row's lock until the new writer commits: `ON CONFLICT DO NOTHING` lets an older
+delivery erase a newer, still-uncommitted privacy change. Generation-checked cache fills cannot
+reinstate data invalidated while they were loading. Outbox shutdown must cancel
+database checkout/lock waits as well as Redis work, with no SQL from a late lease.
+Relocation's exact original state lives in its operation-owned preparation,
+not the generic intent metadata; keep it through failed recovery and remove it
+with settlement. Never delete a known-successful upstream creation as
+compensation for a failed local phase.
+Preparation persistence itself is a gated local effect. With exact unchanged
+local identity/revisions and no remote-start marker, an active recovery admin
+can discard a to-Confluence preparation even after the original actor loses
+authority, credentials or its account. A NULL live actor link is permitted
+only for that exact no-remote-start cleanup, never publication or to-local
+rollback. With no local cutover, recovery leaves current ACLs untouched.
+After a cutover, restore the snapshot only from the still-empty cutover ACL,
+serializing the check and write with ordinary grant/revoke statements using
+the ACE relation lock **before the page row lock**, matching restriction sync.
+A changed ACL must refuse rather than be overwritten.
+Local delete recovery uses exact tombstones and retries committed cleanup
+without repeating deletion.
+Persist the create identity and each upload receipt before further provider work.
+Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
+fail after valid uploads; the generic terminal result binds a count and ordered
+digest instead of duplicating the array. Compact readbacks re-resolve credentials.
+The final ordinary attachment receipt and all-remote-complete marker commit
+atomically; a complete receipt set must survive interruption of its wrapper.
+
+Creation defaults off and refuses activation until the writer-readiness
+provider certifies the deployment. The foundation alone does not certify sync,
+collaboration, purge or subtree writers. Published baseline bytes and history
+survive page/actor deletion; manual signatory text is not authenticated approval.
+An already-frozen request returns 423, never success for unrecorded assertions.
+Publication abandons other prepared previews of that page in the same commit;
+guarded cleanup releases only their unpublished bytes and capacity.
+A `preparing` reservation whose intent was durably cancelled before any effect
+is also reclaimable. Pending or started preparations never expire by age.
+A durable governed marker still vetoes direct manual freeze when EE is
+unavailable. It never prevents authorized audited thaw, including a manual
+baseline frozen before that policy was enabled.
+Operations, capacity, retention and recovery:
+`docs/runbooks/immutable-page-baselines.md`.

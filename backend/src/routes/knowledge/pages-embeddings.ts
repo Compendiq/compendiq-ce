@@ -101,8 +101,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
         ? [...filterSpaceKeys].sort().join(',')
         : 'all';
     const cacheKey = `graph:${view}:${cacheSpaceKey}`;
-    const cached = await cache.get(userId, 'pages', cacheKey);
-    if (cached) return cached;
+    const cacheReceipt = await cache.getWithGeneration(userId, 'pages', cacheKey);
+    if (cacheReceipt.value !== null) return cacheReceipt.value;
 
     // Fetch accessible spaces (RBAC).
     // #360: when the user supplies one or more `spaceKey` values, intersect
@@ -125,7 +125,13 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     }
 
     if (view === 'clustered') {
-      return await buildClusteredGraph(userId, effectiveSpaces, cache, cacheKey);
+      return await buildClusteredGraph(
+        userId,
+        effectiveSpaces,
+        cache,
+        cacheKey,
+        cacheReceipt.generation,
+      );
     }
 
     // ── Individual view ──────────────────────────────────────────────────
@@ -232,7 +238,14 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
         relationshipsByType,
       },
     };
-    await cache.set(userId, 'pages', cacheKey, response, GRAPH_CACHE_TTL);
+    await cache.setIfCurrent(
+      userId,
+      'pages',
+      cacheKey,
+      cacheReceipt.generation,
+      response,
+      GRAPH_CACHE_TTL,
+    );
     return response;
   });
 
@@ -409,6 +422,7 @@ async function buildClusteredGraph(
   effectiveSpaces: string[],
   cache: RedisCache,
   cacheKey: string,
+  cacheGeneration: string | null,
 ) {
   // Group pages by their top-level ancestor (parent_id IS NULL or 3rd-level ancestor).
   // For simplicity, group by the root ancestor (the page with no parent in the same space).
@@ -549,6 +563,13 @@ async function buildClusteredGraph(
   }
 
   const response = { nodes: clusterNodes, edges: clusterEdges };
-  await cache.set(userId, 'pages', cacheKey, response, GRAPH_CACHE_TTL);
+  await cache.setIfCurrent(
+    userId,
+    'pages',
+    cacheKey,
+    cacheGeneration,
+    response,
+    GRAPH_CACHE_TTL,
+  );
   return response;
 }

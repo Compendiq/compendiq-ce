@@ -307,7 +307,7 @@ export async function listCachedAttachments(pageId: string): Promise<string[]> {
  * rather than answering null, because a refused path is a bug in the caller
  * and not an absent file.
  */
-function cachedAttachmentPath(pageId: string, filename: string): string {
+export function cachedAttachmentPath(pageId: string, filename: string): string {
   const dir = attachmentDirNow(pageId);
   const safeFilename = validateFilename(filename);
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
@@ -361,13 +361,14 @@ export async function readCachedAttachmentFile(
  * attachment keys (#1349, fixer external round).
  *
  * They sit inside the Confluence-style root and their names pass that tree's
- * key allow-list (`page-icons` / `client-models` because `-` is in it), so a
- * walker that treats every root entry as a key finds no page row for them
- * and judges the whole store one orphan directory. `local/` was reserved
- * from the start; the page-icon store was not, and a live sweep deleted
- * every uploaded page mark — permanently, because migrations 095/096 persist
- * only the sha. `#1418` adds `client-models/` for operator-supplied ONNX
- * weights on the same volume; forgetting that reservation is the same loss.
+ * key allow-list (`page-icons`, `client-models` and `page-baselines` because
+ * `-` is in it), so a walker that treats every root entry as a key finds no
+ * page row for them and judges the whole store one orphan directory. `local/`
+ * was reserved from the start; the page-icon store was not, and a live sweep
+ * deleted every uploaded page mark — permanently, because migrations 095/096
+ * persist only the sha. `#1418` adds `client-models/` for operator-supplied
+ * ONNX weights, and #275 adds permanently retained immutable baseline bytes.
+ * Forgetting either reservation is irreversible evidence loss.
  *
  * Anything that enumerates the root must skip these by name, and
  * `removeCachedAttachmentDirectory` refuses them outright so a future walker
@@ -375,11 +376,14 @@ export async function readCachedAttachmentFile(
  */
 /** Operator-supplied on-device model weights (#1418). Same attachments volume. */
 export const CLIENT_MODEL_STORE_DIRNAME = 'client-models';
+/** Immutable article baseline bytes (#275). Never traversed by live cleanup. */
+export const BASELINE_STORE_DIRNAME = 'page-baselines';
 
 export const ATTACHMENT_ROOT_RESERVED_DIRNAMES: ReadonlySet<string> = new Set([
   LOCAL_STORE_DIRNAME,
   PAGE_ICON_STORE_DIRNAME,
   CLIENT_MODEL_STORE_DIRNAME,
+  BASELINE_STORE_DIRNAME,
 ]);
 
 /**
@@ -563,7 +567,7 @@ export async function resolveAttachmentBytes(
  * store — the local half of {@link cachedAttachmentPath}, extracted for the
  * same reason.
  */
-function localStorePath(pageId: number, key: string): string {
+export function localStorePath(pageId: number, key: string): string {
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new Error('Invalid page id');
   }
@@ -580,6 +584,60 @@ function localStorePath(pageId: number, key: string): string {
     throw new Error('Path traversal detected');
   }
   return resolved;
+}
+
+const UUID_PATH_SEGMENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_PATH_SEGMENT = /^[0-9a-f]{64}$/;
+
+/** Absolute root of the retained immutable-baseline namespace. */
+export function baselineStoreRoot(): string {
+  return path.resolve(attachmentsRootNow(), BASELINE_STORE_DIRNAME);
+}
+
+/**
+ * Path for one exclusive preparation attempt. UUID-only segments keep the
+ * retained namespace closed to traversal and make abandoned attempts
+ * unreachable unless their exact identity was persisted.
+ */
+export function baselineAttemptDirectory(baselineId: string, attemptId: string): string {
+  if (!UUID_PATH_SEGMENT.test(baselineId) || !UUID_PATH_SEGMENT.test(attemptId)) {
+    throw new Error('Invalid baseline storage identity');
+  }
+  const root = baselineStoreRoot();
+  const resolved = path.resolve(root, baselineId, attemptId);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
+}
+
+/**
+ * Path of a copied media object. The filename is its SHA-256 identity, not a
+ * mutable source filename; the source identity remains in the manifest.
+ */
+export function baselineMediaPath(
+  baselineId: string,
+  attemptId: string,
+  mediaId: string,
+): string {
+  if (!SHA256_PATH_SEGMENT.test(mediaId)) {
+    throw new Error('Invalid baseline media identity');
+  }
+  return path.join(baselineAttemptDirectory(baselineId, attemptId), 'media', mediaId);
+}
+
+/** Candidate paths for an uploaded page icon, whose extension records format. */
+export function pageIconAttachmentPaths(pageId: number, sha256: string): string[] {
+  if (!Number.isInteger(pageId) || pageId <= 0 || !SHA256_PATH_SEGMENT.test(sha256)) {
+    throw new Error('Invalid page icon identity');
+  }
+  const dir = path.resolve(attachmentsRootNow(), PAGE_ICON_STORE_DIRNAME, String(pageId));
+  const root = attachmentsRootNow();
+  if (!dir.startsWith(root + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return ['png', 'jpg', 'webp', 'gif'].map((extension) => path.join(dir, `${sha256}.${extension}`));
 }
 
 /**

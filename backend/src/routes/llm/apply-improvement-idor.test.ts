@@ -56,6 +56,101 @@ async function fetchPage(id: number) {
   return res.rows[0]!;
 }
 
+async function baselineFixtureIds(
+  pageId: number,
+  actorId: string,
+): Promise<{ baselineId: string; intentId: string }> {
+  await query(
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+     VALUES ('baseline-fixture', '{"kind":"test"}'::jsonb)
+     ON CONFLICT (runtime_id) DO NOTHING`,
+  );
+  const result = await query<{ id: string; baseline_id: string }>(
+    `WITH ids AS (
+       SELECT gen_random_uuid() AS id, gen_random_uuid() AS baseline_id
+     )
+     INSERT INTO page_write_intents (
+       id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode,
+       effect, status, settled_at, settlement_reason, settlement_proof
+     )
+     SELECT ids.id, 'baseline-fixture', 'baseline.prepare', $2,
+            ARRAY[p.id], jsonb_build_object(
+              p.id::text,
+              jsonb_build_object(
+                'contentRevision', p.content_revision::text,
+                'lifecycleRevision', p.lifecycle_revision::text
+              )
+            ),
+            'local_verified',
+            jsonb_build_object('effectClass', 'local', 'baselineId', ids.baseline_id::text),
+            'completed', NOW(), 'effect_committed', '{}'::jsonb
+       FROM ids
+       JOIN pages p ON p.id = $1
+     RETURNING id, (effect->>'baselineId')::uuid::text AS baseline_id`,
+    [pageId, actorId],
+  );
+  return {
+    baselineId: result.rows[0]!.baseline_id,
+    intentId: result.rows[0]!.id,
+  };
+}
+
+async function freezePage(id: number, actorId: string): Promise<void> {
+  const page = await query<{
+    version: number;
+    title: string;
+    body_html: string | null;
+    body_text: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT version, title, body_html, body_text,
+            content_revision::text, lifecycle_revision::text
+       FROM pages WHERE id = $1`,
+    [id],
+  );
+  const row = page.rows[0]!;
+  const fixture = await baselineFixtureIds(id, actorId);
+  const baseline = await query<{ id: string }>(
+    `INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version,
+       content_revision, lifecycle_revision, manifest_digest, manifest,
+       manifest_bytes, title, body_html, body_text, total_bytes, reserved_bytes,
+       status, prepared_by_user_id, prepared_by_name, preparation_intent_id,
+       published_by_user_id, published_by_name, published_at, provenance, freeze_reason
+     ) VALUES (
+       $10, $1, $1, '[]'::jsonb, $2,
+       $3::bigint, $4::bigint, $5, '[]'::jsonb,
+       convert_to('[]', 'UTF8'), $6, $7, $8, 0, 0,
+       'published', $9, 'Owner', $11,
+       $9, 'Owner', NOW(), 'manual_assertion', 'Regression freeze'
+     ) RETURNING id`,
+    [
+      id,
+      row.version,
+      row.content_revision,
+      row.lifecycle_revision,
+      '0'.repeat(64),
+      row.title,
+      row.body_html,
+      row.body_text,
+      actorId,
+      fixture.baselineId,
+      fixture.intentId,
+    ],
+  );
+  await query(
+    `UPDATE pages SET
+       baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+       frozen_by_user_id = $3, frozen_by_name = 'Owner',
+       freeze_reason = 'Regression freeze',
+       freeze_provenance = 'manual_assertion',
+       freeze_reported_signatories = '[]'::jsonb
+     WHERE id = $1`,
+    [id, baseline.rows[0]!.id, actorId],
+  );
+}
+
 function applyPayload(pageId: number, extra: Record<string, unknown> = {}) {
   return {
     method: 'POST' as const,
@@ -161,5 +256,65 @@ describe.skipIf(!dbAvailable)('POST /api/llm/improvements/apply — standalone p
     const page = await fetchPage(pageId);
     expect(page.body_html).toContain('Overwritten');
     expect(page.version).toBe(ORIGINAL_VERSION + 1);
+  });
+
+  it('rejects AI Apply on a frozen page without changing authored content', async () => {
+    const pageId = await createStandalonePage({ ownerId: owner.userId, visibility: 'private' });
+    await freezePage(pageId, owner.userId);
+
+    const response = await app.inject({
+      ...applyPayload(pageId, { version: ORIGINAL_VERSION, title: 'Must not land' }),
+      headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' },
+    });
+
+    expect(response.statusCode).toBe(423);
+    expect(response.json()).toMatchObject({ reason: 'page_is_frozen' });
+    expect(await fetchPage(pageId)).toMatchObject({
+      title: ORIGINAL_TITLE,
+      body_html: ORIGINAL_HTML,
+      version: ORIGINAL_VERSION,
+    });
+  });
+
+  it('rejects label application on a frozen page', async () => {
+    const pageId = await createStandalonePage({ ownerId: owner.userId, visibility: 'private' });
+    await freezePage(pageId, owner.userId);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}/labels`,
+      payload: { addLabels: ['security'] },
+      headers: { authorization: `Bearer ${owner.token}` },
+    });
+
+    expect(response.statusCode).toBe(423);
+    expect(response.json()).toMatchObject({ reason: 'page_is_frozen' });
+    const labels = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [pageId]);
+    expect(labels.rows[0]!.labels).toEqual([]);
+  });
+
+  it('rejects restoring a historical snapshot over a frozen page', async () => {
+    const pageId = await createStandalonePage({ ownerId: owner.userId, visibility: 'private' });
+    await query(
+      `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
+       VALUES ($1, 2, 'Historical', '<p>Historical</p>', 'Historical')`,
+      [pageId],
+    );
+    await freezePage(pageId, owner.userId);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/2/restore`,
+      payload: { version: ORIGINAL_VERSION },
+      headers: { authorization: `Bearer ${owner.token}` },
+    });
+
+    expect(response.statusCode).toBe(423);
+    expect(response.json()).toMatchObject({ reason: 'page_is_frozen' });
+    expect(await fetchPage(pageId)).toMatchObject({
+      title: ORIGINAL_TITLE,
+      body_html: ORIGINAL_HTML,
+      version: ORIGINAL_VERSION,
+    });
   });
 });

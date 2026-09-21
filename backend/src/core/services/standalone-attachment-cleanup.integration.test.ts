@@ -19,8 +19,13 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
+import {
+  setupTestDb,
+  truncateAllTables,
+  teardownTestDb,
+  isDbAvailable,
+  waitForDatabaseCondition,
+} from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
 import { purgeExpiredStandalonePages } from './data-retention-service.js';
@@ -100,7 +105,7 @@ async function seedConfluencePage(userId: string, confluenceId: string): Promise
 }
 
 async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -114,10 +119,8 @@ async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<bool
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting === true;
+  });
 }
 
 describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
@@ -170,19 +173,23 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await writeFileAt('local', '77', 'diagram.png');
       await writeFileAt('page-icons', 'brand', 'mark.png');
       await writeFileAt('client-models', 'qwen', 'model.onnx');
+      await writeFileAt('page-baselines', 'baseline', 'evidence.bin');
 
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-baselines')).toBe(true);
 
       await expect(removeCachedAttachmentDirectory('local')).rejects.toThrow(/reserved/i);
       await expect(removeCachedAttachmentDirectory('page-icons')).rejects.toThrow(/reserved/i);
       await expect(removeCachedAttachmentDirectory('client-models')).rejects.toThrow(/reserved/i);
+      await expect(removeCachedAttachmentDirectory('page-baselines')).rejects.toThrow(/reserved/i);
 
       // …and the refusal really is what kept the bytes: both stores intact.
       expect(await exists(path.join(tempBase, 'local', '77', 'diagram.png'))).toBe(true);
       expect(await exists(path.join(tempBase, 'page-icons', 'brand', 'mark.png'))).toBe(true);
       expect(await exists(path.join(tempBase, 'client-models', 'qwen', 'model.onnx'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'page-baselines', 'baseline', 'evidence.bin'))).toBe(true);
     });
 
     it('removeCachedAttachmentFile removes exactly one file and refuses traversal', async () => {
@@ -241,7 +248,7 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await ageDir(String(pageId));
       await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
-      await cleanupStandalonePageAttachmentDirs(pageId);
+      await cleanupStandalonePageAttachmentDirs({ id: pageId });
 
       expect(await exists(path.join(tempBase, String(pageId)))).toBe(false);
       expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
@@ -259,7 +266,7 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await writeFileAt('local', String(pageId), 'diagram.png');
       await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
-      await cleanupStandalonePageAttachmentDirs(pageId);
+      await cleanupStandalonePageAttachmentDirs({ id: pageId });
 
       expect(await exists(young)).toBe(true);
       expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
@@ -279,7 +286,7 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       await ageDir(String(pageId));
       await query(`DELETE FROM pages WHERE id = $1`, [pageId]);
 
-      await cleanupStandalonePageAttachmentDirs(pageId);
+      await cleanupStandalonePageAttachmentDirs({ id: pageId });
 
       // The shared-keyspace directory survives; the local store is unambiguous.
       expect(await exists(confluenceCacheFile)).toBe(true);
@@ -301,7 +308,7 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       const neighbour = await writeFileAt('page-icons', String(pageId + 1), `${'b'.repeat(64)}.png`);
       await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
-      await cleanupStandalonePageAttachmentDirs(pageId);
+      await cleanupStandalonePageAttachmentDirs({ id: pageId });
 
       expect(await exists(icon), "a hard-deleted page's icon must not be left on disk").toBe(false);
       expect(await exists(path.join(tempBase, 'page-icons', String(pageId)))).toBe(false);
@@ -310,7 +317,19 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
 
     it('never throws — a filesystem problem is logged, not fatal', async () => {
       // No page rows, no directories at all: both removals are ENOENT no-ops.
-      await expect(cleanupStandalonePageAttachmentDirs(999_999)).resolves.toBeUndefined();
+      await expect(cleanupStandalonePageAttachmentDirs({ id: 999_999 })).resolves.toBeUndefined();
+    });
+
+    it('preserves every namespace when the claimed deletion did not commit', async () => {
+      const userId = await seedUser();
+      const pageId = await seedStandalonePage(userId);
+      const local = await writeFileAt('local', String(pageId), 'owned.bin');
+      const icon = await writeFileAt('page-icons', String(pageId), 'unknown-residue.bin');
+
+      await cleanupStandalonePageAttachmentDirs({ id: pageId });
+
+      expect(await exists(local)).toBe(true);
+      expect(await exists(icon)).toBe(true);
     });
 
     /**
@@ -368,7 +387,9 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       try {
         // Best-effort contract: the caller is inside a delete/purge and must
         // never be failed by a filesystem problem (mirrors the cell above).
-        await expect(cleanupStandalonePageAttachmentDirs(pageId)).resolves.toBeUndefined();
+        await expect(
+          cleanupStandalonePageAttachmentDirs({ id: pageId }),
+        ).resolves.toBeUndefined();
       } finally {
         statSpy.mockRestore();
       }

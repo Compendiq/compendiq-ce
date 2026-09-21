@@ -1,556 +1,755 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-
-const mockGetClientForUser = vi.fn();
-const mockQuery = vi.fn();
-const mockMarkdownToHtml = vi.fn();
-const mockHtmlToConfluence = vi.fn();
-const mockConfluenceToHtml = vi.fn();
-const mockHtmlToText = vi.fn();
-const mockLogAuditEvent = vi.fn();
-const mockProtectMedia = vi.fn();
-const mockRestoreMedia = vi.fn();
-
-// Defensive mock: llm-conversations.ts doesn't call the LLM directly, but
-// other route tests might be transitively imported. Safe no-op here.
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn(),
-}));
-vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn(),
-  buildRagContext: vi.fn(),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToMarkdown: vi.fn((html: string) => html),
-  confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
-  htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
-  htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
-  markdownToHtml: (...args: unknown[]) => mockMarkdownToHtml(...args),
-  protectMedia: (...args: unknown[]) => mockProtectMedia(...args),
-  restoreMedia: (...args: unknown[]) => mockRestoreMedia(...args),
-  // #781: the apply route derives the layout skeleton and matches the
-  // recovery error by instance — keep the class real-ish in the mock.
-  extractLayoutSkeleton: vi.fn(() => []),
-  LayoutRecoveryError: class LayoutRecoveryError extends Error {},
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  getEmbeddingStatus: vi.fn(),
-  processDirtyPages: vi.fn(),
-  reEmbedAll: vi.fn(),
-  embedPage: vi.fn(),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
-  computePageRelationships: vi.fn(),
-}));
-
-const mockIsConfluenceEnabled = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
-
-vi.mock('../../domains/llm/services/llm-cache.js', () => {
-  class MockLlmCache {
-    getCachedResponse = vi.fn().mockResolvedValue(null);
-    setCachedResponse = vi.fn();
-    acquireLock = vi.fn().mockResolvedValue(true);
-    releaseLock = vi.fn().mockResolvedValue(undefined);
-    waitForCachedResponse = vi.fn().mockResolvedValue(null);
-    clearAll = vi.fn();
-  }
-  return {
-    LlmCache: MockLlmCache,
-    buildLlmCacheKey: vi.fn().mockReturnValue('test-cache-key'),
-    buildRagCacheKey: vi.fn().mockReturnValue('test-rag-cache-key'),
-  };
-});
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
-
-vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
-}));
-
-vi.mock('../../core/services/redis-cache.js', () => {
-  class MockRedisCache {
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-  }
-  return { RedisCache: MockRedisCache };
-});
-
-vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
-  assembleSubPageContext: vi.fn(),
-  getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
-}));
-
+import { randomUUID } from 'node:crypto';
+import { createClient, type RedisClientType } from 'redis';
+import type * as Undici from 'undici';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { getPool, query } from '../../core/db/postgres.js';
+import { confluenceToHtml, htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import {
+  lockPageLifecycle,
+  reconcilePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from '../knowledge/pages.test-helpers.js';
 import { llmConversationRoutes } from './llm-conversations.js';
 
-describe('POST /api/llm/improvements/apply', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  const mockClient = {
-    updatePage: vi.fn(),
-  };
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'user-123';
-      request.userCan = async () => true;
-    });
-
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-
-    // Default: Confluence client available
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    // Default: the integration is on (pre-#1623 behaviour of this suite).
-    mockIsConfluenceEnabled.mockResolvedValue(true);
-
-    // Default: page exists in DB with version 5 (Confluence source)
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: '<p>Old content</p>' }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    // Default: content-converter mocks
-    mockMarkdownToHtml.mockResolvedValue('<p>Improved HTML content</p>');
-    mockHtmlToConfluence.mockReturnValue('<p class="confluence">Improved XHTML</p>');
-    mockConfluenceToHtml.mockReturnValue('<p>Improved HTML content</p>');
-    mockHtmlToText.mockReturnValue('Improved HTML content');
-
-    // Default: protectMedia returns empty media (no media to protect)
-    mockProtectMedia.mockReturnValue({ html: '<p>Old content</p>', media: [] });
-    // Default: restoreMedia is a passthrough
-    mockRestoreMedia.mockImplementation((html: string) => html);
-
-    // Default: Confluence updatePage returns new version
-    mockClient.updatePage.mockResolvedValue({
-      version: { number: 6 },
-      body: { storage: { value: '<p class="confluence">Improved XHTML</p>' } },
-    });
-  });
-
-  it('returns 400 when Confluence is not configured for Confluence pages', async () => {
-    mockGetClientForUser.mockResolvedValue(null);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Improved content\n\nThis is better.',
-        version: 5,
-        title: 'My Article',
-      },
-    });
-
-    expect(response.statusCode).toBe(400);
-  });
-
-  // #1623 — off is standalone: Apply still rewrites the article, it just
-  // rewrites the LOCAL row and never pushes.
-  it('applies to the local row without touching Confluence when the integration is off', async () => {
-    mockIsConfluenceEnabled.mockResolvedValue(false);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Improved content\n\nThis is better.',
-        version: 5,
-        title: 'My Article',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    // Local version bump, not a Confluence version.
-    expect(JSON.parse(response.payload)).toMatchObject({ id: 42, version: 6 });
-    const localWrite = mockQuery.mock.calls.find(
-      (c) => typeof c[0] === 'string'
-        && (c[0] as string).includes('UPDATE pages SET')
-        && (c[0] as string).includes('local_modified_at = NOW()'),
-    );
-    expect(localWrite).toBeDefined();
-    expect(mockClient.updatePage).not.toHaveBeenCalled();
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
-  });
-
-  it('returns 404 when page does not exist in local cache', async () => {
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
-        return Promise.resolve({ rows: [] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'nonexistent-page',
-        improvedMarkdown: '## Better',
-      },
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  it('falls back to the Confluence id when a numeric pageId matches no internal id', async () => {
-    const selects: string[] = [];
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        selects.push(sql);
-        if (sql.includes('WHERE id = $1')) return Promise.resolve({ rows: [] });
-        // Standalone page owned by the requester — local-update path, no Confluence push.
-        return Promise.resolve({ rows: [{ id: 7, version: 2, title: 'Standalone', space_key: 'LOCAL', source: 'standalone', confluence_id: '1146884', body_html: '<p>Old</p>', created_by_user_id: 'user-123', visibility: 'private' }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '1146884', improvedMarkdown: '## Better' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(selects[0]).toContain('WHERE id = $1');
-    expect(selects[1]).toContain('WHERE confluence_id = $1');
-  });
-
-  it('skips the int4 cast for numeric ids longer than 9 digits (404, not a cast error)', async () => {
-    const selects: string[] = [];
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        selects.push(sql);
-        return Promise.resolve({ rows: [] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '123456789012', improvedMarkdown: '## Better' },
-    });
-
-    expect(response.statusCode).toBe(404);
-    expect(selects.some((sql) => sql.includes('WHERE id = $1'))).toBe(false);
-    expect(selects.some((sql) => sql.includes('WHERE confluence_id = $1'))).toBe(true);
-  });
-
-  it('returns 409 on version conflict', async () => {
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({ rows: [{ id: 42, version: 10, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: '<p>Old</p>' }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Outdated edit',
-        version: 5, // stale — server has version 10
-      },
-    });
-
-    expect(response.statusCode).toBe(409);
-    const body = JSON.parse(response.body);
-    expect(body.message).toMatch(/modified since you loaded/i);
-  });
-
-  it('converts markdown to HTML, pushes to Confluence, and updates local cache', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Improved\n\nBetter content.',
-        version: 5,
-        title: 'My Article',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-
-    // Markdown → HTML conversion
-    expect(mockMarkdownToHtml).toHaveBeenCalledWith(
-      '## Improved\n\nBetter content.',
-      { layoutSkeleton: [] }, // #781: skeleton from the page's current body
-    );
-
-    // HTML → Confluence XHTML conversion
-    expect(mockHtmlToConfluence).toHaveBeenCalledWith('<p>Improved HTML content</p>');
-
-    // Confluence push
-    expect(mockClient.updatePage).toHaveBeenCalledWith(
-      'page-1',
-      'My Article',
-      '<p class="confluence">Improved XHTML</p>',
-      5,
-    );
-
-    expect(mockConfluenceToHtml).toHaveBeenCalledWith(
-      '<p class="confluence">Improved XHTML</p>',
-      'page-1',
-      'OPS',
-    );
-
-    // Local cache update (UPDATE pages)
-    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeDefined();
-
-    // Response shape
-    const body = JSON.parse(response.body);
-    expect(body.id).toBe(42);
-    expect(body.title).toBe('My Article');
-    expect(body.version).toBe(6);
-  });
-
-  it('uses existing title when title is not provided in request', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Better',
-        // no title field
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockClient.updatePage).toHaveBeenCalledWith(
-      'page-1', // uses confluence_id from DB, not the raw pageId param
-      'My Article',
-      expect.any(String),
-      5,
-    );
-  });
-
-  it('marks the improvement record as applied', async () => {
-    await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Better',
-        version: 5,
-      },
-    });
-
-    const applyCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes("SET status = 'applied'"),
-    );
-    expect(applyCall).toBeDefined();
-  });
-
-  it('logs audit event for page update', async () => {
-    await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: '## Better',
-        version: 5,
-      },
-    });
-
-    expect(mockLogAuditEvent).toHaveBeenCalledWith(
-      'user-123',
-      'PAGE_UPDATED',
-      'page',
-      '42',
-      expect.objectContaining({ source: 'ai_improvement' }),
-      expect.any(Object),
-    );
-  });
-
-  it('returns 400 when pageId is missing', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        improvedMarkdown: '## Better',
-      },
-    });
-
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-  });
-
-  it('returns 400 when improvedMarkdown is missing', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-      },
-    });
-
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-  });
-
-  /**
-   * #1115 P2 (review r2) — Apply is a `body_html` writer, so it queues the
-   * image index.
-   *
-   * It happens not to rot the index today, because `protectMedia`'s
-   * `MEDIA_SELECTOR` lists `img` first and the #723 drop-guard re-appends
-   * anything the markdown round trip lost, so the set of `(source, key)` pairs
-   * survives a wholesale rewrite. But that is an invariant of a DIFFERENT
-   * module, stated nowhere on this path and absent from the writer tables this
-   * feature ships — if `img` ever leaves `MEDIA_SELECTOR` the index rots
-   * silently with every suite green. Raising the flag costs one reconcile pass
-   * per Apply, on which every row is reused by content hash, and makes the
-   * writer list true rather than lucky.
-   */
-  describe('queues the image index after an Apply (#1115 P2)', () => {
-    function updatePagesSql(marker: string): string {
-      const call = (mockQuery.mock.calls as unknown[][]).find(
-        (args) =>
-          typeof args[0] === 'string' &&
-          (args[0] as string).includes('UPDATE pages SET') &&
-          (args[0] as string).includes(marker),
-      );
-      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
-      return call[0] as string;
-    }
-
-    it('raises image_analysis_dirty on the Confluence push, gated on body_html', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/llm/improvements/apply',
-        payload: { pageId: 'page-1', improvedMarkdown: '## Better', version: 5 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      // ADR-027 D4: the analysis flag carries the gate #1618 retired the
-      // legacy `image_embedding_dirty` half of.
-      expect(updatePagesSql('body_storage')).toMatch(
-        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
-      );
-      expect(updatePagesSql('body_storage')).not.toContain('image_embedding_dirty');
-    });
-
-    it('raises image_analysis_dirty on the standalone write, gated on body_html', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 42, version: 5, title: 'My Article', space_key: 'NOTES',
-              source: 'standalone', confluence_id: null, body_html: '<p>Old content</p>',
-              visibility: 'shared',
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/llm/improvements/apply',
-        payload: { pageId: '42', improvedMarkdown: '## Better', version: 5 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(updatePagesSql('local_modified_by')).toMatch(
-        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
-      );
-      expect(updatePagesSql('local_modified_by')).not.toContain('image_embedding_dirty');
-    });
-  });
-
-  it('preserves drawio + image through improve→apply even if the LLM only kept the tokens (#723)', async () => {
-    const drawio = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/42/Arch.png"></div>';
-    const img = '<img src="/api/attachments/42/p.png" data-confluence-filename="p.png" data-confluence-image-source="attachment">';
-    const bodyHtmlWithMedia = `<p>Old</p>${drawio}${img}`;
-    const improvedHtmlFromMarkdown = '<p>Improved intro</p>\n<p>CQ_MEDIA_PLACEHOLDER_0</p>\n<p>CQ_MEDIA_PLACEHOLDER_1</p>\n';
-    const restoredHtml = `<p>Improved intro</p>\n${drawio}\n${img}\n`;
-
-    // The page has media in body_html
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: bodyHtmlWithMedia }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    // protectMedia returns media entries matching the page's body_html
-    const mediaEntries = [
-      { token: 'CQ_MEDIA_PLACEHOLDER_0', html: drawio },
-      { token: 'CQ_MEDIA_PLACEHOLDER_1', html: img },
-    ];
-    mockProtectMedia.mockReturnValue({ html: 'protected', media: mediaEntries });
-    // markdownToHtml returns HTML with placeholder tokens (simulating LLM kept tokens)
-    mockMarkdownToHtml.mockResolvedValue(improvedHtmlFromMarkdown);
-    // restoreMedia injects the original media back
-    mockRestoreMedia.mockReturnValue(restoredHtml);
-    mockHtmlToConfluence.mockReturnValue('<p>Improved XHTML</p>');
-    mockConfluenceToHtml.mockReturnValue(restoredHtml);
-    mockHtmlToText.mockReturnValue('Improved intro');
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: 'page-1',
-        improvedMarkdown: 'Improved intro\n\nCQ_MEDIA_PLACEHOLDER_0\n\nCQ_MEDIA_PLACEHOLDER_1\n',
-        version: 5,
-        title: 'My Article',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    // protectMedia was called with the page's current body_html
-    expect(mockProtectMedia).toHaveBeenCalledWith(bodyHtmlWithMedia);
-    // restoreMedia was called after markdownToHtml
-    expect(mockRestoreMedia).toHaveBeenCalledWith(improvedHtmlFromMarkdown, mediaEntries);
-    // The final HTML passed to htmlToConfluence includes media
-    expect(mockHtmlToConfluence).toHaveBeenCalledWith(restoredHtml);
-  });
+// The Confluence REST call is the only non-auth boundary controlled here. All
+// persistence, admission, conversion, cache, audit, and collaboration behavior
+// below is production code backed by the real test PostgreSQL and Redis.
+const mockHttpRequest = vi.hoisted(() => vi.fn());
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof Undici>();
+  return { ...actual, request: mockHttpRequest };
 });
+
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
+let app: FastifyInstance;
+let redis: RedisClientType;
+let userId: string;
+let otherUserId: string;
+let lastConfluenceRequest: { url: string; options: Record<string, unknown> } | null;
+let recoveryAdminId: string;
+
+async function waitForBlockedLifecycleLock(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'
+       ) AS waiting`,
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error('Apply writer did not reach the lifecycle admission barrier');
+}
+
+async function setPageContent(
+  pageId: number,
+  bodyHtml: string,
+  version = 5,
+  bodyStorage = '',
+): Promise<void> {
+  await query(
+    `UPDATE pages
+        SET body_html = $2, body_text = $3, body_storage = $4, version = $5,
+            embedding_dirty = FALSE, image_analysis_dirty = FALSE
+      WHERE id = $1`,
+    [pageId, bodyHtml, bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), bodyStorage, version],
+  );
+}
+
+async function enableConfluence(enabled: boolean, configured = true): Promise<void> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ('OPS', 'OPS', 'confluence', NOW())
+     ON CONFLICT (space_key) DO NOTHING`,
+  );
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ('apply-editor', 'Apply editor', ARRAY['read', 'write'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ('OPS', 'user', $1, $2)
+     ON CONFLICT DO NOTHING`,
+    [userId, role.rows[0]!.id],
+  );
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id) DO UPDATE SET
+       confluence_url = EXCLUDED.confluence_url,
+       confluence_pat = EXCLUDED.confluence_pat,
+       confluence_enabled = EXCLUDED.confluence_enabled`,
+    [
+      userId,
+      configured ? 'https://confluence.example.test' : null,
+      configured ? encryptPat('test-personal-access-token') : null,
+      enabled,
+    ],
+  );
+}
+
+function acceptNextConfluenceUpdate(): void {
+  mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
+    lastConfluenceRequest = { url, options };
+    const sent = JSON.parse(String(options.body)) as {
+      title: string;
+      version: { number: number };
+      body: { storage: { value: string } };
+    };
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        text: async () => JSON.stringify({
+          id: new URL(String(url)).pathname.split('/').at(-1),
+          type: 'page',
+          title: sent.title,
+          version: sent.version,
+          body: { storage: { value: sent.body.storage.value, representation: 'storage' } },
+        }),
+      },
+    };
+  });
+}
+
+function acceptNextConfluenceReadback(input: {
+  id: string;
+  title: string;
+  version: number;
+  storage: string;
+}): void {
+  mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
+    lastConfluenceRequest = { url, options };
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        text: async () => JSON.stringify({
+          id: input.id,
+          type: 'page',
+          status: 'current',
+          title: input.title,
+          version: { number: input.version },
+          body: { storage: { value: input.storage, representation: 'storage' } },
+        }),
+      },
+    };
+  });
+}
+
+async function apply(payload: Record<string, unknown>) {
+  return app.inject({ method: 'POST', url: '/api/llm/improvements/apply', payload });
+}
+
+async function readPage(pageId: number) {
+  const result = await query<{
+    title: string;
+    body_html: string;
+    body_storage: string | null;
+    body_text: string;
+    version: number;
+    local_modified_at: Date | null;
+    local_modified_by: string | null;
+    embedding_dirty: boolean;
+    image_analysis_dirty: boolean;
+  }>(
+    `SELECT title, body_html, body_storage, body_text, version,
+            local_modified_at, local_modified_by, embedding_dirty, image_analysis_dirty
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0]!;
+}
+
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'POST /api/llm/improvements/apply — real PostgreSQL, Redis, admission, and conversion',
+  () => {
+    beforeAll(async () => {
+      process.env.PAT_ENCRYPTION_KEY ??= 'apply-improvement-test-key-32bytes!';
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        await instance.register(llmConversationRoutes, { prefix: '/api' });
+      });
+    });
+
+    afterAll(async () => {
+      await app.close();
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      vi.clearAllMocks();
+      lastConfluenceRequest = null;
+      userId = await insertUser(`apply-owner-${randomUUID()}`);
+      otherUserId = await insertUser(`apply-other-${randomUUID()}`);
+      recoveryAdminId = await insertUser(`apply-recovery-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [recoveryAdminId]);
+    });
+
+    it('falls back to a numeric Confluence id only when no internal id matches', async () => {
+      await insertLocalSpace('LOCAL', userId);
+      const pageId = await insertStandalonePage('Fallback target', 'private', userId, 'LOCAL');
+      await query('UPDATE pages SET confluence_id = $2 WHERE id = $1', [pageId, '1146884']);
+      await setPageContent(pageId, '<p>Old fallback body</p>', 2);
+
+      const response = await apply({ pageId: '1146884', improvedMarkdown: '## Better fallback' });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, version: 3 });
+      expect(await readPage(pageId)).toMatchObject({
+        version: 3,
+        body_text: 'Better fallback',
+        local_modified_by: userId,
+      });
+    });
+
+    it('gives the internal id precedence instead of selecting an ambiguous Confluence-id row', async () => {
+      await insertLocalSpace('LOCAL', userId);
+      const internalId = await insertStandalonePage('Internal winner', 'private', userId, 'LOCAL');
+      const confluenceMatch = await insertStandalonePage('Confluence-id loser', 'private', userId, 'LOCAL');
+      await query('UPDATE pages SET confluence_id = $2 WHERE id = $1', [confluenceMatch, String(internalId)]);
+      await setPageContent(internalId, '<p>Internal old</p>', 4);
+      await setPageContent(confluenceMatch, '<p>Other old</p>', 9);
+
+      const response = await apply({ pageId: String(internalId), improvedMarkdown: 'Internal changed' });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: internalId, version: 5 });
+      expect((await readPage(internalId)).body_text).toBe('Internal changed');
+      expect(await readPage(confluenceMatch)).toMatchObject({ body_text: 'Other old', version: 9 });
+    });
+
+    it('does not cast a long numeric Confluence id and returns the ordinary not-found response', async () => {
+      const response = await apply({ pageId: '123456789012', improvedMarkdown: 'Better' });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ error: 'Page not found' });
+    });
+
+    it('conceals another user private standalone page before exposing its version', async () => {
+      await insertLocalSpace('PRIVATE', otherUserId);
+      const pageId = await insertStandalonePage('Secret', 'private', otherUserId, 'PRIVATE');
+      await setPageContent(pageId, '<p>Secret old</p>', 8);
+
+      const response = await apply({ pageId: String(pageId), improvedMarkdown: 'Stolen', version: 1 });
+
+      expect(response.statusCode).toBe(404);
+      expect(await readPage(pageId)).toMatchObject({ body_text: 'Secret old', version: 8 });
+    });
+
+    it('allows a shared standalone page and persists the converted body and version', async () => {
+      await insertLocalSpace('SHARED', otherUserId);
+      const pageId = await insertStandalonePage('Shared article', 'shared', otherUserId, 'SHARED');
+      await setPageContent(pageId, '<p>Old shared body</p>', 3);
+
+      const response = await apply({
+        pageId: String(pageId),
+        improvedMarkdown: '## Shared heading\n\nA **real** converted body.',
+        version: 3,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved.version).toBe(4);
+      expect(saved.body_html).toContain('<h2>Shared heading</h2>');
+      expect(saved.body_html).toContain('<strong>real</strong>');
+      expect(saved.body_text).toContain('Shared heading A real converted body.');
+      expect(saved.embedding_dirty).toBe(true);
+      expect(saved.image_analysis_dirty).toBe(true);
+    });
+
+    it('returns a conflict and leaves the row unchanged for a stale version', async () => {
+      await insertLocalSpace('LOCAL', userId);
+      const pageId = await insertStandalonePage('Current article', 'private', userId, 'LOCAL');
+      await setPageContent(pageId, '<p>Current body</p>', 10);
+
+      const response = await apply({ pageId: String(pageId), improvedMarkdown: 'Outdated edit', version: 5 });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json<{ error: string }>().error).toMatch(/modified since you loaded/i);
+      expect(await readPage(pageId)).toMatchObject({ body_text: 'Current body', version: 10 });
+    });
+
+    it('keeps a synced page local when Confluence is disabled', async () => {
+      const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+      await setPageContent(pageId, '<p>Old synced body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(false, true);
+
+      const response = await apply({
+        pageId: 'page-1',
+        improvedMarkdown: '## Local-only improvement',
+        version: 5,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(mockHttpRequest).not.toHaveBeenCalled();
+      expect(await readPage(pageId)).toMatchObject({
+        version: 6,
+        body_text: 'Local-only improvement',
+        body_storage: '<p>Old storage</p>',
+        local_modified_by: userId,
+      });
+    });
+
+    it('requires configured credentials for an enabled Confluence page', async () => {
+      const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true, false);
+
+      const response = await apply({ pageId: 'page-1', improvedMarkdown: 'Better', version: 5 });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'Confluence not configured' });
+      expect(mockHttpRequest).not.toHaveBeenCalled();
+      expect(await readPage(pageId)).toMatchObject({ body_text: 'Old body', version: 5 });
+    });
+
+    it('pushes production XHTML and commits the accepted body, exact improvement status, and audit row', async () => {
+      const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      const improvedMarkdown = '## Improved\n\nBetter **content**.';
+      const accepted = await query<{ id: string }>(
+        `INSERT INTO llm_improvements
+           (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+         RETURNING id`,
+        [userId, pageId, improvedMarkdown],
+      );
+      const laterUnrelated = await query<{ id: string }>(
+        `INSERT INTO llm_improvements
+           (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         VALUES ($1, $2, 'grammar', 'later-model', 'other old', 'other new', 'completed')
+         RETURNING id`,
+        [userId, pageId],
+      );
+      acceptNextConfluenceUpdate();
+
+      const response = await apply({
+        pageId: 'page-1',
+        improvedMarkdown,
+        version: 5,
+        title: 'Improved title',
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ id: pageId, title: 'Improved title', version: 6 });
+      expect(lastConfluenceRequest?.url).toBe('https://confluence.example.test/rest/api/content/page-1');
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body));
+      expect(sent).toMatchObject({ title: 'Improved title', version: { number: 6 } });
+      expect(sent.body.storage.value).toContain('<h2>Improved</h2>');
+      expect(sent.body.storage.value).toContain('<strong>content</strong>');
+
+      const saved = await readPage(pageId);
+      expect(saved).toMatchObject({
+        title: 'Improved title',
+        version: 6,
+        body_storage: sent.body.storage.value,
+        local_modified_at: null,
+        local_modified_by: null,
+        embedding_dirty: true,
+        image_analysis_dirty: true,
+      });
+      expect(saved.body_html).toContain('<h2>Improved</h2>');
+      expect(saved.body_text).toContain('Improved Better content.');
+
+      const improvements = await query<{ id: string; status: string }>(
+        'SELECT id, status FROM llm_improvements WHERE page_id = $1',
+        [pageId],
+      );
+      expect(improvements.rows.find((row) => row.id === accepted.rows[0]!.id)?.status).toBe('applied');
+      expect(improvements.rows.find((row) => row.id === laterUnrelated.rows[0]!.id)?.status).toBe('completed');
+      const intent = await query<{ effect: Record<string, unknown>; status: string }>(
+        `SELECT effect, status
+           FROM page_write_intents
+          WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+        [pageId],
+      );
+      expect(intent.rows[0]).toMatchObject({
+        status: 'completed',
+        effect: {
+          improvementId: accepted.rows[0]!.id,
+          expectedRemoteVersion: '5',
+          intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      expect(Object.keys(intent.rows[0]!.effect).sort()).toEqual([
+        'confluenceId',
+        'effectClass',
+        'expectedRemoteVersion',
+        'improvementId',
+        'intendedStateDigest',
+        'pageId',
+      ]);
+      expect(JSON.stringify(intent.rows[0]!.effect)).not.toContain(improvedMarkdown);
+      expect(JSON.stringify(intent.rows[0]!.effect)).not.toContain('Improved title');
+      const audit = await query<{ metadata: { source?: string } }>(
+        `SELECT metadata FROM audit_log
+          WHERE user_id = $1 AND action = 'PAGE_UPDATED' AND resource_id = $2`,
+        [userId, String(pageId)],
+      );
+      expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
+    });
+
+    it('publishes a successful sparse Confluence response without requiring recovery', async () => {
+      const pageId = await insertConfluencePage('page-sparse', 'Sparse article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      let acceptedStorage = '';
+      mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
+        lastConfluenceRequest = { url, options };
+        const sent = JSON.parse(String(options.body)) as {
+          body: { storage: { value: string } };
+        };
+        acceptedStorage = sent.body.storage.value;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () => JSON.stringify({
+              id: 'page-sparse',
+              type: 'page',
+              title: 'Accepted sparse article',
+              version: { number: 6 },
+            }),
+          },
+        };
+      });
+      mockHttpRequest.mockImplementationOnce(async () => ({
+        statusCode: 200,
+        headers: {},
+        body: {
+          text: async () => JSON.stringify({
+            id: 'page-sparse',
+            type: 'page',
+            status: 'current',
+            title: 'Accepted sparse article',
+            version: { number: 6 },
+            body: { storage: { value: acceptedStorage, representation: 'storage' } },
+          }),
+        },
+      }));
+
+      const response = await apply({
+        pageId: 'page-sparse',
+        improvedMarkdown: '## Accepted without expansion\n\nStored content.',
+        title: 'Accepted sparse article',
+        version: 5,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ id: pageId, title: 'Accepted sparse article', version: 6 });
+      const saved = await readPage(pageId);
+      expect(saved).toMatchObject({
+        title: 'Accepted sparse article',
+        version: 6,
+        body_text: 'Accepted without expansion Stored content.',
+        local_modified_at: null,
+        local_modified_by: null,
+      });
+      expect(saved.body_html).toContain('<h2>Accepted without expansion</h2>');
+      expect(saved.body_storage).toContain('<p>Stored content.</p>');
+      expect(mockHttpRequest).toHaveBeenCalledTimes(2);
+      const pending = await query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM page_write_intents
+          WHERE $1 = ANY(page_ids) AND status = 'pending'`,
+        [pageId],
+      );
+      expect(pending.rows[0]?.count).toBe('0');
+    });
+    it('keeps a large successful provider body out of terminal metadata and publishes it exactly', async () => {
+      const pageId = await insertConfluencePage('page-large', 'Large article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      const authoredText = `large-${'x'.repeat(36_000)}-end`;
+      acceptNextConfluenceUpdate();
+
+      const response = await apply({
+        pageId: 'page-large',
+        improvedMarkdown: authoredText,
+        title: 'Large accepted title',
+        version: 5,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved).toMatchObject({
+        title: 'Large accepted title',
+        body_text: authoredText,
+        version: 6,
+      });
+      const intent = await query<{
+        status: string;
+        remote_terminal_result: Record<string, unknown>;
+      }>(
+        `SELECT status, remote_terminal_result
+           FROM page_write_intents
+          WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+        [pageId],
+      );
+      expect(intent.rows[0]?.status).toBe('completed');
+      expect(Buffer.byteLength(JSON.stringify(intent.rows[0]?.remote_terminal_result))).toBeLessThan(1024);
+      expect(JSON.stringify(intent.rows[0]?.remote_terminal_result)).not.toContain(authoredText.slice(0, 128));
+    });
+
+    it('retains a compact acknowledged Apply for recovery when readback fails without replaying the PUT', async () => {
+      const pageId = await insertConfluencePage('page-compact-failure', 'Compact article', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      let acceptedStorage = '';
+      mockHttpRequest.mockImplementationOnce(async (_url: string, options: Record<string, unknown>) => {
+        const sent = JSON.parse(String(options.body)) as { body: { storage: { value: string } } };
+        acceptedStorage = sent.body.storage.value;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () => JSON.stringify({
+              id: 'page-compact-failure',
+              type: 'page',
+              title: 'Compact accepted',
+              version: { number: 6 },
+            }),
+          },
+        };
+      });
+      mockHttpRequest.mockResolvedValueOnce({
+        statusCode: 403,
+        headers: {},
+        body: { text: async () => JSON.stringify({ message: 'readback denied' }) },
+      });
+
+      const response = await apply({
+        pageId: 'page-compact-failure',
+        improvedMarkdown: 'Compact accepted body',
+        title: 'Compact accepted',
+        version: 5,
+      });
+      expect(response.statusCode).toBe(403);
+      const pending = await query<{
+        id: string;
+        remote_terminal_result: Record<string, unknown>;
+        remote_effects_completed_at: Date | null;
+      }>(
+        `SELECT id, remote_terminal_result, remote_effects_completed_at
+           FROM page_write_intents
+          WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+        [pageId],
+      );
+      expect(pending.rows[0]?.remote_effects_completed_at).toEqual(expect.any(Date));
+      expect(JSON.stringify(pending.rows[0]?.remote_terminal_result)).not.toContain('Compact accepted body');
+
+      const retiredRuntime = `retired-apply-${randomUUID()}`;
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+         VALUES ($1, '{"fixture":"retired Apply writer"}', NOW(), $2,
+                 'Fixture confirms the acknowledged writer stopped',
+                 '{"kind":"verified_local_termination"}')`,
+        [retiredRuntime, recoveryAdminId],
+      );
+      await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [
+        pending.rows[0]!.id,
+        retiredRuntime,
+      ]);
+      acceptNextConfluenceReadback({
+        id: 'page-compact-failure',
+        title: 'Compact accepted',
+        version: 6,
+        storage: acceptedStorage,
+      });
+      await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+        actorId: recoveryAdminId,
+        reason: 'Recover compact acknowledged Apply without repeating its remote mutation',
+      })).resolves.toEqual({
+        intentId: pending.rows[0]!.id,
+        status: 'reconciled_applied',
+      });
+      expect(await readPage(pageId)).toMatchObject({
+        title: 'Compact accepted',
+        body_text: 'Compact accepted body',
+        version: 6,
+      });
+      const methods = mockHttpRequest.mock.calls.map((call) =>
+        (call[1] as Record<string, unknown> | undefined)?.method);
+      expect(methods.filter((method) => method === 'PUT')).toHaveLength(1);
+    });
+
+    it('cancels an admitted Apply when Confluence is switched off while it waits', async () => {
+      const pageId = await insertConfluencePage('page-mode-race', 'Mode race', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = apply({
+          pageId: 'page-mode-race',
+          improvedMarkdown: 'Must remain local',
+          version: 5,
+        });
+        await waitForBlockedLifecycleLock();
+        await blocker.query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(409);
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect((await query(
+          `SELECT status FROM page_write_intents
+            WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+          [pageId],
+        )).rows).toEqual([{ status: 'cancelled' }]);
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
+    it('uses a PAT rotated while Apply waits for admission', async () => {
+      const pageId = await insertConfluencePage('page-pat-race', 'PAT race', 'OPS');
+      await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
+      await enableConfluence(true);
+      acceptNextConfluenceUpdate();
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = apply({
+          pageId: 'page-pat-race',
+          improvedMarkdown: 'Uses rotated credentials',
+          version: 5,
+        });
+        await waitForBlockedLifecycleLock();
+        await blocker.query(
+          'UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1',
+          [userId, encryptPat('rotated-apply-pat')],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(200);
+        expect(
+          (lastConfluenceRequest?.options.headers as Record<string, string>).Authorization,
+        ).toBe('Bearer rotated-apply-pat');
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+    });
+
+
+    it('preserves protected draw.io and image markup even when the improvement drops every token', async () => {
+      await insertLocalSpace('LOCAL', userId);
+      const pageId = await insertStandalonePage('Media article', 'private', userId, 'LOCAL');
+      const drawio = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/42/Arch.png"></div>';
+      const image = '<img src="/api/attachments/42/photo.png" data-confluence-filename="photo.png" data-confluence-image-source="attachment">';
+      await setPageContent(pageId, `<p>Old introduction</p>${drawio}${image}`, 2);
+
+      const response = await apply({
+        pageId: String(pageId),
+        improvedMarkdown: 'A replacement introduction with no media placeholders.',
+        version: 2,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved.body_html).toContain('A replacement introduction');
+      expect(saved.body_html).toContain('class="confluence-drawio"');
+      expect(saved.body_html).toContain('/api/attachments/42/Arch.png');
+      expect(saved.body_html).toContain('/api/attachments/42/photo.png');
+    });
+
+    it('round-trips an expand macro through production conversion before the remote write', async () => {
+      const storage = '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Runbook</ac:parameter><ac:rich-text-body><p>old step</p></ac:rich-text-body></ac:structured-macro>';
+      const pageId = await insertConfluencePage('page-expand', 'Macro article', 'OPS');
+      const bodyHtml = confluenceToHtml(storage, 'page-expand', 'OPS');
+      await setPageContent(pageId, bodyHtml, 7, storage);
+      await enableConfluence(true);
+      acceptNextConfluenceUpdate();
+      const protectedHtml = protectMedia(bodyHtml).html;
+      const faithfulMarkdown = htmlToMarkdown(protectedHtml, { layoutTokens: true })
+        .replace('old step', 'clarified step');
+
+      const response = await apply({
+        pageId: 'page-expand',
+        improvedMarkdown: faithfulMarkdown,
+        version: 7,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body));
+      expect(sent.body.storage.value).toContain('ac:name="expand"');
+      expect(sent.body.storage.value).toContain('Runbook');
+      expect(sent.body.storage.value).toContain('clarified step');
+      expect((await readPage(pageId)).body_html).toContain('data-macro-name="expand"');
+    });
+
+    it('rejects unrecoverable layout loss before any remote effect and keeps the page unchanged', async () => {
+      const bodyHtml = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal"><div class="confluence-layout-cell"><p>Left</p></div><div class="confluence-layout-cell"><p>Right</p></div></div></div>';
+      const pageId = await insertConfluencePage('page-layout', 'Layout article', 'OPS');
+      await setPageContent(pageId, bodyHtml, 4, '<p>original storage</p>');
+      await enableConfluence(true);
+
+      const response = await apply({
+        pageId: 'page-layout',
+        improvedMarkdown: 'The model flattened both cells into one paragraph.',
+        version: 4,
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json<{ error: string }>().error).toMatch(/lost this page's structure/i);
+      expect(mockHttpRequest).not.toHaveBeenCalled();
+      expect(await readPage(pageId)).toMatchObject({
+        body_html: bodyHtml,
+        body_storage: '<p>original storage</p>',
+        version: 4,
+      });
+    });
+
+    it('validates the required request fields at the route boundary', async () => {
+      const missingPage = await apply({ improvedMarkdown: 'Better' });
+      const missingMarkdown = await apply({ pageId: '1' });
+      expect(missingPage.statusCode).toBe(400);
+      expect(missingMarkdown.statusCode).toBe(400);
+    });
+  },
+);

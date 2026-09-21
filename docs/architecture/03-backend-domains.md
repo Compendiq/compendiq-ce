@@ -10,10 +10,10 @@ imports enforced by `eslint-plugin-boundaries` (see
 flowchart LR
     subgraph routes["routes/ (HTTP entry points)"]
         direction TB
-        rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
+        rF["foundation<br/>health, auth, settings,<br/>admin, page-write recovery,<br/>admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
-        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import,<br/>pages-collab (WS gateway)"]
+        rK["knowledge<br/>pages CRUD, baselines, relocate,<br/>versions, tags, embeddings,<br/>duplicates, pinned, templates,<br/>comments, search, analytics,<br/>export/import, notion connection,<br/>tree/import, pages-collab (WS gateway)"]
     end
 
     subgraph domains["domains/"]
@@ -25,9 +25,9 @@ flowchart LR
 
     subgraph core["core/ (infrastructure)"]
         direction TB
-        cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
+        cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry,<br/>page lifecycle advisory namespace"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -105,6 +105,169 @@ cannot expose second-hop neighbors. The global graph and its navigation remain
 unchanged. Explicit links and hierarchy do not depend on embeddings; current
 bodies and parent IDs recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
+
+### Immutable page baselines (#275 foundation)
+
+Immutable baselines are a CE `core` facility because every route/domain writer
+must share one serialization boundary. `routes/knowledge/page-baselines.ts`
+exposes authenticated preview, freeze, thaw, current-page history and frozen
+media reads; its baseline evidence/history and activation endpoints add a
+system-admin gate. `routes/foundation/page-write-recovery.ts` is the separate
+system-admin surface for runtime quiescence/fencing and intent reconciliation.
+The split introduces no new domain edge: both route groups depend on `core`;
+domains never import the route implementation.
+
+```mermaid
+flowchart TD
+    writer["Protected SQL / file / remote writer"] --> runtime["Runtime epoch row<br/>SHARE before page work"]
+    runtime --> locks["Advisory xact locks<br/>namespace 279001, page ids ascending"]
+    locks --> subsystem["Collaboration-init / attachment / move locks<br/>then pages rows"]
+    subsystem --> sql["SQL-only: validate + mutate<br/>on the same PoolClient"]
+    subsystem --> intent["File/remote: commit pending intent<br/>with revisions before I/O"]
+    intent --> effect["runPageWriteIntentEffect<br/>durable started → effect → durable finished"]
+    effect --> settle["complete or reconcile under<br/>the same locks and revision fence"]
+
+    preview["Authorized freeze preview"] --> inspect["Source-aware manifest inspection<br/>authored fields + local/Confluence/icon bytes"]
+    inspect --> reserve["Capacity row + preparing baseline<br/>+ baseline.prepare intent, one transaction"]
+    reserve --> copy["Exclusive retained copy<br/>stream/hash/fsync/verify"]
+    copy --> prepared["prepared baseline UUID/digest"]
+    prepared --> freeze["Freeze: try locks; re-authorize,<br/>re-inspect sources, verify retained bytes"]
+    freeze --> policyFence["Shared space policy fence<br/>namespace 279002, held through commit"]
+    policyWrite["Audited policy INSERT / UPDATE<br/>exclusive namespace 279002 fence"] --> policyFence
+    policyFence --> marker{"CE governance marker?"}
+    marker -->|off| publish["Atomic publish"]
+    marker -->|on| hook["Registered governance hook<br/>revalidates inside transaction"]
+    hook --> publish
+    publish --> state["pages live freeze state + lifecycle revision"]
+    publish --> evidence["published baseline + page_versions reconciliation"]
+    publish --> ledger["append-only history + audit + lifecycle outbox"]
+    ledger --> delivery["post-commit cache/event/webhook retry"]
+    sql["Committed page insert/update/delete<br/>including SQL-only writers"] --> cacheQueue["Per-page cache invalidation queue<br/>coalesced transactionally"]
+    cacheQueue --> delivery
+```
+
+The lock order is runtime epoch row, sorted lifecycle locks, subsystem locks,
+then page rows. Multi-page discovery is retried with the complete sorted set.
+SQL-only writers hold the process epoch through their commit, not just external
+writers. Freeze and thaw acquire it too and refuse a closed local admission gate.
+They cannot commit after that epoch's durable quiescence or retirement.
+SQL-only writers check editability and mutate on the locking transaction.
+Final freeze holds a shared space-policy fence after its page locks; policy
+changes take the same fence exclusively and never acquire page locks. The
+advisory fence covers an absent policy row as well as an existing one, so an
+enable cannot slip between the final policy decision and publication. Policy
+enablement and EE availability never block authorized audited thaw.
+External writers first persist a closed-policy intent with the observed content
+and lifecycle revisions. `runPageWriteIntentEffect` requires an explicit local
+or remote phase and durably records dispatch and completion while the intent is
+still pending. Local staging never claims that a remote mutation was dispatched.
+The declared final remote phase records all-remote completion separately; later
+local phases preserve that proof and any bounded server-owned terminal identity.
+An intermediate SQL advance records started work but cannot certify external
+completion. Only the effect gate may record it, and only then may
+`completePageWriteIntent` settle the final SQL. A crash or uncertain response
+remains pending until kind-owned reconciliation proves applied or not applied.
+There is no timeout or `finally` force-clear.
+Successful effect phases retain local ownership between stages until final SQL
+settlement. Quiescence refuses new work but lets those admitted continuations
+finish; it holds the runtime row before cancelling no-start reservations and
+recording the acknowledgment. A failed/unproven final commit cannot manufacture
+a drained state.
+Every recovery attempt joins the recovering process's drain before its first
+await. Before any verifier runs, it transfers durable ownership and stamps
+`recovery_started_at`, retaining the original phase evidence. The callback,
+local repair, settlement and publication all remain owned; a quiesced/fenced
+process cannot begin recovery, and a crash requires fencing the new owner.
+A fully failed attempt may retry on the same active process, never concurrently.
+
+`domains/confluence/services/page-put-intent-reconciler.ts` owns one transactional
+publisher for normal and recovered conditional page PUTs. Exact E+1 evidence
+must update local authored content plus its original AI-improvement or restore
+history metadata before the intent settles. Provider observation remains
+read-only; local publication is not. Missing completion identity, revoked actor
+state, conflicting history or conversion failure leaves recovery pending.
+The publisher deletes stale collaborative document bytes transactionally, taking
+the collaboration-init lock before the page row, and marks the exact intent's
+`cache_invalidation_pending` flag. A page-table trigger separately coalesces
+inserts, protected/lifecycle/security updates and deletes in
+`page_cache_invalidation_queue`, covering SQL-only writes without an intent.
+Queue IDs deliberately have no page FK, so deletion cannot erase delivery work.
+Completion flushes after commit; the existing outbox poller retries both queues.
+Global cache generations reject a fill begun before an invalidation, and
+user-local generations isolate targeted invalidations. Redis failure retains
+durable work, not a failed publication response. These deliveries fabricate no
+lifecycle events. Publisher shutdown aborts both PostgreSQL checkout/lock waits
+and Redis delivery; a late pool lease is released without executing SQL.
+
+`ordinary-page-write-reconciler.ts` owns terminal-only CRUD recovery. A compact
+successful page PUT is durably acknowledged before a separate provider read;
+the receipt distinguishes command identity from fields actually returned.
+Local publication requires an exact non-trashed provider page/version and any
+returned fingerprints. Readback failure retains the acknowledgment and never
+permits another mutation. Each admitted remote phase re-reads actor, page,
+space authority and current integration settings/credentials on its held client.
+
+Relocation keeps its operation-owned original bodies, authority, child IDs and
+attachment receipts in `page_relocation_preparations`, not a bounded generic
+intent payload. Terminal settlement removes that preparation transactionally.
+A successful upstream creation is never compensated by deleting the created
+page when a later local phase fails; its known result is recovered instead.
+
+Writable room admissions are durable runtime tokens, not Redis-liveness claims.
+Normal release requires a clean flush/disconnect. Runtime fencing takes the
+runtime row for update before discovering and locking the union of affected page
+IDs; accepted proof is limited to the owner's quiescence acknowledgement,
+durable proof that no effect started, or independently verified local process
+termination. Started work remains pending for reconciliation. This foundation
+provides the admission/runtime protocol, but #276 still owns complete
+collaboration, sync and cascade participation.
+
+Manifest v1 is the SHA-256 of canonical UTF-8 bytes for one fixed JSON array
+tree; it preserves authored strings/nullability and sorts labels and attachment
+identities by UTF-8 bytes. Media inventory covers internal URLs in authored
+HTML, storage-format attachment references, Draw.io rendered/XML siblings and
+image icons across the `local`, `confluence` and `icon` stores. Cross-page
+references require fresh access to the authoritative owner before bytes are
+read and again before retention; mutable owner pages join the sorted lock/intent
+set, while an already-frozen foreign owner contributes its verified retained
+copy. The source-aware page/parent/store identity is persisted rather than
+inferred from a nullable Confluence ID. Frozen rendering rewrites only the
+authorized projection to an exact baseline/media route; signed authored HTML
+and manifest bytes remain unchanged.
+
+Retained bytes live under the reserved
+`ATTACHMENTS_DIR/page-baselines/<baseline UUID>/<attempt UUID>/` namespace.
+Live orphan sweeps and page hard-delete cleanup cannot traverse or delete it.
+The default limits are 512 media objects and 1 GiB per preparation, 50 GiB of
+logical retained capacity, and 64 MiB of filesystem free-space reserve.
+Reservations include in-progress copies; capacity failure evicts no published
+evidence. Only a committed, abandoned, never-published preparation with terminal
+or safely transferred intent state is eligible for guarded cleanup.
+
+Publication atomically changes the prepared row to `published`, links the live
+page, advances its lifecycle revision, reconciles (never overwrites) the
+same-version `page_versions` snapshot, appends freeze history/audit, and enqueues
+the lifecycle event. Thaw clears only live freeze fields and appends history
+against the original baseline/version/digest; the baseline and retained bytes
+remain. Current-page reads apply current visibility/RBAC and chronological
+history redacts caller-reported signatory email. Once a page is deleted, its
+nullable live links disappear and retained evidence/history is available only
+through authenticated system-admin endpoints; immutable page identities, actor
+display snapshots and original page IDs survive page or actor deletion.
+
+The durable CE governance marker is independent of plugin/license state. When it
+is enabled, manual publication is vetoed and a missing/failing hook denies
+finalization. The hook is only an extension boundary here: #278 owns proposals,
+votes, signatures and archive workflow, none of which #275 claims to deliver.
+Likewise #277 owns the consuming UI.
+
+**Activation remains off.** Migration 121 seeds `creation_enabled = false`, and
+without #276's readiness provider the blocker is
+`protected_writer_enforcement_not_registered`; no startup path enables it.
+Operational activation, capacity, storage and recovery procedures are kept in
+the canonical
+[`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md)
+runbook.
 
 
 ## ESLint-enforced boundary rules

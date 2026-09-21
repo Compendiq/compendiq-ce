@@ -1,938 +1,503 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { query } from '../../core/db/postgres.js';
+import { invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { localSpacesRoutes } from './local-spaces.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// The REAL RedisCache over a mocked redis client (same pattern as
-// routes/confluence/spaces.test.ts, #352): `invalidateAcrossUsers` walks SCAN
-// cursors and DELs the returned keys, and the cross-user invalidation tests
-// below assert that fan-out. Defaults return an empty SCAN page so the walk
-// terminates immediately for tests that don't care about the cache.
-const mockRedisGet = vi.fn().mockResolvedValue(null);
-const mockRedisSetEx = vi.fn().mockResolvedValue('OK');
-const mockRedisScan = vi.fn().mockResolvedValue({ cursor: '0', keys: [] });
-const mockRedisDel = vi.fn().mockResolvedValue(0);
+const available = await isDbAvailable() && await isRedisAvailable();
 
-// #1166 asserts the PAGE_MOVED metadata, so the spy is addressable.
-const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
+async function assignSpace(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ($1, 'Local spaces reader', ARRAY['read', 'comment', 'edit', 'delete'])
+     RETURNING id`,
+    [`local-spaces-role-${randomUUID()}`],
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+  await invalidateRbacCache(userId);
+}
 
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+async function setTreePosition(
+  id: number,
+  path: string,
+  depth: number,
+  sortOrder = 0,
+): Promise<void> {
+  await query(
+    'UPDATE pages SET path = $2, depth = $3, sort_order = $4 WHERE id = $1',
+    [id, path, depth, sortOrder],
+  );
+}
 
-const mockQueryFn = vi.fn();
-// #891: the move handler runs its cycle check + UPDATEs on a dedicated pool
-// client inside a transaction under an advisory lock. Route the client's data
-// queries through the same mockQueryFn (single sequential mock per test) and
-// answer transaction-control / advisory-lock statements inline so they don't
-// consume queued mockResolvedValueOnce entries.
-const mockTxClient = {
-  query: (...args: unknown[]) => {
-    const sql = args[0];
-    if (typeof sql === 'string') {
-      const trimmed = sql.trim();
-      if (
-        trimmed === 'BEGIN' ||
-        trimmed === 'COMMIT' ||
-        trimmed === 'ROLLBACK' ||
-        trimmed.includes('pg_advisory_xact_lock')
-      ) {
-        return Promise.resolve({ rows: [] });
-      }
-    }
-    return mockQueryFn(...args);
-  },
-  release: vi.fn(),
-};
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({ connect: () => Promise.resolve(mockTxClient) }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
+async function pagePosition(id: number): Promise<{
+  parent_id: string | null;
+  space_key: string | null;
+  path: string | null;
+  depth: number;
+  sort_order: number;
+}> {
+  return (
+    await query<{
+      parent_id: string | null;
+      space_key: string | null;
+      path: string | null;
+      depth: number;
+      sort_order: number;
+    }>(
+      'SELECT parent_id, space_key, path, depth, sort_order FROM pages WHERE id = $1',
+      [id],
+    )
+  ).rows[0]!;
+}
 
-// #733: per-page / per-space RBAC checks on move/reorder/breadcrumb
-const mockUserCanAccessPage = vi.fn();
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
-
-describe('Local Spaces Routes', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
+  let actorId: string;
+  let otherUserId: string;
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({
-        error: error.message,
-        statusCode: error.statusCode ?? 500,
-      });
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
     });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => actorId, async (instance) => {
+      instance.redis = redis;
+      await instance.register(localSpacesRoutes, { prefix: '/api' });
     });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {
-      get: mockRedisGet,
-      setEx: mockRedisSetEx,
-      scan: mockRedisScan,
-      del: mockRedisDel,
-    });
-
-    await app.register(localSpacesRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Default: page access allowed; no Confluence space assignments.
-    mockUserCanAccessPage.mockResolvedValue(true);
-    mockGetUserAccessibleSpaces.mockResolvedValue([]);
-    // Re-arm Redis SCAN/DEL so the walk terminates immediately for tests that
-    // don't care about cache invalidation; tests that DO care override this.
-    mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
-    mockRedisDel.mockReset().mockResolvedValue(0);
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    actorId = await insertUser(`spaces-actor-${randomUUID()}`);
+    otherUserId = await insertUser(`spaces-other-${randomUUID()}`);
   });
 
-  // ── GET /api/spaces/local ─────────────────────────────────────────────
+  it('creates, lists, updates, and deletes local spaces with real cache fan-out and audit rows', async () => {
+    await redis.set('kb:alice:spaces:local-spaces:list', 'stale');
+    await redis.set('kb:bob:spaces:space-tree:TEAM', 'stale');
 
-  it('should list local spaces', async () => {
-    // First query: list spaces
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        {
-          space_key: 'PROJ',
-          space_name: 'Project Docs',
-          description: 'Internal docs',
-          icon: 'folder',
-          created_by: 'test-user-id',
-          created_at: new Date('2026-03-01'),
-          custom_home_page_id: null,
-        },
-      ],
-    });
-    // Second query: page counts
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ space_key: 'PROJ', count: '5' }],
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/local',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body).toHaveLength(1);
-    expect(body[0].key).toBe('PROJ');
-    expect(body[0].name).toBe('Project Docs');
-    expect(body[0].source).toBe('local');
-    expect(body[0].pageCount).toBe(5);
-    // #352 (finding 2): homepage fields exposed for the "Show home content"
-    // toggle. With no custom override set, both wire fields are null.
-    expect(body[0].homepageId).toBeNull();
-    expect(body[0].customHomePageId).toBeNull();
-  });
-
-  it('should surface homepageId/customHomePageId when an override is set (#352 finding 2)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        {
-          space_key: 'PROJ',
-          space_name: 'Project Docs',
-          description: null,
-          icon: null,
-          created_by: 'test-user-id',
-          created_at: new Date('2026-03-01'),
-          custom_home_page_id: 999,
-        },
-      ],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'PROJ', count: '3' }] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/local',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body[0].homepageId).toBe('999');
-    expect(body[0].customHomePageId).toBe(999);
-  });
-
-  it('SELECTs cs.custom_home_page_id (regression guard for #352 finding 2)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    await app.inject({ method: 'GET', url: '/api/spaces/local' });
-
-    // The SELECT must include `cs.custom_home_page_id` so the column is
-    // actually returned to JS — without it the response shape silently
-    // drops the field and the frontend toggle can never find a homepage.
-    const listCall = mockQueryFn.mock.calls[0];
-    expect(listCall[0]).toMatch(/cs\.custom_home_page_id/);
-  });
-
-  it('should return empty array when no local spaces exist', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/local',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body).toHaveLength(0);
-  });
-
-  // ── POST /api/spaces/local ────────────────────────────────────────────
-
-  it('should create a local space', async () => {
-    // Check duplicate
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Insert
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
+    const created = await app.inject({
       method: 'POST',
       url: '/api/spaces/local',
-      payload: { key: 'MYSPACE', name: 'My Space' },
+      payload: {
+        key: 'TEAM',
+        name: 'Team Docs',
+        description: 'Internal docs',
+        icon: 'folder',
+      },
     });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toEqual({ key: 'TEAM', name: 'Team Docs', source: 'local' });
+    expect(await redis.exists('kb:alice:spaces:local-spaces:list')).toBe(0);
+    expect(await redis.exists('kb:bob:spaces:space-tree:TEAM')).toBe(0);
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.key).toBe('MYSPACE');
-    expect(body.name).toBe('My Space');
-    expect(body.source).toBe('local');
+    const home = await insertStandalonePage('Home', 'private', actorId, 'TEAM');
+    await query('UPDATE spaces SET custom_home_page_id = $2 WHERE space_key = $1', ['TEAM', home]);
+    const listed = await app.inject({ method: 'GET', url: '/api/spaces/local' });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual([
+      expect.objectContaining({
+        key: 'TEAM',
+        name: 'Team Docs',
+        description: 'Internal docs',
+        icon: 'folder',
+        pageCount: 1,
+        source: 'local',
+        homepageId: String(home),
+        customHomePageId: home,
+      }),
+    ]);
 
-    // Verify INSERT was called with correct source
-    const insertCall = mockQueryFn.mock.calls[1];
-    expect(insertCall[0]).toContain("'local'");
-    expect(insertCall[1]).toContain('MYSPACE');
-  });
-
-  it('should reject duplicate space key', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1 }] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/spaces/local',
-      payload: { key: 'EXISTING', name: 'Duplicate' },
-    });
-
-    expect(response.statusCode).toBe(409);
-  });
-
-  it('should reject invalid space key format', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/spaces/local',
-      payload: { key: 'lower-case', name: 'Bad Key' },
-    });
-
-    expect(response.statusCode).toBe(400);
-  });
-
-  // ── PUT /api/spaces/local/:key ────────────────────────────────────────
-
-  it('should update a local space', async () => {
-    // Verify it's a local space
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local', created_by: 'test-user-id' }] });
-    // Update
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
+    await redis.set('kb:someone:spaces:local-spaces:list', 'stale');
+    const updated = await app.inject({
       method: 'PUT',
-      url: '/api/spaces/local/PROJ',
-      payload: { name: 'Updated Name', description: 'New description' },
+      url: '/api/spaces/local/TEAM',
+      payload: { name: 'Renamed Team', icon: 'book' },
     });
+    expect(updated.statusCode).toBe(200);
+    expect(await redis.exists('kb:someone:spaces:local-spaces:list')).toBe(0);
+    expect(
+      (await query<{ space_name: string; icon: string }>(
+        'SELECT space_name, icon FROM spaces WHERE space_key = $1',
+        ['TEAM'],
+      )).rows[0],
+    ).toEqual({ space_name: 'Renamed Team', icon: 'book' });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.key).toBe('PROJ');
-    expect(body.updated).toBe(true);
-  });
+    const nonEmpty = await app.inject({ method: 'DELETE', url: '/api/spaces/local/TEAM' });
+    expect(nonEmpty.statusCode).toBe(409);
+    await query('DELETE FROM pages WHERE id = $1', [home]);
+    await redis.set('kb:someone:spaces:anything', 'stale');
+    const deleted = await app.inject({ method: 'DELETE', url: '/api/spaces/local/TEAM' });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ key: 'TEAM', deleted: true });
+    expect(await redis.exists('kb:someone:spaces:anything')).toBe(0);
 
-  it('should reject update of Confluence space', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence', created_by: null }] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/spaces/local/CONFSPACE',
-      payload: { name: 'Try Update' },
-    });
-
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.error).toContain('Confluence');
-  });
-
-  // ── DELETE /api/spaces/local/:key ─────────────────────────────────────
-
-  it('should delete an empty local space', async () => {
-    // Verify it's local
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // Page count = 0
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    // Delete
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/spaces/local/PROJ',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.deleted).toBe(true);
-  });
-
-  it('should reject deletion of non-empty space', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '3' }] });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/spaces/local/PROJ',
-    });
-
-    expect(response.statusCode).toBe(409);
-  });
-
-  // ── Cross-user cache invalidation (#352 pattern, PR #1256 review F-B) ──
-  //
-  // GET /spaces/local serves a GLOBALLY-scoped list (no per-user filter in
-  // its SQL) out of a per-user cache with a 15-minute TTL. A local space's
-  // name and icon are chrome every user's sidebar renders, so a mutation
-  // that only invalidates the acting user's cache leaves every other user
-  // on the stale row for up to the TTL. Each mutation must SCAN the shared
-  // `kb:*:spaces:*` namespace — NOT the per-user `kb:test-user-id:spaces:*`
-  // one — exactly as PUT /spaces/:key/home does (#352).
-
-  it('POST /spaces/local invalidates the spaces cache across ALL users, not just the creator', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // duplicate check
-    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // INSERT
-    // Two other users hold a cached spaces list; both entries must go.
-    mockRedisScan.mockResolvedValueOnce({
-      cursor: '0',
-      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/spaces/local',
-      payload: { key: 'MYSPACE', name: 'My Space', icon: 'rocket' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
-    expect(mockRedisDel).toHaveBeenCalledWith([
-      'kb:alice:spaces:local-spaces:list',
-      'kb:bob:spaces:local-spaces:list',
+    const audit = await query<{ action: string }>(
+      `SELECT action FROM audit_log
+        WHERE action IN ('LOCAL_SPACE_CREATED', 'LOCAL_SPACE_UPDATED', 'LOCAL_SPACE_DELETED')
+        ORDER BY created_at, id`,
+    );
+    expect(audit.rows.map((row) => row.action)).toEqual([
+      'LOCAL_SPACE_CREATED',
+      'LOCAL_SPACE_UPDATED',
+      'LOCAL_SPACE_DELETED',
     ]);
   });
 
-  it('PUT /spaces/local/:key invalidates the spaces cache across ALL users, not just the editor', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local', created_by: 'test-user-id' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // UPDATE
-    mockRedisScan.mockResolvedValueOnce({
-      cursor: '0',
-      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+  it('validates local-space identity and refuses mutation of Confluence spaces', async () => {
+    await insertLocalSpace('DUP', actorId);
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: '/api/spaces/local',
+      payload: { key: 'DUP', name: 'Duplicate' },
     });
+    expect(duplicate.statusCode).toBe(409);
 
-    const response = await app.inject({
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/spaces/local',
+      payload: { key: 'not valid', name: 'Invalid' },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('CONF', 'Confluence', 'confluence', NOW())`,
+    );
+    const update = await app.inject({
       method: 'PUT',
-      url: '/api/spaces/local/PROJ',
-      payload: { icon: 'rocket' },
+      url: '/api/spaces/local/CONF',
+      payload: { name: 'No' },
     });
+    expect(update.statusCode).toBe(400);
+    expect(update.json().error).toContain('Confluence');
 
+    const remove = await app.inject({ method: 'DELETE', url: '/api/spaces/local/CONF' });
+    expect(remove.statusCode).toBe(400);
+    expect(remove.json().error).toContain('Confluence');
+  });
+
+  it('returns honest empty/not-found states and rejects an update with no fields', async () => {
+    const empty = await app.inject({ method: 'GET', url: '/api/spaces/local' });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual([]);
+
+    const missingTree = await app.inject({ method: 'GET', url: '/api/spaces/MISSING/tree' });
+    const missingMove = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/2147483647/move',
+      payload: { parentId: null },
+    });
+    const missingReorder = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/2147483647/reorder',
+      payload: { sortOrder: 0 },
+    });
+    expect(missingTree.statusCode).toBe(404);
+    expect(missingMove.statusCode).toBe(404);
+    expect(missingReorder.statusCode).toBe(404);
+
+    await insertLocalSpace('UNCHANGED', actorId);
+    const noFields = await app.inject({
+      method: 'PUT',
+      url: '/api/spaces/local/UNCHANGED',
+      payload: {},
+    });
+    expect(noFields.statusCode).toBe(400);
+    expect(noFields.json().error).toContain('No fields');
+  });
+
+  it('returns a local tree with numeric parent identities and serves local spaces without RBAC assignments', async () => {
+    await insertLocalSpace('TREE', actorId);
+    const root = await insertStandalonePage('Root', 'private', actorId, 'TREE');
+    const child = await insertStandalonePage('Child', 'private', actorId, 'TREE', {
+      parentId: String(root),
+    });
+    await setTreePosition(root, `/${root}`, 0, 0);
+    await setTreePosition(child, `/${root}/${child}`, 1, 1);
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces/TREE/tree' });
     expect(response.statusCode).toBe(200);
-    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
-    expect(mockRedisDel).toHaveBeenCalledWith([
-      'kb:alice:spaces:local-spaces:list',
-      'kb:bob:spaces:local-spaces:list',
+    expect(response.json()).toMatchObject({ spaceKey: 'TREE', total: 2 });
+    expect(response.json().items).toEqual([
+      expect.objectContaining({ id: root, title: 'Root', parentId: null }),
+      expect.objectContaining({ id: child, title: 'Child', parentId: String(root) }),
     ]);
   });
 
-  it('DELETE /spaces/local/:key invalidates the spaces cache across ALL users, not just the deleter', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // DELETE
-    mockRedisScan.mockResolvedValueOnce({
-      cursor: '0',
-      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
-    });
+  it('conceals an inaccessible Confluence tree and returns it after a real role assignment', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('SECURE', 'Secure', 'confluence', NOW())`,
+    );
+    const page = await insertConfluencePage('secure-root', 'Secure root', 'SECURE');
+    await setTreePosition(page, `/${page}`, 0);
 
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/spaces/local/PROJ',
-    });
+    const denied = await app.inject({ method: 'GET', url: '/api/spaces/SECURE/tree' });
+    expect(denied.statusCode).toBe(404);
 
-    expect(response.statusCode).toBe(200);
-    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
-    expect(mockRedisDel).toHaveBeenCalledWith([
-      'kb:alice:spaces:local-spaces:list',
-      'kb:bob:spaces:local-spaces:list',
+    await assignSpace(actorId, 'SECURE');
+    const allowed = await app.inject({ method: 'GET', url: '/api/spaces/SECURE/tree' });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().items).toEqual([
+      expect.objectContaining({ id: page, confluenceId: 'secure-root', source: 'confluence' }),
     ]);
   });
 
-  // ── GET /api/spaces/:key/tree ─────────────────────────────────────────
-
-  it('should return page tree for a space', async () => {
-    // Space exists (local — no RBAC gate)
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // Pages
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 1, title: 'Root', parent_numeric_id: null, depth: 0, sort_order: 0, source: 'standalone', confluence_id: null },
-        { id: 2, title: 'Child A', parent_numeric_id: 1, depth: 1, sort_order: 0, source: 'standalone', confluence_id: null },
-        { id: 3, title: 'Child B', parent_numeric_id: 1, depth: 1, sort_order: 1, source: 'standalone', confluence_id: null },
-      ],
+  it('moves a real subtree and rewrites every descendant path under one admitted transaction', async () => {
+    await insertLocalSpace('MOVE', actorId);
+    const oldRoot = await insertStandalonePage('Old root', 'private', actorId, 'MOVE');
+    const child = await insertStandalonePage('Child', 'private', actorId, 'MOVE', {
+      parentId: String(oldRoot),
     });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/PROJ/tree',
+    const grandchild = await insertStandalonePage('Grandchild', 'private', actorId, 'MOVE', {
+      parentId: String(child),
     });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.spaceKey).toBe('PROJ');
-    expect(body.items).toHaveLength(3);
-    expect(body.items[0].parentId).toBeNull();
-    expect(body.items[1].parentId).toBe('1');
-    expect(body.total).toBe(3);
-  });
-
-  it('should return 404 for non-existent space tree', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/NOPE/tree',
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  it('tree: returns 404 for a Confluence space the user cannot access (#817)', async () => {
-    // Space exists and is Confluence-synced.
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    // User has no assignment to this space (default mock is []).
-    mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/RESTRICTED/tree',
-    });
-
-    // 404 (not 403) so restricted spaces are indistinguishable from missing ones.
-    expect(response.statusCode).toBe(404);
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('test-user-id');
-    // Critical: the page tree must never be queried for a denied space.
-    const treeSelect = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages p'),
-    );
-    expect(treeSelect).toBeUndefined();
-  });
-
-  it('tree: returns the tree for a Confluence space the user can access (#817)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 1, title: 'Root', parent_numeric_id: null, depth: 0, sort_order: 0, source: 'confluence', confluence_id: 'c1' },
-      ],
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/TEAMB/tree',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.spaceKey).toBe('TEAMB');
-    expect(body.items).toHaveLength(1);
-  });
-
-  it('tree: serves a local space without an RBAC assignment (#817)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/spaces/MYLOCAL/tree',
-    });
-
-    expect(response.statusCode).toBe(200);
-    // Local spaces are accessible to all authenticated users — no RBAC lookup.
-    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
-  });
-
-  // ── PUT /api/pages/:id/move ───────────────────────────────────────────
-
-  it('should move a page to a new parent', async () => {
-    // Existing page
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
-    });
-    // #891: fresh re-read of the page under the advisory lock
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
-    });
-    // Parent exists check (also supplies the parent path, source and
-    // confluence_id — #1166 derives the stored parent_id flavour from them)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
-    });
-    // #1166 ambiguity guard: no other row claims the identifier. One call
-    // only — the requested identifier and the stored key are both '5'.
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // #891 cycle-check: no cycle (empty result)
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Update page
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Update descendants
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    const target = await insertStandalonePage('Target', 'private', actorId, 'MOVE');
+    await setTreePosition(oldRoot, `/${oldRoot}`, 0);
+    await setTreePosition(child, `/${oldRoot}/${child}`, 1);
+    await setTreePosition(grandchild, `/${oldRoot}/${child}/${grandchild}`, 2);
+    await setTreePosition(target, `/${target}`, 0);
 
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: '5' },
+      url: `/api/pages/${child}/move`,
+      payload: { parentId: target, spaceKey: 'MOVE' },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.parentId).toBe('5');
-    expect(body.path).toBe('/5/10');
-    expect(body.depth).toBe(1);
+    expect(response.json()).toMatchObject({
+      id: child,
+      parentId: String(target),
+      spaceKey: 'MOVE',
+      path: `/${target}/${child}`,
+      depth: 1,
+    });
+    expect(await pagePosition(child)).toMatchObject({
+      parent_id: String(target),
+      path: `/${target}/${child}`,
+      depth: 1,
+    });
+    expect(await pagePosition(grandchild)).toMatchObject({
+      parent_id: String(child),
+      path: `/${target}/${child}/${grandchild}`,
+      depth: 2,
+    });
   });
 
-  it('move: stores the parent confluence_id when the parent is Confluence-sourced (#1166)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, space_key: 'PROJ' }],
-    });
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
-    });
-    // Parent is Confluence-synced: its children key on its confluence_id, not
-    // its numeric id. Its materialized path is NULL, as synced pages' are.
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '424242' }],
-    });
-    // #1166 ambiguity guard runs TWICE here: the requested identifier ('5')
-    // and the stored key ('424242') are different values, and each must be
-    // unique on its own.
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // cycle check: clear
-    mockQueryFn.mockResolvedValue({ rows: [] }); // UPDATEs
+  it('stores a Confluence parent key rather than its local numeric id', async () => {
+    await insertLocalSpace('SOURCE', actorId);
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('TARGET', 'Target', 'confluence', NOW())`,
+    );
+    await assignSpace(actorId, 'TARGET');
+    const moving = await insertStandalonePage('Moving', 'private', actorId, 'SOURCE');
+    const parent = await insertConfluencePage('upstream-parent', 'Parent', 'TARGET');
+    await setTreePosition(moving, `/${moving}`, 0);
+    await setTreePosition(parent, `/${parent}`, 0);
 
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: 5 },
+      url: `/api/pages/${moving}/move`,
+      payload: { parentId: parent, spaceKey: 'TARGET' },
     });
 
     expect(response.statusCode).toBe(200);
-    // Response echoes the STORED key, not the caller's `5` (#1166 contract).
-    expect(JSON.parse(response.payload).parentId).toBe('424242');
-
-    // …and the column really holds it.
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET parent_id'),
-    );
-    expect(updateCall).toBeDefined();
-    expect((updateCall![1] as unknown[])[0]).toBe('424242');
-
-    // The audit trail records the stored key too, so it matches the row.
-    expect(mockLogAuditEvent).toHaveBeenCalledWith(
-      'test-user-id',
-      'PAGE_MOVED',
-      'page',
-      '10',
-      expect.objectContaining({ parentId: '424242' }),
-      expect.anything(),
-    );
+    expect(response.json().parentId).toBe('upstream-parent');
+    expect(await pagePosition(moving)).toMatchObject({
+      parent_id: 'upstream-parent',
+      space_key: 'TARGET',
+      path: `/${parent}/${moving}`,
+    });
   });
 
-  it('move: resolves the parent against both id and confluence_id, never casting to int (#1166)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
-    });
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '3000000000' }],
-    });
-    // Requested identifier == stored key here, so one ambiguity check, clear.
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValue({ rows: [] });
+  it('refuses an identifier that names one parent by PK and another by Confluence id', async () => {
+    await insertLocalSpace('AMBIGUOUS', actorId);
+    const moving = await insertStandalonePage('Moving', 'private', actorId, 'AMBIGUOUS');
+    const numericParent = await insertStandalonePage('Numeric parent', 'private', actorId, 'AMBIGUOUS');
+    const collidingParent = await insertConfluencePage(
+      String(numericParent),
+      'Confluence collision',
+      'AMBIGUOUS',
+    );
+    await setTreePosition(moving, `/${moving}`, 0);
+    await setTreePosition(numericParent, `/${numericParent}`, 0);
+    await setTreePosition(collidingParent, `/${collidingParent}`, 0);
 
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: '3000000000' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const parentLookup = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('confluence_id = $1 OR id::text = $1'),
-    );
-    expect(parentLookup).toBeDefined();
-    // A Confluence id above 2^31 raises 22003 the moment the parameter is cast
-    // to int (the #1167 hazard) — compare `id::text` and pass a plain string.
-    expect(parentLookup![0] as string).not.toMatch(/\$1::int|CAST\s*\(\s*\$1/i);
-    expect((parentLookup![1] as unknown[])[0]).toBe('3000000000');
-
-    // The cycle-check anchor takes the RESOLVED numeric id, so it cannot
-    // overflow either.
-    const cycleCheck = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
-    );
-    expect((cycleCheck![1] as unknown[])[0]).toBe(5);
-  });
-
-  it('move: refuses an ambiguous parent identifier with 409, before the cycle check (#1166)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
-    });
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
-    });
-    // Another row also answers to '5' — here a Confluence page carrying it as
-    // its confluence_id. The stored key would resolve to two parents.
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 77, title: 'decoy' }] });
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: '5' },
+      url: `/api/pages/${moving}/move`,
+      payload: { parentId: numericParent, spaceKey: 'AMBIGUOUS' },
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json().error).toContain('ambiguous');
+    expect(await pagePosition(moving)).toMatchObject({
+      parent_id: null,
+      space_key: 'AMBIGUOUS',
+      path: `/${moving}`,
+    });
+  });
 
-    // The guard short-circuits: the cycle check never runs, and nothing is
-    // written. Ordering matters — the cycle check anchors on ONE row, so
-    // letting it run first is what reopened #891.
-    const cycleCheck = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
+  it('rejects cycles and inaccessible target spaces without changing the source row', async () => {
+    await insertLocalSpace('SOURCE', actorId);
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('RESTRICTED', 'Restricted', 'confluence', NOW())`,
     );
-    expect(cycleCheck).toBeUndefined();
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
-  });
+    const root = await insertStandalonePage('Root', 'private', actorId, 'SOURCE');
+    const child = await insertStandalonePage('Child', 'private', actorId, 'SOURCE', {
+      parentId: String(root),
+    });
+    await setTreePosition(root, `/${root}`, 0);
+    await setTreePosition(child, `/${root}/${child}`, 1);
 
-  it('move: rejects making a page its own parent (#891)', async () => {
-    // Existing page
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/5' }],
-    });
-    // #891: fresh re-read of the page under the advisory lock
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/5' }],
-    });
-    // Parent exists check (parent is the page itself)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
-    });
-    // #1166 ambiguity guard: unambiguous, so the cycle check still decides.
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Cycle-check finds the moved page in the ancestor chain
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
-    // Fallback so any further (unexpected) query resolves harmlessly
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
+    const cycle = await app.inject({
       method: 'PUT',
-      url: '/api/pages/5/move',
-      payload: { parentId: 5 },
+      url: `/api/pages/${root}/move`,
+      payload: { parentId: child, spaceKey: 'SOURCE' },
     });
+    expect(cycle.statusCode).toBe(400);
+    expect(cycle.json().error).toContain('own descendant');
 
-    expect(response.statusCode).toBe(400);
-    // Critical: no UPDATE must run, so no descendant paths are corrupted.
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
-  });
-
-  it('move: rejects moving a Confluence page under its own descendant when path is NULL (#891)', async () => {
-    // Existing page (Confluence-synced, materialized path is NULL)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, parent_id: null, space_key: 'PROJ', source: 'confluence', path: null }],
-    });
-    // #891: fresh re-read of the page under the advisory lock
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: null }],
-    });
-    // Parent exists check (a descendant of page 5, also NULL path)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 9, path: null, source: 'confluence', confluence_id: 'conf-9' }],
-    });
-    // #1166 ambiguity guard, twice: requested '9' vs stored key 'conf-9'.
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Cycle-check finds the moved page in the ancestor chain
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
+    const denied = await app.inject({
       method: 'PUT',
-      url: '/api/pages/5/move',
-      payload: { parentId: 9 },
-    });
-
-    expect(response.statusCode).toBe(400);
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
-  });
-
-  it('should return 404 when moving non-existent page', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/999/move',
-      payload: { parentId: null },
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  // ── PUT /api/pages/:id/reorder ────────────────────────────────────────
-
-  it('should reorder a page and renumber the whole sibling group (#959)', async () => {
-    // 1) existence check, 2) resolve sibling group, 3) sibling list.
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'PROJ', parent_num: 5 }] });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 10 }] });
-    // Per-row UPDATEs + any other tx query.
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/reorder',
-      payload: { sortOrder: 0 },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.sortOrder).toBe(0);
-
-    // The dragged page (10) plus both untouched siblings (11, 12) are each
-    // rewritten to a dense position — not just the dragged row.
-    const updatedIds = mockQueryFn.mock.calls
-      .filter((c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET sort_order'))
-      .map((c) => (c[1] as unknown[])[1]);
-    expect(updatedIds).toEqual([10, 11, 12]);
-  });
-
-  it('should return 404 when reordering non-existent page', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/999/reorder',
-      payload: { sortOrder: 0 },
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  // ── #733 RBAC / IDOR regressions ──────────────────────────────────────
-
-  it('move: returns 404 when the user cannot access the source page (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: 'SECRET', source: 'confluence', path: '/10' }],
-    });
-    mockUserCanAccessPage.mockResolvedValue(false);
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: null, spaceKey: 'PROJ' },
-    });
-
-    expect(response.statusCode).toBe(404);
-    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 10);
-    // Critical: the page must not be moved.
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
-  });
-
-  it('move: returns 403 when the target space is a Confluence space the user cannot access (#733)', async () => {
-    // Source page is accessible (default mock), target space is not.
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
-    });
-    // Target space lookup → Confluence-synced space
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/move',
+      url: `/api/pages/${root}/move`,
       payload: { parentId: null, spaceKey: 'RESTRICTED' },
     });
-
-    expect(response.statusCode).toBe(403);
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
+    expect(denied.statusCode).toBe(403);
+    expect(await pagePosition(root)).toMatchObject({
+      parent_id: null,
+      space_key: 'SOURCE',
+      path: `/${root}`,
+    });
   });
 
-  it('move: returns 400 when the target space does not exist (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
+  it('conceals source-page move, reorder, and breadcrumb operations from an unauthorized user', async () => {
+    await insertLocalSpace('PRIVATE', actorId);
+    const page = await insertStandalonePage('Private', 'private', actorId, 'PRIVATE');
+    await setTreePosition(page, `/${page}`, 0);
+    actorId = otherUserId;
+
+    const move = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${page}/move`,
+      payload: { parentId: null, spaceKey: 'PRIVATE' },
     });
-    // Target space lookup → no such space
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    const reorder = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${page}/reorder`,
+      payload: { sortOrder: 0 },
+    });
+    const breadcrumb = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${page}/breadcrumb`,
+    });
+
+    expect(move.statusCode).toBe(404);
+    expect(reorder.statusCode).toBe(404);
+    expect(breadcrumb.statusCode).toBe(404);
+    expect(await pagePosition(page)).toMatchObject({ sort_order: 0, path: `/${page}` });
+  });
+
+  it('reorders the entire sibling group into a dense persisted order', async () => {
+    await insertLocalSpace('ORDER', actorId);
+    const parent = await insertStandalonePage('Parent', 'private', actorId, 'ORDER');
+    const alpha = await insertStandalonePage('Alpha', 'private', actorId, 'ORDER', {
+      parentId: String(parent),
+    });
+    const beta = await insertStandalonePage('Beta', 'private', actorId, 'ORDER', {
+      parentId: String(parent),
+    });
+    const gamma = await insertStandalonePage('Gamma', 'private', actorId, 'ORDER', {
+      parentId: String(parent),
+    });
+    await setTreePosition(parent, `/${parent}`, 0);
+    await setTreePosition(alpha, `/${parent}/${alpha}`, 1, 0);
+    await setTreePosition(beta, `/${parent}/${beta}`, 1, 1);
+    await setTreePosition(gamma, `/${parent}/${gamma}`, 1, 2);
 
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: null, spaceKey: 'NOPE' },
+      url: `/api/pages/${gamma}/reorder`,
+      payload: { sortOrder: 0 },
     });
-
-    expect(response.statusCode).toBe(400);
-  });
-
-  it('move: allows moving into an accessible Confluence space (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-    mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
-    // #891: fresh re-read of the page under the advisory lock
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
-    });
-    // UPDATE page + descendants
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: null, spaceKey: 'TEAMB' },
-    });
-
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload).spaceKey).toBe('TEAMB');
-  });
+    expect(response.json()).toEqual({ id: gamma, sortOrder: 0 });
 
-  it('move: allows moving into a local space without an RBAC assignment (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, parent_id: null, space_key: null, source: 'standalone', path: '/10' }],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
-    // #891: fresh re-read of the page under the advisory lock
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ parent_id: null, space_key: null, path: '/10' }],
-    });
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/move',
-      payload: { parentId: null, spaceKey: 'MYLOCAL' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    // Local spaces are accessible to all authenticated users — no RBAC lookup.
-    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
-  });
-
-  it('reorder: returns 404 when the user cannot access the page (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
-    mockUserCanAccessPage.mockResolvedValue(false);
-
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/10/reorder',
-      payload: { sortOrder: 3 },
-    });
-
-    expect(response.statusCode).toBe(404);
-    const updateCall = mockQueryFn.mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    const rows = await query<{ id: number; sort_order: number }>(
+      'SELECT id, sort_order FROM pages WHERE parent_id = $1 ORDER BY sort_order',
+      [String(parent)],
     );
-    expect(updateCall).toBeUndefined();
+    expect(rows.rows).toEqual([
+      { id: gamma, sort_order: 0 },
+      { id: alpha, sort_order: 1 },
+      { id: beta, sort_order: 2 },
+    ]);
   });
 
-  it('breadcrumb: returns 404 when the user cannot access the page (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, title: 'Restricted', parent_id: null, space_key: 'SECRET', path: '/10' }],
+  it('returns breadcrumb ancestors in materialized-path order with local-space provenance', async () => {
+    await insertLocalSpace('CRUMBS', actorId);
+    await query("UPDATE spaces SET space_name = 'Breadcrumb Space' WHERE space_key = 'CRUMBS'");
+    const root = await insertStandalonePage('Root', 'private', actorId, 'CRUMBS');
+    const parent = await insertStandalonePage('Parent', 'private', actorId, 'CRUMBS', {
+      parentId: String(root),
     });
-    mockUserCanAccessPage.mockResolvedValue(false);
+    const child = await insertStandalonePage('Child', 'private', actorId, 'CRUMBS', {
+      parentId: String(parent),
+    });
+    await setTreePosition(root, `/${root}`, 0);
+    await setTreePosition(parent, `/${root}/${parent}`, 1);
+    await setTreePosition(child, `/${root}/${parent}/${child}`, 2);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/pages/10/breadcrumb',
-    });
-
-    expect(response.statusCode).toBe(404);
-    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 10);
-  });
-
-  it('breadcrumb: returns the parent chain when the user can access the page (#733)', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, title: 'Child', parent_id: '5', space_key: 'PROJ', path: '/5/10' }],
-    });
-    // Ancestors batch fetch
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 5, title: 'Parent' }] });
-    // Space name lookup
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_name: 'Project Docs', source: 'local' }] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/10/breadcrumb',
+      url: `/api/pages/${child}/breadcrumb`,
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.ancestors).toEqual([{ id: 5, title: 'Parent' }]);
-    expect(body.current).toEqual({ id: 10, title: 'Child' });
+    expect(response.json()).toEqual({
+      spaceKey: 'CRUMBS',
+      spaceName: 'Breadcrumb Space',
+      source: 'local',
+      ancestors: [
+        { id: root, title: 'Root' },
+        { id: parent, title: 'Parent' },
+      ],
+      current: { id: child, title: 'Child' },
+    });
   });
 });

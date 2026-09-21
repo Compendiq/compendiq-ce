@@ -11,7 +11,8 @@
  *     soft-deleted more than 30 days ago, leaves newer trash and Confluence
  *     pages alone, and returns the purged count.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createClient, type RedisClientType } from 'redis';
 import type { FastifyInstance } from 'fastify';
 import {
   setupTestDb,
@@ -19,7 +20,10 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { pagesCrudRoutes } from './pages-crud.js';
 import { TrashListResponseSchema } from '@compendiq/contracts';
 import {
   insertUser,
@@ -29,63 +33,75 @@ import {
   buildKnowledgeTestApp,
 } from './pages.test-helpers.js';
 
-// --- Boundary mocks (everything else is real) ---
+const available = await isDbAvailable() && await isRedisAvailable();
 
-// No Redis in tests — no-op cache so every request hits the real DB.
-// Shared spies so tests can assert which invalidation path a route took (#893).
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    // Shared/Confluence mutations clear every user's cache (#893).
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-  },
-}));
+async function grantRead(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('trash-reader', 'Trash reader', FALSE, ARRAY['read'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
 
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
+async function seedPageCache(redis: RedisClientType, userIds: readonly string[]): Promise<void> {
+  await Promise.all(userIds.map((userId) => redis.set(`kb:${userId}:pages:sentinel`, userId)));
+}
 
-const dbAvailable = await isDbAvailable();
+async function cachedPageUsers(redis: RedisClientType, userIds: readonly string[]): Promise<string[]> {
+  const values = await Promise.all(
+    userIds.map(async (userId) => [userId, await redis.get(`kb:${userId}:pages:sentinel`)] as const),
+  );
+  return values.filter(([, value]) => value !== null).map(([userId]) => userId);
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number): Date => new Date(Date.now() - days * DAY_MS);
 
 // --- Tests ---
 
-describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)', () => {
+describe.skipIf(!available)('GET /api/pages/trash + standalone auto-purge (DB)', () => {
   let app: FastifyInstance;
+  let redis: RedisClientType;
   let userA: string;
   let currentUserId: string;
 
   beforeAll(async () => {
     await setupTestDb();
-    app = await buildKnowledgeTestApp(
-      () => currentUserId,
-      async (a) => {
-        const { pagesCrudRoutes } = await import('./pages-crud.js');
-        await a.register(pagesCrudRoutes, { prefix: '/api' });
-      },
-    );
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    }) as RedisClientType;
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+      instance.redis = redis;
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
+    });
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
     await teardownTestDb();
   });
 
   beforeEach(async () => {
-    vi.clearAllMocks();
     await truncateAllTables();
+    await redis.flushDb();
     userA = await insertUser('trash_owner_a');
     await insertLocalSpace('NOTES', userA);
-    mockGetUserAccessibleSpaces.mockResolvedValue([]);
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('DEV', 'DEV', 'confluence', NOW())`,
+    );
+    await grantRead(userA, 'DEV');
+    currentUserId = userA;
   });
 
   it('returns deletedBy (owner username) and autoPurgeAt (= deletedAt + 30 days, ISO) per item', async () => {
@@ -153,22 +169,19 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
     expect(await purgeExpiredStandalonePages()).toBe(0);
   });
 
-  // #893 review follow-up: a restored shared standalone page reappears in
-  // every user's lists/trees, so restore must clear all users' caches — not
-  // just the owner's — or the page stays missing for others up to the TTL.
-  describe('POST /api/pages/:id/restore — cache invalidation (#893)', () => {
-    it('invalidates the pages cache across all users when restoring a shared page', async () => {
+  describe('POST /api/pages/:id/restore — observable cache scope (#893)', () => {
+    it('invalidates every user’s pages cache when restoring a shared page', async () => {
+      const reader = await insertUser('trash_shared_reader');
       const pageId = await insertStandalonePage('Shared trashed note', 'shared', userA, 'NOTES', {
         deletedAt: new Date(),
       });
+      await seedPageCache(redis, [userA, reader]);
 
-      currentUserId = userA;
       const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/restore` });
 
       expect(response.statusCode).toBe(200);
       expect(response.json().restored).toBe(true);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalledWith(userA, 'pages');
+      expect(await cachedPageUsers(redis, [userA, reader])).toEqual([]);
     });
 
     it('returns 409 instead of 500 when restoring would collide with a live Notion import', async () => {
@@ -191,18 +204,18 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
       expect(stillTrashed.rows[0]!.deleted_at).not.toBeNull();
     });
 
-    it('keeps per-user invalidation when restoring a private page', async () => {
+    it('keeps other users’ cache entries when restoring a private page', async () => {
+      const reader = await insertUser('trash_private_reader');
       const pageId = await insertStandalonePage('Private trashed note', 'private', userA, 'NOTES', {
         deletedAt: new Date(),
       });
+      await seedPageCache(redis, [userA, reader]);
 
-      currentUserId = userA;
       const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/restore` });
 
       expect(response.statusCode).toBe(200);
       expect(response.json().restored).toBe(true);
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(mockCacheInvalidate).toHaveBeenCalledWith(userA, 'pages');
+      expect(await cachedPageUsers(redis, [userA, reader])).toEqual([reader]);
     });
   });
 
@@ -223,8 +236,6 @@ describe.skipIf(!dbAvailable)('GET /api/pages/trash + standalone auto-purge (DB)
 
     it('returns null createdByUserId for a synced Confluence page', async () => {
       const pageId = await insertConfluencePage('conf-own-1', 'Conf page', 'DEV');
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-
       currentUserId = userA;
       const response = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
       expect(response.statusCode).toBe(200);

@@ -1,4 +1,5 @@
 import { query, getPool } from '../../../core/db/postgres.js';
+import type { PoolClient } from 'pg';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown, htmlToText } from '../../../core/services/content-converter.js';
@@ -120,27 +121,39 @@ export async function getVersion(
 export interface RestoreResult {
   pageId: number;
   title: string;
-  /** New live version after the restore (old version + bump). */
+  /** New live version after the restore (old version + bump, or the remote accepted version). */
   newVersion: number;
   bodyHtml: string | null;
   bodyText: string | null;
 }
 
+export interface RestoreVersionOptions {
+  /**
+   * A caller-owned transaction which already holds the page lifecycle fence.
+   * When supplied, this function never begins, commits, rolls back, or releases
+   * the transaction.
+   */
+  client?: PoolClient;
+  /** Actor recorded for a local-only restore. */
+  actorId?: string;
+}
+
 /**
- * Non-destructive, Confluence-style restore of an older snapshot.
+ * Non-destructive local restore of an older snapshot.
  *
- * In a single transaction:
+ * In one caller-owned or locally-owned transaction:
  *   1. Snapshot the CURRENT live state into `page_versions` (so the revert is
  *      itself reversible and intermediate manual edits aren't lost — a plain
  *      edit-save does not snapshot, only sync/draft-publish/this path do).
  *   2. Apply the target snapshot's title / body_html / body_text to the live
  *      `pages` row, re-deriving body_text from body_html when needed.
- *   3. Bump `version` and mark the page `embedding_dirty` so the change flows
- *      through search/embedding the same way an edit-save does.
+ *   3. Bump `version` and mark the page
+ *      dirty so the change flows through search/embedding like an edit-save.
  *
- * The Confluence push (for synced pages) and audit/webhook events are the
- * caller's responsibility — this keeps the domain service DB-only and lets the
- * route reuse the exact edit-save side-effect path.
+ * The inserted `page_versions` row is ordinary best-effort history, not
+ * baseline evidence. Baseline publication independently compares and links an
+ * exact matching snapshot; ON CONFLICT here deliberately never overwrites an
+ * existing same-version row.
  *
  * @returns the applied content + new version, or `null` if the target version
  *          doesn't exist for the page.
@@ -148,12 +161,16 @@ export interface RestoreResult {
 export async function restoreVersion(
   pageId: number,
   targetVersion: number,
+  options: RestoreVersionOptions = {},
 ): Promise<RestoreResult | null> {
-  const txClient = await getPool().connect();
+  const ownsTransaction = options.client === undefined;
+  const txClient = options.client ?? await getPool().connect();
   try {
-    await txClient.query('BEGIN');
+    if (ownsTransaction) await txClient.query('BEGIN');
 
-    // Lock the live row so concurrent edits/restores serialise.
+    // Lock the live row so concurrent edits/restores serialise. Production
+    // mutation callers acquire the lifecycle advisory lock before reaching
+    // this row lock; the locally-owned form remains for focused service tests.
     const liveRes = await txClient.query<{
       version: number;
       title: string;
@@ -165,12 +182,11 @@ export async function restoreVersion(
       [pageId],
     );
     if (liveRes.rows.length === 0) {
-      await txClient.query('ROLLBACK');
+      if (ownsTransaction) await txClient.query('ROLLBACK');
       return null;
     }
     const live = liveRes.rows[0]!;
 
-    // Load the target snapshot to restore.
     const targetRes = await txClient.query<{
       title: string;
       body_html: string | null;
@@ -181,25 +197,22 @@ export async function restoreVersion(
       [pageId, targetVersion],
     );
     if (targetRes.rows.length === 0) {
-      await txClient.query('ROLLBACK');
+      if (ownsTransaction) await txClient.query('ROLLBACK');
       return null;
     }
     const target = targetRes.rows[0]!;
 
-    // #722/#724 defense-in-depth: never apply an empty body. Backfilled rows are
-    // metadata-only (body_html IS NULL) until lazily fetched; the route fills the
-    // body before calling us. If it is still NULL here, restoring would BLANK the
-    // live page (and, for Confluence pages, push an empty body upstream). Abort
-    // without mutating so no code path can lose content.
+    // Backfilled rows are metadata-only until lazily fetched. Never blank a
+    // live page or push an empty body upstream.
     if (target.body_html === null) {
-      await txClient.query('ROLLBACK');
+      if (ownsTransaction) await txClient.query('ROLLBACK');
       throw new Error(
         `Cannot restore version ${targetVersion} of page ${pageId}: historical body is unavailable (not yet fetched from Confluence).`,
       );
     }
 
-    // 1. Snapshot the current live state first (idempotent — DO NOTHING if the
-    //    live version already has a snapshot, e.g. from a prior sync).
+    // Ordinary history only. Never overwrite a same-version row: it may differ
+    // from the current payload, and the immutable baseline remains authoritative.
     await txClient.query(
       `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
        VALUES ($1, $2, $3, $4, $5, NOW())
@@ -207,35 +220,33 @@ export async function restoreVersion(
       [pageId, live.version, live.title, live.body_html, live.body_text],
     );
 
-    // 2 + 3. Apply the target snapshot as a NEW live version.
     const newVersion = live.version + 1;
-    const restoredBodyText = target.body_text ?? (target.body_html ? htmlToText(target.body_html) : null);
+    const restoredBodyText = target.body_text ?? htmlToText(target.body_html);
     await txClient.query(
       `UPDATE pages SET
          title = $2, body_html = $3, body_text = $4,
-         version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-         -- #1115 P2 (review r2) — a restore is a BODY writer, and the one whose
-         -- whole purpose is to swap the body for a different one, so it
-         -- routinely adds and removes <img> elements. It performs no attachment
-         -- write, so nothing in image-analysis-dirty.ts fires, and neither
-         -- source self-heals: a standalone page is never touched by sync, and a
-         -- Confluence page's restore is pushed upstream and the returned version
-         -- written back, so the next syncPage takes the version-unchanged branch
-         -- and never reaches the conflict-policy update. Gated on body_html
-         -- alone, exactly like its four siblings in pages-crud.ts — that is
-         -- where the src attributes are.
+         version = $5,
+         last_modified_at = NOW(),
+         embedding_dirty = TRUE,
          image_analysis_dirty = CASE
            WHEN body_html IS DISTINCT FROM $3 THEN TRUE
            ELSE image_analysis_dirty
          END,
          embedding_status = 'not_embedded', embedded_at = NULL,
-         local_modified_at = NOW()
+         local_modified_at = NOW(),
+         local_modified_by = $6::uuid
        WHERE id = $1`,
-      [pageId, target.title, target.body_html, restoredBodyText, newVersion],
+      [
+        pageId,
+        target.title,
+        target.body_html,
+        restoredBodyText,
+        newVersion,
+        options.actorId ?? null,
+      ],
     );
 
-    await txClient.query('COMMIT');
-
+    if (ownsTransaction) await txClient.query('COMMIT');
     return {
       pageId,
       title: target.title,
@@ -244,10 +255,10 @@ export async function restoreVersion(
       bodyText: restoredBodyText,
     };
   } catch (err) {
-    await txClient.query('ROLLBACK');
+    if (ownsTransaction) await txClient.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
-    txClient.release();
+    if (ownsTransaction) txClient.release();
   }
 }
 

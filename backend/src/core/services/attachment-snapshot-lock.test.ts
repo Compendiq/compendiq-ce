@@ -1,9 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
-import { isDbAvailable } from '../../test-db-helper.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  waitForDatabaseCondition,
+} from '../../test-db-helper.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import { getPool, query } from '../db/postgres.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
@@ -12,7 +17,7 @@ import { deletePageIconImage } from './page-icon-store.js';
 const dbAvailable = await isDbAvailable();
 
 async function waitForSharedWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -26,13 +31,19 @@ async function waitForSharedWaiter(blockerPid: number): Promise<boolean> {
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting === true;
+  });
 }
 
 describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
   it('waits behind an exclusive holder and passes the shared-lock-owning client', async () => {
     const holder = await getPool().connect();
     await holder.query('SET statement_timeout = 0');
@@ -102,9 +113,26 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
     const tempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'compendiq-page-icon-lock-'));
     const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
     process.env.ATTACHMENTS_DIR = tempBase;
-    const iconDir = path.join(tempBase, 'page-icons', '42');
+    const suffix = randomUUID();
+    const user = await query<{ id: string }>(
+      `INSERT INTO users (username, email, password_hash, role)
+       VALUES ($1, $2, 'x', 'user') RETURNING id`,
+      [`icon-lock-${suffix}`, `icon-lock-${suffix}@test.invalid`],
+    );
+    const page = await query<{ id: number }>(
+      `INSERT INTO pages
+         (title, body_html, body_text, version, source, created_by_user_id, visibility)
+       VALUES ('Icon lock', '<p>x</p>', 'x', 1, 'standalone', $1, 'private')
+       RETURNING id`,
+      [user.rows[0]!.id],
+    );
+    const pageId = page.rows[0]!.id;
+    const iconDir = path.join(tempBase, 'page-icons', String(pageId));
     await fs.mkdir(iconDir, { recursive: true });
-    await fs.writeFile(path.join(iconDir, 'old.png'), 'old');
+    const sha256 = 'a'.repeat(64);
+    await fs.writeFile(path.join(iconDir, `${sha256}.png`), 'old');
+    const unrelatedPath = path.join(iconDir, 'unrelated-retained-byte.bin');
+    await fs.writeFile(unrelatedPath, 'retain');
 
     const holder = await getPool().connect();
     await holder.query('SET statement_timeout = 0');
@@ -113,7 +141,8 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
       .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
       .then((result) => result.rows[0]!.pid);
     let holderUnlocked = false;
-    const deletion = deletePageIconImage(42);
+    const deletion = withLocalAttachmentMutationLock((client) =>
+      deletePageIconImage(pageId, sha256, client));
 
     try {
       const sharedLockWaited = await waitForSharedWaiter(blockerPid);
@@ -127,7 +156,10 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
 
       expect(sharedLockWaited).toBe(true);
       expect(iconStillExists).toBe(true);
-      await expect(fs.stat(iconDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(path.join(iconDir, `${sha256}.png`))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.readFile(unrelatedPath, 'utf8')).resolves.toBe('retain');
     } finally {
       if (!holderUnlocked) {
         await holder
@@ -138,6 +170,8 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
       await holder.query('RESET statement_timeout').catch(() => undefined);
       holder.release();
       await fs.rm(tempBase, { recursive: true, force: true });
+      await query('DELETE FROM pages WHERE id = $1', [pageId]).catch(() => undefined);
+      await query('DELETE FROM users WHERE id = $1', [user.rows[0]!.id]).catch(() => undefined);
       if (originalAttachmentsDir === undefined) {
         delete process.env.ATTACHMENTS_DIR;
       } else {

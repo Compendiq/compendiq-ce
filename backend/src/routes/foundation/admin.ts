@@ -1,6 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query, getPool } from '../../core/db/postgres.js';
+import {
+  getPageWriterRuntimeId,
+  lockPageLifecycle,
+  lockPageWriterRuntime,
+  lockPageWrites,
+  PageWriteError,
+} from '../../core/services/page-write-admission.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
@@ -106,6 +113,52 @@ const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRat
  * in-flight page write. Exported for the test that pins the pairing.
  */
 export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
+
+/**
+ * Global label changes are one authored mutation, not a partial bulk operation.
+ * Select before locking, then recheck membership while every selected page is
+ * serialized. A concurrent new member requires a retry, never an unlocked write.
+ */
+async function updateLabelAcrossPages(oldName: string, newName: string | null): Promise<number> {
+  const runtimeId = await getPageWriterRuntimeId();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockPageWriterRuntime(client, runtimeId, { newAdmission: true });
+    const selected = await client.query<{ id: number }>(
+      'SELECT id FROM pages WHERE $1 = ANY(labels) ORDER BY id',
+      [oldName],
+    );
+    const selectedIds = selected.rows.map((row) => row.id);
+    await lockPageLifecycle(client, selectedIds);
+    const current = await client.query<{ id: number }>(
+      'SELECT id FROM pages WHERE $1 = ANY(labels) ORDER BY id',
+      [oldName],
+    );
+    const locked = new Set(selectedIds);
+    if (current.rows.some((row) => !locked.has(row.id))) {
+      throw new PageWriteError(409, 'page_targets_changed', 'The label changed on another page. Retry the operation.');
+    }
+    const pageIds = current.rows.map((row) => row.id);
+    await lockPageWrites(client, pageIds);
+    const result = newName === null
+      ? await client.query(
+        'UPDATE pages SET labels = array_remove(labels, $1) WHERE id = ANY($2::int[]) AND $1 = ANY(labels)',
+        [oldName, pageIds],
+      )
+      : await client.query(
+        'UPDATE pages SET labels = array_replace(labels, $1, $2) WHERE id = ANY($3::int[]) AND $1 = ANY(labels)',
+        [oldName, newName, pageIds],
+      );
+    await client.query('COMMIT');
+    return result.rowCount ?? 0;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
@@ -319,26 +372,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request) => {
     const { oldName, newName } = LabelRenameSchema.parse(request.body);
 
-    // Replace oldName with newName in the labels array for all pages that have the old label
-    const result = await query(
-      `UPDATE pages
-       SET labels = array_replace(labels, $1, $2)
-       WHERE $1 = ANY(labels)`,
-      [oldName, newName],
-    );
+    const affectedPages = await updateLabelAcrossPages(oldName, newName);
 
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'label',
       undefined,
-      { action: 'rename', oldName, newName, affectedPages: result.rowCount },
+      { action: 'rename', oldName, newName, affectedPages },
       request,
     );
 
     return {
       message: `Label renamed from "${oldName}" to "${newName}"`,
-      affectedPages: result.rowCount ?? 0,
+      affectedPages,
     };
   });
 
@@ -346,25 +393,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request) => {
     const { name } = LabelNameParamSchema.parse(request.params);
 
-    const result = await query(
-      `UPDATE pages
-       SET labels = array_remove(labels, $1)
-       WHERE $1 = ANY(labels)`,
-      [name],
-    );
+    const affectedPages = await updateLabelAcrossPages(name, null);
 
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'label',
       undefined,
-      { action: 'delete', name, affectedPages: result.rowCount },
+      { action: 'delete', name, affectedPages },
       request,
     );
 
     return {
       message: `Label "${name}" removed from all pages`,
-      affectedPages: result.rowCount ?? 0,
+      affectedPages,
     };
   });
 

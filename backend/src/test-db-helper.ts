@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
 
@@ -19,6 +20,21 @@ export async function isDbAvailable(): Promise<boolean> {
   if (_dbAvailable !== null) return _dbAvailable;
   _dbAvailable = await checkConnection();
   return _dbAvailable;
+}
+
+/**
+ * Wait for observed database state, not a fixed number of cheap SELECTs.
+ * Concurrent durable writes can take longer than those SELECTs under CI load.
+ * Keep this within the unchanged 30-second test budget and return false so
+ * callers can release their held locks before asserting a missing barrier.
+ */
+export async function waitForDatabaseCondition(condition: () => Promise<boolean>): Promise<boolean> {
+  const deadline = performance.now() + 10_000;
+  do {
+    if (await condition()) return true;
+    await delay(25);
+  } while (performance.now() < deadline);
+  return false;
 }
 
 /**
@@ -116,6 +132,14 @@ export async function truncateAllTables(): Promise<void> {
       LOOP
         EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
       END LOOP;
+      -- Restore mandatory singleton state exactly as a freshly migrated DB has
+      -- it. Ordinary users/content remain empty; creation remains disabled.
+      IF to_regclass('public.page_baseline_feature_state') IS NOT NULL THEN
+        INSERT INTO page_baseline_feature_state (singleton, creation_enabled) VALUES (TRUE, FALSE);
+      END IF;
+      IF to_regclass('public.page_baseline_capacity') IS NOT NULL THEN
+        INSERT INTO page_baseline_capacity (singleton, reserved_bytes) VALUES (TRUE, 0);
+      END IF;
     END $$;
   `;
   // Parallel files on one worker DB are gone, but a leftover collab persist

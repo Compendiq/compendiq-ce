@@ -1,315 +1,290 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import {
+  freezePage,
+  previewPageBaseline,
+  setPageBaselineCreationEnabled,
+} from '../../core/services/page-baseline-service.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    // Shared/Confluence mutations clear every user's cache (#893).
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
-}));
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let currentUserId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
 
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+async function seedFolder(ownerId = currentUserId, visibility: 'private' | 'shared' = 'private'): Promise<number> {
+  const pageId = await insertStandalonePage('Folder', visibility, ownerId, 'LOCAL');
+  await query(
+    `UPDATE pages SET page_type = 'folder', body_html = '', body_text = '', body_storage = NULL,
+                      embedding_dirty = FALSE, image_analysis_dirty = FALSE
+      WHERE id = $1`,
+    [pageId],
+  );
+  return pageId;
+}
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+async function freeze(pageId: number, actorId: string): Promise<void> {
+  setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+  const admin = await insertUser(`folder-admin-${randomUUID()}`);
+  await query("UPDATE users SET role = 'admin' WHERE id = $1", [admin]);
+  await setPageBaselineCreationEnabled(admin, true);
+  const prepared = await previewPageBaseline(pageId, actorId);
+  await freezePage({
+    pageId,
+    actorId,
+    reason: 'Approved folder fixture',
+    expectedContentRevision: prepared.contentRevision,
+    expectedManifestDigest: prepared.manifestDigest,
+    reportedSignatories: [],
+  });
+}
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn((html: string) => html),
-  confluenceToHtml: vi.fn((html: string) => html),
-  htmlToText: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
-}));
+type StoredFolder = {
+  title: string;
+  page_type: string;
+  body_html: string;
+  body_text: string;
+  body_storage: string | null;
+  version: number;
+  embedding_dirty: boolean;
+  image_analysis_dirty: boolean;
+  content_revision: string;
+};
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+async function folderRow(pageId: number): Promise<StoredFolder> {
+  const result = await query<StoredFolder>(
+    `SELECT title, page_type, body_html, body_text, body_storage, version,
+            embedding_dirty, image_analysis_dirty, content_revision::text AS content_revision
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0]!;
+}
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-}));
-
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-describe('Folder pages (#414)', () => {
-  let app: ReturnType<typeof Fastify>;
-
+describe.skipIf(!dbAvailable || !redisAvailable)('Folder pages (#414) — real PostgreSQL and Redis', () => {
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({
-        error: error.message,
-        statusCode: error.statusCode ?? 500,
-      });
+    await setupTestDb();
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'folder-pages-real-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
     });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+      instance.redis = redis;
+      // pages-crud's attachment dependencies read ATTACHMENTS_DIR at module
+      // load, so the route is intentionally loaded after the sandbox exists.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    setPageBaselineReadinessProvider(null);
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    currentUserId = await insertUser(`folder-owner-${randomUUID()}`);
+    await insertLocalSpace('LOCAL', currentUserId);
   });
 
-  describe('POST /api/pages - folder creation', () => {
-    it('should create a folder page with empty body', async () => {
-      // INSERT returns new page
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 100, title: 'My Folder', version: 1 }],
-      });
-      // UPDATE path
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+  describe('POST /api/pages', () => {
+    it('creates a folder as an empty, non-indexable container', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages',
         payload: {
+          spaceKey: 'LOCAL',
           title: 'My Folder',
-          bodyHtml: '<p>should be ignored</p>',
+          bodyHtml: '<p>must not be retained</p>',
           pageType: 'folder',
           source: 'standalone',
+          visibility: 'private',
         },
       });
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.payload);
-      expect(body.id).toBe(100);
-      expect(body.pageType).toBe('folder');
-
-      // The INSERT call should have empty body_html for folders
-      const insertCall = mockQueryFn.mock.calls[0];
-      const insertSql = insertCall[0] as string;
-      expect(insertSql).toContain('INSERT INTO pages');
-      // body_html (2nd param) should be empty string
-      const insertParams = insertCall[1] as unknown[];
-      expect(insertParams[1]).toBe(''); // effectiveBodyHtml
-      expect(insertParams[2]).toBe(''); // bodyText
-      expect(insertParams[7]).toBe('folder'); // page_type
+      expect(response.statusCode, response.body).toBe(200);
+      const body = response.json<{ id: number; pageType: string; source: string }>();
+      expect(body).toMatchObject({ pageType: 'folder', source: 'standalone' });
+      expect(await folderRow(body.id)).toMatchObject({
+        title: 'My Folder',
+        page_type: 'folder',
+        body_html: '',
+        body_text: '',
+        body_storage: null,
+        version: 1,
+        embedding_dirty: false,
+        image_analysis_dirty: false,
+      });
     });
 
-    it('should default to page type when pageType is not specified', async () => {
-      // INSERT returns new page
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 101, title: 'Regular Page', version: 1 }],
-      });
-      // UPDATE path
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
+    it('defaults an omitted pageType to an ordinary page with its content retained', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages',
         payload: {
+          spaceKey: 'LOCAL',
           title: 'Regular Page',
           bodyHtml: '<p>Content here</p>',
           source: 'standalone',
+          visibility: 'private',
         },
       });
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.payload);
+      expect(response.statusCode, response.body).toBe(200);
+      const body = response.json<{ id: number; pageType: string }>();
       expect(body.pageType).toBe('page');
+      expect(await folderRow(body.id)).toMatchObject({
+        page_type: 'page', body_html: '<p>Content here</p>', body_text: 'Content here',
+        embedding_dirty: true, image_analysis_dirty: true,
+      });
+    });
+
+    it('rejects an empty title before creating a row', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { title: '', bodyHtml: '', pageType: 'folder', source: 'standalone' },
+      });
+      expect(response.statusCode).toBe(400);
+      const count = await query<{ count: string }>('SELECT COUNT(*)::text AS count FROM pages');
+      expect(count.rows[0]!.count).toBe('0');
     });
   });
 
-  describe('PUT /api/pages/:id - folder update restrictions', () => {
-    it('should reject body content updates on folder pages', async () => {
-      // Existing page is a folder
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 100,
-          version: 1,
-          space_key: null,
-          source: 'standalone',
-          created_by_user_id: 'test-user-id',
-          visibility: 'shared',
-          confluence_id: null,
-          deleted_at: null,
-          page_type: 'folder',
-        }],
-      });
-
+  describe('PUT /api/pages/:id', () => {
+    it('rejects body content on a folder without changing its title or version', async () => {
+      const pageId = await seedFolder();
+      const before = await folderRow(pageId);
       const response = await app.inject({
         method: 'PUT',
-        url: '/api/pages/100',
-        payload: {
-          title: 'My Folder Updated',
-          bodyHtml: '<p>This body should be rejected</p>',
-        },
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Renamed', bodyHtml: '<p>folders cannot contain content</p>', version: 1 },
       });
 
       expect(response.statusCode).toBe(400);
-      const body = JSON.parse(response.payload);
-      expect(body.error).toContain('Folder pages cannot have body content');
+      expect(response.json<{ error: string }>().error).toContain('Folder pages cannot have body content');
+      expect(await folderRow(pageId)).toMatchObject(before);
     });
 
-    it('should allow title-only updates on folder pages', async () => {
-      // Existing page is a folder
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 100,
-          version: 1,
-          space_key: null,
-          source: 'standalone',
-          created_by_user_id: 'test-user-id',
-          visibility: 'shared',
-          confluence_id: null,
-          deleted_at: null,
-          page_type: 'folder',
-        }],
-      });
-      // UPDATE query — #926 guards the write with `AND version = <read version>`
-      // and treats rowCount 0 as a lost update (409). The version matches here,
-      // so the title-only write lands: rowCount 1 = success.
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
+    it('allows a title-only folder update through real lifecycle admission', async () => {
+      const pageId = await seedFolder();
       const response = await app.inject({
         method: 'PUT',
-        url: '/api/pages/100',
-        payload: {
-          title: 'My Folder Renamed',
-          bodyHtml: '',
-        },
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Renamed Folder', bodyHtml: '', version: 1 },
       });
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.payload);
-      expect(body.title).toBe('My Folder Renamed');
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, title: 'Renamed Folder', version: 2 });
+      expect(await folderRow(pageId)).toMatchObject({
+        title: 'Renamed Folder', page_type: 'folder', body_html: '', body_text: '', version: 2,
+      });
+    });
+
+    it('rechecks real page authority and denies a private folder update by a non-owner', async () => {
+      const ownerId = currentUserId;
+      const pageId = await seedFolder(ownerId);
+      currentUserId = await insertUser(`folder-intruder-${randomUUID()}`);
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Taken Folder', bodyHtml: '', version: 1 },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(await folderRow(pageId)).toMatchObject({ title: 'Folder', version: 1 });
+    });
+
+    it('rejects a stale folder version without changing the container', async () => {
+      const pageId = await seedFolder();
+      await query('UPDATE pages SET version = 4 WHERE id = $1', [pageId]);
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Stale Folder', bodyHtml: '', version: 3 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(await folderRow(pageId)).toMatchObject({ title: 'Folder', version: 4 });
+    });
+
+    it('uses a real frozen baseline to deny a title change and preserve revision state', async () => {
+      const pageId = await seedFolder();
+      await freeze(pageId, currentUserId);
+      const before = await folderRow(pageId);
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Frozen Rename', bodyHtml: '', version: 1 },
+      });
+
+      expect(response.statusCode).toBe(423);
+      expect(await folderRow(pageId)).toMatchObject({
+        title: before.title,
+        version: before.version,
+        body_html: before.body_html,
+        content_revision: before.content_revision,
+      });
     });
   });
 
-  describe('GET /api/pages/:id - folder response', () => {
-    it('should return pageType in the response', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 100,
-          confluence_id: null,
-          space_key: null,
-          title: 'My Folder',
-          page_type: 'folder',
-          body_storage: '',
-          body_html: '',
-          body_text: '',
-          version: 1,
-          parent_id: null,
-          labels: [],
-          author: null,
-          last_modified_at: null,
-          last_synced: new Date(),
-          embedding_dirty: false,
-          embedding_status: 'not_embedded',
-          embedded_at: null,
-          embedding_error: null,
-          has_children: true,
-          quality_score: null,
-          quality_status: null,
-          quality_completeness: null,
-          quality_clarity: null,
-          quality_structure: null,
-          quality_accuracy: null,
-          quality_readability: null,
-          quality_summary: null,
-          quality_analyzed_at: null,
-          quality_error: null,
-          summary_html: null,
-          summary_status: 'pending',
-          summary_generated_at: null,
-          summary_model: null,
-          summary_error: null,
-          source: 'standalone',
-          visibility: 'shared',
-          created_by_user_id: 'test-user-id',
-          has_draft: false,
-          draft_updated_at: null,
-        }],
-      });
-      // #1636: the detail route then counts this page's live descendants
-      // through the shared subtree walk and reports `descendantCount`.
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+  it('returns folder type and empty content from page detail', async () => {
+    const pageId = await seedFolder(currentUserId, 'shared');
+    const response = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
 
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/100',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.payload);
-      expect(body.pageType).toBe('folder');
-      expect(body.bodyHtml).toBe('');
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: String(pageId), title: 'Folder', pageType: 'folder', bodyHtml: '', bodyText: '', source: 'standalone',
     });
   });
 
-  describe('GET /api/pages/tree - folder type in tree', () => {
-    it('should include pageType in tree response items', async () => {
-      // First query: local spaces lookup
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-      // Second query: tree data
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 100, confluence_id: null, space_key: 'DEV', title: 'My Folder', page_type: 'folder', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-          { id: 101, confluence_id: null, space_key: 'DEV', title: 'Child Page', page_type: 'page', parent_numeric_id: 100, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-        ],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/tree',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.payload);
-      expect(body.items).toHaveLength(2);
-      expect(body.items[0].pageType).toBe('folder');
-      expect(body.items[1].pageType).toBe('page');
+  it('includes folder and page types with their persisted hierarchy in the tree', async () => {
+    const folderId = await seedFolder(currentUserId, 'shared');
+    const childId = await insertStandalonePage('Child Page', 'shared', currentUserId, 'LOCAL', {
+      parentId: String(folderId),
     });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(response.statusCode, response.body).toBe(200);
+    const items = response.json<{ items: Array<{ id: string; pageType: string; parentId: string | null }> }>().items;
+    expect(items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: String(folderId), pageType: 'folder', parentId: null }),
+      expect.objectContaining({ id: String(childId), pageType: 'page', parentId: String(folderId) }),
+    ]));
   });
 });

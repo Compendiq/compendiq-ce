@@ -1,696 +1,510 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import {
+  freezePage,
+  previewPageBaseline,
+  setPageBaselineCreationEnabled,
+} from '../../core/services/page-baseline-service.js';
+import { MAX_LOCAL_ATTACHMENT_BYTES } from '../../core/services/local-attachment-service.js';
+import { REAL_PNG_40x30_BASE64 } from '../../core/services/test-image-fixtures.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
+
+const PNG_BYTES = Buffer.from(REAL_PNG_40x30_BASE64, 'base64');
+const PNG_DATA_URI = `data:image/png;base64,${REAL_PNG_40x30_BASE64}`;
+const SVG_BYTES = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+const PDF_BYTES = Buffer.from('%PDF-1.4\n%%EOF\n');
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
+
+let app: FastifyInstance;
+let redis: RedisClientType;
+let userId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+
+function localFile(pageId: number, filename: string): string {
+  return join(attachmentsDir, 'local', String(pageId), filename);
+}
+
+async function expectFileAbsent(pageId: number, filename: string): Promise<void> {
+  await expect(access(localFile(pageId, filename))).rejects.toMatchObject({ code: 'ENOENT' });
+}
+
+async function seedPage(
+  visibility: 'private' | 'shared' = 'private',
+  ownerId = userId,
+): Promise<number> {
+  const spaceKey = `LOCAL-${randomUUID()}`;
+  await insertLocalSpace(spaceKey, ownerId);
+  return insertStandalonePage('Attachment page', visibility, ownerId, spaceKey);
+}
+
+async function upload(pageId: number, filename: string, dataUri = PNG_DATA_URI, xml?: string) {
+  return app.inject({
+    method: 'PUT',
+    url: `/api/local-attachments/${pageId}/${encodeURIComponent(filename)}`,
+    payload: { dataUri, ...(xml === undefined ? {} : { xml }) },
+  });
+}
+
+async function publishBaseline(pageId: number): Promise<void> {
+  const adminId = await insertUser(`attachment-admin-${randomUUID()}`);
+  await query("UPDATE users SET role = 'admin' WHERE id = $1", [adminId]);
+  await setPageBaselineCreationEnabled(adminId, true);
+  const prepared = await previewPageBaseline(pageId, userId);
+  await freezePage({
+    pageId,
+    actorId: userId,
+    reason: 'Approved attachment evidence',
+    expectedContentRevision: prepared.contentRevision,
+    expectedManifestDigest: prepared.manifestDigest,
+    reportedSignatories: [],
+  });
+}
+
 /**
- * HTTP route-level tests for /api/local-attachments (#302 Gap 4).
- *
- * The service layer (`local-attachment-service.ts`) is covered separately
- * against real Postgres. These tests focus on the route-specific logic that
- * sits in front of the service:
- *
- *   - dataUri parsing + MIME allowlist (`decodeDataUri`)
- *   - in-handler 413 branch (needs `bodyLimit` option on the route)
- *   - Zod + custom error → HTTP status mapping
- *   - SVG Content-Security-Policy + content-disposition hardening
- *   - XML sibling filename transform + failure surfacing
- *   - bodyLimit option actually raising Fastify's 1 MB default
- *
- * The service module is fully mocked — we're not testing DB writes here,
- * we're testing the HTTP shell around them.
+ * A fixture for legacy rows that could predate the upload MIME allowlist. It
+ * deliberately uses the real DB and filesystem so the GET route still proves
+ * it never reflects stored active-content MIME metadata.
  */
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+async function seedLegacyAttachment(
+  pageId: number,
+  filename: string,
+  contentType: string,
+  bytes: Buffer,
+): Promise<void> {
+  await mkdir(join(attachmentsDir, 'local', String(pageId)), { recursive: true });
+  await writeFile(localFile(pageId, filename), bytes);
+  await query(
+    `INSERT INTO local_attachments
+       (page_id, filename, content_type, size_bytes, sha256, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      pageId,
+      filename,
+      contentType,
+      bytes.length,
+      createHash('sha256').update(bytes).digest('hex'),
+      userId,
+    ],
+  );
+}
 
-// Mock the service layer before importing the routes so the `import` of
-// the route module picks up the mocks. We use `vi.hoisted` so the mock
-// fns are available both inside the factory and in the test body.
-const serviceMocks = vi.hoisted(() => ({
-  putLocalAttachment: vi.fn(),
-  getLocalAttachment: vi.fn(),
-  listLocalAttachments: vi.fn(),
-}));
-
-vi.mock('../../core/services/local-attachment-service.js', async () => {
-  // Re-export the real `LocalAttachmentError` + constant so `instanceof`
-  // checks in the route still work; only swap out the side-effecting fns.
-  const actual = await vi.importActual<
-    typeof import('../../core/services/local-attachment-service.js')
-  >('../../core/services/local-attachment-service.js');
-  return {
-    ...actual,
-    putLocalAttachment: serviceMocks.putLocalAttachment,
-    getLocalAttachment: serviceMocks.getLocalAttachment,
-    listLocalAttachments: serviceMocks.listLocalAttachments,
-  };
-});
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
-
-import { localAttachmentsRoutes } from './local-attachments.js';
-import { LocalAttachmentError } from '../../core/services/local-attachment-service.js';
-
-/** Smallest valid PNG (1×1 transparent). */
-const VALID_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-const VALID_PNG_DATA_URI = `data:image/png;base64,${VALID_PNG_B64}`;
-
-// 100-byte SVG
-const VALID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
-const VALID_SVG_DATA_URI = `data:image/svg+xml;base64,${Buffer.from(VALID_SVG).toString('base64')}`;
-
-describe('Local Attachment Routes', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({
-        error: error.message,
-        statusCode: error.statusCode ?? 500,
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'local attachment routes — real PostgreSQL, Redis and filesystem',
+  () => {
+    beforeAll(async () => {
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+      originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+      attachmentsDir = await mkdtemp(join(tmpdir(), 'local-attachment-routes-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        // ATTACHMENTS_DIR is a module-loading boundary for the attachment stores,
+        // so the known route import must remain after the isolated path is set.
+        const { localAttachmentsRoutes } = await import('./local-attachments.js');
+        await instance.register(localAttachmentsRoutes, { prefix: '/api' });
       });
     });
 
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'test-user-id';
-    });
-    app.decorateRequest('userId', '');
-
-    await app.register(localAttachmentsRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  // ── dataUri parsing ────────────────────────────────────────────────────
-
-  it('accepts a valid image/png data URI', async () => {
-    serviceMocks.putLocalAttachment.mockResolvedValueOnce({
-      id: 1,
-      pageId: 42,
-      filename: 'diagram.png',
-      contentType: 'image/png',
-      sizeBytes: 70,
-      sha256: 'abc',
-      createdBy: 'test-user-id',
-      createdAt: new Date(),
-      updatedAt: new Date(),
+    afterAll(async () => {
+      await app.close();
+      setPageBaselineReadinessProvider(null);
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
     });
 
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI },
+    beforeEach(async () => {
+      await truncateAllTables();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      await mkdir(attachmentsDir, { recursive: true });
+      userId = await insertUser(`local-attachment-${randomUUID()}`);
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.success).toBe(true);
-    expect(body.filename).toBe('diagram.png');
-    expect(serviceMocks.putLocalAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pageId: 42,
-        filename: 'diagram.png',
-        contentType: 'image/png',
-        userId: 'test-user-id',
-      }),
-    );
-  });
+    it('writes, reads and lists a genuine PNG through the public routes', async () => {
+      const pageId = await seedPage();
 
-  it('accepts a valid image/svg+xml data URI', async () => {
-    serviceMocks.putLocalAttachment.mockResolvedValueOnce({
-      id: 2,
-      pageId: 42,
-      filename: 'vec.svg',
-      contentType: 'image/svg+xml',
-      sizeBytes: VALID_SVG.length,
-      sha256: 'sha',
-      createdBy: 'test-user-id',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
+      const put = await upload(pageId, 'diagram with spaces.png');
 
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/vec.svg',
-      payload: { dataUri: VALID_SVG_DATA_URI },
-    });
-
-    expect(res.statusCode).toBe(200);
-    // The service received the correct MIME through from the data URI.
-    expect(serviceMocks.putLocalAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ contentType: 'image/svg+xml' }),
-    );
-  });
-
-  it('rejects a non-data-URI string with 400 BAD_DATA_URI', async () => {
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: 'https://evil.example/img.png' },
-    });
-
-    expect(res.statusCode).toBe(400);
-    const body = res.json();
-    expect(body.error).toBe('BAD_DATA_URI');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  it('rejects a data URI with an invalid MIME shape', async () => {
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: 'data:not-a-mime;base64,AAAA' },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('BAD_DATA_URI');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  // ── upload MIME allowlist (#735 stored-XSS hardening) ──────────────────
-
-  it('rejects a text/html data URI with 400 UNSUPPORTED_CONTENT_TYPE', async () => {
-    const html = '<script>alert(document.domain)</script>';
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/evil.html',
-      payload: { dataUri: `data:text/html;base64,${Buffer.from(html).toString('base64')}` },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  it('rejects a text/javascript data URI with 400 UNSUPPORTED_CONTENT_TYPE', async () => {
-    const js = 'fetch("/steal?t="+localStorage.token)';
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/x.js',
-      payload: { dataUri: `data:text/javascript;base64,${Buffer.from(js).toString('base64')}` },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  it('rejects MIME allowlist bypass attempts via uppercase (TEXT/HTML)', async () => {
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/evil.html',
-      payload: { dataUri: 'data:TEXT/HTML;base64,AAAA' },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  it('rejects an application/octet-stream data URI (not on the allowlist)', async () => {
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/blob.bin',
-      payload: { dataUri: 'data:application/octet-stream;base64,AAAA' },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('UNSUPPORTED_CONTENT_TYPE');
-    expect(serviceMocks.putLocalAttachment).not.toHaveBeenCalled();
-  });
-
-  it('accepts an application/pdf data URI', async () => {
-    serviceMocks.putLocalAttachment.mockResolvedValueOnce({
-      id: 10,
-      pageId: 42,
-      filename: 'doc.pdf',
-      contentType: 'application/pdf',
-      sizeBytes: 8,
-      sha256: 'sha',
-      createdBy: 'test-user-id',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/doc.pdf',
-      payload: { dataUri: `data:application/pdf;base64,${Buffer.from('%PDF-1.4').toString('base64')}` },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(serviceMocks.putLocalAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ contentType: 'application/pdf' }),
-    );
-  });
-
-  // ── GET one: SVG response hardening ────────────────────────────────────
-
-  it('sets CSP sandbox + content-disposition=attachment on SVG responses', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from(VALID_SVG),
-      record: {
-        id: 3,
-        pageId: 42,
-        filename: 'vec.svg',
-        contentType: 'image/svg+xml',
-        sizeBytes: VALID_SVG.length,
-        sha256: 'sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/vec.svg',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('svg');
-    expect(res.headers['content-disposition']).toBe('attachment');
-    expect(res.headers['content-security-policy']).toBe('sandbox');
-  });
-
-  it('sets content-disposition=inline on non-SVG responses (no CSP)', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from(VALID_PNG_B64, 'base64'),
-      record: {
-        id: 4,
-        pageId: 42,
-        filename: 'diagram.png',
-        contentType: 'image/png',
-        sizeBytes: 70,
-        sha256: 'sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/diagram.png',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('png');
-    expect(res.headers['content-disposition']).toBe('inline');
-    expect(res.headers['content-security-policy']).toBeUndefined();
-  });
-
-  // ── GET one: server-derived Content-Type (#735 stored-XSS hardening) ───
-  //
-  // The stored (client-supplied) content_type must never be echoed for
-  // inline rendering. Content-Type is derived server-side from the filename
-  // extension; anything that is not a safe raster image is forced to
-  // download (`content-disposition: attachment`) with CSP `sandbox`, and
-  // every response carries `x-content-type-options: nosniff`.
-
-  const baseRecord = {
-    id: 100,
-    pageId: 42,
-    sizeBytes: 10,
-    sha256: 'sha',
-    createdBy: 'test-user-id',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-
-  it('does not serve a previously-stored text/html row inline as text/html', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from('<script>alert(1)</script>'),
-      record: { ...baseRecord, filename: 'evil.html', contentType: 'text/html' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/evil.html',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).not.toContain('text/html');
-    expect(res.headers['content-type']).toContain('application/octet-stream');
-    expect(res.headers['content-disposition']).toBe('attachment');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['content-security-policy']).toBe('sandbox');
-  });
-
-  it('does not serve a previously-stored text/javascript row as JavaScript', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from('fetch("/steal")'),
-      record: { ...baseRecord, filename: 'x.js', contentType: 'text/javascript' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/x.js',
-    });
-
-    expect(res.statusCode).toBe(200);
-    // With nosniff + a non-JS Content-Type, <script src> refuses to execute.
-    expect(res.headers['content-type']).not.toContain('javascript');
-    expect(res.headers['content-type']).toContain('application/octet-stream');
-    expect(res.headers['content-disposition']).toBe('attachment');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-  });
-
-  it('derives Content-Type from the filename, not the stored MIME', async () => {
-    // Stored MIME claims image/png but the filename is .html — the
-    // extension allowlist wins and the file is forced to download.
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from('<script>alert(1)</script>'),
-      record: { ...baseRecord, filename: 'spoofed.html', contentType: 'image/png' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/spoofed.html',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('application/octet-stream');
-    expect(res.headers['content-disposition']).toBe('attachment');
-  });
-
-  it('serves raster images inline with nosniff', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from(VALID_PNG_B64, 'base64'),
-      record: { ...baseRecord, filename: 'photo.png', contentType: 'image/png' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/photo.png',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('image/png');
-    expect(res.headers['content-disposition']).toBe('inline');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-  });
-
-  it('serves PDFs as attachment with a server-derived application/pdf type', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from('%PDF-1.4'),
-      record: { ...baseRecord, filename: 'doc.pdf', contentType: 'application/pdf' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/doc.pdf',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('application/pdf');
-    expect(res.headers['content-disposition']).toBe('attachment');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-  });
-
-  it('serves .drawio XML siblings as attachment with CSP sandbox', async () => {
-    serviceMocks.getLocalAttachment.mockResolvedValueOnce({
-      data: Buffer.from('<mxfile/>'),
-      record: { ...baseRecord, filename: 'diagram.drawio', contentType: 'application/xml' },
-    });
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/diagram.drawio',
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('application/xml');
-    // XML can smuggle XHTML/script — never render it inline.
-    expect(res.headers['content-disposition']).toBe('attachment');
-    expect(res.headers['content-security-policy']).toBe('sandbox');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-  });
-
-  // ── XML sibling: filename transform + write ────────────────────────────
-
-  it('writes the XML sibling under the matching .drawio filename', async () => {
-    serviceMocks.putLocalAttachment
-      .mockResolvedValueOnce({
-        id: 5,
-        pageId: 42,
-        filename: 'diagram.png',
-        contentType: 'image/png',
-        sizeBytes: 70,
-        sha256: 'png-sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .mockResolvedValueOnce({
-        id: 6,
-        pageId: 42,
-        filename: 'diagram.drawio',
-        contentType: 'application/xml',
-        sizeBytes: 12,
-        sha256: 'xml-sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI, xml: '<mxfile/>' },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.success).toBe(true);
-    expect(body.xmlFilename).toBe('diagram.drawio');
-    expect(body.xmlSize).toBe(12);
-
-    // Second call writes the XML as application/xml under .drawio
-    expect(serviceMocks.putLocalAttachment).toHaveBeenCalledTimes(2);
-    expect(serviceMocks.putLocalAttachment).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        pageId: 42,
-        filename: 'diagram.drawio',
-        contentType: 'application/xml',
-      }),
-    );
-  });
-
-  it('returns xmlWriteFailed + success=false when XML sibling write throws', async () => {
-    serviceMocks.putLocalAttachment
-      .mockResolvedValueOnce({
-        id: 7,
-        pageId: 42,
-        filename: 'diagram.png',
-        contentType: 'image/png',
-        sizeBytes: 70,
-        sha256: 'png-sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      // XML sibling write fails (e.g. disk full, DB constraint)
-      .mockRejectedValueOnce(new Error('disk full'));
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI, xml: '<mxfile/>' },
-    });
-
-    // Route returns 200 (PNG was persisted) but flags the failure loudly.
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    // Not a bare success — this was the bug.
-    expect(body.success).toBe(false);
-    expect(body.xmlWriteFailed).toBe(true);
-    expect(body.xmlWriteError).toBe('disk full');
-    expect(body.xmlFilename).toBeUndefined();
-  });
-
-  it('preserves LocalAttachmentError code in xmlWriteError', async () => {
-    serviceMocks.putLocalAttachment
-      .mockResolvedValueOnce({
-        id: 8,
-        pageId: 42,
-        filename: 'diagram.png',
-        contentType: 'image/png',
-        sizeBytes: 70,
-        sha256: 'png-sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .mockRejectedValueOnce(new LocalAttachmentError('INVALID_FILENAME', 'bad xml name'));
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI, xml: '<mxfile/>' },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.success).toBe(false);
-    expect(body.xmlWriteFailed).toBe(true);
-    expect(body.xmlWriteError).toBe('INVALID_FILENAME');
-  });
-
-  // ── error → status mapping ─────────────────────────────────────────────
-
-  it('maps service FORBIDDEN → 403', async () => {
-    serviceMocks.putLocalAttachment.mockRejectedValueOnce(
-      new LocalAttachmentError('FORBIDDEN', 'no access'),
-    );
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI },
-    });
-
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error).toBe('FORBIDDEN');
-  });
-
-  it('maps service PAGE_NOT_FOUND → 404', async () => {
-    serviceMocks.listLocalAttachments.mockRejectedValueOnce(
-      new LocalAttachmentError('PAGE_NOT_FOUND', 'missing'),
-    );
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/9999/list',
-    });
-
-    expect(res.statusCode).toBe(404);
-    expect(res.json().error).toBe('PAGE_NOT_FOUND');
-  });
-
-  it('maps service TOO_LARGE → 413', async () => {
-    serviceMocks.putLocalAttachment.mockRejectedValueOnce(
-      new LocalAttachmentError('TOO_LARGE', 'over cap'),
-    );
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI },
-    });
-
-    expect(res.statusCode).toBe(413);
-    expect(res.json().error).toBe('TOO_LARGE');
-  });
-
-  it('maps service INVALID_FILENAME → 400', async () => {
-    serviceMocks.putLocalAttachment.mockRejectedValueOnce(
-      new LocalAttachmentError('INVALID_FILENAME', 'bad'),
-    );
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/diagram.png',
-      payload: { dataUri: VALID_PNG_DATA_URI },
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('INVALID_FILENAME');
-  });
-
-  it('returns 404 on GET when service throws NOT_FOUND', async () => {
-    serviceMocks.getLocalAttachment.mockRejectedValueOnce(
-      new LocalAttachmentError('NOT_FOUND', 'missing'),
-    );
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/missing.png',
-    });
-
-    expect(res.statusCode).toBe(404);
-    expect(res.json().error).toBe('NOT_FOUND');
-  });
-
-  // ── bodyLimit: the 25 MB Zod cap is only reachable when the route
-  //    option raises Fastify's 1 MB default. A 2 MB payload proves the
-  //    cap has been lifted above the default. ─────────────────────────
-
-  it('accepts a payload above Fastify\'s 1 MB default (bodyLimit raised)', async () => {
-    // 2 MiB of raw bytes → ~2.67 MiB when base64-encoded, well above the
-    // 1 MB default Fastify body limit but below the 25 MB service cap.
-    const twoMB = Buffer.alloc(2 * 1024 * 1024, 0x41);
-    const largeDataUri = `data:image/png;base64,${twoMB.toString('base64')}`;
-
-    serviceMocks.putLocalAttachment.mockResolvedValueOnce({
-      id: 99,
-      pageId: 42,
-      filename: 'big.png',
-      contentType: 'image/png',
-      sizeBytes: twoMB.length,
-      sha256: 'big-sha',
-      createdBy: 'test-user-id',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/local-attachments/42/big.png',
-      payload: { dataUri: largeDataUri },
-    });
-
-    // Without the per-route `bodyLimit` option, Fastify would reject this
-    // with a generic 413 before the handler ever runs. The fact that the
-    // handler succeeds proves the cap has been raised to at least 2 MB.
-    expect(res.statusCode).toBe(200);
-    expect(res.json().success).toBe(true);
-  });
-
-  // ── list endpoint sanity ───────────────────────────────────────────────
-
-  it('lists attachments with URL-encoded filenames', async () => {
-    serviceMocks.listLocalAttachments.mockResolvedValueOnce([
-      {
-        id: 1,
-        pageId: 42,
+      expect(put.statusCode, put.body).toBe(200);
+      expect(put.json()).toMatchObject({
+        success: true,
         filename: 'diagram with spaces.png',
-        contentType: 'image/png',
-        sizeBytes: 123,
-        sha256: 'sha',
-        createdBy: 'test-user-id',
-        createdAt: new Date('2026-01-01'),
-        updatedAt: new Date('2026-01-02'),
-      },
-    ]);
+        size: PNG_BYTES.length,
+        sha256: createHash('sha256').update(PNG_BYTES).digest('hex'),
+      });
+      expect(await readFile(localFile(pageId, 'diagram with spaces.png'))).toEqual(PNG_BYTES);
 
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/local-attachments/42/list',
+      const rows = await query<{
+        filename: string;
+        content_type: string;
+        size_bytes: string;
+      }>(
+        'SELECT filename, content_type, size_bytes FROM local_attachments WHERE page_id = $1',
+        [pageId],
+      );
+      expect(rows.rows).toEqual([{
+        filename: 'diagram with spaces.png',
+        content_type: 'image/png',
+        size_bytes: String(PNG_BYTES.length),
+      }]);
+      const revision = await query<{ content_revision: string }>(
+        'SELECT content_revision::text FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(revision.rows[0]?.content_revision).toBe('1');
+
+      const get = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/diagram%20with%20spaces.png`,
+      });
+      expect(get.statusCode, get.body).toBe(200);
+      expect(get.rawPayload).toEqual(PNG_BYTES);
+      expect(get.headers['content-type']).toContain('image/png');
+      expect(get.headers['content-disposition']).toBe('inline');
+      expect(get.headers['x-content-type-options']).toBe('nosniff');
+      expect(get.headers['content-security-policy']).toBeUndefined();
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/list`,
+      });
+      expect(list.statusCode, list.body).toBe(200);
+      expect(list.json().attachments).toEqual([
+        expect.objectContaining({
+          filename: 'diagram with spaces.png',
+          size: PNG_BYTES.length,
+          contentType: 'image/png',
+          url: `/api/local-attachments/${pageId}/diagram%20with%20spaces.png`,
+        }),
+      ]);
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.attachments).toHaveLength(1);
-    expect(body.attachments[0].url).toBe('/api/local-attachments/42/diagram%20with%20spaces.png');
-    expect(body.attachments[0].size).toBe(123);
-  });
-});
+    it('commits a PNG and Draw.io XML sibling as one attachment mutation', async () => {
+      const pageId = await seedPage();
+      const xml = '<mxfile host="app.diagrams.net"><diagram/></mxfile>';
+
+      const response = await upload(pageId, 'diagram.png', PNG_DATA_URI, xml);
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        success: true,
+        filename: 'diagram.png',
+        size: PNG_BYTES.length,
+        xmlFilename: 'diagram.drawio',
+        xmlSize: Buffer.byteLength(xml),
+      });
+      expect(await readFile(localFile(pageId, 'diagram.png'))).toEqual(PNG_BYTES);
+      expect(await readFile(localFile(pageId, 'diagram.drawio'), 'utf8')).toBe(xml);
+      const stored = await query<{ filename: string; content_type: string }>(
+        `SELECT filename, content_type FROM local_attachments
+          WHERE page_id = $1 ORDER BY filename`,
+        [pageId],
+      );
+      expect(stored.rows).toEqual([
+        { filename: 'diagram.drawio', content_type: 'application/xml' },
+        { filename: 'diagram.png', content_type: 'image/png' },
+      ]);
+      const revision = await query<{ content_revision: string }>(
+        'SELECT content_revision::text FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(revision.rows[0]?.content_revision).toBe('1');
+
+      const xmlGet = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/diagram.drawio`,
+      });
+      expect(xmlGet.statusCode, xmlGet.body).toBe(200);
+      expect(xmlGet.rawPayload).toEqual(Buffer.from(xml));
+      expect(xmlGet.headers['content-type']).toContain('application/xml');
+      expect(xmlGet.headers['content-disposition']).toBe('attachment');
+      expect(xmlGet.headers['content-security-policy']).toBe('sandbox');
+    });
+
+
+    it('accepts SVG and PDF uploads but serves both as sandboxed downloads', async () => {
+      const pageId = await seedPage();
+      const cases = [
+        { filename: 'vector.svg', mime: 'image/svg+xml', bytes: SVG_BYTES, served: 'image/svg+xml' },
+        { filename: 'document.pdf', mime: 'application/pdf', bytes: PDF_BYTES, served: 'application/pdf' },
+      ];
+
+      for (const item of cases) {
+        const put = await upload(
+          pageId,
+          item.filename,
+          `data:${item.mime};base64,${item.bytes.toString('base64')}`,
+        );
+        expect(put.statusCode, put.body).toBe(200);
+        const get = await app.inject({
+          method: 'GET',
+          url: `/api/local-attachments/${pageId}/${item.filename}`,
+        });
+        expect(get.statusCode, get.body).toBe(200);
+        expect(get.rawPayload).toEqual(item.bytes);
+        expect(get.headers['content-type']).toContain(item.served);
+        expect(get.headers['content-disposition']).toBe('attachment');
+        expect(get.headers['content-security-policy']).toBe('sandbox');
+        expect(get.headers['x-content-type-options']).toBe('nosniff');
+      }
+    });
+
+    it.each([
+      {
+        label: 'a non-data URI',
+        dataUri: 'https://example.invalid/image.png',
+        error: 'BAD_DATA_URI',
+      },
+      {
+        label: 'an invalid MIME shape',
+        dataUri: 'data:not-a-mime;base64,AAAA',
+        error: 'BAD_DATA_URI',
+      },
+      {
+        label: 'HTML bytes',
+        dataUri: `data:text/html;base64,${Buffer.from('<script>alert(1)</script>').toString('base64')}`,
+        error: 'UNSUPPORTED_CONTENT_TYPE',
+      },
+      {
+        label: 'JavaScript bytes',
+        dataUri: `data:text/javascript;base64,${Buffer.from('fetch("/steal")').toString('base64')}`,
+        error: 'UNSUPPORTED_CONTENT_TYPE',
+      },
+      {
+        label: 'an untyped binary payload',
+        dataUri: `data:application/octet-stream;base64,${Buffer.from([0, 1, 2, 3]).toString('base64')}`,
+        error: 'UNSUPPORTED_CONTENT_TYPE',
+      },
+      {
+        label: 'an uppercase active MIME',
+        dataUri: `data:TEXT/HTML;base64,${Buffer.from('<b>unsafe</b>').toString('base64')}`,
+        error: 'UNSUPPORTED_CONTENT_TYPE',
+      },
+    ])('rejects $label without persistent effects', async ({ dataUri, error }) => {
+      const pageId = await seedPage();
+
+      const response = await upload(pageId, 'rejected.bin', dataUri);
+
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toMatchObject({ error });
+      const stored = await query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM local_attachments WHERE page_id = $1',
+        [pageId],
+      );
+      expect(stored.rows[0]?.count).toBe('0');
+      await expectFileAbsent(pageId, 'rejected.bin');
+    });
+
+    it('rejects decoded bytes over the attachment cap without writing attachment state', async () => {
+      const pageId = await seedPage();
+      const bytes = Buffer.alloc(MAX_LOCAL_ATTACHMENT_BYTES + 1, 0x61);
+
+      const response = await upload(
+        pageId,
+        'oversized.png',
+        `data:image/png;base64,${bytes.toString('base64')}`,
+      );
+
+      expect(response.statusCode, response.body).toBe(413);
+      expect(response.json()).toMatchObject({ error: 'TOO_LARGE' });
+      await expectFileAbsent(pageId, 'oversized.png');
+      const stored = await query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM local_attachments WHERE page_id = $1',
+        [pageId],
+      );
+      expect(stored.rows[0]?.count).toBe('0');
+    });
+
+    it('rejects a hidden filename through the real store validation', async () => {
+      const pageId = await seedPage();
+
+      const response = await upload(pageId, '.secret');
+
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'INVALID_FILENAME' });
+      await expectFileAbsent(pageId, '.secret');
+    });
+
+    it.each([
+      { filename: 'legacy.html', storedType: 'text/html', bytes: Buffer.from('<script>alert(1)</script>') },
+      { filename: 'legacy.js', storedType: 'text/javascript', bytes: Buffer.from('fetch("/steal")') },
+    ])('does not serve a stored $storedType row as active content', async ({ filename, storedType, bytes }) => {
+      const pageId = await seedPage();
+      await seedLegacyAttachment(pageId, filename, storedType, bytes);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/${filename}`,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.rawPayload).toEqual(bytes);
+      expect(response.headers['content-type']).toContain('application/octet-stream');
+      expect(response.headers['content-type']).not.toContain(storedType);
+      expect(response.headers['content-disposition']).toBe('attachment');
+      expect(response.headers['content-security-policy']).toBe('sandbox');
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+    });
+
+    it('returns NOT_FOUND when attachment metadata outlives its file', async () => {
+      const pageId = await seedPage();
+      expect((await upload(pageId, 'missing.png')).statusCode).toBe(200);
+      await rm(localFile(pageId, 'missing.png'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/missing.png`,
+      });
+
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.json()).toMatchObject({ error: 'NOT_FOUND' });
+    });
+
+    it('returns PAGE_NOT_FOUND and writes nothing for an unknown page', async () => {
+      const missingPageId = 2_000_000_000;
+
+      const put = await upload(missingPageId, 'missing.png');
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${missingPageId}/list`,
+      });
+
+      expect(put.statusCode, put.body).toBe(404);
+      expect(put.json()).toMatchObject({ error: 'PAGE_NOT_FOUND' });
+      expect(list.statusCode, list.body).toBe(404);
+      expect(list.json()).toMatchObject({ error: 'PAGE_NOT_FOUND' });
+      await expectFileAbsent(missingPageId, 'missing.png');
+    });
+
+    it('denies another user access to a private page without changing its attachment', async () => {
+      const ownerId = await insertUser(`attachment-owner-${randomUUID()}`);
+      const pageId = await seedPage('private', ownerId);
+      userId = ownerId;
+      expect((await upload(pageId, 'private.png')).statusCode).toBe(200);
+      userId = await insertUser(`attachment-stranger-${randomUUID()}`);
+
+      const put = await upload(pageId, 'denied.png');
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/list`,
+      });
+      const get = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/private.png`,
+      });
+
+      expect(put.statusCode, put.body).toBe(403);
+      expect(put.json()).toMatchObject({ error: 'FORBIDDEN' });
+      expect(list.statusCode, list.body).toBe(403);
+      expect(list.json()).toMatchObject({ error: 'FORBIDDEN' });
+      // The frozen/evidence reader intentionally hides unreadable page identity.
+      expect(get.statusCode, get.body).toBe(404);
+      await expectFileAbsent(pageId, 'denied.png');
+      expect(await readFile(localFile(pageId, 'private.png'))).toEqual(PNG_BYTES);
+    });
+
+    it('allows an authenticated non-owner to write, list and read a shared page', async () => {
+      const ownerId = await insertUser(`shared-owner-${randomUUID()}`);
+      const pageId = await seedPage('shared', ownerId);
+
+      const put = await upload(pageId, 'shared.png');
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/list`,
+      });
+      const get = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/shared.png`,
+      });
+
+      expect(put.statusCode, put.body).toBe(200);
+      expect(list.statusCode, list.body).toBe(200);
+      expect(list.json().attachments).toEqual([
+        expect.objectContaining({ filename: 'shared.png' }),
+      ]);
+      expect(get.statusCode, get.body).toBe(200);
+      expect(get.rawPayload).toEqual(PNG_BYTES);
+    });
+
+    it('refuses the local store for a Confluence-sourced page', async () => {
+      const spaceKey = `CONF-${randomUUID()}`;
+      await insertLocalSpace(spaceKey, userId);
+      const pageId = await insertConfluencePage(`conf-${randomUUID()}`, 'Confluence page', spaceKey);
+
+      const put = await upload(pageId, 'wrong-store.png');
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/list`,
+      });
+
+      expect(put.statusCode, put.body).toBe(403);
+      expect(put.json()).toMatchObject({ error: 'FORBIDDEN' });
+      expect(list.statusCode, list.body).toBe(403);
+      expect(list.json()).toMatchObject({ error: 'FORBIDDEN' });
+      await expectFileAbsent(pageId, 'wrong-store.png');
+    });
+
+    it('serves retained bytes after freeze and denies a new write through real admission', async () => {
+      const pageId = await seedPage();
+      expect((await upload(pageId, 'evidence.png')).statusCode).toBe(200);
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+        pageId,
+        `<p>Approved evidence</p><img src="/api/local-attachments/${pageId}/evidence.png">`,
+      ]);
+      await publishBaseline(pageId);
+      // Prove the response comes from retained evidence, not the mutable store.
+      await writeFile(localFile(pageId, 'evidence.png'), Buffer.from('changed live bytes'));
+
+      const denied = await upload(pageId, 'after-freeze.png');
+      expect(denied.statusCode, denied.body).toBe(423);
+      await expectFileAbsent(pageId, 'after-freeze.png');
+
+      const retained = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/evidence.png`,
+      });
+      expect(retained.statusCode, retained.body).toBe(200);
+      expect(retained.rawPayload).toEqual(PNG_BYTES);
+      expect(retained.headers['content-length']).toBe(String(PNG_BYTES.length));
+      expect(retained.headers['content-disposition']).toBe('inline');
+
+      const absent = await app.inject({
+        method: 'GET',
+        url: `/api/local-attachments/${pageId}/not-in-baseline.png`,
+      });
+      expect(absent.statusCode, absent.body).toBe(404);
+      expect(absent.json()).toMatchObject({ error: 'NOT_FOUND' });
+    });
+  },
+);

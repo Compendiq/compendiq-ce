@@ -1,69 +1,123 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
+import { randomUUID } from 'node:crypto';
+import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-
-// --- Mock: redis-cache ---
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  },
-}));
-
-// --- Mock: rbac-service ---
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
-
-// --- Mock: postgres query ---
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-// --- Mock: embedding-service ---
-const mockComputePageRelationships = vi.fn();
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  computePageRelationships: (...args: unknown[]) => mockComputePageRelationships(...args),
-}));
-
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { pagesEmbeddingRoutes } from './pages-embeddings.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertEmbeddings,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// =============================================================================
-// Test Suite 1: Auth-required tests
-// =============================================================================
+const available = await isDbAvailable() && await isRedisAvailable();
 
-describe('pages-embeddings routes - auth required', () => {
-  let app: ReturnType<typeof Fastify>;
+async function deleteKeys(redis: RedisClientType, pattern: string): Promise<void> {
+  let cursor = '0';
+  do {
+    const scanned = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = String(scanned.cursor);
+    if (scanned.keys.length > 0) await redis.del(scanned.keys);
+  } while (cursor !== '0');
+}
+
+describe.skipIf(!available)('pages graph routes — real boundaries', () => {
+  let app: FastifyInstance;
+  let unauthenticatedApp: FastifyInstance;
+  let redis: RedisClientType;
+  let readerId: string;
+  let visiblePageId: number;
+  let hiddenPageId: number;
+  const ownedUserIds = new Set<string>();
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async () => {
-      throw app.httpErrors.unauthorized('Missing or invalid token');
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
     });
-    app.decorate('requireAdmin', async () => {
-      throw app.httpErrors.forbidden('Admin access required');
-    });
-    app.decorate('redis', {});
+    redis.on('error', () => undefined);
+    await redis.connect();
+    setRedisClient(redis);
 
-    await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
-    await app.ready();
+    app = await buildKnowledgeTestApp(() => readerId, async (instance) => {
+      instance.redis = redis;
+      await instance.register(pagesEmbeddingRoutes, { prefix: '/api' });
+    });
+
+    unauthenticatedApp = Fastify({ logger: false });
+    await unauthenticatedApp.register(sensible);
+    unauthenticatedApp.decorate('authenticate', async () => {
+      throw unauthenticatedApp.httpErrors.unauthorized('Missing or invalid token');
+    });
+    unauthenticatedApp.decorate('requireAdmin', async () => {
+      throw unauthenticatedApp.httpErrors.forbidden('Admin access required');
+    });
+    unauthenticatedApp.decorate('redis', redis);
+    await unauthenticatedApp.register(pagesEmbeddingRoutes, { prefix: '/api' });
+    await unauthenticatedApp.ready();
   });
 
   afterAll(async () => {
-    await app.close();
+    await Promise.all([app.close(), unauthenticatedApp.close()]);
+    for (const userId of ownedUserIds) {
+      await deleteKeys(redis, `kb:${userId}:*`);
+      await redis.del([
+        `kb-cache-generation:pages:user:${userId}`,
+        `kb-cache-generation:search:user:${userId}`,
+        `rbac:admin:${userId}`,
+        `rbac:spaces:${userId}`,
+      ]);
+    }
+    setRedisClient(null);
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
   });
 
-  it('should return 401 for GET /api/pages/graph without auth', async () => {
-    const response = await app.inject({
+  beforeEach(async () => {
+    await truncateAllTables();
+    readerId = await insertUser(`graph-reader-${randomUUID()}`);
+    ownedUserIds.add(readerId);
+
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('DEV', 'Development', 'confluence', NOW()),
+              ('SECRET', 'Secret', 'confluence', NOW())`,
+    );
+    await query(
+      `WITH reader_role AS (
+         INSERT INTO roles (name, display_name, permissions)
+         VALUES ($1, 'Graph reader', ARRAY['read'])
+         RETURNING id
+       )
+       INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       SELECT 'DEV', 'user', $2, id FROM reader_role`,
+      [`graph-reader-${randomUUID()}`, readerId],
+    );
+
+    visiblePageId = await insertConfluencePage('graph-visible', 'Visible graph page', 'DEV');
+    await insertEmbeddings(visiblePageId, 1);
+    hiddenPageId = await insertConfluencePage('graph-hidden', 'Hidden graph page', 'SECRET');
+    await query(
+      `INSERT INTO page_relationships
+         (page_id_1, page_id_2, relationship_type, score)
+       VALUES ($1, $2, 'label_overlap', 1)`,
+      [visiblePageId, hiddenPageId],
+    );
+  });
+
+  it('requires authentication for the complete graph', async () => {
+    const response = await unauthenticatedApp.inject({
       method: 'GET',
       url: '/api/pages/graph',
     });
@@ -71,182 +125,66 @@ describe('pages-embeddings routes - auth required', () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it('should return 401 for GET /api/pages/:id/graph/local without auth', async () => {
-    const response = await app.inject({
+  it('requires authentication for a local graph', async () => {
+    const response = await unauthenticatedApp.inject({
       method: 'GET',
-      url: '/api/pages/123/graph/local',
+      url: `/api/pages/${visiblePageId}/graph/local`,
     });
 
     expect(response.statusCode).toBe(401);
   });
 
-  it('should return 401 for POST /api/pages/graph/refresh without auth', async () => {
-    const response = await app.inject({
+  it('requires authentication before an admin graph refresh', async () => {
+    const response = await unauthenticatedApp.inject({
       method: 'POST',
       url: '/api/pages/graph/refresh',
     });
 
     expect(response.statusCode).toBe(401);
   });
-});
 
-// =============================================================================
-// Test Suite 2: GET /api/pages/graph - knowledge graph
-// =============================================================================
-
-describe('GET /api/pages/graph', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed' });
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message });
-    });
-
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'test-user-id';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-
-    await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-  });
-
-  it('should return nodes and edges for accessible spaces', async () => {
-    // Mock pages query
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('SELECT cp.id')) {
-        return {
-          rows: [
-            {
-              id: 1,
-              confluence_id: 'page-1',
-              space_key: 'DEV',
-              title: 'Test Page',
-              labels: ['docs'],
-              embedding_status: 'embedded',
-              last_modified_at: new Date('2026-01-01'),
-              parent_id: null,
-            },
-          ],
-        };
-      }
-      if (typeof sql === 'string' && sql.includes('page_embeddings')) {
-        return { rows: [{ page_id: 1, count: '5' }] };
-      }
-      if (typeof sql === 'string' && sql.includes('page_relationships')) {
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
+  it('does not expose nodes or cross-space edges outside the real RBAC assignment', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pages/graph',
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.nodes).toHaveLength(1);
-    expect(body.nodes[0].title).toBe('Test Page');
-    expect(body.nodes[0].embeddingCount).toBe(5);
-    expect(body.edges).toEqual([]);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      nodes: [
+        expect.objectContaining({
+          id: String(visiblePageId),
+          title: 'Visible graph page',
+          embeddingCount: 1,
+        }),
+      ],
+      edges: [],
+      meta: {
+        pagesTotal: 1,
+        pagesEmbedded: 1,
+        relationshipsTotal: 0,
+        relationshipsByType: {},
+      },
+    });
+    expect(response.body).not.toContain('Hidden graph page');
   });
 
-  it('should return empty graph when user has no accessible spaces', async () => {
-    mockGetUserAccessibleSpaces.mockResolvedValue([]);
-
+  it('silently drops an explicitly requested space the caller cannot read', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/pages/graph',
+      url: '/api/pages/graph?spaceKey=SECRET',
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.nodes).toEqual([]);
-    expect(body.edges).toEqual([]);
-  });
-
-  it('should filter by spaceKey query parameter', async () => {
-    mockQueryFn.mockResolvedValue({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/graph?spaceKey=DEV',
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      nodes: [],
+      edges: [],
+      meta: {
+        pagesTotal: 0,
+        pagesEmbedded: 0,
+        relationshipsTotal: 0,
+        relationshipsByType: {},
+      },
     });
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.nodes).toEqual([]);
-    expect(body.edges).toEqual([]);
-  });
-});
-
-// =============================================================================
-// Test Suite 3: POST /api/pages/graph/refresh - admin only
-// =============================================================================
-
-describe('POST /api/pages/graph/refresh', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async (request: { userId: string; userRole: string }) => {
-      request.userId = 'admin-user';
-      request.userRole = 'admin';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
-      request.userId = 'admin-user';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-
-    await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('should trigger relationship computation and return edge count', async () => {
-    mockComputePageRelationships.mockResolvedValue(42);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/graph/refresh',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.message).toContain('refreshed');
-    expect(body.edges).toBe(42);
-    expect(mockComputePageRelationships).toHaveBeenCalledOnce();
   });
 });

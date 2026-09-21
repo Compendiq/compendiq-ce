@@ -15,10 +15,11 @@
  * `WHERE space_key=$1 AND deleted_at IS NULL AND confluence_id IS NOT NULL` —
  * cannot see it. Committing a `confluence_id` for a page the upstream create
  * never produced would get the article soft-deleted on the next sync; that is
- * structurally impossible here. Until the local commit, any later failure
- * deletes the just-created upstream page and leaves local state unchanged.
- * Once committed, cleanup failures must never delete that page because the
- * local row now points at it.
+ * structurally impossible here. The acknowledged create identity and each
+ * acknowledged attachment receipt are persisted in the operation-owned
+ * preparation before any later provider work. Later failures keep the original
+ * local article, upstream page, durable progress, and pending intent; recovery
+ * only publishes after it can verify a complete bounded receipt set.
  *
  * **Confluence → local.** Commit the local flip FIRST, delete upstream after.
  * Once `confluence_id` is NULL the article is permanently outside deletion
@@ -32,19 +33,22 @@
  *
  * ## Filesystem
  *
- * Attachment files cannot join a database transaction. Bytes are COPIED to the
- * new key before COMMIT (an abort leaves the originals untouched) and the old
- * directory is removed only after COMMIT, best-effort — the same split
- * `pages-crud`'s delete flow uses. Worst case is an orphaned directory, never
- * a missing image.
+ * Attachment files cannot join a database transaction. Their exact digests and
+ * names are therefore persisted in the operation-owned preparation before any
+ * copy. Recovery verifies those bytes before publication, and terminal
+ * settlement is withheld until every obsolete namespace is removed
+ * successfully; a failed cleanup remains a pending, retryable intent.
  */
 
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import type { PoolClient } from 'pg';
-import { query, getPool } from '../../../core/db/postgres.js';
-import { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+import { query } from '../../../core/db/postgres.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_MOVE_ADVISORY_LOCK_ID,
+} from '../../../core/db/advisory-locks.js';
 import {
   invalidateCollabDocAfterBodyWrite,
   rejectIfLiveCollabRoom,
@@ -59,22 +63,40 @@ import {
   listCachedAttachments,
   readCachedAttachmentFile,
   writeAttachmentCacheAt,
-  removeAttachmentDirectory,
   getMimeType,
   isStorableAttachmentFilename,
+  attachmentCacheDir,
 } from '../../confluence/services/attachment-handler.js';
 import {
   canStoreLocalFilename,
   listLocalAttachmentsForRelocate,
-  removeLocalAttachmentFilesForRelocate,
   writeLocalAttachmentFileForRelocate,
   removeLocalAttachmentDirectory,
+  localAttachmentsDir,
 } from '../../../core/services/local-attachment-service.js';
+import {
+  getUserAccessibleSpaces,
+  userCanAccessPage,
+} from '../../../core/services/rbac-service.js';
 import { withLocalAttachmentMutationLock } from '../../../core/services/attachment-snapshot-lock.js';
+import {
+  advancePageWriteIntent,
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  PageWriteError,
+  registerPageWriteIntentReconciler,
+  withPageWriteTransaction,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  type PageWriteIntent,
+  type PageWriteIntentReconciler,
+} from '../../../core/services/page-write-admission.js';
+import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
   ConfluenceError,
   type ConfluenceClient,
 } from '../../confluence/services/confluence-client.js';
+import { getClientForUser } from '../../confluence/services/sync-service.js';
 import type { RelocatePageInput, RelocatePageResponse } from '@compendiq/contracts';
 
 /** Error carrying the HTTP status the route should surface. */
@@ -108,10 +130,13 @@ export interface RelocatablePage {
   created_by_user_id: string | null;
   body_html: string | null;
   body_storage: string | null;
+  body_text: string | null;
   version: number;
   inherit_perms: boolean;
   local_modified_at: Date | null;
   local_modified_by: string | null;
+  content_revision: string;
+  lifecycle_revision: string;
   embedding_dirty: boolean;
   /**
    * #1115 P2 (review r1) — captured because the move now WRITES it. The rule
@@ -126,8 +151,9 @@ export interface RelocatablePage {
 
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
-  'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
-  'local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at';
+  'body_html, body_storage, body_text, version, inherit_perms, local_modified_at, ' +
+  'local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at, ' +
+  'content_revision::text, lifecycle_revision::text';
 
 /** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
 interface PageAce {
@@ -143,6 +169,44 @@ interface PreMoveSnapshot extends RelocatablePage {
   oldKey: string;
   /** Page-level ACEs the move deletes; restored verbatim on compensation. */
   aces: PageAce[];
+}
+
+interface RelocationAttachmentPreparation {
+  sourceName: string;
+  targetName: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+}
+
+interface ProviderAttachmentReceipt {
+  id: string;
+  title: string;
+  version: number;
+  mediaType: string | null;
+  fileSize: number | null;
+}
+
+interface RelocationPreparation extends PreMoveSnapshot {
+  intentId: string;
+  direction: 'to_confluence' | 'to_local';
+  actorId: string;
+  targetSpaceKey: string | null;
+  targetVisibility: 'private' | 'shared' | null;
+  attachments: RelocationAttachmentPreparation[];
+  expectedRemoteTitleSha256: string;
+  expectedRemoteBodyStorageSha256: string;
+  parentConfluenceId: string | null;
+  createdConfluenceId: string | null;
+  createdPageReceipt: RemotePageReceipt | null;
+  attachmentReceipts: ProviderAttachmentReceipt[];
+}
+
+interface RemotePageReceipt {
+  id: string;
+  version: number;
+  titleSha256: string;
+  bodyStorageSha256: string;
 }
 
 /**
@@ -349,6 +413,790 @@ export async function collectAttachmentFilenames(page: {
   return [...names];
 }
 
+async function reserveRelocateIntent(input: {
+  page: RelocatablePage;
+  userId: string;
+  target: 'confluence' | 'local';
+  targetSpaceKey: string | null;
+}): Promise<PageWriteIntent> {
+  const oldKey = parentKeyFor(input.page.source, input.page.id, input.page.confluence_id);
+  const affected = await query<{
+    id: number;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT id, content_revision::text, lifecycle_revision::text
+       FROM pages
+      WHERE id = $1 OR (parent_id = $2 AND id <> $1)
+      ORDER BY id`,
+    [input.page.id, oldKey],
+  );
+  const pageIds = affected.rows.map((row) => row.id);
+  const expectedRevisions = Object.fromEntries(
+    affected.rows.map((row) => [
+      row.id,
+      {
+        contentRevision: row.content_revision,
+        lifecycleRevision: row.lifecycle_revision,
+      },
+    ]),
+  );
+  const originalRoot = expectedRevisions[input.page.id];
+  if (
+    !originalRoot ||
+    originalRoot.contentRevision !== input.page.content_revision ||
+    originalRoot.lifecycleRevision !== input.page.lifecycle_revision
+  ) {
+    throw new RelocateError(409, 'Page changed while relocation was being prepared. Reload and try again.');
+  }
+  const intent = await reservePageWriteIntent({
+    pageIds,
+    kind: 'page.relocate',
+    actorId: input.userId,
+    expectedRevisions,
+    effect: {
+      effectClass: 'remote',
+      pageId: input.page.id,
+      target: input.target,
+      fromSource: input.page.source,
+      fromConfluenceId: input.page.confluence_id,
+      fromSpaceKey: input.page.space_key,
+      targetSpaceKey: input.targetSpaceKey,
+      affectedPageIds: pageIds,
+    },
+  });
+
+  // Reserving the root prevents participating reparent writers from crossing
+  // this point. Re-expand and re-read the payload before any file/remote effect
+  // so a waiter never operates on the pre-lock hierarchy or body.
+  const reexpanded = await query<{ id: number }>(
+    `SELECT id FROM pages
+      WHERE id = $1 OR (parent_id = $2 AND id <> $1)
+      ORDER BY id`,
+    [input.page.id, oldKey],
+  );
+  const current = await query<Pick<
+    RelocatablePage,
+    'source' | 'confluence_id' | 'space_key' | 'version' | 'title' | 'body_html' | 'body_storage'
+  >>(
+    `SELECT source, confluence_id, space_key, version, title, body_html, body_storage
+       FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+    [input.page.id],
+  );
+  const ids = reexpanded.rows.map((row) => row.id);
+  const page = current.rows[0];
+  const changed =
+    ids.length !== pageIds.length ||
+    ids.some((pageId, index) => pageId !== pageIds[index]) ||
+    !page ||
+    page.source !== input.page.source ||
+    page.confluence_id !== input.page.confluence_id ||
+    page.space_key !== input.page.space_key ||
+    page.version !== input.page.version ||
+    page.title !== input.page.title ||
+    page.body_html !== input.page.body_html ||
+    page.body_storage !== input.page.body_storage;
+  if (changed) {
+    await cancelPageWriteIntentBeforeEffect(intent);
+    throw new RelocateError(409, 'Page or hierarchy changed while relocation was waiting. Reload and try again.');
+  }
+  return intent;
+}
+
+/**
+ * Re-read the same three authority gates the route applied. Transactional
+ * readers bypass RBAC caches, so both the pre-effect admission and the final
+ * local commit observe current authority.
+ */
+async function assertCurrentRelocateAuthorityOnClient(
+  client: PoolClient,
+  userId: string,
+  pageId: number,
+  confluenceSpaceKey: string | null,
+): Promise<void> {
+  const actor = await client.query<{
+    role: string;
+    deactivated_at: Date | null;
+    has_global_permission: boolean;
+  }>(
+    `SELECT u.role, u.deactivated_at,
+            EXISTS (
+              SELECT 1
+                FROM space_role_assignments sra
+                JOIN roles r ON r.id = sra.role_id
+               WHERE 'pages:relocate' = ANY(r.permissions)
+                 AND (
+                   (sra.principal_type = 'user' AND sra.principal_id = u.id::text)
+                   OR (
+                     sra.principal_type = 'group'
+                     AND sra.principal_id ~ '^\\d+$'
+                     AND sra.principal_id::integer IN (
+                       SELECT gm.group_id FROM group_memberships gm WHERE gm.user_id = u.id
+                     )
+                   )
+                 )
+            ) AS has_global_permission
+       FROM users u
+      WHERE u.id = $1`,
+    [userId],
+  );
+  const currentActor = actor.rows[0];
+  if (
+    !currentActor ||
+    currentActor.deactivated_at !== null ||
+    (currentActor.role !== 'admin' && !currentActor.has_global_permission) ||
+    !(await userCanAccessPage(userId, pageId, client))
+  ) {
+    throw new RelocateError(403, 'Relocation authority changed while this move was waiting. Reload and try again.');
+  }
+  if (
+    confluenceSpaceKey !== null &&
+    !(await getUserAccessibleSpaces(userId, client)).includes(confluenceSpaceKey)
+  ) {
+    throw new RelocateError(403, 'Access denied to the Confluence space');
+  }
+}
+
+async function assertCurrentRelocateAuthority(
+  intent: PageWriteIntent,
+  userId: string,
+  pageId: number,
+  confluenceSpaceKey: string | null,
+): Promise<void> {
+  await withPageWriteTransaction(
+    intent.pageIds,
+    (client) =>
+      assertCurrentRelocateAuthorityOnClient(client, userId, pageId, confluenceSpaceKey),
+    { intent },
+  );
+}
+
+type RelocationProviderState = 'original' | 'published_local';
+
+/**
+ * Resolve the original actor's provider only at the remote phase boundary.
+ *
+ * The route-level client is an early credential snapshot used for preflight.
+ * A relocation can wait behind admission and filesystem preparation, so every
+ * mutation phase must instead pair current authority and page identity with a
+ * credential read from the same held database transaction.
+ */
+async function currentRelocationClient(
+  intent: PageWriteIntent,
+  prep: RelocationPreparation,
+  expectedState: RelocationProviderState,
+): Promise<ConfluenceClient> {
+  return withPageWriteTransaction(
+    intent.pageIds,
+    async (client) => {
+      const current = await lockAndReload(client, prep.id);
+      const identityMatches = expectedState === 'original'
+        ? current.source === prep.source &&
+          current.confluence_id === prep.confluence_id &&
+          current.space_key === prep.space_key
+        : current.source === 'standalone' &&
+          current.confluence_id === null &&
+          current.space_key === prep.targetSpaceKey;
+      if (!identityMatches) {
+        throw new PageWriteError(
+          409,
+          'intent_local_evidence_mismatch',
+          'The relocation source identity changed before remote dispatch',
+        );
+      }
+      await assertCurrentRelocateAuthorityOnClient(
+        client,
+        prep.actorId,
+        prep.id,
+        prep.direction === 'to_confluence' ? prep.targetSpaceKey : prep.space_key,
+      );
+      const confluence = await getClientForUser(prep.actorId, client);
+      if (!confluence) {
+        throw new PageWriteError(
+          409,
+          'intent_actor_credentials_unavailable',
+          'The original actor no longer has an active Confluence connection',
+        );
+      }
+      return confluence;
+    },
+    { intent },
+  );
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function parsePreparedAttachments(value: unknown): RelocationAttachmentPreparation[] {
+  if (!Array.isArray(value)) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation attachment preparation is unavailable');
+  }
+  return value.map((item) => {
+    if (
+      item === null ||
+      typeof item !== 'object' ||
+      typeof (item as Record<string, unknown>).sourceName !== 'string' ||
+      typeof (item as Record<string, unknown>).targetName !== 'string' ||
+      typeof (item as Record<string, unknown>).contentType !== 'string' ||
+      typeof (item as Record<string, unknown>).size !== 'number' ||
+      !Number.isSafeInteger((item as Record<string, unknown>).size) ||
+      typeof (item as Record<string, unknown>).sha256 !== 'string' ||
+      !canStoreLocalFilename((item as Record<string, unknown>).sourceName as string) ||
+      !canStoreLocalFilename((item as Record<string, unknown>).targetName as string)
+    ) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation attachment preparation is malformed');
+    }
+    const row = item as Record<string, unknown>;
+    return {
+      sourceName: row.sourceName as string,
+      targetName: row.targetName as string,
+      contentType: row.contentType as string,
+      size: row.size as number,
+      sha256: row.sha256 as string,
+    };
+  });
+}
+
+function parsePreparedAces(value: unknown): PageAce[] {
+  if (!Array.isArray(value)) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation ACL preparation is unavailable');
+  }
+  return value.map((item) => {
+    if (
+      item === null ||
+      typeof item !== 'object' ||
+      typeof (item as Record<string, unknown>).principal_type !== 'string' ||
+      typeof (item as Record<string, unknown>).principal_id !== 'string' ||
+      typeof (item as Record<string, unknown>).permission !== 'string'
+    ) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation ACL preparation is malformed');
+    }
+    return item as PageAce;
+  });
+}
+
+async function persistRelocationPreparation(
+  intent: PageWriteIntent,
+  input: {
+    pageId: number;
+    actorId: string;
+    direction: 'to_confluence' | 'to_local';
+    targetSpaceKey: string | null;
+    targetVisibility: 'private' | 'shared' | null;
+    attachments: RelocationAttachmentPreparation[];
+    expectedRemoteTitleSha256: string;
+    expectedRemoteBodyStorageSha256: string;
+    parentConfluenceId: string | null;
+  },
+): Promise<RelocationPreparation> {
+  return runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => withPageWriteTransaction(
+      intent.pageIds,
+      async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+        const page = await lockAndReload(client, input.pageId);
+        await assertCurrentRelocateAuthorityOnClient(
+          client,
+          input.actorId,
+          input.pageId,
+          input.direction === 'to_confluence' ? input.targetSpaceKey : page.space_key,
+        );
+        const oldKey = parentKeyFor(page.source, page.id, page.confluence_id);
+        const children = await client.query<{ id: number }>(
+          'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
+          [oldKey, page.id],
+        );
+        const aces = await client.query<PageAce>(
+          `SELECT principal_type, principal_id, permission
+             FROM access_control_entries
+            WHERE resource_type = 'page' AND resource_id = $1
+            ORDER BY principal_type, principal_id, permission`,
+          [page.id],
+        );
+        const childIds = children.rows.map((row) => row.id);
+        await client.query(
+          `INSERT INTO page_relocation_preparations (
+             intent_id, page_id, direction, actor_id, target_space_key, target_visibility,
+             original_source, original_confluence_id, original_space_key, original_title,
+             original_body_html, original_body_storage, original_body_text, original_version,
+             original_visibility, original_created_by_user_id, original_inherit_perms,
+             original_local_modified_at, original_local_modified_by, original_embedding_dirty,
+             original_image_analysis_dirty, original_embedding_status, original_embedded_at,
+             original_key, child_ids, access_control_entries, attachments,
+             expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6,
+             $7, $8, $9, $10,
+             $11, $12, $13, $14,
+             $15, $16, $17,
+             $18, $19, $20,
+             $21, $22, $23,
+             $24, $25, $26::jsonb, $27::jsonb,
+             $28, $29, $30
+           )`,
+          [
+            intent.id,
+            page.id,
+            input.direction,
+            input.actorId,
+            input.targetSpaceKey,
+            input.targetVisibility,
+            page.source,
+            page.confluence_id,
+            page.space_key,
+            page.title,
+            page.body_html,
+            page.body_storage,
+            page.body_text,
+            page.version,
+            page.visibility,
+            page.created_by_user_id,
+            page.inherit_perms,
+            page.local_modified_at,
+            page.local_modified_by,
+            page.embedding_dirty,
+            page.image_analysis_dirty,
+            page.embedding_status,
+            page.embedded_at,
+            oldKey,
+            childIds,
+            JSON.stringify(aces.rows),
+            JSON.stringify(input.attachments),
+            input.expectedRemoteTitleSha256,
+            input.expectedRemoteBodyStorageSha256,
+            input.parentConfluenceId,
+          ],
+        );
+        return {
+          ...page,
+          intentId: intent.id,
+          direction: input.direction,
+          actorId: input.actorId,
+          targetSpaceKey: input.targetSpaceKey,
+          targetVisibility: input.targetVisibility,
+          attachments: input.attachments,
+          expectedRemoteTitleSha256: input.expectedRemoteTitleSha256,
+          expectedRemoteBodyStorageSha256: input.expectedRemoteBodyStorageSha256,
+          parentConfluenceId: input.parentConfluenceId,
+          createdConfluenceId: null,
+          createdPageReceipt: null,
+          attachmentReceipts: [],
+          childIds,
+          oldKey,
+          aces: aces.rows,
+        };
+      },
+      { intent },
+    ),
+  );
+}
+
+async function loadRelocationPreparation(
+  client: PoolClient,
+  intent: { id: string; pageIds: number[]; actorId: string | null },
+): Promise<RelocationPreparation> {
+  const result = await client.query<{
+    intent_id: string;
+    page_id: number;
+    direction: 'to_confluence' | 'to_local';
+    actor_id: string;
+    target_space_key: string | null;
+    target_visibility: 'private' | 'shared' | null;
+    original_source: string;
+    original_confluence_id: string | null;
+    original_space_key: string | null;
+    original_title: string;
+    original_body_html: string | null;
+    original_body_storage: string | null;
+    original_body_text: string | null;
+    original_version: number;
+    original_visibility: string;
+    original_created_by_user_id: string | null;
+    original_inherit_perms: boolean;
+    original_local_modified_at: Date | null;
+    original_local_modified_by: string | null;
+    original_embedding_dirty: boolean;
+    original_image_analysis_dirty: boolean;
+    original_embedding_status: string | null;
+    original_embedded_at: Date | null;
+    original_key: string;
+    child_ids: number[];
+    access_control_entries: unknown;
+    attachments: unknown;
+    expected_remote_title_sha256: string;
+    expected_remote_body_storage_sha256: string;
+    parent_confluence_id: string | null;
+    created_confluence_id: string | null;
+    created_page_receipt: unknown;
+    attachment_receipts: unknown;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT prep.*, p.content_revision::text, p.lifecycle_revision::text
+       FROM page_relocation_preparations prep
+       JOIN pages p ON p.id = prep.page_id
+      WHERE prep.intent_id = $1
+      FOR UPDATE OF prep`,
+    [intent.id],
+  );
+  const row = result.rows[0];
+  if (
+    !row ||
+    (intent.actorId !== null && row.actor_id !== intent.actorId) ||
+    !intent.pageIds.includes(row.page_id) ||
+    (row.direction !== 'to_confluence' && row.direction !== 'to_local')
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation preparation identity is unavailable');
+  }
+  let createdPageReceipt: RemotePageReceipt | null = null;
+  let attachmentReceipts: ProviderAttachmentReceipt[];
+  try {
+    if (row.created_page_receipt !== null) {
+      createdPageReceipt = parseRemotePageReceipt(row.created_page_receipt);
+    }
+    attachmentReceipts = parseAttachmentReceipts(row.attachment_receipts);
+  } catch {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation provider progress is malformed');
+  }
+  return {
+    id: row.page_id,
+    title: row.original_title,
+    source: row.original_source,
+    space_key: row.original_space_key,
+    confluence_id: row.original_confluence_id,
+    visibility: row.original_visibility,
+    created_by_user_id: row.original_created_by_user_id,
+    body_html: row.original_body_html,
+    body_storage: row.original_body_storage,
+    body_text: row.original_body_text,
+    version: row.original_version,
+    inherit_perms: row.original_inherit_perms,
+    local_modified_at: row.original_local_modified_at,
+    local_modified_by: row.original_local_modified_by,
+    content_revision: row.content_revision,
+    lifecycle_revision: row.lifecycle_revision,
+    embedding_dirty: row.original_embedding_dirty,
+    image_analysis_dirty: row.original_image_analysis_dirty,
+    embedding_status: row.original_embedding_status,
+    embedded_at: row.original_embedded_at,
+    intentId: row.intent_id,
+    direction: row.direction,
+    actorId: row.actor_id,
+    targetSpaceKey: row.target_space_key,
+    targetVisibility: row.target_visibility,
+    attachments: parsePreparedAttachments(row.attachments),
+    expectedRemoteTitleSha256: row.expected_remote_title_sha256,
+    expectedRemoteBodyStorageSha256: row.expected_remote_body_storage_sha256,
+    parentConfluenceId: row.parent_confluence_id,
+    createdConfluenceId: row.created_confluence_id,
+    createdPageReceipt,
+    attachmentReceipts,
+    childIds: row.child_ids,
+    oldKey: row.original_key,
+    aces: parsePreparedAces(row.access_control_entries),
+  };
+}
+
+function attachmentReceipt(value: unknown): ProviderAttachmentReceipt {
+  const record = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const version = typeof record.version === 'number'
+    ? record.version
+    : record.version !== null && typeof record.version === 'object'
+      ? (record.version as Record<string, unknown>).number
+      : null;
+  const extensions = record.extensions !== null && typeof record.extensions === 'object'
+    ? record.extensions as Record<string, unknown>
+    : {};
+  const metadata = record.metadata !== null && typeof record.metadata === 'object'
+    ? record.metadata as Record<string, unknown>
+    : {};
+  const mediaType = typeof record.mediaType === 'string'
+    ? record.mediaType
+    : typeof metadata.mediaType === 'string' ? metadata.mediaType : null;
+  if (
+    typeof record.id !== 'string' ||
+    record.id.length === 0 ||
+    record.id.length > 1000 ||
+    typeof record.title !== 'string' ||
+    record.title.length === 0 ||
+    record.title.length > 1000 ||
+    (mediaType !== null && mediaType.length > 255) ||
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version < 1
+  ) {
+    throw new RelocateError(502, 'Confluence did not return a versioned attachment identity');
+  }
+  return {
+    id: record.id,
+    title: record.title,
+    version,
+    mediaType,
+    fileSize: typeof record.fileSize === 'number' &&
+        Number.isSafeInteger(record.fileSize) &&
+        record.fileSize >= 0
+      ? record.fileSize
+      : typeof extensions.fileSize === 'number' &&
+          Number.isSafeInteger(extensions.fileSize) &&
+          extensions.fileSize >= 0
+        ? extensions.fileSize
+        : null,
+  };
+}
+
+/** Fixed fields and framed entries preserve order independently of JSONB key order. */
+function attachmentReceiptsDigest(receipts: readonly ProviderAttachmentReceipt[]): string {
+  const digest = createHash('sha256');
+  for (const receipt of receipts) {
+    digest.update(JSON.stringify([
+      receipt.id, receipt.title, receipt.version, receipt.mediaType, receipt.fileSize,
+    ]));
+    digest.update('\n');
+  }
+  return digest.digest('hex');
+}
+
+function remotePageReceipt(value: unknown): RemotePageReceipt {
+  const page = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const version = page.version !== null && typeof page.version === 'object'
+    ? (page.version as Record<string, unknown>).number
+    : null;
+  const body = page.body !== null && typeof page.body === 'object'
+    ? page.body as Record<string, unknown>
+    : {};
+  const storage = body.storage !== null && typeof body.storage === 'object'
+    ? (body.storage as Record<string, unknown>).value
+    : null;
+  if (
+    typeof page.id !== 'string' ||
+    page.id.length === 0 ||
+    typeof page.title !== 'string' ||
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version < 1 ||
+    typeof storage !== 'string'
+  ) {
+    throw new RelocateError(502, 'Confluence did not return an exact page identity');
+  }
+  return {
+    id: page.id,
+    version,
+    titleSha256: sha256(page.title),
+    bodyStorageSha256: sha256(storage),
+  };
+}
+
+function parseRemotePageReceipt(value: unknown): RemotePageReceipt {
+  const row = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  if (
+    typeof row.id !== 'string' ||
+    row.id.length === 0 ||
+    typeof row.version !== 'number' ||
+    !Number.isSafeInteger(row.version) ||
+    row.version < 1 ||
+    typeof row.titleSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(row.titleSha256) ||
+    typeof row.bodyStorageSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(row.bodyStorageSha256)
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_result_invalid', 'Relocation page receipt is incomplete');
+  }
+  return row as unknown as RemotePageReceipt;
+}
+
+function parseAttachmentReceipts(value: unknown): ProviderAttachmentReceipt[] {
+  if (!Array.isArray(value)) {
+    throw new PageWriteError(409, 'intent_terminal_result_invalid', 'Relocation attachment receipts are incomplete');
+  }
+  try {
+    return value.map(attachmentReceipt);
+  } catch {
+    throw new PageWriteError(409, 'intent_terminal_result_invalid', 'Relocation attachment receipts are malformed');
+  }
+}
+
+async function recordRelocationCreate(
+  intent: PageWriteIntent,
+  confluenceId: string,
+  receipt: RemotePageReceipt | null,
+): Promise<void> {
+  await advancePageWriteIntent(intent, async (client) => {
+    const updated = await client.query(
+      `UPDATE page_relocation_preparations
+          SET created_confluence_id = $2,
+              created_page_receipt = COALESCE(created_page_receipt, $3::jsonb)
+        WHERE intent_id = $1
+          AND direction = 'to_confluence'
+          AND (created_confluence_id IS NULL OR created_confluence_id = $2)
+          AND (
+            created_page_receipt IS NULL
+            OR $3::jsonb IS NULL
+            OR created_page_receipt = $3::jsonb
+          )`,
+      [intent.id, confluenceId, receipt === null ? null : JSON.stringify(receipt)],
+    );
+    if (updated.rowCount !== 1) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation create progress could not be recorded exactly once');
+    }
+  });
+}
+
+async function recordRelocationAttachment(
+  intent: PageWriteIntent,
+  confluenceId: string,
+  receiptIndex: number,
+  receipt: ProviderAttachmentReceipt,
+): Promise<void> {
+  await advancePageWriteIntent(intent, async (client) => {
+    const updated = await client.query(
+      `UPDATE page_relocation_preparations
+          SET attachment_receipts =
+                attachment_receipts || jsonb_build_array($4::jsonb)
+        WHERE intent_id = $1
+          AND direction = 'to_confluence'
+          AND created_confluence_id = $2
+          AND jsonb_array_length(attachment_receipts) = $3`,
+      [intent.id, confluenceId, receiptIndex, JSON.stringify(receipt)],
+    );
+    if (updated.rowCount !== 1) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation attachment progress could not be recorded in order');
+    }
+  });
+}
+
+
+async function verifyCreatedProviderState(
+  confluence: ConfluenceClient,
+  createdConfluenceId: string,
+  exactPageReceipt: RemotePageReceipt | null,
+  expectedTitleSha256: string,
+  expectedBodyStorageSha256: string,
+  requiredAttachments: ProviderAttachmentReceipt[],
+  expectedParentId: string | null,
+): Promise<{
+  pageReceipt: RemotePageReceipt;
+  observed: { title: string; bodyStorage: string; version: number };
+}> {
+  let page;
+  let attachments;
+  try {
+    [page, attachments] = await Promise.all([
+      confluence.getPage(createdConfluenceId),
+      confluence.getPageAttachments(createdConfluenceId),
+    ]);
+  } catch (error) {
+    throw new PageWriteError(409, 'intent_provider_state_unavailable', `The relocated Confluence page could not be verified: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let observedPageReceipt: RemotePageReceipt;
+  try {
+    observedPageReceipt = remotePageReceipt(page);
+  } catch {
+    throw new PageWriteError(409, 'intent_provider_state_unavailable', 'The relocated Confluence page identity could not be read');
+  }
+  const bodyStorage = page.body?.storage?.value;
+  const observedParentId = page.ancestors?.at(-1)?.id ?? null;
+  if (
+    observedPageReceipt.id !== createdConfluenceId ||
+    page.status === 'trashed' ||
+    typeof page.title !== 'string' ||
+    typeof bodyStorage !== 'string' ||
+    observedPageReceipt.titleSha256 !== expectedTitleSha256 ||
+    observedPageReceipt.bodyStorageSha256 !== expectedBodyStorageSha256 ||
+    observedParentId !== expectedParentId ||
+    (exactPageReceipt !== null && (
+      observedPageReceipt.id !== exactPageReceipt.id ||
+      observedPageReceipt.version !== exactPageReceipt.version ||
+      observedPageReceipt.titleSha256 !== exactPageReceipt.titleSha256 ||
+      observedPageReceipt.bodyStorageSha256 !== exactPageReceipt.bodyStorageSha256
+    ))
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The relocated Confluence page no longer matches its creation receipt');
+  }
+  let observedAttachments: ProviderAttachmentReceipt[];
+  try {
+    observedAttachments = attachments.results.map(attachmentReceipt);
+  } catch {
+    throw new PageWriteError(409, 'intent_provider_state_unavailable', 'The relocated Confluence attachment identities could not be read');
+  }
+  const expectedAttachments = [...requiredAttachments].sort((a, b) => a.id.localeCompare(b.id));
+  observedAttachments.sort((a, b) => a.id.localeCompare(b.id));
+  if (
+    observedAttachments.length !== expectedAttachments.length ||
+    observedAttachments.some((item, index) => {
+      const wanted = expectedAttachments[index];
+      return !wanted ||
+        item.id !== wanted.id ||
+        item.title !== wanted.title ||
+        item.version !== wanted.version ||
+        item.mediaType !== wanted.mediaType ||
+        item.fileSize !== wanted.fileSize;
+    })
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The relocated Confluence attachments no longer match their upload receipts');
+  }
+  return {
+    pageReceipt: observedPageReceipt,
+    observed: {
+      title: page.title,
+      bodyStorage,
+      version: observedPageReceipt.version,
+    },
+  };
+}
+
+async function readPreparedAttachmentBytes(
+  prep: RelocationPreparation,
+  attachment: RelocationAttachmentPreparation,
+  destinationConfluenceId?: string,
+): Promise<Buffer> {
+  const candidates: Array<() => Promise<Buffer | null>> = [];
+  if (destinationConfluenceId) {
+    candidates.push(() => readCachedAttachmentFile(destinationConfluenceId, attachment.targetName));
+  }
+  candidates.push(() => readCachedAttachmentFile(prep.oldKey, attachment.sourceName));
+  candidates.push(async () => {
+    try {
+      return await fs.readFile(`${localAttachmentsDir(prep.id)}/${attachment.sourceName}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  });
+  for (const readCandidate of candidates) {
+    const bytes = await readCandidate();
+    if (bytes && bytes.length === attachment.size && sha256(bytes) === attachment.sha256) return bytes;
+  }
+  throw new PageWriteError(409, 'intent_local_evidence_mismatch', `Prepared attachment "${attachment.sourceName}" is missing or changed`);
+}
+
+async function removePreparedLocalFilesVerified(
+  prep: RelocationPreparation,
+): Promise<void> {
+  const directory = localAttachmentsDir(prep.id);
+  for (const attachment of prep.attachments) {
+    await fs.rm(`${directory}/${attachment.targetName}`, { force: true });
+  }
+  try {
+    await fs.rmdir(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY') throw error;
+  }
+}
+
+async function deleteRelocationPreparation(client: PoolClient, intentId: string): Promise<void> {
+  const deleted = await client.query(
+    'DELETE FROM page_relocation_preparations WHERE intent_id = $1',
+    [intentId],
+  );
+  if (deleted.rowCount !== 1) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation preparation was not removed exactly once');
+  }
+}
+
 /**
  * The refusal a relocate owes an attachment it cannot read.
  *
@@ -417,6 +1265,15 @@ async function readAttachmentBytes(
 }
 
 /**
+ * Remove a Confluence-cache namespace without the legacy best-effort ambiguity.
+ * Relocation may settle only after a later filesystem mutation is known to
+ * have completed; the shared helper intentionally swallows `fs.rm` failures.
+ */
+async function removeAttachmentDirectoryVerified(pageKey: string): Promise<void> {
+  await fs.rm(attachmentCacheDir(pageKey), { recursive: true, force: true });
+}
+
+/**
  * Take the page row for update inside the caller's transaction, re-reading it
  * under both the advisory lock and a row lock so nothing observed during the
  * pre-checks can have changed underneath.
@@ -450,20 +1307,121 @@ async function resolveConfluenceParent(pageId: number): Promise<string | null> {
   return res.rows[0]?.confluence_id ?? null;
 }
 
+async function publishToConfluenceOnClient(
+  client: PoolClient,
+  intentId: string,
+  prep: RelocationPreparation,
+  confluenceId: string,
+  observed: { title: string; bodyStorage: string; version: number },
+  userId: string,
+  warnings: string[],
+): Promise<RelocatePageResponse> {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+  await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+  const fresh = await lockAndReload(client, prep.id);
+  if (
+    fresh.source !== prep.source ||
+    fresh.confluence_id !== prep.confluence_id ||
+    fresh.space_key !== prep.space_key
+  ) {
+    throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation source changed before publication');
+  }
+  await assertIdentifierUnambiguous(prep.oldKey, prep.id, 'current', client);
+  await assertIdentifierUnambiguous(confluenceId, prep.id, 'new Confluence', client);
+  await assertCurrentRelocateAuthorityOnClient(client, userId, prep.id, prep.targetSpaceKey);
+
+  await withLocalAttachmentMutationLock(async () => {
+    for (const attachment of prep.attachments) {
+      const bytes = await readPreparedAttachmentBytes(prep, attachment, confluenceId);
+      await writeAttachmentCacheAt(confluenceId, attachment.targetName, bytes);
+    }
+  }, client);
+
+  const finalHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  const finalText = htmlToText(finalHtml);
+  await client.query(
+    `UPDATE pages SET
+       title = $2,
+       source = 'confluence',
+       confluence_id = $3,
+       space_key = $4,
+       body_html = $5,
+       body_storage = $6,
+       body_text = $7,
+       visibility = 'shared',
+       version = $8,
+       last_synced = NOW(),
+       embedding_dirty = TRUE,
+       image_analysis_dirty = TRUE,
+       embedding_status = 'not_embedded',
+       embedded_at = NULL
+     WHERE id = $1`,
+    [
+      prep.id,
+      observed.title,
+      confluenceId,
+      prep.targetSpaceKey,
+      finalHtml,
+      observed.bodyStorage,
+      finalText,
+      observed.version,
+    ],
+  );
+  await invalidateCollabDocAfterBodyWrite(prep.id, client);
+  let childrenRepointed = 0;
+  if (prep.childIds.length > 0) {
+    const repointed = await client.query(
+      'UPDATE pages SET parent_id = $1 WHERE id = ANY($2::int[]) AND parent_id = $3',
+      [confluenceId, prep.childIds, prep.oldKey],
+    );
+    childrenRepointed = repointed.rowCount ?? 0;
+    if (childrenRepointed !== prep.childIds.length) {
+      throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'A prepared child link changed before relocation publication');
+    }
+  }
+  const discarded = await client.query(
+    `DELETE FROM page_versions pv
+      WHERE pv.page_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM page_baselines baseline WHERE baseline.version_snapshot_id = pv.id
+        )`,
+    [prep.id],
+  );
+  await client.query('DELETE FROM local_attachments WHERE page_id = $1', [prep.id]);
+  await enqueuePageWriteInvalidation(client, intentId);
+
+  await withLocalAttachmentMutationLock(async (lockClient) => {
+    if (confluenceId !== prep.oldKey) {
+      await removeAttachmentDirectoryVerified(prep.oldKey);
+    }
+    await removeLocalAttachmentDirectory(prep.id, lockClient);
+  }, client);
+
+  return {
+    pageId: prep.id,
+    source: 'confluence',
+    spaceKey: prep.targetSpaceKey,
+    confluenceId,
+    childrenRepointed,
+    versionsDiscarded: discarded.rowCount ?? 0,
+    attachmentsMigrated: prep.attachments.length,
+    upstreamDeleted: false,
+    warnings,
+  };
+}
+
 /** Move a standalone article into Confluence. */
 async function relocateToConfluence(opts: {
   page: RelocatablePage;
   userId: string;
   spaceKey: string;
-  client: ConfluenceClient;
   expectedVersionCount: number;
 }): Promise<RelocatePageResponse> {
-  const { page, userId, spaceKey, client } = opts;
+  const { page, userId, spaceKey } = opts;
   const oldKey = String(page.id);
   const warnings: string[] = [];
 
   await assertIdentifierUnambiguous(oldKey, page.id, 'current');
-
   const versionCount = await countLocalVersions(page.id);
   if (versionCount !== opts.expectedVersionCount) {
     throw new RelocateError(
@@ -474,14 +1432,6 @@ async function relocateToConfluence(opts: {
     );
   }
 
-  // Normalise every attachment reference onto the Confluence-cache form and
-  // tag it, so `htmlToConfluence` emits a correct `ri:attachment` for images
-  // from BOTH stores. Storage format references attachments by filename only,
-  // so this body is already key-independent and can be sent upstream as-is.
-  //
-  // This also yields the local→true filename map: a cross-page reference is
-  // cached under a synthetic `xref` name but must be *published* under its real
-  // one, or the reference we emit names a file Confluence does not have.
   const { html: normalisedHtml, refs } = rewriteAttachmentRefs(
     page.body_html ?? '',
     [`/api/attachments/${encodeURIComponent(oldKey)}/`, `/api/local-attachments/${page.id}/`],
@@ -489,62 +1439,43 @@ async function relocateToConfluence(opts: {
     true,
   );
   const storageBody = htmlToConfluence(normalisedHtml);
-  const targetByLocal = new Map(refs.map((r) => [r.local, r.target]));
-
-  // Read every attachment's bytes BEFORE the upstream create, so a missing
-  // file is noticed while nothing has happened yet. `local` keys the source
-  // store; `target` is the name published to Confluence and used for the new
-  // cache key, so `confluenceToHtml` regenerates URLs that resolve.
-  const payloads: Array<{ local: string; target: string; data: Buffer }> = [];
+  const targetByLocal = new Map(refs.map((ref) => [ref.local, ref.target]));
+  const payloads: Array<RelocationAttachmentPreparation & { data: Buffer }> = [];
   const claimedTargets = new Map<string, string>();
   const collisions: string[] = [];
-  for (const local of await collectAttachmentFilenames(page)) {
-    // `listCachedAttachments` screens unstorable names out of the cache side,
-    // but the local side's filenames come from `local_attachments` rows — one
-    // written outside `localFilePath` still reaches the read below, where the
-    // store throws a bare `Error` that app.ts masks to "Internal Server Error".
-    // Refuse by name instead, so the response says which file to fix (#1169).
-    //
-    // BOTH rules apply: the move has to land the file in the Confluence cache
-    // *and* read it out of the local store, and the two disagree — the cache
-    // rejects NUL bytes, the local store caps at 255 characters. Asking only
-    // one let an over-long row warn past as "missing on disk" instead.
-    if (!isStorableAttachmentFilename(local) || !canStoreLocalFilename(local)) {
+  for (const sourceName of await collectAttachmentFilenames(page)) {
+    if (!isStorableAttachmentFilename(sourceName) || !canStoreLocalFilename(sourceName)) {
       throw new RelocateError(
         400,
-        `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
+        `Attachment "${sourceName}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
       );
     }
     let data: Buffer | null;
     try {
-      data = await readAttachmentBytes(page, local);
-    } catch (err) {
-      if (err instanceof AttachmentReadError) throw unreadableAttachmentError(local, err.cause);
-      throw err;
+      data = await readAttachmentBytes(page, sourceName);
+    } catch (error) {
+      if (error instanceof AttachmentReadError) throw unreadableAttachmentError(sourceName, error.cause);
+      throw error;
     }
     if (data === null) {
-      warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
+      warnings.push(`Attachment "${sourceName}" is referenced but missing on disk; it was not published.`);
       continue;
     }
-    const target = targetByLocal.get(local) ?? local;
-    // Two cross-page references borrowed from different pages can share a real
-    // filename while their cached copies differ. A Confluence page holds one
-    // attachment per name, so publishing both would upload `chart.png` twice —
-    // the second overwriting the first — and BOTH images would then render the
-    // same picture, one of them silently wrong.
-    const previous = claimedTargets.get(target);
-    if (previous !== undefined && previous !== local) {
-      collisions.push(`"${previous}" and "${local}" both publish as "${target}"`);
+    const targetName = targetByLocal.get(sourceName) ?? sourceName;
+    const previous = claimedTargets.get(targetName);
+    if (previous !== undefined && previous !== sourceName) {
+      collisions.push(`"${previous}" and "${sourceName}" both publish as "${targetName}"`);
     }
-    claimedTargets.set(target, local);
-    payloads.push({ local, target, data });
+    claimedTargets.set(targetName, sourceName);
+    payloads.push({
+      sourceName,
+      targetName,
+      data,
+      contentType: getMimeType(targetName),
+      size: data.length,
+      sha256: sha256(data),
+    });
   }
-
-  // Refuse rather than corrupt — the same call this function already makes for
-  // an ambiguous identifier and for a failed attachment upload. The move
-  // discards local version history and cannot be undone, so a warning on a
-  // success response is not an adequate signal for a wrong image. Nothing has
-  // happened yet at this point: no upstream page, no local change.
   if (collisions.length > 0) {
     throw new RelocateError(
       409,
@@ -554,131 +1485,400 @@ async function relocateToConfluence(opts: {
       { collisions },
     );
   }
+
   const parentConfluenceId = await resolveConfluenceParent(page.id);
-
-  // 1. Create the page upstream. Until the local commit, nothing local points
-  //    at it and every subsequent failure is reversible by deleting it again.
-  const created = await client.createPage(
-    spaceKey,
-    page.title,
-    storageBody,
-    parentConfluenceId ?? undefined,
-  );
-  const newConfluenceId = created.id;
-
-  let localCommitted = false;
+  const intent = await reserveRelocateIntent({
+    page,
+    userId,
+    target: 'confluence',
+    targetSpaceKey: spaceKey,
+  });
   try {
-    await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence');
-
-    // 2. Upload the bytes. A failure aborts the move: an article whose
-    //    `ri:attachment` references point at files that were never uploaded
-    //    renders with broken images on both sides.
-    for (const { target, data } of payloads) {
-      await client.updateAttachment(newConfluenceId, target, data, getMimeType(target));
-    }
-
-    // 3. Stage the cache under the new key, named by `target` so it matches the
-    //    URLs `confluenceToHtml` regenerates below (copy — the old key stays
-    //    intact until after COMMIT).
-    for (const { target, data } of payloads) {
-      await writeAttachmentCacheAt(newConfluenceId, target, data);
-    }
-
-    // Re-derive the local body from the storage Confluence accepted, exactly
-    // as `POST /api/pages` does — this is what re-keys every `<img src>` onto
-    // the new confluence id.
-    const finalStorage = created.body?.storage?.value ?? storageBody;
-    const finalHtml = confluenceToHtml(finalStorage, newConfluenceId, spaceKey);
-    const finalText = htmlToText(finalHtml);
-
-    // 4. One transaction for the entire local side. The shared attachment
-    // snapshot barrier stays on this transaction's client through the
-    // post-commit source-directory cleanup.
-    return await withLocalAttachmentMutationLock(async (txClient) => {
-      let result: RelocatePageResponse;
-      try {
-        await txClient.query('BEGIN');
-        const fresh = await lockAndReload(txClient, page.id);
-        if (fresh.source !== 'standalone' || fresh.confluence_id !== null) {
-          throw new RelocateError(409, 'Page was relocated by someone else while this move was in flight');
-        }
-        await assertIdentifierUnambiguous(oldKey, page.id, 'current', txClient);
-        await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence', txClient);
-
-        await txClient.query(
-          `UPDATE pages SET
-             source = 'confluence',
-             confluence_id = $2,
-             space_key = $3,
-             body_html = $4,
-             body_storage = $5,
-             body_text = $6,
-             visibility = 'shared',
-             version = $7,
-             last_synced = NOW(),
-             embedding_dirty = TRUE,
-             image_analysis_dirty = TRUE,
-             embedding_status = 'not_embedded',
-             embedded_at = NULL
-           WHERE id = $1`,
-          [page.id, newConfluenceId, spaceKey, finalHtml, finalStorage, finalText, created.version.number],
-        );
-        await invalidateCollabDocAfterBodyWrite(page.id, txClient);
-
-        const repointed = await txClient.query(
-          'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
-          [oldKey, newConfluenceId, page.id],
-        );
-        const discarded = await txClient.query('DELETE FROM page_versions WHERE page_id = $1', [page.id]);
-        await txClient.query('DELETE FROM local_attachments WHERE page_id = $1', [page.id]);
-        await txClient.query('COMMIT');
-        localCommitted = true;
-
-        result = {
-          pageId: page.id,
-          source: 'confluence',
-          spaceKey,
-          confluenceId: newConfluenceId,
-          childrenRepointed: repointed.rowCount ?? 0,
-          versionsDiscarded: discarded.rowCount ?? 0,
-          attachmentsMigrated: payloads.length,
-          upstreamDeleted: false,
-          warnings,
-        };
-      } catch (err) {
-        await txClient.query('ROLLBACK').catch(() => undefined);
-        throw err;
-      }
-
-      if (result.confluenceId !== String(page.id)) {
-        await removeAttachmentDirectory(String(page.id)).catch(() => undefined);
-      }
-      await removeLocalAttachmentDirectory(page.id, txClient).catch(() => undefined);
-      return result;
-    });
-  } catch (err) {
-    if (!localCommitted) {
-      // Nothing local changed. Remove the page we created upstream so retries
-      // do not accumulate orphans and the next sync does not import it.
-      try {
-        await client.deletePage(newConfluenceId);
-      } catch (cleanupErr) {
-        logger.error(
-          {
-            pageId: page.id,
-            userId,
-            confluenceId: newConfluenceId,
-            err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          },
-          'Relocate aborted but the newly created Confluence page could not be deleted — the next sync will import it as a new page',
-        );
-      }
-      if (newConfluenceId !== oldKey) {
-        await removeAttachmentDirectory(newConfluenceId).catch(() => undefined);
-      }
-    }
-    throw err;
+    await assertCurrentRelocateAuthority(intent, userId, page.id, spaceKey);
+  } catch (error) {
+    await cancelPageWriteIntentBeforeEffect(intent);
+    throw error;
   }
+  const prep = await persistRelocationPreparation(intent, {
+    pageId: page.id,
+    actorId: userId,
+    direction: 'to_confluence',
+    targetSpaceKey: spaceKey,
+    targetVisibility: null,
+    attachments: payloads.map(({ data: _data, ...descriptor }) => descriptor),
+    expectedRemoteTitleSha256: sha256(page.title),
+    expectedRemoteBodyStorageSha256: sha256(storageBody),
+    parentConfluenceId,
+  });
+
+  // Preparation is already a durable local phase. A refusal after this point
+  // must remain pending so recovery can remove the retained snapshot from
+  // no-remote-start evidence; cancelling it would orphan the restrictive FK.
+  const remoteClient = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => currentRelocationClient(intent, prep, 'original'),
+  );
+
+  type RemoteOutcome = {
+    kind: 'committed';
+    createdConfluenceId: string;
+    page: RemotePageReceipt | null;
+    attachments: ProviderAttachmentReceipt[];
+  };
+
+  const remote = await runPageWriteIntentEffect(
+    intent,
+    {
+      kind: 'remote',
+      completesRemoteWork: true,
+      terminalResult: (result: RemoteOutcome) => ({
+        outcome: result.kind,
+        pageId: page.id,
+        createdConfluenceId: result.createdConfluenceId,
+        page: result.page,
+        attachmentCount: result.attachments.length,
+        attachmentReceiptsSha256: attachmentReceiptsDigest(result.attachments),
+      }),
+    },
+    async (): Promise<RemoteOutcome> => {
+      const created = await remoteClient.createPage(
+        spaceKey,
+        page.title,
+        storageBody,
+        parentConfluenceId ?? undefined,
+      );
+      const newConfluenceId = typeof created.id === 'string' && created.id.length > 0
+        ? created.id
+        : null;
+      if (newConfluenceId === null) {
+        throw new RelocateError(502, 'Confluence created a page without returning its identity');
+      }
+
+      // This is the first fallible local step after the acknowledged create.
+      // A process/DB failure between the HTTP response and this commit is the
+      // inherent durability gap; once it returns, every later phase retains the
+      // operation-owned provider identity and never compensates it away.
+      await recordRelocationCreate(intent, newConfluenceId, null);
+      prep.createdConfluenceId = newConfluenceId;
+
+      let createdReceipt: RemotePageReceipt | null = null;
+      try {
+        createdReceipt = remotePageReceipt(created);
+      } catch {
+        // Compact create responses are read back below only when attachment
+        // mutations remain. With none, the acknowledged id is already the
+        // terminal provider receipt and read-only verification happens after
+        // the remote phase has durably completed.
+      }
+      if (createdReceipt !== null) {
+        await recordRelocationCreate(intent, newConfluenceId, createdReceipt);
+        prep.createdPageReceipt = createdReceipt;
+      }
+      if (payloads.length === 0) {
+        return {
+          kind: 'committed',
+          createdConfluenceId: newConfluenceId,
+          page: createdReceipt,
+          attachments: [],
+        };
+      }
+      if (createdReceipt === null) {
+        const readbackClient = await currentRelocationClient(intent, prep, 'original');
+        createdReceipt = remotePageReceipt(await readbackClient.getPage(newConfluenceId));
+        await recordRelocationCreate(intent, newConfluenceId, createdReceipt);
+        prep.createdPageReceipt = createdReceipt;
+      }
+      if (
+        createdReceipt.titleSha256 !== prep.expectedRemoteTitleSha256 ||
+        createdReceipt.bodyStorageSha256 !== prep.expectedRemoteBodyStorageSha256
+      ) {
+        throw new RelocateError(502, 'Confluence created a page whose content does not match the admitted relocation');
+      }
+      await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence');
+
+      const attachmentReceipts = prep.attachmentReceipts;
+      for (const payload of payloads) {
+        const attachmentClient = await currentRelocationClient(intent, prep, 'original');
+        const uploaded = await attachmentClient.updateAttachment(
+          newConfluenceId,
+          payload.targetName,
+          payload.data,
+          payload.contentType,
+        );
+        const receipt = attachmentReceipt(uploaded);
+        await recordRelocationAttachment(
+          intent,
+          newConfluenceId,
+          attachmentReceipts.length,
+          receipt,
+        );
+        attachmentReceipts.push(receipt);
+        if (receipt.title !== payload.targetName) {
+          throw new RelocateError(502, 'Confluence returned an attachment identity for a different filename');
+        }
+      }
+      return {
+        kind: 'committed',
+        createdConfluenceId: newConfluenceId,
+        page: createdReceipt,
+        attachments: attachmentReceipts,
+      };
+    },
+  );
+
+  let createdReceipt = remote.page;
+  if (createdReceipt === null) {
+    const readbackClient = await currentRelocationClient(intent, prep, 'original');
+    createdReceipt = remotePageReceipt(await readbackClient.getPage(remote.createdConfluenceId));
+    await recordRelocationCreate(intent, remote.createdConfluenceId, createdReceipt);
+    prep.createdPageReceipt = createdReceipt;
+  }
+  if (
+    createdReceipt.titleSha256 !== prep.expectedRemoteTitleSha256 ||
+    createdReceipt.bodyStorageSha256 !== prep.expectedRemoteBodyStorageSha256
+  ) {
+    throw new RelocateError(502, 'Confluence created a page whose content does not match the admitted relocation');
+  }
+  await assertIdentifierUnambiguous(remote.createdConfluenceId, page.id, 'new Confluence');
+  const observed = {
+    title: page.title,
+    bodyStorage: storageBody,
+    version: createdReceipt.version,
+  };
+  const result = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => advancePageWriteIntent(intent, (txClient) =>
+      publishToConfluenceOnClient(
+        txClient,
+        intent.id,
+        prep,
+        remote.createdConfluenceId,
+        observed,
+        userId,
+        warnings,
+      ),
+    ),
+  );
+  await completePageWriteIntent(intent, (txClient) =>
+    deleteRelocationPreparation(txClient, intent.id),
+  );
+  return result;
+}
+
+async function publishToLocalOnClient(
+  client: PoolClient,
+  intentId: string,
+  prep: RelocationPreparation,
+): Promise<RelocatePageResponse> {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+  await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+  const fresh = await lockAndReload(client, prep.id);
+  if (
+    fresh.source !== prep.source ||
+    fresh.confluence_id !== prep.confluence_id ||
+    fresh.space_key !== prep.space_key
+  ) {
+    throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation source changed before publication');
+  }
+  await assertIdentifierUnambiguous(prep.oldKey, prep.id, 'current', client);
+  await assertIdentifierUnambiguous(String(prep.id), prep.id, 'new local', client);
+  await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, prep.space_key);
+
+  await withLocalAttachmentMutationLock(async (lockClient) => {
+    for (const attachment of prep.attachments) {
+      const bytes = await readPreparedAttachmentBytes(prep, attachment);
+      await writeLocalAttachmentFileForRelocate(prep.id, attachment.targetName, bytes, lockClient);
+    }
+  }, client);
+  const { html: rewrittenHtml } = rewriteAttachmentRefs(
+    prep.body_html ?? '',
+    [`/api/attachments/${encodeURIComponent(prep.oldKey)}/`],
+    `/api/local-attachments/${prep.id}/`,
+    false,
+  );
+  await client.query(
+    `UPDATE pages SET
+       source = 'standalone',
+       confluence_id = NULL,
+       space_key = $2,
+       visibility = $3,
+       created_by_user_id = $4,
+       body_html = $5,
+       inherit_perms = TRUE,
+       embedding_dirty = TRUE,
+       image_analysis_dirty = TRUE,
+       embedding_status = 'not_embedded',
+       embedded_at = NULL,
+       local_modified_at = NOW(),
+       local_modified_by = $4
+     WHERE id = $1`,
+    [prep.id, prep.targetSpaceKey, prep.targetVisibility, prep.actorId, rewrittenHtml],
+  );
+  await invalidateCollabDocAfterBodyWrite(prep.id, client);
+  await client.query(
+    "DELETE FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1",
+    [prep.id],
+  );
+  let childrenRepointed = 0;
+  if (prep.childIds.length > 0) {
+    const repointed = await client.query(
+      'UPDATE pages SET parent_id = $1 WHERE id = ANY($2::int[]) AND parent_id = $3',
+      [String(prep.id), prep.childIds, prep.oldKey],
+    );
+    childrenRepointed = repointed.rowCount ?? 0;
+    if (childrenRepointed !== prep.childIds.length) {
+      throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'A prepared child link changed before relocation publication');
+    }
+  }
+  for (const attachment of prep.attachments) {
+    await client.query(
+      `INSERT INTO local_attachments (page_id, filename, content_type, size_bytes, sha256, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (page_id, filename) DO UPDATE SET
+         content_type = EXCLUDED.content_type,
+         size_bytes = EXCLUDED.size_bytes,
+         sha256 = EXCLUDED.sha256,
+         updated_at = NOW()`,
+      [
+        prep.id,
+        attachment.targetName,
+        attachment.contentType,
+        attachment.size,
+        attachment.sha256,
+        prep.actorId,
+      ],
+    );
+  }
+  await enqueuePageWriteInvalidation(client, intentId);
+  return {
+    pageId: prep.id,
+    source: 'standalone',
+    spaceKey: prep.targetSpaceKey,
+    confluenceId: null,
+    childrenRepointed,
+    versionsDiscarded: 0,
+    attachmentsMigrated: prep.attachments.length,
+    upstreamDeleted: true,
+    warnings: [],
+  };
+}
+
+async function restorePreMoveStateOnClient(
+  client: PoolClient,
+  prep: RelocationPreparation,
+): Promise<void> {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+  await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+  // Restriction sync writes ACEs before updating the page. Take this relation
+  // lock before the page row too, or each transaction can wait on the other.
+  // Direct admin grants/revocations also serialize here, including absent ACEs.
+  await client.query('LOCK TABLE access_control_entries IN SHARE ROW EXCLUSIVE MODE');
+  const current = await lockAndReload(client, prep.id);
+  const isOriginal =
+    current.source === prep.source &&
+    current.confluence_id === prep.confluence_id &&
+    current.space_key === prep.space_key;
+  const isPreparedLocal =
+    prep.direction === 'to_local' &&
+    current.source === 'standalone' &&
+    current.confluence_id === null &&
+    current.space_key === prep.targetSpaceKey;
+  if (!isOriginal && !isPreparedLocal) {
+    throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation state cannot be restored exactly');
+  }
+  if (!isOriginal) {
+    // Only the still-empty ACL produced by cutover may be restored. A later
+    // grant is intervening authority, not relocation state to overwrite.
+    const currentAces = await client.query<PageAce>(
+      `SELECT principal_type, principal_id, permission
+         FROM access_control_entries
+        WHERE resource_type = 'page' AND resource_id = $1
+        ORDER BY principal_type, principal_id, permission`,
+      [prep.id],
+    );
+    if (currentAces.rows.length !== 0) {
+      throw new PageWriteError(
+        409,
+        'intent_local_evidence_mismatch',
+        'The page access controls changed after relocation publication',
+      );
+    }
+    await client.query(
+      `UPDATE pages SET
+         title = $2,
+         source = $3,
+         confluence_id = $4,
+         space_key = $5,
+         visibility = $6,
+         created_by_user_id = $7,
+         body_html = $8,
+         body_storage = $9,
+         body_text = $10,
+         version = $11,
+         inherit_perms = $12,
+         local_modified_at = $13,
+         local_modified_by = $14,
+         embedding_dirty = $15,
+         image_analysis_dirty = $16,
+         embedding_status = $17,
+         embedded_at = $18
+       WHERE id = $1`,
+      [
+        prep.id,
+        prep.title,
+        prep.source,
+        prep.confluence_id,
+        prep.space_key,
+        prep.visibility,
+        prep.created_by_user_id,
+        prep.body_html,
+        prep.body_storage,
+        prep.body_text,
+        prep.version,
+        prep.inherit_perms,
+        prep.local_modified_at,
+        prep.local_modified_by,
+        prep.embedding_dirty,
+        prep.image_analysis_dirty,
+        prep.embedding_status,
+        prep.embedded_at,
+      ],
+    );
+    await invalidateCollabDocAfterBodyWrite(prep.id, client);
+    for (const ace of prep.aces) {
+      await client.query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, $2, $3, $4)`,
+        [prep.id, ace.principal_type, ace.principal_id, ace.permission],
+      );
+    }
+  }
+  if (prep.childIds.length > 0) {
+    const restored = await client.query(
+      `UPDATE pages
+          SET parent_id = $1
+        WHERE id = ANY($2::int[])
+          AND parent_id = ANY($3::text[])`,
+      [prep.oldKey, prep.childIds, [prep.oldKey, String(prep.id)]],
+    );
+    if ((restored.rowCount ?? 0) !== prep.childIds.length) {
+      throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'A prepared child link cannot be restored exactly');
+    }
+  }
+  if (prep.attachments.length > 0) {
+    await client.query(
+      'DELETE FROM local_attachments WHERE page_id = $1 AND filename = ANY($2::text[])',
+      [prep.id, prep.attachments.map((attachment) => attachment.targetName)],
+    );
+    await withLocalAttachmentMutationLock(
+      () => removePreparedLocalFilesVerified(prep),
+      client,
+    );
+  }
+  await enqueuePageWriteInvalidation(client, prep.intentId);
 }
 
 /**
@@ -691,339 +1891,770 @@ async function relocateToLocal(opts: {
   userId: string;
   spaceKey: string | null;
   visibility: 'private' | 'shared';
-  client: ConfluenceClient;
 }): Promise<RelocatePageResponse> {
-  const { page, userId, spaceKey, visibility, client } = opts;
+  const { page, userId, spaceKey, visibility } = opts;
   const oldConfluenceId = page.confluence_id!;
-  const newKey = String(page.id);
-  const warnings: string[] = [];
-  return withLocalAttachmentMutationLock(async (txClient) => {
+  await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current');
+  await assertIdentifierUnambiguous(String(page.id), page.id, 'new local');
 
-  await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current', txClient);
-  await assertIdentifierUnambiguous(newKey, page.id, 'new local', txClient);
-
-  // Stage attachment bytes into the LOCAL store before the commit. A standalone
-  // page's diagrams are fetched from `/api/local-attachments/<id>/…`, so leaving
-  // them in the Confluence cache would break inline draw.io editing after the
-  // move, and the cache's on-miss refetch has no upstream to fall back to.
-  //
-  // Staging happens BEFORE the transaction that inserts the matching
-  // `local_attachments` rows, so a rollback would otherwise leave the bytes
-  // behind — inert, but accumulating on every failed attempt. The transaction's
-  // failure path removes exactly these filenames (#1169 review); the loop below
-  // records them as it goes, so a throw part-way through still cleans up what
-  // it managed to write.
-  const staged: Array<{ filename: string; contentType: string; size: number; sha: string }> = [];
-  /** Undo the staging. Safe to call more than once — `fs.rm` uses `force`. */
-  const discardStaged = () =>
-    removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename), txClient);
-  try {
-    for (const filename of await listCachedAttachments(oldConfluenceId)) {
-      let data: Buffer | null;
-      try {
-        data = await readCachedAttachmentFile(oldConfluenceId, filename);
-      } catch (err) {
-        throw unreadableAttachmentError(filename, err);
-      }
-      if (data === null) continue;
-      await writeLocalAttachmentFileForRelocate(page.id, filename, data, txClient);
-      // Recorded only after the write succeeds, so `staged` never names a file
-      // that is not on disk — and names every one that is.
-      staged.push({
-        filename,
-        contentType: getMimeType(filename),
+  const sourceFiles: Array<RelocationAttachmentPreparation & { data: Buffer }> = [];
+  for (const sourceName of await listCachedAttachments(oldConfluenceId)) {
+    let data: Buffer | null;
+    try {
+      data = await readCachedAttachmentFile(oldConfluenceId, sourceName);
+    } catch (error) {
+      throw unreadableAttachmentError(sourceName, error);
+    }
+    if (data !== null) {
+      sourceFiles.push({
+        sourceName,
+        targetName: sourceName,
+        data,
+        contentType: getMimeType(sourceName),
         size: data.length,
-        sha: createHash('sha256').update(data).digest('hex'),
+        sha256: sha256(data),
       });
     }
-  } catch (err) {
-    // A throw mid-loop (a full disk, a permission change) leaves the files
-    // written so far with no row and no caller to claim them.
-    await discardStaged();
-    throw err;
   }
 
-  const { html: rewrittenHtml } = rewriteAttachmentRefs(
-    page.body_html ?? '',
-    [`/api/attachments/${encodeURIComponent(oldConfluenceId)}/`],
-    `/api/local-attachments/${page.id}/`,
-    false,
-  );
-  // `body_storage` needs no rewrite: Confluence storage format references
-  // attachments as `<ri:attachment ri:filename="…">`, which carries no page
-  // key. It is kept verbatim so macro fidelity survives a later move back.
-
-  const aces = await txClient.query<PageAce>(
-    `SELECT principal_type, principal_id, permission FROM access_control_entries
-      WHERE resource_type = 'page' AND resource_id = $1`,
-    [page.id],
-  );
-  const childIds = await txClient.query<{ id: number }>(
-    'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
-    [oldConfluenceId, page.id],
-  );
-  const snapshot: PreMoveSnapshot = {
-    ...page,
-    childIds: childIds.rows.map((row) => row.id),
-    oldKey: oldConfluenceId,
-    aces: aces.rows,
-  };
-
-  let childrenRepointed = 0;
+  const intent = await reserveRelocateIntent({
+    page,
+    userId,
+    target: 'local',
+    targetSpaceKey: spaceKey,
+  });
   try {
-    await txClient.query('BEGIN');
-    const fresh = await lockAndReload(txClient, page.id);
-    if (fresh.source !== 'confluence' || fresh.confluence_id !== oldConfluenceId) {
-      throw new RelocateError(409, 'Page changed while this move was in flight');
-    }
-    // Re-check BOTH identifiers under the lock — see the same pair in
-    // relocateToConfluence. The old key matters as much as the new one: the
-    // repoint below keys on it, so a row that claimed it since the pre-flight
-    // check would make the rewrite ambiguous.
-    await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current', txClient);
-    await assertIdentifierUnambiguous(newKey, page.id, 'new local', txClient);
-
-    await txClient.query(
-      `UPDATE pages SET
-         source = 'standalone',
-         confluence_id = NULL,
-         space_key = $2,
-         visibility = $3,
-         -- The relocating user owns the article afterwards. Confluence rows
-         -- carry a NULL created_by_user_id, and a 'private' page with no owner
-         -- is invisible to everyone — including the person who moved it.
-         created_by_user_id = $4,
-         body_html = $5,
-         -- Confluence page restrictions were mirrored into ACEs with
-         -- inherit_perms = FALSE. Those principals no longer mean anything, but
-         -- userHasPermission() consults them for ANY page with a space_key —
-         -- and this row keeps one. Returning to inheritance is what makes the
-         -- standalone visibility model the only one in force (decision 4).
-         inherit_perms = TRUE,
-         embedding_dirty = TRUE,
-         -- ADR-027 D4 — see the matching note in relocateToConfluence. This is
-         -- the direction the P0 record singles out, because the rewritten body
-         -- moves every image onto /api/local-attachments/ while the stored
-         -- analyses still key them under source = 'confluence'.
-         image_analysis_dirty = TRUE,
-         embedding_status = 'not_embedded',
-         embedded_at = NULL,
-         local_modified_at = NOW(),
-         local_modified_by = $4
-       WHERE id = $1`,
-      [page.id, spaceKey, visibility, userId, rewrittenHtml],
-    );
-    await invalidateCollabDocAfterBodyWrite(page.id, txClient);
-
-    // Drop the mirrored Confluence restrictions themselves, so a later
-    // inherit_perms flip cannot resurrect them.
-    await txClient.query(
-      "DELETE FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1",
-      [page.id],
-    );
-
-    // Soft-deleted children are included on purpose — see the same statement
-    // in relocateToConfluence.
-    const repointed = await txClient.query(
-      'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
-      [oldConfluenceId, newKey, page.id],
-    );
-    childrenRepointed = repointed.rowCount ?? 0;
-
-    for (const s of staged) {
-      await txClient.query(
-        `INSERT INTO local_attachments (page_id, filename, content_type, size_bytes, sha256, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (page_id, filename) DO UPDATE SET
-           content_type = EXCLUDED.content_type,
-           size_bytes   = EXCLUDED.size_bytes,
-           sha256       = EXCLUDED.sha256,
-           updated_at   = NOW()`,
-        [page.id, s.filename, s.contentType, s.size, s.sha, userId],
-      );
-    }
-
-    await txClient.query('COMMIT');
-  } catch (err) {
-    await txClient.query('ROLLBACK').catch(() => undefined);
-    // The rows that would have owned these files never landed, so the bytes
-    // are unreferenced. Cleaning up here is what lets "nothing mutated" be a
-    // claim about the disk as well as the database (#1169 review).
-    await discardStaged();
-    throw err;
+    await assertCurrentRelocateAuthority(intent, userId, page.id, page.space_key);
+  } catch (error) {
+    await cancelPageWriteIntentBeforeEffect(intent);
+    throw error;
   }
+  const prep = await persistRelocationPreparation(intent, {
+    pageId: page.id,
+    actorId: userId,
+    direction: 'to_local',
+    targetSpaceKey: spaceKey,
+    targetVisibility: visibility,
+    attachments: sourceFiles.map(({ data: _data, ...descriptor }) => descriptor),
+    expectedRemoteTitleSha256: sha256(page.title),
+    expectedRemoteBodyStorageSha256: sha256(page.body_storage ?? ''),
+    parentConfluenceId: null,
+  });
 
-  // The local side is committed and the article now sits permanently outside
-  // deletion reconciliation's reach (`confluence_id IS NULL`). Only now do we
-  // touch the irreversible upstream side.
-  let upstreamDeleted = true;
-  try {
-    await client.deletePage(oldConfluenceId);
-  } catch (err) {
-    if (await confirmUpstreamGone(client, oldConfluenceId, err)) {
-      // DELETE reported an error but the page is gone (404, or DC trashed it).
-      upstreamDeleted = true;
-    } else {
-      // Provably still live: put everything back so neither side changed,
-      // rather than leaving a duplicate for the next sync to import.
-      await restorePreMoveState(snapshot, staged.map((s) => s.filename), txClient);
-      // `restorePreMoveState` drops the `local_attachments` rows; the bytes are
-      // this function's to remove, and after the restore nothing references
-      // them — the page is Confluence-sourced again and reads from the cache
-      // directory, which this path has not touched (#1169 review).
-      await discardStaged();
-      throw err;
-    }
-  }
+  const result = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => advancePageWriteIntent(intent, (txClient) =>
+      publishToLocalOnClient(txClient, intent.id, prep),
+    ),
+  );
 
-  // Post-commit, best-effort: the Confluence-keyed cache directory is now
-  // unreachable but harmless if it lingers.
-  await removeAttachmentDirectory(oldConfluenceId).catch((err: unknown) => {
-    logger.warn(
-      {
+  // The local cutover can spend an unbounded interval behind its transaction
+  // and filesystem locks. Resolve authority, mode, and credentials only after
+  // it commits; a refusal here deliberately leaves the intent and preparation
+  // pending rather than deleting upstream through the route's stale client.
+  const remoteClient = await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => currentRelocationClient(intent, prep, 'published_local'),
+  );
+
+  let deleteError: unknown;
+  const deletionOutcome = await runPageWriteIntentEffect(
+    intent,
+    {
+      kind: 'remote',
+      completesRemoteWork: true,
+      terminalResult: (outcome: RemoteDeletionOutcome) => ({
+        outcome,
         pageId: page.id,
         confluenceId: oldConfluenceId,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      'Relocate committed but the old attachment cache directory could not be removed (orphaned files only)',
-    );
-  });
+      }),
+    },
+    async (): Promise<RemoteDeletionOutcome> => {
+      try {
+        await remoteClient.deletePage(oldConfluenceId);
+        return 'gone';
+      } catch (error) {
+        deleteError = error;
+        const observed = await remoteDeletionOutcome(remoteClient, oldConfluenceId, error);
+        if (observed === 'unknown') throw error;
+        return observed;
+      }
+    },
+  );
 
-  return {
-    pageId: page.id,
-    source: 'standalone',
-    spaceKey,
-    confluenceId: null,
-    childrenRepointed,
-    versionsDiscarded: 0,
-    attachmentsMigrated: staged.length,
-    upstreamDeleted,
-    warnings,
-  };
-  });
+  if (deletionOutcome === 'live') {
+    await runPageWriteIntentEffect(
+      intent,
+      { kind: 'local' },
+      () => advancePageWriteIntent(intent, (txClient) =>
+        restorePreMoveStateOnClient(txClient, prep),
+      ),
+    );
+    await completePageWriteIntent(intent, (txClient) =>
+      deleteRelocationPreparation(txClient, intent.id),
+    );
+    throw deleteError;
+  }
+
+  await runPageWriteIntentEffect(
+    intent,
+    { kind: 'local' },
+    () => advancePageWriteIntent(intent, async (txClient) => {
+      await txClient.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      await withLocalAttachmentMutationLock(
+        () => removeAttachmentDirectoryVerified(oldConfluenceId),
+        txClient,
+      );
+    }),
+  );
+  await completePageWriteIntent(intent, (txClient) =>
+    deleteRelocationPreparation(txClient, intent.id),
+  );
+  return result;
 }
 
+type RemoteDeletionOutcome = 'gone' | 'live' | 'unknown';
+
 /**
- * Decide whether a failed `deletePage` nevertheless left the page gone.
- *
- * Reuses the exact test `detectDeletedPages` applies: a 404, or a 200 whose
- * `status` is `trashed` (DC's DELETE trashes rather than purges). Anything
- * else — 403, 5xx, network — means the page may still be live, so the caller
- * must not assume success.
+ * Prove the outcome of a failed remote delete. A successful read of a
+ * non-trashed page is the only `live` proof; transport/auth/server failures are
+ * `unknown` and must retain the durable write intent.
  */
-async function confirmUpstreamGone(
+async function remoteDeletionOutcome(
   client: ConfluenceClient,
   confluenceId: string,
   originalErr: unknown,
-): Promise<boolean> {
-  if (originalErr instanceof ConfluenceError && originalErr.statusCode === 404) return true;
+): Promise<RemoteDeletionOutcome> {
+  if (originalErr instanceof ConfluenceError && originalErr.statusCode === 404) return 'gone';
   try {
-    return (await client.getPage(confluenceId)).status === 'trashed';
+    return (await client.getPage(confluenceId)).status === 'trashed' ? 'gone' : 'live';
   } catch (probeErr) {
-    return probeErr instanceof ConfluenceError && probeErr.statusCode === 404;
+    if (probeErr instanceof ConfluenceError && probeErr.statusCode === 404) return 'gone';
+    return 'unknown';
   }
 }
 
-/**
- * Compensating transaction: restore every column and child link the move
- * changed. Runs only when the upstream delete provably did not happen, so the
- * restored `confluence_id` points at a page that is still live — the state
- * deletion reconciliation expects.
- */
-async function restorePreMoveState(
-  snapshot: PreMoveSnapshot,
-  stagedFilenames: string[],
-  existingClient?: PoolClient,
+async function verifyOriginalProviderState(
+  confluence: ConfluenceClient,
+  prep: RelocationPreparation,
 ): Promise<void> {
-  const txClient = existingClient ?? await getPool().connect();
+  if (!prep.confluence_id) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The original Confluence identity is unavailable');
+  }
+  let page;
+  let attachments;
   try {
-    await txClient.query('BEGIN');
-    await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
-    // Restores every column relocateToLocal writes, not just the identity
-    // ones. `local_modified_at` in particular: sync-service treats
-    // `local_modified_at > last_synced` as an unsynced local edit, so leaving
-    // the move's NOW() behind would make a fully reverted page report a
-    // conflict against content identical to upstream.
-    //
-    // The `set_pages_local_modified` trigger (migration 060) does not fire on
-    // this UPDATE: rule A needs `local_modified_by` set with
-    // `local_modified_at` NULL, and rule B needs the new and old timestamps to
-    // be equal — restoring a pre-move value satisfies neither.
-    await txClient.query(
-      `UPDATE pages SET
-         source = $2, confluence_id = $3, space_key = $4, visibility = $5,
-         created_by_user_id = $6, body_html = $7, body_storage = $8,
-         inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
-         embedding_dirty = $12, image_analysis_dirty = $13,
-         embedding_status = $14, embedded_at = $15
-       WHERE id = $1`,
-      [
-        snapshot.id,
-        snapshot.source,
-        snapshot.confluence_id,
-        snapshot.space_key,
-        snapshot.visibility,
-        snapshot.created_by_user_id,
-        snapshot.body_html,
-        snapshot.body_storage,
-        snapshot.inherit_perms,
-        snapshot.local_modified_at,
-        snapshot.local_modified_by,
-        snapshot.embedding_dirty,
-        snapshot.image_analysis_dirty,
-        snapshot.embedding_status,
-        snapshot.embedded_at,
-      ],
-    );
-    await invalidateCollabDocAfterBodyWrite(snapshot.id, txClient);
-
-    // Put the mirrored Confluence restrictions back. Without this the page
-    // returns to `source='confluence'` wide open until the next restrictions
-    // sync re-mirrors them.
-    for (const ace of snapshot.aces) {
-      await txClient.query(
-        `INSERT INTO access_control_entries
-           (resource_type, resource_id, principal_type, principal_id, permission)
-         VALUES ('page', $1, $2, $3, $4)
-         ON CONFLICT (resource_type, resource_id, principal_type, principal_id, permission) DO NOTHING`,
-        [snapshot.id, ace.principal_type, ace.principal_id, ace.permission],
-      );
+    [page, attachments] = await Promise.all([
+      confluence.getPage(prep.confluence_id),
+      confluence.getPageAttachments(prep.confluence_id),
+    ]);
+  } catch (error) {
+    throw new PageWriteError(409, 'intent_provider_state_unavailable', `The original Confluence state could not be verified: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (
+    page.id !== prep.confluence_id ||
+    page.status === 'trashed' ||
+    page.version?.number !== prep.version ||
+    sha256(page.title) !== prep.expectedRemoteTitleSha256 ||
+    sha256(page.body?.storage?.value ?? '') !== prep.expectedRemoteBodyStorageSha256
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The original Confluence page changed after relocation preparation');
+  }
+  for (const required of prep.attachments) {
+    const matches = attachments.results.filter((attachment) => attachment.title === required.sourceName);
+    if (matches.length !== 1 || !matches[0]?._links?.download) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', `Required Confluence attachment "${required.sourceName}" is missing or ambiguous`);
     }
-    if (snapshot.childIds.length > 0) {
-      await txClient.query('UPDATE pages SET parent_id = $1 WHERE id = ANY($2::int[])', [
-        snapshot.oldKey,
-        snapshot.childIds,
-      ]);
+    let bytes: Buffer;
+    try {
+      bytes = await confluence.downloadAttachment(matches[0]._links.download);
+    } catch (error) {
+      throw new PageWriteError(409, 'intent_provider_state_unavailable', `Required Confluence attachment "${required.sourceName}" could not be verified: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (stagedFilenames.length > 0) {
-      await txClient.query(
-        'DELETE FROM local_attachments WHERE page_id = $1 AND filename = ANY($2::text[])',
-        [snapshot.id, stagedFilenames],
-      );
+    if (bytes.length !== required.size || sha256(bytes) !== required.sha256) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', `Required Confluence attachment "${required.sourceName}" changed after relocation preparation`);
     }
-    await txClient.query('COMMIT');
-    logger.warn(
-      { pageId: snapshot.id, confluenceId: snapshot.confluence_id },
-      'Relocate rolled back: the Confluence page is still live, so the local move was reverted — neither side changed',
-    );
-  } catch (restoreErr) {
-    await txClient.query('ROLLBACK').catch(() => undefined);
-    // The article itself is safe — it is a standalone row with no upstream
-    // link, so nothing can soft-delete it. The Confluence page also still
-    // exists, so the next sync imports it as a separate row: recoverable, and
-    // never data loss.
-    logger.error(
-      {
-        pageId: snapshot.id,
-        confluenceId: snapshot.confluence_id,
-        err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
-      },
-      'Relocate compensation failed — the article is local and safe, but the Confluence page still exists and will be re-imported by the next sync',
-    );
-  } finally {
-    if (!existingClient) txClient.release();
   }
 }
+
+async function verifyLocalToConfluencePublication(
+  client: PoolClient,
+  prep: RelocationPreparation,
+  confluenceId: string,
+  observed: { title: string; bodyStorage: string; version: number },
+): Promise<void> {
+  const row = await client.query<RelocatablePage>(
+    `SELECT ${RELOCATABLE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [prep.id],
+  );
+  const current = row.rows[0];
+  const expectedHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  if (
+    !current ||
+    current.source !== 'confluence' ||
+    current.confluence_id !== confluenceId ||
+    current.space_key !== prep.targetSpaceKey ||
+    current.visibility !== 'shared' ||
+    current.title !== observed.title ||
+    current.body_storage !== observed.bodyStorage ||
+    current.body_html !== expectedHtml ||
+    current.body_text !== htmlToText(expectedHtml) ||
+    current.version !== observed.version ||
+    current.embedding_dirty !== true ||
+    current.image_analysis_dirty !== true ||
+    current.embedding_status !== 'not_embedded' ||
+    current.embedded_at !== null
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local Confluence publication does not match the provider receipt');
+  }
+  for (const attachment of prep.attachments) {
+    const bytes = await readCachedAttachmentFile(confluenceId, attachment.targetName);
+    if (
+      bytes === null ||
+      bytes.length !== attachment.size ||
+      sha256(bytes) !== attachment.sha256
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', `Published attachment "${attachment.targetName}" does not match the durable preparation`);
+    }
+  }
+  const children = await client.query<{ id: number }>(
+    'SELECT id FROM pages WHERE parent_id = $1 ORDER BY id',
+    [confluenceId],
+  );
+  if (
+    children.rows.length !== prep.childIds.length ||
+    children.rows.some((child, index) => child.id !== prep.childIds[index])
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The relocated child links do not match the durable preparation');
+  }
+  const remainingLocalAttachments = await client.query(
+    'SELECT 1 FROM local_attachments WHERE page_id = $1 LIMIT 1',
+    [prep.id],
+  );
+  const unprotectedHistory = await client.query(
+    `SELECT 1
+       FROM page_versions pv
+      WHERE pv.page_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM page_baselines baseline WHERE baseline.version_snapshot_id = pv.id
+        )
+      LIMIT 1`,
+    [prep.id],
+  );
+  if (remainingLocalAttachments.rowCount !== 0 || unprotectedHistory.rowCount !== 0) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local Confluence publication cleanup is incomplete');
+  }
+}
+
+async function verifyLocalPublicationState(
+  client: PoolClient,
+  prep: RelocationPreparation,
+): Promise<void> {
+  const row = await client.query<RelocatablePage>(
+    `SELECT ${RELOCATABLE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [prep.id],
+  );
+  const current = row.rows[0];
+  const { html: expectedHtml } = rewriteAttachmentRefs(
+    prep.body_html ?? '',
+    [`/api/attachments/${encodeURIComponent(prep.oldKey)}/`],
+    `/api/local-attachments/${prep.id}/`,
+    false,
+  );
+  if (
+    !current ||
+    current.source !== 'standalone' ||
+    current.confluence_id !== null ||
+    current.space_key !== prep.targetSpaceKey ||
+    current.visibility !== prep.targetVisibility ||
+    current.created_by_user_id !== prep.actorId ||
+    current.body_html !== expectedHtml ||
+    current.body_storage !== prep.body_storage ||
+    current.body_text !== prep.body_text ||
+    current.version !== prep.version ||
+    current.inherit_perms !== true ||
+    current.local_modified_at === null ||
+    current.local_modified_by !== prep.actorId ||
+    current.embedding_dirty !== true ||
+    current.image_analysis_dirty !== true ||
+    current.embedding_status !== 'not_embedded' ||
+    current.embedded_at !== null
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local relocation publication does not match its durable preparation');
+  }
+  const aces = await client.query(
+    "SELECT 1 FROM access_control_entries WHERE resource_type = 'page' AND resource_id = $1 LIMIT 1",
+    [prep.id],
+  );
+  if (aces.rowCount !== 0) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local relocation ACL cutover is incomplete');
+  }
+  const children = await client.query<{ id: number }>(
+    'SELECT id FROM pages WHERE parent_id = $1 ORDER BY id',
+    [String(prep.id)],
+  );
+  if (
+    children.rows.length !== prep.childIds.length ||
+    children.rows.some((child, index) => child.id !== prep.childIds[index])
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local relocation child links are incomplete');
+  }
+  await verifyLocalPublicationAttachments(client, prep);
+}
+
+async function verifyLocalPublicationAttachments(
+  client: PoolClient,
+  prep: RelocationPreparation,
+): Promise<void> {
+  const rows = await client.query<{
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    sha256: string;
+  }>(
+    `SELECT filename, content_type, size_bytes, sha256
+       FROM local_attachments
+      WHERE page_id = $1
+      ORDER BY filename`,
+    [prep.id],
+  );
+  const expected = [...prep.attachments].sort((a, b) => a.targetName.localeCompare(b.targetName));
+  if (
+    rows.rows.length !== expected.length ||
+    rows.rows.some((row, index) => {
+      const wanted = expected[index];
+      return !wanted ||
+        row.filename !== wanted.targetName ||
+        row.content_type !== wanted.contentType ||
+        Number(row.size_bytes) !== wanted.size ||
+        row.sha256 !== wanted.sha256;
+    })
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local relocation attachment rows are incomplete');
+  }
+  for (const attachment of prep.attachments) {
+    const bytes = await fs.readFile(`${localAttachmentsDir(prep.id)}/${attachment.targetName}`);
+    if (bytes.length !== attachment.size || sha256(bytes) !== attachment.sha256) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', `Local attachment "${attachment.targetName}" does not match the durable preparation`);
+    }
+  }
+}
+
+async function assertUnchangedToConfluenceSource(
+  client: PoolClient,
+  intent: PageWriteIntent,
+  pageId: number,
+  expected: {
+    source: unknown;
+    confluenceId: unknown;
+    spaceKey: unknown;
+  },
+): Promise<void> {
+  if (
+    expected.source !== 'standalone' ||
+    expected.confluenceId !== null ||
+    (expected.spaceKey !== null && typeof expected.spaceKey !== 'string')
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The original local relocation identity is unavailable',
+    );
+  }
+  const revision = intent.revisions[pageId];
+  if (!revision) {
+    throw new PageWriteError(
+      409,
+      'intent_recovery_metadata_invalid',
+      'The original local relocation revisions are unavailable',
+    );
+  }
+  const current = await client.query<{
+    source: string;
+    confluence_id: string | null;
+    space_key: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT source, confluence_id, space_key,
+            content_revision::text, lifecycle_revision::text
+       FROM pages
+      WHERE id = $1 AND deleted_at IS NULL`,
+    [pageId],
+  );
+  const row = current.rows[0];
+  if (
+    !row ||
+    row.source !== expected.source ||
+    row.confluence_id !== expected.confluenceId ||
+    row.space_key !== expected.spaceKey ||
+    row.content_revision !== String(revision.contentRevision) ||
+    row.lifecycle_revision !== String(revision.lifecycleRevision)
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_local_evidence_mismatch',
+      'A non-dispatched relocation changed locally',
+    );
+  }
+}
+
+
+const reconcileRelocate: PageWriteIntentReconciler = async (client, intent) => {
+  const effect = intent.effect;
+  const pageId = typeof effect.pageId === 'number' ? effect.pageId : null;
+  if (
+    pageId === null ||
+    !intent.pageIds.includes(pageId) ||
+    (effect.target !== 'local' && effect.target !== 'confluence') ||
+    (
+      intent.actorId === null &&
+      (effect.target !== 'confluence' || intent.remoteEffectStartedAt !== null)
+    )
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation identity is incomplete');
+  }
+  const preparation = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1
+     ) AS exists`,
+    [intent.id],
+  );
+  if (!preparation.rows[0]?.exists) {
+    if (
+      intent.effectStartedAt === null ||
+      intent.effectFinishedAt !== null ||
+      intent.remoteEffectStartedAt !== null
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'Relocation preparation is unavailable after a completed or remote phase',
+      );
+    }
+    if (
+      (effect.target === 'confluence' && (
+        typeof effect.targetSpaceKey !== 'string' ||
+        effect.fromSource !== 'standalone' ||
+        effect.fromConfluenceId !== null ||
+        (effect.fromSpaceKey !== null && typeof effect.fromSpaceKey !== 'string')
+      )) ||
+      (effect.target === 'local' &&
+        effect.fromSpaceKey !== null &&
+        typeof effect.fromSpaceKey !== 'string')
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'Relocation authority metadata is unavailable',
+      );
+    }
+    if (effect.target === 'confluence') {
+      await assertUnchangedToConfluenceSource(client, intent, pageId, {
+        source: effect.fromSource,
+        confluenceId: effect.fromConfluenceId,
+        spaceKey: effect.fromSpaceKey,
+      });
+    } else {
+      if (!intent.actorId) {
+        throw new PageWriteError(
+          409,
+          'intent_recovery_metadata_invalid',
+          'Relocation actor identity is unavailable',
+        );
+      }
+      try {
+        await assertCurrentRelocateAuthorityOnClient(
+          client,
+          intent.actorId,
+          pageId,
+          typeof effect.fromSpaceKey === 'string' ? effect.fromSpaceKey : null,
+        );
+      } catch (error) {
+        if (error instanceof RelocateError && error.statusCode === 403) {
+          throw new PageWriteError(403, 'intent_access_changed', error.message);
+        }
+        throw error;
+      }
+    }
+    // The local gate commits its start marker before the preparation
+    // transaction. An absent row with an unfinished local phase therefore
+    // proves that transaction did not commit, while remote_effect_started_at
+    // independently proves that no provider call was dispatched.
+    return {
+      outcome: 'not_applied',
+      proof: {
+        kind: 'remote_effect_not_started',
+        observedAt: new Date().toISOString(),
+        reference: `page-relocate:${pageId}:preparation-not-committed`,
+        details: { syscallSettled: true, remoteEffectStarted: false, observedAbsent: true },
+      },
+      result: { pageId, outcome: 'not_prepared' },
+    };
+  }
+  const prep = await loadRelocationPreparation(client, intent);
+  if (
+    prep.id !== pageId ||
+    (prep.direction === 'to_confluence') !== (effect.target === 'confluence')
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Relocation preparation does not match its intent');
+  }
+  if (intent.remoteEffectStartedAt === null) {
+    if (prep.direction === 'to_local') {
+      try {
+        await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, prep.space_key);
+      } catch (error) {
+        if (error instanceof RelocateError && error.statusCode === 403) {
+          throw new PageWriteError(403, 'intent_access_changed', error.message);
+        }
+        throw error;
+      }
+      const confluence = await getClientForUser(prep.actorId, client);
+      if (!confluence) {
+        throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
+      }
+      await verifyOriginalProviderState(confluence, prep);
+      await restorePreMoveStateOnClient(client, prep);
+    } else {
+      if (
+        prep.createdConfluenceId !== null ||
+        prep.createdPageReceipt !== null ||
+        prep.attachmentReceipts.length !== 0
+      ) {
+        throw new PageWriteError(
+          409,
+          'intent_terminal_evidence_mismatch',
+          'Relocation provider progress exists without a durable remote-start marker',
+        );
+      }
+      await assertUnchangedToConfluenceSource(client, intent, prep.id, {
+        source: prep.source,
+        confluenceId: prep.confluence_id,
+        spaceKey: prep.space_key,
+      });
+    }
+    await deleteRelocationPreparation(client, intent.id);
+    return {
+      outcome: 'not_applied',
+      proof: {
+        kind: 'remote_effect_not_started',
+        observedAt: new Date().toISOString(),
+        reference: `page-relocate:${pageId}:not-dispatched`,
+        details: { syscallSettled: true, remoteEffectStarted: false, observedAbsent: true },
+      },
+      result: { pageId, outcome: 'restored' },
+    };
+  }
+  const authoritySpace = prep.direction === 'to_confluence'
+    ? prep.targetSpaceKey
+    : prep.space_key;
+  try {
+    await assertCurrentRelocateAuthorityOnClient(client, prep.actorId, prep.id, authoritySpace);
+  } catch (error) {
+    if (error instanceof RelocateError && error.statusCode === 403) {
+      throw new PageWriteError(403, 'intent_access_changed', error.message);
+    }
+    throw error;
+  }
+  const confluence = await getClientForUser(prep.actorId, client);
+  if (!confluence) {
+    throw new PageWriteError(409, 'intent_actor_credentials_unavailable', 'The original writer credentials are unavailable for relocation recovery');
+  }
+  if (prep.direction === 'to_confluence') {
+    if (intent.remoteEffectsCompletedAt === null || !intent.remoteTerminalResult) {
+      throw new PageWriteError(409, 'intent_outcome_unrecoverable', 'The relocation remote outcome is unknown');
+    }
+    const terminal = intent.remoteTerminalResult;
+    if (
+      terminal.outcome !== 'committed' ||
+      typeof terminal.createdConfluenceId !== 'string'
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The Confluence creation receipt is unavailable');
+    }
+    const pageReceipt = terminal.page === null
+      ? prep.createdPageReceipt
+      : parseRemotePageReceipt(terminal.page);
+    const attachmentReceipts = prep.attachmentReceipts;
+    if (
+      prep.createdConfluenceId !== terminal.createdConfluenceId ||
+      (pageReceipt !== null && (
+        prep.createdPageReceipt === null ||
+        prep.createdPageReceipt.id !== pageReceipt.id ||
+        prep.createdPageReceipt.version !== pageReceipt.version ||
+        prep.createdPageReceipt.titleSha256 !== pageReceipt.titleSha256 ||
+        prep.createdPageReceipt.bodyStorageSha256 !== pageReceipt.bodyStorageSha256
+      ))
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The terminal creation receipt does not match durable relocation progress');
+    }
+    if (
+      terminal.attachmentCount !== attachmentReceipts.length ||
+      terminal.attachmentReceiptsSha256 !== attachmentReceiptsDigest(attachmentReceipts)
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The terminal attachment receipts do not match durable relocation progress');
+    }
+
+    if (
+      prep.createdConfluenceId === null ||
+      attachmentReceipts.length !== prep.attachments.length ||
+      attachmentReceipts.some((receipt, index) =>
+        receipt.title !== prep.attachments[index]?.targetName)
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The Confluence attachment receipt set is incomplete');
+    }
+    if (
+      pageReceipt !== null &&
+      (
+        pageReceipt.id !== prep.createdConfluenceId ||
+        pageReceipt.titleSha256 !== prep.expectedRemoteTitleSha256 ||
+        pageReceipt.bodyStorageSha256 !== prep.expectedRemoteBodyStorageSha256
+      )
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The Confluence creation receipt does not match the admitted relocation');
+    }
+    await assertIdentifierUnambiguous(
+      prep.createdConfluenceId,
+      prep.id,
+      'new Confluence',
+      client,
+    );
+    const verified = await verifyCreatedProviderState(
+      confluence,
+      prep.createdConfluenceId,
+      pageReceipt,
+      prep.expectedRemoteTitleSha256,
+      prep.expectedRemoteBodyStorageSha256,
+      attachmentReceipts,
+      prep.parentConfluenceId,
+    );
+    const current = await client.query<{ source: string; confluence_id: string | null }>(
+      'SELECT source, confluence_id FROM pages WHERE id = $1',
+      [prep.id],
+    );
+    if (
+      current.rows[0]?.source === prep.source &&
+      current.rows[0]?.confluence_id === prep.confluence_id
+    ) {
+      await publishToConfluenceOnClient(
+        client,
+        intent.id,
+        prep,
+        verified.pageReceipt.id,
+        verified.observed,
+        prep.actorId,
+        [],
+      );
+    } else {
+      await verifyLocalToConfluencePublication(
+        client,
+        prep,
+        verified.pageReceipt.id,
+        verified.observed,
+      );
+      await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      await withLocalAttachmentMutationLock(async (lockClient) => {
+        if (verified.pageReceipt.id !== prep.oldKey) {
+          await removeAttachmentDirectoryVerified(prep.oldKey);
+        }
+        await removeLocalAttachmentDirectory(prep.id, lockClient);
+      }, client);
+      await enqueuePageWriteInvalidation(client, intent.id);
+    }
+    await deleteRelocationPreparation(client, intent.id);
+    return {
+      outcome: 'applied',
+      proof: {
+        kind: 'remote_terminal_effect_verified',
+        observedAt: new Date().toISOString(),
+        reference: `page-relocate:${pageId}:confluence:${verified.pageReceipt.id}:version:${verified.pageReceipt.version}`,
+        details: {
+          remoteEffectsCompleted: true,
+          terminalEvidence: pageReceipt === null
+            ? 'acknowledged_create_identity_and_read_only_provider_verification_match'
+            : 'page_and_attachment_receipts_match',
+        },
+      },
+      result: { pageId, outcome: 'committed' },
+    };
+  }
+
+  if (intent.remoteEffectsCompletedAt === null || !intent.remoteTerminalResult) {
+    throw new PageWriteError(409, 'intent_outcome_unrecoverable', 'The relocation remote outcome is unknown');
+  }
+  const terminal = intent.remoteTerminalResult;
+
+  if (
+    typeof terminal.confluenceId !== 'string' ||
+    terminal.confluenceId !== prep.confluence_id ||
+    (terminal.outcome !== 'gone' && terminal.outcome !== 'live')
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_result_invalid', 'The Confluence deletion receipt is unavailable');
+  }
+  if (terminal.outcome === 'live') {
+    await verifyOriginalProviderState(confluence, prep);
+    await restorePreMoveStateOnClient(client, prep);
+    await deleteRelocationPreparation(client, intent.id);
+    return {
+      outcome: 'not_applied',
+      proof: {
+        kind: 'remote_terminal_effect_verified',
+        observedAt: new Date().toISOString(),
+        reference: `page-relocate:${pageId}:delete-not-applied`,
+        details: { remoteEffectsCompleted: true, terminalEvidence: 'original_provider_state_live' },
+      },
+      result: { pageId, outcome: 'restored' },
+    };
+  }
+  const remoteState = await remoteDeletionOutcome(
+    confluence,
+    prep.confluence_id!,
+    new Error('recovery probe'),
+  );
+  if (remoteState !== 'gone') {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The deleted Confluence page is not proven absent');
+  }
+  const current = await client.query<{
+    source: string;
+    confluence_id: string | null;
+    space_key: string | null;
+  }>('SELECT source, confluence_id, space_key FROM pages WHERE id = $1', [prep.id]);
+  if (
+    current.rows[0]?.source !== 'standalone' ||
+    current.rows[0]?.confluence_id !== null ||
+    current.rows[0]?.space_key !== prep.targetSpaceKey
+  ) {
+    throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The local relocation publication is incomplete');
+  }
+  await verifyLocalPublicationState(client, prep);
+  await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+  await withLocalAttachmentMutationLock(
+    () => removeAttachmentDirectoryVerified(prep.oldKey),
+    client,
+  );
+  await enqueuePageWriteInvalidation(client, intent.id);
+  await deleteRelocationPreparation(client, intent.id);
+  return {
+    outcome: 'applied',
+    proof: {
+      kind: 'remote_terminal_effect_verified',
+      observedAt: new Date().toISOString(),
+      reference: `page-relocate:${pageId}:deleted`,
+      details: { remoteEffectsCompleted: true, terminalEvidence: 'provider_absence_and_local_files_verified' },
+    },
+    result: { pageId, outcome: 'committed' },
+  };
+};
+
+let relocateReconcilerRegistered = false;
+
+export function registerPageRelocateReconciler(): void {
+  if (relocateReconcilerRegistered) return;
+  registerPageWriteIntentReconciler('page.relocate', reconcileRelocate);
+  relocateReconcilerRegistered = true;
+}
+
 
 
 /**
@@ -1035,9 +2666,10 @@ export async function relocatePage(opts: {
   page: RelocatablePage;
   userId: string;
   input: RelocatePageInput;
+  /** Route preflight snapshot only; remote phases always re-resolve it. */
   client: ConfluenceClient;
 }): Promise<RelocatePageResponse> {
-  const { page, userId, input, client } = opts;
+  const { page, userId, input } = opts;
   await rejectIfLiveCollabRoom(
     page.id,
     (message) => new RelocateError(409, message, { code: 'collab_session_active' }),
@@ -1051,7 +2683,6 @@ export async function relocatePage(opts: {
       page,
       userId,
       spaceKey: input.spaceKey,
-      client,
       expectedVersionCount: input.acknowledgeDiscardedVersions,
     });
   }
@@ -1064,6 +2695,5 @@ export async function relocatePage(opts: {
     userId,
     spaceKey: input.spaceKey,
     visibility: input.visibility,
-    client,
   });
 }

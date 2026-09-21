@@ -26,6 +26,7 @@ import { adminBackupRoutes } from './routes/foundation/admin-backup.js';
 import { backupDownloadRoutes } from './routes/foundation/backup-download.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 import { adminUsersRoutes } from './routes/foundation/admin-users.js';
+import { pageWriteRecoveryRoutes } from './routes/foundation/page-write-recovery.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -68,6 +69,7 @@ import { pagesConnectionRoutes } from './routes/knowledge/pages-connections.js';
 import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
 import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
 import { analyticsRoutes } from './routes/knowledge/analytics.js';
+import { pageBaselineRoutes } from './routes/knowledge/page-baselines.js';
 import { knowledgeAdminRoutes } from './routes/knowledge/knowledge-admin.js';
 import { templateRoutes } from './routes/knowledge/templates.js';
 import { pagesExportRoutes } from './routes/knowledge/pages-export.js';
@@ -89,6 +91,8 @@ import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin, setCurrentLicense } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
+import { registerOrdinaryPageWriteReconcilers } from './domains/confluence/services/ordinary-page-write-reconciler.js';
+import { registerPageRelocateReconciler } from './domains/knowledge/services/page-relocate-service.js';
 import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
@@ -97,6 +101,14 @@ import { initCollabFlag } from './core/services/collab-flag.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
+import {
+  initPageBaselineMaintenance,
+  PageBaselineError,
+} from './core/services/page-baseline-service.js';
+import {
+  initPageBaselineOutbox,
+} from './core/services/page-baseline-outbox.js';
+import { getPageWriterRuntimeId, PageWriteError } from './core/services/page-write-admission.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
   initIpAllowlistService,
@@ -118,6 +130,9 @@ export async function buildApp() {
   // a non-loopback reverse proxy must populate `trusted_proxies` in
   // admin_settings explicitly — see CHANGELOG entry for v0.4 for migration.
   const trustedProxies = await loadTrustedProxiesFromAdminSettings();
+  await getPageWriterRuntimeId();
+  registerOrdinaryPageWriteReconcilers();
+  registerPageRelocateReconciler();
 
   const app = Fastify({
     logger: false, // We use our own pino instance
@@ -288,6 +303,15 @@ export async function buildApp() {
     await closeCacheBus();
   });
 
+  const teardownPageBaselineOutbox = await initPageBaselineOutbox();
+  app.addHook('onClose', async () => {
+    await teardownPageBaselineOutbox();
+  });
+  const teardownPageBaselineMaintenance = initPageBaselineMaintenance();
+  app.addHook('onClose', async () => {
+    await teardownPageBaselineMaintenance();
+  });
+
   await initCollabFlag();
 
   // ── User security cache bus (#737) ───────────────────────────────
@@ -407,6 +431,26 @@ export async function buildApp() {
       return;
     }
 
+    if (error instanceof PageBaselineError || error instanceof PageWriteError) {
+      const statusCode = error.statusCode;
+      if (statusCode >= 500) {
+        logger.error({ err: error }, 'Page lifecycle request failed');
+        trackError(error, {
+          userId: request.userId,
+          requestPath: `${request.method} ${request.url}`,
+          correlationId: (request.headers as Record<string, string>)['x-correlation-id'],
+        });
+      } else {
+        logger.warn({ err: error }, 'Page lifecycle request refused');
+      }
+      reply.status(statusCode).send({
+        error: error.name,
+        reason: error.reason,
+        ...(error instanceof PageBaselineError && error.state ? { state: error.state } : {}),
+      });
+      return;
+    }
+
     const statusCode = error.statusCode ?? 500;
 
     // Log auth errors at warn level to reduce noise from expected 401/403 responses
@@ -453,6 +497,7 @@ export async function buildApp() {
   await app.register(backupDownloadRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
   await app.register(adminUsersRoutes, { prefix: '/api' });
+  await app.register(pageWriteRecoveryRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.
   // Skip if the enterprise plugin registered its own richer version via registerRoutes().
@@ -534,6 +579,7 @@ export async function buildApp() {
   await app.register(pagesDuplicateRoutes, { prefix: '/api' });
   await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
+  await app.register(pageBaselineRoutes, { prefix: '/api' });
   await app.register(knowledgeAdminRoutes, { prefix: '/api' });
   await app.register(templateRoutes, { prefix: '/api' });
   await app.register(pagesExportRoutes, { prefix: '/api' });

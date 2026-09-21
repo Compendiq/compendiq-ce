@@ -1,24 +1,9 @@
 /**
- * Integration tests for delete atomicity (#766) — `DELETE /api/pages/:id` and
- * `POST /api/pages/bulk/delete` against a REAL PostgreSQL.
- *
- * #766 production bug: the route called Confluence first and ran several
- * separate local statements afterwards with no transaction, so any
- * post-upstream failure stranded a live local row whose Confluence
- * counterpart was already gone — and nothing ever converged it. The fixed
- * ordering is:
- *
- *   1. record the delete intent locally (soft-delete, single atomic UPDATE);
- *   2. call Confluence (irreversible);
- *   3. upstream success/404 → finish hard cleanup in ONE transaction;
- *   4. upstream failure (non-404) → clear the soft-delete (neither side changed).
- *
- * These tests drive the real route against real rows. Only the Confluence
- * client (external HTTP boundary, via `getClientForUser`) and infrastructure
- * side-channels (Redis cache, audit log, webhook hook, attachment filesystem)
- * are stubbed. A post-upstream DB failure is simulated with a real BEFORE
- * DELETE trigger on `pages` — the database itself rejects the hard delete,
- * exactly like a mid-flight connection/constraint failure would.
+ * Delete outcomes against real PostgreSQL, Redis, and attachment files.
+ * The local row is hidden before irreversible Confluence I/O. A failed
+ * response is not proof that the provider did nothing: retain the row, bytes,
+ * and unresolved admission rather than reviving content or reporting success.
+ * A confirmed remote delete does not make failed local cleanup a success.
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify from 'fastify';
@@ -27,74 +12,30 @@ import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { PAGE_ICON_STORE_DIRNAME } from '../../core/services/page-icon-store.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../core/db/advisory-locks.js';
+import { createClient, type RedisClientType } from 'redis';
+import { encryptPat } from '../../core/utils/crypto.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import type * as Undici from 'undici';
 
-// --- Boundary mocks (everything else is real) ---
-
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    // Shared/Confluence mutations clear every user's cache (#893).
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
+const httpRequest = vi.hoisted(() => vi.fn());
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof Undici>()),
+  request: httpRequest,
 }));
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: vi.fn(),
-}));
-
-// Attachment cleanup touches the filesystem — out of scope here.
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-  syncDrawioAttachments: vi.fn().mockResolvedValue(undefined),
-  syncImageAttachments: vi.fn().mockResolvedValue(undefined),
-  getMissingAttachments: vi.fn().mockResolvedValue([]),
-  writeAttachmentCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-}));
-
-vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({
-  triggerQualityBatch: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-// Stub ONLY the Confluence client factory; keep the rest of sync-service real
-// so `__internal.purgeDeletedPages` exercises the genuine convergence path.
-const mockGetClientForUser = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../domains/confluence/services/sync-service.js')>();
-  return {
-    ...actual,
-    getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-  };
-});
+const CONFLUENCE_URL = 'https://confluence.delete.test';
+const httpStatuses = new Map<string, number>();
 
 const { __internal } = await import('../../domains/confluence/services/sync-service.js');
 const { purgeDeletedPages } = __internal;
@@ -195,6 +136,7 @@ async function unblockPageDeletes(): Promise<void> {
 let attachmentsDir: string;
 let originalAttachmentsDir: string | undefined;
 
+let redis: RedisClientType;
 function iconDir(pageId: number): string {
   return path.join(attachmentsDir, PAGE_ICON_STORE_DIRNAME, String(pageId));
 }
@@ -214,7 +156,7 @@ async function iconExists(pageId: number): Promise<boolean> {
 }
 
 async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return waitForDatabaseCondition(async () => {
     const result = await query<{ waiting: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -228,10 +170,8 @@ async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<bool
        ) AS waiting`,
       [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
     );
-    if (result.rows[0]?.waiting) return true;
-    await nextEventLoopTurn();
-  }
-  return false;
+    return result.rows[0]?.waiting ?? false;
+  });
 }
 
 // --- Tests ---
@@ -242,10 +182,13 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
   beforeAll(async () => {
     await setupTestDb();
 
-    // Real disk for the icon store; path resolution there is call-time.
     originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
     attachmentsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cq-delete-atomicity-'));
     process.env.ATTACHMENTS_DIR = attachmentsDir;
+    vi.stubEnv('PAT_ENCRYPTION_KEY', 'delete-atomicity-disposable-key-over-32-characters');
+    redis = createClient({ url: process.env.REDIS_URL, socket: { reconnectStrategy: false } });
+    await redis.connect();
+    setRedisClient(redis);
 
     app = Fastify({ logger: false });
     await app.register(sensible);
@@ -261,7 +204,7 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     app.decorate('requireAdmin', async (request: { userId: string }) => {
       request.userId = userId;
     });
-    app.decorate('redis', {});
+    app.decorate('redis', redis);
     const { pagesCrudRoutes } = await import('./pages-crud.js');
     await app.register(pagesCrudRoutes, { prefix: '/api' });
     await app.ready();
@@ -269,21 +212,52 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
 
   afterAll(async () => {
     await app.close();
+    await redis.quit();
     await teardownTestDb();
     if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
     else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
     await fs.rm(attachmentsDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   beforeEach(async () => {
-    vi.clearAllMocks();
-    await unblockPageDeletes(); // safety: never leak the trigger across tests
+    httpRequest.mockReset();
+    httpStatuses.clear();
+    httpRequest.mockImplementation(async (url: string, options: { method: string }) => {
+      const parsed = new URL(url);
+      if (parsed.origin !== CONFLUENCE_URL) throw new Error(`Unexpected outbound origin: ${parsed.origin}`);
+      const statusCode = httpStatuses.get(`${options.method} ${parsed.pathname}`)
+        ?? (options.method === 'DELETE' ? 204 : undefined);
+      if (statusCode === undefined) throw new Error(`Unexpected outbound request: ${options.method} ${parsed.pathname}`);
+      return {
+        statusCode,
+        headers: {},
+        body: { text: async () => statusCode < 400 ? '' : JSON.stringify({ message: 'Upstream failure' }) },
+      };
+    });
+    await unblockPageDeletes();
     await truncateAllTables();
+    await redis.flushDb();
     const res = await query<{ id: string }>(
       "INSERT INTO users (username, email, password_hash, role) VALUES ('del_user', 'del@test', 'x', 'user') RETURNING id",
     );
     userId = res.rows[0]!.id;
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+    await query("INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'Development')");
+    const role = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ('delete-manager', 'Delete manager', ARRAY['read', 'write', 'delete', 'manage'])
+       ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions RETURNING id`,
+    );
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2)`,
+      [userId, role.rows[0]!.id],
+    );
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+       VALUES ($1, $2, $3, TRUE)`,
+      [userId, CONFLUENCE_URL, encryptPat('disposable-confluence-pat')],
+    );
   });
 
   // ── single delete ─────────────────────────────────────────────────────────
@@ -328,12 +302,10 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     const pageId = await insertPage('conf-ok');
     await insertPin(pageId);
     await seedIcon(pageId);
-    mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-ok' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().message).toBe('Page deleted');
     expect(await getRow('conf-ok')).toBeNull();
     const pins = await query('SELECT 1 FROM pinned_pages WHERE page_id = $1', [pageId]);
     expect(pins.rowCount).toBe(0);
@@ -341,71 +313,68 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(await iconExists(pageId)).toBe(false);
   });
 
-  it('(b) leaves the article fully intact when the Confluence delete fails — intent rolled back, neither side changed', async () => {
-    await insertPage('conf-5xx');
-    const deletePage = vi.fn().mockRejectedValue(new ConfluenceError('Confluence API error: HTTP 503', 503));
-    mockGetClientForUser.mockResolvedValue({ deletePage });
+  it('keeps an uncertain Confluence delete hidden and blocks a conflicting retry', async () => {
+    const pageId = await insertPage('conf-5xx');
+    await seedIcon(pageId);
+    httpStatuses.set('DELETE /rest/api/content/conf-5xx', 503);
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-5xx' });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(deletePage).toHaveBeenCalledWith('conf-5xx');
-    // The row survives AND is still live (the #766 delete intent was cleared).
+    expect(response.statusCode).toBe(503);
     const row = await getRow('conf-5xx');
     expect(row).not.toBeNull();
-    expect(row!.deleted_at).toBeNull();
-    expect(await liveCount('conf-5xx')).toBe(1);
+    expect(row!.deleted_at).not.toBeNull();
+    expect(await liveCount('conf-5xx')).toBe(0);
+    expect(await iconExists(pageId)).toBe(true);
+
+    const attemptsBeforeRetry = httpRequest.mock.calls.length;
+    const retry = await app.inject({ method: 'DELETE', url: '/api/pages/conf-5xx' });
+    expect(retry.statusCode).toBe(409);
+    expect(httpRequest.mock.calls).toHaveLength(attemptsBeforeRetry);
+    const pending = await query<{ status: string }>(
+      'SELECT status FROM page_write_intents WHERE page_ids @> ARRAY[$1]::int[]',
+      [pageId],
+    );
+    expect(pending.rows).toEqual([{ status: 'pending' }]);
   });
 
   it('(d) #719 regression: a 404 from Confluence still completes the local removal', async () => {
     const pageId = await insertPage('conf-404');
     await insertPin(pageId);
-    mockGetClientForUser.mockResolvedValue({
-      deletePage: vi.fn().mockRejectedValue(new ConfluenceError('Resource not found', 404)),
-    });
+    httpStatuses.set('DELETE /rest/api/content/conf-404', 404);
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-404' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().message).toBe('Page was already removed in Confluence — removed locally');
     expect(await getRow('conf-404')).toBeNull();
   });
 
-  // #1623 — off is standalone, and these cases run the REAL
-  // `isConfluenceEnabled` against Postgres (only the client factory is stubbed).
+  // #1623 — integration mode and encrypted credentials are real database state.
   it('integration off → destroys the local row and issues no Confluence delete', async () => {
     await query(
-      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
       [userId],
     );
     const pageId = await insertPage('conf-off');
     await insertPin(pageId);
-    const deletePage = vi.fn();
-    mockGetClientForUser.mockResolvedValue({ deletePage });
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-off' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().message).toContain('left untouched');
     // Gone locally…
     expect(await getRow('conf-off')).toBeNull();
     const pins = await query('SELECT 1 FROM pinned_pages WHERE page_id = $1', [pageId]);
     expect(pins.rowCount).toBe(0);
-    // …and never touched upstream. The route did not even ask for a client, so
-    // `Confluence not configured` is unreachable for this user too.
-    expect(deletePage).not.toHaveBeenCalled();
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
+    expect(httpRequest).not.toHaveBeenCalled();
   });
 
   it('integration off → bulk delete destroys the local rows and issues no Confluence delete', async () => {
     await query(
-      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
       [userId],
     );
     await insertPage('bulk-off-1');
     await insertPage('bulk-off-2');
-    const deletePage = vi.fn();
-    mockGetClientForUser.mockResolvedValue({ deletePage });
 
     const response = await app.inject({
       method: 'POST',
@@ -417,21 +386,18 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(response.json()).toMatchObject({ succeeded: 2, failed: 0 });
     expect(await getRow('bulk-off-1')).toBeNull();
     expect(await getRow('bulk-off-2')).toBeNull();
-    expect(deletePage).not.toHaveBeenCalled();
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
+    expect(httpRequest).not.toHaveBeenCalled();
   });
 
-  it('(a) upstream delete succeeds but the local hard-delete fails → article is hidden (soft-deleted), never a live orphan; sync purge converges it', async () => {
+  it('reports failed local cleanup after upstream deletion and keeps the hidden row and its bytes', async () => {
     const strandedId = await insertPage('conf-strand');
     await seedIcon(strandedId);
-    mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     await blockPageDeletes();
     try {
       const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-strand' });
 
-      // The user-visible outcome (gone on both sides) is achieved — no error.
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(500);
 
       // Pre-#766 behaviour left this row LIVE (deleted_at NULL) forever. Now it
       // must be soft-deleted: invisible to every user-facing query.
@@ -449,37 +415,18 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
       await unblockPageDeletes();
     }
 
-    // Convergence: the standard sync lifecycle purges soft-deleted rows after
-    // 30 days — prove the leftover row is fully removed by the real purge path.
-    // Purge re-confirms the page is gone upstream before the irreversible local
-    // delete (#766 review); here the upstream GET answers 404 (page trashed and
-    // hidden / purged), so the purge proceeds.
-    await query("UPDATE pages SET deleted_at = NOW() - INTERVAL '31 days' WHERE confluence_id = 'conf-strand'");
-    const purgeClient = {
-      getPage: vi.fn().mockRejectedValue(new ConfluenceError('Resource not found', 404)),
-    };
-    await purgeDeletedPages(purgeClient as never, 'DEV');
-    expect(purgeClient.getPage).toHaveBeenCalledWith('conf-strand');
-    expect(await getRow('conf-strand')).toBeNull();
-    // …and only THERE, after a committed DELETE, is the mark collected — so
-    // deferring it on the rollback branch leaks nothing permanently (#1349).
-    expect(await iconExists(strandedId)).toBe(false);
   });
 
   // ── bulk delete ───────────────────────────────────────────────────────────
 
-  it('bulk: success + 404 are removed, a 5xx page stays fully live (intent rolled back per page)', async () => {
+  it('bulk reports independent success and 404 while retaining an uncertain 503 member', async () => {
     const okId = await insertPage('bulk-ok');
     const failedId = await insertPage('bulk-5xx');
     await insertPage('bulk-404');
     await seedIcon(okId);
     await seedIcon(failedId);
-    const deletePage = vi.fn().mockImplementation((id: string) => {
-      if (id === 'bulk-5xx') return Promise.reject(new ConfluenceError('Confluence API error: HTTP 503', 503));
-      if (id === 'bulk-404') return Promise.reject(new ConfluenceError('Resource not found', 404));
-      return Promise.resolve(undefined);
-    });
-    mockGetClientForUser.mockResolvedValue({ deletePage });
+    httpStatuses.set('DELETE /rest/api/content/bulk-5xx', 503);
+    httpStatuses.set('DELETE /rest/api/content/bulk-404', 404);
 
     const response = await app.inject({
       method: 'POST',
@@ -497,11 +444,11 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     // Upstream-deleted pages are hard-removed locally (one transaction).
     expect(await getRow('bulk-ok')).toBeNull();
     expect(await getRow('bulk-404')).toBeNull();
-    // The upstream-failed page is fully live — soft-delete intent rolled back.
+    // The uncertain member stays hidden with its files and pending admission.
     const survivor = await getRow('bulk-5xx');
     expect(survivor).not.toBeNull();
-    expect(survivor!.deleted_at).toBeNull();
-    expect(await liveCount('bulk-5xx')).toBe(1);
+    expect(survivor!.deleted_at).not.toBeNull();
+    expect(await liveCount('bulk-5xx')).toBe(0);
     // Marks follow their rows: destroyed for the page the commit removed, kept
     // for the page that survived upstream failure (#1349).
     expect(await iconExists(okId)).toBe(false);
@@ -511,7 +458,6 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
   it('bulk (a): upstream deletes succeed but local cleanup fails → rows hidden (soft-deleted), never live orphans', async () => {
     const strandedIds = [await insertPage('bulk-strand-1'), await insertPage('bulk-strand-2')];
     for (const id of strandedIds) await seedIcon(id);
-    mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     await blockPageDeletes();
     try {
@@ -523,8 +469,8 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
+      expect(body.succeeded).toBe(0);
+      expect(body.failed).toBe(2);
 
       for (const cid of ['bulk-strand-1', 'bulk-strand-2']) {
         const row = await getRow(cid);
@@ -532,8 +478,7 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
         expect(row!.deleted_at).not.toBeNull();
         expect(await liveCount(cid)).toBe(0);
       }
-      // Rolled back → every row is still alive, so every mark must still be on
-      // disk; `purgeDeletedPages` collects them after its own committed DELETE.
+      // A failed DELETE cannot collect files whose row still exists.
       for (const id of strandedIds) expect(await iconExists(id)).toBe(true);
     } finally {
       await unblockPageDeletes();
@@ -562,12 +507,23 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(body.succeeded).toBe(0);
     expect(body.failed).toBe(1);
     expect(body.errors).toHaveLength(1);
-    expect(body.errors[0]).toContain('not the owner');
 
     // The page is untouched — still live.
     const row = await getRowById(pageId);
     expect(row).not.toBeNull();
     expect(row!.deleted_at).toBeNull();
+  });
+
+  it('ordinary aged trash with confirmed remote absence is purged with its icon', async () => {
+    const pageId = await insertPage('ordinary-trash');
+    await seedIcon(pageId);
+    await query("UPDATE pages SET deleted_at = NOW() - INTERVAL '31 days' WHERE id = $1", [pageId]);
+    httpStatuses.set('GET /rest/api/content/ordinary-trash', 404);
+
+    await purgeDeletedPages(new ConfluenceClient(CONFLUENCE_URL, 'disposable-confluence-pat'), 'DEV');
+
+    expect(await getRowById(pageId)).toBeNull();
+    expect(await iconExists(pageId)).toBe(false);
   });
 
   it('bulk: an owner can still trash their own shared standalone page (#861)', async () => {

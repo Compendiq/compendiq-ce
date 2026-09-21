@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
+import sensible from '@fastify/sensible';
 import { Response, fetch } from 'undici';
 import pgvector from 'pgvector';
 import type { PageSource } from '@compendiq/contracts';
@@ -9,6 +13,8 @@ import { query } from '../../core/db/postgres.js';
 import { flushSearchAnalytics } from '../../domains/llm/services/rag-service.js';
 import { invalidateRagFetchWidthCache } from '../../core/services/admin-settings-service.js';
 import { searchRoutes } from './search.js';
+import { pageBaselineRoutes } from './page-baselines.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
 
 // Retrieval and persistence stay real; only the embedding HTTP boundary and auth are controlled.
 vi.mock('undici', async (importOriginal) => ({
@@ -28,21 +34,34 @@ describe.skipIf(!dbAvailable)('search canonical page provenance', () => {
   let app: FastifyInstance;
   let userId: string;
   let expectedSources: Map<number, PageSource>;
+  let attachmentsDir: string;
 
   beforeAll(async () => {
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'baseline-search-'));
+    vi.stubEnv('ATTACHMENTS_DIR', attachmentsDir);
     await setupTestDb();
     app = Fastify({ logger: false });
+    await app.register(sensible);
+    setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
     app.decorate('authenticate', async (request: { userId: string }) => {
       request.userId = userId;
     });
+    app.decorate('requireAdmin', async (request: { userId: string; userRole: string }) => {
+      request.userId = userId;
+      request.userRole = 'admin';
+    });
     await app.register(searchRoutes, { prefix: '/api' });
+    await app.register(pageBaselineRoutes, { prefix: '/api' });
     await app.ready();
   }, 30_000);
 
   afterAll(async () => {
     await flushSearchAnalytics();
     await app.close();
+    setPageBaselineReadinessProvider(null);
     await teardownTestDb();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   beforeEach(async () => {
@@ -54,7 +73,7 @@ describe.skipIf(!dbAvailable)('search canonical page provenance', () => {
       data: [{ embedding }],
     }), { headers: { 'Content-Type': 'application/json' } }));
     const user = await query<{ id: string }>(
-      "INSERT INTO users (username, email, password_hash, role) VALUES ('origin', 'origin@test', 'x', 'user') RETURNING id",
+      "INSERT INTO users (username, email, password_hash, role) VALUES ('origin', 'origin@test', 'x', 'admin') RETURNING id",
     );
     userId = user.rows[0]!.id;
     await query("INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'Development')");
@@ -76,6 +95,13 @@ describe.skipIf(!dbAvailable)('search canonical page provenance', () => {
       [provider.rows[0]!.id],
     );
   });
+
+  async function enableBaselines() {
+    const response = await app.inject({
+      method: 'PUT', url: '/api/admin/page-baselines/activation', payload: { creationEnabled: true },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+  }
 
   async function seedEmbeddings() {
     await query(
@@ -116,5 +142,54 @@ describe.skipIf(!dbAvailable)('search canonical page provenance', () => {
     await seedEmbeddings();
     vi.mocked(fetch).mockImplementation(async () => new Response('provider unavailable', { status: 503 }));
     await expectOrigins('q=Redis&mode=hybrid', 'hybrid');
+  });
+
+  it.each([
+    ['FTS', 'q=Redis&mode=keyword', false],
+    ['fuzzy title', 'q=Redis%20Handbok&mode=keyword', false],
+    ['semantic', 'q=Redis&mode=semantic', true],
+    ['hybrid', 'q=Redis&mode=hybrid', true],
+  ] as const)('reports live freeze state without sign-off details through %s', async (_branch, search, needsEmbeddings) => {
+    if (needsEmbeddings) await seedEmbeddings();
+    await enableBaselines();
+    const frozenPageId = [...expectedSources].find(([, source]) => source === 'standalone')![0];
+    const previewResponse = await app.inject({ method: 'GET', url: `/api/pages/${frozenPageId}/freeze-preview` });
+    expect(previewResponse.statusCode, previewResponse.body).toBe(200);
+    const preview = previewResponse.json<{ contentRevision: string; manifestDigest: string; baselineId: string }>();
+    const frozen = await app.inject({
+      method: 'POST', url: `/api/pages/${frozenPageId}/freeze`,
+      payload: {
+        reason: 'Confidential board sign-off reason',
+        expectedContentRevision: preview.contentRevision,
+        expectedManifestDigest: preview.manifestDigest,
+      },
+    });
+    expect(frozen.statusCode, frozen.body).toBe(200);
+    const state = frozen.json<{ state: { baselineId: string; lifecycleRevision: string; frozenVersion: number } }>().state;
+    const result = await app.inject({ method: 'GET', url: `/api/search?${search}&includeFacets=false` });
+    expect(result.statusCode, result.body).toBe(200);
+    const items = result.json<{ items: Array<Record<string, unknown>> }>().items;
+    expect(items.find((item) => item.id === frozenPageId)).toMatchObject({
+      isFrozen: true, baselineId: preview.baselineId, frozenVersion: state.frozenVersion,
+    });
+    for (const item of items) {
+      expect(item).not.toHaveProperty('freezeReason');
+      expect(item).not.toHaveProperty('frozenBy');
+      expect(item).not.toHaveProperty('reportedSignatories');
+    }
+    expect(result.body).not.toContain('Confidential board sign-off reason');
+    const thawed = await app.inject({
+      method: 'POST', url: `/api/pages/${frozenPageId}/unfreeze`,
+      payload: {
+        reason: 'Reopen the article for revision',
+        expectedBaselineId: state.baselineId,
+        expectedLifecycleRevision: state.lifecycleRevision,
+      },
+    });
+    expect(thawed.statusCode, thawed.body).toBe(200);
+    const updated = await app.inject({ method: 'GET', url: `/api/search?${search}&includeFacets=false` });
+    expect(updated.statusCode, updated.body).toBe(200);
+    expect(updated.json<{ items: Array<Record<string, unknown>> }>().items.find((item) => item.id === frozenPageId))
+      .toMatchObject({ isFrozen: false, baselineId: null, frozenVersion: null });
   });
 });

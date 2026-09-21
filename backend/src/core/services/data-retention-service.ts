@@ -114,12 +114,18 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   const maxVersions = safeIntOr(process.env.RETENTION_VERSIONS_MAX, 50, 1);
   try {
     const { rowCount } = await pool.query(`
-      DELETE FROM page_versions WHERE id IN (
-        SELECT id FROM (
-          SELECT id, ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY version_number DESC) AS rn
-          FROM page_versions
-        ) ranked WHERE rn > $1
-      )
+      DELETE FROM page_versions pv
+       WHERE pv.id IN (
+         SELECT id FROM (
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY version_number DESC) AS rn
+             FROM page_versions
+         ) ranked WHERE rn > $1
+       )
+         AND NOT EXISTS (
+           SELECT 1
+             FROM page_baselines baseline
+            WHERE baseline.version_snapshot_id = pv.id
+         )
     `, [maxVersions]);
     results.page_versions = rowCount ?? 0;
     if (results.page_versions > 0) {
@@ -281,7 +287,7 @@ export async function purgeExpiredStandalonePages(): Promise<number> {
         // The shared barrier remains held after the DELETE commits until every
         // related directory cleanup has completed.
         for (const row of result.rows ?? []) {
-          await cleanupStandalonePageAttachmentDirs(row.id, client);
+          await cleanupStandalonePageAttachmentDirs(row, client);
         }
         return result;
       });

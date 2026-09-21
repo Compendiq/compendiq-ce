@@ -1,622 +1,262 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
 import { pinnedPagesRoutes } from './pinned-pages.js';
-import { pagesCrudRoutes } from './pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// Mock external dependencies
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-      // Shared/Confluence mutations clear every user's cache (#893).
-      invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue({
-    deletePage: vi.fn().mockResolvedValue(undefined),
-    getPage: vi.fn().mockResolvedValue({
-      id: 'page-1',
-      title: 'Test Page',
-      body: { storage: { value: '<p>content</p>' } },
-      version: { number: 1 },
-    }),
-    addLabels: vi.fn().mockResolvedValue(undefined),
-    removeLabel: vi.fn().mockResolvedValue(undefined),
-  }),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let currentUserId: string;
+let otherUserId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
+async function grantSpace(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('pinned-pages-reader', 'Pinned pages reader', FALSE, ARRAY['read'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)
+     ON CONFLICT (space_key, principal_type, principal_id)
+     DO UPDATE SET role_id = EXCLUDED.role_id`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+async function pinCount(userId: string, pageId?: number): Promise<number> {
+  const result = pageId === undefined
+    ? await query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM pinned_pages WHERE user_id = $1',
+      [userId],
+    )
+    : await query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
+      [userId, pageId],
+    );
+  return Number(result.rows[0]!.count);
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+async function useStandaloneMode(userId: string): Promise<void> {
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_enabled)
+     VALUES ($1, FALSE)
+     ON CONFLICT (user_id) DO UPDATE SET confluence_enabled = FALSE`,
+    [userId],
+  );
+}
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-import { userCanAccessPage } from '../../core/services/rbac-service.js';
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  userCanAccessPage: vi.fn().mockResolvedValue(true),
-  // Still consumed by the co-registered pages-crud routes (delete cleanup tests).
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-}));
-
-const mockQueryFn = vi.fn();
-// Transaction client returned by getPool().connect() — since #766 the delete
-// routes finish local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: () =>
-      Promise.resolve({
-        query: (...args: unknown[]) => mockTxQueryFn(...args),
-        release: vi.fn(),
-      }),
-  }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-describe('Pinned Pages API', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
-    });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pinnedPagesRoutes, { prefix: '/api' });
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  describe('GET /api/pages/pinned', () => {
-    it('should return pinned articles using integer PK as id', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          {
-            page_id: 42,
-            pin_order: 0,
-            pinned_at: new Date('2025-06-01T00:00:00Z'),
-            space_key: 'DEV',
-            title: 'Getting Started',
-            author: 'Alice',
-            last_modified_at: new Date('2025-05-20T00:00:00Z'),
-            body_text: 'This is a getting started guide for new developers joining the team.',
-          },
-        ],
-        rowCount: 1,
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'Pinned Pages API — real PostgreSQL and Redis',
+  () => {
+    beforeAll(async () => {
+      originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+      attachmentsDir = await mkdtemp(join(tmpdir(), 'pinned-pages-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
       });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/pinned',
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+        instance.redis = redis;
+        await instance.register(pinnedPagesRoutes, { prefix: '/api' });
+        // Hard-delete coverage below reaches attachment cleanup, whose root is
+        // captured on import; load CRUD only after installing the sandbox.
+        const { pagesCrudRoutes } = await import('./pages-crud.js');
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
       });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.items).toHaveLength(1);
-      expect(body.items[0].id).toBe('42');
-      expect(body.items[0].title).toBe('Getting Started');
-      expect(body.items[0].spaceKey).toBe('DEV');
-      expect(body.items[0].author).toBe('Alice');
-      expect(body.items[0].excerpt).toBe('This is a getting started guide for new developers joining the team.');
-      expect(body.total).toBe(1);
     });
 
-    it('should JOIN on pages.id instead of confluence_id', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      await app.inject({
-        method: 'GET',
-        url: '/api/pages/pinned',
-      });
-
-      const sql = mockQueryFn.mock.calls[0][0] as string;
-      expect(sql).toContain('JOIN pages cp ON cp.id = pp.page_id');
-      expect(sql).not.toContain('cp.confluence_id = pp.page_id');
+    afterAll(async () => {
+      await app.close();
+      setRedisClient(null as unknown as RedisClientType);
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
     });
 
-    it('should return empty list when no pins exist', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/pinned',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.items).toHaveLength(0);
-      expect(body.total).toBe(0);
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      currentUserId = await insertUser(`pinner-${randomUUID()}`);
+      otherUserId = await insertUser(`other-pinner-${randomUUID()}`);
+      await insertLocalSpace('LOCAL', currentUserId);
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source)
+         VALUES ('DEV', 'DEV', 'confluence'), ('HR', 'HR', 'confluence')`,
+      );
     });
 
-    // The row count is unbounded since #1130, so the excerpt has to be
-    // truncated by Postgres — otherwise every pinned article's full TOASTed
-    // body crosses the wire to be thrown away in JS.
-    it('should truncate the excerpt in SQL, not only in JS', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    it('returns only the caller’s live pins with integer page ids and a 200-character excerpt', async () => {
+      const mine = await insertStandalonePage('Getting Started', 'shared', currentUserId, 'LOCAL');
+      const theirs = await insertStandalonePage('Other article', 'shared', otherUserId, 'LOCAL');
+      const hidden = await insertStandalonePage('Trashed article', 'shared', currentUserId, 'LOCAL');
+      await query(
+        `UPDATE pages
+            SET author = 'Alice', body_text = $2, last_modified_at = NOW()
+          WHERE id = $1`,
+        [mine, 'A'.repeat(500)],
+      );
+      await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [hidden]);
+      await query(
+        `INSERT INTO pinned_pages (user_id, page_id, pin_order)
+         VALUES ($1, $2, 1), ($1, $3, 2), ($4, $5, 1)`,
+        [currentUserId, mine, hidden, otherUserId, theirs],
+      );
 
-      await app.inject({ method: 'GET', url: '/api/pages/pinned' });
+      const response = await app.inject({ method: 'GET', url: '/api/pages/pinned' });
 
-      const sql = mockQueryFn.mock.calls[0][0] as string;
-      expect(sql).toContain('substring(cp.body_text, 1, 200)');
-      expect(sql).not.toMatch(/,\s*cp\.body_text\b/);
-    });
-
-    it('should truncate excerpt to 200 characters', async () => {
-      const longText = 'A'.repeat(500);
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          page_id: 42,
-          pin_order: 0,
-          pinned_at: new Date(),
-          space_key: 'DEV',
-          title: 'Long Page',
-          author: null,
-          last_modified_at: null,
-          body_text: longText,
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        total: 1,
+        items: [{
+          id: String(mine),
+          title: 'Getting Started',
+          spaceKey: 'LOCAL',
+          author: 'Alice',
+          excerpt: 'A'.repeat(200),
         }],
-        rowCount: 1,
       });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/pinned',
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.items[0].excerpt).toHaveLength(200);
-    });
-  });
-
-  describe('POST /api/pages/:id/pin', () => {
-    it('should pin a page by integer PK', async () => {
-      // access check passes (default mock returns true)
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert (succeeded)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('42');
-
-      // Verify access is gated by userCanAccessPage on the integer PK
-      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 42);
-
-      // Verify the insert (second query) stores the integer PK. Two params
-      // only — the third was the pin cap, removed in #1130.
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42]);
     });
 
-    it('should return 404 when page does not exist', async () => {
-      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
+    it('pins accessible standalone pages idempotently and persists one row', async () => {
+      const shared = await insertStandalonePage('Shared', 'shared', otherUserId, 'LOCAL');
+      const ownedPrivate = await insertStandalonePage('Mine', 'private', currentUserId, 'LOCAL');
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/999/pin',
-      });
-
-      expect(response.statusCode).toBe(404);
+      for (const pageId of [shared, ownedPrivate]) {
+        const first = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/pin` });
+        const second = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/pin` });
+        expect(first.statusCode, first.body).toBe(200);
+        expect(second.statusCode, second.body).toBe(200);
+        expect(await pinCount(currentUserId, pageId)).toBe(1);
+      }
     });
 
-    it('should return 400 for non-numeric page ID', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/not-a-number/pin',
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-
-    // #1130 removed the 8-pin cap. The DB is mocked here, so the pin count is
-    // unobservable and this can only show that the statement carries no count
-    // guard — it is named for what it checks (#1180). That a ninth pin really
-    // lands is demonstrated against real Postgres in
-    // `pinned-pages.integration.test.ts`; this stays as the tripwire that still
-    // fires where no test database is reachable and that file is skipped.
-    it('should issue an INSERT that carries no count guard', async () => {
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert (succeeded — no count guard to fail)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).message).toBe('Page pinned');
-
-      const insertSql = mockQueryFn.mock.calls[1][0] as string;
-      expect(insertSql).not.toMatch(/COUNT\(\*\)/);
-      expect(insertSql).not.toContain('$3');
-    });
-
-    // rowCount 0 no longer means "cap reached" — with the guard gone the only
-    // way the insert affects no row is ON CONFLICT DO NOTHING, i.e. a
-    // concurrent request pinned the same page first. That is success, not 400.
-    it('should return 200 when a concurrent request already inserted the pin', async () => {
-      // already-pinned check (not pinned at the time we looked)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // ON CONFLICT DO NOTHING swallowed the insert
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('42');
-    });
-
-    it('should be idempotent when pinning an already-pinned page', async () => {
-      // already-pinned check (already pinned — early return)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      // Should not have attempted the INSERT (only the already-pinned query ran)
-      expect(mockQueryFn).toHaveBeenCalledTimes(1);
-    });
-
-    it('should return 200 when re-pinning an already-pinned page', async () => {
-      // already-pinned check (already pinned — early return)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('42');
-      // Only the already-pinned query ran, no INSERT attempted
-      expect(mockQueryFn).toHaveBeenCalledTimes(1);
-    });
-
-    it('should return 404 for a soft-deleted page', async () => {
-      // userCanAccessPage does its own deleted_at IS NULL filter and returns
-      // false for a soft-deleted page.
-      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    // The count guard is gone (#1130), but the insert must still be a single
-    // statement whose ON CONFLICT absorbs a concurrent duplicate — otherwise
-    // two simultaneous pins of the same page raise a unique violation.
-    it('should use a single INSERT ... ON CONFLICT DO NOTHING to absorb races', async () => {
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      const insertCall = mockQueryFn.mock.calls[1];
-      expect(insertCall[0]).toContain('INSERT INTO pinned_pages');
-      expect(insertCall[0]).toContain('ON CONFLICT (user_id, page_id) DO NOTHING');
-      expect(insertCall[1]).toEqual(['test-user-id', 42]);
-    });
-  });
-
-  describe('DELETE /api/pages/:id/pin', () => {
-    it('should unpin a page by integer PK', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page unpinned');
-      expect(body.pageId).toBe('42');
-
-      // Verify the delete uses integer PK directly (no confluence_id resolution)
-      expect(mockQueryFn.mock.calls[0][1]).toEqual(['test-user-id', 42]);
-    });
-
-    it('should return 404 when pin does not exist', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/999/pin',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should return 400 for non-numeric page ID', async () => {
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/not-a-number/pin',
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-  });
-
-  describe('Per-user isolation', () => {
-    it('should pass the correct userId to pinned pages query', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      await app.inject({
-        method: 'GET',
-        url: '/api/pages/pinned',
-      });
-
-      expect(mockQueryFn).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE pp.user_id = $1'),
-        ['test-user-id'],
+    it('returns 404 without creating a pin for a missing, soft-deleted, or foreign private page', async () => {
+      const foreignPrivate = await insertStandalonePage('Private', 'private', otherUserId, 'LOCAL');
+      const deleted = await insertStandalonePage(
+        'Deleted',
+        'shared',
+        currentUserId,
+        'LOCAL',
+        { deletedAt: new Date() },
       );
+
+      for (const pageId of [999_999, deleted, foreignPrivate]) {
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/pin` });
+        expect(response.statusCode).toBe(404);
+      }
+      expect(await pinCount(currentUserId)).toBe(0);
     });
 
-    it('should pass the correct userId to pin insert', async () => {
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    it('enforces real space membership for Confluence pins and preserves the admin bypass', async () => {
+      const devPage = await insertConfluencePage('pin-dev', 'DEV page', 'DEV');
+      const hrPage = await insertConfluencePage('pin-hr', 'HR page', 'HR');
+      await grantSpace(currentUserId, 'DEV');
 
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
+      const allowed = await app.inject({ method: 'POST', url: `/api/pages/${devPage}/pin` });
+      const denied = await app.inject({ method: 'POST', url: `/api/pages/${hrPage}/pin` });
 
-      // The insert query (second call) should use userId
-      const insertCall = mockQueryFn.mock.calls[1];
-      expect(insertCall[1]).toContain('test-user-id');
-    });
-  });
+      expect(allowed.statusCode, allowed.body).toBe(200);
+      expect(denied.statusCode).toBe(404);
+      expect(await pinCount(currentUserId, devPage)).toBe(1);
+      expect(await pinCount(currentUserId, hrPage)).toBe(0);
 
-  describe('RBAC integration (#409, #894)', () => {
-    it('should gate pinning on userCanAccessPage with the numeric page id', async () => {
-      vi.mocked(userCanAccessPage).mockResolvedValueOnce(true);
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 42);
+      currentUserId = await insertUser(`pin-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [currentUserId]);
+      const adminResponse = await app.inject({ method: 'POST', url: `/api/pages/${hrPage}/pin` });
+      expect(adminResponse.statusCode, adminResponse.body).toBe(200);
+      expect(await pinCount(currentUserId, hrPage)).toBe(1);
     });
 
-    it('should return 404 when the user cannot access the page', async () => {
-      // userCanAccessPage returns false for a restricted page
-      vi.mocked(userCanAccessPage).mockResolvedValueOnce(false);
+    it('rejects non-numeric ids without touching persistence', async () => {
+      const pin = await app.inject({ method: 'POST', url: '/api/pages/not-a-number/pin' });
+      const unpin = await app.inject({ method: 'DELETE', url: '/api/pages/not-a-number/pin' });
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/42/pin',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  describe('Standalone page pinning (no confluence_id)', () => {
-    it('should pin a standalone page that has no confluence_id', async () => {
-      // access check passes (default mock returns true)
-      // Not already pinned
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // Insert succeeds
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/100/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('100');
-
-      // Verify the insert (second query) stores the integer PK
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 100]);
+      expect(pin.statusCode).toBe(400);
+      expect(unpin.statusCode).toBe(400);
+      expect(await pinCount(currentUserId)).toBe(0);
     });
 
-    it('pins a standalone page (space_key NULL) via userCanAccessPage', async () => {
-      // #894: standalone pages have space_key = NULL, so the old
-      // `space_key = ANY(...)` check filtered them out (NULL = ANY → NULL).
-      // The route now gates on userCanAccessPage, which permits standalone
-      // shared/own-private pages.
-      vi.mocked(userCanAccessPage).mockResolvedValueOnce(true);
-      // already-pinned check (not pinned)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert (succeeded)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    it('unpins only the caller’s row and reports a missing pin', async () => {
+      const pageId = await insertStandalonePage('Shared', 'shared', currentUserId, 'LOCAL');
+      await query(
+        `INSERT INTO pinned_pages (user_id, page_id)
+         VALUES ($1, $3), ($2, $3)`,
+        [currentUserId, otherUserId, pageId],
+      );
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/100/pin',
-      });
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/pin` });
+      const repeated = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/pin` });
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('100');
-      expect(userCanAccessPage).toHaveBeenCalledWith('test-user-id', 100);
-
-      // The insert (last query) stores the integer PK
-      const lastCall = mockQueryFn.mock.calls[mockQueryFn.mock.calls.length - 1];
-      expect(lastCall[1]).toEqual(['test-user-id', 100]);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(repeated.statusCode).toBe(404);
+      expect(await pinCount(currentUserId, pageId)).toBe(0);
+      expect(await pinCount(otherUserId, pageId)).toBe(1);
     });
 
-    it('should unpin a standalone page that has no confluence_id', async () => {
-      // Direct delete by integer PK — no confluence_id resolution needed
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    it('removes every user’s pins when a standalone page is permanently deleted', async () => {
+      const pageId = await insertStandalonePage('Permanent', 'shared', currentUserId, 'LOCAL');
+      await query(
+        `INSERT INTO pinned_pages (user_id, page_id)
+         VALUES ($1, $3), ($2, $3)`,
+        [currentUserId, otherUserId, pageId],
+      );
 
       const response = await app.inject({
         method: 'DELETE',
-        url: '/api/pages/100/pin',
+        url: `/api/pages/${pageId}?permanent=true`,
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(mockQueryFn.mock.calls[0][1]).toEqual(['test-user-id', 100]);
-    });
-  });
-
-  describe('Page deletion cleans up pinned_pages', () => {
-    it('should delete pinned_pages row when single-deleting a page', async () => {
-      // First query: load page to determine source (new standalone-aware lookup)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 42, source: 'confluence', created_by_user_id: null, confluence_id: 'page-1' }],
-        rowCount: 1,
-      });
-      // #766 delete-intent soft-delete (UPDATE … RETURNING id)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/page-1',
-      });
-
-      expect(response.statusCode).toBe(200);
-      // Since #766 the hard cleanup (pins + page row) runs inside one
-      // transaction on a dedicated pool client.
-      const pinnedDeleteCall = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
-      );
-      expect(pinnedDeleteCall).toBeDefined();
-      expect(pinnedDeleteCall![1]).toEqual([42]);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await pinCount(currentUserId, pageId)).toBe(0);
+      expect(await pinCount(otherUserId, pageId)).toBe(0);
+      const page = await query('SELECT 1 FROM pages WHERE id = $1', [pageId]);
+      expect(page.rowCount).toBe(0);
     });
 
-    it('should delete pinned_pages row when bulk-deleting pages', async () => {
-      // Bulk delete: ownership check, #766 delete-intent soft-delete, then the
-      // batched cleanup (pinned_pages, pages) inside one transaction.
-      // page_embeddings are cascade-deleted via FK on pages.
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, source: 'confluence', confluence_id: 'page-1', space_key: 'DEV' }], rowCount: 1 });
-      // #766 delete-intent soft-delete (UPDATE … RETURNING id)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
+    it('removes persisted pins with a locally committed Confluence delete', async () => {
+      await grantSpace(currentUserId, 'DEV');
+      await useStandaloneMode(currentUserId);
+      const pageId = await insertConfluencePage('pinned-delete', 'Pinned synced page', 'DEV');
+      await query('INSERT INTO pinned_pages (user_id, page_id) VALUES ($1, $2)', [currentUserId, pageId]);
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1'] },
-      });
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/pinned-delete' });
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-
-      // After the ownership check, the Confluence client.deletePage is called
-      // (mocked), then the batch cleanup runs inside the #766 transaction.
-      const pinnedDeleteCall = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
-      );
-      expect(pinnedDeleteCall).toBeDefined();
-      expect(pinnedDeleteCall![1]).toEqual([[42]]);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await pinCount(currentUserId, pageId)).toBe(0);
+      const page = await query('SELECT 1 FROM pages WHERE id = $1', [pageId]);
+      expect(page.rowCount).toBe(0);
     });
-  });
-});
+  },
+);

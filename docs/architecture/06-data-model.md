@@ -17,6 +17,13 @@ erDiagram
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
     users ||--o{ templates : "authors"
+    users o|--o{ page_writer_runtimes : "fences; SET NULL"
+    users o|--o{ page_runtime_admissions : "acts; SET NULL"
+    users o|--o{ page_write_intents : "acts/settles; SET NULL"
+    users o|--o{ page_baselines : "prepares/publishes; SET NULL"
+    users o|--o{ page_baseline_history : "acts; SET NULL"
+    users o|--o{ page_baseline_feature_state : "activates; SET NULL"
+    users o|--o{ page_governance_policies : "updates; SET NULL"
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
@@ -26,6 +33,17 @@ erDiagram
     pages ||--o{ local_attachments : "owns (standalone pages only)"
     pages ||--o{ spaces : "is custom home of (#352)"
     pages ||--o| page_collaborative_docs : "live CRDT state (#1411)"
+    pages o|--o{ page_baselines : "live page locator; SET NULL"
+    page_baselines o|--o{ pages : "active baseline; RESTRICT"
+    pages o|--o{ page_baseline_history : "live page locator; SET NULL"
+    page_writer_runtimes ||--o{ page_runtime_admissions : "owns; RESTRICT"
+    page_writer_runtimes ||--o{ page_write_intents : "owns; RESTRICT"
+    page_write_intents ||--o{ page_baselines : "preparation intent; RESTRICT"
+    page_write_intents ||--o| page_relocation_preparations : "operation preparation; RESTRICT"
+    page_write_intents ||--o{ page_write_recovery_history_segments : "append-only attempts; RESTRICT"
+    pages ||--o{ page_relocation_preparations : "preserves source until settlement; RESTRICT"
+    page_versions o|--o{ page_baselines : "snapshot locator; SET NULL"
+    page_baselines ||--o{ page_baseline_history : "evidence; RESTRICT"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -88,7 +106,7 @@ erDiagram
         text body_html
         text body_text
         int version
-        int parent_id FK
+        text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
         text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
         text visibility "private | shared"
@@ -102,6 +120,17 @@ erDiagram
         text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
         text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
+        bigint content_revision "migration 120; DEFAULT 0, monotonic protected payload revision"
+        bigint lifecycle_revision "migration 120; DEFAULT 0, monotonic freeze/thaw revision"
+        uuid baseline_id FK "active published baseline; nullable, ON DELETE RESTRICT"
+        int frozen_version "nullable live projection"
+        timestamptz frozen_at "nullable live projection"
+        uuid frozen_by_user_id FK "nullable; ON DELETE SET NULL"
+        text frozen_by_name "immutable display snapshot while frozen"
+        text freeze_reason
+        text freeze_provenance "manual_assertion | authenticated_approval"
+        jsonb freeze_reported_signatories "caller assertions, not authenticated approvals"
+        text freeze_reported_reference
     }
 
     page_collaborative_docs {
@@ -124,6 +153,197 @@ erDiagram
         timestamptz edited_at "nullable; real Confluence edit time (migration 077)"
         text author "nullable; Confluence author display name (migration 077)"
         text message "nullable; Confluence version comment (migration 077)"
+    }
+
+    page_writer_runtimes {
+        text runtime_id PK "one backend process epoch"
+        jsonb deployment_identity "immutable host/pid/start identity"
+        timestamptz started_at "DEFAULT NOW"
+        timestamptz quiesced_at
+        uuid quiescence_ack
+        timestamptz fenced_at
+        uuid fenced_by FK "users; ON DELETE SET NULL"
+        text fence_reason
+        jsonb fence_proof "closed server-verified proof kinds"
+    }
+
+    page_runtime_admissions {
+        uuid id PK "DEFAULT gen_random_uuid"
+        text runtime_id FK "page_writer_runtimes; ON DELETE RESTRICT"
+        int page_id "deliberately no FK; durable identity after deletion"
+        uuid actor_id FK "users; ON DELETE SET NULL"
+        bigint lifecycle_revision "admission fence"
+        timestamptz admitted_at "DEFAULT NOW"
+        timestamptz released_at
+        text release_kind "clean_disconnect | runtime_fenced"
+    }
+
+    page_write_intents {
+        uuid id PK "DEFAULT gen_random_uuid"
+        text runtime_id FK "page_writer_runtimes; ON DELETE RESTRICT"
+        text kind "closed effect/recovery policy"
+        uuid actor_id FK "users; ON DELETE SET NULL"
+        int_array page_ids "sorted protected targets; no page FK"
+        jsonb revisions "content + lifecycle revision per page"
+        int_array deleted_page_ids "durable deletion tombstones"
+        text recovery_mode "local_verified | remote_conditional | remote_terminal_only"
+        jsonb effect "bounded, no secrets/full request content"
+        text status "pending | completed | cancelled | reconciled_*"
+        timestamptz effect_started_at
+        timestamptz effect_finished_at
+        timestamptz remote_effect_started_at "first mutating remote phase"
+        timestamptz remote_effects_completed_at "all remote phases succeeded"
+        jsonb remote_terminal_result "bounded server-owned terminal identity"
+        boolean cache_invalidation_pending "retry until pages/search eviction succeeds"
+        jsonb recovery_history "current segment; at most 32 entries / 64 KiB"
+        timestamptz recovery_started_at "claimed before any verifier callback"
+        timestamptz settled_at
+        uuid settled_by FK "users; ON DELETE SET NULL"
+        text settlement_reason
+        jsonb settlement_proof
+    }
+
+    page_write_recovery_history_segments {
+        bigserial id PK
+        uuid intent_id FK "page_write_intents; ON DELETE RESTRICT"
+        jsonb recovery_history "complete immutable segment; 1..32 entries / 64 KiB"
+        timestamptz archived_at "DEFAULT NOW; ordered with id"
+    }
+
+    page_cache_invalidation_queue {
+        int page_id PK "coalesced delivery identity; deliberately no FK"
+        timestamptz queued_at "DEFAULT NOW; ordered delivery index"
+    }
+
+    page_relocation_preparations {
+        uuid intent_id PK,FK "page_write_intents; ON DELETE RESTRICT"
+        int page_id FK "pages; ON DELETE RESTRICT"
+        text direction "to_confluence | to_local"
+        uuid actor_id "original identity; not a live authority grant"
+        text target_space_key
+        text target_visibility
+        text original_source
+        text original_confluence_id
+        text original_space_key
+        text original_title
+        text original_body_html
+        text original_body_storage
+        text original_body_text
+        int original_version
+        text original_visibility
+        uuid original_created_by_user_id
+        boolean original_inherit_perms
+        timestamptz original_local_modified_at
+        uuid original_local_modified_by
+        boolean original_embedding_dirty
+        boolean original_image_analysis_dirty
+        text original_embedding_status
+        timestamptz original_embedded_at
+        text original_key
+        int_array child_ids
+        jsonb access_control_entries
+        jsonb attachments
+        text expected_remote_title_sha256
+        text expected_remote_body_storage_sha256
+        text parent_confluence_id
+        text created_confluence_id "acknowledged before further provider work"
+        jsonb created_page_receipt "nullable; bounded exact returned page identity"
+        jsonb attachment_receipts "ordered acknowledged receipts; bounded by admitted inventory"
+        timestamptz created_at "DEFAULT NOW"
+    }
+
+    page_baseline_feature_state {
+        boolean singleton PK
+        boolean creation_enabled "DEFAULT FALSE"
+        timestamptz activated_at
+        uuid activated_by_user_id FK "users; ON DELETE SET NULL"
+        text activated_by_name "actor display snapshot"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_baseline_capacity {
+        boolean singleton PK
+        bigint reserved_bytes "DEFAULT 0; retained rows until guarded cleanup"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_baselines {
+        uuid id PK "stable preparation/publication identity"
+        int page_id FK "nullable live locator; pages ON DELETE SET NULL"
+        int original_page_id "immutable; deliberately no FK"
+        jsonb page_identity "source-aware offline identity"
+        int version "ordinary page version"
+        bigint content_revision "captured protected payload revision"
+        bigint lifecycle_revision "captured pre-freeze lifecycle"
+        int manifest_version "DEFAULT 1; constrained to 1"
+        text manifest_digest "SHA-256 lowercase hex"
+        jsonb manifest "canonical fixed array"
+        bytea manifest_bytes "exact canonical framed bytes"
+        text title "authored snapshot"
+        text body_html "authored snapshot"
+        text body_storage "authored snapshot"
+        text body_text "authored snapshot"
+        text_array labels "authored snapshot"
+        jsonb parent_identity "source-aware, nullable"
+        jsonb icon "raw-field tuple, nullable"
+        jsonb attachments "retained inventory; DEFAULT []"
+        bigint total_bytes
+        bigint reserved_bytes
+        text status "preparing | prepared | published | abandoned"
+        uuid prepared_by_user_id FK "users; ON DELETE SET NULL"
+        text prepared_by_name "immutable display snapshot"
+        uuid preparation_intent_id FK "page_write_intents; ON DELETE RESTRICT"
+        timestamptz prepared_at "DEFAULT NOW"
+        uuid published_by_user_id FK "users; ON DELETE SET NULL"
+        text published_by_name "immutable display snapshot"
+        timestamptz published_at
+        text provenance "manual_assertion | authenticated_approval"
+        text freeze_reason
+        jsonb reported_signatories "DEFAULT []; caller assertions"
+        text reported_reference
+        uuid version_snapshot_id FK "page_versions; ON DELETE SET NULL"
+        timestamptz abandoned_at
+    }
+
+    page_baseline_history {
+        uuid id PK "DEFAULT gen_random_uuid"
+        int page_id FK "nullable live locator; pages ON DELETE SET NULL"
+        int original_page_id "immutable; deliberately no FK"
+        uuid baseline_id FK "page_baselines; ON DELETE RESTRICT"
+        text action "freeze | thaw"
+        int version "baseline version; mandatory for both actions"
+        text manifest_digest "mandatory for both actions"
+        bigint content_revision
+        bigint lifecycle_revision "unique with original_page_id"
+        text reason
+        uuid actor_user_id FK "users; ON DELETE SET NULL"
+        text actor_display_name "immutable snapshot"
+        text provenance "manual_assertion | authenticated_approval"
+        jsonb reported_signatories "DEFAULT []"
+        text reported_reference
+        timestamptz created_at "DEFAULT NOW"
+    }
+
+    page_governance_policies {
+        text space_key PK
+        boolean governance_enabled "DEFAULT FALSE"
+        bigint policy_revision "DEFAULT 1"
+        uuid updated_by_user_id FK "users; ON DELETE SET NULL"
+        text updated_by_name "actor display snapshot"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_lifecycle_outbox {
+        uuid id PK "DEFAULT gen_random_uuid"
+        int page_id "deliberately no FK; event survives page deletion"
+        bigint lifecycle_revision "unique with page_id"
+        jsonb event "typed page_lifecycle payload"
+        int attempt_count "DEFAULT 0"
+        timestamptz next_attempt_at "DEFAULT NOW"
+        text last_error
+        timestamptz delivered_at
+        timestamptz claimed_at
+        timestamptz created_at "DEFAULT NOW"
     }
 
     page_embeddings {
@@ -364,6 +584,160 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**Immutable baseline foundation (migrations 120–121, #275).** Migration 120 is
+additive: existing and new `pages` rows receive `content_revision = 0` and
+`lifecycle_revision = 0`; the backfill deliberately invents no historical
+freeze, approval or ledger entry. Migration 121 installs the protected-write
+trigger after adding `baseline_id`, leaving legacy writers usable between the
+separately committed migrations. That trigger rejects protected
+title/body/storage/text/label/hierarchy/identity/icon/draft/deletion changes
+while `baseline_id` is set and advances `content_revision` exactly once for an
+editable protected update. Attachment-only writers explicitly touch the
+revision under the same lifecycle lock. `lifecycle_revision` advances on
+freeze/thaw; both revisions are non-negative `BIGINT`s and cross the API as
+decimal strings.
+
+`page_writer_runtimes` is one durable row per process epoch.
+`page_runtime_admissions` retains writable-room tokens until clean disconnect
+or proven runtime fencing. `page_write_intents` retains the exact target set,
+content/lifecycle revisions, dispatch/finish markers, deletion tombstones and
+settlement proof. Its `page_ids`/`deleted_page_ids` arrays intentionally have
+no page FK: a local delete can commit before the intent settles, and a missing
+row is accepted only when its ID appears in that intent's immutable tombstones.
+Only `pending` intents block writes/freeze; uncertain outcomes remain pending
+without TTL expiry. Runtime/admission/intent ownership uses `ON DELETE
+RESTRICT`; nullable human actor/settler/fencer references use `ON DELETE SET
+NULL`.
+Recovery transfers `runtime_id` and stamps `recovery_started_at` before invoking
+the verifier, not only before a local repair. That marker disqualifies no-start
+fencing/cancellation even if the original effect never began; phase timestamps
+and all recovery attempts remain intact across ownership changes.
+Each recovery mutation also holds a current active system administrator row
+on its transaction client; this does not substitute for original-writer access.
+Quiescence records its authorized request before closing the local gate and
+rechecks the administrator before persisting an acknowledgment.
+Each accepted same-runtime retry also appends the actual administrator and
+reason before callbacks; quiescence cancellation writes its `settled_by`.
+Migration 122 rolls the bounded current `recovery_history` segment into
+`page_write_recovery_history_segments` before appending would exceed 32 entries
+or 64 KiB of PostgreSQL JSONB text. Archive insertion and the next current
+segment commit atomically before callbacks. Archived rows reject UPDATE and
+DELETE and restrict parent-intent deletion; their actor identities are JSON
+evidence, not nullable live-user foreign keys. There is no lifetime attempt
+limit and no discarded attribution.
+The process retains retry eligibility once the claim UPDATE succeeds, before
+awaiting COMMIT acknowledgment. Durable ownership distinguishes a committed
+claim from a rolled-back one on the next attempt; callbacks still wait for an
+acknowledged claim.
+
+The page-table publication trigger writes one
+`page_cache_invalidation_queue` row per affected page in the same transaction.
+It covers inserts, deletes, content/lifecycle revisions, visibility, ownership
+and permission inheritance; unrelated telemetry updates do not enqueue work.
+Its primary key coalesces repeated writes, its delivery index orders pending
+work, and the deliberate absence of a page FK preserves hard-delete delivery.
+The conflict arm updates the existing tuple without changing `queued_at`, holding
+its lock through the new writer's commit. A conflict no-op that takes no tuple
+lock would let delivery delete the old entry before the new change becomes visible.
+Intent-owned publication also retains its terminal-only partial queue index.
+Delivery clears either queue only after real cache invalidation succeeds.
+
+`page_relocation_preparations` holds exact operation-owned rollback/publication
+state outside the generic intent's 32 KiB metadata ceiling. Its source-page FK
+prevents deletion while preparation remains necessary. Settlement removes it
+in the transaction that settles the intent; failed recovery preserves it.
+Its insertion is itself a gated local effect, so a crash on either side of
+that commit cannot disguise a retained preparation as an unstarted intent.
+Exact unchanged local state plus absent remote-start evidence permits an active
+recovery administrator to remove a to-Confluence preparation after original-actor
+revocation or deletion; it authorizes no publication or to-local restoration.
+A to-local recovery with no cutover leaves current grants and revocations intact.
+During rollback, a `SHARE ROW EXCLUSIVE` lock on `access_control_entries`
+precedes the page row lock, matching restriction refresh's ACE-then-page order.
+It serializes ordinary grant/revoke writers with verification of the still-empty
+cutover ACL and exact snapshot restoration. A changed ACL refuses restoration.
+The create identity is recorded before readback or uploads, and every successful
+upload appends its own bounded receipt before the next provider call. Receipt
+capacity scales with the admitted inventory; the generic terminal result holds
+only its count and canonical ordered SHA-256, never a second full receipt array.
+
+Migration 121 seeds exactly one feature-state row with
+`creation_enabled = false` and one zeroed capacity row. Enabling creation is
+separately gated by a registered deployment-readiness provider; the #275
+foundation intentionally has none, so its blocker is
+`protected_writer_enforcement_not_registered` until #276 supplies complete
+writer readiness. This schema does not claim #276's remaining sync,
+collaboration and cascade enforcement, #278's proposal/signature/archive
+tables, or #277's UI.
+
+A preview owns one stable `page_baselines.id`. The partial unique index on
+`(original_page_id, prepared_by_user_id, content_revision,
+lifecycle_revision)` for `preparing`/`prepared` rows makes concurrent or
+retried previews reuse that preparation rather than reserve another copy.
+Publishing one preview atomically abandons the page's other prepared previews.
+Maintenance removes only these unpublished copies and releases their reservations;
+published evidence is never a capacity-cleanup candidate.
+The same cleanup also releases `preparing` reservations whose intents were
+durably cancelled before effect-start. Pending and started reservations are
+never made reclaimable by age alone.
+Manifest v1 persists both its fixed JSON array and the exact UTF-8 bytes hashed
+into `manifest_digest`; authored title/HTML/storage/text, sorted labels,
+source-aware page/parent identity, raw icon tuple and complete attachment
+inventory are independent of the mutable page. The inventory records
+`local`/`confluence`/`icon` store identity, owner key, filename, byte count,
+media type and SHA-256. `page_baseline_capacity.reserved_bytes` covers every
+published, preparing, prepared or not-yet-cleaned abandoned row and is
+serialized by its singleton row.
+
+Retained media is stored outside live attachment keyspaces at
+`ATTACHMENTS_DIR/page-baselines/<baseline UUID>/<attempt UUID>/`. The namespace
+is reserved from the orphan sweep and hard-delete cleanup, and every path
+segment is validated. Defaults are 512 attachments and 1 GiB per preparation,
+50 GiB total retained bytes, and a 64 MiB free-space reserve. Preparation
+capacity is committed with its `baseline.prepare` intent before streamed
+copy/hash/fsync verification. Published evidence is never evicted or garbage
+collected. Cleanup can delete only a committed `abandoned` preparation after
+proving it was never published/referenced and its intent is terminal or safely
+transferred; capacity is released only after byte removal succeeds.
+
+The baseline row permits only `preparing → prepared|abandoned` and `prepared →
+published|abandoned`, with immutable preparation fields. Its trigger otherwise
+allows only FK-driven nulling of `page_id`, actor IDs and
+`version_snapshot_id`; published content/evidence cannot be updated or deleted.
+The live page points to the active baseline with `ON DELETE RESTRICT`.
+`version_snapshot_id` is only a locator: publication inserts
+`page_versions` with `ON CONFLICT DO NOTHING`, then links it only if the
+existing same-version title/body are byte-equivalent. It never overwrites an
+older snapshot, and the baseline remains authoritative when no link can be
+made.
+
+`page_baseline_history` is append-only except for FK-driven nulling of its live
+page/actor pointers. Every freeze **and** thaw row retains the mandatory
+baseline UUID, ordinary version, manifest digest, content/lifecycle revisions,
+reason, provenance, original page ID and actor display snapshot. Consequently
+page/user deletion removes neither the ledger nor its attribution snapshot;
+the old page URL no longer authorizes it, while system-admin evidence/history
+reads remain available by baseline identity. The unique
+`(original_page_id, lifecycle_revision)` key prevents duplicate transitions.
+
+Freeze/thaw also inserts one `page_lifecycle_outbox` row in the same
+transaction, unique by `(page_id,lifecycle_revision)`. Outbox rows deliberately
+have no page FK, survive deletion, and carry only the typed lifecycle event.
+Delivery is at least once after commit with claim recovery/backoff; cache,
+Redis event and optional EE webhook failure updates retry state instead of
+rolling back or misreporting the committed transition. Enqueue is deduplicated,
+but a retry may repeat or reorder delivery, so consumers compare the monotonic
+lifecycle revision and ignore stale/already-observed events.
+
+`page_governance_policies` is the durable CE fail-closed marker. An enabled
+space cannot manually publish even when the enterprise plugin/license is
+absent; the optional core hook must revalidate and finalize on the locked CE
+transaction. Migration 121 provides the marker and extension point only.
+Proposal requirements, votes, signatures and archive protection belong to
+#278 and are not represented as delivered CE tables here. Operations and
+rollout are documented in
+[`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md).
 
 **Deterministic relationship freshness (#1314, migration 111).** The
 `pages_deterministic_relationship_dirty` trigger records committed content,

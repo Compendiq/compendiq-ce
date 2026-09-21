@@ -157,6 +157,35 @@ curl http://localhost:8081/api/health
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
+### Immutable page baseline storage (foundation)
+
+Issue #275 installs the inactive Community Edition foundation for immutable
+article baselines. It has no published admin or end-user UI, and baseline
+creation remains disabled until #276 completes collaboration, sync, purge,
+cascade, and cross-process writer enforcement. In a foundation-only deployment,
+`GET /api/admin/page-baselines/activation` reports
+`creationEnabled: false`, `deploymentReady: false`, and blocker
+`protected_writer_enforcement_not_registered`. Do not bypass that gate or
+describe the current release as covering every writer.
+
+Retained media lives under `ATTACHMENTS_DIR/page-baselines/` and is excluded
+from ordinary attachment sweeps and page-delete cleanup. Size limits are
+positive safe-integer environment values:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAGE_BASELINE_MAX_ATTACHMENTS` | `512` | Maximum referenced media objects in one baseline |
+| `PAGE_BASELINE_MAX_BYTES` | `1073741824` (1 GiB) | Maximum retained media bytes in one baseline |
+| `PAGE_BASELINE_MAX_RETAINED_BYTES` | `53687091200` (50 GiB) | Logical cap across published evidence and active reservations |
+| `PAGE_BASELINE_MIN_FREE_BYTES` | `67108864` (64 MiB) | Filesystem free-space reserve left after an admitted copy |
+
+Capacity exhaustion refuses new preparation and never evicts published
+evidence. Lowering a limit does not prune existing baselines. For the exact
+manifest, media coverage, rollout gate, authority model, retention/backup rules,
+and conservative writer recovery procedure, see
+[`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
+
+
 ### Client inference (on-device editor model)
 
 Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
@@ -1434,6 +1463,54 @@ Pick one of the following when upgrading an existing install:
 
 2. Restart the services. Migrations run automatically.
 
+## Immutable Page Baseline Foundation
+
+The #275 foundation stores a canonical manifest, independent retained copies of
+referenced media, and append-only freeze/thaw evidence. CE provenance is a
+`manual_assertion`: optional reported signatories and references are
+caller-supplied assertions, not authenticated approval or a cryptographic
+signature. Signed governance, independently trusted keys, and evidence reports
+belong to #278; the shared UI belongs to #277. The #276 enforcement dependency
+must land first, so creation is deliberately off in this release.
+
+Published evidence has no product TTL, ordinary-retention deletion, capacity
+eviction, or delete API. Thaw unlocks the live page but retains its old
+baseline. Evidence also survives page and actor deletion: live foreign keys may
+become null while original page identity and actor display snapshots remain.
+Old page history and media URLs do not become an evidence back door after
+deletion; they return not found. Deleted-source evidence is available only to an
+active system administrator through the baseline-ID admin routes.
+
+Freeze preview/manual freeze requires current page access plus system-admin,
+space `manage`, or standalone-page ownership. Thaw is narrower: current page
+access plus system-admin or space `manage`; owner-only thaw is not allowed.
+Ordinary page history redacts reported signatory emails, while the system-admin
+evidence response may contain the stored caller-reported email. A UUID or digest
+never grants access.
+
+Interrupted writers never expire by heartbeat or TTL. Recovery is active
+system-administrator work through `/api/admin/page-write-recovery`: quiescence
+must reach the process that owns the runtime ID, fencing accepts only an exact
+owner acknowledgment, server-proven no-start state, or independently verified
+local process termination, and outcome reconciliation uses trusted
+kind-specific server code. There is no caller-supplied proof or force-clear
+route. An unversioned remote write with an unknown result stays unresolved.
+Quiescence waits across successful multi-stage writer gaps through final
+settlement; it is not a timeout-based cancellation. Conditional Confluence
+recovery reads exact provider history and atomically publishes the matching
+local content and completion metadata before clearing the intent. It never
+reissues an unknown remote mutation.
+Recovery itself belongs to the process performing it: quiescence waits for its
+verification, repair and settlement. If that process dies, fence its new runtime
+ID before retrying. A failed provider read after an acknowledged page PUT keeps
+the acknowledgment and retries only observation/local publication, never PUT.
+Committed local changes and hard deletes also retain cache-publication work
+through Redis outages; the worker retries it after Redis returns.
+
+The complete activation, storage, canonical digest, capacity, API, recovery,
+and backup procedure is
+[`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
+
 ## Attachment Storage & Orphan Sweep
 
 `ATTACHMENTS_DIR` (default `data/attachments`) holds two stores that grow with
@@ -1599,6 +1676,14 @@ transaction open until `pg_dump` has exited, then closes and returns the pooled
 connection. Backup generation remains constant-memory: the backend does not
 buffer a complete dump, attachment, or archive, and it does not report success
 until `pg_dump` closes with exit code `0`.
+
+Immutable page baselines require the database records and
+`ATTACHMENTS_DIR/page-baselines/` bytes as one recovery set. The in-app backup
+includes both because it walks the complete attachment root. A manual
+database-only dump or attachment-volume-only copy is not complete baseline
+evidence; stop application writers and capture both together. See the
+[immutable baseline runbook](runbooks/immutable-page-baselines.md#backup-and-restore)
+for restore verification.
 
 - **Download:** the authenticated admin request creates a 256-bit Redis ticket
   with a 30-second TTL, then the browser performs native navigation to the

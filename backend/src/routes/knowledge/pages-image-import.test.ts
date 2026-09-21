@@ -1,73 +1,34 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  addAllowedBaseUrlSilent,
+  clearAllowedBaseUrls,
+} from '../../core/utils/ssrf-guard.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// Mocks mirror the setup in pages-image-upload.test.ts so the two routes
-// share their test plumbing.
-const mockWriteAttachmentCache = vi.fn();
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn(),
-  writeAttachmentCache: (...args: unknown[]) => mockWriteAttachmentCache(...args),
-}));
+const PUBLIC_ORIGIN = 'https://cdn.example.com';
 
-const mockIsSystemAdmin = vi.fn().mockResolvedValue(false);
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-  isSystemAdmin: (...args: unknown[]) => mockIsSystemAdmin(...args),
-}));
-
-const mockQuery = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: vi.fn().mockResolvedValue({ query: vi.fn(), release: vi.fn() }),
-  }),
-}));
-
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn(), confluenceToHtml: vi.fn(),
-}));
-vi.mock('../../core/services/audit-service.js', () => ({ logAuditEvent: vi.fn() }));
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn(), isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-vi.mock('../../core/services/redis-cache.js', () => {
-  class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  }
-  return { RedisCache: MockRedisCache, getRedisClient: vi.fn().mockReturnValue(null) };
-});
-
-// SSRF guard: allow `https://cdn.example.com`-style URLs and reject the
-// rest, so we can exercise both code paths deterministically.
-const mockAssertNonSsrfUrl = vi.fn();
-vi.mock('../../core/utils/ssrf-guard.js', async () => {
-  const actual = await vi.importActual<typeof import('../../core/utils/ssrf-guard.js')>(
-    '../../core/utils/ssrf-guard.js',
-  );
-  return {
-    ...actual,
-    assertNonSsrfUrl: (url: string) => mockAssertNonSsrfUrl(url),
-  };
-});
-
-// Tiny valid PNG (8-byte signature plus a minimal IHDR) — used as the
-// upstream response body. Just needs `content-type: image/png` and a
-// non-empty body; the route doesn't currently magic-byte-check imports
-// (the SSRF + content-type gates carry the trust, plus the storage layer
-// is the same as for paste uploads where we already do PNG sniffing).
+// Tiny valid PNG (signature plus a minimal IHDR) used as the upstream body.
 const TINY_PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -80,9 +41,12 @@ const TINY_PNG = Buffer.from([
   0xae, 0x42, 0x60, 0x82,
 ]);
 
-function mockUpstream(
+function publicUrl(path: string): string {
+  return `${PUBLIC_ORIGIN}${path}`;
+}
+
+function upstreamResponse(
   options: {
-    ok?: boolean;
     status?: number;
     contentType?: string;
     contentLength?: number;
@@ -92,383 +56,213 @@ function mockUpstream(
   const body = options.body ?? TINY_PNG;
   const headers = new Headers();
   headers.set('content-type', options.contentType ?? 'image/png');
-  if (options.contentLength !== undefined) {
-    headers.set('content-length', String(options.contentLength));
-  } else {
-    headers.set('content-length', String(body.length));
-  }
+  headers.set('content-length', String(options.contentLength ?? body.length));
   return new Response(body, {
     status: options.status ?? 200,
     headers,
   });
 }
 
-describe('POST /api/pages/:id/images/import', () => {
-  let app: ReturnType<typeof Fastify>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let originalFetch: any;
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
+const dependenciesAvailable = dbAvailable && redisAvailable;
+let app: FastifyInstance;
+let redis: RedisClientType;
+let userId: string;
+let ownedPageId: number;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+let originalFetch: typeof globalThis.fetch;
+let fetchMock = vi.fn<typeof globalThis.fetch>();
 
+async function expectAttachmentAbsent(pageKey: string, filename: string): Promise<void> {
+  await expect(access(join(attachmentsDir, pageKey, filename))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+}
+
+async function expectPageDirectoryAbsent(pageKey: string): Promise<void> {
+  await expect(access(join(attachmentsDir, pageKey))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+}
+
+async function expectStoredBytes(pageKey: string, filename: string): Promise<void> {
+  await expect(readFile(join(attachmentsDir, pageKey, filename))).resolves.toEqual(TINY_PNG);
+}
+
+async function expectPageStillWritable(): Promise<void> {
+  const nextWrite = await app.inject({
+    method: 'POST',
+    url: `/api/pages/${ownedPageId}/images`,
+    payload: {
+      filename: 'next-write.png',
+      dataUri: `data:image/png;base64,${TINY_PNG.toString('base64')}`,
+    },
+  });
+  expect(nextWrite.statusCode).toBe(200);
+  await expectStoredBytes(String(ownedPageId), 'next-write.png');
+}
+
+async function grantSpaceAccess(spaceKey: string, actorId: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('image-import-reader', 'Image import reader', FALSE, ARRAY['read'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments
+       (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, actorId, role.rows[0]!.id],
+  );
+}
+
+describe.skipIf(!dependenciesAvailable)('POST /api/pages/:id/images/import — real persistence', () => {
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'test-user';
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    }) as RedisClientType;
+    await redis.connect();
+    setRedisClient(redis);
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'page-image-import-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
+    originalFetch = globalThis.fetch;
+    app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+      instance.redis = redis;
+      // The attachment handler captures ATTACHMENTS_DIR at module load.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
-    app.decorateRequest('userId', '');
-    app.decorate('redis', null);
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
-    if (originalFetch) globalThis.fetch = originalFetch;
+    await redis.quit();
+    await teardownTestDb();
+    globalThis.fetch = originalFetch;
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+    clearAllowedBaseUrls();
+    await rm(attachmentsDir, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    mockQuery.mockReset();
-    mockWriteAttachmentCache.mockReset();
-    mockWriteAttachmentCache.mockResolvedValue(undefined);
-    mockIsSystemAdmin.mockReset();
-    mockIsSystemAdmin.mockResolvedValue(false);
-    mockAssertNonSsrfUrl.mockReset();
-    mockAssertNonSsrfUrl.mockResolvedValue(undefined); // allow by default
-    if (!originalFetch) originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn();
-    mockQuery.mockResolvedValue({ rows: [] });
+  beforeEach(async () => {
+    await truncateAllTables();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    userId = await insertUser(`image-import-${randomUUID()}`);
+    await insertLocalSpace('LOCAL', userId);
+    ownedPageId = await insertStandalonePage('Owned image page', 'private', userId, 'LOCAL');
+    clearAllowedBaseUrls();
+    addAllowedBaseUrlSilent(PUBLIC_ORIGIN);
+    fetchMock = vi.fn<typeof globalThis.fetch>();
+    globalThis.fetch = fetchMock;
   });
 
-  it('imports a valid PNG and returns the internal /api/attachments URL', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
+  it('imports a valid PNG, returns its attachment URL, and stores the upstream bytes', async () => {
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/hero.png' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/hero.png') },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.url).toMatch(/^\/api\/attachments\/42\/hero\.png$/);
-    expect(mockAssertNonSsrfUrl).toHaveBeenCalledWith('https://cdn.example.com/hero.png');
-    expect(mockWriteAttachmentCache).toHaveBeenCalledWith('test-user', '42', 'hero.png', expect.any(Buffer));
+    expect(response.json()).toEqual({ url: `/api/attachments/${ownedPageId}/hero.png` });
+    await expectStoredBytes(String(ownedPageId), 'hero.png');
   });
 
-  it('rejects URLs blocked by SSRF guard with 400 (does not leak the reason)', async () => {
-    mockAssertNonSsrfUrl.mockRejectedValueOnce(
-      Object.assign(new Error('SSRF blocked: cannot connect to internal/private network'), { name: 'SsrfError' }),
-    );
-    // Real SsrfError instances are produced by the guard; the route catches
-    // `instanceof SsrfError`. We import the real class so the instanceof
-    // check fires in the route.
-    const { SsrfError } = await vi.importActual<typeof import('../../core/utils/ssrf-guard.js')>(
-      '../../core/utils/ssrf-guard.js',
-    );
-    mockAssertNonSsrfUrl.mockReset();
-    mockAssertNonSsrfUrl.mockRejectedValueOnce(new SsrfError('blocked'));
-
+  it('rejects a loopback source through the real SSRF guard without fetching or writing', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
+      url: `/api/pages/${ownedPageId}/images/import`,
       payload: { url: 'http://127.0.0.1/admin' },
     });
 
     expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.payload).message).toMatch(/not reachable or not allowed/i);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+    expect(response.json().message).toMatch(/not reachable or not allowed/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectPageDirectoryAbsent(String(ownedPageId));
   });
 
-  it('rejects non-image content-types with 415', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      mockUpstream({ contentType: 'text/html', body: Buffer.from('<html>nope</html>') }),
+  it('rejects non-image content types with 415 without blocking later writes', async () => {
+    fetchMock.mockResolvedValueOnce(
+      upstreamResponse({ contentType: 'text/html', body: Buffer.from('<html>nope</html>') }),
     );
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://example.com/index.html' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/index.html') },
     });
 
     expect(response.statusCode).toBe(415);
-    expect(JSON.parse(response.payload).message).toMatch(/must be an image/i);
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+    expect(response.json().message).toMatch(/must be an image/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'index.html');
+    await expectPageStillWritable();
   });
 
-  it('rejects unsupported image MIME types (e.g. SVG, BMP) with 415', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      mockUpstream({ contentType: 'image/svg+xml', body: Buffer.from('<svg/>') }),
+  it('rejects unsupported image MIME types such as SVG with 415', async () => {
+    fetchMock.mockResolvedValueOnce(
+      upstreamResponse({ contentType: 'image/svg+xml', body: Buffer.from('<svg/>') }),
     );
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://example.com/diagram.svg' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/diagram.svg') },
     });
 
     expect(response.statusCode).toBe(415);
-    expect(JSON.parse(response.payload).message).toMatch(/not supported.*svg/i);
+    expect(response.json().message).toMatch(/not supported.*svg/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'diagram.svg');
+    await expectPageStillWritable();
   });
 
-  it('rejects oversized responses up front via the declared Content-Length', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      mockUpstream({ contentLength: 50 * 1024 * 1024 }), // 50 MB declared
-    );
+  it('rejects oversized responses up front from Content-Length', async () => {
+    fetchMock.mockResolvedValueOnce(upstreamResponse({ contentLength: 50 * 1024 * 1024 }));
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/huge.png' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/huge.png') },
     });
 
     expect(response.statusCode).toBe(413);
-    expect(JSON.parse(response.payload).message).toMatch(/exceeds maximum size/i);
+    expect(response.json().message).toMatch(/exceeds maximum size/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'huge.png');
+    await expectPageStillWritable();
   });
 
-  it('returns 502 when the upstream responds non-2xx', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      mockUpstream({ status: 404, body: Buffer.alloc(0) }),
-    );
+  it('returns 502 for a non-success upstream response without storing it', async () => {
+    fetchMock.mockResolvedValueOnce(upstreamResponse({ status: 404, body: Buffer.alloc(0) }));
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/missing.png' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/missing.png') },
     });
 
     expect(response.statusCode).toBe(502);
-    expect(JSON.parse(response.payload).message).toMatch(/HTTP 404/);
+    expect(response.json().message).toMatch(/HTTP 404/);
+    await expectAttachmentAbsent(String(ownedPageId), 'missing.png');
+    await expectPageStillWritable();
   });
 
-  it('returns 502 when the upstream returns an empty body', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      mockUpstream({ body: Buffer.alloc(0), contentLength: 0 }),
-    );
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/empty.png' },
-    });
-
-    expect(response.statusCode).toBe(502);
-    expect(JSON.parse(response.payload).message).toMatch(/empty body/i);
-  });
-
-  it('returns 502 when fetch throws (timeout, DNS, connection refused, …)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TypeError('fetch failed'));
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/down.png' },
-    });
-
-    expect(response.statusCode).toBe(502);
-    expect(JSON.parse(response.payload).message).toMatch(/failed to fetch/i);
-  });
-
-  it('returns 404 when the page does not exist', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/999/images/import',
-      payload: { url: 'https://cdn.example.com/x.png' },
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  it('returns 403 when the user does not own a standalone page', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
-      }],
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/x.png' },
-    });
-
-    expect(response.statusCode).toBe(403);
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
-  });
-
-  it('imports onto a shared standalone page the user did not create', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'shared',
-      }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/x.png' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
-  });
-
-  it('lets a system admin import onto a private standalone page they did not create', async () => {
-    mockIsSystemAdmin.mockResolvedValue(true);
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
-      }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/x.png' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
-  });
-
-  it('rejects malformed URLs with 400', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'not-a-real-url' },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(mockAssertNonSsrfUrl).not.toHaveBeenCalled(); // Zod rejects before we call the guard
-  });
-
-  it('generates a filename when the URL has no usable basename', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/' }, // empty path
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.url).toMatch(/^\/api\/attachments\/42\/imported-\d+-[0-9a-f]+\.png$/);
-  });
-
-  it('re-validates redirect Location headers against SSRF guard (chain bypass fix)', async () => {
-    // Regression test for the SSRF-via-redirect bypass found in code review:
-    // before the fix, fetch(url, {redirect: 'follow'}) would silently follow
-    // a 302 → http://192.168.1.1 even though the SSRF guard would have
-    // blocked that URL if submitted directly. The route now uses manual
-    // redirect mode and re-validates each hop.
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-    const { SsrfError } = await vi.importActual<typeof import('../../core/utils/ssrf-guard.js')>(
-      '../../core/utils/ssrf-guard.js',
-    );
-
-    // First call (the initial URL) passes the guard…
-    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
-    // …upstream returns 302 → private IP.
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(null, { status: 302, headers: { location: 'http://192.168.1.1/admin' } }),
-    );
-    // …the second guard call (for the Location target) rejects.
-    mockAssertNonSsrfUrl.mockRejectedValueOnce(new SsrfError('SSRF blocked: cannot connect to internal/private network'));
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/redir.png' },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.payload).message).toMatch(/redirects to a disallowed/i);
-    // Critical: fetch was called for the FIRST URL but NOT for the private IP.
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    expect(globalThis.fetch).toHaveBeenCalledWith('https://cdn.example.com/redir.png', expect.anything());
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
-  });
-
-  it('follows safe redirect chains (re-validates and re-fetches the final URL)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-
-    // Both hops pass SSRF — the chain is public-to-public.
-    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
-    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
-
-    (globalThis.fetch as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://final.example.com/hero.png' } }))
-      .mockResolvedValueOnce(mockUpstream());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://short.example.com/r' },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-    expect(mockAssertNonSsrfUrl).toHaveBeenCalledTimes(2);
-    expect(mockAssertNonSsrfUrl.mock.calls[1]![0]).toBe('https://final.example.com/hero.png');
-  });
-
-  it('aborts when the body exceeds the size cap mid-stream (lying Content-Length)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-
-    // Build a ReadableStream that emits chunks summing past 10 MB, while
-    // claiming Content-Length: 100 in the header. Defends against
-    // upstreams that lie about size to bypass the up-front content-length
-    // check.
-    const CHUNK_BYTES = 1024 * 1024; // 1 MB chunks
-    const CHUNK_COUNT = 15;          // → ~15 MB total
+  it('returns 502 when the upstream response body fails while streaming', async () => {
     const stream = new ReadableStream({
-      async start(controller) {
-        for (let i = 0; i < CHUNK_COUNT; i++) {
-          controller.enqueue(new Uint8Array(CHUNK_BYTES));
-          // Yield so the consumer can interleave reads with the cap check.
-          await new Promise((r) => setTimeout(r, 0));
-        }
-        controller.close();
+      start(controller) {
+        controller.error(new Error('upstream socket reset'));
       },
     });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response(stream, {
         status: 200,
         headers: { 'content-type': 'image/png', 'content-length': '100' },
@@ -477,73 +271,286 @@ describe('POST /api/pages/:id/images/import', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://cdn.example.com/lying.png' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/interrupted.png') },
     });
 
-    expect(response.statusCode).toBe(413);
-    expect(JSON.parse(response.payload).message).toMatch(/exceeds maximum size/i);
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(502);
+    expect(response.json().message).toMatch(/failed to read source image body/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'interrupted.png');
+    await expectPageStillWritable();
   });
 
-  it('rejects bodies whose magic bytes do not match the declared Content-Type', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
+  it('returns 502 for an empty upstream body without storing it', async () => {
+    fetchMock.mockResolvedValueOnce(
+      upstreamResponse({ body: Buffer.alloc(0), contentLength: 0 }),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/empty.png') },
     });
 
-    // Upstream returns `Content-Type: image/png` but the body is plain HTML
-    // bytes (no PNG signature). The route must reject this — otherwise an
-    // attacker can stash anything in our attachment store under a PNG MIME.
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(Buffer.from('<!doctype html><script>alert(1)</script>'), {
-        status: 200,
-        headers: { 'content-type': 'image/png', 'content-length': '40' },
+    expect(response.statusCode).toBe(502);
+    expect(response.json().message).toMatch(/empty body/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'empty.png');
+    await expectPageStillWritable();
+  });
+
+  it('returns 502 when the upstream fetch fails and leaves no pending writer', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/down.png') },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().message).toMatch(/failed to fetch/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'down.png');
+    await expectPageStillWritable();
+  });
+
+  it('returns 404 when the page does not exist', async () => {
+    const missingId = 2_147_483_647;
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${missingId}/images/import`,
+      payload: { url: publicUrl('/x.png') },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectPageDirectoryAbsent(String(missingId));
+  });
+
+  it('returns 403 when the user does not own a private standalone page', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('OTHER-PRIVATE', ownerId);
+    const pageId = await insertStandalonePage('Private page', 'private', ownerId, 'OTHER-PRIVATE');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/images/import`,
+      payload: { url: publicUrl('/x.png') },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectPageDirectoryAbsent(String(pageId));
+  });
+
+  it('imports onto a shared standalone page the user did not create', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('OTHER-SHARED', ownerId);
+    const pageId = await insertStandalonePage('Shared page', 'shared', ownerId, 'OTHER-SHARED');
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/images/import`,
+      payload: { url: publicUrl('/shared.png') },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ url: `/api/attachments/${pageId}/shared.png` });
+    await expectStoredBytes(String(pageId), 'shared.png');
+  });
+
+  it('lets a system admin import onto a private standalone page they did not create', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('OTHER-ADMIN', ownerId);
+    const pageId = await insertStandalonePage('Private admin page', 'private', ownerId, 'OTHER-ADMIN');
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [userId]);
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/images/import`,
+      payload: { url: publicUrl('/admin.png') },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ url: `/api/attachments/${pageId}/admin.png` });
+    await expectStoredBytes(String(pageId), 'admin.png');
+  });
+
+  it('rejects malformed URLs before fetching or creating writer state', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: 'not-a-real-url' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectPageDirectoryAbsent(String(ownedPageId));
+    const intents = await query('SELECT id FROM page_write_intents WHERE actor_id = $1', [userId]);
+    expect(intents.rows).toEqual([]);
+  });
+
+  it('generates a safe filename when the URL has no usable basename', async () => {
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/') },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ url: string }>();
+    expect(body.url).toMatch(new RegExp(`^/api/attachments/${ownedPageId}/imported-\\d+-[0-9a-f]+\\.png$`));
+    const filename = decodeURIComponent(body.url.split('/').at(-1)!);
+    await expectStoredBytes(String(ownedPageId), filename);
+  });
+
+  it('sanitizes the URL basename before writing the imported file', async () => {
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/folder/hero_(final)!.png') },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      url: `/api/attachments/${ownedPageId}/hero_final.png`,
+    });
+    await expectStoredBytes(String(ownedPageId), 'hero_final.png');
+    await expectAttachmentAbsent(String(ownedPageId), 'hero_(final)!.png');
+  });
+
+  it('denies a redirect to a private address before fetching the forbidden destination', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'http://192.168.1.1/admin' },
       }),
     );
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images/import',
-      payload: { url: 'https://attacker.example.com/fake.png' },
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/redir.png') },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toMatch(/redirects to a disallowed/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(publicUrl('/redir.png'), expect.anything());
+    await expectAttachmentAbsent(String(ownedPageId), 'redir.png');
+    await expectPageStillWritable();
+  });
+
+  it('follows a safe public redirect chain and stores the final response bytes', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: publicUrl('/final/hero.png') },
+        }),
+      )
+      .mockResolvedValueOnce(upstreamResponse());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/short') },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]![0]).toBe(publicUrl('/final/hero.png'));
+    const body = response.json<{ url: string }>();
+    expect(body.url).toMatch(new RegExp(`^/api/attachments/${ownedPageId}/imported-\\d+-[0-9a-f]+\\.png$`));
+    const filename = decodeURIComponent(body.url.split('/').at(-1)!);
+    await expectStoredBytes(String(ownedPageId), filename);
+  });
+
+  it('aborts when a lying Content-Length body exceeds the size cap mid-stream', async () => {
+    const chunkBytes = 1024 * 1024;
+    const stream = new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < 15; i += 1) {
+          controller.enqueue(new Uint8Array(chunkBytes));
+        }
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': '100' },
+      }),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/lying.png') },
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json().message).toMatch(/exceeds maximum size/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'lying.png');
+    await expectPageStillWritable();
+  });
+
+  it('rejects bytes whose magic does not match the declared image type', async () => {
+    fetchMock.mockResolvedValueOnce(
+      upstreamResponse({
+        contentType: 'image/png',
+        body: Buffer.from('<!doctype html><script>alert(1)</script>'),
+      }),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${ownedPageId}/images/import`,
+      payload: { url: publicUrl('/fake.png') },
     });
 
     expect(response.statusCode).toBe(415);
-    expect(JSON.parse(response.payload).message).toMatch(/does not match declared/i);
-    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+    expect(response.json().message).toMatch(/does not match declared/i);
+    await expectAttachmentAbsent(String(ownedPageId), 'fake.png');
+    await expectPageStillWritable();
   });
 
-  it('allows Confluence-spaced pages when the user has access to the space (RBAC)', async () => {
-    // Coverage for the non-standalone branch — `getUserAccessibleSpaces`
-    // returns `['DEV', 'OPS']` per the mock at the top of the file.
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 100, source: 'confluence', confluence_id: 'CONFL-100', created_by_user_id: null, space_key: 'DEV' }],
-    });
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
+  it('imports onto a Confluence page through a real current space assignment', async () => {
+    await insertLocalSpace('DEV', userId);
+    await grantSpaceAccess('DEV', userId);
+    await insertConfluencePage('CONFL-100', 'Accessible Confluence page', 'DEV');
+    fetchMock.mockResolvedValueOnce(upstreamResponse());
 
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages/CONFL-100/images/import',
-      payload: { url: 'https://cdn.example.com/space-shot.png' },
+      payload: { url: publicUrl('/space-shot.png') },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockWriteAttachmentCache).toHaveBeenCalledWith(
-      'test-user', 'CONFL-100', 'space-shot.png', expect.any(Buffer),
-    );
+    expect(response.json()).toEqual({
+      url: '/api/attachments/CONFL-100/space-shot.png',
+    });
+    await expectStoredBytes('CONFL-100', 'space-shot.png');
   });
 
-  it('denies Confluence-spaced pages when the user does not have access', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 200, source: 'confluence', confluence_id: 'CONFL-200', created_by_user_id: null, space_key: 'SECRET' }],
-    });
+  it('denies a Confluence page when the user has no current page or space access', async () => {
+    await insertLocalSpace('SECRET', userId);
+    await insertConfluencePage('CONFL-200', 'Denied Confluence page', 'SECRET');
 
     const response = await app.inject({
       method: 'POST',
       url: '/api/pages/CONFL-200/images/import',
-      payload: { url: 'https://cdn.example.com/x.png' },
+      payload: { url: publicUrl('/x.png') },
     });
 
     expect(response.statusCode).toBe(403);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectPageDirectoryAbsent('CONFL-200');
   });
 });

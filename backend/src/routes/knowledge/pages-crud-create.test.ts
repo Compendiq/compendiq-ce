@@ -506,11 +506,10 @@ describe('POST /api/pages - parentId validation', () => {
    * Round 1 swept the four UPDATE paths and stopped there, which left the
    * writer list this feature ships — ADR-025's, the runbook's and
    * `image-embedding-dirty.ts`'s — reading as an audit while the create arms
-   * were absent from it. The Confluence arm is the one that matters twice
-   * over: `confluenceToHtml` emits `/api/attachments/<id>/<file>` for any
-   * `<ac:image><ri:attachment>` the created storage carries, and its
-   * `ON CONFLICT … DO UPDATE` re-writes `body_html` on a row that may already
-   * carry index entries.
+   * The Confluence arm is the one that matters most:
+   * `confluenceToHtml` emits `/api/attachments/<id>/<file>` for any
+   * `<ac:image><ri:attachment>` the created storage carries. A create collision
+   * must not rewrite an existing protected row; reconciliation handles it.
    *
    * Unconditional TRUE, matching `embedding_dirty` beside it rather than the
    * `IS DISTINCT FROM` gate the UPDATE paths use: there is no previous body to
@@ -551,7 +550,7 @@ describe('POST /api/pages - parentId validation', () => {
       expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![2]);
     });
 
-    it('marks a Confluence create image_analysis_dirty, on the insert and the conflict arm', async () => {
+    it('marks a Confluence create image_analysis_dirty without overwriting a colliding row', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
       mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -574,7 +573,7 @@ describe('POST /api/pages - parentId validation', () => {
       expect(response.statusCode).toBe(200);
       const sql = insertPagesSql();
       expect(sql).toMatch(/embedding_dirty,\s*image_analysis_dirty,\s*embedding_status/);
-      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_analysis_dirty = TRUE/);
+      expect(sql).toMatch(/ON CONFLICT[\s\S]*DO NOTHING/);
       expect(sql).not.toContain('image_embedding_dirty');
     });
   });

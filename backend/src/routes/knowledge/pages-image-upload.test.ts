@@ -1,386 +1,376 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import {
+  completePageWriteIntent,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+} from '../../core/services/page-write-admission.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  REAL_GIF_40x30_BASE64,
+  REAL_JPEG_40x30_BASE64,
+  REAL_PNG_40x30_BASE64,
+  REAL_WEBP_VP8_40x30_BASE64,
+} from '../../core/services/test-image-fixtures.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// Mock the attachment handler
-const mockWriteAttachmentCache = vi.fn();
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn(),
-  writeAttachmentCache: (...args: unknown[]) => mockWriteAttachmentCache(...args),
-}));
+const IMAGE_FORMATS = [
+  { label: 'PNG', mime: 'image/png', extension: 'png', base64: REAL_PNG_40x30_BASE64 },
+  { label: 'JPEG', mime: 'image/jpeg', extension: 'jpg', base64: REAL_JPEG_40x30_BASE64 },
+  { label: 'JPG MIME alias', mime: 'image/jpg', extension: 'jpg', base64: REAL_JPEG_40x30_BASE64 },
+  { label: 'GIF', mime: 'image/gif', extension: 'gif', base64: REAL_GIF_40x30_BASE64 },
+  { label: 'WebP', mime: 'image/webp', extension: 'webp', base64: REAL_WEBP_VP8_40x30_BASE64 },
+] as const;
 
-const mockIsSystemAdmin = vi.fn().mockResolvedValue(false);
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-  isSystemAdmin: (...args: unknown[]) => mockIsSystemAdmin(...args),
-}));
+const PNG_BYTES = Buffer.from(REAL_PNG_40x30_BASE64, 'base64');
+const PNG_DATA_URI = `data:image/png;base64,${REAL_PNG_40x30_BASE64}`;
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
+let app: FastifyInstance;
+let redis: RedisClientType;
+let userId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+async function expectStoredAttachment(
+  pageKey: string,
+  filename: string,
+  expectedBytes: Buffer,
+): Promise<void> {
+  expect(await readFile(join(attachmentsDir, pageKey, filename))).toEqual(expectedBytes);
+}
 
-const mockQuery = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: vi.fn().mockResolvedValue({
-      query: vi.fn(),
-      release: vi.fn(),
-    }),
-  }),
-}));
+async function expectAttachmentAbsent(pageKey: string, filename: string): Promise<void> {
+  await expect(access(join(attachmentsDir, pageKey, filename))).rejects.toMatchObject({ code: 'ENOENT' });
+}
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+async function expectAttachmentDirectoryAbsent(pageKey: string): Promise<void> {
+  await expect(access(join(attachmentsDir, pageKey))).rejects.toMatchObject({ code: 'ENOENT' });
+}
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn(),
-  confluenceToHtml: vi.fn(),
-}));
+async function freezePage(pageId: number, actorId: string): Promise<void> {
+  const page = await query<{
+    version: number;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT version, content_revision::text, lifecycle_revision::text
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  const state = page.rows[0]!;
+  const baselineId = randomUUID();
+  const preparation = await reservePageWriteIntent({
+    pageIds: [pageId],
+    kind: 'baseline.prepare',
+    actorId,
+    effect: { effectClass: 'local', baselineId },
+  });
+  await runPageWriteIntentEffect(preparation, { kind: 'local' }, async () => undefined);
+  await completePageWriteIntent(preparation, async () => undefined);
+  await query(
+    `INSERT INTO page_baselines
+       (id, page_id, original_page_id, page_identity, version, content_revision,
+        lifecycle_revision, manifest_digest, manifest, manifest_bytes, title,
+        labels, attachments, total_bytes, reserved_bytes, status,
+        prepared_by_user_id, prepared_by_name, published_by_user_id,
+        published_by_name, published_at, provenance, freeze_reason, preparation_intent_id)
+     VALUES ($1, $2, $2, '[]'::jsonb, $3, $4::bigint, $5::bigint,
+             $6, '[]'::jsonb, $7, 'Frozen image page', '{}', '[]'::jsonb, 0, 0,
+             'published', $8, 'Test actor', $8, 'Test actor', NOW(),
+             'manual_assertion', 'Approved image evidence', $9)`,
+    [
+      baselineId,
+      pageId,
+      state.version,
+      state.content_revision,
+      state.lifecycle_revision,
+      'a'.repeat(64),
+      Buffer.from('[]'),
+      actorId,
+      preparation.id,
+    ],
+  );
+  await query(
+    `UPDATE pages
+        SET baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+            frozen_by_user_id = $3, frozen_by_name = 'Test actor',
+            freeze_reason = 'Approved image evidence', freeze_provenance = 'manual_assertion',
+            freeze_reported_signatories = '[]'::jsonb
+      WHERE id = $1`,
+    [pageId, baselineId, actorId],
+  );
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn(),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn(),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-// Mock Redis — pagesCrudRoutes creates a RedisCache instance via `new RedisCache()`
-vi.mock('../../core/services/redis-cache.js', () => {
-  class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  }
-  return {
-    RedisCache: MockRedisCache,
-    getRedisClient: vi.fn().mockReturnValue(null),
-  };
-});
-
-// Valid 1x1 transparent PNG as base64
-const VALID_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-const VALID_PNG_DATA_URI = `data:image/png;base64,${VALID_PNG_BASE64}`;
-const VALID_JPG_DATA_URI = `data:image/jpeg;base64,${VALID_PNG_BASE64}`; // Content doesn't matter for this test
-
-describe('POST /api/pages/:id/images', () => {
-  let app: ReturnType<typeof Fastify>;
-
+describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/images — real PostgreSQL and Redis', () => {
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    // Mock authenticate decorator
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'test-user';
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
     });
-    app.decorateRequest('userId', '');
-
-    // Mock redis decorator (required by RedisCache constructor in pagesCrudRoutes)
-    app.decorate('redis', null);
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+    await redis.connect();
+    setRedisClient(redis);
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'page-image-upload-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
+    app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+      instance.redis = redis;
+      // attachment-store captures ATTACHMENTS_DIR when pages-crud is imported,
+      // so this intentionally exercises the module-loading boundary.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
+    });
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+    await rm(attachmentsDir, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    mockQuery.mockReset();
-    mockWriteAttachmentCache.mockReset();
-    mockWriteAttachmentCache.mockResolvedValue('/data/attachments/42/paste-123-abcd.png');
-    mockIsSystemAdmin.mockReset();
-    mockIsSystemAdmin.mockResolvedValue(false);
-    // Default: no query results (tests must set up their own mocks)
-    mockQuery.mockResolvedValue({ rows: [] });
+  beforeEach(async () => {
+    await truncateAllTables();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    userId = await insertUser(`image-upload-${randomUUID()}`);
   });
 
-  it('should upload a valid PNG image and return the serving URL', async () => {
-    // Mock page lookup: standalone page owned by the test user
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
+  it.each(IMAGE_FORMATS)(
+    'stores genuine $label bytes and returns their attachment URL',
+    async ({ mime, extension, base64 }) => {
+      await insertLocalSpace('LOCAL', userId);
+      const pageId = await insertStandalonePage('Image page', 'private', userId, 'LOCAL');
+      const filename = `pasted-image.${extension}`;
+      const bytes = Buffer.from(base64, 'base64');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/images`,
+        payload: { dataUri: `data:${mime};base64,${base64}`, filename },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json<{ url: string }>()).toEqual({
+        url: `/api/attachments/${pageId}/${filename}`,
+      });
+      await expectStoredAttachment(String(pageId), filename, bytes);
+    },
+  );
+
+  it('rejects a frozen page through real admission before writing bytes', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Frozen image page', 'private', userId, 'LOCAL');
+    await freezePage(pageId, userId);
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-1234567890-abcd.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'frozen.png' },
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.url).toBe('/api/attachments/42/paste-1234567890-abcd.png');
-    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
-    expect(mockWriteAttachmentCache).toHaveBeenCalledWith(
-      'test-user',
-      '42',
-      'paste-1234567890-abcd.png',
-      expect.any(Buffer),
-    );
+    expect(response.statusCode).toBe(423);
+    await expectAttachmentAbsent(String(pageId), 'frozen.png');
   });
 
-  it('should upload a valid JPEG image', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
+  it('rejects non-image data URIs before writing bytes', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Validation page', 'private', userId, 'LOCAL');
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
+      url: `/api/pages/${pageId}/images`,
       payload: {
-        dataUri: VALID_JPG_DATA_URI,
-        filename: 'paste-1234567890-abcd.jpg',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.url).toContain('/api/attachments/42/');
-  });
-
-  it('should reject non-image data URIs with 400', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: `data:text/plain;base64,${VALID_PNG_BASE64}`,
-        filename: 'test.txt',
+        dataUri: `data:text/plain;base64,${REAL_PNG_40x30_BASE64}`,
+        filename: 'not-an-image.txt',
       },
     });
 
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.message).toContain('Invalid data URI format');
+    await expectAttachmentDirectoryAbsent(String(pageId));
   });
 
-  it('should reject unsupported image MIME types with 400', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
+  it('rejects unsupported image MIME types before writing bytes', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Validation page', 'private', userId, 'LOCAL');
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
+      url: `/api/pages/${pageId}/images`,
       payload: {
-        dataUri: `data:image/svg+xml;base64,${VALID_PNG_BASE64}`,
-        filename: 'test.svg',
+        dataUri: `data:image/svg+xml;base64,${REAL_PNG_40x30_BASE64}`,
+        filename: 'unsupported.svg',
       },
     });
 
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.message).toContain('Unsupported image type');
+    await expectAttachmentDirectoryAbsent(String(pageId));
   });
 
-  it('should reject invalid data URI format with 400', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
+  it('rejects malformed data URIs before writing bytes', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Validation page', 'private', userId, 'LOCAL');
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: 'not-a-data-uri',
-        filename: 'test.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: 'not-a-data-uri', filename: 'malformed.png' },
     });
 
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.payload);
-    expect(body.message).toContain('Invalid data URI format');
+    await expectAttachmentDirectoryAbsent(String(pageId));
   });
 
-  it('should return 404 when page does not exist', async () => {
-    // All queries return empty by default (from beforeEach)
-
+  it('returns 404 and writes no bytes when the page does not exist', async () => {
+    const missingPageId = '999999999';
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/999/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
+      url: `/api/pages/${missingPageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'missing.png' },
     });
 
     expect(response.statusCode).toBe(404);
-    expect(JSON.parse(response.payload).message).toBe('Page not found');
+    await expectAttachmentAbsent(missingPageId, 'missing.png');
   });
 
-  it('should return 403 when user does not own the standalone page', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
-      }],
-    });
+  it('denies a private standalone page owned by another user before writing bytes', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('PRIVATE', ownerId);
+    const pageId = await insertStandalonePage('Private image page', 'private', ownerId, 'PRIVATE');
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'denied.png' },
     });
 
     expect(response.statusCode).toBe(403);
+    await expectAttachmentAbsent(String(pageId), 'denied.png');
   });
 
-  it('should upload to a shared standalone page the user did not create', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'shared',
-      }],
-    });
+  it('allows a reader to upload to a shared standalone page they did not create', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('SHARED', ownerId);
+    const pageId = await insertStandalonePage('Shared image page', 'shared', ownerId, 'SHARED');
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'shared.png' },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload).url).toBe('/api/attachments/42/paste-123-abcd.png');
-    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ url: string }>().url).toBe(`/api/attachments/${pageId}/shared.png`);
+    await expectStoredAttachment(String(pageId), 'shared.png', PNG_BYTES);
   });
 
-  it('should let a system admin upload to a private standalone page they did not create', async () => {
-    mockIsSystemAdmin.mockResolvedValue(true);
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 42, source: 'standalone', confluence_id: null,
-        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
-      }],
-    });
+  it('allows a system admin to upload to another user’s private standalone page', async () => {
+    const ownerId = await insertUser(`image-owner-${randomUUID()}`);
+    await insertLocalSpace('ADMIN', ownerId);
+    const pageId = await insertStandalonePage('Admin image page', 'private', ownerId, 'ADMIN');
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [userId]);
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'admin.png' },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload).url).toBe('/api/attachments/42/paste-123-abcd.png');
-    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ url: string }>().url).toBe(`/api/attachments/${pageId}/admin.png`);
+    await expectStoredAttachment(String(pageId), 'admin.png', PNG_BYTES);
   });
 
-  it('should return 413 when image exceeds 10MB', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-
-    // Create a data URI that decodes to >10MB
-    // base64 encodes 3 bytes to 4 chars, so ~14MB of base64 = ~10.5MB decoded
-    const largeBase64 = Buffer.alloc(11 * 1024 * 1024).toString('base64');
+  it('rejects decoded image bytes over 10 MiB before writing a file', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Large image page', 'private', userId, 'LOCAL');
+    const oversizedBytes = Buffer.alloc(10 * 1024 * 1024 + 1, 0x61);
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
+      url: `/api/pages/${pageId}/images`,
       payload: {
-        dataUri: `data:image/png;base64,${largeBase64}`,
+        dataUri: `data:image/png;base64,${oversizedBytes.toString('base64')}`,
         filename: 'large.png',
       },
     });
 
     expect(response.statusCode).toBe(413);
+    await expectAttachmentAbsent(String(pageId), 'large.png');
   });
 
-  it('should reject filenames with path traversal characters', async () => {
+  it('rejects filenames containing path traversal characters before writing bytes', async () => {
+    await insertLocalSpace('LOCAL', userId);
+    const pageId = await insertStandalonePage('Filename validation page', 'private', userId, 'LOCAL');
+
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: '../../../etc/passwd',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: '../../../etc/passwd' },
     });
 
     expect(response.statusCode).toBe(400);
+    await expectAttachmentDirectoryAbsent(String(pageId));
   });
 
-  it('should use confluence_id as attachment pageId for Confluence pages', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 100, source: 'confluence', confluence_id: 'conf-12345', created_by_user_id: null, space_key: 'DEV' }],
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/100/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    // Confluence pages use confluence_id in the attachment URL
-    expect(body.url).toContain('conf-12345');
-    expect(mockWriteAttachmentCache).toHaveBeenCalledWith(
-      'test-user',
-      'conf-12345',
-      'paste-123-abcd.png',
-      expect.any(Buffer),
+  it('uses the Confluence id namespace for an authorized Confluence page', async () => {
+    await insertLocalSpace('CONF', userId);
+    const confluenceId = 'conf-12345';
+    const pageId = await insertConfluencePage(confluenceId, 'Confluence image page', 'CONF');
+    await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission)
+       VALUES ('page', $1, 'user', $2, 'edit')`,
+      [pageId, userId],
     );
-  });
-
-  it('should return 403 when page is not standalone and has no space_key', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'confluence', confluence_id: 'conf-999', created_by_user_id: null, space_key: null }],
-    });
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'confluence.png' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ url: string }>().url).toBe(
+      `/api/attachments/${confluenceId}/confluence.png`,
+    );
+    await expectStoredAttachment(confluenceId, 'confluence.png', PNG_BYTES);
+    await expectAttachmentAbsent(String(pageId), 'confluence.png');
+  });
+
+  it('denies a Confluence page without a space before writing bytes', async () => {
+    await insertLocalSpace('CONF', userId);
+    const confluenceId = 'conf-no-space';
+    const pageId = await insertConfluencePage(confluenceId, 'Orphaned Confluence page', 'CONF');
+    await query('UPDATE pages SET space_key = NULL WHERE id = $1', [pageId]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/images`,
+      payload: { dataUri: PNG_DATA_URI, filename: 'denied-confluence.png' },
     });
 
     expect(response.statusCode).toBe(403);
-    expect(JSON.parse(response.payload).message).toBe('Access denied');
-  });
-
-  it('should require auth (route has onRequest authenticate hook)', async () => {
-    // The authenticate hook is always called for all routes in this plugin.
-    // We verify the hook is set up by checking the app is working normally
-    // (our mock authenticate always sets userId to 'test-user').
-    // A real unauthenticated request would fail at the hook level.
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/images',
-      payload: {
-        dataUri: VALID_PNG_DATA_URI,
-        filename: 'paste-123-abcd.png',
-      },
-    });
-
-    // Confirms the route works with authentication (mock authenticate)
-    expect(response.statusCode).toBe(200);
+    await expectAttachmentAbsent(confluenceId, 'denied-confluence.png');
   });
 });

@@ -31,7 +31,7 @@ const mockQueryFn = vi.fn();
 const mockPageSources = new Map<number, 'confluence' | 'standalone'>();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (sql: string, params?: unknown[]) => {
-    if (sql === 'SELECT id, source FROM pages WHERE id = ANY($1::int[])') {
+    if (sql === 'SELECT id, source, baseline_id, frozen_version FROM pages WHERE id = ANY($1::int[])') {
       return Promise.resolve({
         rows: (params![0] as number[]).flatMap((id) => {
           const source = mockPageSources.get(id);

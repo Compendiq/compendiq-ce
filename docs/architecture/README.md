@@ -11,10 +11,10 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 |---|---------|------|------|
 | 1 | System Context (C4 L1) | [`01-system-context.md`](./01-system-context.md) | Users + external systems talking to Compendiq |
 | 2 | Container Diagram (C4 L2) | [`02-container.md`](./02-container.md) | Deployable units (frontend, backend, Postgres, Redis, mcp-docs, searxng) |
-| 3 | Backend Domains (C4 L3) | [`03-backend-domains.md`](./03-backend-domains.md) | Components per domain + ESLint boundary rules |
+| 3 | Backend Domains (C4 L3) | [`03-backend-domains.md`](./03-backend-domains.md) | Components, ESLint boundaries, immutable-baseline admission/retention flow |
 | 4 | Frontend Structure | [`04-frontend-structure.md`](./04-frontend-structure.md) | Feature folders, providers, enterprise gating |
 | 5 | Docker Deployment | [`05-deployment.md`](./05-deployment.md) | Compose services, networks, ports, volumes |
-| 6 | Data Model (ERD) | [`06-data-model.md`](./06-data-model.md) | Key PostgreSQL tables and relationships |
+| 6 | Data Model (ERD) | [`06-data-model.md`](./06-data-model.md) | Key PostgreSQL tables, relationships, writer recovery and immutable evidence |
 | 7 | Auth & Login Flow | [`07-flow-auth.md`](./07-flow-auth.md) | Local JWT flow + OIDC (EE) |
 | 8 | Confluence Sync Flow | [`08-flow-sync.md`](./08-flow-sync.md) | Scheduler → fetch → convert → persist → embed |
 | 9 | RAG Chat Flow | [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) | Ask pipeline: retrieve → prompt → stream |
@@ -29,6 +29,7 @@ a diagram points when "what do I DO about it" is the question.
 
 | Runbook | Covers |
 |---|---|
+| [`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md) | Canonical activation, retained-storage capacity, runtime fencing, intent reconciliation and evidence-recovery operations for immutable page baselines |
 | [`image-analysis.md`](../runbooks/image-analysis.md) | Operating the `image_analysis` use case (ADR-027): what the model has to be, assigning and probing it, intake, the worker, the operator card, what the chat model is shown, and what changing the model costs |
 | [`retrieval-eval.md`](../runbooks/retrieval-eval.md) | The #1102 retrieval harness: corpora, fixtures, the FTS-language axis, the `--images` arm axis, the ADR-027 arm protocol, and how to read a verdict |
 | [`shadow-reembed.md`](../runbooks/shadow-reembed.md) | Zero-downtime TEXT embedding model change — lifecycle, go/no-go, revert (#1116) |
@@ -62,6 +63,7 @@ Quick reference for what to update when:
 | `routes/llm/llm-image-analysis.ts` (the image-analysis status and the three operator actions) or `features/settings/panels/ImageAnalysisProgressCard.tsx` | `03-backend-domains.md`, `04-frontend-structure.md`, `docs/runbooks/image-analysis.md` §5 |
 | The legacy image space's retirement — migration `118_retire_image_embedding_space.sql` (applied), the dump set, or the restore procedure | `docs/runbooks/image-embedding-retirement.md` + ADR-027 "Retirement plan" |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
+| Immutable-baseline migrations `120_page_write_admission.sql` / `121_page_baselines.sql`, `page-write-admission.ts`, `page-baseline-{manifest,service,outbox,governance}.ts`, baseline/recovery routes, or the retained `page-baselines/` attachment namespace | `03-backend-domains.md`, `06-data-model.md`, `docs/runbooks/immutable-page-baselines.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
