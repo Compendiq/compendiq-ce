@@ -265,4 +265,36 @@ describe('DockDiffCard (#1126)', () => {
     await waitFor(() => expect(screen.queryByTestId('dock-diff-card')).not.toBeInTheDocument());
     expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
   });
+
+  // #277: Apply is a protected write. A frozen article refuses it, and the
+  // generated text is the user's — a freeze is not a reason to discard it.
+  it('withdraws Apply on a frozen article and keeps the proposed text', async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === '/pages/page-1'
+        ? Promise.resolve({ ...PAGE, isFrozen: true, canMutateContent: false })
+        : baseRoutes(path));
+    renderDock();
+    await produceDiff();
+
+    expect(screen.queryByTestId('dock-diff-apply')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dock-diff-frozen')).toHaveTextContent('frozen');
+    expect(screen.getByTestId('dock-unified-diff')).toHaveTextContent('personal access token');
+  });
+
+  it('reports a 423 as a refusal that changed nothing, not as a re-runnable failure', async () => {
+    // The freeze landed between the proposal and this press. Re-running
+    // Improve would produce the same refusal, so the card must not offer it.
+    apiFetchMock.mockImplementation((path: string) =>
+      path === '/llm/improvements/apply'
+        ? Promise.reject(new ApiError(423, 'Locked', undefined, undefined, undefined, 'page_is_frozen'))
+        : baseRoutes(path));
+    renderDock();
+    await produceDiff();
+
+    fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+    expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('frozen');
+    expect(screen.getByTestId('dock-unified-diff')).toHaveTextContent('personal access token');
+    expect(screen.queryByTestId('dock-diff-rerun')).not.toBeInTheDocument();
+  });
 });

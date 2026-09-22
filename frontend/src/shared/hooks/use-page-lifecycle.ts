@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PageFreezeHistoryResponseSchema,
   PageFreezePreviewResponseSchema,
@@ -35,7 +35,8 @@ export class PageBaselineError extends Error {
   }
 }
 
-function toBaselineError(err: unknown): PageBaselineError {
+/** Shared with the governed workflow (#278 routes) so one refusal shape reaches every surface. */
+export function toBaselineError(err: unknown): PageBaselineError {
   if (err instanceof ApiError) {
     return new PageBaselineError(err.statusCode, err.reason ?? 'request_failed', err.message);
   }
@@ -74,15 +75,26 @@ export function useFreezePreview(pageId: string | undefined, enabled: boolean) {
   });
 }
 
+/**
+ * Retained freeze/thaw evidence for one article, oldest page first requested
+ * and paged by the server's opaque cursor. It is an infinite query because
+ * the history of a long-lived article outlives one screen and the server
+ * caps a page at 100 entries — a single fixed read would quietly hide the
+ * older half of the evidence this feature exists to keep.
+ */
 export function useFreezeHistory(pageId: string | undefined, enabled: boolean) {
-  return useQuery<PageFreezeHistoryResponse, PageBaselineError>({
+  return useInfiniteQuery<PageFreezeHistoryResponse, PageBaselineError, PageFreezeHistoryResponse[], readonly unknown[], string | null>({
     queryKey: pageLifecycleKeys(pageId ?? 'none').history,
     enabled: Boolean(pageId) && enabled,
     retry: false,
-    queryFn: async () => {
+    initialPageParam: null,
+    getNextPageParam: (last) => last.nextCursor,
+    select: (data) => data.pages,
+    queryFn: async ({ pageParam }) => {
+      const query = pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : '';
       try {
         return PageFreezeHistoryResponseSchema.parse(
-          await apiFetch(`/pages/${pageId}/freeze-history`),
+          await apiFetch(`/pages/${pageId}/freeze-history${query}`),
         );
       } catch (err) {
         throw toBaselineError(err);

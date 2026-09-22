@@ -799,4 +799,63 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
     );
     expect((await thaw(state, reader)).statusCode).toBe(200);
   });
+
+  // #277: the marker had a service and no route, so the only surface that can
+  // switch a space to governed approvals was unreachable outside tests — and
+  // an unreachable marker means a governed deployment cannot be configured at
+  // all. It is admin-only in both directions, and turning it on is what makes
+  // a direct manual freeze refuse.
+  it('exposes the governance marker to administrators and refuses a direct freeze once it is on', async () => {
+    const spaceKey = 'BASELINE-GOVERNED';
+    await query('UPDATE pages SET space_key = $2 WHERE id = $1', [pageId, spaceKey]);
+
+    expect((await app.inject({
+      method: 'GET', url: `/api/admin/page-governance/${spaceKey}/policy`,
+      headers: { 'x-test-user': reader },
+    })).statusCode).toBe(403);
+
+    const before = await app.inject({
+      method: 'GET', url: `/api/admin/page-governance/${spaceKey}/policy`,
+      headers: { 'x-test-user': admin },
+    });
+    expect(before.statusCode, before.body).toBe(200);
+    expect(before.json()).toEqual({ spaceKey, enabled: false, policyRevision: null });
+
+    const enabled = await app.inject({
+      method: 'PUT', url: `/api/admin/page-governance/${spaceKey}/policy`,
+      headers: { 'x-test-user': admin }, payload: { enabled: true },
+    });
+    expect(enabled.statusCode, enabled.body).toBe(200);
+    expect(enabled.json()).toMatchObject({ spaceKey, enabled: true });
+
+    // The capability surface the shared frontend reads must now say governed,
+    // with the workflow reported as unreachable rather than as "no proposal":
+    // no Enterprise hook is installed in this CE suite.
+    const detail = await app.inject({
+      method: 'GET', url: `/api/pages/${pageId}`, headers: { 'x-test-user': owner },
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      governanceEnabled: true,
+      canFreeze: false,
+      freezeDeniedReason: 'governance_unavailable',
+      governanceProposalStatus: 'unavailable',
+      governanceProposalId: null,
+    });
+
+
+    const prepared = await preview(owner);
+    const refused = await freeze(prepared, owner);
+    expect(refused.statusCode, refused.body).toBe(409);
+
+    const disabled = await app.inject({
+      method: 'PUT', url: `/api/admin/page-governance/${spaceKey}/policy`,
+      headers: { 'x-test-user': admin }, payload: { enabled: false },
+    });
+    expect(disabled.statusCode, disabled.body).toBe(200);
+    // A policy change is a new revision, never a silent rewrite of the old one.
+    expect(Number(disabled.json().policyRevision))
+      .toBeGreaterThan(Number(enabled.json().policyRevision));
+    expect((await freeze(await preview(owner), owner)).statusCode).toBe(200);
+  });
 });

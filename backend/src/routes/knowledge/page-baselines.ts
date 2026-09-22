@@ -8,6 +8,8 @@ import {
   PageFreezeHistoryQuerySchema,
   PageFreezeHistoryResponseSchema,
   PageFreezePreviewResponseSchema,
+  PageGovernancePolicyRequestSchema,
+  PageGovernancePolicySchema,
   PageLifecycleMutationResponseSchema,
   UnfreezePageRequestSchema,
 } from '@compendiq/contracts';
@@ -17,10 +19,12 @@ import {
   getPageBaselineActivationState,
   getPageBaselineEvidence,
   getPageFreezeHistory,
+  getPageGovernancePolicy,
   previewPageBaseline,
   readBaselineEvidenceAttachment,
   readFrozenBaselineMedia,
   setPageBaselineCreationEnabled,
+  setPageGovernancePolicy,
   unfreezePage,
 } from '../../core/services/page-baseline-service.js';
 
@@ -32,6 +36,9 @@ const AttachmentParamsSchema = BaselineParamsSchema.extend({
 const BaselineMediaParamsSchema = PageIdParamsSchema.extend({
   baselineId: z.string().uuid(),
   identity: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+const SpaceKeyParamsSchema = z.object({
+  spaceKey: z.string().trim().min(1).max(255),
 }).strict();
 
 export async function pageBaselineRoutes(fastify: FastifyInstance): Promise<void> {
@@ -96,6 +103,31 @@ export async function pageBaselineRoutes(fastify: FastifyInstance): Promise<void
     return PageBaselineActivationStateSchema.parse(
       await setPageBaselineCreationEnabled(request.userId, body.creationEnabled),
     );
+  });
+
+  // The governance marker. It lives in CE because it is what refuses a direct
+  // manual freeze (`governance_required`), and it must keep refusing while an
+  // Enterprise licence is expired — so turning it off is a separate, audited,
+  // system-admin operation and never an implicit fallback.
+  fastify.get('/admin/page-governance/:spaceKey/policy', {
+    onRequest: [fastify.requireAdmin],
+  }, async (request) => {
+    const { spaceKey } = SpaceKeyParamsSchema.parse(request.params);
+    const policy = await getPageGovernancePolicy(request.userId, spaceKey);
+    return PageGovernancePolicySchema.parse({ spaceKey, ...policy });
+  });
+
+  fastify.put('/admin/page-governance/:spaceKey/policy', {
+    onRequest: [fastify.requireAdmin],
+  }, async (request) => {
+    const { spaceKey } = SpaceKeyParamsSchema.parse(request.params);
+    const body = PageGovernancePolicyRequestSchema.parse(request.body);
+    const policy = await setPageGovernancePolicy({
+      actorId: request.userId,
+      spaceKey,
+      enabled: body.enabled,
+    });
+    return PageGovernancePolicySchema.parse({ spaceKey, ...policy });
   });
 
   fastify.get('/admin/page-baselines/:baselineId', {

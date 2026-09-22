@@ -179,6 +179,59 @@ enters the viewport, not on ordinary re-renders or background refetches.
   Tree rows use the compact form — one glyph with an accessible name, no
   extra tab stop and no second icon column, in `SidebarTreeView` and
   `DndLocalSpaceTree` together.
+- **The governed Enterprise workflow is its own section** (`PageGovernanceSection`,
+  mounted inside `PageLifecycleSection`). It renders nothing at all unless the
+  server says `governanceEnabled` — an ungoverned space and a governed space
+  with no proposal both report status `none`, so the mode is a server fact and
+  not inferable from the status. Without the `document_sign_off_governance`
+  entitlement it renders one sentence and issues **no request**: new proposals,
+  votes and finalization stop, while the article stays frozen, its evidence
+  stays readable and an authorized thaw stays available. With it, the section
+  reads `GET /enterprise/page-governance/proposals/:id` (the identity comes
+  from the page's `governanceProposalId`, so discovering a proposal never
+  requires POSTing one) and renders one row per required role carrying the
+  authenticated approver and the date. **No field anywhere in it accepts a
+  name, a role or a signature**: the role is chosen from the proposal's own
+  `requiredRoles`, and the vote carries the digest and requirements revision
+  the browser was shown, so a stale tab cannot approve content it never saw.
+  A proposal whose `expectedContentRevision` no longer matches the page is
+  marked stale in amber and offers no vote; an `approved` proposal carrying a
+  `finalizeError` reports the named failure and the explicit retry the server
+  requires, because the freeze happens inside the final approval and nothing
+  reschedules it.
+- **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
+  It fetches only once opened, pages on the server's cursor, and keeps the
+  same three claims apart as the section above it: the server's immutable
+  actor snapshot (a deleted user keeps the recorded display name), the
+  provenance, and *reported signatories* — typed by the person who froze the
+  article and labelled as unverified. A reference id renders as text, never as
+  a link, and a failed read is a failure rather than an article that was never
+  frozen.
+- **Every protected-write entry point on the article route shares one refusal.**
+  Edit, the empty-article `Add content`, the shortcuts that reach them, the
+  draw.io overlay and the attachment write behind it all go through
+  `contentWriteRefusal`, which distinguishes *frozen* from *not yours to
+  change* because the next step differs. `DrawioEditor` has no read-only mode,
+  so a frozen article supplies **no** `onEditDiagram` callback and the viewer
+  injects no overlay; an already-open diagram is never unmounted — its saving
+  action is refused and the refusal names draw.io's own export as the way out.
+  AI `Apply` is a protected write too: the dock and the improve diff withdraw
+  the control and keep the generated text, and a **423** from
+  `/llm/improvements/apply` is reported as a refusal that changed nothing, not
+  as a re-runnable failure.
+- **Settings → Governance → Article baselines** (`ArticleBaselinesTab`) is the
+  admin surface: baseline creation activation with the deployment's readiness
+  blockers in prose, and per space the CE governance marker plus — under an
+  Enterprise licence — the required approval roles and their holders (picked
+  from the user directory, never typed). Its copy carries the rollout rule,
+  because activation is a one-way door: do not enable it in a mixed-version
+  cluster, and once baselines exist a non-enforcing build is not a rollback
+  path. The article inspector links admins here when a policy is refusing
+  their direct freeze (`BASELINE_SETTINGS_PATH`).
+- Library rows and search results carry the same compact lock as the trees,
+  fed by the freeze summary fields the contract puts on every page shape.
+  Freezing does not bump `pages.version`, so `PageListItem`'s memo comparator
+  compares `isFrozen` explicitly or a frozen row keeps rendering as editable.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**

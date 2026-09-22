@@ -60,7 +60,24 @@ export const PageFreezeDetailFieldsSchema = PageFreezeSummaryFieldsSchema.extend
   approveDeniedReason: PageLifecycleDenialReasonSchema.nullable(),
   canMutateContent: z.boolean(),
   mutateContentDeniedReason: PageLifecycleDenialReasonSchema.nullable(),
+  /**
+   * Whether a governance policy is in force for this page's space. It is a
+   * server fact and not inferable from the fields beside it: an ungoverned
+   * page and a governed page with no proposal yet both report status
+   * `none`, and a frozen page's denial reason is `page_is_frozen` whichever
+   * it is. The shared frontend decides whether to render the approval
+   * workflow at all from this flag.
+   */
+  governanceEnabled: z.boolean(),
   governanceProposalStatus: PageGovernanceProposalStatusSchema.nullable(),
+  /**
+   * The open (or last decided) governed proposal for this page, when the
+   * Enterprise hook supplied one. It is the identity the shared frontend
+   * reads the vote list with: a status alone cannot be acted on, and a
+   * client that has to POST a proposal to discover the existing one has
+   * already changed state to ask a question.
+   */
+  governanceProposalId: z.string().uuid().nullable(),
 }).strict();
 export type PageLifecycleState = z.infer<typeof PageFreezeDetailFieldsSchema>;
 
@@ -217,3 +234,132 @@ export const PageBaselineActivationStateSchema = z.object({
   activatedByName: z.string().nullable(),
 }).strict();
 export type PageBaselineActivationState = z.infer<typeof PageBaselineActivationStateSchema>;
+
+/**
+ * Governed sign-off wire shapes (#277 consumes, #278 serves).
+ *
+ * These live in CE because the single shared frontend compiles against them
+ * and validates every governed payload it renders as authority. The workflow
+ * itself is Enterprise-only; in community mode nothing serves these routes
+ * and the panels that read them never mount.
+ *
+ * They are deliberately NOT `.strict()`, unlike the request bodies above: a
+ * newer Enterprise overlay may add a field, and a shared bundle that refuses
+ * to render a vote list because of an unknown key would turn an additive
+ * server change into a blank governance panel. Unknown keys are stripped.
+ */
+export const PageGovernanceProposalStateSchema = z.enum([
+  'draft',
+  'in_review',
+  'approved',
+  'rejected',
+  'withdrawn',
+]);
+export type PageGovernanceProposalState = z.infer<typeof PageGovernanceProposalStateSchema>;
+
+export const PageGovernanceApprovalSchema = z.object({
+  role: z.string(),
+  approverUserId: z.string().uuid().nullable(),
+  approverName: z.string(),
+  manifestDigest: ManifestDigestSchema,
+  signedAt: z.string().datetime(),
+  comment: z.string().nullable(),
+});
+export type PageGovernanceApproval = z.infer<typeof PageGovernanceApprovalSchema>;
+
+export const PageGovernanceProposalSchema = z.object({
+  id: z.string().uuid(),
+  pageId: z.number().int().positive().nullable(),
+  originalPageId: z.number().int().positive(),
+  spaceKey: z.string(),
+  status: PageGovernanceProposalStateSchema,
+  expectedManifestDigest: ManifestDigestSchema,
+  expectedContentRevision: PageRevisionSchema,
+  requirementsRevision: z.string(),
+  requiredRoles: z.array(z.string()),
+  requestedBy: z.string().uuid().nullable(),
+  requestedByName: z.string(),
+  contentAuthorName: z.string(),
+  baselineId: z.string().uuid().nullable(),
+  finalizeError: z.string().nullable(),
+  decisionReason: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  approvals: z.array(PageGovernanceApprovalSchema),
+});
+export type PageGovernanceProposal = z.infer<typeof PageGovernanceProposalSchema>;
+
+export const PageGovernanceProposalResponseSchema = z.object({
+  proposal: PageGovernanceProposalSchema,
+});
+
+/** A vote names the role, the manifest and the policy revision it is for. */
+export const PageGovernanceSignOffRequestSchema = z.object({
+  proposalId: z.string().uuid(),
+  role: z.string().trim().min(1).max(64),
+  expectedManifestDigest: ManifestDigestSchema,
+  expectedRequirementsRevision: z.string().regex(/^[1-9]\d*$/),
+  comment: z.string().trim().max(2_000).optional(),
+}).strict();
+export type PageGovernanceSignOffRequest = z.infer<typeof PageGovernanceSignOffRequestSchema>;
+
+export const PageGovernanceDecisionRequestSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+}).strict();
+export type PageGovernanceDecisionRequest = z.infer<typeof PageGovernanceDecisionRequestSchema>;
+
+export const PageGovernanceRequirementsSchema = z.object({
+  spaceKey: z.string(),
+  requiredRoles: z.array(z.string()),
+  requirementsRevision: z.string(),
+  updatedBy: z.string().uuid().nullable(),
+  updatedByName: z.string().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+});
+export type PageGovernanceRequirements = z.infer<typeof PageGovernanceRequirementsSchema>;
+
+export const PageGovernanceRequirementsResponseSchema = z.object({
+  requirements: PageGovernanceRequirementsSchema.nullable(),
+});
+
+export const PageGovernanceRequirementsRequestSchema = z.object({
+  requiredRoles: z.array(z.string().trim().min(1).max(64)).min(1).max(16),
+}).strict();
+export type PageGovernanceRequirementsRequest = z.infer<typeof PageGovernanceRequirementsRequestSchema>;
+
+export const PageGovernanceRoleAssignmentSchema = z.object({
+  spaceKey: z.string(),
+  role: z.string(),
+  userId: z.string().uuid(),
+  username: z.string(),
+  assignedByName: z.string(),
+  assignedAt: z.string().datetime(),
+});
+export type PageGovernanceRoleAssignment = z.infer<typeof PageGovernanceRoleAssignmentSchema>;
+
+export const PageGovernanceRoleAssignmentsResponseSchema = z.object({
+  assignments: z.array(PageGovernanceRoleAssignmentSchema),
+});
+
+export const PageGovernanceRoleAssignmentRequestSchema = z.object({
+  role: z.string().trim().min(1).max(64),
+  userId: z.string().uuid(),
+}).strict();
+export type PageGovernanceRoleAssignmentRequest = z.infer<typeof PageGovernanceRoleAssignmentRequestSchema>;
+
+/**
+ * The CE governance marker for one space. Enabling it is what makes a direct
+ * manual freeze refuse with `governance_required`; it is persisted policy, so
+ * it keeps refusing while an Enterprise licence is expired.
+ */
+export const PageGovernancePolicySchema = z.object({
+  spaceKey: z.string(),
+  enabled: z.boolean(),
+  policyRevision: z.string().nullable(),
+}).strict();
+export type PageGovernancePolicy = z.infer<typeof PageGovernancePolicySchema>;
+
+export const PageGovernancePolicyRequestSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+export type PageGovernancePolicyRequest = z.infer<typeof PageGovernancePolicyRequestSchema>;

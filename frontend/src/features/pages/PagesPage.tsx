@@ -32,6 +32,7 @@ import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
+import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
@@ -201,6 +202,9 @@ interface PageListItemProps {
     source: 'confluence' | 'standalone';
     visibility?: string;
     icon?: PageIconValue | null;
+    /** #277 freeze summary; absent means "not known to be frozen". */
+    isFrozen?: boolean;
+    frozenVersion?: number | null;
   };
   index: number;
   onNavigate: (id: string) => void;
@@ -282,6 +286,12 @@ const PageListItem = memo(function PageListItem({
               <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                 {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
                 <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
+                {/* The tree's rule, on the list: one neutral lock, no extra
+                    tab stop, no second icon column, and nothing at all on a
+                    row that is not frozen. */}
+                {pageItem.isFrozen === true && (
+                  <FrozenBadge frozenVersion={pageItem.frozenVersion} compact className="shrink-0" />
+                )}
               </p>
               <SourceVisibilityBadges
                 pageItem={pageItem}
@@ -382,6 +392,10 @@ const PageListItem = memo(function PageListItem({
   if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
   if (prev.pageItem.qualityAnalyzedAt !== next.pageItem.qualityAnalyzedAt) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  // Freezing and thawing do not bump `version`, so the lock needs its own
+  // comparison or a frozen row keeps rendering as editable (#277).
+  if (prev.pageItem.isFrozen !== next.pageItem.isFrozen) return false;
+  if (prev.pageItem.frozenVersion !== next.pageItem.frozenVersion) return false;
   if (prev.pageItem.labels !== next.pageItem.labels && prev.pageItem.labels.join(',') !== next.pageItem.labels.join(',')) return false;
   if (prev.index !== next.index) return false;
   // Selection is row-local render state, not page data. Omitting it here made
@@ -1882,6 +1896,9 @@ export function PagesPage() {
                                   <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground">
                                     {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
                                     <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                    {item.isFrozen === true && (
+                                      <FrozenBadge frozenVersion={item.frozenVersion} compact className="shrink-0" />
+                                    )}
                                   </p>
                                   {item.excerpt && (
                                     <SanitizedHtml

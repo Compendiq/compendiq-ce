@@ -43,6 +43,15 @@ export function ImproveDiffView() {
       queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
       navigate(`/pages/${pageId}`);
     } catch (err) {
+      // A 423 means the article was frozen between the proposal and the
+      // apply: the page was NOT modified and the improvement is still on
+      // screen, so it is reported as a refusal rather than a failed write.
+      if (err instanceof ApiError
+        && (err.statusCode === 423 || err.reason === 'page_is_frozen')) {
+        toast.warning('This article is frozen, so the change was not applied. It stays here until you discard it.');
+        queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+        return;
+      }
       toast.error(err instanceof Error ? err.message : 'Failed to apply improvement');
     } finally {
       setIsApplying(false);
@@ -61,6 +70,11 @@ export function ImproveDiffView() {
     backendLayoutTokensLost ??
     (/\[\[\[/.test(originalMarkdown) && !/\[\[\[/.test(improvedContent));
 
+  // Applying rewrites the saved article, so a frozen page refuses it (#277).
+  // The diff stays: the answer is the user's and a freeze is no reason to
+  // discard it. Only Accept is withdrawn, and the reason is on screen.
+  const applyLocked = page.isFrozen === true || page.canMutateContent === false;
+
   return (
     <div className="flex flex-col gap-3">
       {layoutTokensLost && (
@@ -73,6 +87,13 @@ export function ImproveDiffView() {
           lose the layout — run Improve again to retry.
         </div>
       )}
+      {applyLocked && (
+        <p className="text-sm leading-6 text-muted-foreground" data-testid="improve-apply-frozen">
+          {page.isFrozen === true
+            ? 'This article is frozen, so these changes cannot be applied to it. They stay here until you discard them.'
+            : 'You cannot change this article’s content, so these changes cannot be applied.'}
+        </p>
+      )}
       <DiffView
         // #704: diff like-for-like — the original markdown the model was fed
         // (echoed by /llm/improve) vs the improved markdown it returned, so only
@@ -80,7 +101,7 @@ export function ImproveDiffView() {
         // if the backend didn't supply the baseline (e.g. an aborted stream).
         original={originalMarkdown || page.bodyText || page.bodyHtml}
         improved={improvedContent}
-        onAccept={handleAccept}
+        onAccept={applyLocked ? undefined : handleAccept}
         onReject={() => setShowDiffView(false)}
         isAccepting={isApplying}
       />

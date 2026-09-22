@@ -42,6 +42,14 @@ interface PageSummary {
   source: 'confluence' | 'standalone';
   visibility: 'private' | 'shared';
   icon?: PageIcon | null;
+  /**
+   * #277 freeze summary, carried on every page shape by the contract. Optional
+   * here for the same reason the tree's copy is: a server that predates the
+   * fields sends none, and absent means "not known to be frozen".
+   */
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
 interface PageDetail extends PageSummary, Partial<PageLifecycleState> {

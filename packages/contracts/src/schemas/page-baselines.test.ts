@@ -74,9 +74,25 @@ describe('page baseline contracts', () => {
       approveDeniedReason: 'confluence_integration_enabled',
       canMutateContent: true,
       mutateContentDeniedReason: null,
+      governanceEnabled: false,
       governanceProposalStatus: 'none',
+      governanceProposalId: null,
     };
     expect(PageFreezeDetailFieldsSchema.parse(state)).toEqual(state);
+
+    // An ungoverned space and a governed space with no proposal both report
+    // status `none`, so the shared frontend cannot infer the mode from it:
+    // the flag and the proposal identity are separate server facts, and both
+    // are required rather than optional.
+    expect(PageFreezeDetailFieldsSchema.safeParse({
+      ...state, governanceEnabled: undefined,
+    }).success).toBe(false);
+    expect(PageFreezeDetailFieldsSchema.safeParse({
+      ...state, governanceProposalId: 'not-a-uuid',
+    }).success).toBe(false);
+    expect(PageFreezeDetailFieldsSchema.parse({
+      ...state, governanceEnabled: true, governanceProposalId: ID,
+    }).governanceProposalId).toBe(ID);
   });
 
   it('keeps signatory email out of ordinary history while retaining it in admin evidence', () => {

@@ -21,25 +21,33 @@ collaboration, job, sync, and maintenance writer runtime, drain older
 runtimes, and verify the API state described below. The backend is
 authoritative; do not bypass it with a direct database update.
 
-There is no published admin activation UI or end-user freeze/thaw workflow in
-this release. Operators may use the authenticated HTTP APIs below. #276 does
-ship enforcement for existing frozen pages and the editor's recoverable
-collaborative-draft behavior; neither depends on exposing a freeze button.
+**#277 ships the administration and article UI** in the unmodified shared CE
+bundle: Settings → Governance → **Article baselines** carries the activation
+control described below (with the deployment's readiness blockers in prose)
+and, per space, the governance marker plus — under an Enterprise licence —
+the approval roles and their holders. The article inspector's Details tab
+carries the freeze/thaw controls, the retained baseline history and the
+governed sign-off section. The HTTP APIs below remain authoritative and stay
+usable directly; the UI adds no capability of its own and reads the same
+server-computed capabilities.
+
+Creation is still **default-off**, and nothing in the UI changes that: an
+administrator has to enable it after the rollout below.
 
 The dependent work remains deliberately separate:
 
 - **#276 is installed here.** It supplies collaboration, sync, remote-write,
   purge, subtree/cascade, and cross-process writer enforcement plus deployment
   readiness.
-- **#278 is not implemented.** Governed proposal/approval and signing remain
-  later work; a current CE baseline has neither.
-- **#277 is not implemented.** The full baseline administration and article
-  workflow UI remains later work.
+- **#278** supplies governed proposals, approvals and signing in the Enterprise
+  overlay. In a community deployment the governed section reports the workflow
+  as unavailable and a governed space simply refuses a direct manual freeze.
 - **#285** is a separate AI-policy project. A frozen page is not an AI-policy
   control, and this release does not add `no_ai` or `local_only` guarantees.
 
-Do not describe this release as signed, certified, or as having a shipped
-proposal/approval UI.
+Do not describe this release as signed or certified, and do not read the
+presence of the sign-off UI as evidence that a given baseline was approved:
+`provenance` on the baseline is the only thing that says so.
 
 ## #276 eligibility and protected-writer enforcement
 
@@ -456,7 +464,8 @@ manual baseline predates the policy. Its historical provenance stays
 
 ## Activation and rollback gate
 
-The admin activation state is available without a UI:
+The admin activation state is available both in Settings → Governance →
+**Article baselines** and over HTTP:
 
 ```http
 GET /api/admin/page-baselines/activation
@@ -521,6 +530,33 @@ baseline exists, never roll back to a binary that lacks lock, read, retention,
 or thaw enforcement. On an incident, disable creation and forward-fix while
 preserving existing evidence. Disabling creation is not a thaw and does not
 unlock frozen pages.
+
+### Requiring approvals for a space
+
+The CE governance marker is what makes a direct manual freeze refuse with
+`governance_required` for every article in a space. It is persisted policy, so
+it keeps refusing while an Enterprise licence is expired — there is no implicit
+fallback to manual freezing, and turning it off is a separate audited
+system-admin operation (`PAGE_GOVERNANCE_POLICY_CHANGED`).
+
+```http
+GET /api/admin/page-governance/:spaceKey/policy
+PUT /api/admin/page-governance/:spaceKey/policy   { "enabled": true }
+Authorization: Bearer <system-admin-token>
+```
+
+Both answer `{ spaceKey, enabled, policyRevision }`; `policyRevision` is null
+until the space has a row, and every change increments it rather than
+rewriting the previous revision. The same control is in the Article baselines
+panel beside activation.
+
+With the marker on and **no** Enterprise governance hook installed — a
+community deployment, or an expired licence — the page's capability fields
+report `governanceEnabled: true` with
+`governanceProposalStatus: "unavailable"` and
+`freezeDeniedReason: "governance_unavailable"`. That is a refusal, not a
+fallback: the space stays unfreezable until the workflow is reachable again or
+an administrator turns the marker off.
 
 ## Authority, access, and redaction
 

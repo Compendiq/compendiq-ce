@@ -37,7 +37,9 @@ const EDITABLE: PageLifecycleState = {
   approveDeniedReason: null,
   canMutateContent: true,
   mutateContentDeniedReason: null,
+  governanceEnabled: false,
   governanceProposalStatus: null,
+  governanceProposalId: null,
 };
 
 const FROZEN: PageLifecycleState = {
@@ -129,15 +131,29 @@ describe('PageLifecycleSection', () => {
     expect(screen.getByTestId('lifecycle-provenance')).toHaveTextContent('Authenticated approval');
   });
 
-  it('keeps governance state out of community mode and shows it under Enterprise', () => {
-    const governed = { ...EDITABLE, governanceProposalStatus: 'in_review' as const };
+  // The governed workflow moved into its own section (`PageGovernanceSection`),
+  // which is what the Enterprise gate now guards. The rule the section keeps
+  // is unchanged: a governed space is a server fact, not something inferred
+  // from a proposal status that an ungoverned page also reports.
+  it('keeps the governed workflow out of community mode and out of ungoverned spaces', () => {
+    const governed = {
+      ...EDITABLE,
+      governanceEnabled: true,
+      governanceProposalStatus: 'in_review' as const,
+    };
     const { unmount } = renderSection(governed);
-    expect(screen.queryByTestId('lifecycle-governance')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('governance-section')).not.toBeInTheDocument();
+    expect(screen.getByTestId('governance-unlicensed')).toBeInTheDocument();
     unmount();
 
     enterpriseMode = true;
+    const ungoverned = renderSection({ ...EDITABLE, governanceProposalStatus: 'none' as const });
+    expect(screen.queryByTestId('governance-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('governance-unlicensed')).not.toBeInTheDocument();
+    ungoverned.unmount();
+
     renderSection(governed);
-    expect(screen.getByTestId('lifecycle-governance')).toHaveTextContent('collecting approvals');
+    expect(screen.getByTestId('governance-status')).toHaveTextContent('collecting approvals');
   });
 
   it('sends the previewed manifest identity and never freezes optimistically', async () => {

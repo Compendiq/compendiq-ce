@@ -419,10 +419,31 @@ export function PageViewPage() {
     [id, uploadIconMutation],
   );
 
+  /**
+   * One sentence for every protected-write entry point on this route (#277).
+   *
+   * Frozen and merely-unwritable are different facts and the person in front
+   * of the article has a different next step for each: a frozen article has a
+   * baseline in Details and a thaw is how editing resumes, while a page the
+   * caller may not change is a permission. Returning `null` means the write
+   * may proceed; a string is the refusal, and it is spoken (a toast) rather
+   * than hidden in the `title` of a control the user cannot focus.
+   */
+  const contentWriteRefusal = useCallback((): string | null => {
+    if (page?.isFrozen === true) {
+      return 'This article is frozen. Its content cannot change until it is thawed — open Details for the baseline.';
+    }
+    if (page?.canMutateContent === false) {
+      return 'This page is read-only. Its content cannot be changed with your current access.';
+    }
+    return null;
+  }, [page?.isFrozen, page?.canMutateContent]);
+
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
-    if (page.isFrozen === true || page.canMutateContent === false) {
-      toast.info('This page is read-only. Its content cannot be changed with your current access.');
+    const refusal = contentWriteRefusal();
+    if (refusal) {
+      toast.info(refusal);
       return;
     }
     editSessionRef.current += 1;
@@ -452,7 +473,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, captureScrollOffset]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -826,6 +847,16 @@ export function PageViewPage() {
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
+    // A diagram is reachable from READ mode, so the frozen gate has to be
+    // here too and not only on Edit (#277). `DrawioEditor` has no read-only
+    // mode and must never be instantiated as a faux viewer: its iframe is a
+    // live editor with a Save. The rendered diagram in the article is the
+    // frozen view.
+    const refusal = contentWriteRefusal();
+    if (refusal) {
+      toast.info(`${refusal} The diagram is shown as it was frozen.`);
+      return;
+    }
     // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
     // Confluence pages key attachments by confluence_id against /api/attachments; standalone
     // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
@@ -854,13 +885,25 @@ export function PageViewPage() {
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);
-  }, [id, page?.confluenceId]);
+  }, [id, page?.confluenceId, contentWriteRefusal]);
 
   const handleDrawioClose = useCallback(() => {
     setDrawioEditingDiagram(null);
   }, []);
 
   const handleDrawioSave = useCallback(async (dataUri: string, xml: string) => {
+    // A freeze that lands while this iframe is open does NOT unmount it: the
+    // unsaved diagram is the user's work and closing the overlay would be the
+    // one irreversible thing here. The saving action is what stops, and the
+    // refusal names the way out — draw.io's own export — before Close.
+    const refusal = contentWriteRefusal();
+    if (refusal) {
+      toast.warning(
+        `${refusal} This diagram was not saved — export it from the draw.io editor before closing.`,
+        { duration: 12_000 },
+      );
+      return;
+    }
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId || !drawioEditingDiagram) return;
     const filename = `${drawioEditingDiagram}.png`;
@@ -883,10 +926,22 @@ export function PageViewPage() {
       // Refresh the page data so the updated diagram image is shown
       queryClient.invalidateQueries({ queryKey: ['pages', id] });
     } catch (error) {
+      // The server is the authority on the freeze: this tab can be a lifecycle
+      // event behind, so a 423 here is answered with the same sentence and the
+      // page is re-read rather than reported as a generic save failure.
+      if (error instanceof ApiError
+        && (error.statusCode === 423 || error.reason === 'page_is_frozen')) {
+        toast.warning(
+          'This article was frozen. The diagram was not saved — export it from the draw.io editor before closing.',
+          { duration: 12_000 },
+        );
+        void queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to save diagram.';
       toast.error(message);
     }
-  }, [id, page?.confluenceId, drawioEditingDiagram, queryClient]);
+  }, [id, page?.confluenceId, drawioEditingDiagram, queryClient, contentWriteRefusal]);
 
   const handleAddTag = useCallback((tag: string) => {
     if (!id) return;
@@ -1488,7 +1543,11 @@ export function PageViewPage() {
                 content={page.bodyHtml}
                 confluenceUrl={settings?.confluenceUrl}
                 onImageClick={handleImageClick}
-                onEditDiagram={handleEditDiagram}
+                // No callback, so `ArticleViewer` injects no "Edit Diagram"
+                // overlay at all: a frozen article should not advertise an
+                // editor it will refuse to open. `handleEditDiagram` keeps
+                // its own guard for the freeze that lands after this render.
+                onEditDiagram={page.isFrozen === true ? undefined : handleEditDiagram}
                 onHeadingsReady={setHeadings}
                 pageId={id}
                 confluencePageId={page.confluenceId}

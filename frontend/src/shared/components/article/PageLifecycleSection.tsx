@@ -3,7 +3,8 @@ import { cn } from '../../lib/cn';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Loader2, Lock, LockOpen } from 'lucide-react';
 import type { PageLifecycleState } from '@compendiq/contracts';
-import { useEnterprise } from '../../enterprise/use-enterprise';
+import { PageBaselineHistory } from './PageBaselineHistory';
+import { PageGovernanceSection } from './PageGovernanceSection';
 import {
   denialExplanation,
   useFreezePage,
@@ -55,18 +56,7 @@ function formatWhen(value: string | null | undefined): string | null {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-const GOVERNANCE_COPY: Record<string, string> = {
-  none: 'No approval proposal is open.',
-  draft: 'A proposal is open and has no current approvals.',
-  in_review: 'A proposal is in review and is collecting approvals.',
-  approved: 'Every required role has approved; the freeze has not completed yet.',
-  rejected: 'The last proposal was rejected.',
-  withdrawn: 'The last proposal was withdrawn.',
-  unavailable: 'The approval workflow could not be reached, so its state is unknown.',
-};
-
 export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps) {
-  const { isEnterprise } = useEnterprise();
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [unfreezeOpen, setUnfreezeOpen] = useState(false);
   const [announcement, setAnnouncement] = useState('');
@@ -74,7 +64,6 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
 
   const frozen = page?.isFrozen === true;
   const frozenOn = formatWhen(page?.frozenAt);
-  const governed = page?.governanceProposalStatus != null && page.governanceProposalStatus !== 'none';
 
   // Two different handoffs, and both are needed.
   //
@@ -162,11 +151,14 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
         </dl>
       )}
 
-      {isEnterprise && governed && (
-        <p className="mt-2 text-xs text-muted-foreground" data-testid="lifecycle-governance">
-          {GOVERNANCE_COPY[page.governanceProposalStatus ?? 'none'] ?? 'Approval state is unknown.'}
-        </p>
-      )}
+      {/* The governed workflow is its own surface: a vote list, a stale
+          proposal and a failed finalization are all claims this section must
+          not flatten into one sentence. It renders nothing for an ungoverned
+          space and the licence sentence without the entitlement. */}
+      <PageGovernanceSection pageId={pageId} page={page} />
+
+      {/* Retained evidence, collapsed: a thaw changes nothing in it. */}
+      <PageBaselineHistory pageId={pageId} />
 
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         {!frozen && page.canFreeze && (
