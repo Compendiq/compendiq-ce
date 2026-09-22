@@ -303,18 +303,26 @@ async function governanceCapabilities(
 ): Promise<{
   governed: boolean;
   proposalStatus: PageLifecycleState['governanceProposalStatus'];
+  proposalId: string | null;
   canApprove: boolean;
   approveDeniedReason: PageLifecycleDenialReason | null;
 }> {
   const marker = await readPageGovernanceMarker(client, page.space_key);
   if (!marker.enabled) {
-    return { governed: false, proposalStatus: 'none', canApprove: false, approveDeniedReason: null };
+    return {
+      governed: false,
+      proposalStatus: 'none',
+      proposalId: null,
+      canApprove: false,
+      approveDeniedReason: null,
+    };
   }
   const hook = getPageBaselineGovernanceHook();
   if (!hook) {
     return {
       governed: true,
       proposalStatus: 'unavailable',
+      proposalId: null,
       canApprove: false,
       approveDeniedReason: 'governance_unavailable',
     };
@@ -328,13 +336,18 @@ async function governanceCapabilities(
     return {
       governed: true,
       proposalStatus: result.proposalStatus,
+      proposalId: result.proposalId,
       canApprove: result.canApprove,
       approveDeniedReason: result.approveDeniedReason,
     };
   } catch {
+    // An unreadable workflow is reported as unavailable, never as "no
+    // proposal": the second reads as a page nobody has proposed yet, which
+    // is the one state this page is certainly not in.
     return {
       governed: true,
       proposalStatus: 'unavailable',
+      proposalId: null,
       canApprove: false,
       approveDeniedReason: 'governance_unavailable',
     };
@@ -415,7 +428,9 @@ export async function getPageLifecycleState(
     mutateContentDeniedReason: summary.isFrozen
       ? 'page_is_frozen' as const
       : canMutateContent ? null : 'not_authorized' as const,
+    governanceEnabled: governance.governed,
     governanceProposalStatus: governance.proposalStatus,
+    governanceProposalId: governance.proposalId,
   };
   return PageFreezeDetailFieldsSchema.parse(state);
 }
@@ -1904,6 +1919,28 @@ export async function setPageBaselineCreationEnabled(
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Read one space's governance marker for the admin surface. Admin-only for
+ * the same reason the write is: the marker is the policy that refuses a
+ * direct manual freeze, and an ordinary reader is told what it costs them
+ * through their own page's typed denial reason, not by reading policy.
+ *
+ * No advisory lock: this is an advisory read, and only the freeze boundary
+ * has to linearize with a concurrent policy change.
+ */
+export async function getPageGovernancePolicy(
+  actorId: string,
+  spaceKey: string,
+): Promise<{ enabled: boolean; policyRevision: string | null }> {
+  const client = await getPool().connect();
+  try {
+    await assertFreshAdmin(client, actorId);
+    return await readPageGovernanceMarker(client, spaceKey);
   } finally {
     client.release();
   }

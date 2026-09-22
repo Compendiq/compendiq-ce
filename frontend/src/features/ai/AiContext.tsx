@@ -54,6 +54,14 @@ interface PageData {
   bodyText: string;
   version: number;
   hasChildren?: boolean;
+  /**
+   * #277: Apply is a protected write, so the dock and the improve diff have
+   * to know whether the article accepts one. Optional — absent means the
+   * field was not supplied, which is not the same as "writable", so both
+   * gates test `=== true` / `=== false` explicitly.
+   */
+  isFrozen?: boolean;
+  canMutateContent?: boolean;
 }
 
 interface AiContextValue {

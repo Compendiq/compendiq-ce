@@ -107,6 +107,18 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
     } catch (err) {
       const status = err instanceof ApiError ? err.statusCode : undefined;
       const message = err instanceof Error ? err.message : 'Failed to apply the change.';
+      // 423 is a refusal, not a failure: the article was frozen between the
+      // proposal and this press, the page was NOT modified, and re-running
+      // Improve would change nothing. The page is re-read so the frozen
+      // explanation below replaces the button.
+      if (status === 423 || (err instanceof ApiError && err.reason === 'page_is_frozen')) {
+        setFailure({
+          message: 'This article is frozen, so the change was not applied. Your proposed text is still here.',
+          rerunnable: false,
+        });
+        queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+        return;
+      }
       // 409 (the page moved) and 422 (#781 — the response lost the column
       // layout beyond recovery) both mean the page was NOT modified. They stay
       // on the card rather than in a toast, because the recovery from them is a
@@ -137,6 +149,12 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
     (/\[\[\[/.test(originalMarkdown) && !/\[\[\[/.test(improvedContent));
 
   const moved = diffBaseVersion !== null && page.version !== diffBaseVersion;
+  // AI Apply is a protected write (#277): it rewrites the saved article, so a
+  // frozen page refuses it exactly like Edit does. The diff itself stays on
+  // screen — the model's answer is the user's, and a freeze is no reason to
+  // throw it away — only the write is withdrawn.
+  const frozen = page.isFrozen === true;
+  const applyLocked = frozen || page.canMutateContent === false;
   const rerunOnly = moved || failure?.rerunnable === true;
 
   return (
@@ -210,9 +228,18 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
         </p>
       )}
 
+      {/* Frozen refuses the write; an open editor merely defers it. */}
+      {applyLocked && !rerunOnly && (
+        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground" data-testid="dock-diff-frozen">
+          {frozen
+            ? 'This article is frozen, so these changes cannot be applied to it. They stay here until you skip them.'
+            : 'You cannot change this article’s content, so these changes cannot be applied.'}
+        </p>
+      )}
+
       {/* Apply rewrites the SAVED page, so an open editor would hold its own
           stale copy and overwrite the improvement on the next save. */}
-      {editing && !rerunOnly && (
+      {editing && !applyLocked && !rerunOnly && (
         <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground" data-testid="dock-diff-editing">
           Applying updates the saved page. Save or cancel your edit first.
         </p>
@@ -236,7 +263,7 @@ export function DockDiffCard({ onRerun }: { onRerun: (id: DockChipId) => void })
           >
             <RotateCcw size={14} aria-hidden /> Re-run Improve
           </button>
-        ) : (
+        ) : applyLocked ? null : (
           <button
             type="button"
             onClick={() => void handleApply()}

@@ -32,6 +32,7 @@ import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
 import { useTreeRovingFocus } from './sidebar-tree-keyboard';
+import { FrozenBadge } from '../badges/FrozenBadge';
 
 export type { TreeNode };
 
@@ -334,6 +335,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
+        {/* Frozen is a state the row must carry, and a tree row already has
+            its whole horizontal budget spoken for. One neutral glyph with an
+            accessible name — no extra tab stop, no second icon column. */}
+        {node.page.isFrozen === true && (
+          <FrozenBadge frozenVersion={node.page.frozenVersion} compact className="ml-1.5" />
+        )}
         {/* All-Spaces scope merges every space's pages into one flat, sorted
             run with nothing else distinguishing them — a corpus with any
             amount of templated content (runbooks, meeting notes) reliably
