@@ -734,6 +734,20 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     );
   });
 
+  it('fails closed when a focused-graph center is ambiguous across identifier arms', async () => {
+    await seedPage({ id: 817, title: 'Numeric center' });
+    await seedPage({
+      id: 818,
+      title: 'Confluence center',
+      source: 'confluence',
+      confluenceId: '817',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/817/graph/local' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({ nodes: [], edges: [], centerId: '817' });
+  });
+
 
   it('makes a missing and private focused-graph center byte-identical', async () => {
     const missing = await app.inject({ method: 'GET', url: '/api/pages/000812/graph/local' });

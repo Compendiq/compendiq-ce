@@ -6,6 +6,7 @@ import { computePageRelationships } from '../../domains/llm/services/embedding-s
 import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
@@ -278,13 +279,17 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 
     const isNumericId = /^\d+$/.test(id);
     const graphSpaces = await getUserAccessibleSpaces(userId);
+    const centerSpaceParam = isNumericId ? 3 : 2;
+    const centerUserParam = isNumericId ? 4 : 3;
     const pageResult = await query<{ id: number }>(
       `SELECT cp.id
        FROM pages cp
-       WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+       WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL
-         AND ${visiblePagesPredicate(2, 3)}`,
-      [isNumericId ? parseInt(id, 10) : id, graphSpaces, userId],
+         AND ${visiblePagesPredicate(centerSpaceParam, centerUserParam)}`,
+      isNumericId
+        ? [id, toPageIdText(id), graphSpaces, userId]
+        : [id, graphSpaces, userId],
     );
 
     // Missing, ambiguous, and inaccessible identifiers deliberately share the
