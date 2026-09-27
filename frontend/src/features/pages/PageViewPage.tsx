@@ -148,6 +148,10 @@ export function PageViewPage() {
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
+  // State-backed pending flags update on the next render, which leaves a
+  // same-tick Ctrl/Cmd+S window. Claim the save synchronously so every entry
+  // path shares one flight, including draw.io draining and collab commit.
+  const saveInFlightRef = useRef(false);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
@@ -726,11 +730,12 @@ export function PageViewPage() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!id || !page || collabSaving) return;
+    if (!id || !page || saveInFlightRef.current) return;
     if (saveBlocked) {
       toast.info('This draft cannot be saved into the current session. Download it before opening the current version.');
       return;
     }
+    saveInFlightRef.current = true;
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
     const document = collab.ydoc;
@@ -841,9 +846,10 @@ export function PageViewPage() {
         toast.error(message);
       }
     } finally {
+      saveInFlightRef.current = false;
       if (editSessionRef.current === session) setCollabSaving(false);
     }
-  }, [collab.ydoc, collabLive, collabSaving, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
+  }, [collab.ydoc, collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {

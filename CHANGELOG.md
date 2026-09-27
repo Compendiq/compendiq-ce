@@ -140,6 +140,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Page saves are now single-flight per editing session (#1662).** Rapid
+  repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
+  draw.io work or commit a collaborative snapshot, now share the operation
+  already in progress instead of sending the same stale page version twice.
+  The guard releases after both success and failure so an intentional retry
+  still works.
+
 - **Trashing a standalone article now takes its whole sub-article subtree with
   it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its
   live descendants kept `parent_id` pointing at a trashed page: `GET
