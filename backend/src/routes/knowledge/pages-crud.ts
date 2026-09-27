@@ -844,20 +844,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control: same visibility predicate as the list route —
-    //   - Confluence pages from user's accessible spaces (via RBAC)
-    //   - Shared standalone articles (visible to all)
-    //   - Their own private standalone articles
-    // Local-space pages are always standalone, so they surface through the
-    // visibility branches (#527/#528); local space keys are still merged into
-    // the Confluence branch as belt-and-braces against legacy data drift.
+    // Full page authority: inherited Confluence pages use only actual RBAC
+    // assignments. Standalone visibility is independent of space access, so
+    // adding local-space keys here would only re-authorize Confluence rows that
+    // had been moved into a local container.
     const rbacSpaces = await getUserAccessibleSpaces(userId);
-    const localSpacesResult = await query<{ space_key: string }>(
-      `SELECT space_key FROM spaces WHERE source = 'local'`,
-    );
-    const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
-    const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
-    const values: unknown[] = [treeSpaces, userId];
+    const values: unknown[] = [rbacSpaces, userId];
     let treeWhereClause = `WHERE ${authorizedPagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
@@ -1234,68 +1226,55 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    // #1636: this used to match `parent_id = $1` alone, which disagrees with
-    // both the tree and the `hasChildren` field for a synced child (linked by
-    // confluence_id, not by the parent's PK). Resolve the page and ask the same
-    // dual-identifier question `GET /api/pages/:id` asks, with the same numeric
-    // normalisation its sibling routes apply to the id arm (#1167).
-    //
-    // The access decision below reads ONE row, so that row must be the one the
-    // caller named. The id arm is a dual-identifier lookup, and a page whose PK
-    // equals another page's `confluence_id` matches BOTH — with no ordering, the
-    // answer came from whichever row the scan reached first, so a Confluence
-    // decoy in a space the caller cannot read 404'd an id `GET /api/pages/:id`
-    // serves 200. PK-first is the same resolution the detail route applies to a
-    // numeric id (`cp.id = $1`), so the two can no longer disagree; the ordering
-    // only breaks a tie — a numeric `confluence_id` with no PK match still
-    // resolves through the confluence_id arm. LIMIT 1 states the single-row
-    // contract the handler already relied on by reading `rows[0]`.
     const isNumericId = /^\d+$/.test(id);
-    // The caller's id is the LAST parameter either way, so its placeholder
-    // moves with the shape of the lookup above it.
-    const userParam = isNumericId ? '$3' : '$2';
-    const result = await query<{
-      has_children: boolean;
+    const pageResult = await query<{
+      id: number;
+      confluence_id: string | null;
       source: string;
-      space_key: string | null;
-      visibility: string;
-      created_by_user_id: string | null;
     }>(
-      `SELECT EXISTS(
-                SELECT 1 FROM pages c2
-                 WHERE (c2.parent_id = cp.confluence_id OR CAST(cp.id AS TEXT) = c2.parent_id)
-                   AND c2.deleted_at IS NULL
-                   AND NOT (c2.source = 'standalone' AND c2.visibility = 'private'
-                            AND c2.created_by_user_id IS DISTINCT FROM ${userParam})
-              ) as has_children,
-              cp.source, cp.space_key, cp.visibility, cp.created_by_user_id
-         FROM pages cp
-        WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
-          AND cp.deleted_at IS NULL
-        ${isNumericId ? 'ORDER BY (cp.id::text = $2) DESC' : ''}
-        LIMIT 1`,
-      isNumericId ? [id, toPageIdText(id), userId] : [id, userId],
+      `SELECT id, confluence_id, source
+       FROM pages
+       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
+         AND deleted_at IS NULL
+       ORDER BY id`,
+      isNumericId ? [id, toPageIdText(id)] : [id],
     );
-
-    const row = result.rows[0];
-    if (!row) throw fastify.httpErrors.notFound('Page not found');
-
-    // Access control: same pattern as GET /pages/:id — 404, no existence
-    // oracle. Resolving the row is new here (#1636): without this check the
-    // 404-vs-200 split tells any authenticated caller that a page it cannot
-    // read exists, and whether that page has children.
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
+    if (pageResult.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    if (pageResult.rows.length > 1) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
     }
 
-    return { hasChildren: row.has_children };
+    const page = pageResult.rows[0]!;
+    if (!(await userCanAccessPage(userId, page.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    const parentLookupId = page.source === 'confluence'
+      ? page.confluence_id!
+      : String(page.id);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const childResult = await query<{ has_children: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM pages child
+         WHERE child.parent_id = $1
+           AND child.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id <> $2
+               AND (parent_collision.confluence_id = $1
+                    OR parent_collision.id::text = $1)
+           )
+           AND ${authorizedPagesPredicate(3, 4, 'child')}
+       ) AS has_children`,
+      [parentLookupId, page.id, accessibleSpaces, userId],
+    );
+
+    return { hasChildren: childResult.rows[0]?.has_children ?? false };
   });
 
   // GET /api/pages/:id/children - list child pages for the Confluence Children macro

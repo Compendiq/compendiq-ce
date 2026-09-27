@@ -867,24 +867,46 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         .filter((pid) => pid !== currentPage.id);
 
       if (pathIds.length > 0) {
-        const ancestors = await query<{ id: number; title: string }>(
-          `SELECT ancestor.id, ancestor.title
+        const ancestors = await query<{ id: number; title: string; parent_id: string | null }>(
+          `SELECT ancestor.id, ancestor.title, ancestor.parent_id
            FROM pages ancestor
            WHERE ancestor.id = ANY($1::int[])
              AND ancestor.deleted_at IS NULL
              AND ${authorizedPagesPredicate(2, 3, 'ancestor')}`,
           [pathIds, accessibleSpaces, userId],
         );
-
-        // Preserve only the contiguous visible suffix. If an ancestor is not
-        // readable, the tree presents the next readable descendant as a root;
-        // retaining an earlier crumb would reveal a hierarchy across that
-        // hidden boundary.
         const ancestorMap = new Map(ancestors.rows.map((row) => [row.id, row]));
-        for (const pid of pathIds) {
-          const ancestor = ancestorMap.get(pid);
-          if (ancestor) crumbs.push({ id: ancestor.id, title: ancestor.title });
-          else crumbs.length = 0;
+        const parentKeys = Array.from(new Set([
+          currentPage.parent_id,
+          ...ancestors.rows.map((row) => row.parent_id),
+        ].filter((key): key is string => key !== null)));
+        const candidateRows = parentKeys.length === 0
+          ? { rows: [] as Array<{ parent_key: string; candidate_ids: number[] }> }
+          : await query<{ parent_key: string; candidate_ids: number[] }>(
+              `SELECT requested.parent_key,
+                      array_agg(candidate.id ORDER BY candidate.id) AS candidate_ids
+               FROM unnest($1::text[]) AS requested(parent_key)
+               JOIN pages candidate
+                 ON candidate.confluence_id = requested.parent_key
+                 OR candidate.id::text = requested.parent_key
+               WHERE candidate.deleted_at IS NULL
+               GROUP BY requested.parent_key`,
+              [parentKeys],
+            );
+        const candidateMap = new Map(
+          candidateRows.rows.map((row) => [row.parent_key, row.candidate_ids]),
+        );
+
+        // Walk upward from the current page so the result is the contiguous
+        // visible, unambiguous suffix of the materialized path.
+        let childParentKey = currentPage.parent_id;
+        for (let index = pathIds.length - 1; index >= 0; index--) {
+          const ancestor = ancestorMap.get(pathIds[index]!);
+          if (!ancestor || childParentKey === null) break;
+          const candidates = candidateMap.get(childParentKey) ?? [];
+          if (candidates.length !== 1 || candidates[0] !== ancestor.id) break;
+          crumbs.unshift({ id: ancestor.id, title: ancestor.title });
+          childParentKey = ancestor.parent_id;
         }
       }
     } else if (currentPage.parent_id !== null) {
@@ -907,6 +929,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
                  WHERE (parent_collision.confluence_id = $1
                         OR parent_collision.id::text = $1)
                    AND parent_collision.id <> parent.id
+                   AND parent_collision.deleted_at IS NULL
                )
                AND ${authorizedPagesPredicate(2, 3, 'parent')}
              LIMIT 1`,

@@ -657,5 +657,28 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
       ],
       current: { id: child, title: 'Child' },
     });
+
+    const collision = await insertConfluencePage(
+      String(parent),
+      'Colliding parent key',
+      'CRUMBS',
+    );
+    const ambiguous = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${child}/breadcrumb`,
+    });
+    expect(ambiguous.statusCode, ambiguous.body).toBe(200);
+    expect(ambiguous.json().ancestors).toEqual([]);
+
+    await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [collision]);
+    const afterCollisionDeleted = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${child}/breadcrumb`,
+    });
+    expect(afterCollisionDeleted.statusCode, afterCollisionDeleted.body).toBe(200);
+    expect(afterCollisionDeleted.json().ancestors).toEqual([
+      { id: root, title: 'Root' },
+      { id: parent, title: 'Parent' },
+    ]);
   });
 });

@@ -219,6 +219,11 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     });
     expect(children.statusCode, children.body).toBe(409);
     expect(children.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    const legacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${readableRoot}/has-children`,
+    });
+    expect(legacy.statusCode, legacy.body).toBe(409);
   });
 
   it('honors page ACEs, admins, and cache revocation across hierarchy projections', async () => {
@@ -242,6 +247,11 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(await treeTitles(userB)).toEqual([]);
     const deniedList = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=DEV' });
     expect(deniedList.json()).toMatchObject({ total: 0, items: [] });
+    const deniedLegacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${restrictedParent}/has-children`,
+    });
+    expect(deniedLegacy.statusCode, deniedLegacy.body).toBe(404);
 
     const group = await query<{ id: number }>(
       `INSERT INTO groups (name, description) VALUES ($1, 'Hierarchy readers') RETURNING id`,
@@ -296,6 +306,12 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     await query("UPDATE users SET role = 'admin' WHERE id = $1", [userB]);
     await invalidateRbacCache(userB);
     expect(await treeTitles(userB)).toEqual(['Restricted child', 'Restricted parent']);
+    const adminLegacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${restrictedParent}/has-children`,
+    });
+    expect(adminLegacy.statusCode, adminLegacy.body).toBe(200);
+    expect(adminLegacy.json()).toEqual({ hasChildren: true });
   });
 
   it('limits Confluence pages to spaces assigned through real RBAC state', async () => {
@@ -304,6 +320,17 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     await assignReadableSpace(userB, 'DEV');
 
     expect(await treeTitles(userB)).toEqual(['Dev page']);
+  });
+
+  it('does not treat a local container as authority for a moved Confluence page', async () => {
+    await insertConfluencePage('moved-conf', 'Moved Confluence page', 'NOTES');
+    await assignReadableSpace(userA, 'NOTES');
+
+    expect(await treeTitles(userA, '/api/pages/tree?spaceKey=NOTES')).toEqual([
+      'Moved Confluence page',
+    ]);
+    expect(await treeTitles(userB)).toEqual([]);
+    expect(await treeTitles(userB, '/api/pages/tree?spaceKey=NOTES')).toEqual([]);
   });
 
   it('keeps the space filter on top of the visibility and RBAC predicates', async () => {

@@ -578,18 +578,11 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
     });
 
     /**
-     * The route decides from ONE row, and the numeric id arm is a
-     * dual-identifier lookup: a page whose PK equals another page's
-     * `confluence_id` matches both. The Confluence decoy is inserted FIRST, so
-     * it is the physical-first match — which is the row the route used to read.
-     * Resolving it ran the space check against a space this caller cannot read
-     * and 404'd an id `GET /api/pages/:id` serves 200, making the deprecated
-     * route stricter than the detail route for a legitimate caller.
-     *
-     * The row choice must be PK-first — the resolution the detail route applies
-     * to a numeric id (`cp.id = $1`) — so the two cannot disagree.
+     * A numeric key can name one row by primary key and another by Confluence
+     * id. Detail still resolves the primary-key page itself, but no hierarchy
+     * reader may choose one candidate for the parent edge.
      */
-    it('resolves the PK row when the identifier also matches another page’s confluence_id', async () => {
+    it('does not traverse an ambiguous parent key while resolving detail by PK', async () => {
       await insertConfluencePage(String(PARKED_PK), 'Decoy', 'OTHER');
       const target = await insertStandalonePage('Target', 'private', userA, 'NOTES');
       // Park the standalone row on the decoy's identifier: it is now the second
@@ -613,14 +606,13 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       const detail = await app.inject({ method: 'GET', url: `/api/pages/${PARKED_PK}` });
       expect(detail.statusCode).toBe(200);
       const detailBody = detail.json() as { hasChildren: boolean };
-      expect(detailBody.hasChildren).toBe(true);
+      expect(detailBody.hasChildren).toBe(false);
 
       const response = await app.inject({
         method: 'GET',
         url: `/api/pages/${PARKED_PK}/has-children`,
       });
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ hasChildren: true });
+      expect(response.statusCode).toBe(409);
     });
 
     /**
