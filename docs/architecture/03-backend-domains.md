@@ -95,15 +95,19 @@ flowchart LR
     collect --> audit["core/audit-service<br/>durable collection, no content metadata"]
     audit --> store["audit_log<br/>unique user + article + visit impression"]
     panel --> local["Existing focused graph<br/>GET /pages/:id/graph/local?hops=2"]
-    local --> access
-    local --> materialize
+    local --> listVisibility["Shared list visibility<br/>visible unique parent projection"]
+    listVisibility --> materialize
 ```
 
-Authorization removes inaccessible source/target pages before panel ranking and
-before local-graph traversal, limits, and counts. Unavailable intermediate pages
-cannot expose second-hop neighbors. The global graph and its navigation remain
-unchanged. Explicit links and hierarchy do not depend on embeddings; current
-bodies and parent IDs recover direction from canonical persisted pairs.
+Connection-panel authorization removes inaccessible source/target pages before
+ranking. The focused graph uses the hierarchy list contract instead: assigned
+Confluence spaces, shared standalone pages, and the caller's own private
+standalone pages. It applies that visibility before traversal, limits, and
+counts, so an unavailable intermediate cannot expose second-hop neighbors.
+Missing and inaccessible centers return the same caller-keyed empty response;
+node `parentId` is retained only when both identifier arms resolve one live,
+visible parent. Explicit links and hierarchy do not depend on embeddings;
+current bodies and parent IDs recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
 
 ### Page hierarchy read authorization
@@ -130,9 +134,10 @@ candidate. Mixed-source parent/child links remain valid because the parent's
 source determines its canonical stored key.
 
 A visible child whose parent is not visible is presented as a root
-(`parentId: null`); the local tree recomputes all descendant depths from that
-visible forest. Breadcrumbs retain only the contiguous visible suffix, and
-descendant tree walks do not traverse through an invisible or ambiguous node.
+(`parentId: null`); this includes full, clustered, and focused graph nodes. The
+local tree recomputes all descendant depths from that visible forest.
+Breadcrumbs retain only the contiguous visible suffix, and descendant tree
+walks do not traverse through an invisible or ambiguous node.
 
 Hierarchy trees, lists and graphs use the generational `pages` cache namespace
 with per-user keys. Page visibility, ownership, hierarchy and lifecycle writers

@@ -5,7 +5,6 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
 import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
@@ -278,31 +277,37 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const { hops, edgeTypes, minScore, labels, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
 
     const isNumericId = /^\d+$/.test(id);
+    const graphSpaces = await getUserAccessibleSpaces(userId);
     const pageResult = await query<{ id: number }>(
-      isNumericId
-        ? 'SELECT id FROM pages WHERE id = $1 AND deleted_at IS NULL'
-        : 'SELECT id FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-      [isNumericId ? parseInt(id, 10) : id],
+      `SELECT cp.id
+       FROM pages cp
+       WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+         AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 3)}`,
+      [isNumericId ? parseInt(id, 10) : id, graphSpaces, userId],
     );
 
-    if (pageResult.rows.length === 0) {
+    // Missing, ambiguous, and inaccessible identifiers deliberately share the
+    // same response, including the caller-supplied center string. Never expose
+    // a canonical database id until the caller-bound query above admits it.
+    if (pageResult.rows.length !== 1) {
       return { nodes: [], edges: [], centerId: id };
     }
 
     const centerPageId = pageResult.rows[0]!.id;
-    const centerAccess = await authorizedPageIds(userId, [centerPageId]);
-    if (!centerAccess.has(centerPageId)) {
-      return { nodes: [], edges: [], centerId: String(centerPageId) };
-    }
-
     await ensureDeterministicRelationships();
 
-    // Resolve the complete CE+EE-visible vertex set before traversal. Passing
-    // it into the LATERAL edge scan removes inaccessible targets before the
-    // per-hop ORDER/LIMIT, so a hidden vertex cannot consume a bound or become
-    // an intermediate path to otherwise visible content.
-    const accessiblePageIds = [...await authorizedPageIds(userId)];
-
+    // Resolve the complete shared-list-visible vertex set before traversal.
+    // Filtering before each per-hop limit prevents a hidden vertex from
+    // consuming the bound or becoming an intermediate path.
+    const accessiblePages = await query<{ id: number }>(
+      `SELECT cp.id
+       FROM pages cp
+       WHERE cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2)}`,
+      [graphSpaces, userId],
+    );
+    const accessiblePageIds = accessiblePages.rows.map((row) => row.id);
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
@@ -353,8 +358,22 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
-              cp.embedding_status, cp.last_modified_at, cp.parent_id
+              cp.embedding_status, cp.last_modified_at,
+              CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id
        FROM pages cp
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR parent_page.id::text = cp.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND parent_page.id = ANY($2::int[])
+         AND NOT EXISTS (
+           SELECT 1 FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND parent_collision.id <> parent_page.id
+             AND (parent_collision.confluence_id = cp.parent_id
+                  OR parent_collision.id::text = cp.parent_id)
+         )
        WHERE cp.id = ANY($1::int[])
          AND cp.id = ANY($2::int[])
          AND cp.deleted_at IS NULL
