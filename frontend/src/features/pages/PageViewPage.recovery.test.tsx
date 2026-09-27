@@ -121,6 +121,12 @@ const initialPage = {
   canMutateContent: true,
 };
 
+const secondPage = {
+  ...initialPage,
+  id: '43',
+  title: 'Second recovery article',
+};
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -132,6 +138,7 @@ function TestShell() {
   return (
     <>
       <Link to="/elsewhere">Leave article</Link>
+      <Link to="/pages/43">Next article</Link>
       <Routes>
         <Route path="/pages/:id" element={<PageViewPage />} />
         <Route path="/elsewhere" element={<h1>Elsewhere</h1>} />
@@ -198,6 +205,8 @@ let collabEnabled = true;
 let deferredCollabConfig: Promise<{ enabled: boolean }> | null = null;
 let commitMode: 'success' | 'confluence_modified' = 'success';
 let deferredCommit: Promise<void> | null = null;
+let pageUpdateMode: 'success' | 'failure' = 'success';
+let deferredPageUpdate: Promise<void> | null = null;
 
 beforeEach(() => {
   Socket.instances = [];
@@ -208,6 +217,8 @@ beforeEach(() => {
   deferredCollabConfig = null;
   commitMode = 'success';
   deferredCommit = null;
+  pageUpdateMode = 'success';
+  deferredPageUpdate = null;
   vi.stubGlobal('WebSocket', Socket);
   Element.prototype.scrollTo = vi.fn();
   localStorage.clear();
@@ -231,6 +242,26 @@ beforeEach(() => {
         return json(page);
       }
       return json(currentPage);
+    }
+    if (url === '/api/pages/43' && method === 'GET') return json(secondPage);
+    if (url === '/api/pages/42' && method === 'PUT') {
+      if (deferredPageUpdate) await deferredPageUpdate;
+      if (pageUpdateMode === 'failure') {
+        return json({ message: 'Temporary save failure. Please try again.' }, 500);
+      }
+      const body = JSON.parse(String(init?.body)) as { title: string; bodyHtml: string };
+      currentPage = {
+        ...currentPage,
+        title: body.title,
+        bodyHtml: body.bodyHtml,
+        bodyText: body.bodyHtml,
+        version: currentPage.version + 1,
+      };
+      return json({
+        id: Number(currentPage.id),
+        title: currentPage.title,
+        version: currentPage.version,
+      });
     }
     if (url === '/api/collab/config') {
       if (deferredCollabConfig) return json(await deferredCollabConfig);
@@ -268,10 +299,16 @@ beforeEach(() => {
     if (url === '/api/settings/drawio-url') return json({ drawioEmbedUrl: 'https://draw.example.com' });
     if (url === '/api/pages/filters') return json({ authors: [], labels: [] });
     if (url === '/api/pages/pinned') return json({ items: [], total: 0 });
-    if (url === '/api/pages/42/connections') return json({ linked: [], section: [], related: [] });
+    if (url === '/api/pages/42/connections' || url === '/api/pages/43/connections') {
+      return json({ linked: [], section: [], related: [] });
+    }
     if (url.startsWith('/api/llm/usecase-default')) return json({ message: 'Not configured' }, 404);
-    if (url === '/api/pages/42/presence' && method === 'GET') return new Response(null, { status: 403 });
-    if (url.startsWith('/api/pages/42/presence')) return new Response(null, { status: 204 });
+    if ((url === '/api/pages/42/presence' || url === '/api/pages/43/presence') && method === 'GET') {
+      return new Response(null, { status: 403 });
+    }
+    if (url.startsWith('/api/pages/42/presence') || url.startsWith('/api/pages/43/presence')) {
+      return new Response(null, { status: 204 });
+    }
     return json({});
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -286,7 +323,7 @@ afterEach(() => {
   useArticleViewStore.getState().setHeadings([]);
 });
 
-describe('PageViewPage dirty collaboration recovery', () => {
+describe('PageViewPage save and collaboration recovery', () => {
   it('keeps a dirty offline draft when navigation is cancelled and warns before unload', async () => {
     renderPage();
     const socket = await joinWritableSession();
@@ -401,21 +438,147 @@ describe('PageViewPage dirty collaboration recovery', () => {
     expect(screen.getByLabelText('Page title')).toHaveValue('Unsaved collaborative title');
   });
 
-  it('commits through the collaboration wire with the captured lifecycle revision', async () => {
+  it('single-flights repeated keyboard saves through the collaborative commit', async () => {
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
     renderPage();
     await joinWritableSession();
     fireEvent.change(screen.getByLabelText('Page title'), {
       target: { value: 'Committed collaborative title' },
     });
+    const editor = document.querySelector('.ProseMirror');
+    if (!(editor instanceof HTMLElement)) throw new Error('Editor did not mount');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
 
     await waitFor(() => expect(
-      fetchMock.mock.calls.some(([url]) => url === '/api/pages/42/collab/commit'),
-    ).toBe(true));
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+    await act(async () => commit.resolve());
     expect(await screen.findByRole('heading', {
       level: 1,
       name: 'Committed collaborative title',
+    })).toBeInTheDocument();
+  });
+
+  it('keeps an accepted save visibly pending across discard and a retained page transition', async () => {
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    await joinWritableSession();
+    fireEvent.change(screen.getByLabelText('Page title'), {
+      target: { value: 'First session save' },
+    });
+    const firstEditor = document.querySelector('.ProseMirror');
+    if (!(firstEditor instanceof HTMLElement)) throw new Error('Editor did not mount');
+
+    fireEvent.keyDown(firstEditor, { key: 's', code: 'KeyS', ctrlKey: true });
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+
+    const done = screen.getByRole('button', { name: 'Done' });
+    expect(done).toBeEnabled();
+    fireEvent.click(done);
+    expect(await screen.findByRole('heading', { name: 'Discard changes?' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    const pendingEdit = await screen.findByTestId('edit-page-btn');
+    expect(pendingEdit).toBeDisabled();
+    expect(pendingEdit).toHaveTextContent('Finishing save…');
+    expect(screen.queryByLabelText('Page title')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'e', code: 'KeyE', ctrlKey: true });
+    expect(screen.queryByLabelText('Page title')).not.toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Next article' }));
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Second recovery article',
+    })).toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn')).toBeDisabled();
+    expect(screen.getByTestId('edit-page-btn')).toHaveTextContent('Finishing save…');
+
+    await act(async () => commit.resolve());
+    await waitFor(() => expect(screen.getByTestId('edit-page-btn')).toBeEnabled());
+    expect(screen.getByTestId('edit-page-btn')).toHaveTextContent('Edit');
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === '/api/pages/42/collab/commit',
+    )).toHaveLength(1);
+  });
+
+  it('single-flights rapid keyboard saves before the standalone PUT starts', async () => {
+    collabEnabled = false;
+    const update = Promise.withResolvers<void>();
+    deferredPageUpdate = update.promise;
+    renderPage();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => url === '/api/collab/config')).toBe(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /^Edit/ }));
+    const editor = await waitFor(() => {
+      const element = document.querySelector('.ProseMirror');
+      if (!(element instanceof HTMLElement)) throw new Error('Editor did not mount');
+      return element;
+    });
+    fireEvent.change(screen.getByLabelText('Page title'), {
+      target: { value: 'Single-flight standalone title' },
+    });
+
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url, init]) =>
+        url === '/api/pages/42' && (init?.method ?? 'GET') === 'PUT'),
+    ).toHaveLength(1));
+    await act(async () => update.resolve());
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Single-flight standalone title',
+    })).toBeInTheDocument();
+  });
+
+  it('releases the keyboard save flight after failure so a genuine retry succeeds', async () => {
+    collabEnabled = false;
+    pageUpdateMode = 'failure';
+    const failedUpdate = Promise.withResolvers<void>();
+    deferredPageUpdate = failedUpdate.promise;
+    renderPage();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => url === '/api/collab/config')).toBe(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /^Edit/ }));
+    const editor = await waitFor(() => {
+      const element = document.querySelector('.ProseMirror');
+      if (!(element instanceof HTMLElement)) throw new Error('Editor did not mount');
+      return element;
+    });
+    fireEvent.change(screen.getByLabelText('Page title'), {
+      target: { value: 'Retry succeeds' },
+    });
+
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url, init]) =>
+        url === '/api/pages/42' && (init?.method ?? 'GET') === 'PUT'),
+    ).toHaveLength(1));
+    await act(async () => failedUpdate.resolve());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+
+    deferredPageUpdate = null;
+    pageUpdateMode = 'success';
+    fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url, init]) =>
+        url === '/api/pages/42' && (init?.method ?? 'GET') === 'PUT'),
+    ).toHaveLength(2));
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Retry succeeds',
     })).toBeInTheDocument();
   });
 

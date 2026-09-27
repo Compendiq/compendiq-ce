@@ -323,6 +323,18 @@ flowchart TB
   and transport generation and contain the captured client state. If
   title/labels or the Y.Doc change while the request is in flight, the
   acknowledged capture is saved but the editor stays open with the later edits.
+- **Save is single-flight per editing session.** `PageViewPage` claims the
+  flight synchronously before draw.io draining (the first await), so the Save
+  button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
+  ordinary versioned PUT or the collaborative commit. The pending ref has
+  state-backed UI that survives the retained component's discard and
+  `/pages/:id` reset: read mode shows `Finishing save…` and cannot start a new
+  editing session until the older write settles. Navigation and destructive
+  actions retain their existing behavior; the save guard does not become a
+  page-wide mutation lock. Success and failure both release the flight for a
+  later intentional retry; collaborative acknowledgment remains bound to the
+  snapshot captured by the accepted Save, and later local edits still keep the
+  editor open.
 - **Recovery preserves the tab's document.** Lifecycle, permission and document
   resets disconnect and make the mounted provider/Y.Doc inert rather than
   silently joining or replaying into a new lifecycle. Dirty connected and

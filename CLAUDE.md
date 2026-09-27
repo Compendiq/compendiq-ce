@@ -1421,6 +1421,17 @@ disconnects the provider but keeps an inert recoverable Y.Doc with **Download
 draft** and explicitly confirmed **Open current version**; thaw or reconnect
 never automatically replays that blocked draft.
 
+Page Save is single-flight per editing session. Claim the flight synchronously
+before draw.io draining (the first await), and release it after success or
+failure so a later intentional retry remains possible. The button, editor
+callback and `Ctrl`/`Cmd`+`S` all share that flight; do not move the guard into
+mutation pending state or the collaborative branch. Its state-backed pending
+UI must survive discard and retained `/pages/:id` resets: while an older Save
+is unresolved, read mode shows `Finishing save…` and cannot open another
+editing session whose Save would be dropped. Do not turn this into a page-wide
+navigation or mutation lock; existing navigation, deletion, and sibling
+inspector behavior remain independent.
+
 Subtree delete/restore/bulk cascades expand the exact authorized
 standalone-owner mutation component under the hierarchy fence. A frozen root is
 `423 page_is_frozen`; an authorized frozen descendant is

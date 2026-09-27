@@ -159,6 +159,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Page saves are now single-flight per editing session (#1662).** Rapid
+  repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
+  draw.io work or commit a collaborative snapshot, now share the operation
+  already in progress instead of sending the same stale page version twice.
+  If the current editor is discarded or the retained `/pages/:id` route moves
+  to another article while that operation is pending, Edit remains visibly
+  unavailable until the older flight settles, rather than exposing a new
+  session whose Save would be silently dropped. The guard releases after both
+  success and failure so an intentional retry still works.
+
 - **Fresh migrated installations now promote the first real registration to
   administrator (#1661).** The migration-seeded `__system__` template owner no
   longer makes `/api/auth/register` assign the ordinary user role. Registration

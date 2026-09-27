@@ -148,6 +148,12 @@ export function PageViewPage() {
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
+  // State-backed pending flags update on the next render, which leaves a
+  // same-tick Ctrl/Cmd+S window. Claim the ref synchronously so every entry
+  // path shares one flight, including draw.io draining and collab commit; keep
+  // state alongside it so session transitions remain visibly unavailable.
+  const saveInFlightRef = useRef(false);
+  const [saveInFlight, setSaveInFlight] = useState(false);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
@@ -257,7 +263,6 @@ export function PageViewPage() {
     if (!user) return undefined;
     return { name: user.username, color: caretColorForUserId(user.id) };
   }, [currentUserId]);
-  const [collabSaving, setCollabSaving] = useState(false);
   const [confluenceModified, setConfluenceModified] = useState<{
     remoteVersion?: number;
     localVersion?: number;
@@ -296,7 +301,6 @@ export function PageViewPage() {
     if (previousPageIdRef.current !== id) {
       previousPageIdRef.current = id;
       editSessionRef.current += 1;
-      setCollabSaving(false);
       // ArticleViewer publishes the destination headings asynchronously.
       // Clear page A's structure immediately so the app-level inspector cannot
       // expose a stale Outline while page B is loading or has no headings.
@@ -439,15 +443,20 @@ export function PageViewPage() {
     return null;
   }, [page?.isFrozen, page?.canMutateContent]);
 
+  const rejectStartEditingDuringSave = useCallback(() => {
+    if (!saveInFlightRef.current) return false;
+    toast.info('A save is still in progress. Wait for it to finish before starting another editing session.');
+    return true;
+  }, []);
+
   const handleStartEditing = useCallback(() => {
-    if (!page || !id) return;
+    if (!page || !id || rejectStartEditingDuringSave()) return;
     const refusal = contentWriteRefusal();
     if (refusal) {
       toast.info(refusal);
       return;
     }
     editSessionRef.current += 1;
-    setCollabSaving(false);
     setEditingBlocked(false);
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
@@ -473,7 +482,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -510,7 +519,6 @@ export function PageViewPage() {
 
   const discardAndExit = useCallback(() => {
     editSessionRef.current += 1;
-    setCollabSaving(false);
     if (draftKey) clearDraft(draftKey);
     captureScrollOffset();
     setCollabSession(false);
@@ -726,11 +734,13 @@ export function PageViewPage() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!id || !page || collabSaving) return;
+    if (!id || !page || saveInFlightRef.current) return;
     if (saveBlocked) {
       toast.info('This draft cannot be saved into the current session. Download it before opening the current version.');
       return;
     }
+    saveInFlightRef.current = true;
+    setSaveInFlight(true);
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
     const document = collab.ydoc;
@@ -739,7 +749,6 @@ export function PageViewPage() {
     try {
       if (collabLive) {
         if (!document) throw new Error('The collaborative document is not ready. Keep this draft open.');
-        setCollabSaving(true);
         const drain = await drainPendingDrawioDiagrams(editorInstance, {
           attachmentPageId: page.confluenceId ?? id,
           pageSource: page.confluenceId ? 'confluence' : 'standalone',
@@ -841,9 +850,10 @@ export function PageViewPage() {
         toast.error(message);
       }
     } finally {
-      if (editSessionRef.current === session) setCollabSaving(false);
+      saveInFlightRef.current = false;
+      setSaveInFlight(false);
     }
-  }, [collab.ydoc, collabLive, collabSaving, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
+  }, [collab.ydoc, collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -1172,7 +1182,7 @@ export function PageViewPage() {
       iconOnly={editing}
     />
   );
-  const saving = updateMutation.isPending || collabSaving;
+  const saving = saveInFlight || updateMutation.isPending;
   const sessionActions = (
     <>
       <PresenceAvatarStack viewers={mergedViewers} />
@@ -1312,14 +1322,17 @@ export function PageViewPage() {
                       <Button
                         type="button"
                         onClick={handleStartEditing}
+                        disabled={saveInFlight}
+                        isLoading={saveInFlight}
+                        title={saveInFlight ? 'Wait for the current save to finish' : 'Edit page'}
                         variant="ghost"
                         size="sm"
                         className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
                         data-testid="edit-page-btn"
-                        leftIcon={<Pencil size={13} aria-hidden />}
-                        rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
+                        leftIcon={!saveInFlight ? <Pencil size={13} aria-hidden /> : undefined}
+                        rightIcon={!saveInFlight ? <ShortcutHint shortcutId="toggle-edit" /> : undefined}
                       >
-                        <span>Edit</span>
+                        <span>{saveInFlight ? 'Finishing save…' : 'Edit'}</span>
                       </Button>
                     )}
                   </div>
