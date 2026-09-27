@@ -54,8 +54,9 @@ export function configureClientInferenceEnv(
 ): void {
   const wasm = env.backends.onnx?.wasm;
   if (wasm) wasm.wasmPaths = opts.wasmPaths;
-  env.allowRemoteModels = true;
-  env.allowLocalModels = false;
+  // Load API-relative paths locally; never fall back to a Hub repository.
+  env.allowRemoteModels = false;
+  env.allowLocalModels = true;
   env.remoteHost = `${opts.origin.replace(/\/$/, '')}/api/models/client-assets/`;
   env.remotePathTemplate = '{model}/';
   env.useBrowserCache = false;

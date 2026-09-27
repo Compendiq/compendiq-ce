@@ -163,7 +163,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
-    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
       return;
@@ -218,7 +218,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       });
       throw err;
     } finally {
-      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+      if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
     } finally {
       await slot.release();

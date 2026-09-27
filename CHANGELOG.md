@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **LLM response-cache lock releases preserve the current owner (#1660).**
+  Every cache-stampede lease now carries a per-acquisition UUID and releases
+  through an atomic compare-and-delete, so a request that outlives its TTL
+  cannot delete a successor's live lock. Redis-unavailable and cache-wait
+  timeout generation fallbacks remain unchanged.
+
+- **Version restore concurrency (#1659).** The optional optimistic version is
+  now checked against the live page row under its transaction lock, before the
+  superseded snapshot or restored content is written. A concurrent edit wins
+  and the restore returns 409; callers that omit the version retain the existing
+  unconditional restore behavior.
+
+- **Upgrade the client inference dependency family (#1654).** Transformers
+  4.3.0 brings ORT node 1.30.0 and web 1.31.0-dev.20260914-8d85527a0;
+  the resolved sharp 0.35.4 and adm-zip 0.6.1 no longer need the obsolete
+  Transformers 4.2.0 overrides. Load models through API-relative local paths
+  so the new Hub ID validation cannot reject Compendiq's `org--name` asset
+  IDs. Same-origin authentication and existing OPFS caches are preserved.
+
 - **Immutable article baselines and protected-writer enforcement (#275,
   #276).** Added canonical manifest-v1 digests, exclusive retained media,
   append-only freeze/thaw evidence, shared writer intents, and conservative
@@ -149,6 +168,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unavailable until the older flight settles, rather than exposing a new
   session whose Save would be silently dropped. The guard releases after both
   success and failure so an intentional retry still works.
+
+- **Fresh migrated installations now promote the first real registration to
+  administrator (#1661).** The migration-seeded `__system__` template owner no
+  longer makes `/api/auth/register` assign the ordinary user role. Registration
+  and `/api/setup/admin` now share one transaction and users-table lock, so
+  concurrent bootstrap requests produce exactly one real administrator; later
+  open registrations remain regular users and a raced closed registration is
+  rejected by the existing policy.
 
 - **Trashing a standalone article now takes its whole sub-article subtree with
   it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its

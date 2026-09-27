@@ -371,6 +371,11 @@ accumulate across reloads. Inline prompts use the installed tokenizer's chat
 template with thinking disabled and the existing bounded output budget.
 Hunspell EN/DE lint is a second worker (`shared/lib/spellcheck/`), not GPU.
 
+The worker passes `/api/models/client-assets/<local-id>` as a local model
+directory to Transformers, with remote model loading disabled. This avoids
+Hub ID validation of Compendiq's `org--name` IDs without changing the
+authenticated same-origin asset routes or OPFS cache identities (#1654).
+
 The extension sends roughly 800 tokens before and 200 after the cursor after a
 personal debounce. Its persisted default mode either requests and displays one
 word (8 output tokens) or a full one-line suggestion (48 output tokens). Tab

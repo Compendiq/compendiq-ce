@@ -6,6 +6,7 @@ import { htmlToMarkdown, htmlToText } from '../../../core/services/content-conve
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
 import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
+import { PageWriteError } from '../../../core/services/page-write-admission.js';
 
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
@@ -134,6 +135,12 @@ export interface RestoreVersionOptions {
    * the transaction.
    */
   client?: PoolClient;
+  /**
+   * Optimistic version observed by the caller. When present, it is checked
+   * against the row acquired by `FOR UPDATE`, before history or live content
+   * changes. Omission deliberately preserves unconditional restore behavior.
+   */
+  expectedVersion?: number;
   /** Actor recorded for a local-only restore. */
   actorId?: string;
 }
@@ -142,12 +149,13 @@ export interface RestoreVersionOptions {
  * Non-destructive local restore of an older snapshot.
  *
  * In one caller-owned or locally-owned transaction:
- *   1. Snapshot the CURRENT live state into `page_versions` (so the revert is
+ *   1. Lock the live page and, when supplied, validate `expectedVersion`.
+ *   2. Snapshot the CURRENT live state into `page_versions` (so the revert is
  *      itself reversible and intermediate manual edits aren't lost — a plain
  *      edit-save does not snapshot, only sync/draft-publish/this path do).
- *   2. Apply the target snapshot's title / body_html / body_text to the live
+ *   3. Apply the target snapshot's title / body_html / body_text to the live
  *      `pages` row, re-deriving body_text from body_html when needed.
- *   3. Bump `version` and mark the page
+ *   4. Bump `version` and mark the page
  *      dirty so the change flows through search/embedding like an edit-save.
  *
  * The inserted `page_versions` row is ordinary best-effort history, not
@@ -186,6 +194,14 @@ export async function restoreVersion(
       return null;
     }
     const live = liveRes.rows[0]!;
+
+    if (options.expectedVersion !== undefined && options.expectedVersion < live.version) {
+      throw new PageWriteError(
+        409,
+        'stale_content_revision',
+        'Page has been modified since you loaded it. Please refresh and try again.',
+      );
+    }
 
     const targetRes = await txClient.query<{
       title: string;

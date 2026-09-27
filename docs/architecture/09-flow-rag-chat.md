@@ -110,7 +110,8 @@ sequenceDiagram
         CACHE-->>BE: answer
         BE-->>FE: SSE { content, done:true, fromCache:true }
     else miss (stampede lock)
-        CACHE-->>BE: lock acquired
+        BE->>CACHE: SET lock UUID NX EX 120
+        CACHE-->>BE: unique acquisition token<br/>(SET NX EX)
         BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
         BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
         BE->>PROV: streamChat(config, resolvedModel, messages)
@@ -123,6 +124,7 @@ sequenceDiagram
         BE->>CONV: append user turn + answer + sources (atomic jsonb ||)
         BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
         BE-->>FE: SSE { done:true, conversationId, sources }
+        BE->>CACHE: release with token<br/>(atomic compare-and-delete)
     end
 ```
 
@@ -1951,9 +1953,15 @@ deleting your own history is not model consumption, and a user stripped of
 
 - **Key** = `hash(userId, model, normalizedQuestion, contextFingerprint)`.
 - Cache hit → answer returned immediately from Redis.
-- Cache miss → a Redis lock is taken; concurrent identical requests wait
-  for the first writer and then read the fresh entry, avoiding duplicate
-  LLM calls.
+- Cache miss → Redis stores a unique token with `SET NX EX`; concurrent
+  identical requests wait for the first writer and then read the fresh entry,
+  avoiding duplicate LLM calls.
+- Release is one atomic Lua compare-and-delete. An expired holder's stale token
+  cannot delete a successor's live lease, including overlapping requests in the
+  same backend process.
+- Redis acquisition errors deliberately fall back to generation. A cache-wait
+  timeout also deliberately generates without lock ownership and therefore
+  never releases the holder's lease.
 - TTL: `LLM_CACHE_TTL` (default `3600`s).
 
 ## Related routes

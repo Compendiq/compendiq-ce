@@ -14,6 +14,11 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+const mockCreateSetupAdministrator = vi.fn();
+vi.mock('../../core/services/account-bootstrap-service.js', () => ({
+  createSetupAdministrator: (...args: unknown[]) => mockCreateSetupAdministrator(...args),
+}));
+
 const mockGenerateAccessToken = vi.fn().mockResolvedValue('mock-access-token');
 const mockGenerateRefreshToken = vi.fn().mockResolvedValue({ token: 'mock-refresh-token', jti: 'mock-jti' });
 
@@ -112,6 +117,13 @@ describe('Setup routes', () => {
     vi.clearAllMocks();
     mockCheckHealth.mockResolvedValue({ connected: true });
     mockListModels.mockResolvedValue([{ name: 'llama3.2:latest' }]);
+    mockCreateSetupAdministrator.mockResolvedValue({
+      id: 'uuid-1',
+      username: 'admin',
+      role: 'admin',
+      email: null,
+      display_name: null,
+    });
   });
 
   // ─── GET /api/health/setup-status ─────────────────────────────────────
@@ -233,12 +245,7 @@ describe('Setup routes', () => {
 
   describe('POST /api/setup/admin', () => {
     it('should create admin account when no admin exists', async () => {
-      // First query: atomic INSERT ... WHERE NOT EXISTS ... RETURNING
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'uuid-1', username: 'admin', role: 'admin' }],
-      });
-      // Second query: INSERT user_settings
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // The transactional bootstrap service owns the user and settings writes.
 
       const response = await app.inject({
         method: 'POST',
@@ -258,12 +265,7 @@ describe('Setup routes', () => {
     });
 
     it('should set refresh cookie on admin creation', async () => {
-      // Atomic INSERT ... WHERE NOT EXISTS ... RETURNING
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'uuid-1', username: 'admin', role: 'admin' }],
-      });
-      // INSERT user_settings
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // The default service mock creates the administrator.
 
       const response = await app.inject({
         method: 'POST',
@@ -279,8 +281,7 @@ describe('Setup routes', () => {
     });
 
     it('should return 409 when admin already exists', async () => {
-      // Atomic INSERT returns empty rows when admin already exists
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockCreateSetupAdministrator.mockResolvedValueOnce(null);
 
       const response = await app.inject({
         method: 'POST',
@@ -315,10 +316,10 @@ describe('Setup routes', () => {
     });
 
     it('should handle duplicate username (23505 error)', async () => {
-      // Atomic INSERT throws a PG unique violation
+      // The bootstrap service propagates PostgreSQL uniqueness errors.
       const pgError = new Error('duplicate key') as Error & { code: string };
       pgError.code = '23505';
-      mockQuery.mockRejectedValueOnce(pgError);
+      mockCreateSetupAdministrator.mockRejectedValueOnce(pgError);
 
       const response = await app.inject({
         method: 'POST',

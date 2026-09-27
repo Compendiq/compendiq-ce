@@ -85,7 +85,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking });
-    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
       return;
@@ -108,7 +108,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
           },
         });
     } finally {
-      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+      if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
     } finally {
       await slot.release();

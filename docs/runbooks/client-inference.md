@@ -74,6 +74,11 @@ Check the worker error, not only whether the model is downloaded:
 - **`webgpuInit is not a function`:** the runtime pair is wrong. Transformers
   v4's WebGPU backend needs `ort-wasm-simd-threaded.asyncify.mjs` and its
   matching `.wasm`, not the older JSEP pair.
+- **Invalid model ID containing `--`:** `org--name` is Compendiq's asset ID,
+  not a Hub repository ID. Transformers 4.3 validates remote IDs before
+  fetching. Pass `/api/models/client-assets/<local-id>` to the pipeline with
+  local loading enabled and remote loading disabled. Keep the API and OPFS
+  identities unchanged; do not rename already-downloaded models.
 - **`std::bad_alloc` after returning to a tab:** unload must dispose the
   pipeline before another load; dropping the JS reference retains its session.
 - **Empty/whitespace generation despite a ready worker:** use the installed
@@ -125,26 +130,26 @@ nginx grants `script-src 'wasm-unsafe-eval'` and `worker-src 'self'`.
 
 ## Native dependency security overrides
 
-The root manifest scopes two overrides to `@huggingface/transformers@4.2.0`:
+Transformers 4.3.0 admits the patched native dependencies without overrides.
+The lockfile resolves:
 
-- `sharp` 0.34.5 → 0.35.4, including its platform binaries and libheif 1.23.2,
+- `sharp` 0.35.4, including its platform binaries and libheif 1.23.2,
   addresses [GHSA-f88m-g3jw-g9cj](https://github.com/advisories/GHSA-f88m-g3jw-g9cj)
   and [GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
-- `onnxruntime-node@1.24.3` → `adm-zip` 0.5.18 → 0.6.0 addresses
-  [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85).
-  No patched release exists for [GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9)
-  (symlink-following overwrite, `<= 0.6.0`). ORT's installer extracts first-party
-  package libraries via `getEntry` + `extractEntryTo(..., false, true)` into
-  `node_modules`; it does not unpack untrusted archives. Keep 0.6.0 until
-  upstream ships `> 0.6.0` or Transformers admits a parent that does.
+- `onnxruntime-node` 1.30.0 admits `adm-zip ^0.6.0`; the lockfile selects 0.6.1,
+  addressing [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85),
+  [GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9)
+  (symlink-following overwrite), and
+  [GHSA-7q85-xj36-vmfc](https://github.com/advisories/GHSA-7q85-xj36-vmfc)
+  (uncontrolled allocation).
 
-As of 2026-09-10, Transformers 4.2.0 is the latest release and its dependency
-ranges exclude the patched sharp. Updating ORT to 1.29.0 still pulls
-`adm-zip ^0.6.0` and would override Transformers' exact native runtime version.
-The narrower archive override leaves ORT's native ABI and browser/WASM versions
-unchanged. Remove these overrides when a released Transformers parent admits
-the patched dependencies, after checking the resolved graph and the smoke
-steps below; do not carry them blindly onto another parent version.
+The old overrides scoped to `@huggingface/transformers@4.2.0` are removed:
+they no longer match the installed parent. Keep the native/browser runtime
+pair published by Transformers rather than overriding ORT independently.
+This parent upgrade also changes `onnxruntime-web` to
+`1.31.0-dev.20260914-8d85527a0`, so native/archive smoke checks alone do not
+establish browser inference compatibility. Exercise the worker and warm
+OPFS path below whenever the parent or runtime pair changes.
 
 Compatibility boundaries:
 
@@ -161,11 +166,12 @@ Compatibility boundaries:
   require Node >=14. The changed directory-extraction behaviour does not
   affect ORT's installer: it uses `getEntry(pathInPackage)` and
   `extractEntryTo(fileEntry, directory, false, true)` on individual libraries,
-  then copies the extracted basename. Native ORT remains 1.24.3 (Node-API 6);
-  skipping its CUDA download is not a native-runtime compatibility test.
+  then copies the extracted basename. Native ORT is 1.30.0; skipping its
+  CUDA download is not a native-runtime compatibility test.
 
-Before changing or removing the overrides, validate on Node 22 and on the
-frontend Docker builder for both `linux/amd64` and `linux/arm64`:
+Before changing the parent, lockfile resolutions, or security overrides,
+validate on Node 22 and the frontend Docker builder for both
+`linux/amd64` and `linux/arm64`:
 
 1. Run a clean root `ONNXRUNTIME_NODE_INSTALL=skip npm ci`, then inspect
    `npm ls @huggingface/transformers sharp adm-zip onnxruntime-node onnxruntime-web`.
