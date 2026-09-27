@@ -104,7 +104,7 @@ sequenceDiagram
 
     C->>BE: POST /auth/register or /setup/admin
     BE->>BE: validate + bcrypt (outside critical section)
-    BE->>DB: BEGIN; LOCK users IN SHARE ROW EXCLUSIVE MODE
+    BE->>DB: BEGIN#59; LOCK users IN SHARE ROW EXCLUSIVE MODE
     Note over BE,DB: Both routes use the same lock and<br/>exclude __system__ from the admin predicate.
     BE->>DB: SELECT real administrator
     alt no real administrator
