@@ -115,8 +115,8 @@ import {
   syncUser,
   runScheduledSync,
   getClientForUser,
-  isConfluenceEnabled,
 } from './sync-service.js';
+import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
 import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';

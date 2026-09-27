@@ -30,6 +30,13 @@ export interface SearchResultItem {
    * percentage in [0,100] — `/pages` shows it only when positive.
    */
   similarity: number | null;
+  /**
+   * #277 freeze summary. Optional because a server that predates the fields
+   * sends none, and absent must read as "not known to be frozen" — never as
+   * frozen, which would put a lock on every row of an older deployment.
+   */
+  isFrozen?: boolean;
+  frozenVersion?: number | null;
 }
 
 interface SearchApiResponse {
@@ -44,6 +51,8 @@ interface SearchApiResponse {
     score?: number;
     similarity?: number | null;
     icon?: PageIcon | null;
+    isFrozen?: boolean;
+    frozenVersion?: number | null;
   }>;
   total: number;
   page: number;
@@ -74,6 +83,8 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     // 0 — a page nobody measured must render no figure, not "0%".
     similarity: item.similarity ?? null,
     icon: item.icon ?? null,
+    isFrozen: item.isFrozen,
+    frozenVersion: item.frozenVersion ?? null,
   }));
 }
 

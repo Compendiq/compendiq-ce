@@ -142,6 +142,8 @@ export interface ConfirmDialogProps {
    * "close without choosing" rather than silently picking the cancel path.
    */
   onDismiss?: () => void;
+  /** Post-close handoff when the confirmed action removes the invoking control. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export function ConfirmDialog({
@@ -154,6 +156,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   onDismiss,
+  onCloseAutoFocus,
 }: ConfirmDialogProps) {
   /**
    * The control that had focus when this dialog opened. Captured in
@@ -204,7 +207,7 @@ export function ConfirmDialog({
             // Deliberately no `preventDefault()`: Radix's initial focus into
             // the content is the focus-trap entry this dialog wants.
           }}
-          onCloseAutoFocus={() => {
+          onCloseAutoFocus={(event) => {
             const invoker = invokerRef.current;
             // A release, not a guard: nothing else reads it, and a closed
             // dialog that keeps the reference pins a possibly-detached subtree
@@ -213,6 +216,9 @@ export function ConfirmDialog({
             // `onOpenAutoFocus` and overwrites it, so there is no
             // stale-invoker path left to observe.
             invokerRef.current = null;
+            if (!aliveRef.current) return;
+            onCloseAutoFocus?.(event);
+            if (event.defaultPrevented) return;
             // `Invoker | null` narrowing rather than a behaviour branch: `tsc`
             // is what reds for it ("'invoker' is possibly 'null'").
             if (!invoker) return;
@@ -228,7 +234,6 @@ export function ConfirmDialog({
             // while nothing else holds the keyboard. `focus()` on a control
             // that cannot take it is a no-op, which is the intended outcome —
             // not a state to wait out.
-            if (!aliveRef.current) return;
             if (document.activeElement !== document.body) return;
             resolveInvoker(invoker)?.focus();
           }}

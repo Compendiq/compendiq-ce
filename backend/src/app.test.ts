@@ -1,104 +1,143 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
+import { buildApp as productionBuildApp } from './app.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from './test-db-helper.js';
+import { isRedisAvailable } from './test-redis-helper.js';
 
-// Mock all heavy dependencies before importing buildApp
-vi.mock('./core/db/postgres.js', () => ({
-  checkConnection: vi.fn().mockResolvedValue(true),
-  getPool: vi.fn().mockReturnValue({}),
-  query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-vi.mock('./core/plugins/redis.js', () => ({
-  default: vi.fn(async (fastify: FastifyInstance) => {
-    fastify.decorate('redis', {
-      get: vi.fn(),
-      set: vi.fn(),
-      del: vi.fn(),
-      scan: vi.fn().mockResolvedValue({ cursor: '0', keys: [] }),
-      keys: vi.fn().mockResolvedValue([]),
-    });
+/**
+ * Full production-app integration coverage. Persistence, auth, route plugins,
+ * lifecycle workers, and their close hooks stay real; only network egress is
+ * blocked at the DNS/HTTP boundary.
+ */
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => {
+    const error = new Error(
+      'getaddrinfo ENOTFOUND (blocked by app.test)',
+    ) as NodeJS.ErrnoException;
+    error.code = 'ENOTFOUND';
+    throw error;
   }),
-  checkRedisConnection: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('./core/plugins/auth.js', async () => {
-  const { default: fp } = await import('fastify-plugin');
-  return {
-    default: fp(async (fastify: FastifyInstance) => {
-      fastify.decorate('authenticate', vi.fn());
-      fastify.decorate('requireAdmin', vi.fn());
-    }),
-  };
+const dbAvailable = await isDbAvailable();
+const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
+const canRun = dbAvailable && redisAvailable;
+
+const apps = new Set<FastifyInstance>();
+let redisAdmin: RedisClientType | undefined;
+
+async function createTestApp(): Promise<FastifyInstance> {
+  const app = await productionBuildApp();
+  apps.add(app);
+  return app;
+}
+
+async function closeTestApp(app: FastifyInstance): Promise<void> {
+  if (!apps.has(app)) return;
+  const close = app.close.bind(app);
+  await close();
+  apps.delete(app);
+}
+
+async function closeAllApps(): Promise<void> {
+  const openApps = [...apps];
+  const results = await Promise.allSettled(openApps.map(async (app) => app.close()));
+  const failures: unknown[] = [];
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'fulfilled') {
+      apps.delete(openApps[index]!);
+    } else {
+      failures.push(result.reason);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Failed to close one or more buildApp instances');
+  }
+}
+
+beforeAll(async () => {
+  if (!canRun) return;
+  vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> => {
+    throw new Error('Outbound HTTP is blocked by app.test');
+  }));
+  await setupTestDb();
+  redisAdmin = createClient({
+    url: process.env.REDIS_URL,
+    socket: { connectTimeout: 1_000, reconnectStrategy: false },
+  }) as RedisClientType;
+  redisAdmin.on('error', () => {
+    // Connection failures surface from setup/cleanup operations below.
+  });
+  await redisAdmin.connect();
+  await redisAdmin.flushDb();
+}, 30_000);
+
+beforeEach(async () => {
+  if (!canRun) return;
+  await truncateAllTables();
+  await redisAdmin?.flushDb();
 });
 
-vi.mock('./core/plugins/correlation-id.js', () => ({
-  default: vi.fn(async () => {}),
-}));
+afterEach(async () => {
+  if (!canRun) return;
+  try {
+    await closeAllApps();
+  } finally {
+    await redisAdmin?.flushDb();
+  }
+});
 
-vi.mock('./core/utils/logger.js', () => ({
-  logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(), fatal: vi.fn() },
-}));
+afterAll(async () => {
+  if (!canRun) return;
+  const failures: unknown[] = [];
+  try {
+    await closeAllApps();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await redisAdmin?.flushDb();
+    await redisAdmin?.quit();
+  } catch (error) {
+    failures.push(error);
+    if (redisAdmin?.isOpen) {
+      try {
+        await redisAdmin.disconnect();
+      } catch (disconnectError) {
+        failures.push(disconnectError);
+      }
+    }
+  }
+  try {
+    await teardownTestDb();
+  } catch (error) {
+    failures.push(error);
+  }
+  vi.unstubAllGlobals();
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Failed to tear down app.test persistence');
+  }
+}, 30_000);
 
-vi.mock('./core/services/error-tracker.js', () => ({
-  trackError: vi.fn(),
-  listErrors: vi.fn(),
-  resolveError: vi.fn(),
-  getErrorSummary: vi.fn(),
-}));
-
-// Mock all route modules to avoid importing their dependencies
-const noopRoute = vi.fn(async () => {});
-vi.mock('./routes/foundation/health.js', () => ({ healthRoutes: noopRoute, markStartupComplete: vi.fn() }));
-vi.mock('./routes/foundation/auth.js', () => ({ authRoutes: noopRoute }));
-vi.mock('./routes/foundation/settings.js', () => ({ settingsRoutes: noopRoute }));
-vi.mock('./routes/foundation/admin.js', () => ({ adminRoutes: noopRoute }));
-vi.mock('./routes/foundation/rbac.js', () => ({ rbacRoutes: noopRoute }));
-vi.mock('./routes/foundation/notifications.js', () => ({ notificationRoutes: noopRoute }));
-vi.mock('./routes/confluence/spaces.js', () => ({ spacesRoutes: noopRoute }));
-vi.mock('./routes/confluence/sync.js', () => ({ syncRoutes: noopRoute }));
-vi.mock('./routes/confluence/attachments.js', () => ({ attachmentRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-improve.js', () => ({ llmImproveRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-generate.js', () => ({ llmGenerateRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-summarize.js', () => ({ llmSummarizeRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-diagram.js', () => ({ llmDiagramRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-quality.js', () => ({ llmQualityRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-ask.js', () => ({ llmAskRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-conversations.js', () => ({ llmConversationRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-embeddings.js', () => ({ llmEmbeddingRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-models.js', () => ({ llmModelRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-admin.js', () => ({ llmAdminRoutes: noopRoute }));
-vi.mock('./routes/llm/extract-document.js', () => ({ extractDocumentRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-crud.js', () => ({ pagesCrudRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-icon.js', () => ({ pagesIconRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-versions.js', () => ({ pagesVersionRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-tags.js', () => ({ pagesTagRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-embeddings.js', () => ({ pagesEmbeddingRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-duplicates.js', () => ({ pagesDuplicateRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pinned-pages.js', () => ({ pinnedPagesRoutes: noopRoute }));
-vi.mock('./routes/knowledge/analytics.js', () => ({ analyticsRoutes: noopRoute }));
-vi.mock('./routes/knowledge/knowledge-admin.js', () => ({ knowledgeAdminRoutes: noopRoute }));
-vi.mock('./routes/knowledge/templates.js', () => ({ templateRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-export.js', () => ({ pagesExportRoutes: noopRoute }));
-vi.mock('./routes/knowledge/comments.js', () => ({ commentsRoutes: noopRoute }));
-vi.mock('./routes/knowledge/pages-import.js', () => ({ pagesImportRoutes: noopRoute }));
-vi.mock('./routes/knowledge/content-analytics.js', () => ({ contentAnalyticsRoutes: noopRoute }));
-vi.mock('./routes/knowledge/verification.js', () => ({ verificationRoutes: noopRoute }));
-vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
-vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
-vi.mock('./routes/foundation/setup.js', () => ({ setupRoutes: noopRoute }));
-
-// Track bootstrap invocations without suppressing its side effects on other tests.
-const bootstrapLlmProvidersSpy = vi.fn().mockResolvedValue(undefined);
-vi.mock('./domains/llm/services/llm-provider-bootstrap.js', () => ({
-  bootstrapLlmProviders: bootstrapLlmProvidersSpy,
-}));
-
-describe('buildApp — community OIDC config fallback', () => {
+describe.skipIf(!canRun)('buildApp — community OIDC config fallback', () => {
   it('serves a disabled OIDC config so the shared CE login page hides the SSO button', async () => {
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     try {
       const response = await app.inject({ method: 'GET', url: '/api/auth/oidc/config' });
@@ -111,12 +150,12 @@ describe('buildApp — community OIDC config fallback', () => {
         enterpriseRequired: true,
       });
     } finally {
-      await app.close();
+      await closeTestApp(app);
     }
   });
 });
 
-describe('buildApp — CORS multi-origin support', () => {
+describe.skipIf(!canRun)('buildApp — CORS multi-origin support', () => {
   const originalFrontendUrl = process.env.FRONTEND_URL;
 
   afterEach(() => {
@@ -129,8 +168,8 @@ describe('buildApp — CORS multi-origin support', () => {
 
   it('should allow a single CORS origin', async () => {
     process.env.FRONTEND_URL = 'https://app.example.com';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     const response = await app.inject({
       method: 'OPTIONS',
@@ -139,13 +178,13 @@ describe('buildApp — CORS multi-origin support', () => {
     });
 
     expect(response.headers['access-control-allow-origin']).toBe('https://app.example.com');
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('should allow multiple CORS origins (comma-separated)', async () => {
     process.env.FRONTEND_URL = 'https://app.example.com, https://staging.example.com';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // First origin
     const res1 = await app.inject({
@@ -163,13 +202,13 @@ describe('buildApp — CORS multi-origin support', () => {
     });
     expect(res2.headers['access-control-allow-origin']).toBe('https://staging.example.com');
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('should reject unknown origins when multiple are configured', async () => {
     process.env.FRONTEND_URL = 'https://app.example.com, https://staging.example.com';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     const response = await app.inject({
       method: 'OPTIONS',
@@ -179,11 +218,11 @@ describe('buildApp — CORS multi-origin support', () => {
 
     // @fastify/cors returns false/empty for disallowed origins
     expect(response.headers['access-control-allow-origin']).not.toBe('https://evil.example.com');
-    await app.close();
+    await closeTestApp(app);
   });
 });
 
-describe('buildApp — CORS allowed methods (#1055)', () => {
+describe.skipIf(!canRun)('buildApp — CORS allowed methods (#1055)', () => {
   const originalFrontendUrl = process.env.FRONTEND_URL;
 
   afterEach(() => {
@@ -209,8 +248,8 @@ describe('buildApp — CORS allowed methods (#1055)', () => {
 
   it('advertises the full method set for an allowed origin', async () => {
     process.env.FRONTEND_URL = 'http://localhost:8081';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     try {
       const response = await app.inject({
@@ -230,14 +269,14 @@ describe('buildApp — CORS allowed methods (#1055)', () => {
         expect(methods.has(verb)).toBe(true);
       }
     } finally {
-      await app.close();
+      await closeTestApp(app);
     }
   });
 
   it.each(ALL_VERBS)('allowed-origin preflight advertises %s', async (verb) => {
     process.env.FRONTEND_URL = 'http://localhost:8081';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     try {
       const response = await app.inject({
@@ -252,7 +291,7 @@ describe('buildApp — CORS allowed methods (#1055)', () => {
       const methods = methodSet(response.headers['access-control-allow-methods'] as string);
       expect(methods.has(verb)).toBe(true);
     } finally {
-      await app.close();
+      await closeTestApp(app);
     }
   });
 
@@ -260,8 +299,8 @@ describe('buildApp — CORS allowed methods (#1055)', () => {
     // Multi-origin (array) form so @fastify/cors exercises reflect-or-reject;
     // a single configured origin is reflected unconditionally.
     process.env.FRONTEND_URL = 'http://localhost:8081, http://localhost:5273';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     try {
       const response = await app.inject({
@@ -277,12 +316,12 @@ describe('buildApp — CORS allowed methods (#1055)', () => {
       // credentialed response regardless of verb.
       expect(response.headers['access-control-allow-origin']).not.toBe('http://evil.example.com');
     } finally {
-      await app.close();
+      await closeTestApp(app);
     }
   });
 });
 
-describe('buildApp — compression threshold', () => {
+describe.skipIf(!canRun)('buildApp — compression threshold', () => {
   // Regression guard for the production-only @fastify/compress bug observed in
   // the EE backend container: a ~1KB JSON response (/api/health, 1042 bytes)
   // was compressed to an empty body when the client sent
@@ -291,8 +330,8 @@ describe('buildApp — compression threshold', () => {
   // in the bug-prone size range pass through uncompressed.
 
   it('does not compress responses below the 4096-byte threshold', async () => {
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // Synthetic route returning ~1KB JSON — the same size range as the live
     // /api/health response that triggered the bug in production.
@@ -313,12 +352,12 @@ describe('buildApp — compression threshold', () => {
     expect(response.rawPayload.length).toBeGreaterThan(900);
     expect(() => JSON.parse(response.rawPayload.toString('utf8'))).not.toThrow();
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('does compress responses above the 4096-byte threshold', async () => {
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // Synthetic route returning ~5KB JSON — well above the threshold, so
     // compression should kick in to confirm the plugin is wired up and the
@@ -341,11 +380,11 @@ describe('buildApp — compression threshold', () => {
     expect(response.headers['content-encoding']).toMatch(/^(gzip|br|zstd|deflate)$/);
     expect(response.rawPayload.length).toBeGreaterThan(0);
 
-    await app.close();
+    await closeTestApp(app);
   });
 });
 
-describe('buildApp — error handler information leakage', () => {
+describe.skipIf(!canRun)('buildApp — error handler information leakage', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
   afterEach(() => {
@@ -354,8 +393,8 @@ describe('buildApp — error handler information leakage', () => {
 
   it('should not leak internal error names like TypeError for non-500 errors', async () => {
     process.env.NODE_ENV = 'development';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // Register a test route that throws a TypeError with a non-500 status code
     app.get('/test/type-error', async () => {
@@ -373,13 +412,13 @@ describe('buildApp — error handler information leakage', () => {
     expect(body.error).not.toBe('TypeError');
     expect(body.error).toBe('ClientError');
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('should expose known Fastify HTTP error names', async () => {
     process.env.NODE_ENV = 'development';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // Register a test route that throws a known Fastify error
     app.get('/test/not-found', async (_request, reply) => {
@@ -391,13 +430,13 @@ describe('buildApp — error handler information leakage', () => {
     const body = JSON.parse(response.body);
     expect(body.error).toBe('NotFoundError');
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('should always use InternalServerError for 500 errors regardless of error name', async () => {
     process.env.NODE_ENV = 'development';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     // Register a test route that throws a RangeError with 500 status
     app.get('/test/range-error', async () => {
@@ -411,13 +450,13 @@ describe('buildApp — error handler information leakage', () => {
     // Should NOT expose the actual error message for 500 errors
     expect(body.message).toBe('Internal Server Error');
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('forwards only allow-listed collab error codes', async () => {
     process.env.NODE_ENV = 'development';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     app.get('/test/leaky-code', async () => {
       throw Object.assign(new Error('hidden'), { statusCode: 400, code: 'internal_topology' });
@@ -456,11 +495,11 @@ describe('buildApp — error handler information leakage', () => {
       localVersion: 7,
     });
 
-    await app.close();
+    await closeTestApp(app);
   });
 });
 
-describe('buildApp — Swagger UI gating', () => {
+describe.skipIf(!canRun)('buildApp — Swagger UI gating', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
   afterEach(() => {
@@ -469,34 +508,25 @@ describe('buildApp — Swagger UI gating', () => {
 
   it('should register Swagger UI in development', async () => {
     process.env.NODE_ENV = 'development';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     const response = await app.inject({ method: 'GET', url: '/api/docs/' });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
 
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('should not register Swagger UI in production', async () => {
     process.env.NODE_ENV = 'production';
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
+
+    const app = await createTestApp();
 
     const response = await app.inject({ method: 'GET', url: '/api/docs/' });
     expect(response.statusCode).toBe(404);
 
-    await app.close();
+    await closeTestApp(app);
   });
 });
 
-describe('buildApp — LLM provider bootstrap', () => {
-  it('calls bootstrapLlmProviders during buildApp', async () => {
-    bootstrapLlmProvidersSpy.mockClear();
-    const { buildApp } = await import('./app.js');
-    const app = await buildApp();
-    expect(bootstrapLlmProvidersSpy).toHaveBeenCalled();
-    await app.close();
-  });
-});

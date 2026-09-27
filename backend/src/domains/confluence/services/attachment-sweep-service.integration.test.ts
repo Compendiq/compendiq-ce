@@ -21,6 +21,7 @@ import {
   setRedisClient,
 } from '../../../core/services/redis-cache.js';
 import type { AttachmentSweepCandidate } from '@compendiq/contracts';
+import { ATTACHMENT_ROOT_RESERVED_DIRNAMES } from '../../../core/services/attachment-store.js';
 import {
   ATTACHMENT_SWEEP_GRACE_MS,
   ATTACHMENT_SWEEP_WORKER_LOCK,
@@ -1282,9 +1283,6 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     });
 
     it('never judges client-models — a live run leaves operator-supplied weights standing (#1418 SPEC-009)', async () => {
-      const { ATTACHMENT_ROOT_RESERVED_DIRNAMES } = await import(
-        '../../../core/services/attachment-store.js'
-      );
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
 
       await seedCorpus();
@@ -1319,6 +1317,21 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.status).toBe('completed');
       expect(await exists(weight), 'a flat client-models store must survive a live sweep').toBe(true);
       expect(run!.candidateSample.some((c) => c.key === 'client-models')).toBe(false);
+    });
+
+    it('never judges retained baseline evidence — the reserved namespace survives a live sweep', async () => {
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-baselines')).toBe(true);
+
+      await seedCorpus();
+      const evidence = await writeAged('page-baselines', 'retained-manifest.bin');
+      await ageDirs('page-baselines');
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(await exists(evidence), 'immutable baseline evidence must survive a live sweep').toBe(true);
+      expect(run!.candidateSample.some((candidate) => candidate.key === 'page-baselines')).toBe(false);
+      expect(run!.stores!.confluence.unkeyedDirectories).toBe(0);
     });
 
     // Fixer, external round: the record the card polls must describe the tree

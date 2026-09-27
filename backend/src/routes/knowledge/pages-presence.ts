@@ -21,6 +21,7 @@ import {
   removeViewer,
   getActiveViewers,
   subscribeToPage,
+  subscribeToPageLifecycle,
   type PresenceViewer,
 } from '../../core/services/presence-service.js';
 
@@ -90,7 +91,9 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
       'X-Accel-Buffering': 'no',
     });
 
+    let closed = false;
     const sendEvent = (viewers: PresenceViewer[]): void => {
+      if (closed) return;
       const payload = JSON.stringify({
         viewers,
         pageId: id,
@@ -103,39 +106,45 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
       }
     };
 
-    // Emit the current viewer snapshot immediately so the client doesn't have
-    // to wait for the first pub/sub event.
+    const unsubscribeLifecycle = subscribeToPageLifecycle(pageId, (event) => {
+      void userCanAccessPage(userId, pageId).then((canRead) => {
+        if (!closed && canRead) {
+          reply.raw.write(`event: page_lifecycle\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+      }).catch((err: unknown) => {
+        logger.warn({ err, pageId }, 'presence: lifecycle access could not be verified');
+      });
+    });
+
+    const unsubscribe = subscribeToPage(id, sendEvent);
+    let resolveClosed!: () => void;
+    const disconnected = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const onClose = (): void => {
+      if (closed) return;
+      closed = true;
+      unsubscribe();
+      unsubscribeLifecycle();
+      try {
+        reply.raw.end();
+      } catch {
+        // already torn down
+      }
+      resolveClosed();
+    };
+    // Install cleanup before the first post-hijack await: a disconnect during
+    // the Redis snapshot must not retain either subscription.
+    request.raw.once('close', onClose);
+    if (request.raw.destroyed || reply.raw.destroyed) {
+      onClose();
+      return;
+    }
     try {
       const initial = await getActiveViewers(id);
       sendEvent(initial);
     } catch (err) {
       logger.warn({ err, pageId: id }, 'presence: initial snapshot failed');
     }
-
-    const unsubscribe = subscribeToPage(id, sendEvent);
-
-    let closed = false;
-    const onClose = (): void => {
-      if (closed) return;
-      closed = true;
-      unsubscribe();
-      try {
-        reply.raw.end();
-      } catch {
-        // already torn down
-      }
-    };
-
-    // Keep the returned promise pending so Fastify doesn't try to finalise
-    // the reply — the raw socket is now ours. Resolves on client disconnect.
-    // A single `close` listener handles both unsubscribe/cleanup and promise
-    // resolution so we don't double-register.
-    await new Promise<void>((resolve) => {
-      request.raw.on('close', () => {
-        onClose();
-        resolve();
-      });
-    });
+    await disconnected;
   });
 
   // POST /api/pages/:id/presence/heartbeat — refresh ZSET + meta

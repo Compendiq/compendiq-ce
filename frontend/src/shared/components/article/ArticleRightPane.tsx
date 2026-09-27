@@ -35,6 +35,7 @@ import { NotesInspectorPanel, usePageNotes } from './NotesInspectorPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
+import { PageLifecycleSection } from './PageLifecycleSection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { Button } from '../Button';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
@@ -1811,6 +1812,10 @@ export function ArticleRightPane({
               )}
             </div>
           </div>
+
+          {id && (
+            <PageLifecycleSection pageId={id} page={page} />
+          )}
 
           <div className="mt-4">
             <h3 className="text-xs font-semibold text-foreground">Labels</h3>

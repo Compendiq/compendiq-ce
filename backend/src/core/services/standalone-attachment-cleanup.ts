@@ -22,6 +22,11 @@
  * body. The local store has no such ambiguity: `local/<pk>/` belongs to
  * exactly this page and is removed unconditionally.
  *
+ * Immutable baseline evidence is outside all three live keyspaces under
+ * `page-baselines/<baseline>/<attempt>/`. It is never an event-driven cleanup
+ * target: retention removes it only after the independent baseline record is
+ * purged. The shared-tree deleter also refuses that reserved store name.
+ *
  * **This removal consults no keep-set, and that is an accepted loss, not an
  * oversight** (fixer r1, review). The sweep in the same PR holds a global
  * `Set<filename>` per store precisely because attachment URLs are copied
@@ -54,8 +59,15 @@ import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { attachmentCacheDir, removeCachedAttachmentDirectory } from './attachment-store.js';
-import { removeLocalAttachmentDirectory } from './local-attachment-service.js';
-import { deletePageIconImage } from './page-icon-store.js';
+import {
+  localAttachmentsDir,
+  removeLocalAttachmentDirectory,
+} from './local-attachment-service.js';
+import {
+  discardPageIconForDeletedPage,
+  pageIconDirectoryAbsent,
+  type CommittedPageDeletion,
+} from './page-icon-store.js';
 
 /**
  * The `EXISTS` below asks whether a Confluence page owns the key RIGHT NOW,
@@ -79,9 +91,33 @@ import { deletePageIconImage } from './page-icon-store.js';
 const CACHE_DIR_GRACE_MS = 5 * 60 * 1000;
 
 export async function cleanupStandalonePageAttachmentDirs(
-  pageId: number,
+  deletion: CommittedPageDeletion,
   client?: PoolClient,
 ): Promise<void> {
+  const pageId = deletion.id;
+  if (!Number.isSafeInteger(pageId) || pageId <= 0) {
+    logger.warn({ pageId }, 'standalone-attachment-cleanup: invalid committed deletion id');
+    return;
+  }
+  try {
+    const pageExistsStatement = 'SELECT EXISTS (SELECT 1 FROM pages WHERE id = $1) AS exists';
+    const pageExists = client
+      ? await client.query<{ exists: boolean }>(pageExistsStatement, [pageId])
+      : await query<{ exists: boolean }>(pageExistsStatement, [pageId]);
+    if (pageExists.rows[0]?.exists) {
+      logger.warn(
+        { pageId },
+        'standalone-attachment-cleanup: refused cleanup because the page deletion is not committed',
+      );
+      return;
+    }
+  } catch (err) {
+    logger.warn(
+      { err, pageId },
+      'standalone-attachment-cleanup: could not verify the committed deletion; preserving all bytes',
+    );
+    return;
+  }
   // The local store first: unambiguous ownership, so nothing to check.
   try {
     await removeLocalAttachmentDirectory(pageId, client);
@@ -105,7 +141,7 @@ export async function cleanupStandalonePageAttachmentDirs(
   // only for a page that already exists. So it needs neither the ownership
   // EXISTS nor the grace window, only the same best-effort contract.
   try {
-    await deletePageIconImage(pageId, client);
+    await discardPageIconForDeletedPage(deletion, client);
   } catch (err) {
     logger.warn(
       { err, pageId },
@@ -153,4 +189,32 @@ export async function cleanupStandalonePageAttachmentDirs(
       'standalone-attachment-cleanup: could not remove cached attachment directory (orphaned files only — DB is consistent)',
     );
   }
+}
+
+/**
+ * Verify the two page-id-exclusive namespaces used by Notion/local writers.
+ * The shared Confluence-style cache is intentionally excluded: its collision
+ * and grace rules can require retention even after a valid deletion.
+ */
+export async function deletedStandaloneNamespacesAbsent(
+  deletion: CommittedPageDeletion,
+  client: PoolClient,
+): Promise<boolean> {
+  const pageId = deletion.id;
+  if (!Number.isSafeInteger(pageId) || pageId <= 0) {
+    throw new Error('Invalid committed page deletion id');
+  }
+  const page = await client.query<{ exists: boolean }>(
+    'SELECT EXISTS (SELECT 1 FROM pages WHERE id = $1) AS exists',
+    [pageId],
+  );
+  if (page.rows[0]?.exists) return false;
+  let localAbsent = false;
+  try {
+    await fs.stat(localAttachmentsDir(pageId));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    localAbsent = true;
+  }
+  return localAbsent && await pageIconDirectoryAbsent(pageId);
 }

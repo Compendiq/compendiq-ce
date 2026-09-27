@@ -1,8 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { query, getPool } from '../../core/db/postgres.js';
+import type { PoolClient } from 'pg';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import {
+  assertPageHierarchyParentsAvailable,
+  lockPageWrites,
+} from '../../core/services/page-write-admission.js';
 // #1166: `/move` and `POST /pages/:id/relocate` are the two writers of
 // `pages.parent_id`; they must agree both on which identifier flavour a child
 // stores and on what makes an identifier too ambiguous to store, so both
@@ -93,6 +98,53 @@ function computePath(parentPath: string | null, pageId: number): string {
 function computeDepth(path: string): number {
   // Path format: /1/2/3 => depth = count of segments - 1 (root = 0)
   return path.split('/').filter(Boolean).length - 1;
+}
+
+interface ExpandedMove {
+  mutationIds: number[];
+  parentIds: number[];
+}
+
+async function expandedMove(
+  client: Pick<PoolClient, 'query'>,
+  pageId: number,
+  requestedParent: string | number | null,
+): Promise<ExpandedMove> {
+  const result = await client.query<{ id: number; role: 'mutation' | 'parent' }>(
+    `WITH root AS (
+       SELECT id, path, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL
+     ),
+     mutation_set AS (
+       SELECT p.id
+         FROM pages p
+         JOIN root r ON p.id = r.id
+                     OR (r.path IS NOT NULL AND p.path LIKE r.path || '/%')
+        WHERE p.deleted_at IS NULL
+     ),
+     serialization_roots AS (
+       SELECT p.id
+         FROM pages p
+         CROSS JOIN root r
+        WHERE p.deleted_at IS NULL
+          AND (
+            p.confluence_id = r.parent_id OR p.id::text = r.parent_id
+            OR p.confluence_id = $2::text OR p.id::text = $2::text
+          )
+     )
+     SELECT id, 'mutation'::text AS role FROM mutation_set
+     UNION
+     SELECT id, 'parent'::text AS role FROM serialization_roots
+     ORDER BY id, role`,
+    [pageId, requestedParent === null ? null : String(requestedParent)],
+  );
+  return {
+    mutationIds: result.rows
+      .filter((row) => row.role === 'mutation')
+      .map((row) => row.id),
+    parentIds: result.rows
+      .filter((row) => row.role === 'parent')
+      .map((row) => row.id),
+  };
 }
 
 export async function localSpacesRoutes(fastify: FastifyInstance) {
@@ -421,10 +473,28 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       path: string;
       depth: number;
     };
+    // Snapshot rows that can actually be rewritten separately from unchanged
+    // old/new parents. The former are protected mutation targets; the latter
+    // are only checked for a pending destructive component after hierarchy
+    // SHARE, so a frozen unchanged parent does not forbid the move.
+    const expected = await expandedMove(getPool(), page.id, body.parentId);
     const txClient = await getPool().connect();
     try {
       await txClient.query('BEGIN');
+      await lockPageWrites(txClient, expected.mutationIds);
       await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+      const locked = await expandedMove(txClient, page.id, body.parentId);
+      const expansionChanged =
+        locked.mutationIds.length !== expected.mutationIds.length ||
+        locked.mutationIds.some((pageId, index) => pageId !== expected.mutationIds[index]) ||
+        locked.parentIds.length !== expected.parentIds.length ||
+        locked.parentIds.some((pageId, index) => pageId !== expected.parentIds[index]);
+      if (expansionChanged) {
+        throw fastify.httpErrors.conflict(
+          'Page hierarchy changed while the move was waiting. Reload and try again.',
+        );
+      }
+      await assertPageHierarchyParentsAvailable(txClient, locked.parentIds);
 
       // Re-read the page under the lock: a queued concurrent move may have
       // changed its parent/path/space between the pre-checks above and now,

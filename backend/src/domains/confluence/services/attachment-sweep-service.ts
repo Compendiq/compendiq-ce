@@ -882,12 +882,12 @@ async function walkConfluenceTree(
   const keys = rootEntries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    // Reserved STORES are skipped whole (`local/`, walked separately, and
-    // `page-icons/`, which is not walked at all): both sit inside this root
-    // and both names pass PAGE_ID_PATTERN, so without this each is a keyless
-    // directory the rules below judge an orphan and a live run deletes
-    // recursively. A dot-dir is debris; a key that fails the allow-list is
-    // never judged and never touched.
+    // Reserved STORES are skipped whole: `local/` is walked separately;
+    // `page-icons/`, `client-models/` and immutable `page-baselines/` are not
+    // walked at all. Their names pass PAGE_ID_PATTERN, so without this each is
+    // a keyless directory the rules below can judge orphaned and a live run can
+    // delete recursively. A dot-dir is debris; a key that fails the allow-list
+    // is never judged and never touched.
     //
     // The third class is COUNTED (fixer r1, `unkeyedDirectories`): a
     // `tmp.12345/` or `12345 (copy)/` is dropped before `readKeyDir` opens it,

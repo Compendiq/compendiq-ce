@@ -1,546 +1,217 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-import { pagesCrudRoutes } from './pages-crud.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// --- Mocks ---
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-// Shared spies so tests can assert which invalidation path a delete took (#893).
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    // Confluence deletes clear every user's cache (#893).
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
+let app: FastifyInstance;
+let redis: RedisClientType;
+let currentUserId: string;
+let otherUserId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+
+async function grantSpace(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('delete-route-reader', 'Delete route reader', FALSE, ARRAY['read', 'delete'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)
+     ON CONFLICT (space_key, principal_type, principal_id)
+     DO UPDATE SET role_id = EXCLUDED.role_id`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
+
+async function useStandaloneMode(userId: string): Promise<void> {
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_enabled)
+     VALUES ($1, FALSE)
+     ON CONFLICT (user_id) DO UPDATE SET confluence_enabled = FALSE`,
+    [userId],
+  );
+}
+
+async function pageState(pageId: number): Promise<{ deleted_at: Date | null } | null> {
+  const result = await query<{ deleted_at: Date | null }>(
+    'SELECT deleted_at FROM pages WHERE id = $1',
+    [pageId],
+  );
+  return result.rows[0] ?? null;
+}
+
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'DELETE /api/pages/:id authorization and cache scope — real PostgreSQL and Redis',
+  () => {
+    beforeAll(async () => {
+      originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+      attachmentsDir = await mkdtemp(join(tmpdir(), 'pages-delete-rbac-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+        instance.redis = redis;
+        // attachment-store captures ATTACHMENTS_DIR at module load, so the
+        // CRUD route is intentionally loaded only after the sandbox is set.
+        const { pagesCrudRoutes } = await import('./pages-crud.js');
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      });
+    });
+
+    afterAll(async () => {
+      await app.close();
+      setRedisClient(null as unknown as RedisClientType);
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      currentUserId = await insertUser(`delete-rbac-${randomUUID()}`);
+      otherUserId = await insertUser(`delete-rbac-other-${randomUUID()}`);
+      await insertLocalSpace('LOCAL', currentUserId);
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source)
+         VALUES ('DEV', 'DEV', 'confluence'), ('HR', 'HR', 'confluence')`,
+      );
+      await useStandaloneMode(currentUserId);
+    });
+
+    it('refuses a Confluence page outside the caller’s assigned spaces without changing persistence', async () => {
+      await grantSpace(currentUserId, 'DEV');
+      const pageId = await insertConfluencePage('hr-100', 'HR policy', 'HR');
+
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/hr-100' });
+
+      expect(response.statusCode).toBe(403);
+      expect(await pageState(pageId)).toEqual({ deleted_at: null });
+      const intents = await query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM page_write_intents WHERE page_ids @> $1::integer[]',
+        [[pageId]],
+      );
+      expect(intents.rows[0]!.count).toBe('0');
+    });
+
+    it('allows a space member to remove a Confluence page locally while integration is off', async () => {
+      await grantSpace(currentUserId, 'DEV');
+      const pageId = await insertConfluencePage('dev-100', 'DEV page', 'DEV');
+
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/dev-100' });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await pageState(pageId)).toBeNull();
+    });
+
+    it('allows a system administrator without an explicit assignment to remove a page in a known space', async () => {
+      currentUserId = await insertUser(`delete-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [currentUserId]);
+      await useStandaloneMode(currentUserId);
+      const pageId = await insertConfluencePage('admin-100', 'Admin page', 'HR');
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await pageState(pageId)).toBeNull();
+    });
+
+    it('refuses a Confluence row without a space that could establish current authority', async () => {
+      const pageId = await insertConfluencePage('orphan-100', 'No space', 'DEV');
+      await query('UPDATE pages SET space_key = NULL WHERE id = $1', [pageId]);
+
+      const response = await app.inject({ method: 'DELETE', url: '/api/pages/orphan-100' });
+
+      expect(response.statusCode).toBe(403);
+      expect(await pageState(pageId)).toEqual({ deleted_at: null });
+      expect((await query(
+        'SELECT 1 FROM page_write_intents WHERE page_ids @> $1::integer[]',
+        [[pageId]],
+      )).rowCount).toBe(0);
+    });
+
+    it('lets the standalone owner trash the page and refuses another user', async () => {
+      const owned = await insertStandalonePage('Owned', 'private', currentUserId, 'LOCAL');
+      const foreign = await insertStandalonePage('Foreign', 'private', otherUserId, 'LOCAL');
+
+      const ownedResponse = await app.inject({ method: 'DELETE', url: `/api/pages/${owned}` });
+      const foreignResponse = await app.inject({ method: 'DELETE', url: `/api/pages/${foreign}` });
+
+      expect(ownedResponse.statusCode, ownedResponse.body).toBe(200);
+      expect((await pageState(owned))?.deleted_at).toBeInstanceOf(Date);
+      expect(foreignResponse.statusCode).toBe(403);
+      expect(await pageState(foreign)).toEqual({ deleted_at: null });
+    });
+
+    it('invalidates every user’s page cache when a cascade trashes a shared descendant', async () => {
+      const parent = await insertStandalonePage('Private parent', 'private', currentUserId, 'LOCAL');
+      const child = await insertStandalonePage(
+        'Shared child',
+        'shared',
+        currentUserId,
+        'LOCAL',
+        { parentId: String(parent) },
+      );
+      await redis.mSet({
+        [`kb:${currentUserId}:pages:list`]: 'owner-pages',
+        [`kb:${otherUserId}:pages:list`]: 'other-pages',
+        [`kb:${otherUserId}:spaces:list`]: 'other-spaces',
+      });
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${parent}` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect((await pageState(parent))?.deleted_at).toBeInstanceOf(Date);
+      expect((await pageState(child))?.deleted_at).toBeInstanceOf(Date);
+      expect(await redis.get(`kb:${currentUserId}:pages:list`)).toBeNull();
+      expect(await redis.get(`kb:${otherUserId}:pages:list`)).toBeNull();
+      expect(await redis.get(`kb:${otherUserId}:spaces:list`)).toBe('other-spaces');
+    });
+
+    it('keeps another user’s cache when a cascade changes private pages only', async () => {
+      const pageId = await insertStandalonePage('Private', 'private', currentUserId, 'LOCAL');
+      await redis.mSet({
+        [`kb:${currentUserId}:pages:list`]: 'owner-pages',
+        [`kb:${otherUserId}:pages:list`]: 'other-pages',
+      });
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await redis.get(`kb:${currentUserId}:pages:list`)).toBeNull();
+      expect(await redis.get(`kb:${otherUserId}:pages:list`)).toBe('other-pages');
+    });
   },
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-const mockGetClientForUser = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn((html: string) => html),
-  confluenceToHtml: vi.fn((html: string) => html),
-  htmlToText: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
-
-const mockQueryFn = vi.fn();
-// Transaction client returned by getPool().connect() — since #766 the delete
-// route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn();
-const mockTxRelease = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: () =>
-      Promise.resolve({
-        query: (...args: unknown[]) => mockTxQueryFn(...args),
-        release: (...args: unknown[]) => mockTxRelease(...args),
-      }),
-  }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-const TEST_USER = 'user-1';
-
-describe('DELETE /api/pages/:id RBAC space access checks', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed', details: error.errors });
-      }
-      const statusCode = error.statusCode ?? 500;
-      return reply.status(statusCode).send({ error: error.message });
-    });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = TEST_USER;
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = TEST_USER;
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
-  });
-
-  it('returns 403 when Confluence page is in a space the user cannot access, and deletePage is not called', async () => {
-    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    // Page exists in HR space (user only has DEV, OPS)
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-100',
-            space_key: 'HR',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/page-100',
-    });
-
-    expect(response.statusCode).toBe(403);
-    // getUserAccessibleSpaces should have been called
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-    // Critical security assertion: deletePage must NOT be called for unauthorized spaces
-    expect(mockDeletePage).not.toHaveBeenCalled();
-  });
-
-  it('allows delete when Confluence page is in an accessible space', async () => {
-    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-100',
-            space_key: 'DEV',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/page-100',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-  });
-
-  it('allows delete when Confluence page has null space_key (no space to check)', async () => {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-100',
-            space_key: null,
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/page-100',
-    });
-
-    // No space_key means no RBAC check — delete proceeds to Confluence API
-    expect(response.statusCode).toBe(200);
-  });
-
-  it('still allows standalone page deletion by owner (no RBAC space check)', async () => {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'standalone',
-            created_by_user_id: TEST_USER,
-            confluence_id: null,
-            space_key: null,
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/10',
-    });
-
-    expect(response.statusCode).toBe(200);
-    // getUserAccessibleSpaces should NOT have been called for standalone pages
-    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
-  });
-
-  it('allows delete with numeric ID when page is in accessible space', async () => {
-    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-42',
-            space_key: 'OPS',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/42',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockDeletePage).toHaveBeenCalledWith('page-42');
-  });
-
-  // ── #893: cross-user cache invalidation on delete ──────────────────────────
-  // A Confluence or shared standalone page is visible to other users, so its
-  // deletion must clear every user's cached lists/trees — not just the deleter's.
-
-  describe('cache invalidation (#893)', () => {
-    it('invalidates pages AND spaces caches across all users on a Confluence delete', async () => {
-      const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-      mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10,
-              source: 'confluence',
-              created_by_user_id: null,
-              confluence_id: 'page-100',
-              space_key: 'DEV',
-              visibility: 'shared',
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 0 });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/page-100',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      // Deleting a Confluence page may drop its space, and the cached spaces
-      // payload carries per-space pageCount — clear it for everyone too.
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
-    });
-
-    /**
-     * #1636: the scope is read off the ROWS THE CASCADE TOUCHED
-     * (`RETURNING id, visibility`), not off the target page — visibility is per
-     * page, so a private parent can hold a shared sub-article. The mock
-     * therefore has to answer the cascade UPDATE with the rows it trashed; a
-     * statement that reports nothing invalidates nothing across users, however
-     * the target row is shaped.
-     */
-    it('invalidates the pages cache across all users when the cascade trashed a shared page', async () => {
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10,
-              source: 'standalone',
-              created_by_user_id: TEST_USER,
-              confluence_id: null,
-              space_key: null,
-              visibility: 'shared',
-            }],
-          });
-        }
-        // The soft cascade. The shared row here is a SUB-ARTICLE, so this also
-        // covers the case the target's own visibility cannot answer.
-        if (typeof sql === 'string' && /UPDATE pages SET deleted_at = NOW\(\)/.test(sql)) {
-          return Promise.resolve({
-            rows: [{ id: 10, visibility: 'private' }, { id: 11, visibility: 'shared' }],
-            rowCount: 2,
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 0 });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      // Standalone pages never drop a Confluence space — the spaces cache stays.
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalledWith('spaces');
-    });
-
-    it('keeps per-user invalidation when the cascade trashed only private pages', async () => {
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10,
-              source: 'standalone',
-              created_by_user_id: TEST_USER,
-              confluence_id: null,
-              space_key: null,
-              visibility: 'private',
-            }],
-          });
-        }
-        if (typeof sql === 'string' && /UPDATE pages SET deleted_at = NOW\(\)/.test(sql)) {
-          return Promise.resolve({
-            rows: [{ id: 10, visibility: 'private' }, { id: 11, visibility: 'private' }],
-            rowCount: 2,
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 0 });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(mockCacheInvalidate).toHaveBeenCalledWith(TEST_USER, 'pages');
-    });
-  });
-
-  // ── #706: tolerate a Confluence page already deleted remotely ──────────────
-
-  it('succeeds and cleans up locally when the Confluence page is already gone (404)', async () => {
-    // deletePage rejects with a 404 — the remote page no longer exists.
-    const mockDeletePage = vi.fn().mockRejectedValue(new ConfluenceError('Resource not found', 404));
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-100',
-            space_key: 'DEV',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/page-100',
-    });
-
-    // A 404 means the desired end state (gone from Confluence) is already true —
-    // the delete must succeed rather than surface "Resource not found".
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body).message).toBe(
-      'Page was already removed in Confluence — removed locally',
-    );
-    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
-
-    // Local cleanup must still run: the page row, pins and attachments are removed.
-    // Since #766 the hard cleanup runs inside one transaction on a dedicated client.
-    const pageDelete = mockTxQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
-    );
-    expect(pageDelete).toBeDefined();
-    const pinDelete = mockTxQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
-    );
-    expect(pinDelete).toBeDefined();
-    expect(mockTxQueryFn).toHaveBeenCalledWith('BEGIN');
-    expect(mockTxQueryFn).toHaveBeenCalledWith('COMMIT');
-    expect(cleanPageAttachments).toHaveBeenCalledWith('page-100');
-  });
-
-  it('surfaces a non-404 Confluence error and does NOT delete locally (no data loss)', async () => {
-    // deletePage rejects with a 5xx — Confluence genuinely failed.
-    const mockDeletePage = vi.fn().mockRejectedValue(
-      new ConfluenceError('Confluence API error: HTTP 503', 503),
-    );
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 10,
-            source: 'confluence',
-            created_by_user_id: null,
-            confluence_id: 'page-100',
-            space_key: 'DEV',
-          }],
-        });
-      }
-      // The #766 delete-intent soft-delete reports it updated the row.
-      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
-        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/pages/page-100',
-    });
-
-    // The error surfaces (any non-2xx) — it is not swallowed.
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
-
-    // Critical: the local row must NOT be deleted when the remote delete failed
-    // for any reason other than 404 — otherwise we silently lose the page.
-    const pageDelete = mockTxQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
-    );
-    expect(pageDelete).toBeUndefined();
-    expect(cleanPageAttachments).not.toHaveBeenCalled();
-
-    // #766: the delete intent recorded before the upstream call is rolled back,
-    // so the article stays fully live — neither side changed.
-    const intentRestore = mockQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
-    );
-    expect(intentRestore).toBeDefined();
-    expect(intentRestore![1]).toEqual([10]);
-  });
-
-  // ── #766: delete intent ordering + post-upstream failure containment ───────
-
-  it('records the local delete intent (soft-delete) BEFORE calling Confluence', async () => {
-    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    let intentOrder = -1;
-    let callIndex = 0;
-    mockQueryFn.mockImplementation((sql: string) => {
-      callIndex++;
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{ id: 10, source: 'confluence', created_by_user_id: null, confluence_id: 'page-100', space_key: 'DEV' }],
-        });
-      }
-      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
-        intentOrder = callIndex;
-        // The upstream call must not have happened yet at this point.
-        expect(mockDeletePage).not.toHaveBeenCalled();
-        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({ method: 'DELETE', url: '/api/pages/page-100' });
-
-    expect(response.statusCode).toBe(200);
-    expect(intentOrder).toBeGreaterThan(0); // the intent soft-delete actually ran
-    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
-  });
-
-  it('leaves the row soft-deleted (hidden, NOT live) when local cleanup fails after a successful upstream delete', async () => {
-    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
-    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
-
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
-        return Promise.resolve({
-          rows: [{ id: 10, source: 'confluence', created_by_user_id: null, confluence_id: 'page-100', space_key: 'DEV' }],
-        });
-      }
-      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
-        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-    // The hard-cleanup transaction blows up on the page row delete.
-    mockTxQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('DELETE FROM pages')) {
-        return Promise.reject(new Error('connection terminated'));
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
-
-    const response = await app.inject({ method: 'DELETE', url: '/api/pages/page-100' });
-
-    // The user-visible outcome (page gone on both sides) is achieved — the row is
-    // soft-deleted (hidden) and sync purges it later; the request succeeds.
-    expect(response.statusCode).toBe(200);
-    expect(mockTxQueryFn).toHaveBeenCalledWith('ROLLBACK');
-
-    // Crucially the delete intent is NOT rolled back — the row must stay hidden,
-    // never resurface as a live orphan (#766).
-    const intentRestore = mockQueryFn.mock.calls.find(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
-    );
-    expect(intentRestore).toBeUndefined();
-  });
-});
+);

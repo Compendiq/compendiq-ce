@@ -1,507 +1,449 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from '../knowledge/pages.test-helpers.js';
+import { llmConversationRoutes } from './llm-conversations.js';
 
 const CONV_1 = '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a';
 const CONV_2 = '6a1f9f0b-2c3d-4e4f-9a5b-6c7d8e9f0a1b';
+const CONV_3 = '7b2a0a1c-3d4e-4f50-8b6c-7d8e9f0a1b2c';
 
-// --- Mock: postgres query ---
-const mockQuery = vi.fn();
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let userId: string;
+let otherUserId: string;
+let authenticated = true;
 
-// --- Mock: redis-cache ---
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  },
-}));
+async function insertConversation(input: {
+  id: string;
+  ownerId?: string;
+  title?: string | null;
+  titleSource?: 'question' | 'generated' | 'user';
+  model?: string;
+  pageRef?: number | null;
+  messages?: unknown[];
+  createdAt?: string;
+  updatedAt?: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO llm_conversations
+       (id, user_id, model, title, title_source, page_ref, messages, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz, $9::timestamptz)`,
+    [
+      input.id,
+      input.ownerId ?? userId,
+      input.model ?? 'test-model',
+      input.title ?? 'Conversation',
+      input.titleSource ?? 'question',
+      input.pageRef ?? null,
+      JSON.stringify(input.messages ?? []),
+      input.createdAt ?? '2026-01-01T10:00:00.000Z',
+      input.updatedAt ?? '2026-01-01T11:00:00.000Z',
+    ],
+  );
+}
 
-// --- Mock: content-converter ---
-vi.mock('../../core/services/content-converter.js', () => ({
-  confluenceToHtml: vi.fn(),
-  htmlToConfluence: vi.fn(),
-  htmlToText: vi.fn(),
-  markdownToHtml: vi.fn(),
-}));
+async function insertImprovement(input: {
+  ownerId?: string;
+  pageId: number;
+  type: string;
+  model: string;
+  status: string;
+  improvedContent?: string;
+  createdAt: string;
+}): Promise<string> {
+  const result = await query<{ id: string }>(
+    `INSERT INTO llm_improvements
+       (user_id, page_id, improvement_type, model, original_content, improved_content, status, created_at)
+     VALUES ($1, $2, $3, $4, 'old', $5, $6, $7::timestamptz)
+     RETURNING id`,
+    [
+      input.ownerId ?? userId,
+      input.pageId,
+      input.type,
+      input.model,
+      input.improvedContent ?? 'new',
+      input.status,
+      input.createdAt,
+    ],
+  );
+  return result.rows[0]!.id;
+}
 
-// --- Mock: sync-service ---
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+async function get(url: string) {
+  return app.inject({ method: 'GET', url });
+}
 
-// --- Mock: audit-service ---
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'llm conversations — real PostgreSQL and Redis persistence',
+  () => {
+    beforeAll(async () => {
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        vi.spyOn(instance, 'authenticate').mockImplementation(async (request) => {
+          if (!authenticated) throw instance.httpErrors.unauthorized('Missing or invalid token');
+          request.userId = userId;
+          request.userCan = async () => true;
+        });
+        await instance.register(llmConversationRoutes, { prefix: '/api' });
+      });
+    }, 30_000);
 
-// --- Mock: logger ---
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-// --- Mock: rbac-service (the read-time source annotation binds the caller's spaces) ---
-const mockAccessibleSpaces = vi.fn(async (_userId: string) => ['ENG']);
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpacesMemoized: (userId: string) => mockAccessibleSpaces(userId),
-}));
-
-import { llmConversationRoutes } from './llm-conversations.js';
-
-// =============================================================================
-// Test Suite 1: Auth-required tests
-// =============================================================================
-
-describe('llm-conversations routes - auth required', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async () => {
-      throw app.httpErrors.unauthorized('Missing or invalid token');
-    });
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  it('should return 401 for GET /api/llm/conversations without auth', async () => {
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/llm/conversations',
-    });
-
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('should return 401 for GET /api/llm/conversations/:id without auth', async () => {
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/llm/conversations/conv-1',
-    });
-
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('should return 401 for PATCH /api/llm/conversations/:id without auth', async () => {
-    const response = await app.inject({ method: 'PATCH', url: '/api/llm/conversations/conv-1', payload: { title: 'x' } });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('should return 401 for DELETE /api/llm/conversations/:id without auth', async () => {
-    const response = await app.inject({
-      method: 'DELETE',
-      url: '/api/llm/conversations/conv-1',
+    afterAll(async () => {
+      await app.close();
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+      vi.restoreAllMocks();
     });
 
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('should return 401 for GET /api/llm/improvements without auth', async () => {
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/llm/improvements',
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      authenticated = true;
+      userId = await insertUser(`conversation-owner-${randomUUID()}`);
+      otherUserId = await insertUser(`conversation-other-${randomUUID()}`);
+      await insertLocalSpace('VIEWER', userId);
+      await insertLocalSpace('OTHER', otherUserId);
     });
 
-    expect(response.statusCode).toBe(401);
-  });
-});
-
-// =============================================================================
-// Test Suite 2: Conversation CRUD
-// =============================================================================
-
-describe('llm-conversations routes - CRUD', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'test-user-123';
+    it('requires authentication for every conversation and improvement endpoint', async () => {
+      authenticated = false;
+      const requests = [
+        app.inject({ method: 'GET', url: '/api/llm/conversations' }),
+        app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` }),
+        app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: 'x' } }),
+        app.inject({ method: 'DELETE', url: `/api/llm/conversations/${CONV_1}` }),
+        app.inject({ method: 'GET', url: '/api/llm/improvements' }),
+        app.inject({ method: 'POST', url: '/api/llm/improvements/apply', payload: { pageId: '1', improvedMarkdown: 'x' } }),
+      ];
+      for (const response of await Promise.all(requests)) expect(response.statusCode).toBe(401);
     });
 
-    // Mirror the production app's Zod error handling (ZodError → 400) — the
-    // .uuid() id params (#1361) must answer 400, not 500.
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'ValidationError', statusCode: 400 });
-      }
-      return reply.status(error.statusCode ?? 500).send({
-        error: error.name,
-        message: error.message,
-        statusCode: error.statusCode ?? 500,
+    it('lists only the caller’s persisted conversations with page chips, title fallback, and ISO timestamps', async () => {
+      const pageId = await insertStandalonePage('Runbook', 'private', userId, 'VIEWER');
+      await insertConversation({
+        id: CONV_1,
+        title: 'First conversation',
+        model: 'llama3',
+        pageRef: pageId,
+        createdAt: '2026-01-01T10:00:00.000Z',
+        updatedAt: '2026-01-02T12:00:00.000Z',
+      });
+      await insertConversation({
+        id: CONV_2,
+        title: '   ',
+        titleSource: 'user',
+        model: 'qwen3:32b',
+        createdAt: '2026-01-02T10:00:00.000Z',
+        updatedAt: '2026-01-02T11:00:00.000Z',
+      });
+      await insertConversation({
+        id: CONV_3,
+        ownerId: otherUserId,
+        title: 'Another user’s conversation',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      });
+
+      const response = await get('/api/llm/conversations');
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({
+        items: [
+          {
+            id: CONV_1,
+            title: 'First conversation',
+            titleSource: 'question',
+            model: 'llama3',
+            pageId,
+            pageTitle: 'Runbook',
+            createdAt: '2026-01-01T10:00:00.000Z',
+            updatedAt: '2026-01-02T12:00:00.000Z',
+          },
+          {
+            id: CONV_2,
+            title: 'Untitled conversation',
+            titleSource: 'user',
+            model: 'qwen3:32b',
+            pageId: null,
+            pageTitle: null,
+            createdAt: '2026-01-02T10:00:00.000Z',
+            updatedAt: '2026-01-02T11:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
       });
     });
 
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
-  });
+    it('uses a stable keyset cursor across actual rows', async () => {
+      await insertConversation({ id: CONV_1, title: 'c0', updatedAt: '2026-01-03T00:00:00.000Z' });
+      await insertConversation({ id: CONV_2, title: 'c1', updatedAt: '2026-01-02T00:00:00.000Z' });
+      await insertConversation({ id: CONV_3, title: 'c2', updatedAt: '2026-01-01T00:00:00.000Z' });
+      await insertConversation({
+        id: '8c3b1b2d-4e5f-4061-9c7d-8e9f0a1b2c3d',
+        ownerId: otherUserId,
+        title: 'not visible',
+        updatedAt: '2026-01-04T00:00:00.000Z',
+      });
 
-  afterAll(async () => {
-    await app.close();
-  });
+      const first = await get('/api/llm/conversations?limit=2');
+      expect(first.statusCode).toBe(200);
+      const page1 = first.json<{ items: Array<{ id: string }>; nextCursor: string | null }>();
+      expect(page1.items.map((item) => item.id)).toEqual([CONV_1, CONV_2]);
+      expect(page1.nextCursor).toEqual(expect.any(String));
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  // --- GET /api/llm/conversations ---
-
-  it('returns { items, nextCursor } with page chip data and ISO timestamps (#1361)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [
-        { id: CONV_1, title: 'First conversation', title_source: 'question', model: 'llama3', page_ref: 42, page_title: 'Runbook',
-          created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z') },
-        { id: CONV_2, title: 'Second conversation', title_source: 'user', model: 'qwen3:32b', page_ref: null, page_title: null,
-          created_at: new Date('2026-01-02T10:00:00Z'), updated_at: new Date('2026-01-02T12:00:00Z') },
-      ],
-    });
-    const response = await app.inject({ method: 'GET', url: '/api/llm/conversations' });
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body.items).toHaveLength(2);
-    expect(body.items[0]).toEqual({
-      id: CONV_1, title: 'First conversation', titleSource: 'question', model: 'llama3', pageId: 42, pageTitle: 'Runbook',
-      createdAt: '2026-01-01T10:00:00.000Z', updatedAt: '2026-01-01T11:00:00.000Z',
-    });
-    expect(body.items[1].pageId).toBeNull();
-    expect(body.nextCursor).toBeNull(); // 2 rows < limit + 1
-    const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
-    expect(sql).toContain('LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL');
-    expect(sql).toContain("COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation')");
-    expect(sql).toContain('ORDER BY c.updated_at DESC, c.id DESC');
-    expect(sql).toContain('(c.updated_at, c.id) < ($2::timestamptz, $3::uuid)');
-    expect(sql).toContain('LIMIT $4');
-    expect(params).toEqual(['test-user-123', null, null, 51]);
-  });
-
-  it('pages with a keyset cursor: limit + 1 rows → nextCursor, and the cursor round-trips into $2/$3', async () => {
-    const rows = [0, 1, 2].map((n) => ({
-      id: [CONV_1, CONV_2, '7b2a0a1c-3d4e-4f50-8b6c-7d8e9f0a1b2c'][n], title: `c${n}`, title_source: 'question', model: 'm', page_ref: null, page_title: null,
-      created_at: new Date('2026-01-01T00:00:00Z'), updated_at: new Date(`2026-01-0${3 - n}T00:00:00Z`),
-    }));
-    mockQuery.mockResolvedValueOnce({ rows });
-    const first = await app.inject({ method: 'GET', url: '/api/llm/conversations?limit=2' });
-    const page1 = JSON.parse(first.body);
-    expect(page1.items).toHaveLength(2);
-    expect(typeof page1.nextCursor).toBe('string');
-
-    mockQuery.mockResolvedValueOnce({ rows: [rows[2]] });
-    const second = await app.inject({ method: 'GET', url: `/api/llm/conversations?limit=2&cursor=${encodeURIComponent(page1.nextCursor)}` });
-    expect(second.statusCode).toBe(200);
-    const [, params] = mockQuery.mock.calls[1] as [string, unknown[]];
-    expect(params).toEqual(['test-user-123', '2026-01-02T00:00:00.000Z', CONV_2, 3]);
-    expect(JSON.parse(second.body).nextCursor).toBeNull();
-  });
-
-  it('answers 400 for a garbage cursor and for limit > 100', async () => {
-    expect((await app.inject({ method: 'GET', url: '/api/llm/conversations?cursor=not-base64-json' })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'GET', url: '/api/llm/conversations?limit=101' })).statusCode).toBe(400);
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it('returns an empty page when the user has no conversations', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-    const response = await app.inject({ method: 'GET', url: '/api/llm/conversations' });
-    expect(JSON.parse(response.body)).toEqual({ items: [], nextCursor: null });
-  });
-
-  it('answers 400 for a non-uuid id on GET and DELETE (#1361)', async () => {
-    expect((await app.inject({ method: 'GET', url: '/api/llm/conversations/conv-1' })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'DELETE', url: '/api/llm/conversations/conv-1' })).statusCode).toBe(400);
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  // --- GET /api/llm/conversations/:id ---
-
-  it('returns the detail: summary columns, messages with refused/sources, historyTruncated (#1361)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: CONV_1, title: 'Docker questions', title_source: 'generated', model: 'llama3', page_ref: null, page_title: null,
-        messages: [
-          { role: 'user', content: 'What is Docker?' },
-          { role: 'assistant', content: 'A container platform.', sources: [{ pageTitle: 'Intro', pageId: 7, similarity: 0.8 }] },
-          { role: 'user', content: 'and 2027 revenue?' },
-          { role: 'assistant', content: 'I am not answering.', refused: true },
-        ],
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
-      }],
-    });
-    // the visibility probe for pageId 7 → visible
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] });
-
-    const response = await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` });
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body).toMatchObject({
-      id: CONV_1, title: 'Docker questions', titleSource: 'generated', model: 'llama3', pageId: null, pageTitle: null,
-      createdAt: '2026-01-01T10:00:00.000Z', updatedAt: '2026-01-01T11:00:00.000Z', historyTruncated: false,
-    });
-    expect(body.messages).toHaveLength(4);
-    expect(body.messages[1].sources[0]).toEqual({ pageTitle: 'Intro', pageId: 7, similarity: 0.8 });
-    expect(body.messages[3].refused).toBe(true);
-    const [detailSql, detailParams] = mockQuery.mock.calls[0] as [string, unknown[]];
-    expect(detailSql).toContain('c.messages');
-    expect(detailSql).toContain('LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL');
-    expect(detailParams).toEqual([CONV_1, 'test-user-123']);
-    const [visSql, visParams] = mockQuery.mock.calls[1] as [string, unknown[]];
-    expect(visSql).toContain('deleted_at IS NULL');
-    expect(visSql).toContain('cp.space_key = ANY($1::text[])');
-    expect(visSql).toContain('cp.created_by_user_id = $2');
-    expect(visParams).toEqual([['ENG'], 'test-user-123', [7]]);
-  });
-
-  it('marks a source unavailable when its page is trashed or no longer visible, and leaves url sources alone', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
-        messages: [
-          { role: 'user', content: 'q' },
-          { role: 'assistant', content: 'a', sources: [
-            { pageTitle: 'Gone', pageId: 9, similarity: 0.5 },
-            { pageTitle: 'Still here', pageId: 7, similarity: 0.6 },
-            { pageTitle: 'Web', url: 'https://example.com', similarity: null },
-          ] },
-        ],
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
-      }],
-    });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
-
-    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
-    const [gone, here, web] = body.messages[1].sources;
-    expect(gone.unavailable).toBe(true);
-    expect(here).not.toHaveProperty('unavailable');
-    expect(web).not.toHaveProperty('unavailable');
-  });
-
-  // #1115 P3 + #1361: a stored image source carries `kind`/`attachmentUrl`
-  // and the annotation applies to it exactly like a page source — the
-  // annotator spreads, it does not special-case the shape.
-  it('keeps kind and attachmentUrl intact on a stored image source, annotating unavailable only for the trashed/invisible page', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
-        messages: [
-          { role: 'user', content: 'q' },
-          { role: 'assistant', content: 'a', sources: [
-            { pageTitle: 'Gone', pageId: 9, kind: 'image', attachmentUrl: '/api/attachments/9/a.png', similarity: null },
-            { pageTitle: 'Still here', pageId: 7, kind: 'image', attachmentUrl: '/api/attachments/7/b.png', similarity: null },
-          ] },
-        ],
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
-      }],
-    });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
-
-    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
-    const [gone, here] = body.messages[1].sources;
-    expect(gone).toMatchObject({ kind: 'image', attachmentUrl: '/api/attachments/9/a.png', unavailable: true });
-    expect(here).toMatchObject({ kind: 'image', attachmentUrl: '/api/attachments/7/b.png' });
-    expect(here).not.toHaveProperty('unavailable');
-  });
-
-  // ADR-027 D12 (#1617): "a shared `contentHash` is provenance, never an
-  // authorization shortcut". The same picture is regularly attached to two
-  // pages, so two stored image sources can carry one hash — and the
-  // annotation is decided per PAGE, by the same visibility predicate, with
-  // the hash playing no part. An annotator that keyed on the hash (or that
-  // treated a visible twin as evidence for the invisible one) would replay a
-  // revoked page's description and thumbnail to a reader who lost access.
-  it('annotates a revoked page’s image source even when a VISIBLE page shares its contentHash', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
-        messages: [
-          { role: 'user', content: 'q' },
-          { role: 'assistant', content: 'a', sources: [
-            {
-              pageTitle: 'Revoked', pageId: 9, kind: 'image',
-              attachmentUrl: '/api/attachments/9/shared.png', similarity: null,
-              attachmentStore: 'confluence', attachmentKey: 'shared.png',
-              contentHash: 'sha256:same', analysisVersion: 1,
-            },
-            {
-              pageTitle: 'Still here', pageId: 7, kind: 'image',
-              attachmentUrl: '/api/attachments/7/shared.png', similarity: null,
-              attachmentStore: 'confluence', attachmentKey: 'shared.png',
-              contentHash: 'sha256:same', analysisVersion: 1,
-            },
-          ] },
-        ],
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
-      }],
-    });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
-
-    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
-    const [revoked, visible] = body.messages[1].sources;
-    expect(revoked.unavailable).toBe(true);
-    expect(visible).not.toHaveProperty('unavailable');
-    // The provenance round-trips untouched on both — replay is a read of what
-    // the live answer carried, and the annotation only ADDS a flag.
-    expect(revoked).toMatchObject({ contentHash: 'sha256:same', attachmentKey: 'shared.png', analysisVersion: 1 });
-    expect(visible).toMatchObject({ contentHash: 'sha256:same', attachmentStore: 'confluence' });
-  });
-
-  it('reports historyTruncated: true for a conversation longer than the replay budget', async () => {
-    const messages: Array<{ role: string; content: string }> = [];
-    for (let n = 0; n < 6; n++) {
-      messages.push({ role: 'user', content: 'x'.repeat(4_000) }, { role: 'assistant', content: 'y'.repeat(4_000) });
-    }
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null, messages,
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z') }],
-    });
-    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
-    expect(body.historyTruncated).toBe(true);
-    expect(body.messages).toHaveLength(12); // stored messages are untouched
-  });
-
-  it('should return 404 for a non-existent conversation', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: `/api/llm/conversations/${CONV_2}`,
+      const second = await get(`/api/llm/conversations?limit=2&cursor=${encodeURIComponent(page1.nextCursor!)}`);
+      expect(second.statusCode, second.body).toBe(200);
+      expect(second.json()).toMatchObject({ items: [{ id: CONV_3 }], nextCursor: null });
     });
 
-    expect(response.statusCode).toBe(404);
-    const body = JSON.parse(response.body);
-    expect(body.message).toContain('Conversation not found');
-  });
-
-  // --- PATCH /api/llm/conversations/:id ---
-
-  it('renames: title_source becomes user, updated_at is NOT bumped, returns the summary (#1361)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: CONV_1, title: 'PAT rotation', title_source: 'user', model: 'llama3', page_ref: null, page_title: null,
-        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z') }],
-    });
-    const response = await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: '  PAT rotation  ' } });
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toMatchObject({ id: CONV_1, title: 'PAT rotation', titleSource: 'user' });
-    const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
-    expect(sql).toContain("title_source = 'user'");
-    expect(sql).not.toMatch(/updated_at\s*=/);
-    expect(params).toEqual([CONV_1, 'test-user-123', 'PAT rotation']);
-  });
-
-  it('PATCH answers 404 for another user\'s or a missing conversation', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-    const response = await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_2}`, payload: { title: 'x' } });
-    expect(response.statusCode).toBe(404);
-  });
-
-  it('PATCH answers 400 for a blank title, an over-long title, or a non-uuid id', async () => {
-    expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: '   ' } })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: 'x'.repeat(201) } })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'PATCH', url: '/api/llm/conversations/conv-1', payload: { title: 'x' } })).statusCode).toBe(400);
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  // --- DELETE /api/llm/conversations/:id ---
-
-  it('should delete a conversation and return success message', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: `/api/llm/conversations/${CONV_1}`,
+    it('rejects malformed cursors, oversized limits, and non-UUID ids before reading a row', async () => {
+      expect((await get('/api/llm/conversations?cursor=not-base64-json')).statusCode).toBe(400);
+      expect((await get('/api/llm/conversations?limit=101')).statusCode).toBe(400);
+      expect((await get('/api/llm/conversations/conv-1')).statusCode).toBe(400);
+      expect((await app.inject({ method: 'DELETE', url: '/api/llm/conversations/conv-1' })).statusCode).toBe(400);
+      expect((await query<{ count: string }>('SELECT COUNT(*)::text AS count FROM llm_conversations')).rows[0]?.count).toBe('0');
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body.message).toBe('Conversation deleted');
-
-    // Verify DELETE query included user_id scope
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('DELETE FROM llm_conversations WHERE id = $1 AND user_id = $2'),
-      [CONV_1, 'test-user-123'],
-    );
-  });
-
-  it('should return 200 even when deleting a non-existent conversation (idempotent)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-    const response = await app.inject({
-      method: 'DELETE',
-      url: `/api/llm/conversations/${CONV_2}`,
+    it('returns an empty page when the caller has no conversations', async () => {
+      expect((await get('/api/llm/conversations')).json()).toEqual({ items: [], nextCursor: null });
     });
 
-    // The route does not check rowCount, just deletes — idempotent
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body.message).toBe('Conversation deleted');
-  });
-
-  // --- GET /api/llm/improvements ---
-
-  it('should return improvement history for user', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [
+    it('reopens persisted messages and annotates source availability per page without losing image provenance', async () => {
+      const visiblePage = await insertStandalonePage('Visible', 'private', userId, 'VIEWER');
+      const revokedPage = await insertStandalonePage('Revoked', 'private', otherUserId, 'OTHER');
+      const trashedPage = await insertStandalonePage('Trashed', 'shared', otherUserId, 'OTHER', { deletedAt: new Date() });
+      const messages = [
+        { role: 'user', content: 'What is shown?' },
         {
-          id: 'imp-1',
-          confluence_id: 'page-abc',
-          improvement_type: 'grammar',
-          model: 'llama3',
-          status: 'completed',
-          created_at: new Date('2026-01-01T10:00:00Z'),
+          role: 'assistant',
+          content: 'A diagram.',
+          sources: [
+            { pageTitle: 'Visible', pageId: visiblePage, similarity: 0.8 },
+            { pageTitle: 'Revoked', pageId: revokedPage, similarity: 0.5 },
+            { pageTitle: 'Trashed', pageId: trashedPage, similarity: 0.4 },
+            { pageTitle: 'Web', url: 'https://example.com', similarity: null },
+            {
+              pageTitle: 'Revoked image',
+              pageId: revokedPage,
+              kind: 'image',
+              attachmentUrl: `/api/attachments/${revokedPage}/shared.png`,
+              attachmentStore: 'confluence',
+              attachmentKey: 'shared.png',
+              contentHash: 'sha256:same',
+              analysisVersion: 1,
+              similarity: null,
+            },
+            {
+              pageTitle: 'Visible image',
+              pageId: visiblePage,
+              kind: 'image',
+              attachmentUrl: `/api/attachments/${visiblePage}/shared.png`,
+              attachmentStore: 'confluence',
+              attachmentKey: 'shared.png',
+              contentHash: 'sha256:same',
+              analysisVersion: 1,
+              similarity: null,
+            },
+          ],
         },
-      ],
+        { role: 'assistant', content: 'I am not answering.', refused: true },
+      ];
+      await insertConversation({
+        id: CONV_1,
+        title: 'Docker questions',
+        titleSource: 'generated',
+        model: 'llama3',
+        pageRef: visiblePage,
+        messages,
+      });
+
+      const response = await get(`/api/llm/conversations/${CONV_1}`);
+      expect(response.statusCode, response.body).toBe(200);
+      const body = response.json<{
+        id: string;
+        pageId: number;
+        pageTitle: string;
+        historyTruncated: boolean;
+        messages: Array<{ refused?: boolean; sources?: Array<Record<string, unknown>> }>;
+      }>();
+      expect(body).toMatchObject({
+        id: CONV_1,
+        pageId: visiblePage,
+        pageTitle: 'Visible',
+        historyTruncated: false,
+      });
+      expect(body.messages[2]?.refused).toBe(true);
+      const sources = body.messages[1]!.sources!;
+      expect(sources[0]).not.toHaveProperty('unavailable');
+      expect(sources[1]).toMatchObject({ pageId: revokedPage, unavailable: true });
+      expect(sources[2]).toMatchObject({ pageId: trashedPage, unavailable: true });
+      expect(sources[3]).not.toHaveProperty('unavailable');
+      expect(sources[4]).toMatchObject({
+        pageId: revokedPage,
+        kind: 'image',
+        attachmentKey: 'shared.png',
+        contentHash: 'sha256:same',
+        analysisVersion: 1,
+        unavailable: true,
+      });
+      expect(sources[5]).toMatchObject({
+        pageId: visiblePage,
+        kind: 'image',
+        attachmentStore: 'confluence',
+        contentHash: 'sha256:same',
+      });
+      expect(sources[5]).not.toHaveProperty('unavailable');
     });
 
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/llm/improvements',
+    it('reports truncation without modifying the persisted message history', async () => {
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+      for (let index = 0; index < 6; index++) {
+        messages.push(
+          { role: 'user', content: 'x'.repeat(4_000) },
+          { role: 'assistant', content: 'y'.repeat(4_000) },
+        );
+      }
+      await insertConversation({ id: CONV_1, messages });
+
+      const body = (await get(`/api/llm/conversations/${CONV_1}`)).json<{
+        historyTruncated: boolean;
+        messages: unknown[];
+      }>();
+      expect(body.historyTruncated).toBe(true);
+      expect(body.messages).toHaveLength(12);
+      const persisted = await query<{ messages: unknown[] }>('SELECT messages FROM llm_conversations WHERE id = $1', [CONV_1]);
+      expect(persisted.rows[0]!.messages).toHaveLength(12);
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body).toHaveLength(1);
-    expect(body[0].id).toBe('imp-1');
-    expect(body[0].confluenceId).toBe('page-abc');
-    expect(body[0].type).toBe('grammar');
-    expect(body[0].model).toBe('llama3');
-    expect(body[0].status).toBe('completed');
-  });
-
-  it('should filter improvements by pageId when provided', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/llm/improvements?pageId=page-abc',
+    it('returns 404 for a missing or another user’s conversation', async () => {
+      await insertConversation({ id: CONV_2, ownerId: otherUserId });
+      for (const id of [CONV_1, CONV_2]) {
+        const response = await get(`/api/llm/conversations/${id}`);
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toMatchObject({ error: 'Conversation not found' });
+      }
     });
 
-    expect(response.statusCode).toBe(200);
+    it('renames only the caller’s row, marks it user-named, and preserves its keyset timestamp', async () => {
+      await insertConversation({
+        id: CONV_1,
+        title: 'Old title',
+        updatedAt: '2026-01-01T11:00:00.000Z',
+      });
+      await insertConversation({ id: CONV_2, ownerId: otherUserId, title: 'Other title' });
 
-    // Verify the query includes the pageId filter
-    const queryCall = mockQuery.mock.calls[0];
-    expect(queryCall[0]).toContain('p.confluence_id = $2');
-    expect(queryCall[1]).toContain('page-abc');
-  });
-});
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/llm/conversations/${CONV_1}`,
+        payload: { title: '  PAT rotation  ' },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: CONV_1, title: 'PAT rotation', titleSource: 'user' });
+      const renamed = await query<{ title: string; title_source: string; updated_at: Date }>(
+        'SELECT title, title_source, updated_at FROM llm_conversations WHERE id = $1',
+        [CONV_1],
+      );
+      expect(renamed.rows[0]).toMatchObject({ title: 'PAT rotation', title_source: 'user' });
+      expect(renamed.rows[0]!.updated_at.toISOString()).toBe('2026-01-01T11:00:00.000Z');
+
+      const denied = await app.inject({
+        method: 'PATCH',
+        url: `/api/llm/conversations/${CONV_2}`,
+        payload: { title: 'Stolen' },
+      });
+      expect(denied.statusCode).toBe(404);
+      expect((await query<{ title: string }>('SELECT title FROM llm_conversations WHERE id = $1', [CONV_2])).rows[0]?.title)
+        .toBe('Other title');
+    });
+
+    it('rejects blank, over-long, and malformed rename requests without changing the row', async () => {
+      await insertConversation({ id: CONV_1, title: 'Original' });
+      expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: '   ' } })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'PATCH', url: `/api/llm/conversations/${CONV_1}`, payload: { title: 'x'.repeat(201) } })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'PATCH', url: '/api/llm/conversations/conv-1', payload: { title: 'x' } })).statusCode).toBe(400);
+      expect((await query<{ title: string }>('SELECT title FROM llm_conversations WHERE id = $1', [CONV_1])).rows[0]?.title)
+        .toBe('Original');
+    });
+
+    it('deletes only the caller’s conversation and remains idempotent', async () => {
+      await insertConversation({ id: CONV_1 });
+      await insertConversation({ id: CONV_2, ownerId: otherUserId });
+
+      const denied = await app.inject({ method: 'DELETE', url: `/api/llm/conversations/${CONV_2}` });
+      expect(denied.statusCode).toBe(200);
+      expect((await query<{ count: string }>('SELECT COUNT(*)::text AS count FROM llm_conversations WHERE id = $1', [CONV_2])).rows[0]?.count)
+        .toBe('1');
+
+      const deleted = await app.inject({ method: 'DELETE', url: `/api/llm/conversations/${CONV_1}` });
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toEqual({ message: 'Conversation deleted' });
+      expect((await query<{ count: string }>('SELECT COUNT(*)::text AS count FROM llm_conversations WHERE id = $1', [CONV_1])).rows[0]?.count)
+        .toBe('0');
+      expect((await app.inject({ method: 'DELETE', url: `/api/llm/conversations/${CONV_1}` })).statusCode).toBe(200);
+    });
+
+    it('returns the caller’s persisted improvement history and filters it by Confluence page id', async () => {
+      const firstPage = await insertConfluencePage('page-abc', 'First page', 'ENG');
+      const secondPage = await insertConfluencePage('page-other', 'Second page', 'ENG');
+      const firstId = await insertImprovement({
+        pageId: firstPage,
+        type: 'grammar',
+        model: 'llama3',
+        status: 'completed',
+        createdAt: '2026-01-01T10:00:00.000Z',
+      });
+      const secondId = await insertImprovement({
+        pageId: secondPage,
+        type: 'clarity',
+        model: 'qwen3',
+        status: 'applied',
+        createdAt: '2026-01-02T10:00:00.000Z',
+      });
+      await insertImprovement({
+        ownerId: otherUserId,
+        pageId: firstPage,
+        type: 'other-user',
+        model: 'hidden',
+        status: 'completed',
+        createdAt: '2026-01-03T10:00:00.000Z',
+      });
+
+      const all = await get('/api/llm/improvements');
+      expect(all.statusCode, all.body).toBe(200);
+      expect(all.json()).toMatchObject([
+        { id: secondId, confluenceId: 'page-other', type: 'clarity', model: 'qwen3', status: 'applied' },
+        { id: firstId, confluenceId: 'page-abc', type: 'grammar', model: 'llama3', status: 'completed' },
+      ]);
+
+      const filtered = await get('/api/llm/improvements?pageId=page-abc');
+      expect(filtered.statusCode, filtered.body).toBe(200);
+      expect(filtered.json()).toMatchObject([
+        { id: firstId, confluenceId: 'page-abc', type: 'grammar', model: 'llama3', status: 'completed' },
+      ]);
+    });
+  },
+);

@@ -10,6 +10,7 @@ import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { chooseLexicalParser } from '../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
+import { freezeSummary } from '../../core/services/page-baseline-service.js';
 import {
   vectorSearch,
   hybridSearch,
@@ -173,14 +174,24 @@ async function generateSearchEmbedding(
   }
 }
 
-/** Resolve provenance from pages, not retrieval metadata or the page's space. */
-async function getPageSources(pageIds: number[]): Promise<Map<number, PageSource>> {
+/** Read current source and lifecycle metadata, never infer it from retrieved chunks. */
+async function getSearchPageMetadata(pageIds: number[]): Promise<Map<number, {
+  source: PageSource;
+  isFrozen: boolean;
+  baselineId: string | null;
+  frozenVersion: number | null;
+}>> {
   if (pageIds.length === 0) return new Map();
-  const { rows } = await query<{ id: number; source: PageSource }>(
-    'SELECT id, source FROM pages WHERE id = ANY($1::int[])',
+  const { rows } = await query<{
+    id: number;
+    source: PageSource;
+    baseline_id: string | null;
+    frozen_version: number | null;
+  }>(
+    'SELECT id, source, baseline_id, frozen_version FROM pages WHERE id = ANY($1::int[])',
     [pageIds],
   );
-  return new Map(rows.map((row) => [row.id, row.source]));
+  return new Map(rows.map((row) => [row.id, { source: row.source, ...freezeSummary(row) }]));
 }
 
 export async function searchRoutes(fastify: FastifyInstance) {
@@ -304,12 +315,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
         surface: 'search',
       }).catch(() => {});
 
-      const sources = await getPageSources(deduped.map((r) => r.pageId));
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId));
       // Pages removed since retrieval no longer have a canonical result to return.
-      const items = deduped.filter((r) => sources.has(r.pageId)).map((r) => ({
+      const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
-        source: sources.get(r.pageId)!,
+        ...metadata.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -379,11 +390,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const sources = await getPageSources(deduped.map((r) => r.pageId));
-      const items = deduped.filter((r) => sources.has(r.pageId)).map((r) => ({
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId));
+      const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
-        source: sources.get(r.pageId)!,
+        ...metadata.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -500,6 +511,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
       id: number;
       confluence_id: string;
       source: PageSource;
+      baseline_id: string | null;
+      frozen_version: number | null;
       title: string;
       space_key: string;
       author: string | null;
@@ -515,6 +528,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
+              cp.baseline_id, cp.frozen_version,
               ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
               ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
@@ -532,6 +546,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
       id: number;
       confluence_id: string;
       source: PageSource;
+      baseline_id: string | null;
+      frozen_version: number | null;
       title: string;
       space_key: string;
       body_text: string;
@@ -542,6 +558,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_filled: boolean | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key,
+              cp.baseline_id, cp.frozen_version,
               substring(cp.body_text, 1, 300) AS body_text,
               similarity(cp.title, $1) AS rank,
               cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
@@ -607,6 +624,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       id: row.id,
       confluenceId: row.confluence_id,
       source: row.source,
+      ...freezeSummary(row),
       title: row.title,
       spaceKey: row.space_key,
       author: row.author,
@@ -624,6 +642,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
           id: trgmRow.id,
           confluenceId: trgmRow.confluence_id,
           source: trgmRow.source,
+          ...freezeSummary(trgmRow),
           title: trgmRow.title,
           spaceKey: trgmRow.space_key,
           author: null,

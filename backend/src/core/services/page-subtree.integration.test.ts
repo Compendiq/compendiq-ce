@@ -34,10 +34,11 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import {
   PAGE_SUBTREE_CTE,
   PAGE_SUBTREE_CTE_MANY_ROOTS,
+  authorizedSubtreeComponents,
   activeDescendantCount,
   findSubtreeKeyAmbiguity,
   resolveParentOf,
@@ -239,13 +240,77 @@ describe.skipIf(!dbAvailable)('page-subtree — real PostgreSQL (#1636)', () => 
       deletedAt: stamp,
       ownerId: other,
     });
+    const synced = await insertPage('Synced row', {
+      parentId: String(root),
+      deletedAt: stamp,
+      source: 'confluence',
+      confluenceId: 'synced-batch-member',
+    });
 
     expect(ascending(await trashBatchIds(root, owner))).toEqual(ascending([root, withRoot]));
     expect(await trashBatchIds(root, owner)).not.toContain(foreign);
+    expect(await trashBatchIds(root, owner)).not.toContain(synced);
     expect(await trashBatchIds(separately, owner)).toEqual([separately]);
     // A live page has no batch at all: the NULL comparison is never true.
     const live = await insertPage('Live');
     expect(await trashBatchIds(live, owner)).toEqual([]);
+  });
+
+  it('coalesces overlapping authorized roots while filtering but traversing foreign, synced, and deleted rows', async () => {
+    const root = await insertPage('Root');
+    const selectedChild = await insertPage('Selected child', { parentId: String(root) });
+    const deletedBridge = await insertPage('Deleted bridge', {
+      parentId: String(selectedChild),
+      deletedAt: new Date(),
+    });
+    const liveBelowDeleted = await insertPage('Live below deleted', {
+      parentId: String(deletedBridge),
+    });
+    const foreignBridge = await insertPage('Foreign bridge', {
+      parentId: String(root),
+      ownerId: other,
+    });
+    const ownedBelowForeign = await insertPage('Owned below foreign', {
+      parentId: String(foreignBridge),
+    });
+    const synced = await insertPage('Synced descendant', {
+      parentId: String(root),
+      source: 'confluence',
+      confluenceId: 'sync-child',
+    });
+    const safe = await insertPage('Independent root');
+    const client = await getPool().connect();
+    try {
+      const liveComponents = await authorizedSubtreeComponents(
+        client,
+        [root, selectedChild, safe],
+        owner,
+        false,
+      );
+      expect(liveComponents).toHaveLength(2);
+      const overlapping = liveComponents.find((component) => component.rootIds.includes(root))!;
+      expect(ascending(overlapping.rootIds)).toEqual(ascending([root, selectedChild]));
+      expect(ascending(overlapping.members.map((member) => member.id))).toEqual(
+        ascending([root, selectedChild, liveBelowDeleted, ownedBelowForeign]),
+      );
+      expect(overlapping.members.map((member) => member.id)).not.toContain(foreignBridge);
+      expect(overlapping.members.map((member) => member.id)).not.toContain(synced);
+      expect(liveComponents.find((component) => component.rootIds.includes(safe))?.members).toMatchObject([
+        { id: safe },
+      ]);
+
+      const allComponents = await authorizedSubtreeComponents(
+        client,
+        [root, selectedChild],
+        owner,
+        true,
+      );
+      expect(ascending(allComponents[0]!.members.map((member) => member.id))).toEqual(
+        ascending([root, selectedChild, deletedBridge, liveBelowDeleted, ownedBelowForeign]),
+      );
+    } finally {
+      client.release();
+    }
   });
 
   // ── findSubtreeKeyAmbiguity ────────────────────────────────────────────────

@@ -5,7 +5,9 @@
  * `authenticate` in onRequest on the WS route — browsers cannot see HTTP 401.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
+import * as Y from 'yjs';
 import {
   COLLAB_WS_PROTOCOL,
   CollabCommitResponseSchema,
@@ -13,7 +15,7 @@ import {
   CollabConfigSchema,
   type CollabCommit,
 } from '@compendiq/contracts';
-import { getPool, query } from '../../core/db/postgres.js';
+import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
 import { verifyToken } from '../../core/plugins/auth.js';
 import { getUserSecurityState } from '../../core/services/user-security-cache.js';
@@ -21,20 +23,46 @@ import { userCanAccessPage, userCanEditPage } from '../../core/services/rbac-ser
 import { isCollabEditingEnabled } from '../../core/services/collab-flag.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import {
-  COLLAB_COMMIT_DUMP_TIMEOUT_MS,
   COLLAB_PING_INTERVAL_MS,
   getDefaultCollabRuntime,
   refreshCollabActiveTtl,
   type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
-import { htmlFromPersistedDoc, snapshotRoomHtml } from '../../core/services/collab-persistence.js';
 import { htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
+import {
+  ConfluenceError,
+  type ConfluenceClient,
+} from '../../domains/confluence/services/confluence-client.js';
+import {
+  planLocalImagesForConfluence,
+  preparePastedImagePlan,
+  uploadPreparedPastedImage,
+  type PastedImageUploadReceipt,
+  type PreparedPastedImage,
+} from '../../domains/confluence/services/pasted-image-uploader.js';
 import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
+import {
+  completePageWriteIntent,
+  cancelPageWriteIntentBeforeEffect,
+  deferPageRequestAdmissionRelease,
+  PageWriteError,
+  releasePageRuntime,
+  reservePageWriteIntentInTransaction,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+  type PageRuntimeAdmission,
+} from '../../core/services/page-write-admission.js';
+import {
+  confirmPagePublication,
+  pagePublicationReceipt,
+} from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
+import {
+  describeCollabCommit,
+  publishCollabCommit,
+} from '../../domains/confluence/services/collab-commit-intent-reconciler.js';
 
 const UPGRADE_LIMIT_PER_MIN = 20;
 
@@ -58,7 +86,81 @@ type CollabCommitPage = {
   visibility: string;
   confluence_id: string | null;
   space_key: string | null;
+  content_revision: string;
+  lifecycle_revision: string;
+  baseline_id: string | null;
 };
+
+async function assertCurrentCollabMutationAuthority(
+  client: PoolClient,
+  expected: CollabCommitPage,
+  userId: string,
+): Promise<void> {
+  const state = await client.query<{
+    version: number;
+    source: string;
+    confluence_id: string | null;
+    lifecycle_revision: string;
+    baseline_id: string | null;
+    deleted_at: Date | null;
+  }>(
+    `SELECT version, source, confluence_id, lifecycle_revision::text,
+            baseline_id, deleted_at
+       FROM pages
+      WHERE id = $1`,
+    [expected.id],
+  );
+  const current = state.rows[0];
+  if (
+    !current
+    || current.deleted_at !== null
+    || current.source !== expected.source
+    || current.confluence_id !== expected.confluence_id
+    || current.lifecycle_revision !== expected.lifecycle_revision
+    || (expected.source === 'confluence' && current.version !== expected.version)
+  ) {
+    throw new PageWriteError(
+      409,
+      'collab_commit_identity_changed',
+      'The page identity or lifecycle changed during collaborative publication',
+    );
+  }
+  if (current.baseline_id !== null) {
+    throw new PageWriteError(423, 'page_is_frozen', 'Frozen pages cannot be changed');
+  }
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+    [userId],
+  );
+  if (
+    actor.rowCount !== 1
+    || !(await userCanAccessPage(userId, expected.id, client))
+    || !(await userCanEditPage(userId, expected.id, client))
+  ) {
+    throw new PageWriteError(
+      403,
+      'collab_commit_authority_changed',
+      'The collaborative writer is no longer authorized',
+    );
+  }
+}
+
+async function currentConfluenceCommitClient(
+  dbClient: PoolClient,
+  expected: CollabCommitPage,
+  userId: string,
+): Promise<ConfluenceClient> {
+  await assertCurrentCollabMutationAuthority(dbClient, expected, userId);
+  const client = await getClientForUser(userId, dbClient);
+  if (!client) {
+    throw new PageWriteError(
+      409,
+      'intent_actor_credentials_unavailable',
+      'The collaborative writer credentials are no longer available',
+    );
+  }
+  return client;
+}
 
 async function commitConfluencePage(args: {
   fastify: FastifyInstance;
@@ -68,90 +170,181 @@ async function commitConfluencePage(args: {
   existing: CollabCommitPage;
   body: CollabCommit;
   html: string;
-  bodyText: string;
-  runtime: CollabRuntime | null | undefined;
+  runtime: CollabRuntime;
+  admission: PageRuntimeAdmission;
 }) {
-  const { fastify, request, pageId, userId, existing, body, html, bodyText, runtime } = args;
+  const { fastify, request, pageId, userId, existing, body, html, runtime, admission } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
   }
-  const client = await getClientForUser(userId);
-  if (!client) {
-    throw fastify.httpErrors.badRequest('Confluence not configured');
-  }
 
-  const remote = await client.getPage(existing.confluence_id);
+  const imagePlan = await planLocalImagesForConfluence(html);
+  const storageBody = htmlToConfluence(imagePlan.bodyHtml);
+
+  // The room admission and a fresh authority/client read immediately precede
+  // the provider read. A revoked actor must not carry initial-route authority
+  // across any awaited filesystem or provider work.
+  let readClient: ConfluenceClient;
+  try {
+    readClient = await withPageWriteTransaction(
+      [pageId],
+      (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
+      { admission },
+    );
+  } catch (error) {
+    if (
+      error instanceof PageWriteError
+      && error.reason === 'intent_actor_credentials_unavailable'
+    ) {
+      throw fastify.httpErrors.badRequest('Confluence not configured');
+    }
+    throw error;
+  }
+  const remote = await readClient.getPage(existing.confluence_id);
   const remoteVersion = remote.version.number;
   if (remoteVersion !== existing.version) {
     throwConfluenceModified(fastify, remoteVersion, existing.version);
   }
 
-  const uploadedBodyHtml = await uploadLocalImagesToConfluence(
-    html, existing.confluence_id, client, request.log,
-  );
-  const storageBody = htmlToConfluence(uploadedBodyHtml);
+  const publication = describeCollabCommit({
+    actorId: userId,
+    pageId,
+    confluenceId: existing.confluence_id,
+    title: body.title,
+    bodyStorage: storageBody,
+    expectedRemoteVersion: existing.version,
+    expectedLifecycleRevision: existing.lifecycle_revision,
+    images: imagePlan.images.map((image) => ({
+      filename: image.filename,
+      mimeType: image.mimeType,
+      size: image.size,
+      contentSha256: image.contentSha256,
+    })),
+  });
+  const intent = await withPageWriteTransaction([pageId], async (dbClient) => {
+    await assertCurrentCollabMutationAuthority(dbClient, existing, userId);
+    return reservePageWriteIntentInTransaction(dbClient, {
+      pageIds: [pageId],
+      kind: imagePlan.images.length > 0
+        ? 'collab.commit.confluence.media'
+        : 'collab.commit.confluence',
+      actorId: userId,
+      expectedRevisions: {
+        [pageId]: {
+          contentRevision: existing.content_revision,
+          lifecycleRevision: existing.lifecycle_revision,
+        },
+      },
+      effect: publication.effect,
+    });
+  }, { admission });
 
-  let confPage: { version: { number: number }; body?: { storage?: { value: string } } };
+  let preparedImages: PreparedPastedImage[];
   try {
-    confPage = await client.updatePage(
-      existing.confluence_id,
-      body.title,
-      storageBody,
-      existing.version,
-    );
-  } catch (err) {
-    if (err instanceof ConfluenceError && err.statusCode === 409) {
-      let remoteVersion = existing.version + 1;
-      try {
-        const again = await client.getPage(existing.confluence_id);
-        remoteVersion = again.version.number;
-      } catch {
-        // GET failed — keep local+1 rather than invent a number we did not see.
+    preparedImages = await preparePastedImagePlan(imagePlan);
+  } catch (error) {
+    await cancelPageWriteIntentBeforeEffect(intent);
+    throw error;
+  }
+
+  const attachmentReceipts: PastedImageUploadReceipt[] = [];
+  for (const image of preparedImages) {
+    let attachmentClient: ConfluenceClient;
+    try {
+      attachmentClient = await withPageWriteTransaction(
+        [pageId],
+        (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
+        { intent },
+      );
+    } catch (error) {
+      if (attachmentReceipts.length === 0) {
+        await cancelPageWriteIntentBeforeEffect(intent);
       }
-      throwConfluenceModified(fastify, remoteVersion, existing.version);
+      throw error;
     }
-    throw err;
+    const receipt = await runPageWriteIntentEffect(
+      intent,
+      { kind: 'remote', completesRemoteWork: false },
+      () => uploadPreparedPastedImage(
+        image,
+        existing.confluence_id!,
+        attachmentClient,
+        request.log,
+      ),
+    );
+    attachmentReceipts.push(receipt);
   }
-  const newVersion = confPage.version.number;
-  const bodyStorage = confPage.body?.storage?.value ?? storageBody;
 
-  const poolClient = await getPool().connect();
+  let updateClient: ConfluenceClient;
   try {
-    await poolClient.query('BEGIN');
-    const locked = await poolClient.query<{ version: number }>(
-      'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+    updateClient = await withPageWriteTransaction(
       [pageId],
+      (dbClient) => currentConfluenceCommitClient(dbClient, existing, userId),
+      { intent },
     );
-    if (locked.rows.length === 0) {
-      await poolClient.query('ROLLBACK');
-      throw fastify.httpErrors.notFound('Page not found');
+  } catch (error) {
+    if (attachmentReceipts.length === 0) {
+      await cancelPageWriteIntentBeforeEffect(intent);
     }
-    await poolClient.query(
-      `UPDATE pages SET
-         title = $2, body_html = $3, body_text = $4, body_storage = $5,
-         version = $6, last_synced = NOW(), last_modified_at = NOW(),
-         local_modified_at = NULL, local_modified_by = NULL,
-         embedding_dirty = TRUE,
-         image_analysis_dirty = CASE
-           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-           ELSE image_analysis_dirty
-         END,
-         embedding_status = 'not_embedded', embedded_at = NULL,
-         summary_status = 'pending', summary_retry_count = 0,
-         quality_status = 'pending', quality_retry_count = 0
-       WHERE id = $1`,
-      [pageId, body.title, html, bodyText, bodyStorage, newVersion],
-    );
-    await poolClient.query('COMMIT');
-  } catch (err) {
-    try { await poolClient.query('ROLLBACK'); } catch { /* */ }
-    throw err;
-  } finally {
-    poolClient.release();
+    throw error;
   }
 
-  runtime?.broadcastControl(pageId, { type: 'pages_version', version: newVersion });
-  logger.info({ pageId, version: newVersion, confluence: true }, 'collab.commit');
+  const remotePublication = await (async () => {
+    try {
+      return await runPageWriteIntentEffect(
+        intent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (remote) => ({
+            ...remote.receipt,
+            attachments: attachmentReceipts,
+          }),
+        },
+        async () => {
+          const confPage = await updateClient.updatePage(
+            existing.confluence_id!,
+            body.title,
+            storageBody,
+            existing.version,
+          );
+          return {
+            confPage,
+            receipt: pagePublicationReceipt(
+              existing.confluence_id!,
+              existing.version + 1,
+              confPage,
+            ),
+          };
+        },
+      );
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 409) {
+        let observedVersion = existing.version + 1;
+        try {
+          observedVersion = (await readClient.getPage(existing.confluence_id!)).version.number;
+        } catch {
+          // The durable intent remains pending for exact reconciliation.
+        }
+        throwConfluenceModified(fastify, observedVersion, existing.version);
+      }
+      throw err;
+    }
+  })();
+  const confPage = await confirmPagePublication(
+    updateClient,
+    remotePublication.receipt,
+    remotePublication.confPage,
+  );
+  const result = await completePageWriteIntent(intent, (dbClient) =>
+    publishCollabCommit(dbClient, publication, {
+      id: confPage.id,
+      title: confPage.title,
+      bodyStorage: confPage.body.storage.value,
+      remoteVersion: confPage.version.number,
+    }, intent.id, imagePlan.bodyHtml));
+  runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
+  logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
 
   const cache = new RedisCache(fastify.redis);
   await cache.invalidateAcrossUsers('pages');
@@ -163,11 +356,10 @@ async function commitConfluencePage(args: {
     { source: 'collab_commit', title: body.title, confluence: true },
     request,
   );
-
   return CollabCommitResponseSchema.parse({
     id: pageId,
     title: body.title,
-    version: newVersion,
+    version: result.newVersion,
     source: 'confluence' as const,
     pushedToConfluence: true as const,
   });
@@ -246,6 +438,38 @@ async function rateLimitUpgrade(userId: string): Promise<boolean> {
   }
 }
 
+function decodeCommitDocumentState(value: string): Y.Snapshot {
+  try {
+    const bytes = Buffer.from(value, 'base64');
+    const snapshot = Y.decodeSnapshot(bytes);
+    if (!bytes.equals(Y.encodeSnapshot(snapshot))) throw new Error('Non-canonical snapshot');
+    return snapshot;
+  } catch {
+    throw new PageWriteError(400, 'invalid_collab_snapshot', 'Invalid collaborative document state');
+  }
+}
+
+function assertCommitSnapshotIncludes(actual: Y.Snapshot, requested: Y.Snapshot): void {
+  let clocksPresent = true;
+  for (const [client, clock] of requested.sv) {
+    if ((actual.sv.get(client) ?? 0) < clock) {
+      clocksPresent = false;
+      break;
+    }
+  }
+  const deletionsPresent = clocksPresent && Y.equalDeleteSets(
+    actual.ds,
+    Y.mergeDeleteSets([actual.ds, requested.ds]),
+  );
+  if (!deletionsPresent) {
+    throw new PageWriteError(
+      409,
+      'collab_snapshot_not_received',
+      'Some edits have not reached the server. Keep this draft open and try Save again.',
+    );
+  }
+}
+
 export async function pagesCollabRoutes(fastify: FastifyInstance) {
   fastify.get('/collab/config', {
     onRequest: [fastify.authenticate],
@@ -255,6 +479,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
 
   fastify.post('/pages/:id/collab/commit', {
     onRequest: [fastify.authenticate],
+    bodyLimit: 2 * 1024 * 1024,
   }, async (request) => {
     const rawId = (request.params as { id: string }).id;
     const pageId = Number(rawId);
@@ -262,6 +487,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
     const body = CollabCommitSchema.parse(request.body);
+    const requestedDocumentState = decodeCommitDocumentState(body.expectedDocumentState);
     const userId = request.userId;
 
     const writable = await userCanEditPage(userId, pageId);
@@ -278,163 +504,153 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       page_type: string | null;
       confluence_id: string | null;
       space_key: string | null;
+      content_revision: string;
+      lifecycle_revision: string;
+      baseline_id: string | null;
     }>(
-      `SELECT id, version, source, visibility, deleted_at, page_type, confluence_id, space_key FROM pages WHERE id = $1`,
+      `SELECT id, version, source, visibility, deleted_at, page_type,
+              confluence_id, space_key, content_revision::text,
+              lifecycle_revision::text, baseline_id
+         FROM pages
+        WHERE id = $1`,
       [pageId],
     );
     if (page.rows.length === 0 || page.rows[0]!.deleted_at) {
       throw fastify.httpErrors.notFound('Page not found');
     }
     const existing = page.rows[0]!;
+    if (existing.baseline_id !== null) {
+      throw new PageWriteError(423, 'page_is_frozen', 'Frozen pages cannot be changed');
+    }
     if ((existing.page_type ?? 'page') === 'folder') {
       throw fastify.httpErrors.badRequest('Folder pages cannot have body content');
     }
     if (existing.source !== 'standalone' && existing.source !== 'confluence') {
       throw fastify.httpErrors.unprocessableEntity('Unsupported page source');
     }
+    if (body.expectedLifecycleRevision !== existing.lifecycle_revision) {
+      throw new PageWriteError(
+        409,
+        'stale_lifecycle',
+        'The page lifecycle changed after the collaborative editing session began',
+      );
+    }
 
     const runtime = getDefaultCollabRuntime();
-    const local = runtime?.getRoom(pageId);
-    let html: string | null = null;
-    if (local) {
-      html = snapshotRoomHtml(local.doc);
-    } else {
-      let live = 0;
-      try {
-        const redis = getRedisClient();
-        if (redis) live = Number(await redis.sCard(`collab:active:${pageId}`));
-      } catch {
-        // unread SET: fall through to BYTEA
+    let admission: PageRuntimeAdmission | null = null;
+    try {
+      if (!runtime) {
+        throw new PageWriteError(
+          409,
+          'collab_writable_join_required',
+          'A fresh writable collaborative join is required before saving',
+        );
       }
-      if (live > 0) {
-        if (!runtime) {
-          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
-        }
-        const created = await runtime.getOrCreateRoom(pageId);
-        const dumped = await runtime.waitForPeerStateDump(pageId, COLLAB_COMMIT_DUMP_TIMEOUT_MS);
-        if (!dumped) {
-          if (created.sockets.size === 0) {
-            // Dump never arrived — do not snapshot the BYTEA-loaded heap onto body_html.
-            created.persistable = false;
-            await runtime.dropRoom(pageId);
-          }
-          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
-        }
-        html = snapshotRoomHtml(created.doc);
-        if (created.sockets.size === 0) await runtime.dropRoom(pageId);
-      } else {
-        html = await htmlFromPersistedDoc(pageId);
-      }
-    }
-    if (html === null) {
-      throw fastify.httpErrors.conflict('No collaborative session for this page');
-    }
-    const bodyText = htmlToText(html);
-
-    // #1623 — ONE rule: a synced page whose owner switched the integration off
-    // takes exactly the path a standalone page takes below. Nothing goes
-    // upstream, and no credential prompt is reachable from here.
-    if (!(await pageWriteStaysLocal(userId, existing.source))) {
-      return commitConfluencePage({
-        fastify,
-        request,
+      const snapshot = await runtime.prepareCommitSnapshot(
         pageId,
         userId,
-        existing,
-        body,
-        html,
-        bodyText,
-        runtime,
-      });
-    }
+        body.expectedLifecycleRevision,
+      );
+      admission = snapshot.admission;
+      assertCommitSnapshotIncludes(snapshot.documentState, requestedDocumentState);
+      const html = snapshot.html;
+      const bodyText = htmlToText(html);
 
-    const client = await getPool().connect();
-    let newVersion = existing.version;
-    try {
-      await client.query('BEGIN');
-      const locked = await client.query<{ version: number }>(
-        'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
-        [pageId],
-      );
-      if (locked.rows.length === 0) {
-        await client.query('ROLLBACK');
-        throw fastify.httpErrors.notFound('Page not found');
+      // #1623 — ONE rule: a synced page whose owner switched the integration off
+      // takes exactly the path a standalone page takes below. Nothing goes
+      // upstream, and no credential prompt is reachable from here.
+      if (!(await pageWriteStaysLocal(userId, existing.source))) {
+        return await commitConfluencePage({
+          fastify,
+          request,
+          pageId,
+          userId,
+          existing,
+          body,
+          html,
+          runtime,
+          admission,
+        });
       }
-      let expected = locked.rows[0]!.version;
-      const write = async (expectedVersion: number) => client.query(
-        `UPDATE pages SET
-           title = $2, body_html = $3, body_text = $4,
-           version = version + 1,
-           last_modified_at = NOW(),
-           local_modified_at = NOW(),
-           local_modified_by = $5,
-           embedding_dirty = TRUE,
-           image_analysis_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_analysis_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           summary_status = 'pending', summary_retry_count = 0,
-           quality_status = 'pending', quality_retry_count = 0
-         WHERE id = $1 AND version = $6
-         RETURNING version`,
-        [pageId, body.title, html, bodyText, userId, expectedVersion],
-      );
-      let updated = await write(expected);
-      if ((updated.rowCount ?? 0) === 0) {
-        const again = await client.query<{ version: number }>(
-          'SELECT version FROM pages WHERE id = $1 FOR UPDATE',
+
+      const newVersion = await withPageWriteTransaction([pageId], async (client) => {
+        await assertCurrentCollabMutationAuthority(client, existing, userId);
+        const locked = await client.query<{ version: number }>(
+          'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
           [pageId],
         );
-        expected = again.rows[0]!.version;
-        updated = await write(expected);
+        if (locked.rows.length === 0) throw fastify.httpErrors.notFound('Page not found');
+        const expected = locked.rows[0]!.version;
+        const updated = await client.query<{ version: number }>(
+          `UPDATE pages SET
+             title = $2, body_html = $3, body_text = $4,
+             version = version + 1,
+             last_modified_at = NOW(),
+             local_modified_at = NOW(),
+             local_modified_by = $5,
+             embedding_dirty = TRUE,
+             image_analysis_dirty = CASE
+               WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+               ELSE image_analysis_dirty
+             END,
+             embedding_status = 'not_embedded', embedded_at = NULL,
+             summary_status = 'pending', summary_retry_count = 0,
+             quality_status = 'pending', quality_retry_count = 0
+           WHERE id = $1 AND version = $6
+           RETURNING version`,
+          [pageId, body.title, html, bodyText, userId, expected],
+        );
+        if (updated.rowCount !== 1) {
+          throw fastify.httpErrors.conflict(
+            'Page has been modified since you loaded it. Please refresh and try again.',
+          );
+        }
+        return updated.rows[0]!.version;
+      }, { admission });
+
+      runtime.broadcastControl(pageId, { type: 'pages_version', version: newVersion });
+      logger.info(
+        { pageId, version: newVersion, confluence: false, source: existing.source },
+        'collab.commit',
+      );
+
+      const cache = new RedisCache(fastify.redis);
+      // A Confluence-sourced page is visible to every user with space access
+      // (#893) even when this user's integration is off, so its local write
+      // clears every cache the remote path would have cleared.
+      if (existing.visibility === 'shared' || existing.source === 'confluence') {
+        await cache.invalidateAcrossUsers('pages');
+      } else {
+        await cache.invalidate(userId, 'pages');
       }
-      if ((updated.rowCount ?? 0) === 0) {
-        await client.query('ROLLBACK');
-        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
-      }
-      newVersion = updated.rows[0]!.version as number;
-      await client.query('COMMIT');
-    } catch (err) {
-      try { await client.query('ROLLBACK'); } catch { /* */ }
-      throw err;
+      await logAuditEvent(
+        userId,
+        'PAGE_UPDATED',
+        'page',
+        String(pageId),
+        // `confluence: false` on a Confluence-sourced page is the audit trail's
+        // record that the edit stayed local (#1623).
+        { source: 'collab_commit', title: body.title, ...(existing.source === 'confluence' ? { confluence: false } : {}) },
+        request,
+      );
+
+      return CollabCommitResponseSchema.parse({
+        id: pageId,
+        title: body.title,
+        version: newVersion,
+        source: existing.source as 'standalone' | 'confluence',
+        ...(existing.source === 'confluence' ? { pushedToConfluence: false as const } : {}),
+      });
     } finally {
-      client.release();
+      if (admission) {
+        try {
+          await releasePageRuntime(admission);
+        } catch (error) {
+          deferPageRequestAdmissionRelease(admission);
+          logger.warn({ err: error, pageId, admissionId: admission.id }, 'collab: request cleanup deferred; durable admission retained');
+        }
+      }
     }
-
-    runtime?.broadcastControl(pageId, { type: 'pages_version', version: newVersion });
-    logger.info(
-      { pageId, version: newVersion, confluence: false, source: existing.source },
-      'collab.commit',
-    );
-
-    const cache = new RedisCache(fastify.redis);
-    // A Confluence-sourced page is visible to every user with space access
-    // (#893) even when this user's integration is off, so its local write
-    // clears every cache the remote path would have cleared.
-    if (existing.visibility === 'shared' || existing.source === 'confluence') {
-      await cache.invalidateAcrossUsers('pages');
-    } else {
-      await cache.invalidate(userId, 'pages');
-    }
-    await logAuditEvent(
-      userId,
-      'PAGE_UPDATED',
-      'page',
-      String(pageId),
-      // `confluence: false` on a Confluence-sourced page is the audit trail's
-      // record that the edit stayed local (#1623).
-      { source: 'collab_commit', title: body.title, ...(existing.source === 'confluence' ? { confluence: false } : {}) },
-      request,
-    );
-
-    return CollabCommitResponseSchema.parse({
-      id: pageId,
-      title: body.title,
-      version: newVersion,
-      source: existing.source as 'standalone' | 'confluence',
-      ...(existing.source === 'confluence' ? { pushedToConfluence: false as const } : {}),
-    });
   });
 
   fastify.get('/collab/:pageId', {
@@ -451,6 +667,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     let pageId: number | null = null;
     let connId: string | null = null;
     const runtime = getDefaultCollabRuntime();
+    let frameChain = Promise.resolve();
 
     const pingTimer = setInterval(() => {
       if (socket.readyState === 1) {
@@ -467,7 +684,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       closed = true;
       pending.length = 0;
       clearInterval(pingTimer);
-      if (securityTimer) clearInterval(securityTimer);
+      clearInterval(securityTimer ?? undefined);
       try { socket.close(code, reason); } catch { /* */ }
     };
 
@@ -482,8 +699,15 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         pending.push(buf);
         return;
       }
-      const result = runtime.handleInboundFrame(pageId, connId, buf);
-      if (result === 'close_4403') finish(4403, 'readonly');
+      const joinedPageId = pageId;
+      const joinedConnId = connId;
+      frameChain = frameChain.then(async () => {
+        const result = await runtime.handleInboundFrame(joinedPageId, joinedConnId, buf);
+        if (result === 'close_4403') finish(4403, 'readonly');
+      }).catch((err) => {
+        logger.warn({ err, pageId: joinedPageId }, 'collab: inbound frame failed');
+        finish(1001, 'internal');
+      });
     });
 
     socket.on('pong', () => {
@@ -493,9 +717,11 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     socket.on('close', () => {
       closed = true;
       clearInterval(pingTimer);
-      if (securityTimer) clearInterval(securityTimer);
+      clearInterval(securityTimer ?? undefined);
       if (pageId !== null && connId !== null && runtime) {
-        void runtime.detachSocket(pageId, connId);
+        void runtime.detachSocket(pageId, connId).catch((err) => {
+          logger.warn({ err, pageId }, 'collab: detach failed; durable admission retained');
+        });
       }
     });
 
@@ -553,14 +779,22 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      const writable = await userCanEditPage(auth.userId, pageId);
+      const rawExpectedLifecycleRevision = (
+        request.query as { expectedLifecycleRevision?: unknown }
+      ).expectedLifecycleRevision;
+      const expectedLifecycleRevision = typeof rawExpectedLifecycleRevision === 'string'
+        && /^\d+$/.test(rawExpectedLifecycleRevision)
+        ? rawExpectedLifecycleRevision
+        : null;
+      const requestedWritable = await userCanEditPage(auth.userId, pageId);
       const meta = await fetchUserMeta(auth.userId);
       connId = randomUUID();
-      await runtime.attachSocket(pageId, {
+      const attached = await runtime.attachSocket(pageId, {
         id: connId,
         ws: socket,
         userId: auth.userId,
-        writable,
+        writable: requestedWritable,
+        expectedLifecycleRevision,
         identity: {
           id: auth.userId,
           name: meta.name,
@@ -568,7 +802,15 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         },
       });
       logger.debug(
-        { pageId, userId: auth.userId, writable, connId, name: meta.name, color: awarenessColor(auth.userId) },
+        {
+          pageId,
+          userId: auth.userId,
+          writable: attached.writable,
+          connId,
+          name: meta.name,
+          color: awarenessColor(auth.userId),
+          writableRefusalReason: attached.writableRefusalReason,
+        },
         'collab.identity',
       );
 
@@ -576,6 +818,8 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         await runtime.detachSocket(pageId, connId);
         return;
       }
+      const securityPageId = pageId;
+      const securityConnId = connId;
       securityTimer = setInterval(() => {
         void (async () => {
           const security = await getUserSecurityState(auth.userId);
@@ -585,19 +829,30 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           }
           if (security.kind === 'active' && security.role !== auth.role) {
             finish(4401, 'unauthorized');
+            return;
           }
-        })();
+          if (!(await userCanAccessPage(auth.userId, securityPageId))) {
+            finish(4403, 'forbidden');
+            return;
+          }
+          if (!(await userCanEditPage(auth.userId, securityPageId))) {
+            await runtime.demoteSocket(securityPageId, securityConnId);
+          }
+        })().catch((err) => logger.warn(
+          { err, pageId: securityPageId },
+          'collab: permission refresh failed',
+        ));
       }, 60_000);
       if (typeof securityTimer.unref === 'function') securityTimer.unref();
       live = true;
-      for (const buf of pending) {
-        const result = runtime.handleInboundFrame(pageId, connId, buf);
-        if (result === 'close_4403') {
-          finish(4403, 'readonly');
-          return;
-        }
+      const queuedFrames = pending.splice(0);
+      for (const buf of queuedFrames) {
+        frameChain = frameChain.then(async () => {
+          const result = await runtime.handleInboundFrame(securityPageId, securityConnId, buf);
+          if (result === 'close_4403') finish(4403, 'readonly');
+        });
       }
-      pending.length = 0;
+      await frameChain;
     })().catch((err) => {
       logger.warn({ err }, 'collab: join failed');
       finish(1001, 'internal');

@@ -13,7 +13,8 @@ import { validateUrlSyntaxAndProtocol, addAllowedBaseUrl, removeAllowedBaseUrl, 
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';

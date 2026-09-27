@@ -1,20 +1,30 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { UpdatePageIconSchema } from '@compendiq/contracts';
+import { UpdatePageIconSchema, type PageIcon } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
+import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
 import {
+  activatePageIconImage,
   deletePageIconImage,
   MAX_ICON_BYTES,
   PageIconStoreError,
   readPageIconImage,
-  writePageIconImage,
+  stagePageIconImage,
+  validatePageIconImage,
+  userCanMutatePageIcon,
 } from '../../core/services/page-icon-store.js';
-import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
+import {
+  advancePageWriteIntent,
+  completePageWriteIntent,
+  PageWriteError,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+} from '../../core/services/page-write-admission.js';
+import { readFrozenPageAttachment } from '../../core/services/page-baseline-service.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImageQuerySchema = z.object({ v: z.string().min(1).max(128).optional() });
@@ -25,20 +35,26 @@ const ImageBodySchema = z.object({
 type PageIconRow = {
   id: number;
   source: string;
+  confluence_id: string | null;
   created_by_user_id: string | null;
   visibility: string;
   space_key: string | null;
   deleted_at: Date | null;
+  inherit_perms: boolean;
   icon_kind: string | null;
   icon_value: string | null;
   icon_color: string | null;
   icon_filled: boolean | null;
+  content_revision: string;
+  lifecycle_revision: string;
 };
 
 async function loadPage(id: string): Promise<PageIconRow | null> {
   const isNumericId = /^\d+$/.test(id);
   const result = await query<PageIconRow>(
-    `SELECT id, source, created_by_user_id, visibility, space_key, deleted_at, icon_kind, icon_value, icon_color, icon_filled
+    `SELECT id, source, confluence_id, created_by_user_id, visibility, space_key,
+            deleted_at, inherit_perms, icon_kind, icon_value, icon_color, icon_filled,
+            content_revision::text, lifecycle_revision::text
        FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
     [isNumericId ? parseInt(id, 10) : id],
   );
@@ -49,22 +65,90 @@ async function assertCanEdit(
   fastify: FastifyInstance,
   userId: string,
   page: PageIconRow,
+  client?: PoolClient,
 ): Promise<void> {
   if (page.deleted_at) {
     throw fastify.httpErrors.badRequest('Cannot edit a page that is in the trash');
   }
-  if (page.source === 'standalone') {
-    if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
-      throw fastify.httpErrors.forbidden('Not authorized to edit this page');
-    }
-    return;
+  if (!await userCanMutatePageIcon(userId, page, client)) {
+    throw fastify.httpErrors.forbidden(
+      page.source === 'confluence' && page.space_key
+        ? 'Access denied to this space'
+        : 'Not authorized to edit this page',
+    );
   }
-  if (page.space_key) {
-    const spaces = await getUserAccessibleSpaces(userId);
-    if (!spaces.includes(page.space_key)) {
-      throw fastify.httpErrors.forbidden('Access denied to this space');
-    }
+}
+
+async function loadCurrentIconAuthority(
+  fastify: FastifyInstance,
+  client: PoolClient,
+  userId: string,
+  admitted: PageIconRow,
+): Promise<PageIconRow> {
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL FOR SHARE',
+    [userId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new PageWriteError(
+      403,
+      'intent_actor_inactive',
+      'The original icon writer is no longer active',
+    );
   }
+  const result = await client.query<PageIconRow>(
+    `SELECT id, source, confluence_id, created_by_user_id, visibility, space_key,
+            deleted_at, inherit_perms, icon_kind, icon_value, icon_color, icon_filled,
+            content_revision::text, lifecycle_revision::text
+       FROM pages
+      WHERE id = $1
+      FOR UPDATE`,
+    [admitted.id],
+  );
+  const current = result.rows[0];
+  if (!current) {
+    throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  }
+  if (
+    current.source !== admitted.source ||
+    current.confluence_id !== admitted.confluence_id
+  ) {
+    throw new PageWriteError(
+      409,
+      'intent_page_identity_changed',
+      'The icon page identity changed after admission',
+    );
+  }
+  if (
+    current.icon_kind !== admitted.icon_kind ||
+    current.icon_value !== admitted.icon_value ||
+    current.icon_color !== admitted.icon_color ||
+    current.icon_filled !== admitted.icon_filled
+  ) {
+    throw new PageWriteError(
+      409,
+      'stale_content_revision',
+      'The page icon changed after admission',
+    );
+  }
+  try {
+    await assertCanEdit(fastify, userId, current, client);
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'statusCode' in error &&
+      error.statusCode === 403
+    ) {
+      throw new PageWriteError(
+        403,
+        'intent_access_changed',
+        'Icon publication authority changed',
+      );
+    }
+    throw error;
+  }
+  return current;
 }
 
 function parseDataUri(dataUri: string): Buffer {
@@ -95,7 +179,10 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     client: PoolClient,
   ) {
     await client.query(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5 WHERE id = $1',
+      `UPDATE pages
+          SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5,
+              content_revision = content_revision + 1
+        WHERE id = $1`,
       [page.id, kind, value, color, filled],
     );
     return { icon: toPageIcon(kind, value, color, filled) };
@@ -122,22 +209,77 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     const page = await loadPage(id);
     if (!page) throw fastify.httpErrors.notFound('Page not found');
     await assertCanEdit(fastify, userId, page);
+    const previousUploadedSha = page.icon_kind === 'image' &&
+      typeof page.icon_value === 'string' &&
+      /^[a-f0-9]{64}$/.test(page.icon_value)
+      ? page.icon_value
+      : null;
+    if (page.icon_kind === 'image' && previousUploadedSha === null) {
+      throw fastify.httpErrors.conflict('The uploaded page icon identity is invalid');
+    }
 
-    const result = await withLocalAttachmentMutationLock(async (client) => {
-      if (body.icon === null) {
-        await deletePageIconImage(page.id, client);
-        return persistIcon(page, null, null, null, false, client);
-      }
-
-      await deletePageIconImage(page.id, client);
-      const color =
-        body.icon.kind === 'lucide' || body.icon.kind === 'brand'
-          ? body.icon.color ?? null
-          : null;
-      const filled = body.icon.kind === 'lucide' ? Boolean(body.icon.filled) : false;
-      return persistIcon(page, body.icon.kind, body.icon.value, color, filled, client);
+    const intent = await reservePageWriteIntent({
+      pageIds: [page.id],
+      expectedRevisions: {
+        [page.id]: {
+          contentRevision: page.content_revision,
+          lifecycleRevision: page.lifecycle_revision,
+        },
+      },
+      kind: 'icon.metadata.patch',
+      actorId: userId,
+      effect: {
+        effectClass: 'local',
+        pageId: page.id,
+        iconKind: body.icon?.kind ?? null,
+        iconValue: body.icon?.value ?? null,
+        iconColor:
+          body.icon?.kind === 'lucide' || body.icon?.kind === 'brand'
+            ? body.icon.color ?? null
+            : null,
+        iconFilled: body.icon?.kind === 'lucide' ? Boolean(body.icon.filled) : false,
+        removesUploadedImage: page.icon_kind === 'image',
+        previousSha256: previousUploadedSha,
+      },
     });
-    await finalizeIconMutation(page, body.icon?.kind ?? null, userId, request);
+    let result: { icon: PageIcon | null };
+    let committedPage: PageIconRow | undefined;
+    if (page.icon_kind === 'image') {
+      result = await runPageWriteIntentEffect(intent, { kind: 'local' }, () => advancePageWriteIntent(intent, async (client) => {
+        const current = await loadCurrentIconAuthority(fastify, client, userId, page);
+        committedPage = current;
+        await deletePageIconImage(current.id, current.icon_value!, client);
+        return body.icon === null
+          ? persistIcon(current, null, null, null, false, client)
+          : persistIcon(
+              current,
+              body.icon.kind,
+              body.icon.value,
+              body.icon.kind === 'lucide' || body.icon.kind === 'brand'
+                ? body.icon.color ?? null
+                : null,
+              body.icon.kind === 'lucide' ? Boolean(body.icon.filled) : false,
+              client,
+            );
+      }));
+      await completePageWriteIntent(intent, async () => undefined);
+    } else {
+      result = await completePageWriteIntent(intent, async (client) => {
+        const current = await loadCurrentIconAuthority(fastify, client, userId, page);
+        committedPage = current;
+        if (body.icon === null) {
+          return persistIcon(current, null, null, null, false, client);
+        }
+        const color =
+          body.icon.kind === 'lucide' || body.icon.kind === 'brand'
+            ? body.icon.color ?? null
+            : null;
+        const filled = body.icon.kind === 'lucide' ? Boolean(body.icon.filled) : false;
+        return persistIcon(current, body.icon.kind, body.icon.value, color, filled, client);
+      });
+    }
+    if (!committedPage) throw new Error('Icon mutation completed without current page authority');
+    await finalizeIconMutation(committedPage, body.icon?.kind ?? null, userId, request);
     return result;
   });
 
@@ -151,11 +293,37 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
 
     try {
       const bytes = parseDataUri(dataUri);
-      const result = await withLocalAttachmentMutationLock(async (client) => {
-        const written = await writePageIconImage(page.id, bytes, client);
-        return persistIcon(page, 'image', written.sha, null, false, client);
+      const image = validatePageIconImage(bytes);
+      const intent = await reservePageWriteIntent({
+        pageIds: [page.id],
+        expectedRevisions: {
+          [page.id]: {
+            contentRevision: page.content_revision,
+            lifecycleRevision: page.lifecycle_revision,
+          },
+        },
+        kind: 'icon.image.put',
+        actorId: userId,
+        effect: {
+          effectClass: 'local',
+          pageId: page.id,
+          sha256: image.sha,
+          size: bytes.length,
+          expectsMetadata: true,
+          format: image.format,
+        },
       });
-      await finalizeIconMutation(page, 'image', userId, request);
+      const staged = await runPageWriteIntentEffect(intent, { kind: 'local' }, () => stagePageIconImage(page.id, intent, bytes));
+      let committedPage: PageIconRow | undefined;
+      const result = await runPageWriteIntentEffect(intent, { kind: 'local' }, () => advancePageWriteIntent(intent, async (client) => {
+        const current = await loadCurrentIconAuthority(fastify, client, userId, page);
+        committedPage = current;
+        await activatePageIconImage(current.id, staged, intent, client);
+        return persistIcon(current, 'image', staged.sha, null, false, client);
+      }));
+      await completePageWriteIntent(intent, async () => undefined);
+      if (!committedPage) throw new Error('Icon image completed without current page authority');
+      await finalizeIconMutation(committedPage, 'image', userId, request);
       return result;
     } catch (err) {
       if (err instanceof PageIconStoreError) {
@@ -175,10 +343,26 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     if (!(await userCanAccessPage(userId, page.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    const sha = v ?? page.icon_value;
+    if (!sha) throw fastify.httpErrors.notFound('Page not found');
+    const frozen = await readFrozenPageAttachment({
+      pageId: page.id,
+      actorId: userId,
+      locator: { store: 'icon', sha256: sha },
+    });
+    if (frozen.state === 'frozen_missing') {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    if (frozen.state === 'frozen') {
+      return reply
+        .header('Content-Type', frozen.mediaType)
+        .header('Content-Length', String(frozen.size))
+        .header('Cache-Control', 'private, max-age=86400')
+        .send(frozen.stream);
+    }
     if (page.icon_kind !== 'image' || !page.icon_value) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-    const sha = v ?? page.icon_value;
     const file = await readPageIconImage(page.id, sha);
     if (!file) throw fastify.httpErrors.notFound('Page not found');
     return reply

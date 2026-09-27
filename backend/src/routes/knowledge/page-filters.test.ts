@@ -1,319 +1,232 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { pagesCrudRoutes } from './pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// Mock external dependencies
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+async function grantSpaceRead(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('page-filters-reader', 'Page filters reader', FALSE, ARRAY['read'])
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
+async function removeUserRedisState(redis: RedisClientType, userId: string): Promise<void> {
+  for (const pattern of [`kb:${userId}:*`, `rbac:*:${userId}*`]) {
+    let cursor = '0';
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) await redis.del(result.keys);
+    } while (cursor !== '0');
+  }
+  await redis.del([
+    `kb-cache-generation:pages:user:${userId}`,
+    `kb-cache-generation:search:user:${userId}`,
+  ]);
+}
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'GET /api/pages filters — real PostgreSQL, Redis, and RBAC',
+  () => {
+    let app: FastifyInstance;
+    let redis: RedisClientType;
+    let currentUserId: string;
+    const ownedUserIds: string[] = [];
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+    beforeAll(async () => {
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      }) as RedisClientType;
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
 
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-const defaultPageRow = {
-  id: 1,
-  confluence_id: 'page-1',
-  space_key: 'DEV',
-  title: 'Test Page',
-  version: 1,
-  parent_id: null,
-  labels: ['howto'],
-  author: 'Alice',
-  last_modified_at: new Date('2025-01-15'),
-  last_synced: new Date('2025-01-16'),
-  embedding_dirty: false,
-  embedding_status: 'embedded',
-  embedded_at: new Date('2025-01-16'),
-};
-
-describe('Page Filters', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
-    });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Default: count query returns 1, data query returns one row
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-        return { rows: [{ count: '1' }] };
-      }
-      return { rows: [defaultPageRow], rowCount: 1 };
-    });
-  });
-
-  describe('GET /api/pages with author filter', () => {
-    it('should pass author parameter to SQL query', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages?author=Alice',
+      app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+        instance.redis = redis;
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
       });
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      currentUserId = await insertUser(`page-filters-${randomUUID()}`);
+      const otherUserId = await insertUser(`page-filters-hidden-${randomUUID()}`);
+      ownedUserIds.push(currentUserId, otherUserId);
+      await insertLocalSpace('FILTERS', currentUserId);
+      await insertLocalSpace('HIDDEN', otherUserId);
+      await grantSpaceRead(currentUserId, 'FILTERS');
+
+      await query(
+        `INSERT INTO pages (
+           source, space_key, title, body_html, body_text, version, labels, author,
+           last_modified_at, last_synced, embedding_dirty, embedding_status,
+           visibility, created_by_user_id
+         ) VALUES
+           ('standalone', 'FILTERS', 'Fresh article', '<p>fresh</p>', 'fresh', 1,
+            ARRAY['howto', 'architecture'], 'Alice', NOW() - INTERVAL '2 days', NOW(),
+            FALSE, 'embedded', 'private', $1),
+           ('standalone', 'FILTERS', 'Recent article', '<p>recent</p>', 'recent', 1,
+            ARRAY['howto'], 'Bob', NOW() - INTERVAL '15 days', NOW(),
+            TRUE, 'not_embedded', 'private', $1),
+           ('standalone', 'FILTERS', 'Aging article', '<p>aging</p>', 'aging', 1,
+            ARRAY['operations'], 'Alice', NOW() - INTERVAL '60 days', NOW(),
+            FALSE, 'embedded', 'private', $1),
+           ('standalone', 'FILTERS', 'Dated stale article', '<p>stale</p>', 'stale', 1,
+            ARRAY['legacy'], 'Carol', '2025-06-15T12:00:00Z', NOW(),
+            TRUE, 'not_embedded', 'private', $1),
+           ('standalone', 'HIDDEN', 'Hidden article', '<p>hidden</p>', 'hidden', 1,
+            ARRAY['secret'], 'Hidden author', NOW(), NOW(),
+            FALSE, 'embedded', 'private', $2)`,
+        [currentUserId, otherUserId],
+      );
+    });
+
+    afterAll(async () => {
+      if (app) await app.close();
+      setRedisClient(null);
+      if (redis?.isOpen) {
+        for (const userId of ownedUserIds) await removeUserRedisState(redis, userId);
+        await redis.quit();
+      }
+      await truncateAllTables();
+      await teardownTestDb();
+    });
+
+    it('returns only pages by the requested author', async () => {
+      const response = await app.inject({ method: 'GET', url: '/api/pages?author=Alice' });
 
       expect(response.statusCode).toBe(200);
-      // Verify author was passed as a parameter
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect(countCall).toBeDefined();
-      expect((countCall![0] as string)).toContain('cp.author = $');
-      expect(countCall![1] as unknown[]).toContain('Alice');
+      expect(response.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Aging article',
+        'Fresh article',
+      ]);
     });
-  });
 
-  describe('GET /api/pages with labels filter', () => {
-    it('should filter by labels using array contains operator', async () => {
+    it('requires every requested label', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/pages?labels=howto,architecture',
       });
 
       expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect(countCall).toBeDefined();
-      expect((countCall![0] as string)).toContain('cp.labels @>');
-      expect(countCall![1] as unknown[]).toContainEqual(['howto', 'architecture']);
+      expect(response.json()).toMatchObject({ total: 1 });
+      expect(response.json().items[0].title).toBe('Fresh article');
     });
-  });
 
-  describe('GET /api/pages with freshness filter', () => {
-    it('should add date range condition for fresh pages', async () => {
+    it('returns the page inside an inclusive date range', async () => {
       const response = await app.inject({
         method: 'GET',
-        url: '/api/pages?freshness=fresh',
+        url: '/api/pages?dateFrom=2025-06-01&dateTo=2025-06-30',
       });
 
       expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect((countCall![0] as string)).toContain("NOW() - INTERVAL '7 days'");
+      expect(response.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Dated stale article',
+      ]);
     });
 
-    it('should add date range condition for stale pages', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages?freshness=stale',
-      });
+    it('places pages in the fresh, recent, aging, and stale buckets', async () => {
+      const expected = {
+        fresh: 'Fresh article',
+        recent: 'Recent article',
+        aging: 'Aging article',
+        stale: 'Dated stale article',
+      } as const;
 
-      expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect((countCall![0] as string)).toContain("NOW() - INTERVAL '90 days'");
+      for (const [freshness, title] of Object.entries(expected)) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/pages?freshness=${freshness}`,
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().items.map((item: { title: string }) => item.title)).toEqual([title]);
+      }
     });
-  });
 
-  describe('GET /api/pages with embeddingStatus filter', () => {
-    it('should filter for pending embeddings', async () => {
-      const response = await app.inject({
+    it('separates pending and completed embedding work', async () => {
+      const pending = await app.inject({
         method: 'GET',
         url: '/api/pages?embeddingStatus=pending',
       });
-
-      expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect((countCall![0] as string)).toContain('cp.embedding_dirty = $');
-      expect(countCall![1] as unknown[]).toContain(true);
-    });
-
-    it('should filter for done embeddings', async () => {
-      const response = await app.inject({
+      const done = await app.inject({
         method: 'GET',
         url: '/api/pages?embeddingStatus=done',
       });
 
-      expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect(countCall![1] as unknown[]).toContain(false);
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Dated stale article',
+        'Recent article',
+      ]);
+      expect(done.statusCode).toBe(200);
+      expect(done.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Aging article',
+        'Fresh article',
+      ]);
     });
-  });
 
-  describe('GET /api/pages with date range filter', () => {
-    it('should filter by dateFrom', async () => {
+    it('applies author, label, and embedding filters together', async () => {
       const response = await app.inject({
         method: 'GET',
-        url: '/api/pages?dateFrom=2025-01-01',
+        url: '/api/pages?author=Alice&labels=howto,architecture&embeddingStatus=done',
       });
 
       expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect((countCall![0] as string)).toContain('cp.last_modified_at >=');
-      expect(countCall![1] as unknown[]).toContain('2025-01-01');
+      expect(response.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Fresh article',
+      ]);
     });
 
-    it('should filter by dateTo', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages?dateTo=2025-12-31',
-      });
+    it('returns sorted author and label choices from RBAC-accessible spaces', async () => {
+      const response = await app.inject({ method: 'GET', url: '/api/pages/filters' });
 
       expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect((countCall![0] as string)).toContain('cp.last_modified_at <=');
-      expect(countCall![1] as unknown[]).toContain('2025-12-31');
+      expect(response.json()).toEqual({
+        authors: ['Alice', 'Bob', 'Carol'],
+        labels: ['architecture', 'howto', 'legacy', 'operations'],
+      });
     });
 
-    it('should filter by both dateFrom and dateTo', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages?dateFrom=2025-01-01&dateTo=2025-12-31',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      expect(countCall![1] as unknown[]).toContain('2025-01-01');
-      expect(countCall![1] as unknown[]).toContain('2025-12-31');
-    });
-  });
-
-  describe('GET /api/pages with combined filters', () => {
-    it('should apply multiple filters simultaneously', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages?author=Alice&labels=howto&embeddingStatus=done',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const countCall = mockQueryFn.mock.calls.find((c: unknown[]) => (c[0] as string).includes('COUNT(*)'));
-      const sql = countCall![0] as string;
-      expect(sql).toContain('cp.author = $');
-      expect(sql).toContain('cp.labels @>');
-      expect(sql).toContain('cp.embedding_dirty = $');
-    });
-  });
-
-  describe('GET /api/pages/filters', () => {
-    it('should return distinct authors and labels', async () => {
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('DISTINCT') && sql.includes('author')) {
-          return { rows: [{ author: 'Alice' }, { author: 'Bob' }] };
-        }
-        if (typeof sql === 'string' && sql.includes('unnest') && sql.includes('labels')) {
-          return { rows: [{ label: 'architecture' }, { label: 'howto' }] };
-        }
-        return { rows: [], rowCount: 0 };
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/filters',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.authors).toEqual(['Alice', 'Bob']);
-      expect(body.labels).toEqual(['architecture', 'howto']);
-    });
-  });
-
-  describe('GET /api/pages with invalid freshness value', () => {
-    it('should reject invalid freshness value', async () => {
-      const response = await app.inject({
+    it('rejects unsupported freshness and embedding statuses', async () => {
+      const freshness = await app.inject({
         method: 'GET',
         url: '/api/pages?freshness=invalid',
       });
-
-      expect(response.statusCode).toBe(400);
-    });
-  });
-
-  describe('GET /api/pages with invalid embeddingStatus value', () => {
-    it('should reject invalid embeddingStatus value', async () => {
-      const response = await app.inject({
+      const embedding = await app.inject({
         method: 'GET',
         url: '/api/pages?embeddingStatus=invalid',
       });
 
-      expect(response.statusCode).toBe(400);
+      expect(freshness.statusCode).toBe(400);
+      expect(embedding.statusCode).toBe(400);
     });
-  });
-});
+  },
+);

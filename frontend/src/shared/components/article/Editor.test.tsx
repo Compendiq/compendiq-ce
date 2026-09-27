@@ -1038,6 +1038,48 @@ describe('Editor', () => {
         );
       });
     });
+
+    it('does not apply a delayed HTML paste after the editor becomes read-only', async () => {
+      const importResult = Promise.withResolvers<{ url: string }>();
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          return importResult.promise;
+        }
+        return undefined;
+      });
+
+      const { rerender } = render(
+        <Editor content="<p>seed</p>" editable={true} pageId="42" />,
+      );
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+      });
+
+      dispatchHtmlPaste('<p>delayed <img src="https://cdn.example.com/late.png"></p>');
+      await waitFor(() => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/pages/42/images/import',
+          expect.objectContaining({ method: 'POST' }),
+        );
+      });
+
+      rerender(<Editor content="<p>seed</p>" editable={false} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+      });
+
+      await act(async () => {
+        importResult.resolve({ url: '/api/attachments/42/late.png' });
+      });
+
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror img')).toBeNull();
+        expect(document.querySelector('.ProseMirror')).toHaveTextContent('seed');
+      });
+    });
   });
 
   describe('table cell selection (#1135)', () => {

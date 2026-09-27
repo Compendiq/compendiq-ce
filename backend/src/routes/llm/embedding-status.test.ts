@@ -1,424 +1,164 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createClient, type RedisClientType } from 'redis';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
 import { pagesCrudRoutes } from '../knowledge/pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from '../knowledge/pages.test-helpers.js';
 
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+const available = await isDbAvailable() && await isRedisAvailable();
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV']),
-}));
-
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-describe('Embedding Status in API responses', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!available)('embedding state in page consumers — real persistence', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
+  let userId: string;
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    }) as RedisClientType;
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+      instance.redis = redis;
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    userId = await insertUser('embedding_status_reader');
+    await insertLocalSpace('DEV', userId);
   });
 
-  // Common fields for standalone-aware GET /pages/:id (source, visibility, etc.)
-  const confluencePageDefaults = {
-    id: 1,
-    source: 'confluence',
-    visibility: 'shared',
-    created_by_user_id: null,
-    deleted_at: null,
-  };
+  it('projects every persisted detail status without inventing an error or timestamp', async () => {
+    const embeddedAt = new Date('2026-03-01T12:00:00Z');
+    const cases = [
+      {
+        title: 'Embedded',
+        status: 'embedded',
+        dirty: false,
+        embeddedAt,
+        error: null,
+      },
+      {
+        title: 'New',
+        status: 'not_embedded',
+        dirty: true,
+        embeddedAt: null,
+        error: null,
+      },
+      {
+        title: 'Processing',
+        status: 'embedding',
+        dirty: true,
+        embeddedAt: null,
+        error: null,
+      },
+      {
+        title: 'Failed with detail',
+        status: 'failed',
+        dirty: true,
+        embeddedAt: null,
+        error: 'Model bge-m3 not found',
+      },
+      {
+        title: 'Failed without detail',
+        status: 'failed',
+        dirty: true,
+        embeddedAt: null,
+        error: null,
+      },
+    ] as const;
 
-  // Helper: mock the page query + access control query for confluence pages
-  function mockDetailPageQuery(pageRow: Record<string, unknown>) {
-    mockQueryFn.mockImplementation((_sql: string) => {
-      return { rows: [{ ...confluencePageDefaults, ...pageRow }], rowCount: 1 };
-    });
-  }
-
-  describe('GET /api/pages/:id', () => {
-    it('should return embeddingStatus and embeddedAt for an embedded page', async () => {
-      const embeddedAt = new Date('2026-03-01T12:00:00Z');
-      mockDetailPageQuery({
-        confluence_id: 'page-1',
-        space_key: 'DEV',
-        title: 'Test Page',
-        body_storage: '<p>content</p>',
-        body_html: '<p>content</p>',
-        body_text: 'content',
-        version: 3,
-        parent_id: null,
-        labels: ['docs'],
-        author: 'testuser',
-        last_modified_at: new Date('2026-02-28'),
-        last_synced: new Date('2026-03-01'),
-        embedding_dirty: false,
-        embedding_status: 'embedded',
-        embedded_at: embeddedAt,
-        embedding_error: null,
-        has_children: false,
+    for (const fixture of cases) {
+      const pageId = await insertStandalonePage(fixture.title, 'private', userId, 'DEV', {
+        dirty: fixture.dirty,
       });
+      await query(
+        `UPDATE pages
+            SET embedding_status = $2,
+                embedded_at = $3,
+                embedding_error = $4
+          WHERE id = $1`,
+        [pageId, fixture.status, fixture.embeddedAt, fixture.error],
+      );
 
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-1',
-      });
-
+      const response = await app.inject({ method: 'GET', url: `/api/pages/${pageId}` });
       expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.embeddingStatus).toBe('embedded');
-      expect(body.embeddedAt).toBe(embeddedAt.toISOString());
-      expect(body.embeddingDirty).toBe(false);
+      expect(response.json()).toMatchObject({
+        id: String(pageId),
+        embeddingStatus: fixture.status,
+        embeddingDirty: fixture.dirty,
+        embeddedAt: fixture.embeddedAt?.toISOString() ?? null,
+        embeddingError: fixture.error,
+      });
+    }
+  });
+
+  it('keeps embedding state on list summaries', async () => {
+    const embeddedAt = new Date('2026-03-01T12:00:00Z');
+    const embedded = await insertStandalonePage('Embedded', 'shared', userId, 'DEV');
+    const pending = await insertStandalonePage('Pending', 'shared', userId, 'DEV', { dirty: true });
+    await query(
+      `UPDATE pages SET embedding_status = 'embedded', embedded_at = $2 WHERE id = $1`,
+      [embedded, embeddedAt],
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages' });
+    expect(response.statusCode).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    expect(items.find((item) => item.id === String(embedded))).toMatchObject({
+      embeddingStatus: 'embedded',
+      embeddingDirty: false,
+      embeddedAt: embeddedAt.toISOString(),
     });
-
-    it('should return embeddingStatus "not_embedded" for a new page', async () => {
-      mockDetailPageQuery({
-        confluence_id: 'page-2',
-        space_key: 'DEV',
-        title: 'New Page',
-        body_storage: '<p>new</p>',
-        body_html: '<p>new</p>',
-        body_text: 'new',
-        version: 1,
-        parent_id: null,
-        labels: [],
-        author: 'testuser',
-        last_modified_at: new Date('2026-03-10'),
-        last_synced: new Date('2026-03-10'),
-        embedding_dirty: true,
-        embedding_status: 'not_embedded',
-        embedded_at: null,
-        embedding_error: null,
-        has_children: false,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-2',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.embeddingStatus).toBe('not_embedded');
-      expect(body.embeddedAt).toBeNull();
-      expect(body.embeddingDirty).toBe(true);
-    });
-
-    it('should return embeddingStatus "failed" with null error when no error stored', async () => {
-      mockDetailPageQuery({
-        confluence_id: 'page-3',
-        space_key: 'DEV',
-        title: 'Failed Page',
-        body_storage: '<p>fail</p>',
-        body_html: '<p>fail</p>',
-        body_text: 'fail',
-        version: 2,
-        parent_id: null,
-        labels: [],
-        author: 'testuser',
-        last_modified_at: new Date('2026-03-05'),
-        last_synced: new Date('2026-03-05'),
-        embedding_dirty: true,
-        embedding_status: 'failed',
-        embedded_at: null,
-        embedding_error: null,
-        has_children: false,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-3',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.embeddingStatus).toBe('failed');
-      expect(body.embeddingError).toBeNull();
-    });
-
-    it('should return embeddingError with the error message for a failed embedding', async () => {
-      mockDetailPageQuery({
-        confluence_id: 'page-3b',
-        space_key: 'DEV',
-        title: 'Failed Page With Error',
-        body_storage: '<p>fail</p>',
-        body_html: '<p>fail</p>',
-        body_text: 'fail',
-        version: 2,
-        parent_id: null,
-        labels: [],
-        author: 'testuser',
-        last_modified_at: new Date('2026-03-05'),
-        last_synced: new Date('2026-03-05'),
-        embedding_dirty: true,
-        embedding_status: 'failed',
-        embedded_at: null,
-        embedding_error: 'Model bge-m3 not found',
-        has_children: false,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-3b',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.embeddingStatus).toBe('failed');
-      expect(body.embeddingError).toBe('Model bge-m3 not found');
-    });
-
-    it('should return embeddingStatus "embedding" for a page being processed', async () => {
-      mockDetailPageQuery({
-        confluence_id: 'page-4',
-        space_key: 'DEV',
-        title: 'Processing Page',
-        body_storage: '<p>processing</p>',
-        body_html: '<p>processing</p>',
-        body_text: 'processing',
-        version: 2,
-        parent_id: null,
-        labels: [],
-        author: 'testuser',
-        last_modified_at: new Date('2026-03-08'),
-        last_synced: new Date('2026-03-08'),
-        embedding_dirty: true,
-        embedding_status: 'embedding',
-        embedded_at: null,
-        embedding_error: null,
-        has_children: false,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-4',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.embeddingStatus).toBe('embedding');
-    });
-
-    it('should return hasChildren true when page has child pages', async () => {
-      mockDetailPageQuery({
-        confluence_id: 'page-5',
-        space_key: 'DEV',
-        title: 'Parent Page',
-        body_storage: '<p>parent</p>',
-        body_html: '<p>parent</p>',
-        body_text: 'parent',
-        version: 1,
-        parent_id: null,
-        labels: [],
-        author: 'testuser',
-        last_modified_at: new Date('2026-03-10'),
-        last_synced: new Date('2026-03-10'),
-        embedding_dirty: false,
-        embedding_status: 'embedded',
-        embedded_at: new Date('2026-03-10'),
-        embedding_error: null,
-        has_children: true,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/page-5',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.hasChildren).toBe(true);
+    expect(items.find((item) => item.id === String(pending))).toMatchObject({
+      embeddingStatus: 'not_embedded',
+      embeddingDirty: true,
+      embeddedAt: null,
     });
   });
 
-  describe('GET /api/pages (list)', () => {
-    it('should include embeddingStatus and embeddedAt in list items', async () => {
-      const embeddedAt = new Date('2026-03-01T12:00:00Z');
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '2' }] };
-        }
-        return {
-          rows: [
-            {
-              id: 1,
-              confluence_id: 'page-1',
-              space_key: 'DEV',
-              title: 'Embedded Page',
-              version: 3,
-              parent_id: null,
-              labels: [],
-              author: 'Alice',
-              last_modified_at: new Date('2026-02-28'),
-              last_synced: new Date('2026-03-01'),
-              embedding_dirty: false,
-              embedding_status: 'embedded',
-              embedded_at: embeddedAt,
-              embedding_error: null,
-            },
-            {
-              id: 2,
-              confluence_id: 'page-2',
-              space_key: 'DEV',
-              title: 'Not Embedded Page',
-              version: 1,
-              parent_id: null,
-              labels: [],
-              author: 'Bob',
-              last_modified_at: new Date('2026-03-10'),
-              last_synced: new Date('2026-03-10'),
-              embedding_dirty: true,
-              embedding_status: 'not_embedded',
-              embedded_at: null,
-              embedding_error: null,
-            },
-          ],
-        };
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.items).toHaveLength(2);
-
-      expect(body.items[0].embeddingStatus).toBe('embedded');
-      expect(body.items[0].embeddedAt).toBe(embeddedAt.toISOString());
-
-      expect(body.items[1].embeddingStatus).toBe('not_embedded');
-      expect(body.items[1].embeddedAt).toBeNull();
+  it('keeps embedding state on tree summaries alongside real parent resolution', async () => {
+    const embeddedAt = new Date('2026-03-01T12:00:00Z');
+    const root = await insertStandalonePage('Root', 'private', userId, 'DEV');
+    const child = await insertStandalonePage('Child', 'private', userId, 'DEV', {
+      parentId: String(root),
     });
-  });
+    await query(
+      `UPDATE pages SET embedding_status = 'embedded', embedded_at = $2 WHERE id = $1`,
+      [root, embeddedAt],
+    );
 
-  describe('GET /api/pages/tree', () => {
-    it('should include embeddingStatus and embeddedAt in tree items', async () => {
-      const embeddedAt = new Date('2026-03-01T12:00:00Z');
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          {
-            confluence_id: 'page-1',
-            space_key: 'DEV',
-            title: 'Root',
-            parent_id: null,
-            labels: [],
-            last_modified_at: new Date('2026-03-01'),
-            embedding_dirty: false,
-            embedding_status: 'embedded',
-            embedded_at: embeddedAt,
-            embedding_error: null,
-          },
-        ],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/tree',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.items[0].embeddingStatus).toBe('embedded');
-      expect(body.items[0].embeddedAt).toBe(embeddedAt.toISOString());
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(response.statusCode).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    expect(items.find((item) => item.id === String(root))).toMatchObject({
+      embeddingStatus: 'embedded',
+      embeddedAt: embeddedAt.toISOString(),
     });
+    expect(items.find((item) => item.id === String(child))?.parentId).toBe(String(root));
   });
 });

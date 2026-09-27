@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
+import type { PageIcon, PageLifecycleState, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 import { useOnboardingActions } from './use-onboarding';
 
@@ -42,9 +42,17 @@ interface PageSummary {
   source: 'confluence' | 'standalone';
   visibility: 'private' | 'shared';
   icon?: PageIcon | null;
+  /**
+   * #277 freeze summary, carried on every page shape by the contract. Optional
+   * here for the same reason the tree's copy is: a server that predates the
+   * fields sends none, and absent means "not known to be frozen".
+   */
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
-interface PageDetail extends PageSummary {
+interface PageDetail extends PageSummary, Partial<PageLifecycleState> {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
@@ -167,6 +175,13 @@ export interface PageTreeItem {
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
   icon?: PageIcon | null;
+  // #277: the tree renders a frozen row's lock from the same summary fields
+  // the contract already puts on every page shape. Optional here because a
+  // server that predates the field sends none, and absent must read as
+  // "not known to be frozen" rather than as frozen.
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
 interface PageTreeResponse {

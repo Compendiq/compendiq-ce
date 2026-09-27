@@ -3,12 +3,21 @@
  * Real Postgres (:5433) + real Redis. Never mock the DB.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createClient, type RedisClientType } from 'redis';
 import * as Y from 'yjs';
 import type { WebSocket } from 'ws';
+
+// test-setup pins COLLAB_COMMIT_DUMP_TIMEOUT_MS to 200 ms so the suites that
+// assert on an UNANSWERED dump round finish quickly. Nothing here asserts on
+// a timeout: the concurrent-init case correlates two real pods over Redis
+// and PostgreSQL, and inside 200 ms the responder must finish its own
+// admission and document load (advisory locks contended with the requester),
+// run a transaction and publish back. On a loaded shard that window lapsed
+// and a legitimate join answered 503 `collab_state_unavailable`. Read at
+// module load through `vitestIntOr`, so it has to be set before the import.
+vi.hoisted(() => {
+  process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS = '2000';
+});
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../db/postgres.js';
@@ -21,9 +30,11 @@ import {
 } from './collab-room-service.js';
 import {
   COLLAB_PERSIST_DEBOUNCE_MS,
+  loadOrInitCollabDoc,
   persistAndSnapshot,
 } from './collab-persistence.js';
 import { yDocToHtml } from './collab-schema.js';
+import { admitPageRuntime, releasePageRuntime, withPageWriteTransaction } from './page-write-admission.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
@@ -152,29 +163,31 @@ beforeEach(async () => {
   if (!canRun || !main) return;
   if (runtime) await runtime.close();
   await truncateAllTables();
+  await withPageWriteTransaction([], async () => undefined);
   runtime = await createCollabRuntime(main, 'persist-pod');
 });
 
 describe.skipIf(!canRun)('collab persistence init (#1445)', () => {
-  it('first join with no BYTEA row inits from body_html; dual-join does not duplicate', async () => {
+  it('read-only load stays BYTEA-free; first writable join initializes once from body_html', async () => {
     const owner = await insertUser('persist_init');
     const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
 
     const roomA = await runtime!.getOrCreateRoom(pageId);
     expect(fragmentText(roomA.doc)).toContain(UNIQUE);
     expect(fragmentText(roomA.doc).split(UNIQUE)).toHaveLength(2);
+    expect((await collabRow(pageId)).rows).toHaveLength(0);
 
+    await runtime!.attachSocket(pageId, {
+      id: 'first-writer', ws: stubWs(), userId: owner, writable: true,
+    });
     const bytea = await collabRow(pageId);
     expect(bytea.rows).toHaveLength(1);
     const loaded = new Y.Doc();
     Y.applyUpdate(loaded, new Uint8Array(bytea.rows[0]!.doc_state));
     expect(fragmentText(loaded)).toContain(UNIQUE);
-    expect(Buffer.from(bytea.rows[0]!.state_vector ?? [])).toEqual(
-      Buffer.from(Y.encodeStateVector(roomA.doc)),
-    );
+    loaded.destroy();
 
     const roomSame = await runtime!.getOrCreateRoom(pageId);
-    expect(roomSame).toBe(roomA);
     expect(fragmentText(roomSame.doc).split(UNIQUE)).toHaveLength(2);
 
     const runtimeB = await createCollabRuntime(main!, 'persist-pod-b');
@@ -189,24 +202,72 @@ describe.skipIf(!canRun)('collab persistence init (#1445)', () => {
     }
   });
 
-  it('takes the two-key advisory lock COLLAB_INIT_LOCK_KEY', () => {
-    expect(COLLAB_INIT_LOCK_KEY).toBe(1_411_001);
-    const persistSrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), 'collab-persistence.ts'),
-      'utf8',
-    );
-    const roomSrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), 'collab-room-service.ts'),
-      'utf8',
-    );
-    const src = persistSrc + roomSrc;
-    expect(src).toContain('pg_advisory_xact_lock($1, $2)');
-    expect(src).toContain('COLLAB_INIT_LOCK_KEY');
-    expect(src).not.toMatch(/pg_advisory_xact_lock\(\s*\$1\s*\)/);
+  it('concurrent first writable joins share one initial document rather than duplicate its text', async () => {
+    const owner = await insertUser('persist_concurrent_init');
+    const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
+    const runtimeB = await createCollabRuntime(main!, 'persist-init-pod-b');
+    const merged = new Y.Doc();
+    try {
+      await Promise.all([
+        runtime!.attachSocket(pageId, {
+          id: 'initial-writer-a', ws: stubWs(), userId: owner, writable: true,
+        }),
+        runtime!.attachSocket(pageId, {
+          id: 'initial-writer-a-second', ws: stubWs(), userId: owner, writable: true,
+        }),
+        runtimeB.attachSocket(pageId, {
+          id: 'initial-writer-b', ws: stubWs(), userId: owner, writable: true,
+        }),
+      ]);
+      for (const peer of [runtime!, runtimeB]) {
+        const room = await peer.getOrCreateRoom(pageId);
+        Y.applyUpdate(merged, Y.encodeStateAsUpdate(room.doc));
+      }
+      expect(fragmentText(merged)).toBe(UNIQUE);
+    } finally {
+      merged.destroy();
+      await runtimeB.close();
+    }
   });
 });
 
 describe.skipIf(!canRun)('collab BYTEA persist + snapshot (#1445)', () => {
+  it('merges independently admitted room flushes instead of replacing an unseen peer edit', async () => {
+    const owner = await insertUser('partitioned_flush');
+    const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
+    const admissionA = await admitPageRuntime(pageId, owner, 'collab_room');
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const restored = new Y.Doc();
+    try {
+      await loadOrInitCollabDoc(pageId, docA, admissionA);
+      Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
+      appendText(docA, ' FIRST_ROOM');
+      appendText(docB, ' SECOND_ROOM');
+      const admissionB = await admitPageRuntime(pageId, owner, 'collab_room');
+      try {
+        await persistAndSnapshot(pageId, docA, admissionA);
+        await persistAndSnapshot(pageId, docB, admissionB);
+      } finally {
+        await releasePageRuntime(admissionB);
+      }
+      const stored = (await collabRow(pageId)).rows[0]!;
+      const published = (await pageRow(pageId)).rows[0]!;
+      Y.applyUpdate(restored, new Uint8Array(stored.doc_state));
+      expect(yDocToHtml(restored)).toBe(published.body_html);
+      expect(published.body_html).toContain(UNIQUE);
+      expect(published.body_html).toContain('FIRST_ROOM');
+      expect(published.body_html).toContain('SECOND_ROOM');
+      expect(published.body_text).toContain('FIRST_ROOM');
+      expect(published.body_text).toContain('SECOND_ROOM');
+    } finally {
+      await releasePageRuntime(admissionA);
+      docA.destroy();
+      docB.destroy();
+      restored.destroy();
+    }
+  });
+
   it('persists encodeStateAsUpdate / encodeStateVector after the 2s debounce', async () => {
     const owner = await insertUser('persist_debounce');
     const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
@@ -299,7 +360,10 @@ describe.skipIf(!canRun)('empty-room BYTEA invalidation (#1445)', () => {
   it('DELETE FROM page_collaborative_docs lets the next join re-init from HTML', async () => {
     const owner = await insertUser('persist_inval');
     const pageId = await insertPage({ ownerId: owner, html: `<p>${UNIQUE}</p>` });
-    const room = await runtime!.getOrCreateRoom(pageId);
+    await runtime!.attachSocket(pageId, {
+      id: 'writer', ws: stubWs(), userId: owner, writable: true,
+    });
+    const room = runtime!.getRoom(pageId)!;
     expect(fragmentText(room.doc)).toContain(UNIQUE);
     expect((await collabRow(pageId)).rows).toHaveLength(1);
 
@@ -336,7 +400,7 @@ describe.skipIf(!canRun)('resetFromHtml vs in-flight persist (#1474)', () => {
       try {
         await holder.query('BEGIN');
         await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
-        const persistP = persistAndSnapshot(pageId, roomB.doc);
+        const persistP = persistAndSnapshot(pageId, roomB.doc, roomB.admission!);
         await new Promise((r) => setTimeout(r, 50));
         const resetP = runtime!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
         await new Promise((r) => setTimeout(r, 50));

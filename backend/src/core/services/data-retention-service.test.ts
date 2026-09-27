@@ -169,6 +169,9 @@ describe('data-retention-service', () => {
       const versionsCall = mockPool.query.mock.calls[5];
       expect(versionsCall[0]).toContain('ROW_NUMBER()');
       expect(versionsCall[0]).toContain('PARTITION BY page_id');
+      expect(versionsCall[0]).toContain('NOT EXISTS');
+      expect(versionsCall[0]).toContain('page_baselines');
+      expect(versionsCall[0]).toContain('baseline.version_snapshot_id = pv.id');
       expect(versionsCall[1]).toEqual([50]);
     });
 
@@ -303,8 +306,14 @@ describe('data-retention-service', () => {
       expect(results.page_versions).toBe(0);
       // #1349: each purged page's attachment directories were cleaned.
       expect(mockCleanupDirs).toHaveBeenCalledTimes(10_007);
-      expect(mockCleanupDirs).toHaveBeenCalledWith(1, expect.anything());
-      expect(mockCleanupDirs).toHaveBeenCalledWith(20_006, expect.anything());
+      expect(mockCleanupDirs).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1 }),
+        expect.anything(),
+      );
+      expect(mockCleanupDirs).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 20_006 }),
+        expect.anything(),
+      );
     });
 
     it('holds the attachment barrier across each purge batch and its directory cleanup', async () => {
@@ -315,7 +324,10 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42 }] })
         .mockResolvedValueOnce({ rowCount: 0 });
-      mockCleanupDirs.mockImplementationOnce(async (_pageId: number, client: unknown) => {
+      mockCleanupDirs.mockImplementationOnce(async (
+        _deletion: { id: number },
+        client: unknown,
+      ) => {
         expect(mutationLockState.active).toBe(true);
         expect(client).toEqual(expect.objectContaining({ query: mockPool.query }));
       });
@@ -324,7 +336,10 @@ describe('data-retention-service', () => {
 
       expect(results.pages_standalone_trash).toBe(1);
       expect(mockWithAttachmentMutationLock).toHaveBeenCalledTimes(1);
-      expect(mockCleanupDirs).toHaveBeenCalledWith(42, expect.anything());
+      expect(mockCleanupDirs).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 42 }),
+        expect.anything(),
+      );
     });
 
     it('swallows errors inside the standalone trash purge and reports 0', async () => {

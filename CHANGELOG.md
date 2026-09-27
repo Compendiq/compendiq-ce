@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the new Hub ID validation cannot reject Compendiq's `org--name` asset
   IDs. Same-origin authentication and existing OPFS caches are preserved.
 
+- **Immutable article baselines and protected-writer enforcement (#275,
+  #276).** Added canonical manifest-v1 digests, exclusive retained media,
+  append-only freeze/thaw evidence, shared writer intents, and conservative
+  recovery, then registered enforcement version 1 across collaboration, sync,
+  purge, and subtree/cascade writers. Creation is installed but default-off:
+  activation requires a ready single-protocol writer deployment and the acting
+  administrator's Confluence integration explicitly off; new baselines also
+  require standalone page provenance and the acting user's integration off.
+  Existing freeze enforcement, thaw, and evidence access remain independent of
+  that mode. Governed signing/approval (#278) and the full UI (#277) are not
+  included.
+
 - **An analysis whose only schema violation is inside `structured` is kept
   (#1615).** Measured while driving #1619's arm B backfill over the 187-image
   corpus: 9 images produced a payload that broke a bound only in the OPTIONAL

@@ -1,872 +1,605 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-
-// This suite exercises the REAL content-converter (protectMedia / restoreMedia /
-// markdownToHtml) through the Accept/apply drop-guard — unlike apply-improvement.test.ts
-// which mocks the converter. It verifies that media dropped by the LLM is never
-// lost (#723): the drop-guard must re-append it.
-
-const mockQuery = vi.fn();
-const mockLogAuditEvent = vi.fn();
-
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn(),
-}));
-vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn(),
-  buildRagContext: vi.fn(),
-}));
-
-// NOTE: content-converter.js is intentionally NOT mocked here.
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  getEmbeddingStatus: vi.fn(),
-  processDirtyPages: vi.fn(),
-  reEmbedAll: vi.fn(),
-  embedPage: vi.fn(),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
-  computePageRelationships: vi.fn(),
-}));
-
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn(),
-}));
-
-vi.mock('../../domains/llm/services/llm-cache.js', () => {
-  class MockLlmCache {
-    getCachedResponse = vi.fn().mockResolvedValue(null);
-    setCachedResponse = vi.fn();
-    acquireLock = vi.fn().mockResolvedValue(true);
-    releaseLock = vi.fn().mockResolvedValue(undefined);
-    waitForCachedResponse = vi.fn().mockResolvedValue(null);
-    clearAll = vi.fn();
-  }
-  return {
-    LlmCache: MockLlmCache,
-    buildLlmCacheKey: vi.fn().mockReturnValue('test-cache-key'),
-    buildRagCacheKey: vi.fn().mockReturnValue('test-rag-cache-key'),
-  };
-});
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
-
-vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
-}));
-
-vi.mock('../../core/services/redis-cache.js', () => {
-  class MockRedisCache {
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-  }
-  return { RedisCache: MockRedisCache };
-});
-
-vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
-  assembleSubPageContext: vi.fn(),
-  getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
-}));
-
+import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { query } from '../../core/db/postgres.js';
+import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from '../knowledge/pages.test-helpers.js';
 import { llmConversationRoutes } from './llm-conversations.js';
-import { protectMedia, htmlToMarkdown } from '../../core/services/content-converter.js';
 
-/**
- * The exact markdown the Improve route sends for a page — so a test can echo it
- * back unchanged and mean "the model behaved perfectly". Mirrors
- * assembleContextIfNeeded's main-page conversion (protectMedia + layoutTokens).
- */
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
+const previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
+
+let app: FastifyInstance;
+let redis: RedisClientType;
+let attachmentsDir: string;
+let userId: string;
+let authenticated = true;
+
+/** Mirrors the markdown shown to Improve for a page whose structure is retained. */
 function faithfulEcho(bodyHtml: string): string {
   return htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true });
 }
 
-describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia (#723)', () => {
-  let app: ReturnType<typeof Fastify>;
+async function seedPage(bodyHtml: string, version = 5): Promise<number> {
+  const pageId = await insertStandalonePage('My Article', 'private', userId, 'LOCAL');
+  await query(
+    `UPDATE pages
+        SET body_html = $2, body_text = $3, body_storage = '', version = $4,
+            embedding_dirty = FALSE, image_analysis_dirty = FALSE
+      WHERE id = $1`,
+    [pageId, bodyHtml, bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), version],
+  );
+  return pageId;
+}
 
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'user-123';
-      request.userCan = async () => true;
-    });
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
+async function readPage(pageId: number) {
+  const result = await query<{
+    title: string;
+    body_html: string;
+    body_text: string;
+    version: number;
+    embedding_dirty: boolean;
+    image_analysis_dirty: boolean;
+  }>(
+    `SELECT title, body_html, body_text, version, embedding_dirty, image_analysis_dirty
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0]!;
+}
+
+async function apply(pageId: number, improvedMarkdown: string, extra: Record<string, unknown> = {}) {
+  return app.inject({
+    method: 'POST',
+    url: '/api/llm/improvements/apply',
+    payload: {
+      pageId: String(pageId),
+      improvedMarkdown,
+      version: 5,
+      title: 'My Article',
+      ...extra,
+    },
   });
+}
 
-  afterAll(async () => {
-    await app.close();
-  });
+async function expectUnchanged(pageId: number, bodyHtml: string): Promise<void> {
+  expect(await readPage(pageId)).toMatchObject({ body_html: bodyHtml, version: 5 });
+}
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  function captureUpdatedBodyHtml(): string {
-    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeDefined();
-    // standalone UPDATE params: [id, title, bodyHtml, bodyText, version, userId]
-    return (updateCall as unknown[])[1]![2] as string;
-  }
-
-  it('re-appends media the LLM dropped entirely (token missing from improved markdown)', async () => {
-    const img =
-      '<img src="/api/attachments/42/p$1$&x.png" data-confluence-filename="p.png" data-confluence-image-source="attachment" alt="Photo">';
-    const drawio =
-      '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/42/Arch.png"></div>';
-    const bodyHtmlWithMedia = `<p>Old intro</p>${img}${drawio}`;
-
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
-            source: 'standalone', confluence_id: null, body_html: bodyHtmlWithMedia,
-            // #734: the page-resolve query now returns ownership fields; the
-            // test user must own this private standalone page to write it.
-            created_by_user_id: 'user-123', visibility: 'private',
-          }],
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'POST /api/llm/improvements/apply — real persistence, admission, media, and layout conversion',
+  () => {
+    beforeAll(async () => {
+      await setupTestDb();
+      attachmentsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'compendiq-apply-media-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        vi.spyOn(instance, 'authenticate').mockImplementation(async (request) => {
+          if (!authenticated) throw instance.httpErrors.unauthorized('Missing or invalid token');
+          request.userId = userId;
+          request.userCan = async () => true;
         });
-      }
-      return Promise.resolve({ rows: [] });
+        await instance.register(llmConversationRoutes, { prefix: '/api' });
+      });
+    }, 30_000);
+
+    afterAll(async () => {
+      await app.close();
+      if (redis.isOpen) await redis.quit();
+      await fs.rm(attachmentsDir, { recursive: true, force: true });
+      if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
+      await teardownTestDb();
+      vi.restoreAllMocks();
     });
 
-    // The LLM returned plain markdown with NO placeholder tokens at all —
-    // i.e. it dropped every media token. The drop-guard must re-append both.
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: '42',
-        improvedMarkdown: '## Rewritten\n\nFresh prose, no media tokens.',
-        version: 5,
-        title: 'My Article',
-      },
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      await fs.rm(attachmentsDir, { recursive: true, force: true });
+      await fs.mkdir(attachmentsDir, { recursive: true });
+      authenticated = true;
+      userId = await insertUser(`apply-media-${randomUUID()}`);
+      await insertLocalSpace('LOCAL', userId);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    // Both media survived — the $-laden image must be byte-identical (no
-    // replacement-pattern corruption), and the draw.io wrapper preserved.
-    expect(savedHtml).toContain('/api/attachments/42/p$1$&amp;x.png');
-    expect(savedHtml).toContain('data-confluence-filename="p.png"');
-    expect(savedHtml).toContain('class="confluence-drawio"');
-    expect(savedHtml).toContain('data-diagram-name="Arch"');
-  });
+    it('requires authentication before applying protected content', async () => {
+      const original = '<p>Private body</p><img src="/api/attachments/1/private.png">';
+      const pageId = await seedPage(original);
+      authenticated = false;
 
-  it('restores in-place when the LLM kept the tokens (no double-append)', async () => {
-    const img = '<img src="/api/attachments/42/q.png" alt="Q">';
-    const bodyHtmlWithMedia = `<p>Old</p>${img}`;
+      const response = await apply(pageId, 'Stolen rewrite');
 
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
-            source: 'standalone', confluence_id: null, body_html: bodyHtmlWithMedia,
-            // #734: owner of the private standalone page (see test above).
-            created_by_user_id: 'user-123', visibility: 'private',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
+      expect(response.statusCode).toBe(401);
+      await expectUnchanged(pageId, original);
     });
 
-    // The LLM kept the placeholder token (markdown escapes the underscores).
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: '42',
-        improvedMarkdown: 'Improved intro\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n',
-        version: 5,
-        title: 'My Article',
-      },
+    it('runs the real collaboration admission guard before publication', async () => {
+      const original = '<p>Original body</p><img src="/api/attachments/1/guarded.png">';
+      const pageId = await seedPage(original);
+      await redis.sAdd(`collab:active:${pageId}`, 'live-session');
+
+      const response = await apply(pageId, 'Blocked rewrite');
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json<{ error: string }>().error).toMatch(/collaborative editing session/i);
+      await expectUnchanged(pageId, original);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    // Image present exactly once — restored in place, not also appended.
-    expect(savedHtml.split('/api/attachments/42/q.png').length - 1).toBe(1);
-  });
+    it('re-appends dropped image and draw.io markup, commits the accepted improvement, and invalidates real cached state', async () => {
+      const pageId = await seedPage('<p>temporary</p>');
+      const imageName = 'p$1$&x.png';
+      const pageDir = path.join(attachmentsDir, String(pageId));
+      await fs.mkdir(pageDir, { recursive: true });
+      await fs.writeFile(path.join(pageDir, imageName), Buffer.from('image-bytes'));
+      await fs.writeFile(path.join(pageDir, 'Arch.png'), Buffer.from('drawio-bytes'));
+      const image = `<img src="/api/attachments/${pageId}/${imageName}" data-confluence-filename="p.png" data-confluence-image-source="attachment" alt="Photo">`;
+      const drawio = `<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/${pageId}/Arch.png"></div>`;
+      const original = `<p>Old intro</p>${image}${drawio}`;
+      await query('UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1', [pageId, original, 'Old intro']);
+      const improvedMarkdown = '## Rewritten\n\nFresh prose, no media tokens.';
+      const improvement = await query<{ id: string }>(
+        `INSERT INTO llm_improvements
+           (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+         RETURNING id`,
+        [userId, pageId, improvedMarkdown],
+      );
+      const cacheKey = `kb:${userId}:pages:fixture`;
+      await redis.set(cacheKey, 'stale');
 
-  it('#1221: an expand section inside a table cell rides the freeze through apply', async () => {
-    // A constrained section cannot use boundary tokens (markdownToHtml's token
-    // normalization would rip it out of the cell), so it stays opaquely frozen
-    // and the #723 drop-guard is what preserves it when the model drops the
-    // placeholder entirely.
-    const expand =
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
-    const bodyHtmlWithExpand =
-      `<p>Old intro</p><table><tbody><tr><td>${expand}</td></tr></tbody></table>`;
+      const response = await apply(pageId, improvedMarkdown);
 
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
-            source: 'standalone', confluence_id: null, body_html: bodyHtmlWithExpand,
-            created_by_user_id: 'user-123', visibility: 'private',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ id: pageId, title: 'My Article', version: 6 });
+      const saved = await readPage(pageId);
+      expect(saved).toMatchObject({
+        version: 6,
+        embedding_dirty: true,
+        image_analysis_dirty: true,
+      });
+      expect(saved.body_html).toContain('Fresh prose, no media tokens.');
+      expect(saved.body_html).toContain(`/api/attachments/${pageId}/p$1$&amp;x.png`);
+      expect(saved.body_html).toContain('data-confluence-filename="p.png"');
+      expect(saved.body_html).toContain('class="confluence-drawio"');
+      expect(saved.body_html).toContain('data-diagram-name="Arch"');
+      expect(await fs.readFile(path.join(pageDir, imageName), 'utf8')).toBe('image-bytes');
+      expect(await fs.readFile(path.join(pageDir, 'Arch.png'), 'utf8')).toBe('drawio-bytes');
+      expect(await redis.get(cacheKey)).toBeNull();
+      expect((await query<{ status: string }>('SELECT status FROM llm_improvements WHERE id = $1', [improvement.rows[0]!.id])).rows[0]?.status)
+        .toBe('applied');
+      const audit = await query<{ metadata: { source?: string } }>(
+        `SELECT metadata FROM audit_log
+          WHERE user_id = $1 AND action = 'PAGE_UPDATED' AND resource_id = $2`,
+        [userId, String(pageId)],
+      );
+      expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
     });
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: {
-        pageId: '42',
-        improvedMarkdown: '## Rewritten\n\nFresh prose, no tokens at all.',
-        version: 5,
-        title: 'My Article',
-      },
+    it('restores a retained media token in place without appending a duplicate', async () => {
+      const pageId = await seedPage('<p>temporary</p>');
+      const original = `<p>Old</p><img src="/api/attachments/${pageId}/q.png" alt="Q">`;
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, original]);
+
+      const response = await apply(pageId, 'Improved intro\n\nCQ\\_MEDIA\\_PLACEHOLDER\\_0\n');
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved.body_html.split(`/api/attachments/${pageId}/q.png`).length - 1).toBe(1);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    // The whole section came back — identity stamp, summary and body — exactly
-    // once, and it is still a <details>, not flattened prose.
-    expect(savedHtml).toContain(expand);
-    expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
-  });
-});
+    it('keeps a constrained expand section in a table cell through the frozen-media path', async () => {
+      const expand = '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
+      const original = `<p>Old intro</p><table><tbody><tr><td>${expand}</td></tr></tbody></table>`;
+      const pageId = await seedPage(original);
 
-describe('POST /api/llm/improvements/apply — EXPAND boundary tokens (#1221 stage 2)', () => {
-  let app: ReturnType<typeof Fastify>;
+      const response = await apply(pageId, '## Rewritten\n\nFresh prose, no tokens at all.');
 
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'user-123';
-      request.userCan = async () => true;
-    });
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  function mockPageWith(bodyHtml: string): void {
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
-            source: 'standalone', confluence_id: null, body_html: bodyHtml,
-            created_by_user_id: 'user-123', visibility: 'private',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-  }
-
-  function findUpdateCall(): unknown[] | undefined {
-    return (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
-    );
-  }
-
-  function captureUpdatedBodyHtml(): string {
-    const updateCall = findUpdateCall();
-    expect(updateCall).toBeDefined();
-    return (updateCall as unknown[])[1]![2] as string;
-  }
-
-  async function apply(improvedMarkdown: string): Promise<Awaited<ReturnType<typeof app.inject>>> {
-    return app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
-    });
-  }
-
-  it('rewrites the body of an unconstrained expand while keeping the macro', async () => {
-    mockPageWith(
-      '<p>Old intro</p>' +
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
-    );
-
-    const response = await apply([
-      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
-      'Step one, rewritten far more clearly.', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('<details data-macro-name="expand">');
-    expect(savedHtml).toContain('<summary>Runbook</summary>');
-    // The body really was improved — this is the whole point of stage 2.
-    expect(savedHtml).toContain('Step one, rewritten far more clearly.');
-    expect(savedHtml).not.toContain('step one');
-    expect(savedHtml).not.toContain('[[[');
-    expect(savedHtml.split('<details').length - 1).toBe(1);
-  });
-
-  it('preserves ui-expand identity, open state and parameters through a full apply', async () => {
-    mockPageWith(
-      '<details data-macro-name="ui-expand" open data-macro-params="{&quot;class&quot;:&quot;team&quot;}">' +
-      '<summary>Dev Team</summary><p>owns platform services</p></details>',
-    );
-
-    const response = await apply([
-      '[[[EXPAND name=ui-expand open=1 title=Dev%20Team params=%7B%22class%22%3A%22team%22%7D]]]', '',
-      'Owns the platform services end to end.', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('data-macro-name="ui-expand"');
-    expect(savedHtml).not.toContain('data-macro-name="expand"');
-    expect(savedHtml).toContain('<summary>Dev Team</summary>');
-    expect(savedHtml).toMatch(/<details[^>]*\bopen\b/);
-    expect(savedHtml).toContain('data-macro-params="{&quot;class&quot;:&quot;team&quot;}"');
-    // The identity was preserved by REBUILDING the section around improved
-    // prose, not by re-appending a frozen copy beside it: the old body is gone
-    // and there is exactly one section.
-    expect(savedHtml).not.toContain('owns platform services');
-    expect(savedHtml.split('<details').length - 1).toBe(1);
-    const improvedAt = savedHtml.indexOf('Owns the platform services end to end.');
-    expect(improvedAt).toBeGreaterThan(savedHtml.indexOf('</summary>'));
-    expect(improvedAt).toBeLessThan(savedHtml.indexOf('</details>'));
-  });
-
-  it('rejects an unrecoverable EXPAND mangling with 422 instead of flattening the page', async () => {
-    // Two sections (so the single-slot wrap cannot disambiguate), every token
-    // dropped, and both bodies reworded so no anchor survives. This 422 is the
-    // property that makes stage 2 safe at all: without it, a mangled token
-    // would be the silent macro deletion #1221 exists to prevent.
-    mockPageWith(
-      '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
-      '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>',
-    );
-
-    const response = await apply(
-      'Abschnitt eins: voellig neu formuliert.\n\nAbschnitt zwei: ebenfalls neu formuliert.',
-    );
-
-    expect(response.statusCode).toBe(422);
-    expect(response.json().message).toContain('could not be recovered');
-    // Predictable failure: NO page write happened, so nothing flattened can be
-    // saved locally or pushed back to Confluence.
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  it('recovers a case-mangled EXPAND close token against the page skeleton', async () => {
-    mockPageWith(
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
-    );
-
-    const response = await apply([
-      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
-      'Step one, clarified.', '',
-      '[[[/expand]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('<details data-macro-name="expand">');
-    expect(savedHtml).toContain('<summary>Runbook</summary>');
-    expect(savedHtml).toContain('Step one, clarified.');
-    expect(savedHtml).not.toContain('[[[');
-  });
-
-  // --------------------------------------------------------------------
-  // Silent-deletion regressions found by adversarial review of #1232.
-  // Each one saved a page with the macro GONE at HTTP 200, and each is a
-  // regression against stage 1, where the blanket freeze made <details>
-  // immune. They are route-level on purpose: this is the path that writes
-  // the page and pushes it to Confluence.
-  // --------------------------------------------------------------------
-  it('keeps a real expand AND the literal token text when the page prose contains a token spelling', async () => {
-    // turndown escapes the prose to \[\[\[…\]\]\], so the markdown-side
-    // strict scan never sees it and #781 recovery passes. marked then
-    // UN-escapes it, and a rebuild that re-discovers tokens by regex counts
-    // three opens against one close, fails the balance check, and the
-    // all-or-nothing drop-guard strips every token — deleting the real
-    // section. The rebuild must consume the tokens recovery aligned, by
-    // identity, so prose that merely looks like a token is never structure.
-    mockPageWith(
-      '<p>We use [[[EXPAND name=expand open=0 title=Runbook params=]]] markers.</p>' +
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
-    );
-
-    const response = await apply([
-      'We use \\[\\[\\[EXPAND name=expand open=0 title=Runbook params=\\]\\]\\] markers.', '',
-      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
-      'real body, clarified', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('<details data-macro-name="expand">');
-    expect(savedHtml).toContain('<summary>Runbook</summary>');
-    expect(savedHtml).toContain('real body, clarified');
-    // The user's own sentence survives verbatim — not stripped, not structure.
-    expect(savedHtml).toContain('[[[EXPAND name=expand open=0 title=Runbook params=]]]');
-    expect(savedHtml.split('<details').length - 1).toBe(1);
-  });
-
-  it('never fabricates a macro from a balanced token pair written in ordinary prose', async () => {
-    mockPageWith('<p>Use [[[EXPAND name=expand]]] then [[[/EXPAND]]].</p>');
-
-    const response = await apply(
-      'Use \\[\\[\\[EXPAND name=expand\\]\\]\\] then \\[\\[\\[/EXPAND\\]\\]\\].',
-    );
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).not.toContain('<details');
-    expect(savedHtml).toContain('[[[EXPAND name=expand]]]');
-    expect(savedHtml).toContain('[[[/EXPAND]]]');
-  });
-
-  it('preserves an expand containing a bare column macro on a verbatim echo', async () => {
-    // COLUMN may only open inside a SECTION, so expand > column emits a
-    // sequence the rebuild rejects — strip-all, macro deleted, on a model
-    // echo with zero mangling. Confluence permits a Column directly in an
-    // expand body; the freeze has to cover it.
-    const bodyHtml =
-      '<details data-macro-name="expand"><summary>Runbook steps</summary>' +
-      '<div class="confluence-column"><p>col body</p></div></details>';
-    mockPageWith(bodyHtml);
-
-    const response = await apply(faithfulEcho(bodyHtml));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('data-macro-name="expand"');
-    expect(savedHtml).toContain('<summary>Runbook steps</summary>');
-    expect(savedHtml).toContain('confluence-column');
-    expect(savedHtml).toContain('col body');
-  });
-
-  it('preserves an expand sitting directly inside a layout wrapper on a verbatim echo', async () => {
-    // The mirror of the case above: EXPAND may not OPEN under LAYOUT, so the
-    // same strip-all deletes both the section and the layout div.
-    const bodyHtml =
-      '<div class="confluence-layout">' +
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>' +
-      '</div>';
-    mockPageWith(bodyHtml);
-
-    const response = await apply(faithfulEcho(bodyHtml));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('data-macro-name="expand"');
-    expect(savedHtml).toContain('<summary>Runbook</summary>');
-    expect(savedHtml).toContain('step one');
-  });
-
-  it('refuses rather than swallowing the page into the section when an EXPAND pair is dropped', async () => {
-    // An expand is a page FRAGMENT with sibling prose, not a partition of the
-    // document the way a layout cell is. #785's single-slot wrap assumes the
-    // latter, so a one-expand page had its heading and every surrounding
-    // paragraph moved INSIDE the collapsed section and pushed to Confluence.
-    mockPageWith(
-      '<h2>Deployment guide</h2><p>Intro paragraph outside the section.</p>' +
-      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>step one</p></details>' +
-      '<p>Closing paragraph outside the section.</p>',
-    );
-
-    const response = await apply([
-      '## Deployment guide', '',
-      'Intro paragraph outside the section.', '',
-      'Step one, rewritten.', '',
-      'Closing paragraph outside the section.',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(422);
-    expect(response.json().message).toContain('could not be recovered');
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  it('refuses rather than relocating between-section prose when a multi-expand page loses its tokens', async () => {
-    // The anchor-split path has the same false premise, and fires precisely
-    // when the model behaved well apart from the tokens: prose that sat
-    // BETWEEN two sections was pulled inside the preceding one.
-    mockPageWith(
-      '<p>Intro outside.</p>' +
-      '<details data-macro-name="expand"><summary>Q one</summary><p>Answer one body.</p></details>' +
-      '<p>Middle prose outside.</p>' +
-      '<details data-macro-name="expand"><summary>Q two</summary><p>Answer two body.</p></details>' +
-      '<p>Outro outside.</p>',
-    );
-
-    const response = await apply([
-      'Intro outside.', '',
-      'Answer one body.', '',
-      'Middle prose outside.', '',
-      'Answer two body.', '',
-      'Outro outside.',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(422);
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  // --------------------------------------------------------------------
-  // Round-2 review: alignment identity. Greedy alignment matched on kind
-  // alone and the reconstruction re-emitted skeleton[i], so WHICH section a
-  // title belonged to was decided by position. Both of these saved a page
-  // with a real macro carrying the wrong identity, at HTTP 200.
-  // --------------------------------------------------------------------
-  it('keeps each title with its own body when the model reorders two sections', async () => {
-    // Nothing mangled: every token is canonical and carries its own correct
-    // attrs. Position-based reconstruction pinned "Rollback runbook" onto the
-    // deploy body and vice versa. Unlike an anonymous layout cell, an expand's
-    // title is user-visible identity.
-    mockPageWith(
-      '<details data-macro-name="expand"><summary>Deployment steps</summary><p>deploy body</p></details>' +
-      '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>rollback body</p></details>',
-    );
-
-    const response = await apply([
-      '[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]', '',
-      'rollback body', '',
-      '[[[/EXPAND]]]', '',
-      '[[[EXPAND name=expand open=0 title=Deployment%20steps params=]]]', '',
-      'deploy body', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    // Each summary is immediately followed by ITS OWN body.
-    expect(savedHtml).toMatch(/<summary>Rollback runbook<\/summary>\s*<p>rollback body<\/p>/);
-    expect(savedHtml).toMatch(/<summary>Deployment steps<\/summary>\s*<p>deploy body<\/p>/);
-  });
-
-  it('refuses when an escape-stripped prose literal would anchor a section boundary', async () => {
-    // Models routinely drop backslash escapes when echoing. The strict-span
-    // scan is the entire provenance signal, so an unescaped prose literal
-    // becomes a real token and greedy alignment anchors the skeleton at the
-    // PROSE position — pulling the page's own sentence inside the collapsed
-    // section and ejecting the real body.
-    mockPageWith(
-      '<p>Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.</p>' +
-      '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
-    );
-
-    const response = await apply([
-      'Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.', '',
-      '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
-      'real body, clarified', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(422);
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  it('refuses when a surplus token would redistribute bodies across a multi-section page', async () => {
-    mockPageWith(
-      '<p>Syntax: [[[EXPAND name=expand open=0 title=One params=]]]</p>' +
-      '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
-      '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>',
-    );
-
-    const response = await apply([
-      'Syntax: [[[EXPAND name=expand open=0 title=One params=]]]', '',
-      '[[[EXPAND name=expand open=0 title=One params=]]]', '',
-      'alpha body', '',
-      '[[[/EXPAND]]]', '',
-      '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
-      'beta body', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(422);
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  it('refuses a model-invented wrapper pair rather than relocating real prose into a real section', async () => {
-    // Same family: a surplus pair the model made up. Stripping it as debris
-    // moved prose that belonged at top level inside the page's real section.
-    mockPageWith(
-      '<p>Intro outside.</p>' +
-      '<details data-macro-name="expand"><summary>Real</summary><p>real body</p></details>',
-    );
-
-    const response = await apply([
-      '[[[EXPAND name=expand open=0 title=Invented params=]]]', '',
-      'Intro outside.', '',
-      '[[[/EXPAND]]]', '',
-      '[[[EXPAND name=expand open=0 title=Real params=]]]', '',
-      'real body', '',
-      '[[[/EXPAND]]]',
-    ].join('\n'));
-
-    expect(response.statusCode).toBe(422);
-    expect(findUpdateCall()).toBeUndefined();
-  });
-
-  it('derives the layout skeleton from the PROTECTED html, so a frozen subtree stays invisible', async () => {
-    // llm-conversations.ts must pass protectedCurrentHtml, not body_html:
-    // the raw document still shows the section/column inside the frozen
-    // expand, and the extra skeleton entries rebuild a SECOND macro around
-    // the table. Nothing pinned the route's choice before.
-    const bodyHtml =
-      '<table><tbody><tr><td>' +
-      '<details data-macro-name="expand"><summary>In cell</summary>' +
-      '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
-      '</details></td></tr></tbody></table>';
-    mockPageWith(bodyHtml);
-
-    const response = await apply(faithfulEcho(bodyHtml));
-
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml.split('data-macro-name="expand"').length - 1).toBe(1);
-    expect(savedHtml.split('confluence-section').length - 1).toBe(1);
-    expect(savedHtml).toContain('<td>');
-  });
-});
-
-describe('POST /api/llm/improvements/apply — layout boundary tokens with REAL markdownToHtml (#765)', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'user-123';
-      request.userCan = async () => true;
-    });
-    await app.register(llmConversationRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const layoutBodyHtml =
-    '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal">' +
-    '<div class="confluence-layout-cell"><p>Left column content</p></div>' +
-    '<div class="confluence-layout-cell"><p>Right column content</p></div>' +
-    '</div></div>';
-
-  function mockPageWith(bodyHtml: string): void {
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 5, title: 'My Article', space_key: 'OPS',
-            source: 'standalone', confluence_id: null, body_html: bodyHtml,
-            created_by_user_id: 'user-123', visibility: 'private',
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-  }
-
-  function captureUpdatedBodyHtml(): string {
-    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeDefined();
-    return (updateCall as unknown[])[1]![2] as string;
-  }
-
-  it('rebuilds the layout when the LLM kept the boundary tokens and edited the prose', async () => {
-    mockPageWith(layoutBodyHtml);
-
-    const improvedMarkdown = [
-      '[[[LAYOUT]]]', '',
-      '[[[LAYOUT-SECTION two_equal]]]', '',
-      '[[[LAYOUT-CELL]]]', '',
-      'Left column content, improved by the model.', '',
-      '[[[/LAYOUT-CELL]]]', '',
-      '[[[LAYOUT-CELL]]]', '',
-      'Right column content stays.', '',
-      '[[[/LAYOUT-CELL]]]', '',
-      '[[[/LAYOUT-SECTION]]]', '',
-      '[[[/LAYOUT]]]',
-    ].join('\n');
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved.body_html).toContain(expand);
+      expect(saved.body_html.split('data-macro-name="expand"').length - 1).toBe(1);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).toContain('class="confluence-layout"');
-    expect(savedHtml).toContain('data-layout-type="two_equal"');
-    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
-    expect(savedHtml).toContain('Left column content, improved by the model.');
-    expect(savedHtml).not.toContain('[[[');
-  });
+    it('rewrites an unconstrained expand body while retaining the macro boundary', async () => {
+      const pageId = await seedPage(
+        '<p>Old intro</p><details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
+      );
+      const response = await apply(pageId, [
+        '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+        'Step one, rewritten far more clearly.', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
 
-  it('#781: mangled tokens are recovered against the page skeleton — layout survives (was silently flattened)', async () => {
-    mockPageWith(layoutBodyHtml);
-
-    // The LLM dropped one closing token and lower-cased another — the exact
-    // failure mode #781 reported from real local models.
-    const improvedMarkdown = [
-      '[[[LAYOUT]]]', '',
-      '[[[LAYOUT-SECTION two_equal]]]', '',
-      '[[[LAYOUT-CELL]]]', '',
-      'Left prose survives.', '',
-      '[[[/layout-cell]]]', '',
-      '[[[LAYOUT-CELL]]]', '',
-      'Right prose survives.', '',
-      '[[[/LAYOUT-SECTION]]]', '',
-      '[[[/LAYOUT]]]',
-    ].join('\n');
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = await readPage(pageId);
+      expect(saved.body_html).toContain('<details data-macro-name="expand">');
+      expect(saved.body_html).toContain('<summary>Runbook</summary>');
+      expect(saved.body_html).toContain('Step one, rewritten far more clearly.');
+      expect(saved.body_html).not.toContain('step one');
+      expect(saved.body_html).not.toContain('[[[');
+      expect(saved.body_html.split('<details').length - 1).toBe(1);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).not.toContain('[[[');
-    // The layout is rebuilt from the page's own skeleton, not flattened.
-    expect(savedHtml).toContain('class="confluence-layout"');
-    expect(savedHtml).toContain('data-layout-type="two_equal"');
-    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
-    expect(savedHtml).toContain('Left prose survives.');
-    expect(savedHtml).toContain('Right prose survives.');
-    expect((savedHtml.match(/<div/g) ?? []).length).toBe((savedHtml.match(/<\/div>/g) ?? []).length);
-  });
+    it('preserves ui-expand identity, open state, and parameters through publication', async () => {
+      const pageId = await seedPage(
+        '<details data-macro-name="ui-expand" open data-macro-params="{&quot;class&quot;:&quot;team&quot;}">' +
+        '<summary>Dev Team</summary><p>owns platform services</p></details>',
+      );
+      const response = await apply(pageId, [
+        '[[[EXPAND name=ui-expand open=1 title=Dev%20Team params=%7B%22class%22%3A%22team%22%7D]]]', '',
+        'Owns the platform services end to end.', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
 
-  it('#781: unrecoverable token loss rejects the apply with 422 — the page is NOT modified or pushed', async () => {
-    mockPageWith(layoutBodyHtml);
-
-    // The model rewrote the markers in German prose — nothing to align.
-    const improvedMarkdown = [
-      'Beginn des Seitenlayouts.', '',
-      'Linke Spalte: Left prose.', '',
-      'Rechte Spalte: Right prose.', '',
-      'Ende des Seitenlayouts.',
-    ].join('\n');
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('data-macro-name="ui-expand"');
+      expect(html).not.toContain('data-macro-name="expand"');
+      expect(html).toContain('<summary>Dev Team</summary>');
+      expect(html).toMatch(/<details[^>]*\bopen\b/);
+      expect(html).toContain('data-macro-params="{&quot;class&quot;:&quot;team&quot;}"');
+      expect(html).not.toContain('owns platform services');
+      expect(html.split('<details').length - 1).toBe(1);
+      expect(html.indexOf('Owns the platform services end to end.')).toBeGreaterThan(html.indexOf('</summary>'));
+      expect(html.indexOf('Owns the platform services end to end.')).toBeLessThan(html.indexOf('</details>'));
     });
 
-    expect(response.statusCode).toBe(422);
-    expect(response.json().message).toContain('columns or collapsible sections');
-    // Predictable failure: NO page write happened — flattened content can
-    // never be saved locally nor pushed back to Confluence.
-    const updateCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
-    );
-    expect(updateCall).toBeUndefined();
-  });
+    it('rejects unrecoverable multi-expand token loss without publishing partial content', async () => {
+      const original =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>';
+      const pageId = await seedPage(original);
 
-  it('#785: single-cell layout page applies even when the LLM dropped every token (unambiguous wrap recovery)', async () => {
-    mockPageWith(
-      '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
-      '<div class="confluence-layout-cell"><p>Full width content</p></div>' +
-      '</div></div>',
-    );
+      const response = await apply(pageId, 'Abschnitt eins: voellig neu formuliert.\n\nAbschnitt zwei: ebenfalls neu formuliert.');
 
-    // Token-free echo: with exactly ONE prose-bearing cell there is no
-    // ambiguity — the apply must succeed with the prose wrapped in the cell.
-    const improvedMarkdown = '## Improved heading\n\nFresh single-column prose, no tokens at all.';
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+      expect(response.statusCode).toBe(422);
+      expect(response.json<{ error: string }>().error).toContain('could not be recovered');
+      await expectUnchanged(pageId, original);
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).not.toContain('[[[');
-    expect(savedHtml).toContain('data-layout-type="single"');
-    expect((savedHtml.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(1);
-    // The prose landed INSIDE the cell (before the layout's closing divs),
-    // not at top level after an empty rebuilt layout.
-    const proseIdx = savedHtml.indexOf('Fresh single-column prose');
-    expect(proseIdx).toBeGreaterThan(savedHtml.indexOf('confluence-layout-cell'));
-    expect(savedHtml.lastIndexOf('</div>')).toBeGreaterThan(proseIdx);
-  });
+    it('recovers a case-mangled EXPAND close token against the persisted skeleton', async () => {
+      const pageId = await seedPage(
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>',
+      );
+      const response = await apply(pageId, [
+        '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+        'Step one, clarified.', '',
+        '[[[/expand]]]',
+      ].join('\n'));
 
-  it('#781: hallucinated layout tokens on a layout-free page are stripped, never built', async () => {
-    mockPageWith('<h1>Plain page</h1><p>No layout here.</p>');
-
-    const improvedMarkdown = [
-      '[[[LAYOUT]]]', '',
-      '[[[LAYOUT-SECTION two_equal]]]', '',
-      '[[[LAYOUT-CELL]]]', '',
-      'Hallucinated structure around real prose.', '',
-      '[[[/LAYOUT-CELL]]]', '',
-      '[[[/LAYOUT-SECTION]]]', '',
-      '[[[/LAYOUT]]]',
-    ].join('\n');
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/improvements/apply',
-      payload: { pageId: '42', improvedMarkdown, version: 5, title: 'My Article' },
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('<details data-macro-name="expand">');
+      expect(html).toContain('<summary>Runbook</summary>');
+      expect(html).toContain('Step one, clarified.');
+      expect(html).not.toContain('[[[');
     });
 
-    expect(response.statusCode).toBe(200);
-    const savedHtml = captureUpdatedBodyHtml();
-    expect(savedHtml).not.toContain('[[[');
-    expect(savedHtml).not.toContain('confluence-layout');
-    expect(savedHtml).toContain('Hallucinated structure around real prose.');
-  });
-});
+    it('keeps a real expand and literal token-looking prose as separate content', async () => {
+      const pageId = await seedPage(
+        '<p>We use [[[EXPAND name=expand open=0 title=Runbook params=]]] markers.</p>' +
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>',
+      );
+      const response = await apply(pageId, [
+        'We use \\[\\[\\[EXPAND name=expand open=0 title=Runbook params=\\]\\]\\] markers.', '',
+        '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+        'real body, clarified', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('<details data-macro-name="expand">');
+      expect(html).toContain('real body, clarified');
+      expect(html).toContain('[[[EXPAND name=expand open=0 title=Runbook params=]]]');
+      expect(html.split('<details').length - 1).toBe(1);
+    });
+
+    it('never fabricates a macro from a balanced token pair that was ordinary prose', async () => {
+      const pageId = await seedPage('<p>Use [[[EXPAND name=expand]]] then [[[/EXPAND]]].</p>');
+
+      const response = await apply(
+        pageId,
+        'Use \\[\\[\\[EXPAND name=expand\\]\\]\\] then \\[\\[\\[/EXPAND\\]\\]\\].',
+      );
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).not.toContain('<details');
+      expect(html).toContain('[[[EXPAND name=expand]]]');
+      expect(html).toContain('[[[/EXPAND]]]');
+    });
+
+    it('preserves an expand containing a bare column on a faithful round trip', async () => {
+      const original =
+        '<details data-macro-name="expand"><summary>Runbook steps</summary>' +
+        '<div class="confluence-column"><p>col body</p></div></details>';
+      const pageId = await seedPage(original);
+
+      const response = await apply(pageId, faithfulEcho(original));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('data-macro-name="expand"');
+      expect(html).toContain('<summary>Runbook steps</summary>');
+      expect(html).toContain('confluence-column');
+      expect(html).toContain('col body');
+    });
+
+    it('preserves an expand directly inside a layout wrapper on a faithful round trip', async () => {
+      const original =
+        '<div class="confluence-layout">' +
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>' +
+        '</div>';
+      const pageId = await seedPage(original);
+
+      const response = await apply(pageId, faithfulEcho(original));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('data-macro-name="expand"');
+      expect(html).toContain('<summary>Runbook</summary>');
+      expect(html).toContain('step one');
+    });
+
+    it('refuses rather than swallowing surrounding prose when an EXPAND pair is dropped', async () => {
+      const original =
+        '<h2>Deployment guide</h2><p>Intro paragraph outside the section.</p>' +
+        '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>step one</p></details>' +
+        '<p>Closing paragraph outside the section.</p>';
+      const pageId = await seedPage(original);
+      const response = await apply(pageId, [
+        '## Deployment guide', '',
+        'Intro paragraph outside the section.', '',
+        'Step one, rewritten.', '',
+        'Closing paragraph outside the section.',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      await expectUnchanged(pageId, original);
+    });
+
+    it('refuses rather than relocating prose between sections when all tokens disappear', async () => {
+      const original =
+        '<p>Intro outside.</p>' +
+        '<details data-macro-name="expand"><summary>Q one</summary><p>Answer one body.</p></details>' +
+        '<p>Middle prose outside.</p>' +
+        '<details data-macro-name="expand"><summary>Q two</summary><p>Answer two body.</p></details>' +
+        '<p>Outro outside.</p>';
+      const pageId = await seedPage(original);
+      const response = await apply(pageId, [
+        'Intro outside.', '',
+        'Answer one body.', '',
+        'Middle prose outside.', '',
+        'Answer two body.', '',
+        'Outro outside.',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      await expectUnchanged(pageId, original);
+    });
+
+    it('keeps each expand title with its own body when the model reorders sections', async () => {
+      const pageId = await seedPage(
+        '<details data-macro-name="expand"><summary>Deployment steps</summary><p>deploy body</p></details>' +
+        '<details data-macro-name="expand"><summary>Rollback runbook</summary><p>rollback body</p></details>',
+      );
+      const response = await apply(pageId, [
+        '[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]', '',
+        'rollback body', '',
+        '[[[/EXPAND]]]', '',
+        '[[[EXPAND name=expand open=0 title=Deployment%20steps params=]]]', '',
+        'deploy body', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toMatch(/<summary>Rollback runbook<\/summary>\s*<p>rollback body<\/p>/);
+      expect(html).toMatch(/<summary>Deployment steps<\/summary>\s*<p>deploy body<\/p>/);
+    });
+
+    it('refuses when escape-stripped prose would falsely anchor an expand boundary', async () => {
+      const original =
+        '<p>Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.</p>' +
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>real body</p></details>';
+      const pageId = await seedPage(original);
+      const response = await apply(pageId, [
+        'Use [[[EXPAND name=expand open=0 title=Runbook params=]]] to open.', '',
+        '[[[EXPAND name=expand open=0 title=Runbook params=]]]', '',
+        'real body, clarified', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      await expectUnchanged(pageId, original);
+    });
+
+    it('refuses surplus tokens that could redistribute bodies across sections', async () => {
+      const original =
+        '<p>Syntax: [[[EXPAND name=expand open=0 title=One params=]]]</p>' +
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha body</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta body</p></details>';
+      const pageId = await seedPage(original);
+      const response = await apply(pageId, [
+        'Syntax: [[[EXPAND name=expand open=0 title=One params=]]]', '',
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha body', '',
+        '[[[/EXPAND]]]', '',
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta body', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      await expectUnchanged(pageId, original);
+    });
+
+    it('refuses a model-invented wrapper instead of relocating real top-level prose', async () => {
+      const original =
+        '<p>Intro outside.</p>' +
+        '<details data-macro-name="expand"><summary>Real</summary><p>real body</p></details>';
+      const pageId = await seedPage(original);
+      const response = await apply(pageId, [
+        '[[[EXPAND name=expand open=0 title=Invented params=]]]', '',
+        'Intro outside.', '',
+        '[[[/EXPAND]]]', '',
+        '[[[EXPAND name=expand open=0 title=Real params=]]]', '',
+        'real body', '',
+        '[[[/EXPAND]]]',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      await expectUnchanged(pageId, original);
+    });
+
+    it('derives the skeleton from protected HTML so a frozen subtree is not rebuilt twice', async () => {
+      const original =
+        '<table><tbody><tr><td>' +
+        '<details data-macro-name="expand"><summary>In cell</summary>' +
+        '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div>' +
+        '</details></td></tr></tbody></table>';
+      const pageId = await seedPage(original);
+
+      const response = await apply(pageId, faithfulEcho(original));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html.split('data-macro-name="expand"').length - 1).toBe(1);
+      expect(html.split('confluence-section').length - 1).toBe(1);
+      expect(html).toContain('<td>');
+    });
+
+    const layoutBodyHtml =
+      '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal">' +
+      '<div class="confluence-layout-cell"><p>Left column content</p></div>' +
+      '<div class="confluence-layout-cell"><p>Right column content</p></div>' +
+      '</div></div>';
+
+    it('rebuilds a two-column layout when boundary tokens are retained', async () => {
+      const pageId = await seedPage(layoutBodyHtml);
+      const response = await apply(pageId, [
+        '[[[LAYOUT]]]', '',
+        '[[[LAYOUT-SECTION two_equal]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Left column content, improved by the model.', '',
+        '[[[/LAYOUT-CELL]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Right column content stays.', '',
+        '[[[/LAYOUT-CELL]]]', '',
+        '[[[/LAYOUT-SECTION]]]', '',
+        '[[[/LAYOUT]]]',
+      ].join('\n'));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).toContain('class="confluence-layout"');
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+      expect(html).toContain('Left column content, improved by the model.');
+      expect(html).not.toContain('[[[');
+    });
+
+    it('recovers a dropped and case-mangled layout boundary against the persisted skeleton', async () => {
+      const pageId = await seedPage(layoutBodyHtml);
+      const response = await apply(pageId, [
+        '[[[LAYOUT]]]', '',
+        '[[[LAYOUT-SECTION two_equal]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Left prose survives.', '',
+        '[[[/layout-cell]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Right prose survives.', '',
+        '[[[/LAYOUT-SECTION]]]', '',
+        '[[[/LAYOUT]]]',
+      ].join('\n'));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).not.toContain('[[[');
+      expect(html).toContain('class="confluence-layout"');
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
+      expect(html).toContain('Left prose survives.');
+      expect(html).toContain('Right prose survives.');
+      expect((html.match(/<div/g) ?? []).length).toBe((html.match(/<\/div>/g) ?? []).length);
+    });
+
+    it('rejects unrecoverable column loss and leaves the persisted page unchanged', async () => {
+      const pageId = await seedPage(layoutBodyHtml);
+      const response = await apply(pageId, [
+        'Beginn des Seitenlayouts.', '',
+        'Linke Spalte: Left prose.', '',
+        'Rechte Spalte: Right prose.', '',
+        'Ende des Seitenlayouts.',
+      ].join('\n'));
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json<{ error: string }>().error).toContain('columns or collapsible sections');
+      await expectUnchanged(pageId, layoutBodyHtml);
+    });
+
+    it('wraps token-free prose in an unambiguous single-cell layout', async () => {
+      const original =
+        '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+        '<div class="confluence-layout-cell"><p>Full width content</p></div>' +
+        '</div></div>';
+      const pageId = await seedPage(original);
+
+      const response = await apply(pageId, '## Improved heading\n\nFresh single-column prose, no tokens at all.');
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).not.toContain('[[[');
+      expect(html).toContain('data-layout-type="single"');
+      expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(1);
+      const proseIndex = html.indexOf('Fresh single-column prose');
+      expect(proseIndex).toBeGreaterThan(html.indexOf('confluence-layout-cell'));
+      expect(html.lastIndexOf('</div>')).toBeGreaterThan(proseIndex);
+    });
+
+    it('strips hallucinated layout tokens from a layout-free page instead of building structure', async () => {
+      const pageId = await seedPage('<h1>Plain page</h1><p>No layout here.</p>');
+      const response = await apply(pageId, [
+        '[[[LAYOUT]]]', '',
+        '[[[LAYOUT-SECTION two_equal]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Hallucinated structure around real prose.', '',
+        '[[[/LAYOUT-CELL]]]', '',
+        '[[[/LAYOUT-SECTION]]]', '',
+        '[[[/LAYOUT]]]',
+      ].join('\n'));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const html = (await readPage(pageId)).body_html;
+      expect(html).not.toContain('[[[');
+      expect(html).not.toContain('confluence-layout');
+      expect(html).toContain('Hallucinated structure around real prose.');
+    });
+  },
+);

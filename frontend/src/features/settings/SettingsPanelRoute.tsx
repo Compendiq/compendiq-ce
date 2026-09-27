@@ -33,6 +33,7 @@ const ComplianceWrapper = lazy(() => import('./wrappers/ComplianceWrapper').then
 const IntegrationsWrapper = lazy(() => import('./wrappers/IntegrationsWrapper').then((m) => ({ default: m.IntegrationsWrapper })));
 const DiagnosticsWrapper = lazy(() => import('./wrappers/DiagnosticsWrapper').then((m) => ({ default: m.DiagnosticsWrapper })));
 const BackupTab = lazy(() => import('./panels/BackupTab').then((m) => ({ default: m.BackupTab })));
+const ArticleBaselinesTab = lazy(() => import('../admin/ArticleBaselinesTab').then((m) => ({ default: m.ArticleBaselinesTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
 
@@ -85,6 +86,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   // Governance
   'governance/access': () => <AccessControlWrapper />,
   'governance/compliance': () => <ComplianceWrapper />,
+  'governance/baselines': () => <ArticleBaselinesTab />,
 
   // System
   'system/integrations': () => <IntegrationsWrapper />,

@@ -5,6 +5,8 @@ export * from './schemas/settings.js';
 export * from './schemas/pages.js';
 export * from './schemas/page-icon.js';
 export * from './schemas/page-versions.js';
+export * from './schemas/page-baselines.js';
+export * from './schemas/page-write-recovery.js';
 export * from './schemas/spaces.js';
 export * from './schemas/llm.js';
 export * from './schemas/client-assets.js';

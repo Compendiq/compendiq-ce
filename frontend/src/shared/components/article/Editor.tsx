@@ -822,6 +822,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
    * Returns true if an image was handled, false to let TipTap process normally.
    */
   const handleImageFiles = useCallback((files: File[]): boolean => {
+    const targetEditor = editorRef.current;
+    if (!targetEditor?.isEditable) return true;
     const imageFile = files.find((f) => f.type.startsWith('image/'));
     if (!imageFile) return false;
 
@@ -832,8 +834,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     }
 
     uploadPastedImage(imageFile, currentPageId).then((url) => {
-      if (url && editorRef.current) {
-        editorRef.current.chain().focus().setImage({ src: url }).run();
+      const current = editorRef.current;
+      if (
+        url && current === targetEditor && !current.isDestroyed &&
+        current.isEditable && pageIdRef.current === currentPageId
+      ) {
+        // An upload may outlive the editor session that started it. Insert
+        // only into that same still-writable session; a retired lifecycle or
+        // page switch must never receive the delayed result.
+        current.chain().focus().setImage({ src: url }).run();
       }
     });
 
@@ -904,7 +913,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       InlineCompletionExtension.configure({
         enabled: () => {
           const config = inlineCompletionRef.current;
-          if (!editable || !config?.enabled) return false;
+          if (editorRef.current?.isEditable !== true || !config?.enabled) return false;
           return getClientInferenceManager().decideGhostAvailability(
             !!config.available,
             config.clientInferenceWithoutServer ?? true,
@@ -983,6 +992,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       // #1135 — triple-click selects the whole cell, not one paragraph.
       handleTripleClick: handleTableCellTripleClick,
       handlePaste(_view, event) {
+        if (!_view.editable) {
+          event.preventDefault();
+          return true;
+        }
         const items = Array.from(event.clipboardData?.items ?? []);
         const imageItem = items.find((i) => i.type.startsWith('image/'));
         if (imageItem) {
@@ -1017,7 +1030,18 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         const importToastId = toast.loading('Importing pasted images…');
         rewriteHtmlImageSrcs(htmlPayload, currentPageId)
           .then(({ html, imported, failed, total }) => {
-            editorInstance.chain().focus().insertContent(html).run();
+            const current = editorRef.current;
+            if (
+              current !== editorInstance || current.isDestroyed ||
+              !current.isEditable || pageIdRef.current !== currentPageId
+            ) {
+              // The network work is complete, but its destination was frozen,
+              // retired or replaced while it was in flight. Do not replay the
+              // old session's clipboard payload into the surviving editor.
+              toast.dismiss(importToastId);
+              return;
+            }
+            current.chain().focus().insertContent(html).run();
             if (total === 0) {
               toast.dismiss(importToastId);
               return;
@@ -1036,6 +1060,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         return true;
       },
       handleDrop(_view, event, _slice, moved) {
+        if (!_view.editable) {
+          event.preventDefault();
+          return true;
+        }
         // Only handle external drops (not internal drag-and-drop of existing content)
         if (moved) return false;
         const files = Array.from(event.dataTransfer?.files ?? []);
@@ -1061,6 +1089,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   // Keep the editor ref in sync
   editorRef.current = editor;
+
+  useEffect(() => {
+    if (editor && !editor.isDestroyed && editor.isEditable !== editable) {
+      editor.setEditable(editable, false);
+    }
+  }, [editor, editable]);
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
@@ -1089,7 +1123,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           className="px-3 py-2 text-xs leading-5 text-muted-foreground"
           data-testid="collab-readonly-banner"
         >
-          You&apos;re following this session as read-only.
+          This document is read-only. Its contents remain available to copy.
         </p>
       )}
       {editable && editor && !hideToolbar && (

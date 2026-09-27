@@ -191,6 +191,29 @@ describe('ConfluenceClient version methods (#722)', () => {
     expect(await client.getHistoricalPageBody('123', 2)).toBe('<p>old</p>');
   });
 
+  it('getHistoricalPage reads the exact version with title and storage for recovery', async () => {
+    mockRequest.mockResolvedValueOnce(jsonResponse({
+      id: '123',
+      type: 'page',
+      status: 'historical',
+      title: 'Recovered title',
+      version: { number: 6, when: '2026-01-06T00:00:00Z' },
+      body: { storage: { value: '<p>recovered</p>' } },
+    }) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    const page = await client.getHistoricalPage('123', 6);
+
+    expect(page).toMatchObject({
+      title: 'Recovered title',
+      version: { number: 6 },
+      body: { storage: { value: '<p>recovered</p>' } },
+    });
+    expect(calledUrl(0)).toContain(
+      '/rest/api/content/123?status=historical&version=6&expand=body.storage,version',
+    );
+  });
+
   it('getHistoricalPageBody returns empty string when body is absent', async () => {
     mockRequest.mockResolvedValueOnce(jsonResponse({}) as never);
 

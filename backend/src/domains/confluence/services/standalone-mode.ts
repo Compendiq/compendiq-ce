@@ -24,7 +24,7 @@
  * have no local equivalent. They refuse with `CONFLUENCE_DISABLED_MESSAGE`,
  * naming the integration being off rather than asking for a PAT.
  */
-import { isConfluenceEnabled } from './sync-service.js';
+import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
 
 /**
  * Refusal for a Confluence-only operation while the integration is off.

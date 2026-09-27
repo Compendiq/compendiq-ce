@@ -1,1418 +1,597 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { FastifyInstance } from 'fastify';
+import type * as Undici from 'undici';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>content</p>');
+const mockUndiciRequest = vi.hoisted(() => vi.fn());
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof Undici>()),
+  request: mockUndiciRequest,
+}));
 
-// Mock external dependencies
-// Shared spies so tests can assert which invalidation path a route took (#893).
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
-vi.mock('../../core/services/redis-cache.js', () => {
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
+
+const available = await isDbAvailable() && await isRedisAvailable();
+
+function httpResponse(statusCode: number, body: unknown = '') {
+  const text = typeof body === 'string' ? body : JSON.stringify(body);
   return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-      // Bulk deletes clear every user's cache (#893).
-      invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-    },
+    statusCode,
+    headers: {},
+    body: { text: vi.fn().mockResolvedValue(text) },
   };
-});
+}
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue({
-    deletePage: vi.fn().mockResolvedValue(undefined),
-    getPage: vi.fn().mockResolvedValue({
-      id: 'page-1',
-      title: 'Updated Title',
-      body: { storage: { value: '<p>new content</p>' } },
-      version: { number: 2 },
-    }),
-    addLabels: vi.fn().mockResolvedValue(undefined),
-    removeLabel: vi.fn().mockResolvedValue(undefined),
-  }),
-}));
+async function rowForPage(id: number): Promise<{
+  deleted_at: Date | null;
+  labels: string[];
+  title: string;
+  body_html: string;
+  image_analysis_dirty: boolean;
+  embedding_dirty: boolean;
+} | undefined> {
+  return (
+    await query<{
+      deleted_at: Date | null;
+      labels: string[];
+      title: string;
+      body_html: string;
+      image_analysis_dirty: boolean;
+      embedding_dirty: boolean;
+    }>(
+      `SELECT deleted_at, labels, title, body_html, image_analysis_dirty, embedding_dirty
+         FROM pages WHERE id = $1`,
+      [id],
+    )
+  ).rows[0];
+}
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-// #1349: the icon store is keyed by `pages.id`, so the bulk hard delete runs
-// a SECOND pass over the numeric ids beside the `confluence_id`-keyed
-// attachment cleanup above. Mocked here so the cell below can see it — the
-// real module writes to `ATTACHMENTS_DIR`.
-// Only the one function is replaced: `attachment-store.ts` imports
-// `PAGE_ICON_STORE_DIRNAME` from this module to build its reserved-name set,
-// and a whole-module stand-in leaves that `undefined`.
-vi.mock('../../core/services/page-icon-store.js', async () => {
-  const actual = await vi.importActual<typeof import('../../core/services/page-icon-store.js')>(
-    '../../core/services/page-icon-store.js',
+async function auditMetadata(action: string): Promise<Record<string, unknown>[]> {
+  const result = await query<{ metadata: Record<string, unknown> }>(
+    'SELECT metadata FROM audit_log WHERE action = $1 ORDER BY created_at, id',
+    [action],
   );
-  return { ...actual, discardPageIconForDeletedPage: vi.fn().mockResolvedValue(undefined) };
-});
+  return result.rows.map((row) => row.metadata);
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+async function assignSpace(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ($1, 'Bulk test editor', ARRAY['read', 'comment', 'edit', 'delete'])
+     RETURNING id`,
+    [`bulk-editor-${randomUUID()}`],
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
 
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
+async function seedConfluencePage(
+  confluenceId: string,
+  title: string,
+  labels: string[] = [],
+): Promise<number> {
+  const id = await insertConfluencePage(confluenceId, title, 'CONF');
+  await query(
+    `UPDATE pages
+        SET labels = $2, body_html = '<p>old</p>', body_storage = '<p>old</p>',
+            body_text = 'old', version = 1, image_analysis_dirty = FALSE
+      WHERE id = $1`,
+    [id, labels],
+  );
+  return id;
+}
 
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
-const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
-// A factory mock REPLACES the module, so every import the routes reach for has
-// to appear here. `assertShadowRollbackWindowClear` (#1116) is called at the top
-// of POST /pages/bulk/embed; when it was missing from this list the route threw
-// "not a function" and 19 cells in this file failed with a bare 500 — the guard
-// itself was fine.
-const mockAssertShadowRollbackWindowClear = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
-  isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-  assertShadowRollbackWindowClear: (...args: unknown[]) =>
-    mockAssertShadowRollbackWindowClear(...args),
-}));
-
-const mockTriggerQualityBatch = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({
-  triggerQualityBatch: (...args: unknown[]) => mockTriggerQualityBatch(...args),
-}));
-
-// Mock the database with a function we can control per test
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockQueryFn = vi.fn();
-// Transaction client returned by getPool().connect() — since #766 the bulk
-// delete route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn();
-const mockTxRelease = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: () =>
-      Promise.resolve({
-        query: (...args: unknown[]) => mockTxQueryFn(...args),
-        release: (...args: unknown[]) => mockTxRelease(...args),
-      }),
-  }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
-import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
-import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-
-describe('Bulk Pages Routes (Parallelized)', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
+  let actorId: string;
+  let otherUserId: string;
+  let attachmentsDir: string;
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    // Match production error handler for Zod validation errors
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    vi.stubEnv('PAT_ENCRYPTION_KEY', 'bulk-pages-test-encryption-key-at-least-32-bytes');
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'bulk-pages-real-'));
+    vi.stubEnv('ATTACHMENTS_DIR', attachmentsDir);
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
     });
-
-    // Decorate with mock auth and redis
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => actorId, async (instance) => {
+      instance.redis = redis;
+      // Attachment modules capture ATTACHMENTS_DIR at import time; defer this
+      // known route module until the suite's filesystem sandbox exists.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    mockConfluenceToHtml.mockReturnValue('<p>content</p>');
-    // #1636: `findSubtreeKeyAmbiguity` runs before the standalone cascade, and
-    // ZERO rows is what "this subtree is safe to act on" looks like. It is
-    // answered on its own rather than by the catch-all below, because a row
-    // there is a 409 and the bulk delete never runs at all.
-    mockQueryFn.mockImplementation((sql: unknown) => {
-      if (typeof sql === 'string' && /conflicting_page_id/.test(sql)) {
-        return Promise.resolve({ rows: [], rowCount: 0 });
+    await truncateAllTables();
+    await redis.flushDb();
+    actorId = await insertUser(`bulk-actor-${randomUUID()}`);
+    otherUserId = await insertUser(`bulk-other-${randomUUID()}`);
+    await insertLocalSpace('LOCAL', actorId);
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('CONF', 'Confluence', 'confluence', NOW())`,
+    );
+    await assignSpace(actorId, 'CONF');
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+       VALUES ($1, 'https://confluence.example.com', $2, TRUE)`,
+      [actorId, encryptPat('bulk-test-pat')],
+    );
+    mockUndiciRequest.mockImplementation(async (url: string, options?: { method?: string }) => {
+      const method = options?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/rest/api/content/')) {
+        const encodedId = url.match(/\/rest\/api\/content\/([^?]+)/)?.[1] ?? 'unknown';
+        const id = decodeURIComponent(encodedId);
+        return httpResponse(200, {
+          id,
+          title: `Remote ${id}`,
+          status: 'current',
+          type: 'page',
+          version: { number: 7, when: '2026-09-19T00:00:00.000Z' },
+          body: { storage: { value: `<p>Remote ${id}</p>` } },
+          ancestors: [],
+          metadata: { labels: { results: [] } },
+        });
       }
-      // Default: batch ownership query returns both pages
-      // Note: confluence_id matches the IDs sent by delete/sync tests ('page-1', 'page-2')
-      // Tag tests override this default with their own mocks using integer PKs
-      return Promise.resolve({
-        rows: [
-          { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: ['existing-tag'] },
-          { id: 2, confluence_id: 'page-2', space_key: 'ENG', source: 'confluence', labels: ['existing-tag'] },
-        ],
-        rowCount: 2,
-      });
+      return httpResponse(method === 'DELETE' ? 204 : 200, method === 'DELETE' ? '' : {});
     });
-    // `DELETE FROM pages … RETURNING id` answers with the rows it actually
-    // destroyed, and since #1349 fixer r1 the icon pass keys off exactly that
-    // — so the stub has to model the RETURNING, not hand back an empty set.
-    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
-      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
-        const ids = (params?.[0] as number[] | undefined) ?? [];
-        return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
+  });
+
+  it('validates that a bulk selection is non-empty and uses exactly one selection mode', async () => {
+    const empty = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: [] },
+    });
+    expect(empty.statusCode).toBe(400);
+
+    const mixed = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: {
+        ids: ['1'],
+        filter: { spaceKey: 'CONF' },
+        expectedCount: 1,
+        tags: ['x'],
+      },
+    });
+    expect(mixed.statusCode).toBe(400);
+  });
+
+  it('deletes authorized mixed-source rows, rejects a non-owner, reports missing IDs, and invalidates every user cache', async () => {
+    const owned = await insertStandalonePage('Owned', 'private', actorId, 'LOCAL');
+    const notOwned = await insertStandalonePage('Shared by another user', 'shared', otherUserId, 'LOCAL');
+    const synced = await seedConfluencePage('conf-delete', 'Synced');
+    await redis.set('kb:alice:pages:list', 'stale');
+    await redis.set('kb:bob:spaces:list', 'stale');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: [String(owned), String(notOwned), 'conf-delete', 'missing'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 2, failed: 2 });
+    expect(response.json().errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('not the owner'),
+      expect.stringContaining('missing'),
+    ]));
+    expect((await rowForPage(owned))?.deleted_at).toBeInstanceOf(Date);
+    expect((await rowForPage(notOwned))?.deleted_at).toBeNull();
+    expect(await rowForPage(synced)).toBeUndefined();
+    expect(await redis.exists('kb:alice:pages:list')).toBe(0);
+    expect(await redis.exists('kb:bob:spaces:list')).toBe(0);
+
+    const audits = await auditMetadata('PAGE_DELETED');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ affectedCount: 3, succeeded: 2, failed: 2 });
+  });
+
+  it('keeps independently failed Confluence deletes recoverable while successful components finish', async () => {
+    const goodId = await seedConfluencePage('delete-good', 'Good');
+    const badId = await seedConfluencePage('delete-bad', 'Bad');
+    mockUndiciRequest.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if ((options?.method ?? 'GET') === 'DELETE' && url.endsWith('/delete-bad')) {
+        return httpResponse(400, { message: 'remote policy denied deletion' });
       }
-      return Promise.resolve({ rows: [], rowCount: 0 });
+      return httpResponse(204);
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: ['delete-good', 'delete-bad'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
+    expect(response.json().errors[0]).toContain('remote policy denied deletion');
+    expect(await rowForPage(goodId)).toBeUndefined();
+    expect((await rowForPage(badId))?.deleted_at).toBeInstanceOf(Date);
+    const unresolved = await query<{ page_id: number }>(
+      `SELECT unnest(page_ids) AS page_id
+         FROM page_write_intents
+        WHERE settled_at IS NULL`,
+    );
+    expect(unresolved.rows.map((row) => row.page_id)).toContain(badId);
+  });
+
+  it('treats an upstream 404 as an already-completed delete and reports missing credentials per page', async () => {
+    const alreadyGone = await seedConfluencePage('already-gone', 'Already gone');
+    mockUndiciRequest.mockResolvedValueOnce(httpResponse(404, { message: 'missing' }));
+
+    const removed = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: ['already-gone'] },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ succeeded: 1, failed: 0 });
+    expect(await rowForPage(alreadyGone)).toBeUndefined();
+
+    const unconfigured = await seedConfluencePage('no-client', 'No client');
+    await query(
+      'UPDATE user_settings SET confluence_url = NULL, confluence_pat = NULL WHERE user_id = $1',
+      [actorId],
+    );
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: ['no-client'] },
+    });
+    expect(refused.statusCode).toBe(200);
+    expect(refused.json()).toMatchObject({ succeeded: 0, failed: 1 });
+    expect(refused.json().errors[0]).toContain('Confluence not configured');
+    expect((await rowForPage(unconfigured))?.deleted_at).toBeNull();
+  });
+
+  it('deletes Confluence-sourced rows only locally when integration is disabled', async () => {
+    const pageId = await seedConfluencePage('local-only-delete', 'Local only');
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [actorId]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: ['local-only-delete'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
+    expect(await rowForPage(pageId)).toBeUndefined();
+    expect(mockUndiciRequest).not.toHaveBeenCalled();
+  });
+
+  it('re-syncs authorized rows independently and persists the successful remote representation', async () => {
+    const goodId = await seedConfluencePage('sync-good', 'Old good');
+    const badId = await seedConfluencePage('sync-bad', 'Old bad');
+    mockUndiciRequest.mockImplementation(async (url: string) => {
+      if (url.includes('/sync-bad?')) return httpResponse(400, { message: 'unreadable upstream page' });
+      return httpResponse(200, {
+        id: 'sync-good',
+        title: 'Remote good',
+        status: 'current',
+        type: 'page',
+        version: { number: 9, when: '2026-09-19T00:00:00.000Z' },
+        body: { storage: { value: '<p>Fresh body</p>' } },
+        ancestors: [],
+        metadata: { labels: { results: [] } },
+      });
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/sync',
+      payload: { ids: ['sync-good', 'sync-bad', 'not-found'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 1, failed: 2 });
+    expect(response.json().errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('sync-bad'),
+      expect.stringContaining('not-found'),
+    ]));
+    expect(await rowForPage(goodId)).toMatchObject({
+      title: 'Remote good',
+      body_html: '<p>Fresh body</p>',
+      image_analysis_dirty: true,
+    });
+    expect(await rowForPage(badId)).toMatchObject({ title: 'Old bad', body_html: '<p>old</p>' });
+
+    mockUndiciRequest.mockResolvedValue(httpResponse(200, {
+      id: 'sync-bad',
+      title: 'Recovered upstream page',
+      status: 'current',
+      type: 'page',
+      version: { number: 2 },
+      body: { storage: { value: '<p>Recovered body</p>' } },
+      ancestors: [],
+      metadata: { labels: { results: [] } },
+    }));
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/sync',
+      payload: { ids: ['sync-bad'] },
+    });
+    expect(retry.json()).toMatchObject({ succeeded: 1, failed: 0 });
+    expect(await rowForPage(badId)).toMatchObject({
+      title: 'Recovered upstream page',
+      body_html: '<p>Recovered body</p>',
     });
   });
 
-  describe('POST /api/pages/bulk/delete', () => {
-    it('should delete multiple pages', async () => {
-      const response = await app.inject({
+  it.each(['content', 'authority'] as const)(
+    'does not apply a sync response after %s changes during the upstream read',
+    async (change) => {
+      const pageId = await seedConfluencePage('sync-race', 'Original page');
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      mockUndiciRequest.mockImplementationOnce(async () => {
+        started.resolve();
+        await release.promise;
+        return httpResponse(200, {
+          id: 'sync-race',
+          title: 'Stale upstream page',
+          status: 'current',
+          type: 'page',
+          version: { number: 9 },
+          body: { storage: { value: '<p>Stale upstream body</p>' } },
+          ancestors: [],
+          metadata: { labels: { results: [] } },
+        });
+      });
+      const pending = app.inject({
         method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['sync-race'] },
       });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
-      expect(body.errors).toEqual([]);
-
-      // #893: a bulk delete may remove Confluence/shared pages from every
-      // user's view — both the pages and spaces caches (the latter carries
-      // per-space pageCount) must be cleared across all users.
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('spaces');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
-    });
-
-    it('should return 400 for empty ids', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: [] },
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-
-    it('should report not-found pages from batch ownership check', async () => {
-      // Batch query returns only page-2 (not-found is missing)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 2, confluence_id: 'page-2', source: 'confluence' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['not-found', 'page-2'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.failed).toBe(1);
-      expect(body.succeeded).toBe(1);
-      expect(body.errors).toHaveLength(1);
-      expect(body.errors[0]).toContain('not found');
-    });
-
-    it('should report Confluence pages as failed when Confluence not configured', async () => {
-      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'DEV' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(0);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('Confluence not configured');
-    });
-
-    it('should delete standalone pages without Confluence configured', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 42, confluence_id: null, source: 'standalone', space_key: null, created_by_user_id: 'test-user-id' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['42'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-      expect(getClientForUser).not.toHaveBeenCalled();
-    });
-
-    // #1623 — off is standalone, so a synced page is still deletable; it is
-    // just deleted locally, and Confluence keeps its copy.
-    it('deletes Confluence-sourced pages locally when the integration is off', async () => {
-      vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'DEV' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-      // The local row is gone…
-      const localDelete = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string'
-          && (call[0] as string).includes('DELETE FROM pages'),
-      );
-      expect(localDelete).toBeDefined();
-      // …and nothing was deleted upstream: the route never even asked for a
-      // client, so neither a `deletePage` nor a credential prompt is reachable.
-      expect(getClientForUser).not.toHaveBeenCalled();
-    });
-
-    it('should use batch DELETE queries with ANY()', async () => {
-      // Single page owned
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'OPS' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-
-      // Verify both batch DELETEs use ANY(…) and run inside the #766 cleanup
-      // transaction (dedicated client, BEGIN…COMMIT).
-      const cachedPageDelete = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' &&
-          (call[0] as string).includes('DELETE FROM pages'),
-      );
-      expect(cachedPageDelete).toBeDefined();
-      expect(cachedPageDelete![0]).toContain('ANY($1::int[])');
-
-      const pinnedDelete = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' &&
-          (call[0] as string).includes('DELETE FROM pinned_pages'),
-      );
-      expect(pinnedDelete).toBeDefined();
-      expect(pinnedDelete![0]).toContain('page_id = ANY($1::int[])');
-      expect(mockTxQueryFn).toHaveBeenCalledWith('BEGIN');
-      expect(mockTxQueryFn).toHaveBeenCalledWith('COMMIT');
-    });
-
-    it('should call cleanPageAttachments for each deleted page', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
-        rowCount: 2,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(cleanPageAttachments).toHaveBeenCalledTimes(2);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
-      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
-    });
-
-    /**
-     * Fixer r1 — the BULK arm of the four hard-delete call sites #1349
-     * enumerates was pinned by nothing: removing the pass left every bulk and
-     * delete suite green. The #1349 sweep is structurally forbidden to walk
-     * `page-icons/` (it is a reserved root name), so an event-driven delete is
-     * the ONLY thing that ever collects an uploaded mark — a regression here
-     * leaks files with no other collector.
-     *
-     * The NUMERIC ids: the icon store is keyed by `pages.id`, while the
-     * attachment cleanup beside it is keyed by `confluence_id`, which is why
-     * this is its own pass rather than a line inside that one.
-     */
-    it('takes each hard-deleted page icon too, keyed by pages.id', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
-        rowCount: 2,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(discardPageIconForDeletedPage).toHaveBeenCalledTimes(2);
-      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(1);
-      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(2);
-      // Never the `confluence_id` the attachment cache is keyed by.
-      expect(discardPageIconForDeletedPage).not.toHaveBeenCalledWith('page-1');
-    });
-
-    /**
-     * Fixer r1 — …and only for the ids the COMMIT actually destroyed. The
-     * cleanup transaction's catch does not rethrow (#766), so a rolled-back
-     * bulk cleanup used to fall through into the icon pass and `rm -rf` the
-     * marks of pages whose rows all survived (soft-deleted, restorable). Real
-     * Postgres + a real BEFORE DELETE trigger cover the same branch in
-     * `pages-crud-delete-atomicity.integration.test.ts`.
-     */
-    it('keeps every icon when the bulk cleanup transaction rolled back', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
-        rowCount: 2,
-      });
-      mockTxQueryFn.mockImplementation((sql: unknown) => {
-        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
-          return Promise.reject(new Error('simulated post-upstream DB failure'));
+      try {
+        await started.promise;
+        if (change === 'content') {
+          await withPageWriteTransaction([pageId], (client) => client.query(
+            'UPDATE pages SET body_html = $2 WHERE id = $1',
+            [pageId, '<p>New local content</p>'],
+          ));
+        } else {
+          await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [actorId]);
         }
-        return Promise.resolve({ rows: [], rowCount: 0 });
+      } finally {
+        release.resolve();
+      }
+      const response = await pending;
+      expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
+      expect(await rowForPage(pageId)).toMatchObject({
+        title: 'Original page',
+        body_html: change === 'content' ? '<p>New local content</p>' : '<p>old</p>',
       });
+    },
+  );
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
+  it('refuses sync before external HTTP when Confluence integration is disabled', async () => {
+    await seedConfluencePage('sync-disabled', 'Disabled');
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [actorId]);
 
-      expect(response.statusCode).toBe(200);
-      expect(discardPageIconForDeletedPage).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/sync',
+      payload: { ids: ['sync-disabled'] },
     });
 
-    it('should delete mixed standalone and Confluence pages in one request', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 42, confluence_id: null, source: 'standalone', space_key: null, created_by_user_id: 'test-user-id' },
-          { id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'OPS' },
-        ],
-        rowCount: 2,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['42', 'page-1'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
-
-      // Standalone page should be soft-deleted
-      const softDelete = mockQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at'),
-      );
-      expect(softDelete).toBeDefined();
-
-      // Confluence page should be hard-deleted (inside the #766 cleanup transaction)
-      const hardDelete = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages'),
-      );
-      expect(hardDelete).toBeDefined();
-    });
-
-    it('should handle partial Confluence delete failures', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
-        rowCount: 2,
-      });
-
-      // Set up a new client mock where deletePage fails on the second call
-      let callCount = 0;
-      const failingClient = {
-        deletePage: vi.fn().mockImplementation(() => {
-          callCount++;
-          if (callCount === 2) return Promise.reject(new Error('Confluence error'));
-          return Promise.resolve(undefined);
-        }),
-        getPage: vi.fn(),
-        addLabels: vi.fn(),
-        removeLabel: vi.fn(),
-      };
-      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(failingClient);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(1);
-      expect(body.errors).toHaveLength(1);
-      expect(body.errors[0]).toContain('Confluence error');
-
-      // #766: the delete intent recorded before the upstream calls is rolled
-      // back for the failed page (id 2) so it stays fully live locally.
-      const intentRestore = mockQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
-      );
-      expect(intentRestore).toBeDefined();
-      expect(intentRestore![1]).toEqual([[2]]);
-    });
-
-    it('treats a 404 Confluence rejection as success and removes the row locally (#706)', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'page-1', source: 'confluence' },
-          { id: 2, confluence_id: 'page-2', source: 'confluence' },
-        ],
-        rowCount: 2,
-      });
-
-      // page-1 deletes cleanly; page-2 is already gone in Confluence (404).
-      const client = {
-        deletePage: vi.fn().mockImplementation((id: string) =>
-          id === 'page-2'
-            ? Promise.reject(new ConfluenceError('Resource not found', 404))
-            : Promise.resolve(undefined),
-        ),
-        getPage: vi.fn(),
-        addLabels: vi.fn(),
-        removeLabel: vi.fn(),
-      };
-      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(client);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      // Both count as succeeded — the 404 page's local cleanup runs too.
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
-      expect(body.errors).toHaveLength(0);
-
-      // The already-gone page is included in the batch row removal + attachment
-      // cleanup (the row delete runs inside the #766 cleanup transaction).
-      const pageDelete = mockTxQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = ANY'),
-      );
-      expect(pageDelete).toBeDefined();
-      expect(pageDelete![1]).toEqual([[1, 2]]);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
-    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain('Confluence integration is disabled');
+    expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
-  describe('POST /api/pages/bulk/delete (filter-mode)', () => {
-    it('accepts filter-mode + expectedCount selection', async () => {
-      // COUNT → 1; SELECT resolved → 1 row; UPDATE deleted_at + DELETE pinned (parallel)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 });
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 50, confluence_id: null, space_key: null, source: 'standalone', labels: [], created_by_user_id: 'test-user-id' }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+  it('marks real rows for embedding and quality work without widening the caller-visible selection', async () => {
+    const confluence = await seedConfluencePage('reprocess-me', 'Reprocess');
+    const standalone = await insertStandalonePage('Standalone quality', 'private', actorId, 'LOCAL');
+    await query(
+      `UPDATE pages
+          SET embedding_dirty = FALSE, quality_status = 'analyzed',
+              quality_score = 95, quality_error = 'old', quality_retry_count = 3
+        WHERE id = ANY($1::int[])`,
+      [[confluence, standalone]],
+    );
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/delete',
-        payload: { filter: { source: 'standalone' }, expectedCount: 1 },
-      });
+    // The route must still enqueue through the real embedding service. Hold an
+    // unrelated production lease so that global scanner backs off immediately
+    // after the route mutation, without replacing the worker with a test fake.
+    await redis.set('embedding:lock:other-bulk-test-user', 'other-runtime', { EX: 60 });
+    await redis.sAdd('embedding:locks:active', 'other-bulk-test-user');
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
+    const embed = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: ['reprocess-me', 'not-found'] },
     });
+    expect(embed.statusCode).toBe(200);
+    expect(embed.json()).toMatchObject({ succeeded: 1, failed: 1 });
+    expect(await rowForPage(confluence)).toMatchObject({ title: 'Reprocess', embedding_dirty: true });
+    await expect.poll(() => redis.exists(`embedding:lock:${actorId}`)).toBe(0);
+
+    // Keep the actual worker from racing the route-level mutation assertion.
+    // Its distributed lease is the production exclusion mechanism, not a mock.
+    await redis.set('worker:lock:quality-worker', 'another-runtime', { EX: 60 });
+    const quality = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/quality',
+      payload: { ids: ['reprocess-me', String(standalone)] },
+    });
+    expect(quality.statusCode).toBe(200);
+    expect(quality.json()).toMatchObject({ succeeded: 2, failed: 0 });
+    const qualityRows = await query<{
+      id: number;
+      quality_status: string;
+      quality_score: number | null;
+      quality_error: string | null;
+      quality_retry_count: number;
+    }>(
+      `SELECT id, quality_status, quality_score, quality_error, quality_retry_count
+         FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+      [[confluence, standalone]],
+    );
+    expect(qualityRows.rows).toEqual([
+      {
+        id: Math.min(confluence, standalone),
+        quality_status: 'pending',
+        quality_score: null,
+        quality_error: null,
+        quality_retry_count: 0,
+      },
+      {
+        id: Math.max(confluence, standalone),
+        quality_status: 'pending',
+        quality_score: null,
+        quality_error: null,
+        quality_retry_count: 0,
+      },
+    ]);
   });
 
-  describe('POST /api/pages/bulk/sync', () => {
-    it('should re-sync multiple pages', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
+  it('applies additive and replacement label semantics to real rows and records one audit event per request', async () => {
+    const standalone = await insertStandalonePage('Labels', 'private', actorId, 'LOCAL');
+    await query('UPDATE pages SET labels = ARRAY[$2, $3] WHERE id = $1', [standalone, 'old', 'keep']);
 
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
+    const additive = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/tag',
+      payload: { ids: [String(standalone)], addTags: ['new', 'keep'], removeTags: ['old'] },
     });
+    expect(additive.statusCode).toBe(200);
+    expect(additive.json()).toMatchObject({ succeeded: 1, failed: 0 });
+    expect((await rowForPage(standalone))?.labels).toEqual(['keep', 'new']);
 
-    it('should return 400 for empty ids', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: [] },
-      });
-
-      expect(response.statusCode).toBe(400);
+    const replacement = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: { ids: [String(standalone)], tags: ['  Alpha ', 'alpha', 'BETA'] },
     });
-
-    // #1623 — a re-sync is Confluence work with no local equivalent, so it
-    // refuses by naming the integration instead of asking for credentials that
-    // are still stored.
-    it('refuses with the integration-off message when Confluence is disabled', async () => {
-      vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body).error).toBe('Confluence integration is disabled');
-      expect(getClientForUser).not.toHaveBeenCalled();
-    });
-
-    it('re-queues the image index when the refresh rewrites body_html (#1115 P2)', async () => {
-      // A bulk refresh overwrites `body_html` from upstream, which is exactly
-      // what can move an image — and this path never reaches `syncPage`, so
-      // nothing else raises the flag for it.
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1'] },
-      });
-
-      const update = mockQueryFn.mock.calls
-        .map((c) => c[0] as string)
-        .find((sql) => typeof sql === 'string' && sql.includes('UPDATE pages SET') && sql.includes('body_storage'));
-      expect(update).toBeDefined();
-      // ADR-027 D4: the analysis flag carries the gate #1115's retired
-      // `image_embedding_dirty` used to share with it (#1618).
-      expect(update).toMatch(
-        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
-      );
-      expect(update).not.toContain('image_embedding_dirty');
-    });
-
-    it('should report not-found pages in sync', async () => {
-      // Batch query returns only page-1 (page-999 not found)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1', 'page-999'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('page-999');
-      expect(body.errors[0]).toContain('not found');
-    });
-
-    it('should use batch ownership query with ANY()', async () => {
-      // Resolver SELECT (call 0) returns the eligible row; the route then
-      // issues the UPDATE (call 1). Both use ANY() for batching.
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
-        rowCount: 1,
-      });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1'] },
-      });
-
-      // Resolver SELECT batches by `ANY($1::int[])` for numeric ids and
-      // `ANY($2::text[])` for confluence ids — both visible in the first call.
-      const firstCall = mockQueryFn.mock.calls[0];
-      expect(firstCall[0]).toContain('ANY($2::text[])');
-    });
-
-    it('accepts filter-mode + expectedCount selection', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 });
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 1 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-    });
-
-    it('returns 409 CountDrift when filter actual diverges past tolerance', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '50' }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 10 },
-      });
-
-      expect(response.statusCode).toBe(409);
-      expect(JSON.parse(response.body).error).toBe('CountDrift');
-    });
-
-    it('passes cached space keys into confluenceToHtml during bulk sync', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockConfluenceToHtml).toHaveBeenCalledWith('<p>new content</p>', 'page-1', 'OPS');
-      expect(mockConfluenceToHtml).toHaveBeenCalledWith('<p>new content</p>', 'page-2', 'ENG');
-    });
+    expect(replacement.statusCode).toBe(200);
+    expect(replacement.json()).toMatchObject({ succeeded: 1, failed: 0, cancelled: false });
+    expect((await rowForPage(standalone))?.labels).toEqual(['alpha', 'beta']);
+    expect(await auditMetadata('BULK_PAGE_TAGGED')).toHaveLength(1);
+    expect(await auditMetadata('BULK_PAGE_TAGS_REPLACED')).toHaveLength(1);
   });
 
-  describe('POST /api/pages/bulk/embed', () => {
-    it('should mark pages as embedding dirty and trigger processing', async () => {
-      // The new code uses UPDATE...RETURNING, so mock must return rows
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
-        rowCount: 2,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['page-1', 'page-2'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-
-      // Verify processDirtyPages was called fire-and-forget
-      await vi.waitFor(() => {
-        expect(mockProcessDirtyPages).toHaveBeenCalledWith('test-user-id');
-      });
+  it('reports independent remote-label failure, keeps the local original, and leaves the uncertain row pending', async () => {
+    const goodId = await seedConfluencePage('labels-good', 'Good', ['old']);
+    const badId = await seedConfluencePage('labels-bad', 'Bad', ['old']);
+    mockUndiciRequest.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if ((options?.method ?? 'GET') === 'POST' && url.includes('/labels-bad/label')) {
+        return httpResponse(400, { message: 'labels rejected upstream' });
+      }
+      return httpResponse(200, {});
     });
 
-    it('should not trigger processing when no pages succeeded', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['nonexistent'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.failed).toBe(1);
-      expect(mockProcessDirtyPages).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/tag',
+      payload: { ids: [String(goodId), String(badId)], addTags: ['new'] },
     });
 
-    it('should report failure for non-existent page', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['nonexistent'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('not found');
-    });
-
-    it('should return 409 when embedding is already in progress', async () => {
-      mockIsProcessingUser.mockResolvedValueOnce(true);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(409);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('already in progress');
-    });
-
-    // The guard above is a no-op mock, which is what a route test wants — but a
-    // no-op mock also passes if the route stops calling it at all, and that is
-    // precisely how the call was lost. These two cells pin the wiring: it is
-    // invoked, and its refusal reaches the client as a 409 rather than a 500.
-    it('consults the shadow-rollback guard before touching anything', async () => {
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(mockAssertShadowRollbackWindowClear).toHaveBeenCalled();
-    });
-
-    it('surfaces the guard refusal as a 409, not a 500', async () => {
-      const refusal = Object.assign(
-        new Error('A shadow embedding migration has swapped and is awaiting validation'),
-        { statusCode: 409 },
-      );
-      mockAssertShadowRollbackWindowClear.mockRejectedValueOnce(refusal);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(409);
-      expect(JSON.parse(response.body).error).toContain('awaiting validation');
-    });
-
-    it('accepts filter-mode + expectedCount selection', async () => {
-      // COUNT (drift check) → 2; SELECT resolved rows → 2 rows; UPDATE → 2 rows
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 });
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] },
-          { id: 2, confluence_id: 'page-2', space_key: 'OPS', source: 'confluence', labels: [] },
-        ],
-        rowCount: 2,
-      });
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
-        rowCount: 2,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 2 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
-    });
-
-    it('should use single batch UPDATE with ANY() and RETURNING', async () => {
-      // Resolver SELECT (call 0) returns the eligible row; route's UPDATE
-      // (call 1) writes embedding_dirty=TRUE with `ANY($1)` and RETURNING.
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }],
-        rowCount: 1,
-      });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: ['page-1'] },
-      });
-
-      const updateCall = mockQueryFn.mock.calls[1];
-      expect(updateCall![0]).toContain('UPDATE pages SET embedding_dirty');
-      expect(updateCall![0]).toContain('ANY($1)');
-      expect(updateCall![0]).toContain('RETURNING');
-    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
+    expect(response.json().errors[0]).toContain('labels rejected upstream');
+    expect((await rowForPage(goodId))?.labels).toEqual(['old', 'new']);
+    expect((await rowForPage(badId))?.labels).toEqual(['old']);
+    const pending = await query<{ page_ids: number[] }>(
+      'SELECT page_ids FROM page_write_intents WHERE settled_at IS NULL',
+    );
+    expect(pending.rows.some((row) => row.page_ids.includes(badId))).toBe(true);
   });
 
-  describe('POST /api/pages/bulk/quality', () => {
-    it('resets quality_status and fires the worker', async () => {
-      // Resolver SELECT returns the eligible row; UPDATE returns rowCount=1.
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+  it('resolves filter-mode against the caller-visible set and rejects stale expected counts', async () => {
+    const matchingA = await insertStandalonePage('A', 'private', actorId, 'LOCAL');
+    const matchingB = await insertStandalonePage('B', 'private', actorId, 'LOCAL');
+    const hidden = await insertStandalonePage('Hidden', 'private', otherUserId, 'LOCAL');
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/quality',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-
-      // The UPDATE statement scopes by integer PK and clears prior score/error
-      const updateCall = mockQueryFn.mock.calls[1];
-      expect(updateCall![0]).toContain("quality_status = 'pending'");
-      expect(updateCall![0]).toContain('quality_score = NULL');
-      expect(updateCall![0]).toContain('id = ANY($1::int[])');
-      expect(updateCall![1]).toEqual([[1]]);
-
-      // Fire-and-forget worker trigger
-      await vi.waitFor(() => {
-        expect(mockTriggerQualityBatch).toHaveBeenCalledTimes(1);
-      });
+    const applied = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: {
+        filter: { spaceKey: 'LOCAL', source: 'standalone' },
+        expectedCount: 2,
+        driftToleranceFraction: 0,
+        tags: ['filtered'],
+      },
     });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({ succeeded: 2, failed: 0 });
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(matchingB))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(hidden))?.labels).toEqual([]);
 
-    it('does not fire the worker when no pages were eligible', async () => {
-      // No resolved rows → nothing to update → no trigger.
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/quality',
-        payload: { ids: ['nonexistent'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(0);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('not found');
-      expect(mockTriggerQualityBatch).not.toHaveBeenCalled();
+    const drift = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: {
+        filter: { spaceKey: 'LOCAL', source: 'standalone' },
+        expectedCount: 20,
+        driftToleranceFraction: 0,
+        tags: ['must-not-apply'],
+      },
     });
+    expect(drift.statusCode).toBe(409);
+    expect(drift.json()).toMatchObject({ error: 'CountDrift', expected: 20, actual: 2 });
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
   });
 
-  describe('POST /api/pages/bulk/tag', () => {
-    it('should add tags to multiple pages', async () => {
-      // Override default mock to return only page 1 for this single-ID test
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
+  it('does not expose or mutate a Confluence page outside the caller space assignment', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('SECRET', 'Secret', 'confluence', NOW())`,
+    );
+    const secret = await insertConfluencePage('secret-page', 'Secret', 'SECRET');
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1'],
-          addTags: ['new-tag-1', 'new-tag-2'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: { ids: [String(secret)], tags: ['leak'] },
     });
 
-    it('should remove tags from multiple pages', async () => {
-      // Override default mock to return only page 1 for this single-ID test
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1'],
-          removeTags: ['existing-tag'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-    });
-
-    it('should reject when neither addTags nor removeTags provided', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: { ids: ['page-1'] },
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-
-    it('should reject empty ids', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: { ids: [], addTags: ['tag'] },
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-
-    it('should sync added tags to Confluence', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1'],
-          addTags: ['new-tag'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const client = await vi.mocked(getClientForUser).mock.results[0].value;
-      expect(client.addLabels).toHaveBeenCalledWith('conf-1', ['new-tag']);
-    });
-
-    it('should sync removed tags to Confluence', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1'],
-          removeTags: ['existing-tag'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const client = await vi.mocked(getClientForUser).mock.results[0].value;
-      expect(client.removeLabel).toHaveBeenCalledWith('conf-1', 'existing-tag');
-    });
-
-    it('should use batch label fetch with ANY()', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1'],
-          addTags: ['new-tag'],
-        },
-      });
-
-      // First query should be the batch label fetch using integer PK
-      const firstCall = mockQueryFn.mock.calls[0];
-      expect(firstCall[0]).toContain('ANY($2');
-      expect(firstCall[0]).toContain('labels');
-    });
-
-    it('should report not-found pages in tag operation', async () => {
-      // Batch query returns only page 1 (page 999 not found)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1', '999'],
-          addTags: ['new-tag'],
-        },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('999');
-      expect(body.errors[0]).toContain('not found');
-    });
-
-    it('should report non-numeric IDs as not found in bulk tag operation', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
-        rowCount: 1,
-      });
-      // Mock UPDATE query
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['1', 'abc', 'not-a-number'],
-          addTags: ['new-tag'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      // Non-numeric IDs are filtered out and reported as not found
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(2);
-      expect(body.errors).toHaveLength(2);
-      expect(body.errors.some((e: string) => e.includes('abc'))).toBe(true);
-      expect(body.errors.some((e: string) => e.includes('not-a-number'))).toBe(true);
-    });
-
-    it('should handle standalone pages (no confluence_id) without Confluence sync (#442)', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 50, confluence_id: null, labels: [] }],
-        rowCount: 1,
-      });
-      // Mock UPDATE query
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: {
-          ids: ['50'],
-          addTags: ['standalone-tag'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-
-      // Verify UPDATE used integer PK
-      const updateCall = mockQueryFn.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET labels'),
-      );
-      expect(updateCall).toBeDefined();
-      expect(updateCall![0]).toContain('WHERE id = $1');
-    });
-
-    // EE #117 — confirm the additive bulk/tag route now emits exactly one
-    // BULK_PAGE_TAGGED audit event per request (not per row). Audit-volume
-    // mitigation per epic v0.4 §3.6 / R8.
-    it('emits exactly one BULK_PAGE_TAGGED audit event for the whole request', async () => {
-      const { logAuditEvent } = await import('../../core/services/audit-service.js');
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] },
-          { id: 2, confluence_id: 'conf-2', labels: [] },
-          { id: 3, confluence_id: 'conf-3', labels: [] },
-        ],
-        rowCount: 3,
-      });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/tag',
-        payload: { ids: ['1', '2', '3'], addTags: ['shared'] },
-      });
-
-      const calls = vi.mocked(logAuditEvent).mock.calls;
-      const bulkTaggedCalls = calls.filter((c) => c[1] === 'BULK_PAGE_TAGGED');
-      expect(bulkTaggedCalls).toHaveLength(1);
-      const meta = bulkTaggedCalls[0]?.[4] as Record<string, unknown>;
-      expect(meta.bulkIds).toEqual(['1', '2', '3']);
-      expect(meta.addTags).toEqual(['shared']);
-      expect(meta.succeeded).toBe(3);
-      expect(meta.failed).toBe(0);
-    });
-  });
-
-  describe('POST /api/pages/bulk/replace-tags', () => {
-    it('should replace the entire tag set on the targeted pages', async () => {
-      // Page 1 has existing labels ['old-a', 'old-b'] → after replace they are
-      // wiped and ['kept'] survives only because the input contains it.
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['old-a', 'old-b'] }],
-        rowCount: 1,
-      });
-      // UPDATE query
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: ['1'], tags: ['kept'] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(0);
-      expect(body.cancelled).toBe(false);
-
-      // The UPDATE should write the new tag set to the page
-      const updateCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET labels'),
-      );
-      expect(updateCall).toBeDefined();
-      expect(updateCall![1]).toEqual([1, ['kept']]);
-    });
-
-    it('normalises tags (lowercase, trim, dedupe) before persisting', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: null, labels: [] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: {
-          ids: ['1'],
-          tags: ['  Bug  ', 'BUG', 'feature', 'feature', '   '],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const updateCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET labels'),
-      );
-      expect(updateCall![1]).toEqual([1, ['bug', 'feature']]);
-    });
-
-    it('syncs the diff to Confluence: adds new tags, removes dropped ones', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['old-a', 'old-b'] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: ['1'], tags: ['old-a', 'new'] },
-      });
-
-      const client = await vi.mocked(getClientForUser).mock.results[0].value;
-      expect(client.addLabels).toHaveBeenCalledWith('conf-1', ['new']);
-      expect(client.removeLabel).toHaveBeenCalledWith('conf-1', 'old-b');
-    });
-
-    it('reports not-found pages without aborting the request', async () => {
-      // RBAC fetch returns only page 1; page 999 is not found.
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{ id: 1, confluence_id: null, labels: [] }],
-        rowCount: 1,
-      });
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: ['1', '999'], tags: ['t'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('999');
-      expect(body.errors[0]).toContain('not found');
-    });
-
-    it('rejects empty ids', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: [], tags: ['t'] },
-      });
-      expect(response.statusCode).toBe(400);
-    });
-
-    // Audit-count invariant: one BULK_PAGE_TAGS_REPLACED event per request,
-    // never per affected page (epic v0.4 §3.6 / R8).
-    it('emits exactly one BULK_PAGE_TAGS_REPLACED audit event for the whole request', async () => {
-      const { logAuditEvent } = await import('../../core/services/audit-service.js');
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'conf-1', labels: ['old-a'] },
-          { id: 2, confluence_id: 'conf-2', labels: ['old-b'] },
-          { id: 3, confluence_id: null, labels: [] },
-        ],
-        rowCount: 3,
-      });
-      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: ['1', '2', '3'], tags: ['shared'] },
-      });
-
-      const calls = vi.mocked(logAuditEvent).mock.calls;
-      const replacedCalls = calls.filter((c) => c[1] === 'BULK_PAGE_TAGS_REPLACED');
-      expect(replacedCalls).toHaveLength(1);
-      const meta = replacedCalls[0]?.[4] as Record<string, unknown>;
-      expect(meta.tags).toEqual(['shared']);
-      expect(meta.succeeded).toBe(3);
-      expect(meta.failed).toBe(0);
-      expect(meta.cancelled).toBe(false);
-    });
-
-    it('accepts filter-mode + expectedCount selection (instead of ids)', async () => {
-      // First query: COUNT for drift check → returns 2
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 });
-      // Second query: SELECT resolved rows
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'conf-1', space_key: 'OPS', source: 'confluence', labels: ['old'] },
-          { id: 2, confluence_id: 'conf-2', space_key: 'OPS', source: 'confluence', labels: [] },
-        ],
-        rowCount: 2,
-      });
-      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 }); // UPDATEs
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: {
-          filter: { spaceKey: 'OPS' },
-          expectedCount: 2,
-          tags: ['canonical'],
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(2);
-      expect(body.failed).toBe(0);
-    });
-
-    it('returns 409 CountDrift when filter actual diverges past tolerance', async () => {
-      // expectedCount = 100, actual = 200 → way past 5% tolerance
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '200' }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: {
-          filter: { spaceKey: 'OPS' },
-          expectedCount: 100,
-          tags: ['x'],
-        },
-      });
-
-      expect(response.statusCode).toBe(409);
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe('CountDrift');
-      expect(body.expected).toBe(100);
-      expect(body.actual).toBe(200);
-    });
-
-    it('rejects mixing ids and filter (Zod refine)', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: {
-          ids: ['1'],
-          filter: { spaceKey: 'OPS' },
-          expectedCount: 1,
-          tags: ['x'],
-        },
-      });
-      expect(response.statusCode).toBe(400);
-    });
-
-    it('partial-apply: emits ONE audit event whose metadata reflects the failure count', async () => {
-      // Two pages eligible from RBAC; the first UPDATE rejects (simulated DB
-      // failure) so we expect succeeded=1, failed=1 in the single audit row.
-      const { logAuditEvent } = await import('../../core/services/audit-service.js');
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [
-          { id: 1, confluence_id: 'conf-1', labels: [] },
-          { id: 2, confluence_id: 'conf-2', labels: [] },
-        ],
-        rowCount: 2,
-      });
-      // First UPDATE rejects, second succeeds.
-      let updateCallIdx = 0;
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (sql.includes('UPDATE pages SET labels')) {
-          updateCallIdx++;
-          if (updateCallIdx === 1) {
-            return Promise.reject(new Error('simulated DB failure'));
-          }
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [], rowCount: 0 });
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/replace-tags',
-        payload: { ids: ['1', '2'], tags: ['new'] },
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
-      expect(body.failed).toBe(1);
-      expect(body.errors.some((e: string) => e.includes('simulated DB failure'))).toBe(true);
-
-      const replacedCalls = vi.mocked(logAuditEvent).mock.calls.filter((c) => c[1] === 'BULK_PAGE_TAGS_REPLACED');
-      expect(replacedCalls).toHaveLength(1);
-      const meta = replacedCalls[0]?.[4] as Record<string, unknown>;
-      expect(meta.succeeded).toBe(1);
-      expect(meta.failed).toBe(1);
-    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
+    expect(response.json().errors[0]).toContain('not found');
+    expect((await rowForPage(secret))?.labels).toEqual([]);
   });
 });

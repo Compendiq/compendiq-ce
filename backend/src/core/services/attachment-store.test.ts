@@ -64,10 +64,11 @@ async function writeFileAt(relative: string, data: Buffer | string): Promise<str
 }
 
 describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
-  it('reserves client-models so the orphan sweep cannot delete operator weights', () => {
+  it('reserves every independent store so key cleanup cannot delete it', () => {
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
+    expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-baselines')).toBe(true);
   });
 
   it('refuses to remove the client-models store by name', async () => {
@@ -78,6 +79,21 @@ describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
       'utf8',
     );
     expect(kept).toBe('weights');
+  });
+
+  it('refuses to remove retained baseline evidence by namespace', async () => {
+    const retained = await writeFileAt(
+      path.join(
+        'page-baselines',
+        '018f47a8-4a19-7cc2-a747-8f4ef65d9a22',
+        '018f47a8-4a19-7cc2-a747-8f4ef65d9a23',
+        'media',
+        'a'.repeat(64),
+      ),
+      'evidence',
+    );
+    await expect(store.removeCachedAttachmentDirectory('page-baselines')).rejects.toThrow(/reserved/i);
+    await expect(fsReal.readFile(retained, 'utf8')).resolves.toBe('evidence');
   });
 });
 

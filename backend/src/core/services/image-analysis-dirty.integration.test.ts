@@ -421,15 +421,20 @@ describe.skipIf(!dbAvailable)('image_analysis_dirty writers (#1115 P2, ADR-027 D
     };
 
     async function run(confluenceId: string): Promise<void> {
+      const actor = await query<{ id: string }>(
+        `INSERT INTO users (username, email, password_hash, role)
+         VALUES ('image-sync-user', 'image-sync-user@test.invalid', 'hash', 'admin')
+         ON CONFLICT (username) DO UPDATE SET role = EXCLUDED.role RETURNING id`,
+      );
       await syncPage(
         client as never,
-        'sync-user',
+        actor.rows[0]!.id,
         'DEV',
         { id: confluenceId } as never,
         new Date(),
         new Map(),
         { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 },
-        'run-1',
+        '27600000-0000-4000-8000-000000000003',
       );
     }
 

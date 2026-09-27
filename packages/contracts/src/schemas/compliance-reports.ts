@@ -51,6 +51,7 @@ export const REPORT_IDS = [
   'data_retention',
   'admin_actions',
   'model_governance',
+  'document_governance',
 ] as const;
 
 export const ReportIdSchema = z.enum(REPORT_IDS);

@@ -10,7 +10,7 @@ let _redisClient: RedisClientType | null = null;
  * Store a reference to the Redis client so standalone services (e.g. embedding-service)
  * can invalidate cache entries without access to the Fastify instance.
  */
-export function setRedisClient(client: RedisClientType): void {
+export function setRedisClient(client: RedisClientType | null): void {
   _redisClient = client;
 }
 
@@ -26,29 +26,18 @@ export function getRedisClient(): RedisClientType | null {
  * Invalidate the knowledge-graph cache for every user.
  *
  * Graph responses are cached under `kb:<userId>:pages:graph:<view>:<spaceKey>`
- * (see `routes/knowledge/pages-embeddings.ts`), so a single exact-key delete
- * never matches a real entry. Because `page_relationships` is shared across
- * users, recomputing relationships after an embedding run must clear *all*
- * users' graph caches — hence a SCAN-delete over `kb:*:pages:graph:*` rather
- * than a per-user key. Uses the same cursor loop as `scanAndDelete` so it is
- * O(1) per call and never issues a blocking `KEYS`.
+ * (see `routes/knowledge/pages-embeddings.ts`). Because relationships are
+ * shared, recomputing them must fence and clear every user's graph cache: bump
+ * the pages generation, then SCAN-delete `kb:*:pages:graph:*`. The cursor scan
+ * never issues a blocking `KEYS`.
  *
  * Safe to call even if Redis is not initialised (no-op).
  */
 export async function invalidateGraphCache(): Promise<void> {
   if (!_redisClient) return;
   try {
-    let cursor = '0';
-    do {
-      const result = await _redisClient.scan(cursor, {
-        MATCH: 'kb:*:pages:graph:*',
-        COUNT: 100,
-      });
-      cursor = String(result.cursor);
-      if (result.keys.length > 0) {
-        await _redisClient.del(result.keys);
-      }
-    } while (cursor !== '0');
+    await bumpGlobalCacheGeneration(_redisClient, 'pages');
+    await scanAndDelete(_redisClient, 'kb:*:pages:graph:*');
     logger.debug('Invalidated graph cache for all users');
   } catch (err) {
     logger.error({ err }, 'Failed to invalidate graph cache');
@@ -590,11 +579,121 @@ const TTL = {
   notion_tree: 120, // 2 minutes (Notion workspace tree cache)
 } as const;
 
-type CacheType = keyof typeof TTL;
+export type CacheType = keyof typeof TTL;
+export type GenerationalCacheType = Extract<CacheType, 'pages' | 'search'>;
 
 function key(userId: string, type: CacheType, identifier: string): string {
   return `kb:${userId}:${type}:${identifier}`;
 }
+
+// Kept outside `kb:*:<namespace>:*` so namespace scans never delete their
+// fences. INCR creates missing generations without attaching an expiry.
+function globalGenerationKey(type: GenerationalCacheType): string {
+  return `kb-cache-generation:${type}:global`;
+}
+
+function userGenerationKey(userId: string, type: GenerationalCacheType): string {
+  return `kb-cache-generation:${type}:user:${userId}`;
+}
+
+function isGenerationalCacheType(type: CacheType): type is GenerationalCacheType {
+  return type === 'pages' || type === 'search';
+}
+
+function redisWithSignal(redis: RedisClientType, signal?: AbortSignal): RedisClientType {
+  return signal ? redis.withAbortSignal(signal) as RedisClientType : redis;
+}
+
+async function bumpGlobalCacheGeneration(
+  redis: RedisClientType,
+  type: GenerationalCacheType,
+  signal?: AbortSignal,
+): Promise<void> {
+  await redisWithSignal(redis, signal).incr(globalGenerationKey(type));
+}
+
+async function bumpUserCacheGeneration(
+  redis: RedisClientType,
+  userId: string,
+  type: GenerationalCacheType,
+): Promise<void> {
+  await redis.incr(userGenerationKey(userId, type));
+}
+
+async function scanAndDelete(
+  redis: RedisClientType,
+  pattern: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const client = redisWithSignal(redis, signal);
+  let cursor = '0';
+  do {
+    const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = String(result.cursor);
+    if (result.keys.length > 0) {
+      await client.del(result.keys);
+    }
+  } while (cursor !== '0');
+}
+
+/**
+ * Strict cross-user invalidation for durable delivery. Each namespace-global
+ * generation moves before matching keys are removed, so older in-flight fills
+ * cannot publish after the scan. Unlike public best-effort methods, failures
+ * propagate.
+ */
+export async function invalidateCacheNamespaces(
+  redis: RedisClientType,
+  types: readonly GenerationalCacheType[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const pages = types.includes('pages');
+  const search = types.includes('search');
+  if (pages) await bumpGlobalCacheGeneration(redis, 'pages', signal);
+  if (search) await bumpGlobalCacheGeneration(redis, 'search', signal);
+  if (pages) await scanAndDelete(redis, 'kb:*:pages:*', signal);
+  if (search) await scanAndDelete(redis, 'kb:*:search:*', signal);
+}
+
+// Generational entries carry their creation generation in the value. That
+// makes a pre-bump key an immediate miss during the interval between INCR and
+// the later cursor deletion, while preserving one Redis key per cache entry.
+const GET_WITH_GENERATION_SCRIPT = `
+local globalGeneration = redis.call("get", KEYS[2])
+if not globalGeneration then
+  redis.call("set", KEYS[2], "0")
+  globalGeneration = "0"
+end
+local userGeneration = redis.call("get", KEYS[3])
+if not userGeneration then
+  redis.call("set", KEYS[3], "0")
+  userGeneration = "0"
+end
+local generation = globalGeneration .. ":" .. userGeneration
+local stored = redis.call("get", KEYS[1])
+if not stored then
+  return { generation, "" }
+end
+local separator = string.find(stored, "\\n", 1, true)
+if not separator or string.sub(stored, 1, separator - 1) ~= generation then
+  return { generation, "" }
+end
+return { generation, string.sub(stored, separator + 1) }
+`;
+
+const SET_IF_CURRENT_SCRIPT = `
+local globalGeneration = redis.call("get", KEYS[2])
+local userGeneration = redis.call("get", KEYS[3])
+if not globalGeneration or not userGeneration then
+  return 0
+end
+local generation = globalGeneration .. ":" .. userGeneration
+if generation ~= ARGV[1] then
+  return 0
+end
+redis.call("set", KEYS[1], ARGV[1] .. "\\n" .. ARGV[2], "EX", ARGV[3])
+return 1
+`;
 
 export class RedisCache {
   constructor(private redis: RedisClientType) {}
@@ -607,6 +706,76 @@ export class RedisCache {
     } catch (err) {
       logger.error({ err, key: key(userId, type, identifier) }, 'Redis cache get error');
       return null;
+    }
+  }
+
+  /**
+   * Atomically read a pages/search entry with the combined namespace-global
+   * and per-user fence. A Redis failure makes both facts unknown; callers may
+   * still compute but must pass the null generation to setIfCurrent, which
+   * refuses the fill.
+   */
+  async getWithGeneration<T>(
+    userId: string,
+    type: GenerationalCacheType,
+    identifier: string,
+  ): Promise<{ value: T | null; generation: string | null }> {
+    const cacheKey = key(userId, type, identifier);
+    try {
+      const result = await this.redis.eval(GET_WITH_GENERATION_SCRIPT, {
+        keys: [
+          cacheKey,
+          globalGenerationKey(type),
+          userGenerationKey(userId, type),
+        ],
+        arguments: [],
+      });
+      if (!Array.isArray(result) || result.length !== 2 || typeof result[0] !== 'string') {
+        throw new Error('Redis returned an invalid cache generation receipt');
+      }
+      const serialized = result[1];
+      if (serialized === '') {
+        return { value: null, generation: result[0] };
+      }
+      if (typeof serialized !== 'string') {
+        throw new Error('Redis returned an invalid cache value');
+      }
+      return { value: JSON.parse(serialized) as T, generation: result[0] };
+    } catch (err) {
+      logger.error({ err, key: cacheKey }, 'Redis cache generation read error');
+      return { value: null, generation: null };
+    }
+  }
+
+  /**
+   * Publish a fill only if no invalidation moved the namespace generation
+   * after getWithGeneration captured it.
+   */
+  async setIfCurrent(
+    userId: string,
+    type: GenerationalCacheType,
+    identifier: string,
+    generation: string | null,
+    data: unknown,
+    ttlOverride?: number,
+  ): Promise<boolean> {
+    if (generation === null) return false;
+    const serialized = JSON.stringify(data);
+    if (serialized === undefined) return false;
+    const cacheKey = key(userId, type, identifier);
+    try {
+      const stored = await this.redis.eval(SET_IF_CURRENT_SCRIPT, {
+        keys: [
+          cacheKey,
+          globalGenerationKey(type),
+          userGenerationKey(userId, type),
+        ],
+        arguments: [generation, serialized, String(ttlOverride ?? TTL[type])],
+      });
+      return Number(stored) === 1;
+    } catch (err) {
+      logger.error({ err, key: cacheKey }, 'Redis conditional cache set error');
+      return false;
     }
   }
 
@@ -624,11 +793,14 @@ export class RedisCache {
 
   async invalidate(userId: string, type: CacheType, identifier?: string): Promise<void> {
     try {
+      if (isGenerationalCacheType(type)) {
+        await bumpUserCacheGeneration(this.redis, userId, type);
+      }
       if (identifier) {
         await this.redis.del(key(userId, type, identifier));
       } else {
         // Invalidate all keys of this type for user using SCAN (O(1) per call vs O(N) KEYS)
-        await this.scanAndDelete(`kb:${userId}:${type}:*`);
+        await scanAndDelete(this.redis, `kb:${userId}:${type}:*`);
       }
     } catch (err) {
       logger.error({ err, userId, type }, 'Redis cache invalidate error');
@@ -637,7 +809,9 @@ export class RedisCache {
 
   async invalidateAllForUser(userId: string): Promise<void> {
     try {
-      await this.scanAndDelete(`kb:${userId}:*`);
+      await bumpUserCacheGeneration(this.redis, userId, 'pages');
+      await bumpUserCacheGeneration(this.redis, userId, 'search');
+      await scanAndDelete(this.redis, `kb:${userId}:*`);
     } catch (err) {
       logger.error({ err, userId }, 'Redis cache invalidate all error');
     }
@@ -650,15 +824,16 @@ export class RedisCache {
    * all users (e.g. setting a space's custom home page — #352). The per-user
    * `invalidate(userId, type)` only clears the calling admin's cache and
    * leaves every other user reading stale data for up to TTL seconds.
-   *
-   * Implemented as a single SCAN cursor walk over `kb:*:{type}:*` against the
-   * shared Redis. Works in single-pod and multi-pod deployments without
-   * needing pub/sub — Redis is the authoritative store, so deleting the keys
-   * is sufficient; subsequent reads from any pod miss and re-populate.
+   * Implemented as a generation bump followed by a SCAN cursor walk over
+   * `kb:*:{type}:*` against shared Redis. The fence prevents a pre-invalidation
+   * computation from restoring stale data after the scan on any pod.
    */
   async invalidateAcrossUsers(type: CacheType): Promise<void> {
     try {
-      await this.scanAndDelete(`kb:*:${type}:*`);
+      if (isGenerationalCacheType(type)) {
+        await bumpGlobalCacheGeneration(this.redis, type);
+      }
+      await scanAndDelete(this.redis, `kb:*:${type}:*`);
     } catch (err) {
       logger.error({ err, type }, 'Redis cache invalidate across users error');
     }
@@ -735,14 +910,4 @@ export class RedisCache {
     return value;
   }
 
-  private async scanAndDelete(pattern: string): Promise<void> {
-    let cursor = '0';
-    do {
-      const result = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
-      cursor = String(result.cursor);
-      if (result.keys.length > 0) {
-        await this.redis.del(result.keys);
-      }
-    } while (cursor !== '0');
-  }
 }

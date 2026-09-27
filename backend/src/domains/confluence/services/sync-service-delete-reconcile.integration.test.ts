@@ -485,7 +485,7 @@ describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#76
   });
 
   /**
-   * Fixer r1 — the purge's `discardPageIconForDeletedPage(id)` was pinned by
+   * Fixer r1 — the purge's `discardPageIconForDeletedPage({ id })` was pinned by
    * nothing: removing it left every sync suite green, although the
    * `RETURNING id, confluence_id` this PR added exists solely for that line.
    *

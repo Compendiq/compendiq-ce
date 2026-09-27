@@ -19,6 +19,7 @@ import { cn } from '../../lib/cn';
 import { PageIcon } from '../page-icon/PageIcon';
 import type { TreeNode } from './sidebar-types';
 import { SidebarPageMoveMenu } from './SidebarPageMoveMenu';
+import { FrozenBadge } from '../badges/FrozenBadge';
 import {
   ROOT_SORTABLE_GROUP,
   findNode,
@@ -380,6 +381,9 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
+        {node.page.isFrozen === true && (
+          <FrozenBadge frozenVersion={node.page.frozenVersion} compact className="ml-1.5" />
+        )}
       </div>
 
       {hasChildren && isExpanded && (

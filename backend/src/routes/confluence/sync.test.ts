@@ -12,6 +12,9 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   syncUser: (...args: unknown[]) => mockSyncUser(...args),
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
   setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
   isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 

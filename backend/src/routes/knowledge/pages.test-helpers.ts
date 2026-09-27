@@ -13,6 +13,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import type { RedisClientType } from 'redis';
+import { PageSubtreeFrozenError } from '../../core/services/page-subtree.js';
 import { query } from '../../core/db/postgres.js';
 
 // --- Seeders ---
@@ -93,11 +94,23 @@ export async function buildKnowledgeTestApp(
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(sensible);
-  app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+  app.setErrorHandler((error: Error & { statusCode?: number; reason?: string }, _request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({ error: 'Validation failed' });
     }
-    return reply.status(error.statusCode ?? 500).send({ error: error.message });
+    if (error instanceof PageSubtreeFrozenError) {
+      return reply.status(error.statusCode).send({
+        error: error.name,
+        reason: error.reason,
+        message: error.message,
+        blockedCount: error.blockedCount,
+      });
+    }
+    return reply.status(error.statusCode ?? 500).send(
+      error.reason
+        ? { error: error.name, reason: error.reason }
+        : { error: error.message },
+    );
   });
   app.decorate('authenticate', async (request: { userId: string }) => {
     request.userId = getCurrentUserId();

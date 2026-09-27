@@ -37,9 +37,11 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
 
 const mockIsConfluenceEnabled = vi.fn();
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper this route consults before touching the remote tree.
-  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 vi.mock('../../domains/llm/services/llm-cache.js', () => {

@@ -1281,6 +1281,30 @@ describe('PagesPage', () => {
       expect(screen.queryByTitle('Semantic similarity to your query')).not.toBeInTheDocument();
     });
 
+    // #277: a frozen article is identifiable wherever it is listed, not only
+    // in the page tree and on the article itself.
+    it('marks a frozen search result with one neutral lock and no extra tab stop', async () => {
+      renderSearchWith([
+        { id: 4, title: 'Frozen Runbook', spaceKey: 'DEV', snippet: 'x', rank: 0.4, similarity: 0.6, isFrozen: true, frozenVersion: 7 },
+        { id: 5, title: 'Live Runbook', spaceKey: 'DEV', snippet: 'x', rank: 0.3, similarity: 0.5 },
+      ]);
+
+      expect(await screen.findByText('Frozen Runbook', undefined, { timeout: 2000 })).toBeInTheDocument();
+      const locks = screen.getAllByTestId('frozen-badge-compact');
+      expect(locks).toHaveLength(1);
+      expect(locks[0]).toHaveTextContent('Frozen at v7');
+      expect(locks[0]?.querySelector('button, a, [tabindex]')).toBeNull();
+    });
+
+    it('renders no lock for a result whose payload predates the freeze fields', async () => {
+      renderSearchWith([
+        { id: 6, title: 'Older Server Page', spaceKey: 'DEV', snippet: 'x', rank: 0.4, similarity: 0.6 },
+      ]);
+
+      expect(await screen.findByText('Older Server Page', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.queryByTestId('frozen-badge-compact')).not.toBeInTheDocument();
+    });
+
     it('supports selecting search result rows and triggers bulk action bar', async () => {
       renderSearchWith([
         { id: 101, title: 'Search Hit A', spaceKey: 'DEV', snippet: 'snippet a', rank: 0.8, similarity: 0.85 },
