@@ -60,6 +60,10 @@ type ConversationRow = {
   created_at: Date;
   updated_at: Date;
 };
+type ConversationListRow = ConversationRow & {
+  /** PostgreSQL's full six-digit fractional precision, kept out of JavaScript Date. */
+  cursor_updated_at: string;
+};
 
 /**
  * The summary columns every conversation route returns. `title` is COALESCEd
@@ -89,24 +93,35 @@ function toSummary(r: ConversationRow): ConversationSummary {
   };
 }
 
-// Keyset cursor: the (updated_at, id) of the last row served. Keyset rather
-// than offset because this list is prepended-to on every ask (updated_at
-// bumps), so an offset page shifts under the reader; rename does NOT bump
-// updated_at, so paging is stable through it.
+// Keyset cursor: the exact PostgreSQL (updated_at, id) of the last row served.
+// Keep updated_at as a six-digit UTC string: node-postgres converts TIMESTAMPTZ
+// to Date and silently truncates its microseconds. Keyset comparison must use
+// the same precision as the ordering key or rows inside that millisecond vanish.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function encodeCursor(updatedAtIso: string, id: string): string {
-  return Buffer.from(JSON.stringify([updatedAtIso, id])).toString('base64url');
+const CURSOR_TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{6})Z$/;
+
+function isCursorTimestamp(value: string): boolean {
+  const match = CURSOR_TIMESTAMP_RE.exec(value);
+  if (!match) return false;
+  const millisecondIso = `${match[1]}.${match[2]!.slice(0, 3)}Z`;
+  const parsed = new Date(millisecondIso);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === millisecondIso;
 }
+
+function encodeCursor(updatedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify([updatedAt, id])).toString('base64url');
+}
+
 function decodeCursor(raw: string | undefined): { updatedAt: string; id: string } | null {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
     if (
       Array.isArray(parsed) && parsed.length === 2
-      && typeof parsed[0] === 'string' && !Number.isNaN(Date.parse(parsed[0]))
+      && typeof parsed[0] === 'string' && isCursorTimestamp(parsed[0])
       && typeof parsed[1] === 'string' && UUID_RE.test(parsed[1])
     ) {
-      return { updatedAt: new Date(parsed[0]).toISOString(), id: parsed[1] };
+      return { updatedAt: parsed[0], id: parsed[1] };
     }
   } catch {
     // fall through
@@ -151,8 +166,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     } catch {
       throw fastify.httpErrors.badRequest('Invalid cursor');
     }
-    const result = await query<ConversationRow>(
-      `SELECT ${SUMMARY_COLUMNS}
+    const result = await query<ConversationListRow>(
+      `SELECT ${SUMMARY_COLUMNS},
+              to_char(c.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at
        ${SUMMARY_FROM}
        WHERE c.user_id = $1
          AND ($2::timestamptz IS NULL OR (c.updated_at, c.id) < ($2::timestamptz, $3::uuid))
@@ -162,7 +178,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     );
     const page = result.rows.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = result.rows.length > limit && last ? encodeCursor(last.updated_at.toISOString(), last.id) : null;
+    const nextCursor = result.rows.length > limit && last ? encodeCursor(last.cursor_updated_at, last.id) : null;
     return { items: page.map(toSummary), nextCursor };
   });
 
