@@ -366,6 +366,12 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
       sharedRoot,
     ]);
     expect(adminTree.body).not.toContain('Private parent');
+    const adminPrivateBreadcrumb = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${privateParent}/breadcrumb`,
+    });
+    expect(adminPrivateBreadcrumb.statusCode, adminPrivateBreadcrumb.body).toBe(404);
+    expect(adminPrivateBreadcrumb.body).not.toContain('Private parent');
 
     await query("UPDATE users SET role = 'user' WHERE id = $1", [adminId]);
     await invalidateRbacCache(adminId);

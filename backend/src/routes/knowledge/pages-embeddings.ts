@@ -101,38 +101,24 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       filterSpaceKeys && filterSpaceKeys.length > 0
         ? [...filterSpaceKeys].sort().join(',')
         : 'all';
-    const cacheKey = `graph:${view}:${cacheSpaceKey}`;
+    const cacheKey = `graph:v2:${view}:${cacheSpaceKey}`;
     const cacheReceipt = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cacheReceipt.value !== null) return cacheReceipt.value;
 
-    // Fetch accessible spaces (RBAC).
-    // #360: when the user supplies one or more `spaceKey` values, intersect
-    // them with the RBAC-accessible set. The intersection IS the security
-    // gate — keys the user can't see are silently dropped, never reaching
-    // SQL. No SQL injection vector here because every value is bound as a
-    // text[] parameter.
+    // RBAC space keys are one arm of the shared page-visibility contract; they
+    // must not become a prerequisite for standalone pages. Apply an optional
+    // caller-selected space filter only after that full contract.
     const graphSpaces = await getUserAccessibleSpaces(userId);
-    const effectiveSpaces =
-      filterSpaceKeys && filterSpaceKeys.length > 0
-        ? graphSpaces.filter((s: string) => filterSpaceKeys.includes(s))
-        : graphSpaces;
-
-    if (effectiveSpaces.length === 0) {
-      return {
-        nodes: [],
-        edges: [],
-        meta: { pagesTotal: 0, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
-      };
-    }
-
-    // Resolve the caller-bound shared list visibility once, then constrain every
-    // graph projection before traversal, grouping, counts, edges, or caching.
+    const selectedSpaces = filterSpaceKeys && filterSpaceKeys.length > 0
+      ? filterSpaceKeys
+      : null;
     const visiblePages = await query<{ id: number }>(
       `SELECT cp.id
        FROM pages cp
        WHERE cp.deleted_at IS NULL
-         AND ${visiblePagesPredicate(1, 2)}`,
-      [effectiveSpaces, userId],
+         AND ${visiblePagesPredicate(1, 2)}
+         AND ($3::text[] IS NULL OR cp.space_key = ANY($3::text[]))`,
+      [graphSpaces, userId, selectedSpaces],
     );
     const visiblePageIds = visiblePages.rows.map((row) => row.id);
     if (visiblePageIds.length === 0) {
@@ -146,7 +132,6 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     if (view === 'clustered') {
       return await buildClusteredGraph(
         userId,
-        effectiveSpaces,
         visiblePageIds,
         cache,
         cacheKey,
@@ -159,7 +144,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const nodesResult = await query<{
       id: number;
       confluence_id: string | null;
-      space_key: string;
+      space_key: string | null;
       title: string;
       labels: string[];
       embedding_status: string;
@@ -175,7 +160,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
          OR parent_page.id::text = cp.parent_id
        )
          AND parent_page.deleted_at IS NULL
-         AND parent_page.id = ANY($2::int[])
+         AND parent_page.id = ANY($1::int[])
          AND NOT EXISTS (
            SELECT 1 FROM pages parent_collision
            WHERE parent_collision.deleted_at IS NULL
@@ -183,11 +168,10 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
              AND (parent_collision.confluence_id = cp.parent_id
                   OR parent_collision.id::text = cp.parent_id)
          )
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.id = ANY($2::int[])
+       WHERE cp.id = ANY($1::int[])
          AND cp.deleted_at IS NULL
        ORDER BY cp.title ASC`,
-      [effectiveSpaces, visiblePageIds],
+      [visiblePageIds],
     );
 
     // Fetch embedding counts per page for node sizing
@@ -198,11 +182,10 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pe.page_id, COUNT(*) as count
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.id = ANY($2::int[])
+       WHERE cp.id = ANY($1::int[])
          AND cp.deleted_at IS NULL
        GROUP BY pe.page_id`,
-      [effectiveSpaces, visiblePageIds],
+      [visiblePageIds],
     );
 
     const embeddingCountMap = new Map<number, number>();
@@ -237,7 +220,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const nodes = nodesResult.rows.map((row) => ({
       id: String(row.id),
       confluenceId: row.confluence_id,
-      spaceKey: row.space_key,
+      spaceKey: row.space_key ?? '',
       title: row.title,
       labels: row.labels ?? [],
       embeddingStatus: row.embedding_status,
@@ -457,76 +440,73 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 
 async function buildClusteredGraph(
   userId: string,
-  effectiveSpaces: string[],
   visiblePageIds: number[],
   cache: RedisCache,
   cacheKey: string,
   cacheGeneration: string | null,
 ) {
-  // Group pages by their top-level ancestor (parent_id IS NULL or 3rd-level ancestor).
-  // For simplicity, group by the root ancestor (the page with no parent in the same space).
-  // We use a CTE to walk up the parent chain and find each page's root ancestor.
+  // Resolve the visible forest once. A parent is usable only when its stored
+  // key identifies exactly one live page and that page is visible. Hidden,
+  // missing, and ambiguous parents all re-root the visible child.
   const clustersResult = await query<{
-    root_id: number;
-    root_title: string;
-    space_key: string;
+    root_id: number | null;
+    root_title: string | null;
+    space_key: string | null;
     article_count: string;
     page_ids: number[];
+    is_orphan: boolean;
   }>(
-    `WITH RECURSIVE ancestors AS (
-       SELECT id, parent_id, id AS root_id, title AS root_title, space_key, 0 AS depth
-       FROM pages
-       WHERE parent_id IS NULL
-         AND space_key = ANY($1::text[])
-         AND id = ANY($2::int[])
-         AND deleted_at IS NULL
-       UNION ALL
-       SELECT p.id, p.parent_id, a.root_id, a.root_title, p.space_key, a.depth + 1
+    `WITH RECURSIVE visible AS MATERIALIZED (
+       SELECT p.id, p.confluence_id, p.source, p.parent_id, p.title, p.space_key
        FROM pages p
-       JOIN ancestors a ON p.parent_id = a.id::text
-       WHERE p.deleted_at IS NULL
-         AND p.id = ANY($2::int[])
-         AND a.depth < 50
+       WHERE p.id = ANY($1::int[])
+         AND p.deleted_at IS NULL
+     ),
+     resolved AS MATERIALIZED (
+       SELECT visible.*,
+              resolved_parent.id AS parent_numeric_id
+       FROM visible
+       LEFT JOIN LATERAL (
+         SELECT MIN(candidate.id)::integer AS id
+         FROM pages candidate
+         WHERE candidate.deleted_at IS NULL
+           AND (candidate.confluence_id = visible.parent_id
+                OR candidate.id::text = visible.parent_id)
+         HAVING COUNT(*) = 1
+            AND BOOL_AND(candidate.id = ANY($1::int[]))
+       ) resolved_parent ON TRUE
+     ),
+     ancestors AS (
+       SELECT resolved.id, resolved.parent_numeric_id,
+              resolved.id AS root_id, resolved.title AS root_title,
+              resolved.space_key AS root_space_key, 0 AS depth
+       FROM resolved
+       WHERE resolved.parent_numeric_id IS NULL
+       UNION ALL
+       SELECT child.id, child.parent_numeric_id,
+              parent.root_id, parent.root_title, parent.root_space_key,
+              parent.depth + 1
+       FROM resolved child
+       JOIN ancestors parent ON child.parent_numeric_id = parent.id
+       WHERE parent.depth < 50
      )
-     SELECT root_id, root_title, space_key, COUNT(*) AS article_count,
-            array_agg(id) AS page_ids
+     SELECT ancestors.root_id, ancestors.root_title,
+            ancestors.root_space_key AS space_key,
+            COUNT(*) AS article_count, array_agg(ancestors.id) AS page_ids,
+            FALSE AS is_orphan
      FROM ancestors
-     GROUP BY root_id, root_title, space_key
-     ORDER BY COUNT(*) DESC`,
-    [effectiveSpaces, visiblePageIds],
-  );
-
-  // Pages without a root ancestor (orphans) -- group them by space
-  const orphanResult = await query<{
-    space_key: string;
-    article_count: string;
-    page_ids: number[];
-  }>(
-    `SELECT cp.space_key, COUNT(*) as article_count, array_agg(cp.id) as page_ids
-     FROM pages cp
-     WHERE cp.space_key = ANY($1::text[])
-       AND cp.id = ANY($2::int[])
-       AND cp.deleted_at IS NULL
-       AND cp.id NOT IN (
-         WITH RECURSIVE ancestors(id, depth) AS (
-           SELECT id, 0
-           FROM pages
-           WHERE parent_id IS NULL
-             AND space_key = ANY($1::text[])
-             AND id = ANY($2::int[])
-             AND deleted_at IS NULL
-           UNION ALL
-           SELECT p.id, a.depth + 1
-           FROM pages p
-           JOIN ancestors a ON p.parent_id = a.id::text
-           WHERE p.deleted_at IS NULL
-             AND p.id = ANY($2::int[])
-             AND a.depth < 50
-         )
-         SELECT id FROM ancestors
-       )
-     GROUP BY cp.space_key`,
-    [effectiveSpaces, visiblePageIds],
+     GROUP BY ancestors.root_id, ancestors.root_title, ancestors.root_space_key
+     UNION ALL
+     SELECT NULL::integer AS root_id, NULL::text AS root_title,
+            resolved.space_key, COUNT(*) AS article_count,
+            array_agg(resolved.id) AS page_ids, TRUE AS is_orphan
+     FROM resolved
+     WHERE NOT EXISTS (
+       SELECT 1 FROM ancestors WHERE ancestors.id = resolved.id
+     )
+     GROUP BY resolved.space_key
+     ORDER BY article_count DESC`,
+    [visiblePageIds],
   );
 
   // Build cluster nodes
@@ -540,28 +520,19 @@ async function buildClusteredGraph(
   }> = [];
 
   for (const row of clustersResult.rows) {
+    const spaceKey = row.space_key ?? '';
     clusterNodes.push({
-      id: `cluster-${row.root_id}`,
+      id: row.is_orphan
+        ? `cluster-orphan-${spaceKey || 'unassigned'}`
+        : `cluster-${row.root_id!}`,
       type: 'cluster',
-      spaceKey: row.space_key,
-      title: row.root_title,
+      spaceKey,
+      title: row.is_orphan
+        ? `${spaceKey || 'Unassigned'} (ungrouped)`
+        : row.root_title!,
       articleCount: parseInt(row.article_count, 10),
       pageIds: row.page_ids,
     });
-  }
-
-  // Add orphan clusters (pages that didn't belong to any root ancestor tree)
-  for (const row of orphanResult.rows) {
-    if (parseInt(row.article_count, 10) > 0) {
-      clusterNodes.push({
-        id: `cluster-orphan-${row.space_key}`,
-        type: 'cluster',
-        spaceKey: row.space_key,
-        title: `${row.space_key} (ungrouped)`,
-        articleCount: parseInt(row.article_count, 10),
-        pageIds: row.page_ids,
-      });
-    }
   }
 
   // Compute inter-cluster edges based on cross-cluster relationships

@@ -256,7 +256,15 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
 
   it('invalidates cached hierarchy rows on space-role changes without widening admins', async () => {
     await insertConfluencePage('dev-page', 'Dev page', 'DEV');
-    await insertStandalonePage('Private foreign note', 'private', userA, 'NOTES');
+    const privateForeignPage = await insertStandalonePage(
+      'Private foreign note',
+      'private',
+      userA,
+      'NOTES',
+    );
+    await insertStandalonePage('Private child', 'private', userA, 'NOTES', {
+      parentId: String(privateForeignPage),
+    });
     await insertStandalonePage('Shared note', 'shared', userA, 'NOTES');
     await assignReadableSpace(userB, 'DEV');
 
@@ -290,14 +298,38 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(adminTree.json().items.map((item: { title: string }) => item.title)).toEqual([
       'Shared note',
     ]);
+
+    for (const suffix of ['', '/children', '/has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${privateForeignPage}${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.body).not.toContain('Private child');
+    }
   });
 
-  it('limits Confluence pages to spaces assigned through real RBAC state', async () => {
+  it('does not widen Confluence hierarchy reads through page ACEs', async () => {
     await insertConfluencePage('conf-dev', 'Dev page', 'DEV');
-    await insertConfluencePage('conf-secret', 'Secret page', 'SECRET');
+    const secretPage = await insertConfluencePage('conf-secret', 'Secret page', 'SECRET');
+    await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [secretPage]);
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission)
+       VALUES ('page', $1, 'user', $2, 'read')`,
+      [secretPage, userB],
+    );
     await assignReadableSpace(userB, 'DEV');
 
     expect(await treeTitles(userB)).toEqual(['Dev page']);
+    for (const suffix of ['', '/children', '/has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${secretPage}${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.body).not.toContain('Secret page');
+    }
   });
 
   it('does not treat a local container as authority for a moved Confluence page', async () => {

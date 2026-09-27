@@ -413,16 +413,46 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       result.rows.map((row) => [row.id, row.parent_numeric_id]),
     );
     const depthById = new Map<number, number>();
-    const displayDepth = (pageId: number, visiting = new Set<number>()): number => {
+    const displayDepth = (pageId: number): number => {
       const memoized = depthById.get(pageId);
       if (memoized !== undefined) return memoized;
-      const parentId = parentById.get(pageId) ?? null;
-      if (parentId === null || visiting.has(pageId)) return 0;
-      visiting.add(pageId);
-      const depth = displayDepth(parentId, visiting) + 1;
-      visiting.delete(pageId);
-      depthById.set(pageId, depth);
-      return depth;
+
+      const chain: number[] = [];
+      const chainIndex = new Map<number, number>();
+      let currentId = pageId;
+      let baseDepth = 0;
+
+      while (true) {
+        const knownDepth = depthById.get(currentId);
+        if (knownDepth !== undefined) {
+          baseDepth = knownDepth;
+          break;
+        }
+
+        const cycleStart = chainIndex.get(currentId);
+        if (cycleStart !== undefined) {
+          for (let i = cycleStart; i < chain.length; i += 1) {
+            depthById.set(chain[i]!, 0);
+          }
+          chain.length = cycleStart;
+          break;
+        }
+
+        chainIndex.set(currentId, chain.length);
+        chain.push(currentId);
+        const parentId = parentById.get(currentId) ?? null;
+        if (parentId === null || !parentById.has(parentId)) {
+          depthById.set(chain.pop()!, 0);
+          break;
+        }
+        currentId = parentId;
+      }
+
+      for (let i = chain.length - 1; i >= 0; i -= 1) {
+        baseDepth += 1;
+        depthById.set(chain[i]!, baseDepth);
+      }
+      return depthById.get(pageId) ?? 0;
     };
 
     const items = result.rows.map((row) => ({
@@ -830,7 +860,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/breadcrumb', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
-
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
     const page = await query<{
       id: number;
       title: string;
@@ -838,26 +868,24 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       path: string | null;
     }>(
-      'SELECT id, title, parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [id],
+      `SELECT page.id, page.title, page.parent_id, page.space_key, page.path
+       FROM pages page
+       WHERE page.id = $1
+         AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 3, 'page')}`,
+      [id, accessibleSpaces, userId],
     );
 
     if (page.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    // #733: the breadcrumb leaks titles/structure of the page and all its
-    // ancestors — require page access; 404 to avoid an existence oracle.
-    if (!(await userCanAccessPage(userId, page.rows[0]!.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     // Fetch all ancestors in a single query using the materialized path column.
     // The path format is /id1/id2/id3 -- we extract the ancestor IDs, exclude
     // the current page, and fetch them all at once (eliminates N+1 queries).
     const currentPage = page.rows[0]!;
     const crumbs: { id: number; title: string }[] = [];
-    const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
     if (currentPage.path) {
       const pathIds = currentPage.path

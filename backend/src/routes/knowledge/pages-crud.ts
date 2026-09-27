@@ -940,7 +940,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cache key based on sorted space list to ensure consistency
     const spacesKey = [...filterSpaces].sort().join(',');
-    const cacheKey = `filters:${spacesKey}`;
+    const cacheKey = `filters:v2:${spacesKey}`;
 
     const { value: cached, generation } = await cache.getWithGeneration<{
       authors: string[]; labels: string[];
@@ -1113,7 +1113,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.baseline_id, cp.frozen_version
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
-         AND cp.deleted_at IS NULL`,
+         AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(3, 2, 'cp')}`,
       [isNumericId ? parseInt(id, 10) : id, userId, accessibleSpaces],
     );
 
@@ -1123,10 +1124,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0]!;
 
-    // Reuse the page authority, including the system-admin and page-ACE arms.
-    if (!(await userCanAccessPage(userId, row.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     let visibleParentId = row.parent_id;
     if (visibleParentId !== null) {
@@ -1135,13 +1132,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          FROM pages parent
          WHERE (parent.confluence_id = $1 OR parent.id::text = $1)
            AND parent.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = $1
+                    OR parent_collision.id::text = $1)
+           )
+           AND ${visiblePagesPredicate(2, 3, 'parent')}
          ORDER BY parent.id`,
-        [visibleParentId],
+        [visibleParentId, accessibleSpaces, userId],
       );
-      const parent = parentResult.rows.length === 1 ? parentResult.rows[0] : undefined;
-      if (!parent || !(await userCanAccessPage(userId, parent.id))) {
-        visibleParentId = null;
-      }
+      if (parentResult.rows.length !== 1) visibleParentId = null;
     }
 
     // Counted through the same walk the delete cascade uses (#1636), from the
@@ -1230,17 +1232,40 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const isNumericId = /^\d+$/.test(id);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const rootSpaceParam = isNumericId ? 3 : 2;
+    const rootUserParam = rootSpaceParam + 1;
     const pageResult = await query<{
       id: number;
       confluence_id: string | null;
       source: string;
+      canonical_key_ambiguous: boolean;
     }>(
-      `SELECT id, confluence_id, source
-       FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
-         AND deleted_at IS NULL
-       ORDER BY id`,
-      isNumericId ? [id, toPageIdText(id)] : [id],
+      `SELECT page.id, page.confluence_id, page.source,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+              ) AS canonical_key_ambiguous
+       FROM pages page
+       WHERE ${isNumericId ? '(page.confluence_id = $1 OR page.id::text = $2)' : 'page.confluence_id = $1'}
+         AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'page')}
+       ORDER BY page.id`,
+      isNumericId
+        ? [id, toPageIdText(id), accessibleSpaces, userId]
+        : [id, accessibleSpaces, userId],
     );
     if (pageResult.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
@@ -1250,14 +1275,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const page = pageResult.rows[0]!;
-    if (!(await userCanAccessPage(userId, page.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     const parentLookupId = page.source === 'confluence'
       ? page.confluence_id!
       : String(page.id);
-    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    if (page.canonical_key_ambiguous) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
     const childResult = await query<{ has_children: boolean }>(
       `SELECT EXISTS(
          SELECT 1
@@ -1310,6 +1334,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // longer find page 7. It applies to the id arm ONLY — confluence_id is a
     // text column and must still be matched verbatim.
     const isNumericId = /^\d+$/.test(id);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const rootSpaceParam = isNumericId ? 3 : 2;
+    const rootUserParam = rootSpaceParam + 1;
     const pageResult = await query<{
       id: number;
       confluence_id: string | null;
@@ -1340,8 +1367,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        FROM pages page
        WHERE ${isNumericId ? '(page.confluence_id = $1 OR page.id::text = $2)' : 'page.confluence_id = $1'}
          AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'page')}
        ORDER BY page.id`,
-      isNumericId ? [id, toPageIdText(id)] : [id],
+      isNumericId
+        ? [id, toPageIdText(id), accessibleSpaces, userId]
+        : [id, accessibleSpaces, userId],
     );
 
     if (pageResult.rows.length === 0) {
@@ -1353,9 +1383,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = pageResult.rows[0]!;
 
-    if (!(await userCanAccessPage(userId, page.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     // Children store the canonical key of the parent, independent of the
     // child's source, so mixed-source hierarchies remain representable.
@@ -1373,7 +1400,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cap total nodes to prevent unbounded recursive queries (DoS protection)
     const MAX_TOTAL_NODES = 200;
-    const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
     // Single recursive CTE replaces the N+1 fetchChildren() function.
     // Fetches the entire subtree in one round-trip, then assembles the
