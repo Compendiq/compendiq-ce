@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rejected page deletes no longer corrupt Library caches (#1668).** Page
+  removal now waits for a successful DELETE, adjusts totals only for cached
+  result sets that contain the confirmed row, and invalidates page, tree, pin,
+  trash, and space-derived data for reconciliation. Failed deletes preserve
+  inactive rows and totals even when the follow-up fetch also fails.
+
 - **LLM response-cache lock releases preserve the current owner (#1660).**
   Every cache-stampede lease now carries a per-acquisition UUID and releases
   through an atomic compare-and-delete, so a request that outlives its TTL

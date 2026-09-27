@@ -776,6 +776,14 @@ the same class of reason: they fire after the cascade has COMMITTED, so one
 failing collab tombstone must not skip the remaining ids' webhooks, the cache
 invalidation and the audit row.
 
+The frontend delete hook does not remove anything before the DELETE succeeds.
+After success it adjusts only paginated Library caches that actually contain
+the confirmed target; an absent row gives no evidence that the page belongs to
+that filter or page, so its total stays unchanged. Settlement invalidates the
+whole `['pages']` prefix (lists, tree, pins and details), and success also
+invalidates `['trash']`. Keep rollback snapshots out of this flow: overlapping
+deletes can otherwise restore a different deletion that already committed.
+
 The dialog copy for all THREE destructive surfaces — the article view, the
 article inspector and the multi-select bulk bar — lives in
 `frontend/src/shared/lib/trash-copy.ts`. The count comes from the server, never
