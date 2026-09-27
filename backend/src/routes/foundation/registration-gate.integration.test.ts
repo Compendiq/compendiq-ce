@@ -4,10 +4,9 @@ import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
 import { ZodError } from 'zod';
 
-// The register handler mints tokens + writes audit rows. None of that is under
-// test here (the GATE + admin_settings + users predicate is), and the token
-// helpers pull in JWT/refresh-token machinery, so stub them. Postgres is NOT
-// mocked — the gate reads the REAL admin_settings + users tables.
+// Token and audit side effects are outside this regression. PostgreSQL is NOT
+// mocked: both public routes run their real shared bootstrap transaction
+// against the fully migrated schema, including migration 032's sentinel shape.
 vi.mock('../../core/plugins/auth.js', () => ({
   generateAccessToken: vi.fn().mockResolvedValue('access-token'),
   generateRefreshToken: vi.fn().mockResolvedValue({ token: 'refresh-token', jti: 'jti' }),
@@ -35,7 +34,7 @@ import {
 import { query } from '../../core/db/postgres.js';
 import { SYSTEM_USER_ID } from '../../core/services/registration-policy-service.js';
 import { authRoutes } from './auth.js';
-
+import { setupRoutes } from './setup.js';
 const dbAvailable = await isDbAvailable();
 
 async function insertSentinel(): Promise<void> {
@@ -76,7 +75,7 @@ async function countRealAdmins(): Promise<number> {
   return parseInt(r.rows[0]!.count, 10);
 }
 
-describe.skipIf(!dbAvailable)('registration gate — real DB round-trip (#1051)', () => {
+describe.skipIf(!dbAvailable)('first-administrator bootstrap — real DB round-trip (#1661)', () => {
   let app: FastifyInstance;
 
   beforeAll(async () => {
@@ -103,6 +102,7 @@ describe.skipIf(!dbAvailable)('registration gate — real DB round-trip (#1051)'
     app.decorate('requireAdmin', async () => {});
 
     await app.register(authRoutes, { prefix: '/api/auth' });
+    await app.register(setupRoutes, { prefix: '/api' });
     await app.ready();
   });
 
@@ -113,24 +113,30 @@ describe.skipIf(!dbAvailable)('registration gate — real DB round-trip (#1051)'
 
   beforeEach(async () => {
     await truncateAllTables();
+    // Reproduce the row migration 032 seeds in every normally migrated DB.
+    await insertSentinel();
   });
 
-  it('(1) bootstrap: fresh DB → POST /register 201 and the first account is an admin (despite default closed)', async () => {
-    const res = await app.inject({
+  it('turns the first real registration into an administrator on the sentinel-seeded database', async () => {
+    const policy = await app.inject({ method: 'GET', url: '/api/auth/registration-policy' });
+    expect(policy.statusCode).toBe(200);
+    expect(JSON.parse(policy.body)).toEqual({ allowRegistration: true });
+
+    const registration = await app.inject({
       method: 'POST',
       url: '/api/auth/register',
       payload: { username: 'firstuser', password: 'securepassword' },
     });
+    expect(registration.statusCode).toBe(201);
+    expect(JSON.parse(registration.body).user.role).toBe('admin');
 
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).user.role).toBe('admin');
-
-    const row = await query<{ role: string }>(`SELECT role FROM users WHERE username = 'firstuser'`);
-    expect(row.rows[0]!.role).toBe('admin');
+    const setup = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
+    expect(setup.statusCode).toBe(200);
+    expect(JSON.parse(setup.body).steps.admin).toBe(true);
+    expect(await countRealAdmins()).toBe(1);
   });
 
-  it('(2) closed (unset mode) with a real admin → POST /register 403 registration_disabled, no new row', async () => {
-    await insertSentinel();
+  it('rejects registration without writing when a real admin exists and mode is closed', async () => {
     await insertRealAdmin();
     const before = await countUsers();
 
@@ -145,40 +151,54 @@ describe.skipIf(!dbAvailable)('registration gate — real DB round-trip (#1051)'
     expect(await countUsers()).toBe(before);
   });
 
-  it("(3) mode 'open' with a real admin → POST /register 201 and the new account is a regular user", async () => {
-    await insertSentinel();
-    await insertRealAdmin();
+  it("creates later registrations as regular users when mode is 'open'", async () => {
     await setMode('open');
 
-    const res = await app.inject({
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'first_admin', password: 'securepassword' },
+    });
+    const later = await app.inject({
       method: 'POST',
       url: '/api/auth/register',
       payload: { username: 'joiner', password: 'securepassword' },
     });
 
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).user.role).toBe('user');
+    expect(first.statusCode).toBe(201);
+    expect(JSON.parse(first.body).user.role).toBe('admin');
+    expect(later.statusCode).toBe(201);
+    expect(JSON.parse(later.body).user.role).toBe('user');
+    expect(await countRealAdmins()).toBe(1);
   });
 
-  it('(4) two concurrent bootstrap registrations both succeed and create exactly two accounts', async () => {
+  it('serializes concurrent open registrations so exactly one receives the admin role', async () => {
+    await setMode('open');
     const [a, b] = await Promise.all([
       app.inject({ method: 'POST', url: '/api/auth/register', payload: { username: 'concurrent_a', password: 'securepassword' } }),
       app.inject({ method: 'POST', url: '/api/auth/register', payload: { username: 'concurrent_b', password: 'securepassword' } }),
     ]);
 
-    // The bootstrap gate must let BOTH concurrent first-account requests
-    // through (neither 403s) — that is the property this change guarantees.
-    expect(a.statusCode).toBe(201);
-    expect(b.statusCode).toBe(201);
+    expect([a.statusCode, b.statusCode]).toEqual([201, 201]);
+    const roles = [JSON.parse(a.body).user.role, JSON.parse(b.body).user.role].sort();
+    expect(roles).toEqual(['admin', 'user']);
     expect(await countUsers()).toBe(2);
-    // At least one is an admin — first-account bootstrap succeeded. Exact-one
-    // admin under true concurrency is a pre-existing property of the register
-    // INSERT (unchanged here), not something this gate controls.
-    expect(await countRealAdmins()).toBeGreaterThanOrEqual(1);
+    expect(await countRealAdmins()).toBe(1);
   });
 
-  it('(5) GET /registration-policy reflects the effective policy', async () => {
-    await insertSentinel();
+  it('serializes /auth/register against /setup/admin across the bootstrap boundary', async () => {
+    const [registration, setup] = await Promise.all([
+      app.inject({ method: 'POST', url: '/api/auth/register', payload: { username: 'route_register', password: 'securepassword' } }),
+      app.inject({ method: 'POST', url: '/api/setup/admin', payload: { username: 'route_setup', password: 'securepassword' } }),
+    ]);
+
+    const statusPair = [registration.statusCode, setup.statusCode];
+    expect([[201, 409], [403, 201]]).toContainEqual(statusPair);
+    expect(await countUsers()).toBe(1);
+    expect(await countRealAdmins()).toBe(1);
+  });
+
+  it('reports the effective public registration policy without exposing its inputs', async () => {
     await insertRealAdmin();
     await setMode('closed');
     const closed = await app.inject({ method: 'GET', url: '/api/auth/registration-policy' });

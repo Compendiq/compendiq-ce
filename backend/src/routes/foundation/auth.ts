@@ -13,6 +13,7 @@ function isCookieSecure(request: FastifyRequest): boolean {
 import bcrypt from 'bcrypt';
 import { RegisterSchema, LoginSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
+import { createRegistrationUser } from '../../core/services/account-bootstrap-service.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -60,28 +61,34 @@ export async function authRoutes(fastify: FastifyInstance) {
     const passwordHash = await bcrypt.hash(body.password, SALT_ROUNDS);
 
     try {
-      // Atomic first-user-is-admin: the role is determined in the same INSERT
-      // to avoid a TOCTOU race between SELECT COUNT and INSERT
-      const result = await query<{ id: string; username: string; role: string; email: string | null; display_name: string | null }>(
-        `INSERT INTO users (username, password_hash, role, email, display_name)
-         VALUES ($1, $2, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END, $3, $4)
-         RETURNING id, username, role, email, display_name`,
-        [body.username, passwordHash, email, displayName],
-      );
-      const user = result.rows[0]!;
-
-      // Create default user_settings row
-      await query('INSERT INTO user_settings (user_id) VALUES ($1)', [user.id]);
-
+      // The preflight above preserves the no-bcrypt fast path for a normally
+      // closed deployment. The definitive policy check and role assignment
+      // happen under the shared registration/setup bootstrap lock so a
+      // concurrent setup request cannot create a second first administrator.
+      const creation = await createRegistrationUser({
+        username: body.username,
+        passwordHash,
+        email,
+        displayName,
+      });
+      if (creation.kind === 'registration_disabled') {
+        logger.warn({ username: body.username }, 'Registration blocked after concurrent bootstrap');
+        return reply.code(403).send({
+          error: 'registration_disabled',
+          message: 'Public registration is disabled',
+          statusCode: 403,
+        });
+      }
+      const { user } = creation;
       const accessToken = await generateAccessToken({
         sub: user.id,
         username: user.username,
-        role: user.role as 'user' | 'admin',
+        role: user.role,
       });
       const { token: refreshToken } = await generateRefreshToken({
         sub: user.id,
         username: user.username,
-        role: user.role as 'user' | 'admin',
+        role: user.role,
       });
 
       await logAuditEvent(user.id, 'REGISTER', 'user', user.id, { username: user.username }, request);

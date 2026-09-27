@@ -153,6 +153,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fresh migrated installations now promote the first real registration to
+  administrator (#1661).** The migration-seeded `__system__` template owner no
+  longer makes `/api/auth/register` assign the ordinary user role. Registration
+  and `/api/setup/admin` now share one transaction and users-table lock, so
+  concurrent bootstrap requests produce exactly one real administrator; later
+  open registrations remain regular users and a raced closed registration is
+  rejected by the existing policy.
+  The bootstrap sequence diagram also renders its transaction separator
+  correctly instead of failing Mermaid parsing.
+
 - **Trashing a standalone article now takes its whole sub-article subtree with
   it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its
   live descendants kept `parent_id` pointing at a trashed page: `GET

@@ -105,6 +105,17 @@ runbook, including stale server-model assignments.
 5. **Auth** — `fastify.authenticate` on every protected route. Public exceptions: `/api/health`, `/api/auth/*`.
 6. **Infra isolation** — Postgres / Redis / Ollama must not bind `0.0.0.0` in production. Use Docker internal networks.
 
+**First-administrator bootstrap (#1661).** Migration 032's `__system__` admin
+owns built-in templates but is never a real operator. Registration policy,
+registration role assignment, setup status, and setup-admin creation all use
+the same sentinel-excluding real-admin definition. `POST /api/auth/register`
+and `POST /api/setup/admin` serialize the transition with the shared
+`account-bootstrap-service.ts` transaction and users-table lock; never replace
+it with a filtered count in either route. The user and default `user_settings`
+row commit together. Registration keeps its pre-bcrypt policy probe for the
+ordinary closed case, then rechecks under the lock so setup cannot close the
+bootstrap window between policy and insert.
+
 ## Testing & Mocks
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
