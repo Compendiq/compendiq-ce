@@ -989,10 +989,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       referenceText: referenceForLlm,
     });
 
-    let ragLockAcquired = false;
+    let ragLockToken: string | null = null;
     if (conversationHistory.length === 0) {
-      const { cached, lockAcquired } = await checkCacheWithLock(llmCache, ragCacheKey);
-      ragLockAcquired = lockAcquired;
+      const { cached, lockToken } = await checkCacheWithLock(llmCache, ragCacheKey);
+      ragLockToken = lockToken;
 
       if (cached) {
         const saved = await saveConversation(cached.content);
@@ -1172,7 +1172,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         reply.raw.end();
       }
     } finally {
-      if (ragLockAcquired) await llmCache.releaseLock(ragCacheKey);
+      if (ragLockToken) await llmCache.releaseLock(ragCacheKey, ragLockToken);
     }
     } finally {
       await slot.release();

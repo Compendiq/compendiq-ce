@@ -196,7 +196,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
-    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
@@ -309,7 +309,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       });
       throw err;
     } finally {
-      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+      if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
     } finally {
       await slot.release();

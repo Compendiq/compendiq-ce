@@ -1222,6 +1222,12 @@ Full reference is `.env.example`. Keys you must set:
 
 Tunable defaults (override only with reason): `EMBEDDING_DIMENSIONS=1024`, `USE_BULLMQ=true`, `SYNC_INTERVAL_MIN=15`, `LLM_CONCURRENCY=4`, `LLM_MAX_QUEUE_DEPTH=50`, `LLM_STREAM_TIMEOUT_MS=300000`, `LLM_CACHE_TTL=3600`, `QUALITY_CHECK_INTERVAL_MINUTES=60`, `SUMMARY_CHECK_INTERVAL_MINUTES=60`, `CONFLUENCE_RATE_LIMIT_RPM=60`, `SHUTDOWN_TIMEOUT_MS=50000` (keep below container stop grace period). TLS escape hatches: `LLM_VERIFY_SSL`, `CONFLUENCE_VERIFY_SSL`, `NODE_EXTRA_CA_CERTS`. Observability: `OTEL_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`. SMTP: `SMTP_*` (also configurable via admin UI).
 
+LLM response-cache stampede locks carry one UUID per acquisition. Callers keep
+that token through generation and release with an atomic ownership-checked Lua
+delete; an expired holder must never delete a successor's lease. Redis acquire
+errors still fall back to unlocked generation, and the deliberate cache-wait
+timeout still generates without ownership and must not release the live holder.
+
 Quality/Summary batch entrypoints own their local guard, Redis lease and
 `isProcessing` state for every caller, including BullMQ. Do not put locking
 back only in timer/manual wrappers: scheduled runs would reclaim live rows.

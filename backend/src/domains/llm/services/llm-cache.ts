@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -8,6 +8,7 @@ const LOCK_PREFIX = 'llm:lock:';
 const LOCK_TTL = 120; // seconds — safety net if holder crashes
 const LOCK_POLL_INTERVAL_MS = 1_000; // 1 second between polls
 const LOCK_POLL_TIMEOUT_MS = 60_000; // give up waiting after 60 seconds
+const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
 export interface CachedLlmResponse {
   content: string;
@@ -191,28 +192,36 @@ export class LlmCache {
 
   /**
    * Acquire a Redis-based lock for a cache key using SET NX EX.
-   * Returns true if the lock was acquired, false if another holder has it.
+   * Returns a unique ownership token if acquired, or null if another holder
+   * owns the lock. The token must be passed to releaseLock so an expired
+   * holder cannot delete a successor's live lock.
    */
-  async acquireLock(cacheKey: string, ttl: number = LOCK_TTL): Promise<boolean> {
+  async acquireLock(cacheKey: string, ttl: number = LOCK_TTL): Promise<string | null> {
+    const token = randomUUID();
     try {
       const lockKey = LOCK_PREFIX + cacheKey;
-      // SET key value NX EX ttl — atomic "set if not exists" with expiry
-      const result = await this.redis.set(lockKey, '1', { NX: true, EX: ttl });
-      return result !== null;
+      // SET key token NX EX ttl — atomic "set if not exists" with expiry
+      const result = await this.redis.set(lockKey, token, { NX: true, EX: ttl });
+      return result !== null ? token : null;
     } catch (err) {
       logger.error({ err, cacheKey }, 'LLM lock acquire error');
-      // On Redis failure, allow the caller to proceed (degrade gracefully)
-      return true;
+      // On Redis failure, allow the caller to proceed (degrade gracefully).
+      // A later release is still ownership-checked in case Redis recovers.
+      return token;
     }
   }
 
   /**
-   * Release the Redis lock for a cache key.
-   * Safe to call even if the lock was not held (no-op).
+   * Release the Redis lock only when token still identifies its current owner.
+   * The compare-and-delete Lua script is atomic, so a holder whose TTL expired
+   * cannot delete a successor's lock. Redis failures remain a no-op.
    */
-  async releaseLock(cacheKey: string): Promise<void> {
+  async releaseLock(cacheKey: string, token: string): Promise<void> {
     try {
-      await this.redis.del(LOCK_PREFIX + cacheKey);
+      await this.redis.eval(RELEASE_LOCK_SCRIPT, {
+        keys: [LOCK_PREFIX + cacheKey],
+        arguments: [token],
+      });
     } catch (err) {
       logger.error({ err, cacheKey }, 'LLM lock release error');
     }
