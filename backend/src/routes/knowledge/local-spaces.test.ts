@@ -361,11 +361,11 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     actorId = adminId;
     const adminTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
     expect(adminTree.json().items.map((item: { id: number }) => item.id)).toEqual([
-      privateParent,
       sharedChild,
       sharedGrandchild,
       sharedRoot,
     ]);
+    expect(adminTree.body).not.toContain('Private parent');
 
     await query("UPDATE users SET role = 'user' WHERE id = $1", [adminId]);
     await invalidateRbacCache(adminId);

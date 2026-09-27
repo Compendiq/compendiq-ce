@@ -1,7 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
-import { userCanAccessPage } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -17,6 +18,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
   // pinned_pages.page_id is INTEGER FK → pages.id (migration 030)
   fastify.get('/pages/pinned', async (request) => {
     const userId = request.userId;
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
     const result = await query<{
       page_id: number;
@@ -45,8 +47,9 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
        JOIN pages cp ON cp.id = pp.page_id
        WHERE pp.user_id = $1
          AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 1)}
        ORDER BY pp.pinned_at DESC`,
-      [userId],
+      [userId, accessibleSpaces],
     );
 
     return {

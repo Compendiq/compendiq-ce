@@ -6,6 +6,7 @@ import { computePageRelationships } from '../../domains/llm/services/embedding-s
 import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { authorizedPageIds } from '../../core/services/authorized-pages.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
@@ -124,10 +125,29 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       };
     }
 
+    // Resolve the caller-bound shared list visibility once, then constrain every
+    // graph projection before traversal, grouping, counts, edges, or caching.
+    const visiblePages = await query<{ id: number }>(
+      `SELECT cp.id
+       FROM pages cp
+       WHERE cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2)}`,
+      [effectiveSpaces, userId],
+    );
+    const visiblePageIds = visiblePages.rows.map((row) => row.id);
+    if (visiblePageIds.length === 0) {
+      return {
+        nodes: [],
+        edges: [],
+        meta: { pagesTotal: 0, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
+      };
+    }
+
     if (view === 'clustered') {
       return await buildClusteredGraph(
         userId,
         effectiveSpaces,
+        visiblePageIds,
         cache,
         cacheKey,
         cacheReceipt.generation,
@@ -147,11 +167,27 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
-              cp.embedding_status, cp.last_modified_at, cp.parent_id
+              cp.embedding_status, cp.last_modified_at,
+              CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id
        FROM pages cp
-       WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR parent_page.id::text = cp.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND parent_page.id = ANY($2::int[])
+         AND NOT EXISTS (
+           SELECT 1 FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND parent_collision.id <> parent_page.id
+             AND (parent_collision.confluence_id = cp.parent_id
+                  OR parent_collision.id::text = cp.parent_id)
+         )
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.id = ANY($2::int[])
+         AND cp.deleted_at IS NULL
        ORDER BY cp.title ASC`,
-      [effectiveSpaces],
+      [effectiveSpaces, visiblePageIds],
     );
 
     // Fetch embedding counts per page for node sizing
@@ -162,9 +198,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pe.page_id, COUNT(*) as count
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.id = ANY($2::int[])
+         AND cp.deleted_at IS NULL
        GROUP BY pe.page_id`,
-      [effectiveSpaces],
+      [effectiveSpaces, visiblePageIds],
     );
 
     const embeddingCountMap = new Map<number, number>();
@@ -420,6 +458,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 async function buildClusteredGraph(
   userId: string,
   effectiveSpaces: string[],
+  visiblePageIds: number[],
   cache: RedisCache,
   cacheKey: string,
   cacheGeneration: string | null,
@@ -437,19 +476,24 @@ async function buildClusteredGraph(
     `WITH RECURSIVE ancestors AS (
        SELECT id, parent_id, id AS root_id, title AS root_title, space_key, 0 AS depth
        FROM pages
-       WHERE parent_id IS NULL AND space_key = ANY($1::text[]) AND deleted_at IS NULL
+       WHERE parent_id IS NULL
+         AND space_key = ANY($1::text[])
+         AND id = ANY($2::int[])
+         AND deleted_at IS NULL
        UNION ALL
        SELECT p.id, p.parent_id, a.root_id, a.root_title, p.space_key, a.depth + 1
        FROM pages p
        JOIN ancestors a ON p.parent_id = a.id::text
-       WHERE p.deleted_at IS NULL AND a.depth < 50
+       WHERE p.deleted_at IS NULL
+         AND p.id = ANY($2::int[])
+         AND a.depth < 50
      )
      SELECT root_id, root_title, space_key, COUNT(*) AS article_count,
             array_agg(id) AS page_ids
      FROM ancestors
      GROUP BY root_id, root_title, space_key
      ORDER BY COUNT(*) DESC`,
-    [effectiveSpaces],
+    [effectiveSpaces, visiblePageIds],
   );
 
   // Pages without a root ancestor (orphans) -- group them by space
@@ -460,17 +504,29 @@ async function buildClusteredGraph(
   }>(
     `SELECT cp.space_key, COUNT(*) as article_count, array_agg(cp.id) as page_ids
      FROM pages cp
-     WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
+     WHERE cp.space_key = ANY($1::text[])
+       AND cp.id = ANY($2::int[])
+       AND cp.deleted_at IS NULL
        AND cp.id NOT IN (
          WITH RECURSIVE ancestors(id, depth) AS (
-           SELECT id, 0 FROM pages WHERE parent_id IS NULL AND space_key = ANY($1::text[]) AND deleted_at IS NULL
+           SELECT id, 0
+           FROM pages
+           WHERE parent_id IS NULL
+             AND space_key = ANY($1::text[])
+             AND id = ANY($2::int[])
+             AND deleted_at IS NULL
            UNION ALL
-           SELECT p.id, a.depth + 1 FROM pages p JOIN ancestors a ON p.parent_id = a.id::text WHERE p.deleted_at IS NULL AND a.depth < 50
+           SELECT p.id, a.depth + 1
+           FROM pages p
+           JOIN ancestors a ON p.parent_id = a.id::text
+           WHERE p.deleted_at IS NULL
+             AND p.id = ANY($2::int[])
+             AND a.depth < 50
          )
          SELECT id FROM ancestors
        )
      GROUP BY cp.space_key`,
-    [effectiveSpaces],
+    [effectiveSpaces, visiblePageIds],
   );
 
   // Build cluster nodes

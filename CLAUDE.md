@@ -778,22 +778,25 @@ serves any reader of a shared page, and counting rows the tree hides
 (`visiblePagesPredicate`) both disclosed their existence and offered an expander
 that yields nothing.
 
-**Hierarchy metadata follows the page ACL, not the space container.** A local
-space is discoverable to every authenticated user, but its private standalone
-pages are not. `GET /spaces/:key/tree`, `/pages/tree`, `/pages`, page detail,
-breadcrumbs and the recursive children route apply the complete read authority
-to page rows and parent resolution: standalone sharing/ownership, inherited
-Confluence space access, non-inheriting page ACEs, and the system-admin bypass.
-When a visible child has an invisible direct parent, present the child as a
-root (`parentId: null`) and rebase every descendant's local-tree depth from that
-visible root; breadcrumbs keep only the contiguous visible suffix and children
-traversal stops at the hidden node. Mixed-source parent/child links are valid,
-but a stored key that identifies multiple live parent candidates fails closed.
-Never retain a hidden or ambiguous parent ID or original depth as a hierarchy
-oracle. Hierarchy trees and lists are per-user, generation-checked entries in
-the `pages` cache namespace. Visibility/hierarchy writers and every RBAC
-invalidation advance that generation, fencing in-flight fills across role,
-group, ACE and admin-status changes. The local-space list is uncached: its
+**Hierarchy metadata follows shared list visibility, not the space container.**
+A local space is discoverable to every authenticated user, but its private
+standalone pages are not. `GET /spaces/:key/tree`, `/pages/tree`, `/pages`,
+page detail, breadcrumbs, recursive children, graphs, pins, filter facets and
+page-derived space summaries use the existing caller-bound list definition:
+Confluence pages in assigned spaces, shared standalone pages, and the caller's
+own private standalone pages. System administrators retain that same list
+behavior; hierarchy reads do not introduce an admin bypass or a separate
+Confluence page-ACE policy. When a visible child has an invisible direct
+parent, present the child as a root (`parentId: null`) and rebase every
+descendant's local-tree depth from that visible root; breadcrumbs keep only the
+contiguous visible suffix and children traversal stops at the hidden node.
+Mixed-source parent/child links are valid, but a stored key that identifies
+multiple live parent candidates fails closed. Never retain a hidden or
+ambiguous parent ID or original depth as a hierarchy oracle. Hierarchy trees
+and lists are per-user, generation-checked entries in the `pages` cache
+namespace. Visibility/hierarchy writers and every RBAC invalidation advance
+that generation, fencing in-flight fills across role and group changes.
+Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.
 

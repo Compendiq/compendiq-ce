@@ -17,6 +17,7 @@ import { cleanupAbandonedBaselinePreparations } from '../../core/services/page-b
 import { pageBaselineRoutes } from './page-baselines.js';
 import { createClient, type RedisClientType } from 'redis';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { initPageBaselineOutbox, kickPageLifecycleOutbox } from '../../core/services/page-baseline-outbox.js';
 import {
   admitPageRuntime,
@@ -178,6 +179,7 @@ describe.skipIf(!dbAvailable)('baseline lifecycle HTTP invariants', () => {
        SELECT 'IMPORTED-BASELINE', 'user', $1, id FROM role`,
       [owner],
     );
+    await invalidateRbacCache(owner);
     await query(
       `UPDATE pages
           SET source = 'confluence', confluence_id = 'previously-synced-route', space_key = 'IMPORTED-BASELINE'

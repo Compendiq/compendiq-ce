@@ -7,7 +7,7 @@ import {
   getUserAccessibleSpaces,
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
-import { authorizedPagesPredicate } from '../../core/services/page-visibility.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   assertPageHierarchyParentsAvailable,
   lockPageWrites,
@@ -181,7 +181,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
        LEFT JOIN pages visible_home
          ON visible_home.id = cs.custom_home_page_id
         AND visible_home.deleted_at IS NULL
-        AND ${authorizedPagesPredicate(1, 2, 'visible_home')}
+        AND ${visiblePagesPredicate(1, 2, 'visible_home')}
        WHERE cs.source = 'local'
        ORDER BY cs.space_name`,
       [accessibleSpaces, userId],
@@ -193,7 +193,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
        FROM pages p
        WHERE p.space_key IN (SELECT space_key FROM spaces WHERE source = 'local')
          AND p.deleted_at IS NULL
-         AND ${authorizedPagesPredicate(1, 2, 'p')}
+         AND ${visiblePagesPredicate(1, 2, 'p')}
        GROUP BY p.space_key`,
       [accessibleSpaces, userId],
     );
@@ -401,10 +401,10 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
                   OR parent_collision.id::text = p.parent_id)
              AND parent_collision.id <> parent_page.id
          )
-         AND ${authorizedPagesPredicate(2, 3, 'parent_page')}
+         AND ${visiblePagesPredicate(2, 3, 'parent_page')}
        WHERE p.space_key = $1
          AND p.deleted_at IS NULL
-         AND ${authorizedPagesPredicate(2, 3, 'p')}
+         AND ${visiblePagesPredicate(2, 3, 'p')}
        ORDER BY p.sort_order, p.title`,
       [key, accessibleSpaces, userId],
     );
@@ -872,7 +872,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
            FROM pages ancestor
            WHERE ancestor.id = ANY($1::int[])
              AND ancestor.deleted_at IS NULL
-             AND ${authorizedPagesPredicate(2, 3, 'ancestor')}`,
+             AND ${visiblePagesPredicate(2, 3, 'ancestor')}`,
           [pathIds, accessibleSpaces, userId],
         );
         const ancestorMap = new Map(ancestors.rows.map((row) => [row.id, row]));
@@ -931,7 +931,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
                    AND parent_collision.id <> parent.id
                    AND parent_collision.deleted_at IS NULL
                )
-               AND ${authorizedPagesPredicate(2, 3, 'parent')}
+               AND ${visiblePagesPredicate(2, 3, 'parent')}
              LIMIT 1`,
           [currentParentId, accessibleSpaces, userId],
         );

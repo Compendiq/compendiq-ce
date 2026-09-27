@@ -54,7 +54,7 @@ import {
   getUserAccessibleSpaces,
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
-import { authorizedPagesPredicate } from '../../core/services/page-visibility.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
 import { z } from 'zod';
@@ -556,7 +556,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     //   - Shared standalone articles (visible to all)
     //   - Their own private standalone articles
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    const whereBase = `WHERE ${authorizedPagesPredicate(1, 2)}`;
+    const whereBase = `WHERE ${visiblePagesPredicate(1, 2)}`;
     const values: unknown[] = [accessibleSpaces, userId];
     let paramIdx = 3;
 
@@ -755,7 +755,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                    OR parent_collision.id::text = cp.parent_id)
               AND parent_collision.id <> parent_page.id
           )
-          AND ${authorizedPagesPredicate(1, 2, 'parent_page')}
+          AND ${visiblePagesPredicate(1, 2, 'parent_page')}
         ${wc}
         ORDER BY ${ob}
         LIMIT $${pi} OFFSET $${pi + 1}
@@ -844,13 +844,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Full page authority: inherited Confluence pages use only actual RBAC
-    // assignments. Standalone visibility is independent of space access, so
-    // adding local-space keys here would only re-authorize Confluence rows that
-    // had been moved into a local container.
+    // Reuse the shared list visibility definition. Confluence rows require an
+    // actual RBAC space assignment; standalone visibility is independent of
+    // space access, so local-space keys must not authorize moved Confluence
+    // rows.
     const rbacSpaces = await getUserAccessibleSpaces(userId);
     const values: unknown[] = [rbacSpaces, userId];
-    let treeWhereClause = `WHERE ${authorizedPagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
+    let treeWhereClause = `WHERE ${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
       treeWhereClause += ' AND cp.space_key = $3';
@@ -901,7 +901,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                   OR parent_collision.id::text = cp.parent_id)
              AND parent_collision.id <> parent_page.id
          )
-         AND ${authorizedPagesPredicate(1, 2, 'parent_page')}
+         AND ${visiblePagesPredicate(1, 2, 'parent_page')}
        ${treeWhereClause}
        ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
@@ -950,15 +950,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const [authorsResult, labelsResult] = await Promise.all([
       query<{ author: string }>(
         `SELECT DISTINCT cp.author FROM pages cp
-         WHERE cp.space_key = ANY($1::text[])
-           AND cp.author IS NOT NULL ORDER BY cp.author ASC`,
-        [filterSpaces],
+         WHERE cp.author IS NOT NULL
+           AND cp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(1, 2)}
+         ORDER BY cp.author ASC`,
+        [filterSpaces, userId],
       ),
       query<{ label: string }>(
         `SELECT DISTINCT unnest(cp.labels) AS label FROM pages cp
-         WHERE cp.space_key = ANY($1::text[])
+         WHERE cp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(1, 2)}
          ORDER BY label ASC`,
-        [filterSpaces],
+        [filterSpaces, userId],
       ),
     ]);
 
@@ -1080,7 +1083,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               -- Children use the parent's canonical stored key: a Confluence
               -- parent's upstream id, or a standalone parent's numeric id.
               -- Reject a key that also identifies a second live page, and
-              -- apply the same complete authority as the children route.
+              -- apply the same shared list visibility as the children route.
               EXISTS(SELECT 1 FROM pages c2
                       WHERE c2.parent_id = CASE
                               WHEN cp.source = 'confluence' THEN cp.confluence_id
@@ -1102,7 +1105,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                               END
                             )
                         )
-                        AND ${authorizedPagesPredicate(3, 2, 'c2')}) as has_children,
+                        AND ${visiblePagesPredicate(3, 2, 'c2')}) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
               (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
@@ -1269,7 +1272,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                AND (parent_collision.confluence_id = $1
                     OR parent_collision.id::text = $1)
            )
-           AND ${authorizedPagesPredicate(3, 4, 'child')}
+           AND ${visiblePagesPredicate(3, 4, 'child')}
        ) AS has_children`,
       [parentLookupId, page.id, accessibleSpaces, userId],
     );
@@ -1307,11 +1310,37 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // longer find page 7. It applies to the id arm ONLY — confluence_id is a
     // text column and must still be matched verbatim.
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
-      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
-         AND deleted_at IS NULL
-       ORDER BY id`,
+    const pageResult = await query<{
+      id: number;
+      confluence_id: string | null;
+      space_key: string | null;
+      source: string;
+      visibility: string;
+      created_by_user_id: string | null;
+      canonical_key_ambiguous: boolean;
+    }>(
+      `SELECT page.id, page.confluence_id, page.space_key, page.source,
+              page.visibility, page.created_by_user_id,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+              ) AS canonical_key_ambiguous
+       FROM pages page
+       WHERE ${isNumericId ? '(page.confluence_id = $1 OR page.id::text = $2)' : 'page.confluence_id = $1'}
+         AND page.deleted_at IS NULL
+       ORDER BY page.id`,
       isNumericId ? [id, toPageIdText(id)] : [id],
     );
 
@@ -1333,6 +1362,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const parentLookupId = page.source === 'confluence'
       ? page.confluence_id!
       : String(page.id);
+
+    if (page.canonical_key_ambiguous) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
 
     // Validate sort column to prevent SQL injection (only allow whitelisted values)
     const sortColumn = sort === 'created_at' ? 'created_at' : 'title';
@@ -1366,7 +1399,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          FROM pages p
          WHERE p.parent_id = $1
            AND p.deleted_at IS NULL
-           AND ${authorizedPagesPredicate(4, 5, 'p')}
+           AND ${visiblePagesPredicate(4, 5, 'p')}
          UNION ALL
          SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, p.source, t.depth + 1,
                 p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
@@ -1392,7 +1425,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  END
                )
            )
-           AND ${authorizedPagesPredicate(4, 5, 'p')}
+           AND ${visiblePagesPredicate(4, 5, 'p')}
        )
        SELECT * FROM tree ORDER BY depth, ${sortColumn} ${sortOrder}
        LIMIT $3`,

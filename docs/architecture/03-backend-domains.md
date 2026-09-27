@@ -110,38 +110,39 @@ Recommendations remain bounded to five, ordered by persisted evidence score.
 
 ```mermaid
 flowchart LR
-    caller["Authenticated caller"] --> authority["Standalone owner/share<br/>Space inheritance<br/>Page ACE<br/>System admin"]
-    authority --> rows["Visible page rows"]
-    authority --> parents["Visible unambiguous parent rows"]
-    rows --> projection["Tree / list / detail / breadcrumb projection"]
+    caller["Authenticated caller"] --> visibility["Assigned Confluence spaces<br/>Shared standalone<br/>Own private standalone"]
+    visibility --> rows["Caller-visible page rows"]
+    visibility --> parents["Visible unambiguous parent rows"]
+    rows --> projection["Tree / list / graph / pins / facets<br/>space page counts + home ids"]
     parents --> projection
-    writes["Page + RBAC authority writes"] --> generation["Per-user + global pages<br/>cache generation"]
+    writes["Page + RBAC visibility writes"] --> generation["Per-user + global pages<br/>cache generation"]
     generation --> projection
 ```
 
 Local-space access grants access to the space container, not to every
-standalone page assigned to it. Page list and hierarchy routes apply the full
-page-read authority before returning rows: standalone sharing/ownership,
-inherited Confluence space access, non-inheriting page ACEs, and the
-system-admin bypass. Parent identity is projected only when the direct parent
-is visible and its stored key identifies one live candidate. Mixed-source
-parent/child links remain valid because the parent's source determines its
-canonical stored key.
+standalone page assigned to it. Page-derived list and hierarchy projections
+reuse the shared caller-bound list definition: Confluence pages in assigned
+spaces, shared standalone pages, and the caller's own private standalone pages.
+This preserves the established system-administrator list behavior and does not
+add a separate page-ACE policy to hierarchy reads. Parent identity is projected
+only when the direct parent is visible and its stored key identifies one live
+candidate. Mixed-source parent/child links remain valid because the parent's
+source determines its canonical stored key.
 
 A visible child whose parent is not visible is presented as a root
 (`parentId: null`); the local tree recomputes all descendant depths from that
 visible forest. Breadcrumbs retain only the contiguous visible suffix, and
 descendant tree walks do not traverse through an invisible or ambiguous node.
 
-Hierarchy trees and lists use the generational `pages` cache namespace with
-per-user keys. Page visibility, ownership, hierarchy and lifecycle writers
+Hierarchy trees, lists and graphs use the generational `pages` cache namespace
+with per-user keys. Page visibility, ownership, hierarchy and lifecycle writers
 invalidate that namespace. RBAC invalidation also advances its generation, so
-role, group membership, ACE, inherited-permission and admin-status changes
-cannot reuse or refill a pre-change projection. Cache-key versioning prevents
-pre-fix values surviving a deployment. `GET /api/spaces/local` combines mutable
-space metadata with caller-visible page counts and home-page identity, so it
-remains uncached rather than pretending one of those two independent
-invalidation domains covers both.
+role and group membership changes cannot reuse or refill a pre-change
+projection. Cache-key versioning prevents pre-fix values surviving a
+deployment. `GET /api/spaces/local` and `GET /api/spaces` combine mutable space
+metadata with caller-visible page counts and home-page identity, so they remain
+uncached rather than pretending one of those two independent invalidation
+domains covers both.
 
 ### Immutable page baselines (#275 foundation, #276 enforcement)
 

@@ -226,92 +226,70 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(legacy.statusCode, legacy.body).toBe(409);
   });
 
-  it('honors page ACEs, admins, and cache revocation across hierarchy projections', async () => {
-    const restrictedParent = await insertConfluencePage(
-      'restricted-parent',
-      'Restricted parent',
+  it('rejects a canonical Confluence root key that collides before children traversal', async () => {
+    const numericCandidate = await insertStandalonePage(
+      'Numeric collision candidate',
+      'shared',
+      userA,
+      'NOTES',
+    );
+    const confluenceParent = await insertConfluencePage(
+      String(numericCandidate),
+      'Confluence parent',
       'DEV',
     );
-    const restrictedChild = await insertConfluencePage(
-      'restricted-child',
-      'Restricted child',
-      'DEV',
-      { parentId: 'restricted-parent' },
-    );
-    await query('UPDATE pages SET inherit_perms = FALSE WHERE id = ANY($1::int[])', [
-      [restrictedParent, restrictedChild],
-    ]);
+    await insertConfluencePage('canonical-child', 'Canonical child', 'DEV', {
+      parentId: String(numericCandidate),
+    });
     await assignReadableSpace(userB, 'DEV');
 
     currentUserId = userB;
-    expect(await treeTitles(userB)).toEqual([]);
-    const deniedList = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=DEV' });
-    expect(deniedList.json()).toMatchObject({ total: 0, items: [] });
-    const deniedLegacy = await app.inject({
+    const response = await app.inject({
       method: 'GET',
-      url: `/api/pages/${restrictedParent}/has-children`,
+      url: `/api/pages/${confluenceParent}/children`,
     });
-    expect(deniedLegacy.statusCode, deniedLegacy.body).toBe(404);
 
-    const group = await query<{ id: number }>(
-      `INSERT INTO groups (name, description) VALUES ($1, 'Hierarchy readers') RETURNING id`,
-      [`hierarchy-readers-${randomUUID()}`],
-    );
-    const groupId = group.rows[0]!.id;
-    await query('INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2)', [
-      groupId,
-      userB,
-    ]);
-    await query(
-      `INSERT INTO access_control_entries
-         (resource_type, resource_id, principal_type, principal_id, permission)
-       VALUES ('page', $1, 'group', $2::text, 'read')`,
-      [restrictedChild, groupId],
-    );
-    await invalidateRbacCache(userB);
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    expect(response.body).not.toContain('Canonical child');
+  });
 
-    const grantedTree = await app.inject({ method: 'GET', url: '/api/pages/tree' });
-    expect(grantedTree.json().items).toEqual([
-      expect.objectContaining({ id: String(restrictedChild), parentId: null }),
-    ]);
-    const grantedList = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=DEV' });
-    expect(grantedList.json().items).toEqual([
-      expect.objectContaining({ id: String(restrictedChild), parentId: null }),
-    ]);
-    const grantedDetail = await app.inject({
-      method: 'GET',
-      url: `/api/pages/${restrictedChild}`,
-    });
-    expect(grantedDetail.statusCode, grantedDetail.body).toBe(200);
-    expect(grantedDetail.json()).toMatchObject({ parentId: null });
+  it('invalidates cached hierarchy rows on space-role changes without widening admins', async () => {
+    await insertConfluencePage('dev-page', 'Dev page', 'DEV');
+    await insertStandalonePage('Private foreign note', 'private', userA, 'NOTES');
+    await insertStandalonePage('Shared note', 'shared', userA, 'NOTES');
+    await assignReadableSpace(userB, 'DEV');
 
-    await query('DELETE FROM group_memberships WHERE group_id = $1 AND user_id = $2', [
-      groupId,
-      userB,
-    ]);
-    await invalidateRbacCache(userB);
-    expect(await treeTitles(userB)).toEqual([]);
-    const revokedList = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=DEV' });
-    expect(revokedList.json()).toMatchObject({ total: 0, items: [] });
+    expect(await treeTitles(userB)).toEqual(['Dev page', 'Shared note']);
 
     await query(
-      `INSERT INTO access_control_entries
-         (resource_type, resource_id, principal_type, principal_id, permission)
-       VALUES ('page', $1, 'user', $2, 'read')`,
-      [restrictedChild, userB],
+      `DELETE FROM space_role_assignments
+       WHERE space_key = 'DEV' AND principal_type = 'user' AND principal_id = $1`,
+      [userB],
     );
     await invalidateRbacCache(userB);
-    expect(await treeTitles(userB)).toEqual(['Restricted child']);
+    expect(await treeTitles(userB)).toEqual(['Shared note']);
 
     await query("UPDATE users SET role = 'admin' WHERE id = $1", [userB]);
     await invalidateRbacCache(userB);
-    expect(await treeTitles(userB)).toEqual(['Restricted child', 'Restricted parent']);
-    const adminLegacy = await app.inject({
+    expect(await treeTitles(userB)).toEqual(['Dev page', 'Shared note']);
+    const adminList = await app.inject({
       method: 'GET',
-      url: `/api/pages/${restrictedParent}/has-children`,
+      url: '/api/pages?spaceKey=NOTES',
     });
-    expect(adminLegacy.statusCode, adminLegacy.body).toBe(200);
-    expect(adminLegacy.json()).toEqual({ hasChildren: true });
+    expect(adminList.statusCode, adminList.body).toBe(200);
+    expect(adminList.json().items.map((item: { title: string }) => item.title)).toEqual([
+      'Shared note',
+    ]);
+
+    const adminTree = await app.inject({
+      method: 'GET',
+      url: '/api/pages/tree?spaceKey=NOTES',
+    });
+    expect(adminTree.statusCode, adminTree.body).toBe(200);
+    expect(adminTree.json().items.map((item: { title: string }) => item.title)).toEqual([
+      'Shared note',
+    ]);
   });
 
   it('limits Confluence pages to spaces assigned through real RBAC state', async () => {

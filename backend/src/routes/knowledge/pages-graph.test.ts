@@ -170,6 +170,57 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       });
     });
 
+    it("omits another user's private standalone page from individual and clustered graphs", async () => {
+      const owner = randomUUID();
+      await query(
+        `INSERT INTO users (id, username, email, password_hash, role)
+         VALUES ($1, 'graph-private-owner', 'graph-private-owner@test', 'x', 'user')`,
+        [owner],
+      );
+      const privatePage = await query<{ id: number }>(
+        `INSERT INTO pages
+           (source, space_key, title, body_html, body_text, visibility,
+            embedding_status, created_by_user_id)
+         VALUES ('standalone', 'DEV', 'Private foreign article', '<p>private</p>',
+                 'private', 'private', 'embedded', $1)
+         RETURNING id`,
+        [owner],
+      );
+      const visibleChild = await query<{ id: number }>(
+        `INSERT INTO pages
+           (source, space_key, title, body_html, body_text, visibility, parent_id,
+            embedding_status, created_by_user_id)
+         VALUES ('standalone', 'DEV', 'Visible child', '<p>child</p>', 'child',
+                 'shared', $1, 'not_embedded', $2)
+         RETURNING id`,
+        [String(privatePage.rows[0]!.id), owner],
+      );
+
+      const individual = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=DEV',
+      });
+      expect(individual.statusCode, individual.body).toBe(200);
+      expect(individual.json().nodes.map((node: { id: string }) => node.id))
+        .not.toContain(String(privatePage.rows[0]!.id));
+      expect(individual.body).not.toContain('Private foreign article');
+      expect(individual.json().nodes).toContainEqual(
+        expect.objectContaining({
+          id: String(visibleChild.rows[0]!.id),
+          parentId: null,
+        }),
+      );
+
+      const clustered = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?view=clustered&spaceKey=DEV',
+      });
+      expect(clustered.statusCode, clustered.body).toBe(200);
+      expect(clustered.json().nodes.flatMap((node: { pageIds: number[] }) => node.pageIds))
+        .not.toContain(privatePage.rows[0]!.id);
+      expect(clustered.body).not.toContain('Private foreign article');
+    });
+
     it('fences the individual fill and preserves its 300-second TTL', async () => {
       const url = '/api/pages/graph?spaceKey=DEV';
       const first = await app.inject({ method: 'GET', url });
