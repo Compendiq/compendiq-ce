@@ -746,6 +746,7 @@ export function PageViewPage() {
       return;
     }
     saveInFlightRef.current = true;
+    setConfirmTrashOpen(false);
     setSaveInFlight(true);
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
@@ -1020,12 +1021,12 @@ export function PageViewPage() {
     : trashConfirmCopy(undefined);
 
   const handleDeletePage = useCallback(() => {
-    if (!id) return;
+    if (!id || rejectSessionTransitionDuringSave()) return;
     setConfirmTrashOpen(true);
-  }, [id]);
+  }, [id, rejectSessionTransitionDuringSave]);
 
   const handleConfirmMoveToTrash = useCallback(async () => {
-    if (!id) return;
+    if (!id || rejectSessionTransitionDuringSave()) return;
     setConfirmTrashOpen(false);
     try {
       await deleteMutation_page.mutateAsync(id);
@@ -1034,7 +1035,7 @@ export function PageViewPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
-  }, [deleteMutation_page, id, navigate]);
+  }, [deleteMutation_page, id, navigate, rejectSessionTransitionDuringSave]);
 
   // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape, Alt+P, Alt+Shift+D, Alt+I)
   const pageShortcuts = useMemo<ShortcutDefinition[]>(() => [

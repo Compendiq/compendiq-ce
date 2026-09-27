@@ -327,11 +327,14 @@ flowchart TB
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
   ordinary versioned PUT or the collaborative commit. The pending ref has
-  state-backed UI: Done/Cancel and page navigation cannot advance to another
-  editing session while the older write is unresolved. Success and failure
-  both release the flight for a later intentional retry; collaborative
-  acknowledgment remains bound to the snapshot captured by the accepted Save,
-  and later local edits still keep the editor open.
+  state-backed UI: Done/Cancel, page navigation, and destructive deletion
+  cannot advance to another editing session or trash the page while the older
+  write is unresolved. Starting Save closes an already-open trash
+  confirmation, and both opening and confirming deletion recheck the
+  synchronous ref. Success and failure both release the flight for a later
+  intentional retry; collaborative acknowledgment remains bound to the
+  snapshot captured by the accepted Save, and later local edits still keep the
+  editor open.
 - **Recovery preserves the tab's document.** Lifecycle, permission and document
   resets disconnect and make the mounted provider/Y.Doc inert rather than
   silently joining or replaying into a new lifecycle. Dirty connected and

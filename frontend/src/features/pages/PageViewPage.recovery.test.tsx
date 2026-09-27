@@ -510,6 +510,52 @@ describe('PageViewPage save and collaboration recovery', () => {
     })).toBeInTheDocument();
   });
 
+  it('keeps destructive deletion unavailable while a collaborative save is pending', async () => {
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    await joinWritableSession();
+    const editor = document.querySelector('.ProseMirror');
+    if (!(editor instanceof HTMLElement)) throw new Error('Editor did not mount');
+
+    fireEvent.keyDown(editor, {
+      key: 'd',
+      code: 'KeyD',
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    const confirmDelete = screen.getByTestId('confirm-dialog-confirm');
+
+    act(() => {
+      fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
+      fireEvent.click(confirmDelete);
+    });
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+    await waitFor(() => expect(
+      screen.queryByText('Move page to trash?'),
+    ).not.toBeInTheDocument());
+
+    fireEvent.keyDown(editor, {
+      key: 'd',
+      code: 'KeyD',
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([, init]) =>
+      (init?.method ?? 'GET') === 'DELETE',
+    )).toHaveLength(0);
+
+    await act(async () => commit.resolve());
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Recovery article',
+    })).toBeInTheDocument();
+  });
+
   it('single-flights rapid keyboard saves before the standalone PUT starts', async () => {
     collabEnabled = false;
     const update = Promise.withResolvers<void>();
