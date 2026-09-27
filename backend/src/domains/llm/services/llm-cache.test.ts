@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest';
 import {
   hashLlmInputs,
   buildLlmCacheKey,
@@ -219,12 +219,13 @@ describe('buildRagCacheKey', () => {
 describe('LlmCache', () => {
   let cache: LlmCache;
   let mockRedis: {
-    get: ReturnType<typeof vi.fn>;
-    set: ReturnType<typeof vi.fn>;
-    setEx: ReturnType<typeof vi.fn>;
-    scan: ReturnType<typeof vi.fn>;
-    del: ReturnType<typeof vi.fn>;
-    exists: ReturnType<typeof vi.fn>;
+    get: Mock;
+    set: Mock;
+    setEx: Mock;
+    scan: Mock;
+    del: Mock;
+    exists: Mock;
+    eval: Mock;
   };
 
   beforeEach(() => {
@@ -235,6 +236,7 @@ describe('LlmCache', () => {
       scan: vi.fn(),
       del: vi.fn(),
       exists: vi.fn(),
+      eval: vi.fn(),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cache = new LlmCache(mockRedis as any);
@@ -297,44 +299,69 @@ describe('LlmCache', () => {
   });
 
   describe('acquireLock', () => {
-    it('should return true when lock is acquired (SET NX succeeds)', async () => {
+    it('returns the unique ownership token stored by SET NX', async () => {
       mockRedis.set.mockResolvedValue('OK');
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      expect(acquired).toBe(true);
-      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 120 });
+
+      const token = await cache.acquireLock('kb:llm:abc123');
+
+      expect(token).toMatch(/^[0-9a-f-]{36}$/);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        'llm:lock:kb:llm:abc123',
+        token,
+        { NX: true, EX: 120 },
+      );
     });
 
-    it('should return false when lock is already held (SET NX returns null)', async () => {
+    it('creates a fresh identity for every acquisition attempt', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+
+      const first = await cache.acquireLock('kb:llm:first');
+      const second = await cache.acquireLock('kb:llm:second');
+
+      expect(first).not.toBe(second);
+    });
+
+    it('returns null when the lock is already held', async () => {
       mockRedis.set.mockResolvedValue(null);
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      expect(acquired).toBe(false);
+      await expect(cache.acquireLock('kb:llm:abc123')).resolves.toBeNull();
     });
 
-    it('should accept a custom TTL', async () => {
+    it('accepts a custom TTL', async () => {
       mockRedis.set.mockResolvedValue('OK');
-      await cache.acquireLock('kb:llm:abc123', 30);
-      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 30 });
+      const token = await cache.acquireLock('kb:llm:abc123', 30);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        'llm:lock:kb:llm:abc123',
+        token,
+        { NX: true, EX: 30 },
+      );
     });
 
-    it('should return true on Redis error (graceful degradation)', async () => {
+    it('returns a token on Redis error to preserve graceful degradation', async () => {
       mockRedis.set.mockRejectedValue(new Error('Redis down'));
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      // On failure, allow caller to proceed rather than blocking
-      expect(acquired).toBe(true);
+      await expect(cache.acquireLock('kb:llm:abc123')).resolves.toMatch(
+        /^[0-9a-f-]{36}$/,
+      );
     });
   });
 
   describe('releaseLock', () => {
-    it('should delete the lock key', async () => {
-      mockRedis.del.mockResolvedValue(1);
-      await cache.releaseLock('kb:llm:abc123');
-      expect(mockRedis.del).toHaveBeenCalledWith('llm:lock:kb:llm:abc123');
+    it('atomically deletes only the lock owned by the supplied token', async () => {
+      mockRedis.eval.mockResolvedValue(1);
+
+      await cache.releaseLock('kb:llm:abc123', 'owner-token');
+
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+        {
+          keys: ['llm:lock:kb:llm:abc123'],
+          arguments: ['owner-token'],
+        },
+      );
     });
 
-    it('should not throw on Redis error', async () => {
-      mockRedis.del.mockRejectedValue(new Error('Redis down'));
-      // Should not throw
-      await cache.releaseLock('kb:llm:abc123');
+    it('does not throw on Redis error', async () => {
+      mockRedis.eval.mockRejectedValue(new Error('Redis down'));
+      await cache.releaseLock('kb:llm:abc123', 'owner-token');
     });
   });
 

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **LLM response-cache lock releases preserve the current owner (#1660).**
+  Every cache-stampede lease now carries a per-acquisition UUID and releases
+  through an atomic compare-and-delete, so a request that outlives its TTL
+  cannot delete a successor's live lock. Redis-unavailable and cache-wait
+  timeout generation fallbacks remain unchanged.
+
 - **Immutable article baselines and protected-writer enforcement (#275,
   #276).** Added canonical manifest-v1 digests, exclusive retained media,
   append-only freeze/thaw evidence, shared writer intents, and conservative

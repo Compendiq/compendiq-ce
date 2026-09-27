@@ -168,26 +168,28 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
  *    result appears (or timeout, in which case we return null so the caller
  *    can generate anyway).
  *
- * The caller MUST call `releaseLock()` in a finally block when `lockAcquired`
- * is true, after writing the generated result to the cache.
+ * The caller MUST pass `lockToken` to `releaseLock()` in a finally block
+ * when it is non-null, after writing the generated result to the cache.
  */
 export async function checkCacheWithLock(
   llmCache: LlmCache,
   cacheKey: string,
-): Promise<{ cached: CachedLlmResponse | null; lockAcquired: boolean }> {
+): Promise<{ cached: CachedLlmResponse | null; lockToken: string | null }> {
   // Fast path — already in cache
   const cached = await llmCache.getCachedResponse(cacheKey);
-  if (cached) return { cached, lockAcquired: false };
+  if (cached) return { cached, lockToken: null };
 
   // Try to become the single generator for this key
-  const lockAcquired = await llmCache.acquireLock(cacheKey);
-  if (lockAcquired) {
-    return { cached: null, lockAcquired: true };
+  const lockToken = await llmCache.acquireLock(cacheKey);
+  if (lockToken) {
+    return { cached: null, lockToken };
   }
 
-  // Another request holds the lock — wait for it to populate the cache
+  // Another request holds the lock — wait for it to populate the cache.
+  // A timeout deliberately returns without ownership so the caller can use
+  // the existing duplicate-generation fallback without releasing that lock.
   const waited = await llmCache.waitForCachedResponse(cacheKey);
-  return { cached: waited, lockAcquired: false };
+  return { cached: waited, lockToken: null };
 }
 
 /**
