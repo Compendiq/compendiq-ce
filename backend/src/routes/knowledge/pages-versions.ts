@@ -57,6 +57,16 @@ const SemanticDiffSchema = z.object({
   model: z.string().optional(),
 });
 
+const RESTORE_STALE_MESSAGE =
+  'Page has been modified since you loaded it. Please refresh and try again.';
+
+function throwPublicRestoreError(fastify: FastifyInstance, error: unknown): never {
+  if (error instanceof PageWriteError && error.reason === 'stale_content_revision') {
+    throw fastify.httpErrors.conflict(RESTORE_STALE_MESSAGE);
+  }
+  throw error;
+}
+
 /**
  * #780: the underlying backfill error is rendered inside the Version History
  * dialog, so make it dialog-safe before embedding: collapse all whitespace
@@ -484,23 +494,26 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     let result: RestoreResult | null;
 
     if (staysLocal) {
-      result = await withPageWriteTransaction([ctx.id], async (client) => {
-        const current = await client.query<{ version: number }>(
-          'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL',
-          [ctx.id],
-        );
-        const liveVersion = current.rows[0]?.version;
-        if (liveVersion === undefined) throw fastify.httpErrors.notFound('Page not found');
-        if (expectedVersion !== undefined && expectedVersion < liveVersion) {
-          throw fastify.httpErrors.conflict(
-            'Page has been modified since you loaded it. Please refresh and try again.',
+      try {
+        result = await withPageWriteTransaction([ctx.id], async (client) => {
+          const current = await client.query<{ version: number }>(
+            'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [ctx.id],
           );
-        }
-        if (targetVersion === liveVersion) {
-          throw fastify.httpErrors.badRequest('Cannot restore the current version');
-        }
-        return restoreVersion(ctx.id, targetVersion, { client, actorId: userId });
-      });
+          const liveVersion = current.rows[0]?.version;
+          if (liveVersion === undefined) throw fastify.httpErrors.notFound('Page not found');
+          if (targetVersion === liveVersion) {
+            throw fastify.httpErrors.badRequest('Cannot restore the current version');
+          }
+          return restoreVersion(ctx.id, targetVersion, {
+            client,
+            actorId: userId,
+            expectedVersion,
+          });
+        });
+      } catch (error) {
+        throwPublicRestoreError(fastify, error);
+      }
     } else {
       if (!ctx.confluenceId) throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       // Preserve the existing early configuration error. The admitted resolver
@@ -578,7 +591,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         }, { intent });
       } catch (error) {
         await cancelPageWriteIntentBeforeEffect(intent);
-        throw error;
+        throwPublicRestoreError(fastify, error);
       }
 
       // Store only the bounded acknowledgment receipt. Compact successful

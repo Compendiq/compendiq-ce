@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Version restore concurrency (#1659).** The optional optimistic version is
+  now checked against the live page row under its transaction lock, before the
+  superseded snapshot or restored content is written. A concurrent edit wins
+  and the restore returns 409; callers that omit the version retain the existing
+  unconditional restore behavior.
+
 - **Upgrade the client inference dependency family (#1654).** Transformers
   4.3.0 brings ORT node 1.30.0 and web 1.31.0-dev.20260914-8d85527a0;
   the resolved sharp 0.35.4 and adm-zip 0.6.1 no longer need the obsolete

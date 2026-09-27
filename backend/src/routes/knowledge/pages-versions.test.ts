@@ -53,6 +53,26 @@ async function waitForBlockedLifecycleLock(): Promise<void> {
   }
 }
 
+async function waitForRowLockWaiter(blockerPid: number): Promise<void> {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND $1 = ANY(pg_blocking_pids(pid))
+            AND query LIKE '%SELECT version, title, body_html, body_text%'
+       ) AS waiting`,
+      [blockerPid],
+    );
+    return waiting.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('Version restore did not reach the locked live-row read');
+  }
+}
+
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json' });
   response.end(JSON.stringify(body));
@@ -537,6 +557,98 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     )).rows).toEqual([{
       action: 'PAGE_VERSION_RESTORED',
       metadata: expect.objectContaining({ restoredFrom: 1, newVersion: 4, pushedToConfluence: false }),
+    }]);
+  });
+
+  it('returns 409 and preserves a concurrent edit committed while restore waits for the row lock', async () => {
+    const pageId = await seedPage({
+      version: 2,
+      title: 'Version two',
+      bodyHtml: '<p>version two</p>',
+      bodyText: 'version two',
+    });
+    await seedVersion(pageId, 1, 'Version one', '<p>version one</p>', 'version one');
+
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    try {
+      const blockerPid = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      await blocker.query(
+        `UPDATE pages
+            SET version = 3,
+                title = 'Concurrent edit',
+                body_html = '<p>concurrent edit</p>',
+                body_text = 'concurrent edit'
+          WHERE id = $1`,
+        [pageId],
+      );
+
+      const pendingRestore = app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/1/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 2 },
+      });
+      await waitForRowLockWaiter(blockerPid.rows[0]!.pid);
+      await blocker.query('COMMIT');
+
+      const response = await pendingRestore;
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({
+        error: 'Page has been modified since you loaded it. Please refresh and try again.',
+      });
+      expect((await query(
+        'SELECT version, title, body_html, body_text FROM pages WHERE id = $1',
+        [pageId],
+      )).rows).toEqual([{
+        version: 3,
+        title: 'Concurrent edit',
+        body_html: '<p>concurrent edit</p>',
+        body_text: 'concurrent edit',
+      }]);
+      expect((await query(
+        'SELECT version_number FROM page_versions WHERE page_id = $1 ORDER BY version_number',
+        [pageId],
+      )).rows).toEqual([{ version_number: 1 }]);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('keeps restore unconditional when the optional expected version is omitted', async () => {
+    const pageId = await seedPage({
+      version: 2,
+      title: 'Live without guard',
+      bodyHtml: '<p>live without guard</p>',
+      bodyText: 'live without guard',
+    });
+    await seedVersion(pageId, 1, 'Restored without guard', '<p>restored</p>', 'restored');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: {},
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: pageId,
+      title: 'Restored without guard',
+      version: 3,
+      restoredFrom: 1,
+      pushedToConfluence: false,
+    });
+    expect((await query(
+      'SELECT version, title, body_text FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      version: 3,
+      title: 'Restored without guard',
+      body_text: 'restored',
     }]);
   });
 
