@@ -33,7 +33,9 @@ async function ensurePipeline(modelId: string, accessToken?: string): Promise<vo
   } else if (accessToken) {
     transformers.env.fetch = wrapAssetFetch(accessToken, self.location.origin);
   }
-  generator = await transformers.pipeline('text-generation', modelId, {
+  // A same-origin path is not a Hugging Face repo id: Hub-installed local
+  // ids contain "--", which Transformers 4.3 rejects as a remote model id.
+  generator = await transformers.pipeline('text-generation', `/api/models/client-assets/${modelId}`, {
     device: 'webgpu',
     dtype: 'q4',
   });

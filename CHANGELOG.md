@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the restore returns 409; callers that omit the version retain the existing
   unconditional restore behavior.
 
+- **Upgrade the client inference dependency family (#1654).** Transformers
+  4.3.0 brings ORT node 1.30.0 and web 1.31.0-dev.20260914-8d85527a0;
+  the resolved sharp 0.35.4 and adm-zip 0.6.1 no longer need the obsolete
+  Transformers 4.2.0 overrides. Load models through API-relative local paths
+  so the new Hub ID validation cannot reject Compendiq's `org--name` asset
+  IDs. Same-origin authentication and existing OPFS caches are preserved.
+
 - **Immutable article baselines and protected-writer enforcement (#275,
   #276).** Added canonical manifest-v1 digests, exclusive retained media,
   append-only freeze/thaw evidence, shared writer intents, and conservative
