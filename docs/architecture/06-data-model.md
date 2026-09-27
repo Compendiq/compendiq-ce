@@ -1298,10 +1298,12 @@ together, which matters most for #1114's query-side prefix.
   Confluence-synced and standalone/local pages accumulate history. The
   right-pane "Version history" UI lists snapshots + the live version, previews
   any snapshot, and offers a Confluence-style **restore**
-  (`POST /api/pages/:id/versions/:version/restore`): it snapshots the current
-  live state first, then applies the target snapshot as a **new** bumped
-  version (older versions remain), marks `embedding_dirty`, and — for
-  Confluence-sourced pages — pushes the restored content upstream as a new
+  (`POST /api/pages/:id/versions/:version/restore`): after locking the live row,
+  it rejects a supplied stale optimistic version before writing history or live
+  content (an omitted version deliberately remains unconditional), snapshots
+  the current live state, then applies the target snapshot as a **new** bumped
+  version. Older versions remain, `embedding_dirty` is raised, and — for
+  Confluence-sourced pages — the restored content is pushed upstream as a new
   Confluence version so the next sync doesn't clobber the revert. Retention
   keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
   (`data-retention-service.ts`).
