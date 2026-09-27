@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Upgrade the client inference dependency family (#1654).** Transformers
+  4.3.0 brings ORT node 1.30.0 and web 1.31.0-dev.20260914-8d85527a0;
+  the resolved sharp 0.35.4 and adm-zip 0.6.1 no longer need the obsolete
+  Transformers 4.2.0 overrides. Load models through API-relative local paths
+  so the new Hub ID validation cannot reject Compendiq's `org--name` asset
+  IDs. Same-origin authentication and existing OPFS caches are preserved.
+
 - **An analysis whose only schema violation is inside `structured` is kept
   (#1615).** Measured while driving #1619's arm B backfill over the 187-image
   corpus: 9 images produced a payload that broke a bound only in the OPTIONAL

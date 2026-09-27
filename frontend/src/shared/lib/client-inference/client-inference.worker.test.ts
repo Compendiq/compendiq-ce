@@ -5,8 +5,8 @@ const { generatedPrompts } = vi.hoisted(() => ({ generatedPrompts: [] as string[
 
 // The external GPU boundary has room for one model, as on a constrained
 // device. Dropping the JS pipeline reference does not release its session.
-// A model id starting with `base-` ships no chat template, like a non-instruct
-// checkpoint picked through the admin search.
+// A checkpoint basename starting with `base-` ships no chat template, like
+// a non-instruct checkpoint picked through the admin search.
 vi.mock('@huggingface/transformers', () => {
   let residentModels = 0;
   return {
@@ -18,7 +18,7 @@ vi.mock('@huggingface/transformers', () => {
         generatedPrompts.push(prompt);
         return [{ generated_text: ' continuation' }];
       };
-      const templated = !modelId.startsWith('base-');
+      const templated = !modelId.split('/').pop()?.startsWith('base-');
       return Object.assign(generate, {
         tokenizer: {
           chat_template: templated ? '{{ messages }}' : undefined,
