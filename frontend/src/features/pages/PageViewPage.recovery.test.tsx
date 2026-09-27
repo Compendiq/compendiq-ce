@@ -121,6 +121,12 @@ const initialPage = {
   canMutateContent: true,
 };
 
+const secondPage = {
+  ...initialPage,
+  id: '43',
+  title: 'Second recovery article',
+};
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -132,6 +138,7 @@ function TestShell() {
   return (
     <>
       <Link to="/elsewhere">Leave article</Link>
+      <Link to="/pages/43">Next article</Link>
       <Routes>
         <Route path="/pages/:id" element={<PageViewPage />} />
         <Route path="/elsewhere" element={<h1>Elsewhere</h1>} />
@@ -236,6 +243,7 @@ beforeEach(() => {
       }
       return json(currentPage);
     }
+    if (url === '/api/pages/43' && method === 'GET') return json(secondPage);
     if (url === '/api/pages/42' && method === 'PUT') {
       if (deferredPageUpdate) await deferredPageUpdate;
       if (pageUpdateMode === 'failure') {
@@ -291,10 +299,16 @@ beforeEach(() => {
     if (url === '/api/settings/drawio-url') return json({ drawioEmbedUrl: 'https://draw.example.com' });
     if (url === '/api/pages/filters') return json({ authors: [], labels: [] });
     if (url === '/api/pages/pinned') return json({ items: [], total: 0 });
-    if (url === '/api/pages/42/connections') return json({ linked: [], section: [], related: [] });
+    if (url === '/api/pages/42/connections' || url === '/api/pages/43/connections') {
+      return json({ linked: [], section: [], related: [] });
+    }
     if (url.startsWith('/api/llm/usecase-default')) return json({ message: 'Not configured' }, 404);
-    if (url === '/api/pages/42/presence' && method === 'GET') return new Response(null, { status: 403 });
-    if (url.startsWith('/api/pages/42/presence')) return new Response(null, { status: 204 });
+    if ((url === '/api/pages/42/presence' || url === '/api/pages/43/presence') && method === 'GET') {
+      return new Response(null, { status: 403 });
+    }
+    if (url.startsWith('/api/pages/42/presence') || url.startsWith('/api/pages/43/presence')) {
+      return new Response(null, { status: 204 });
+    }
     return json({});
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -448,7 +462,7 @@ describe('PageViewPage save and collaboration recovery', () => {
     })).toBeInTheDocument();
   });
 
-  it('keeps session transitions unavailable until a collaborative save settles', async () => {
+  it('keeps an accepted save visibly pending across discard and a retained page transition', async () => {
     const commit = Promise.withResolvers<void>();
     deferredCommit = commit.promise;
     renderPage();
@@ -465,95 +479,34 @@ describe('PageViewPage save and collaboration recovery', () => {
     ).toHaveLength(1));
 
     const done = screen.getByRole('button', { name: 'Done' });
-    expect(done).toBeDisabled();
+    expect(done).toBeEnabled();
     fireEvent.click(done);
-    fireEvent.keyDown(firstEditor, { key: 'e', code: 'KeyE', ctrlKey: true });
-    fireEvent.click(screen.getByRole('link', { name: 'Leave article' }));
+    expect(await screen.findByRole('heading', { name: 'Discard changes?' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
-    expect(screen.getByLabelText('Page title')).toHaveValue('First session save');
-    expect(screen.queryByRole('heading', { name: 'Elsewhere' })).not.toBeInTheDocument();
+    const pendingEdit = await screen.findByTestId('edit-page-btn');
+    expect(pendingEdit).toBeDisabled();
+    expect(pendingEdit).toHaveTextContent('Finishing save…');
+    expect(screen.queryByLabelText('Page title')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'e', code: 'KeyE', ctrlKey: true });
+    expect(screen.queryByLabelText('Page title')).not.toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Next article' }));
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Second recovery article',
+    })).toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn')).toBeDisabled();
+    expect(screen.getByTestId('edit-page-btn')).toHaveTextContent('Finishing save…');
+
+    await act(async () => commit.resolve());
+    await waitFor(() => expect(screen.getByTestId('edit-page-btn')).toBeEnabled());
+    expect(screen.getByTestId('edit-page-btn')).toHaveTextContent('Edit');
     expect(fetchMock.mock.calls.filter(
       ([url]) => url === '/api/pages/42/collab/commit',
     )).toHaveLength(1);
-
-    await act(async () => commit.resolve());
-    expect(await screen.findByRole('heading', {
-      level: 1,
-      name: 'First session save',
-    })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Edit/ }));
-    await waitFor(() => expect(Socket.instances).toHaveLength(2));
-    const secondSocket = Socket.instances[1]!;
-    act(() => {
-      secondSocket.open();
-      synchronize(secondSocket);
-      sendControl(secondSocket, { type: 'writable_admission', lifecycleRevision: '1' });
-    });
-    const secondEditor = await waitFor(() => {
-      const element = document.querySelector('.ProseMirror');
-      expect(element).toHaveAttribute('contenteditable', 'true');
-      if (!(element instanceof HTMLElement)) throw new Error('Editor did not remount');
-      return element;
-    });
-    fireEvent.change(screen.getByLabelText('Page title'), {
-      target: { value: 'Second session save' },
-    });
-    fireEvent.keyDown(secondEditor, { key: 's', code: 'KeyS', ctrlKey: true });
-
-    await waitFor(() => expect(
-      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
-    ).toHaveLength(2));
-    expect(await screen.findByRole('heading', {
-      level: 1,
-      name: 'Second session save',
-    })).toBeInTheDocument();
-  });
-
-  it('keeps destructive deletion unavailable while a collaborative save is pending', async () => {
-    const commit = Promise.withResolvers<void>();
-    deferredCommit = commit.promise;
-    renderPage();
-    await joinWritableSession();
-    const editor = document.querySelector('.ProseMirror');
-    if (!(editor instanceof HTMLElement)) throw new Error('Editor did not mount');
-
-    fireEvent.keyDown(editor, {
-      key: 'd',
-      code: 'KeyD',
-      altKey: true,
-      shiftKey: true,
-    });
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
-    const confirmDelete = screen.getByTestId('confirm-dialog-confirm');
-
-    act(() => {
-      fireEvent.keyDown(editor, { key: 's', code: 'KeyS', ctrlKey: true });
-      fireEvent.click(confirmDelete);
-    });
-    await waitFor(() => expect(
-      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
-    ).toHaveLength(1));
-    await waitFor(() => expect(
-      screen.queryByText('Move page to trash?'),
-    ).not.toBeInTheDocument());
-
-    fireEvent.keyDown(editor, {
-      key: 'd',
-      code: 'KeyD',
-      altKey: true,
-      shiftKey: true,
-    });
-    expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([, init]) =>
-      (init?.method ?? 'GET') === 'DELETE',
-    )).toHaveLength(0);
-
-    await act(async () => commit.resolve());
-    expect(await screen.findByRole('heading', {
-      level: 1,
-      name: 'Recovery article',
-    })).toBeInTheDocument();
   });
 
   it('single-flights rapid keyboard saves before the standalone PUT starts', async () => {

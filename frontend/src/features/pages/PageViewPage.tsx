@@ -443,14 +443,14 @@ export function PageViewPage() {
     return null;
   }, [page?.isFrozen, page?.canMutateContent]);
 
-  const rejectSessionTransitionDuringSave = useCallback(() => {
+  const rejectStartEditingDuringSave = useCallback(() => {
     if (!saveInFlightRef.current) return false;
-    toast.info('A save is still in progress. Wait for it to finish before leaving this editing session.');
+    toast.info('A save is still in progress. Wait for it to finish before starting another editing session.');
     return true;
   }, []);
 
   const handleStartEditing = useCallback(() => {
-    if (!page || !id || rejectSessionTransitionDuringSave()) return;
+    if (!page || !id || rejectStartEditingDuringSave()) return;
     const refusal = contentWriteRefusal();
     if (refusal) {
       toast.info(refusal);
@@ -482,7 +482,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal, rejectSessionTransitionDuringSave]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -518,7 +518,6 @@ export function PageViewPage() {
   }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
-    if (rejectSessionTransitionDuringSave()) return false;
     editSessionRef.current += 1;
     if (draftKey) clearDraft(draftKey);
     captureScrollOffset();
@@ -527,8 +526,7 @@ export function PageViewPage() {
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
-    return true;
-  }, [captureScrollOffset, draftKey, rejectSessionTransitionDuringSave]);
+  }, [captureScrollOffset, draftKey]);
 
   const titleOrLabelsDiverged = useCallback(() => {
     if (!page) return false;
@@ -543,7 +541,6 @@ export function PageViewPage() {
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
-    if (rejectSessionTransitionDuringSave()) return;
     // Connection and room admission do not acknowledge each local update.
     const dirty = collabSession ? titleOrLabelsDiverged() || isDirty : isEditorDirty();
     if (dirty) {
@@ -551,7 +548,7 @@ export function PageViewPage() {
       return;
     }
     const source = document.activeElement;
-    if (!discardAndExit()) return;
+    discardAndExit();
     requestAnimationFrame(() => {
       // Hand off only the focus lost with this editor, never a surviving
       // control or a different article reached before the next paint.
@@ -560,10 +557,11 @@ export function PageViewPage() {
         currentArticleHeadingRef.current?.focus();
       }
     });
-  }, [collabSession, titleOrLabelsDiverged, isDirty, isEditorDirty, discardAndExit, id, rejectSessionTransitionDuringSave]);
+  }, [collabSession, titleOrLabelsDiverged, isDirty, isEditorDirty, discardAndExit, id]);
 
   const handleConfirmDiscard = useCallback(() => {
-    if (discardAndExit()) setConfirmDiscardOpen(false);
+    setConfirmDiscardOpen(false);
+    discardAndExit();
   }, [discardAndExit]);
 
   const downloadOpenDraft = useCallback(() => {
@@ -578,7 +576,7 @@ export function PageViewPage() {
   }, [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
 
   const openCurrentVersion = useCallback(async () => {
-    if (openingCurrent || rejectSessionTransitionDuringSave()) return;
+    if (openingCurrent) return;
     const requestId = openingCurrentRequestRef.current + 1;
     openingCurrentRequestRef.current = requestId;
     const source = document.activeElement;
@@ -594,8 +592,8 @@ export function PageViewPage() {
         source,
         shouldFocus: document.activeElement === source,
       };
-      if (!discardAndExit()) return;
       setConfirmReloadOpen(false);
+      discardAndExit();
     } catch {
       if (openingCurrentRequestRef.current === requestId) {
         toast.error('The current page could not be opened. Your draft is still here.');
@@ -603,28 +601,24 @@ export function PageViewPage() {
     } finally {
       if (openingCurrentRequestRef.current === requestId) setOpeningCurrent(false);
     }
-  }, [discardAndExit, openingCurrent, refetchPage, rejectSessionTransitionDuringSave]);
+  }, [discardAndExit, openingCurrent, refetchPage]);
 
   // A connected socket is not durable acknowledgment. Preserve every changed
-  // local draft until a successful commit covers its captured Yjs state. An
-  // accepted Save also guards leaving until that flight settles, even after an
-  // external route reset has advanced the editing session.
+  // local draft until a successful commit covers its captured Yjs state.
   const recoveryDraftNeedsGuard = editing && collabLive && (titleOrLabelsDiverged() || isDirty);
-  const pageExitNeedsGuard = recoveryDraftNeedsGuard || saveInFlight;
-  recoveryNavigationGuardRef.current = pageExitNeedsGuard;
+  recoveryNavigationGuardRef.current = recoveryDraftNeedsGuard;
 
   useEffect(() => {
-    if (!pageExitNeedsGuard) return;
+    if (!recoveryDraftNeedsGuard) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [pageExitNeedsGuard]);
+  }, [recoveryDraftNeedsGuard]);
 
   const requestGuardedNavigation = useCallback((proceed: () => void) => {
-    if (rejectSessionTransitionDuringSave()) return;
     if (!recoveryNavigationGuardRef.current) {
       proceed();
       return;
@@ -634,7 +628,7 @@ export function PageViewPage() {
     if (pendingNavigationRef.current) return;
     pendingNavigationRef.current = proceed;
     setConfirmNavigationOpen(true);
-  }, [rejectSessionTransitionDuringSave]);
+  }, []);
 
   const cancelGuardedNavigation = useCallback(() => {
     pendingNavigationRef.current = null;
@@ -643,9 +637,9 @@ export function PageViewPage() {
 
   const confirmGuardedNavigation = useCallback(() => {
     const proceed = pendingNavigationRef.current;
-    if (!discardAndExit()) return;
     pendingNavigationRef.current = null;
     setConfirmNavigationOpen(false);
+    discardAndExit();
     proceed?.();
   }, [discardAndExit]);
 
@@ -675,7 +669,7 @@ export function PageViewPage() {
       });
     };
     const guardedGo: GuardableNavigator['go'] = (delta) => {
-      if (!recoveryNavigationGuardRef.current && !saveInFlightRef.current) {
+      if (!recoveryNavigationGuardRef.current) {
         Reflect.apply(originalGo, navigator, [delta]);
         return;
       }
@@ -702,7 +696,7 @@ export function PageViewPage() {
         event.stopImmediatePropagation();
         return;
       }
-      if (!recoveryNavigationGuardRef.current && !saveInFlightRef.current) {
+      if (!recoveryNavigationGuardRef.current) {
         currentIndex = nextIndex;
         return;
       }
@@ -746,7 +740,6 @@ export function PageViewPage() {
       return;
     }
     saveInFlightRef.current = true;
-    setConfirmTrashOpen(false);
     setSaveInFlight(true);
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
@@ -1021,12 +1014,12 @@ export function PageViewPage() {
     : trashConfirmCopy(undefined);
 
   const handleDeletePage = useCallback(() => {
-    if (!id || rejectSessionTransitionDuringSave()) return;
+    if (!id) return;
     setConfirmTrashOpen(true);
-  }, [id, rejectSessionTransitionDuringSave]);
+  }, [id]);
 
   const handleConfirmMoveToTrash = useCallback(async () => {
-    if (!id || rejectSessionTransitionDuringSave()) return;
+    if (!id) return;
     setConfirmTrashOpen(false);
     try {
       await deleteMutation_page.mutateAsync(id);
@@ -1035,7 +1028,7 @@ export function PageViewPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
-  }, [deleteMutation_page, id, navigate, rejectSessionTransitionDuringSave]);
+  }, [deleteMutation_page, id, navigate]);
 
   // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape, Alt+P, Alt+Shift+D, Alt+I)
   const pageShortcuts = useMemo<ShortcutDefinition[]>(() => [
@@ -1196,8 +1189,7 @@ export function PageViewPage() {
       {collabSession ? (
         <Button
           onClick={handleCancelEditing}
-          disabled={saving}
-          title={saving ? 'Wait for the current save to finish' : 'Done editing (Esc)'}
+          title="Done editing (Esc)"
           variant="ghost"
           size="sm"
           className="h-8 shrink-0 px-2.5 text-xs"
@@ -1208,8 +1200,7 @@ export function PageViewPage() {
       ) : (
         <IconButton
           onClick={handleCancelEditing}
-          disabled={saving}
-          title={saving ? 'Wait for the current save to finish' : 'Cancel editing (Esc)'}
+          title="Cancel editing (Esc)"
           label="Cancel"
           variant="destructive-ghost"
           size="icon-sm"
