@@ -734,6 +734,43 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     );
   });
 
+  it('ignores inaccessible collisions when deriving focused parent links', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source)
+       VALUES ('HIDDEN', 'Hidden', 'confluence')`,
+    );
+    await seedPage({ id: 819, title: 'Visible parent' });
+    await seedPage({
+      id: 820,
+      title: 'Visible child',
+      parentId: '819',
+    });
+    await seedPage({
+      id: 821,
+      title: 'Inaccessible collision',
+      source: 'confluence',
+      confluenceId: '819',
+      spaceKey: 'HIDDEN',
+      ownerId: otherUserId,
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/820/graph/local' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: '819', parentId: null }),
+        expect.objectContaining({ id: '820', parentId: '819' }),
+      ]),
+    );
+    expect(response.json().edges).toContainEqual({
+      source: '819',
+      target: '820',
+      type: 'parent_child',
+      score: 1,
+    });
+    expect(response.body).not.toContain('Inaccessible collision');
+  });
+
   it('fails closed when a focused-graph center is ambiguous across identifier arms', async () => {
     await seedPage({ id: 817, title: 'Numeric center' });
     await seedPage({

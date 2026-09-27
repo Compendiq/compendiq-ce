@@ -104,10 +104,13 @@ ranking. The focused graph uses the hierarchy list contract instead: assigned
 Confluence spaces, shared standalone pages, and the caller's own private
 standalone pages. It applies that visibility before traversal, limits, and
 counts, so an unavailable intermediate cannot expose second-hop neighbors.
-Missing and inaccessible centers return the same caller-keyed empty response;
-node `parentId` is retained only when both identifier arms resolve one live,
-visible parent. Explicit links and hierarchy do not depend on embeddings;
-current bodies and parent IDs recover direction from canonical persisted pairs.
+Missing, ambiguous, and inaccessible centers return the same caller-keyed empty
+response. Focused-graph hierarchy links are derived from the caller-visible
+vertex set for both traversal and edge output; node `parentId` is retained only
+when both identifier arms resolve one visible parent. An inaccessible
+identifier collision therefore cannot alter the focused response. Explicit
+links and hierarchy do not depend on embeddings; current bodies and parent IDs
+recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
 
 ### Page hierarchy read authorization

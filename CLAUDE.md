@@ -790,13 +790,16 @@ Confluence page-ACE policy. When a visible child has an invisible direct
 parent, present the child as a root (`parentId: null`) and rebase every
 descendant's local-tree depth from that visible root; breadcrumbs keep only the
 contiguous visible suffix and children traversal stops at the hidden node.
-Full, clustered, and focused graphs apply the same parent projection. The
-focused graph resolves its center in one caller-visible query and returns the
-same caller-keyed empty payload for missing, ambiguous, or inaccessible input,
-so identifier normalization cannot become an existence oracle. Mixed-source
-parent/child links are valid, but a stored key that identifies multiple live
-parent candidates fails closed. Never retain a hidden or ambiguous parent ID or
-original depth as a hierarchy oracle. Hierarchy trees
+Full, clustered, and focused graphs apply the same hidden-parent projection.
+The focused graph resolves its center in one caller-visible query and returns
+the same caller-keyed empty payload for missing, ambiguous, or inaccessible
+input, so identifier normalization cannot become an existence oracle. It also
+derives hierarchy traversal and `parent_child` output edges from caller-visible
+parent candidates; inaccessible identifier collisions cannot alter the
+response. Mixed-source parent/child links are valid, but a stored key that
+identifies multiple applicable parent candidates fails closed. Never retain a
+hidden or ambiguous parent ID or original depth as a hierarchy oracle.
+Hierarchy trees
 and lists are per-user, generation-checked entries in the `pages` cache
 namespace. Visibility/hierarchy writers and every RBAC invalidation advance
 that generation, fencing in-flight fills across role and group changes.

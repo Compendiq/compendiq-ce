@@ -314,22 +314,55 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     );
     const accessiblePageIds = accessiblePages.rows.map((row) => row.id);
     const neighborResult = await query<{ page_id: number; hop: number }>(
-      `WITH RECURSIVE neighbors AS (
+      `WITH RECURSIVE visible_parent_relationships AS (
+         SELECT LEAST(child.id, parent.id) AS page_id_1,
+                GREATEST(child.id, parent.id) AS page_id_2,
+                'parent_child'::text AS relationship_type,
+                1.0::real AS score
+         FROM pages child
+         JOIN pages parent ON (
+           parent.confluence_id = child.parent_id
+           OR parent.id::text = child.parent_id
+         )
+           AND parent.deleted_at IS NULL
+           AND parent.id = ANY($6::int[])
+           AND parent.id <> child.id
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id = ANY($6::int[])
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = child.parent_id
+                    OR parent_collision.id::text = child.parent_id)
+           )
+         WHERE child.deleted_at IS NULL
+           AND child.parent_id IS NOT NULL
+           AND child.id = ANY($6::int[])
+       ),
+       visible_relationships AS (
+         SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
+         FROM page_relationships pr
+         WHERE pr.relationship_type <> 'parent_child'
+         UNION ALL
+         SELECT page_id_1, page_id_2, relationship_type, score
+         FROM visible_parent_relationships
+       ),
+       neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
          UNION
          SELECT next.page_id, n.hop + 1 AS hop
          FROM neighbors n
          CROSS JOIN LATERAL (
-           SELECT CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END AS page_id
-           FROM page_relationships pr
-           WHERE (pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id)
-             AND ($4::text[] IS NULL OR pr.relationship_type = ANY($4::text[]))
-             AND ($5::real IS NULL OR pr.score >= $5::real)
+           SELECT CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END AS page_id
+           FROM visible_relationships vr
+           WHERE (vr.page_id_1 = n.page_id OR vr.page_id_2 = n.page_id)
+             AND ($4::text[] IS NULL OR vr.relationship_type = ANY($4::text[]))
+             AND ($5::real IS NULL OR vr.score >= $5::real)
              AND (
-               CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END
+               CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END
              ) = ANY($6::int[])
-           ORDER BY pr.score DESC,
-             CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END ASC
+           ORDER BY vr.score DESC,
+             CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END ASC
            LIMIT $3
          ) next
          WHERE n.hop < $2
@@ -375,6 +408,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
          AND NOT EXISTS (
            SELECT 1 FROM pages parent_collision
            WHERE parent_collision.deleted_at IS NULL
+              AND parent_collision.id = ANY($2::int[])
              AND parent_collision.id <> parent_page.id
              AND (parent_collision.confluence_id = cp.parent_id
                   OR parent_collision.id::text = cp.parent_id)
@@ -406,16 +440,50 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       relationship_type: string;
       score: number;
     }>(
-      `SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
-       FROM page_relationships pr
-       WHERE pr.page_id_1 = ANY($1::int[]) AND pr.page_id_2 = ANY($1::int[])
-         AND ($2::text[] IS NULL OR pr.relationship_type = ANY($2::text[]))
-         AND ($3::real IS NULL OR pr.score >= $3::real)
-       ORDER BY pr.score DESC`,
+      `WITH visible_parent_relationships AS (
+         SELECT LEAST(child.id, parent.id) AS page_id_1,
+                GREATEST(child.id, parent.id) AS page_id_2,
+                'parent_child'::text AS relationship_type,
+                1.0::real AS score
+         FROM pages child
+         JOIN pages parent ON (
+           parent.confluence_id = child.parent_id
+           OR parent.id::text = child.parent_id
+         )
+           AND parent.deleted_at IS NULL
+           AND parent.id = ANY($4::int[])
+           AND parent.id <> child.id
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id = ANY($4::int[])
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = child.parent_id
+                    OR parent_collision.id::text = child.parent_id)
+           )
+         WHERE child.deleted_at IS NULL
+           AND child.parent_id IS NOT NULL
+           AND child.id = ANY($4::int[])
+       ),
+       visible_relationships AS (
+         SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
+         FROM page_relationships pr
+         WHERE pr.relationship_type <> 'parent_child'
+         UNION ALL
+         SELECT page_id_1, page_id_2, relationship_type, score
+         FROM visible_parent_relationships
+       )
+       SELECT vr.page_id_1, vr.page_id_2, vr.relationship_type, vr.score
+       FROM visible_relationships vr
+       WHERE vr.page_id_1 = ANY($1::int[]) AND vr.page_id_2 = ANY($1::int[])
+         AND ($2::text[] IS NULL OR vr.relationship_type = ANY($2::text[]))
+         AND ($3::real IS NULL OR vr.score >= $3::real)
+       ORDER BY vr.score DESC`,
       [
         [...nodeIdSet],
         edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
         minScore ?? null,
+        accessiblePageIds,
       ],
     );
 
