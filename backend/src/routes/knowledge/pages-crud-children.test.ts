@@ -43,8 +43,13 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   isProcessingUser: vi.fn().mockReturnValue(false),
 }));
 
+const { mockUserCanAccessPage } = vi.hoisted(() => ({
+  mockUserCanAccessPage: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
 }));
 
 vi.mock('../../core/services/fts-language.js', () => ({
@@ -103,6 +108,7 @@ describe('GET /api/pages/:id/children - recursive CTE', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should use a recursive CTE instead of N+1 queries', async () => {

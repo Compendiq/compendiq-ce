@@ -43,9 +43,14 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   isProcessingUser: vi.fn().mockReturnValue(false),
 }));
 
+const { mockUserCanAccessPage } = vi.hoisted(() => ({
+  mockUserCanAccessPage: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
 }));
 
 const mockQueryFn = vi.fn();
@@ -100,6 +105,7 @@ describe('GET /api/pages/:id/children', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should return child pages for a given page', async () => {
@@ -252,6 +258,7 @@ describe('GET /api/pages/:id/children', () => {
 
   it('should return 404 when user lacks space access for confluence page', async () => {
     // Resolve page in a space the user does NOT have access to
+    mockUserCanAccessPage.mockResolvedValue(false);
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, confluence_id: 'secret-page', space_key: 'SECRET', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
@@ -266,6 +273,7 @@ describe('GET /api/pages/:id/children', () => {
   });
 
   it('should return 404 for standalone page not owned by user and not shared', async () => {
+    mockUserCanAccessPage.mockResolvedValue(false);
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, confluence_id: null, space_key: null, source: 'standalone', visibility: 'private', created_by_user_id: 'other-user-id' }],
     });

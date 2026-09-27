@@ -5,10 +5,9 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   getUserAccessibleSpaces,
-  isSystemAdmin,
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
-import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { authorizedPagesPredicate } from '../../core/services/page-visibility.js';
 import {
   assertPageHierarchyParentsAvailable,
   lockPageWrites,
@@ -161,7 +160,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    const systemAdmin = await isSystemAdmin(userId);
 
     // Resolve page-derived fields per caller. This route deliberately remains
     // uncached: space metadata and page visibility have independent
@@ -183,10 +181,10 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
        LEFT JOIN pages visible_home
          ON visible_home.id = cs.custom_home_page_id
         AND visible_home.deleted_at IS NULL
-        AND ($3::boolean OR ${visiblePagesPredicate(1, 2, 'visible_home')})
+        AND ${authorizedPagesPredicate(1, 2, 'visible_home')}
        WHERE cs.source = 'local'
        ORDER BY cs.space_name`,
-      [accessibleSpaces, userId, systemAdmin],
+      [accessibleSpaces, userId],
     );
 
     // Get page counts per local space
@@ -195,9 +193,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
        FROM pages p
        WHERE p.space_key IN (SELECT space_key FROM spaces WHERE source = 'local')
          AND p.deleted_at IS NULL
-         AND ($3::boolean OR ${visiblePagesPredicate(1, 2, 'p')})
+         AND ${authorizedPagesPredicate(1, 2, 'p')}
        GROUP BY p.space_key`,
-      [accessibleSpaces, userId, systemAdmin],
+      [accessibleSpaces, userId],
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));
 
@@ -370,8 +368,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Space not found');
     }
 
-    const systemAdmin = await isSystemAdmin(userId);
-    const cacheKey = `space-tree:${key}`;
+    const cacheKey = `space-tree:v2:${key}`;
     const { value: cached, generation } = await cache.getWithGeneration(
       userId,
       'pages',
@@ -384,37 +381,58 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       title: string;
       page_type: string;
       parent_numeric_id: number | null;
-      depth: number;
       sort_order: number;
       source: string;
       confluence_id: string | null;
     }>(
       `SELECT p.id, p.title, p.page_type, parent_page.id as parent_numeric_id,
-              p.depth, p.sort_order, p.source, p.confluence_id
+              p.sort_order, p.source, p.confluence_id
        FROM pages p
-       LEFT JOIN pages parent_page ON parent_page.source = p.source
-        AND (
-          (p.source = 'confluence' AND parent_page.confluence_id = p.parent_id)
-          OR (p.source = 'standalone' AND parent_page.id::text = p.parent_id)
-        )
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = p.parent_id
+         OR parent_page.id::text = p.parent_id
+       )
          AND parent_page.deleted_at IS NULL
-         AND ($4::boolean OR ${visiblePagesPredicate(2, 3, 'parent_page')})
+         AND NOT EXISTS (
+           SELECT 1
+           FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND (parent_collision.confluence_id = p.parent_id
+                  OR parent_collision.id::text = p.parent_id)
+             AND parent_collision.id <> parent_page.id
+         )
+         AND ${authorizedPagesPredicate(2, 3, 'parent_page')}
        WHERE p.space_key = $1
          AND p.deleted_at IS NULL
-         AND ($4::boolean OR ${visiblePagesPredicate(2, 3, 'p')})
+         AND ${authorizedPagesPredicate(2, 3, 'p')}
        ORDER BY p.sort_order, p.title`,
-      [key, accessibleSpaces, userId, systemAdmin],
+      [key, accessibleSpaces, userId],
     );
+
+    const parentById = new Map(
+      result.rows.map((row) => [row.id, row.parent_numeric_id]),
+    );
+    const depthById = new Map<number, number>();
+    const displayDepth = (pageId: number, visiting = new Set<number>()): number => {
+      const memoized = depthById.get(pageId);
+      if (memoized !== undefined) return memoized;
+      const parentId = parentById.get(pageId) ?? null;
+      if (parentId === null || visiting.has(pageId)) return 0;
+      visiting.add(pageId);
+      const depth = displayDepth(parentId, visiting) + 1;
+      visiting.delete(pageId);
+      depthById.set(pageId, depth);
+      return depth;
+    };
 
     const items = result.rows.map((row) => ({
       id: row.id,
       title: row.title,
       pageType: row.page_type ?? 'page',
       parentId: row.parent_numeric_id !== null ? String(row.parent_numeric_id) : null,
-      // A readable child below an unreadable parent becomes a root, matching
-      // GET /pages/tree. Reset depth too: retaining it would disclose that an
-      // otherwise-unidentified ancestor exists.
-      depth: row.parent_numeric_id !== null ? row.depth : 0,
+      // Rebase the complete visible forest. Resetting only direct children of a
+      // hidden parent leaves deeper rows with a depth gap that reveals it.
+      depth: displayDepth(row.id),
       sortOrder: row.sort_order,
       source: row.source,
       confluenceId: row.confluence_id,
@@ -819,9 +837,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
       space_key: string | null;
       path: string | null;
-      source: string;
     }>(
-      'SELECT id, title, parent_id, space_key, path, source FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, title, parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
 
@@ -841,7 +858,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const currentPage = page.rows[0]!;
     const crumbs: { id: number; title: string }[] = [];
     const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    const systemAdmin = await isSystemAdmin(userId);
 
     if (currentPage.path) {
       const pathIds = currentPage.path
@@ -856,8 +872,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
            FROM pages ancestor
            WHERE ancestor.id = ANY($1::int[])
              AND ancestor.deleted_at IS NULL
-             AND ($4::boolean OR ${visiblePagesPredicate(2, 3, 'ancestor')})`,
-          [pathIds, accessibleSpaces, userId, systemAdmin],
+             AND ${authorizedPagesPredicate(2, 3, 'ancestor')}`,
+          [pathIds, accessibleSpaces, userId],
         );
 
         // Preserve only the contiguous visible suffix. If an ancestor is not
@@ -879,17 +895,22 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
       while (currentParentId !== null && depth < maxDepth) {
         const parentResult: {
-          rows: { id: number; title: string; parent_id: string | null; source: string }[];
-        } = await query<{ id: number; title: string; parent_id: string | null; source: string }>(
-          `SELECT parent.id, parent.title, parent.parent_id, parent.source
+          rows: Array<{ id: number; title: string; parent_id: string | null }>;
+        } = await query<{ id: number; title: string; parent_id: string | null }>(
+          `SELECT parent.id, parent.title, parent.parent_id
              FROM pages parent
-             WHERE parent.source = $5
-               AND (($5 = 'confluence' AND parent.confluence_id = $1)
-                 OR ($5 = 'standalone' AND parent.id::text = $1))
+             WHERE (parent.confluence_id = $1 OR parent.id::text = $1)
                AND parent.deleted_at IS NULL
-               AND ($4::boolean OR ${visiblePagesPredicate(2, 3, 'parent')})
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM pages parent_collision
+                 WHERE (parent_collision.confluence_id = $1
+                        OR parent_collision.id::text = $1)
+                   AND parent_collision.id <> parent.id
+               )
+               AND ${authorizedPagesPredicate(2, 3, 'parent')}
              LIMIT 1`,
-          [currentParentId, accessibleSpaces, userId, systemAdmin, currentPage.source],
+          [currentParentId, accessibleSpaces, userId],
         );
 
         if (parentResult.rows.length === 0) break;

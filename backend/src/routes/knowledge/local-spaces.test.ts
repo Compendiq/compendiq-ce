@@ -272,9 +272,21 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
       'VISIBLE',
       { parentId: String(privateParent) },
     );
+    const sharedGrandchild = await insertStandalonePage(
+      'Shared grandchild',
+      'shared',
+      actorId,
+      'VISIBLE',
+      { parentId: String(sharedChild) },
+    );
     const sharedRoot = await insertStandalonePage('Shared root', 'shared', actorId, 'VISIBLE');
     await setTreePosition(privateParent, `/${privateParent}`, 0);
     await setTreePosition(sharedChild, `/${privateParent}/${sharedChild}`, 1);
+    await setTreePosition(
+      sharedGrandchild,
+      `/${privateParent}/${sharedChild}/${sharedGrandchild}`,
+      2,
+    );
     await setTreePosition(sharedRoot, `/${sharedRoot}`, 0);
     await query('UPDATE spaces SET custom_home_page_id = $2 WHERE space_key = $1', [
       'VISIBLE',
@@ -284,13 +296,19 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     actorId = otherUserId;
     const readerTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
     expect(readerTree.statusCode, readerTree.body).toBe(200);
-    expect(readerTree.json()).toMatchObject({ spaceKey: 'VISIBLE', total: 2 });
+    expect(readerTree.json()).toMatchObject({ spaceKey: 'VISIBLE', total: 3 });
     expect(readerTree.json().items).toEqual([
       expect.objectContaining({
         id: sharedChild,
         title: 'Shared child',
         parentId: null,
         depth: 0,
+      }),
+      expect.objectContaining({
+        id: sharedGrandchild,
+        title: 'Shared grandchild',
+        parentId: String(sharedChild),
+        depth: 1,
       }),
       expect.objectContaining({
         id: sharedRoot,
@@ -307,7 +325,7 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     expect(readerSpaces.json()).toEqual([
       expect.objectContaining({
         key: 'VISIBLE',
-        pageCount: 2,
+        pageCount: 3,
         homepageId: null,
         customHomePageId: null,
       }),
@@ -334,6 +352,7 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     expect(ownerTree.json().items).toEqual([
       expect.objectContaining({ id: privateParent, parentId: null }),
       expect.objectContaining({ id: sharedChild, parentId: String(privateParent), depth: 1 }),
+      expect.objectContaining({ id: sharedGrandchild, parentId: String(sharedChild), depth: 2 }),
       expect.objectContaining({ id: sharedRoot, parentId: null }),
     ]);
 
@@ -344,8 +363,19 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     expect(adminTree.json().items.map((item: { id: number }) => item.id)).toEqual([
       privateParent,
       sharedChild,
+      sharedGrandchild,
       sharedRoot,
     ]);
+
+    await query("UPDATE users SET role = 'user' WHERE id = $1", [adminId]);
+    await invalidateRbacCache(adminId);
+    const demotedTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
+    expect(demotedTree.json().items.map((item: { id: number }) => item.id)).toEqual([
+      sharedChild,
+      sharedGrandchild,
+      sharedRoot,
+    ]);
+    expect(demotedTree.body).not.toContain('Private parent');
   });
 
   it('conceals an inaccessible Confluence tree and returns it after a real role assignment', async () => {
@@ -408,7 +438,7 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     });
   });
 
-  it('stores a Confluence parent key rather than its local numeric id', async () => {
+  it('preserves both directions of mixed-source parent links in hierarchy reads', async () => {
     await insertLocalSpace('SOURCE', actorId);
     await query(
       `INSERT INTO spaces (space_key, space_name, source, last_synced)
@@ -433,6 +463,43 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
       space_key: 'TARGET',
       path: `/${parent}/${moving}`,
     });
+
+    const firstTree = await app.inject({ method: 'GET', url: '/api/spaces/TARGET/tree' });
+    expect(firstTree.statusCode, firstTree.body).toBe(200);
+    expect(firstTree.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: moving, parentId: String(parent) }),
+    ]));
+
+    const standaloneParent = await insertStandalonePage(
+      'Standalone target',
+      'shared',
+      actorId,
+      'TARGET',
+    );
+    const confluenceChild = await insertConfluencePage(
+      'upstream-child',
+      'Confluence child',
+      'TARGET',
+    );
+    await setTreePosition(standaloneParent, `/${standaloneParent}`, 0);
+    await setTreePosition(confluenceChild, `/${confluenceChild}`, 0);
+
+    const inverse = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${confluenceChild}/move`,
+      payload: { parentId: standaloneParent, spaceKey: 'TARGET' },
+    });
+    expect(inverse.statusCode, inverse.body).toBe(200);
+    expect(await pagePosition(confluenceChild)).toMatchObject({
+      parent_id: String(standaloneParent),
+      path: `/${standaloneParent}/${confluenceChild}`,
+    });
+
+    const secondTree = await app.inject({ method: 'GET', url: '/api/spaces/TARGET/tree' });
+    expect(secondTree.statusCode, secondTree.body).toBe(200);
+    expect(secondTree.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: confluenceChild, parentId: String(standaloneParent) }),
+    ]));
   });
 
   it('refuses an identifier that names one parent by PK and another by Confluence id', async () => {
