@@ -491,15 +491,14 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
         );
         const liveVersion = current.rows[0]?.version;
         if (liveVersion === undefined) throw fastify.httpErrors.notFound('Page not found');
-        if (expectedVersion !== undefined && expectedVersion < liveVersion) {
-          throw fastify.httpErrors.conflict(
-            'Page has been modified since you loaded it. Please refresh and try again.',
-          );
-        }
         if (targetVersion === liveVersion) {
           throw fastify.httpErrors.badRequest('Cannot restore the current version');
         }
-        return restoreVersion(ctx.id, targetVersion, { client, actorId: userId });
+        return restoreVersion(ctx.id, targetVersion, {
+          client,
+          actorId: userId,
+          expectedVersion,
+        });
       });
     } else {
       if (!ctx.confluenceId) throw fastify.httpErrors.badRequest('Page is missing confluence_id');

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Version restore concurrency (#1659).** The optional optimistic version is
+  now checked against the live page row under its transaction lock, before the
+  superseded snapshot or restored content is written. A concurrent edit wins
+  and the restore returns 409; callers that omit the version retain the existing
+  unconditional restore behavior.
+
 - **Immutable article baselines and protected-writer enforcement (#275,
   #276).** Added canonical manifest-v1 digests, exclusive retained media,
   append-only freeze/thaw evidence, shared writer intents, and conservative
