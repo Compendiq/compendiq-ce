@@ -12,6 +12,41 @@ function waitForRedisExpiry(): Promise<void> {
   setTimeout(resolve, 1_100);
   return promise;
 }
+async function expectOwnershipLifecycle(
+  redis: RedisClientType,
+  a: LlmCache,
+  b: LlmCache,
+  c: LlmCache,
+): Promise<void> {
+  const cacheKey = `kb:llm:ownership-${randomUUID()}`;
+  const lockKey = `llm:lock:${cacheKey}`;
+
+  try {
+    const staleToken = await a.acquireLock(cacheKey, 1);
+    if (staleToken === null) throw new Error('Initial Redis lock was not acquired');
+
+    await waitForRedisExpiry();
+
+    const successorToken = await b.acquireLock(cacheKey, 30);
+    expect(successorToken).toBeTypeOf('string');
+    if (successorToken === null) throw new Error('Successor Redis lock was not acquired');
+    expect(successorToken).not.toBe(staleToken);
+
+    await a.releaseLock(cacheKey, staleToken);
+    expect(await redis.get(lockKey)).toBe(successorToken);
+    await expect(c.acquireLock(cacheKey, 30)).resolves.toBeNull();
+
+    await b.releaseLock(cacheKey, successorToken);
+    const nextToken = await c.acquireLock(cacheKey, 30);
+    expect(nextToken).toBeTypeOf('string');
+    if (nextToken === null) throw new Error('Next Redis lock was not acquired');
+    expect(nextToken).not.toBe(successorToken);
+    await c.releaseLock(cacheKey, nextToken);
+  } finally {
+    await redis.del(lockKey);
+  }
+}
+
 
 
 describe.skipIf(!redisAvailable)('LlmCache lock ownership with real Redis', () => {
@@ -31,35 +66,16 @@ describe.skipIf(!redisAvailable)('LlmCache lock ownership with real Redis', () =
   });
 
   it('keeps a successor lease when the expired owner releases, then lets the current owner release', async () => {
-    const cacheKey = `kb:llm:ownership-${randomUUID()}`;
-    const lockKey = `llm:lock:${cacheKey}`;
-    const a = new LlmCache(redis);
-    const b = new LlmCache(redis);
-    const c = new LlmCache(redis);
+    await expectOwnershipLifecycle(
+      redis,
+      new LlmCache(redis),
+      new LlmCache(redis),
+      new LlmCache(redis),
+    );
+  });
 
-    try {
-      const staleToken = await a.acquireLock(cacheKey, 1);
-      if (staleToken === null) throw new Error('Initial Redis lock was not acquired');
-
-      await waitForRedisExpiry();
-
-      const successorToken = await b.acquireLock(cacheKey, 30);
-      expect(successorToken).toBeTypeOf('string');
-      if (successorToken === null) throw new Error('Successor Redis lock was not acquired');
-      expect(successorToken).not.toBe(staleToken);
-
-      await a.releaseLock(cacheKey, staleToken);
-      expect(await redis.get(lockKey)).toBe(successorToken);
-      await expect(c.acquireLock(cacheKey, 30)).resolves.toBeNull();
-
-      await b.releaseLock(cacheKey, successorToken);
-      const nextToken = await c.acquireLock(cacheKey, 30);
-      expect(nextToken).toBeTypeOf('string');
-      if (nextToken === null) throw new Error('Next Redis lock was not acquired');
-      expect(nextToken).not.toBe(successorToken);
-      await c.releaseLock(cacheKey, nextToken);
-    } finally {
-      await redis.del(lockKey);
-    }
+  it('uses a fresh token for overlapping acquisitions from one cache instance', async () => {
+    const cache = new LlmCache(redis);
+    await expectOwnershipLifecycle(redis, cache, cache, cache);
   });
 });
