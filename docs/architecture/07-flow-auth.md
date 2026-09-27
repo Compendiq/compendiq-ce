@@ -87,9 +87,42 @@ re-entrancy guard so a tab never echoes a change it just received.
 ### Registration quirks
 
 - `POST /api/auth/register` is rate-limited (5/min).
-- **The first successful registration creates an admin.** Subsequent
-  registrations create regular users. This transition is atomic
-  (single `INSERT … RETURNING role` guarded by a transaction).
+- **The first successful real-account registration creates an admin.** The
+  migration-seeded `__system__` sentinel is not a real account and does not
+  consume this bootstrap. Subsequent registrations create regular users.
+- Registration and `POST /api/setup/admin` serialize the transition through
+  the same transaction and users-table lock. Their sentinel-excluding
+  real-admin decision, user insert, and default `user_settings` insert commit
+  together, so concurrent requests cannot both create a first administrator.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Browser / setup client
+    participant BE as Backend
+    participant DB as Postgres
+
+    C->>BE: POST /auth/register or /setup/admin
+    BE->>BE: validate + bcrypt (outside critical section)
+    BE->>DB: BEGIN; LOCK users IN SHARE ROW EXCLUSIVE MODE
+    Note over BE,DB: Both routes use the same lock and<br/>exclude __system__ from the admin predicate.
+    BE->>DB: SELECT real administrator
+    alt no real administrator
+        BE->>DB: INSERT role=admin + user_settings
+        BE->>DB: COMMIT
+        BE-->>C: 201 administrator
+    else /auth/register and registration_mode=open
+        BE->>DB: INSERT role=user + user_settings
+        BE->>DB: COMMIT
+        BE-->>C: 201 user
+    else /auth/register and registration_mode=closed
+        BE->>DB: COMMIT without a write
+        BE-->>C: 403 registration_disabled
+    else /setup/admin
+        BE->>DB: COMMIT without a write
+        BE-->>C: 409 admin already exists
+    end
+```
 
 #### Registration policy (opt-in self-registration, #1051)
 
@@ -106,8 +139,11 @@ migration and no env var.
 - **Bootstrap is always allowed.** While no real admin exists yet, registration
   is permitted regardless of the stored mode, using the same
   sentinel-excluding predicate (`role='admin' AND id != <SYSTEM_USER_ID>`) as
-  `GET /api/health/setup-status` / `POST /api/setup/admin`. This is why the
-  first account can always be created on a fresh install.
+  `GET /api/health/setup-status` / `POST /api/setup/admin`. The register route
+  performs a cheap preflight before bcrypt, then rechecks the policy while
+  holding the shared bootstrap lock. This is why a first account can always be
+  created on a fresh install without allowing a raced request after setup has
+  completed.
 - **Admin opt-in.** Admins flip the mode via `GET/PUT /api/admin/settings`
   (`registrationMode`), surfaced under Settings → Access Control → Registration.
   Choosing `open` shows a warning that any visitor can self-register and that

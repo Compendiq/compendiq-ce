@@ -85,26 +85,26 @@ describe.skipIf(!dbAvailable)('registration-policy-service (#1051)', () => {
       await insertSentinel();
       await setMode('closed');
       const policy = await getEffectiveRegistrationPolicy();
-      expect(policy).toEqual({ mode: 'closed', allowRegistration: true });
+      expect(policy).toEqual({ mode: 'closed', allowRegistration: true, bootstrap: true });
     });
 
     it('allows registration during bootstrap with no users at all (unset mode)', async () => {
       const policy = await getEffectiveRegistrationPolicy();
-      expect(policy).toEqual({ mode: 'closed', allowRegistration: true });
+      expect(policy).toEqual({ mode: 'closed', allowRegistration: true, bootstrap: true });
     });
 
     it('disallows registration when a real admin exists and the mode is unset (default closed)', async () => {
       await insertSentinel();
       await insertRealAdmin();
       const policy = await getEffectiveRegistrationPolicy();
-      expect(policy).toEqual({ mode: 'closed', allowRegistration: false });
+      expect(policy).toEqual({ mode: 'closed', allowRegistration: false, bootstrap: false });
     });
 
     it('disallows registration when a real admin exists and the mode is closed', async () => {
       await insertRealAdmin();
       await setMode('closed');
       const policy = await getEffectiveRegistrationPolicy();
-      expect(policy).toEqual({ mode: 'closed', allowRegistration: false });
+      expect(policy).toEqual({ mode: 'closed', allowRegistration: false, bootstrap: false });
     });
 
     it("allows registration when a real admin exists and the mode is 'open'", async () => {
@@ -112,7 +112,7 @@ describe.skipIf(!dbAvailable)('registration-policy-service (#1051)', () => {
       await insertRealAdmin();
       await setMode('open');
       const policy = await getEffectiveRegistrationPolicy();
-      expect(policy).toEqual({ mode: 'open', allowRegistration: true });
+      expect(policy).toEqual({ mode: 'open', allowRegistration: true, bootstrap: false });
     });
 
     it('does not treat the sentinel as a real admin (sentinel-exclusion guard)', async () => {
