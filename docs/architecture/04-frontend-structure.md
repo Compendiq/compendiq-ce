@@ -326,8 +326,10 @@ flowchart TB
 - **Save is single-flight per editing session.** `PageViewPage` claims the
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
-  ordinary versioned PUT or the collaborative commit. Success and failure both
-  release the flight for a later intentional retry; collaborative
+  ordinary versioned PUT or the collaborative commit. The pending ref has
+  state-backed UI: Done/Cancel and page navigation cannot advance to another
+  editing session while the older write is unresolved. Success and failure
+  both release the flight for a later intentional retry; collaborative
   acknowledgment remains bound to the snapshot captured by the accepted Save,
   and later local edits still keep the editor open.
 - **Recovery preserves the tab's document.** Lifecycle, permission and document

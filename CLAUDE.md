@@ -1404,7 +1404,10 @@ Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
 failure so a later intentional retry remains possible. The button, editor
 callback and `Ctrl`/`Cmd`+`S` all share that flight; do not move the guard into
-mutation pending state or the collaborative branch.
+mutation pending state or the collaborative branch. Its state-backed pending
+UI must also keep Done/Cancel and page navigation unavailable until the flight
+settles: never clear only the visible state or advance to another editing
+session behind an unresolved write.
 
 Subtree delete/restore/bulk cascades expand the exact authorized
 standalone-owner mutation component under the hierarchy fence. A frozen root is

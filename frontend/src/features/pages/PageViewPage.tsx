@@ -149,9 +149,11 @@ export function PageViewPage() {
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
   // State-backed pending flags update on the next render, which leaves a
-  // same-tick Ctrl/Cmd+S window. Claim the save synchronously so every entry
-  // path shares one flight, including draw.io draining and collab commit.
+  // same-tick Ctrl/Cmd+S window. Claim the ref synchronously so every entry
+  // path shares one flight, including draw.io draining and collab commit; keep
+  // state alongside it so session transitions remain visibly unavailable.
   const saveInFlightRef = useRef(false);
+  const [saveInFlight, setSaveInFlight] = useState(false);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
@@ -261,7 +263,6 @@ export function PageViewPage() {
     if (!user) return undefined;
     return { name: user.username, color: caretColorForUserId(user.id) };
   }, [currentUserId]);
-  const [collabSaving, setCollabSaving] = useState(false);
   const [confluenceModified, setConfluenceModified] = useState<{
     remoteVersion?: number;
     localVersion?: number;
@@ -300,7 +301,6 @@ export function PageViewPage() {
     if (previousPageIdRef.current !== id) {
       previousPageIdRef.current = id;
       editSessionRef.current += 1;
-      setCollabSaving(false);
       // ArticleViewer publishes the destination headings asynchronously.
       // Clear page A's structure immediately so the app-level inspector cannot
       // expose a stale Outline while page B is loading or has no headings.
@@ -443,15 +443,20 @@ export function PageViewPage() {
     return null;
   }, [page?.isFrozen, page?.canMutateContent]);
 
+  const rejectSessionTransitionDuringSave = useCallback(() => {
+    if (!saveInFlightRef.current) return false;
+    toast.info('A save is still in progress. Wait for it to finish before leaving this editing session.');
+    return true;
+  }, []);
+
   const handleStartEditing = useCallback(() => {
-    if (!page || !id) return;
+    if (!page || !id || rejectSessionTransitionDuringSave()) return;
     const refusal = contentWriteRefusal();
     if (refusal) {
       toast.info(refusal);
       return;
     }
     editSessionRef.current += 1;
-    setCollabSaving(false);
     setEditingBlocked(false);
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
@@ -477,7 +482,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal, rejectSessionTransitionDuringSave]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -513,8 +518,8 @@ export function PageViewPage() {
   }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
+    if (rejectSessionTransitionDuringSave()) return false;
     editSessionRef.current += 1;
-    setCollabSaving(false);
     if (draftKey) clearDraft(draftKey);
     captureScrollOffset();
     setCollabSession(false);
@@ -522,7 +527,8 @@ export function PageViewPage() {
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
-  }, [captureScrollOffset, draftKey]);
+    return true;
+  }, [captureScrollOffset, draftKey, rejectSessionTransitionDuringSave]);
 
   const titleOrLabelsDiverged = useCallback(() => {
     if (!page) return false;
@@ -537,6 +543,7 @@ export function PageViewPage() {
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
+    if (rejectSessionTransitionDuringSave()) return;
     // Connection and room admission do not acknowledge each local update.
     const dirty = collabSession ? titleOrLabelsDiverged() || isDirty : isEditorDirty();
     if (dirty) {
@@ -544,7 +551,7 @@ export function PageViewPage() {
       return;
     }
     const source = document.activeElement;
-    discardAndExit();
+    if (!discardAndExit()) return;
     requestAnimationFrame(() => {
       // Hand off only the focus lost with this editor, never a surviving
       // control or a different article reached before the next paint.
@@ -553,11 +560,10 @@ export function PageViewPage() {
         currentArticleHeadingRef.current?.focus();
       }
     });
-  }, [collabSession, titleOrLabelsDiverged, isDirty, isEditorDirty, discardAndExit, id]);
+  }, [collabSession, titleOrLabelsDiverged, isDirty, isEditorDirty, discardAndExit, id, rejectSessionTransitionDuringSave]);
 
   const handleConfirmDiscard = useCallback(() => {
-    setConfirmDiscardOpen(false);
-    discardAndExit();
+    if (discardAndExit()) setConfirmDiscardOpen(false);
   }, [discardAndExit]);
 
   const downloadOpenDraft = useCallback(() => {
@@ -572,7 +578,7 @@ export function PageViewPage() {
   }, [draftLabels, editHtml, editTitle, editorInstance, id, sessionLifecycleRevision]);
 
   const openCurrentVersion = useCallback(async () => {
-    if (openingCurrent) return;
+    if (openingCurrent || rejectSessionTransitionDuringSave()) return;
     const requestId = openingCurrentRequestRef.current + 1;
     openingCurrentRequestRef.current = requestId;
     const source = document.activeElement;
@@ -588,8 +594,8 @@ export function PageViewPage() {
         source,
         shouldFocus: document.activeElement === source,
       };
+      if (!discardAndExit()) return;
       setConfirmReloadOpen(false);
-      discardAndExit();
     } catch {
       if (openingCurrentRequestRef.current === requestId) {
         toast.error('The current page could not be opened. Your draft is still here.');
@@ -597,24 +603,28 @@ export function PageViewPage() {
     } finally {
       if (openingCurrentRequestRef.current === requestId) setOpeningCurrent(false);
     }
-  }, [discardAndExit, openingCurrent, refetchPage]);
+  }, [discardAndExit, openingCurrent, refetchPage, rejectSessionTransitionDuringSave]);
 
   // A connected socket is not durable acknowledgment. Preserve every changed
-  // local draft until a successful commit covers its captured Yjs state.
+  // local draft until a successful commit covers its captured Yjs state. An
+  // accepted Save also guards leaving until that flight settles, even after an
+  // external route reset has advanced the editing session.
   const recoveryDraftNeedsGuard = editing && collabLive && (titleOrLabelsDiverged() || isDirty);
-  recoveryNavigationGuardRef.current = recoveryDraftNeedsGuard;
+  const pageExitNeedsGuard = recoveryDraftNeedsGuard || saveInFlight;
+  recoveryNavigationGuardRef.current = pageExitNeedsGuard;
 
   useEffect(() => {
-    if (!recoveryDraftNeedsGuard) return;
+    if (!pageExitNeedsGuard) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [recoveryDraftNeedsGuard]);
+  }, [pageExitNeedsGuard]);
 
   const requestGuardedNavigation = useCallback((proceed: () => void) => {
+    if (rejectSessionTransitionDuringSave()) return;
     if (!recoveryNavigationGuardRef.current) {
       proceed();
       return;
@@ -624,7 +634,7 @@ export function PageViewPage() {
     if (pendingNavigationRef.current) return;
     pendingNavigationRef.current = proceed;
     setConfirmNavigationOpen(true);
-  }, []);
+  }, [rejectSessionTransitionDuringSave]);
 
   const cancelGuardedNavigation = useCallback(() => {
     pendingNavigationRef.current = null;
@@ -633,9 +643,9 @@ export function PageViewPage() {
 
   const confirmGuardedNavigation = useCallback(() => {
     const proceed = pendingNavigationRef.current;
+    if (!discardAndExit()) return;
     pendingNavigationRef.current = null;
     setConfirmNavigationOpen(false);
-    discardAndExit();
     proceed?.();
   }, [discardAndExit]);
 
@@ -665,7 +675,7 @@ export function PageViewPage() {
       });
     };
     const guardedGo: GuardableNavigator['go'] = (delta) => {
-      if (!recoveryNavigationGuardRef.current) {
+      if (!recoveryNavigationGuardRef.current && !saveInFlightRef.current) {
         Reflect.apply(originalGo, navigator, [delta]);
         return;
       }
@@ -692,7 +702,7 @@ export function PageViewPage() {
         event.stopImmediatePropagation();
         return;
       }
-      if (!recoveryNavigationGuardRef.current) {
+      if (!recoveryNavigationGuardRef.current && !saveInFlightRef.current) {
         currentIndex = nextIndex;
         return;
       }
@@ -736,6 +746,7 @@ export function PageViewPage() {
       return;
     }
     saveInFlightRef.current = true;
+    setSaveInFlight(true);
     const session = editSessionRef.current;
     const metadataRevision = metadataRevisionRef.current;
     const document = collab.ydoc;
@@ -744,7 +755,6 @@ export function PageViewPage() {
     try {
       if (collabLive) {
         if (!document) throw new Error('The collaborative document is not ready. Keep this draft open.');
-        setCollabSaving(true);
         const drain = await drainPendingDrawioDiagrams(editorInstance, {
           attachmentPageId: page.confluenceId ?? id,
           pageSource: page.confluenceId ? 'confluence' : 'standalone',
@@ -847,7 +857,7 @@ export function PageViewPage() {
       }
     } finally {
       saveInFlightRef.current = false;
-      if (editSessionRef.current === session) setCollabSaving(false);
+      setSaveInFlight(false);
     }
   }, [collab.ydoc, collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, saveBlocked, sessionLifecycleRevision, updateMutation]);
 
@@ -1178,14 +1188,15 @@ export function PageViewPage() {
       iconOnly={editing}
     />
   );
-  const saving = updateMutation.isPending || collabSaving;
+  const saving = saveInFlight || updateMutation.isPending;
   const sessionActions = (
     <>
       <PresenceAvatarStack viewers={mergedViewers} />
       {collabSession ? (
         <Button
           onClick={handleCancelEditing}
-          title="Done editing (Esc)"
+          disabled={saving}
+          title={saving ? 'Wait for the current save to finish' : 'Done editing (Esc)'}
           variant="ghost"
           size="sm"
           className="h-8 shrink-0 px-2.5 text-xs"
@@ -1196,7 +1207,8 @@ export function PageViewPage() {
       ) : (
         <IconButton
           onClick={handleCancelEditing}
-          title="Cancel editing (Esc)"
+          disabled={saving}
+          title={saving ? 'Wait for the current save to finish' : 'Cancel editing (Esc)'}
           label="Cancel"
           variant="destructive-ghost"
           size="icon-sm"
@@ -1318,14 +1330,17 @@ export function PageViewPage() {
                       <Button
                         type="button"
                         onClick={handleStartEditing}
+                        disabled={saveInFlight}
+                        isLoading={saveInFlight}
+                        title={saveInFlight ? 'Wait for the current save to finish' : 'Edit page'}
                         variant="ghost"
                         size="sm"
                         className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
                         data-testid="edit-page-btn"
-                        leftIcon={<Pencil size={13} aria-hidden />}
-                        rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
+                        leftIcon={!saveInFlight ? <Pencil size={13} aria-hidden /> : undefined}
+                        rightIcon={!saveInFlight ? <ShortcutHint shortcutId="toggle-edit" /> : undefined}
                       >
-                        <span>Edit</span>
+                        <span>{saveInFlight ? 'Finishing save…' : 'Edit'}</span>
                       </Button>
                     )}
                   </div>

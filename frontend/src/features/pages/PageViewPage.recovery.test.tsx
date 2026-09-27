@@ -448,6 +448,68 @@ describe('PageViewPage save and collaboration recovery', () => {
     })).toBeInTheDocument();
   });
 
+  it('keeps session transitions unavailable until a collaborative save settles', async () => {
+    const commit = Promise.withResolvers<void>();
+    deferredCommit = commit.promise;
+    renderPage();
+    await joinWritableSession();
+    fireEvent.change(screen.getByLabelText('Page title'), {
+      target: { value: 'First session save' },
+    });
+    const firstEditor = document.querySelector('.ProseMirror');
+    if (!(firstEditor instanceof HTMLElement)) throw new Error('Editor did not mount');
+
+    fireEvent.keyDown(firstEditor, { key: 's', code: 'KeyS', ctrlKey: true });
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(1));
+
+    const done = screen.getByRole('button', { name: 'Done' });
+    expect(done).toBeDisabled();
+    fireEvent.click(done);
+    fireEvent.keyDown(firstEditor, { key: 'e', code: 'KeyE', ctrlKey: true });
+    fireEvent.click(screen.getByRole('link', { name: 'Leave article' }));
+
+    expect(screen.getByLabelText('Page title')).toHaveValue('First session save');
+    expect(screen.queryByRole('heading', { name: 'Elsewhere' })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === '/api/pages/42/collab/commit',
+    )).toHaveLength(1);
+
+    await act(async () => commit.resolve());
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'First session save',
+    })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Edit/ }));
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    const secondSocket = Socket.instances[1]!;
+    act(() => {
+      secondSocket.open();
+      synchronize(secondSocket);
+      sendControl(secondSocket, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+    const secondEditor = await waitFor(() => {
+      const element = document.querySelector('.ProseMirror');
+      expect(element).toHaveAttribute('contenteditable', 'true');
+      if (!(element instanceof HTMLElement)) throw new Error('Editor did not remount');
+      return element;
+    });
+    fireEvent.change(screen.getByLabelText('Page title'), {
+      target: { value: 'Second session save' },
+    });
+    fireEvent.keyDown(secondEditor, { key: 's', code: 'KeyS', ctrlKey: true });
+
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/pages/42/collab/commit'),
+    ).toHaveLength(2));
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: 'Second session save',
+    })).toBeInTheDocument();
+  });
+
   it('single-flights rapid keyboard saves before the standalone PUT starts', async () => {
     collabEnabled = false;
     const update = Promise.withResolvers<void>();
