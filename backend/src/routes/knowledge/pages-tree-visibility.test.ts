@@ -131,6 +131,70 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(await treeTitles(userA)).toEqual(['Private note', 'Shared note']);
   });
 
+  it('cuts every hierarchy projection at an inaccessible parent boundary', async () => {
+    const privateParent = await insertStandalonePage(
+      'Private parent',
+      'private',
+      userA,
+      'NOTES',
+    );
+    const sharedChild = await insertStandalonePage(
+      'Shared child',
+      'shared',
+      userA,
+      'NOTES',
+      { parentId: String(privateParent) },
+    );
+    const sharedRoot = await insertStandalonePage('Shared root', 'shared', userA, 'NOTES');
+    const privateMiddle = await insertStandalonePage(
+      'Private middle',
+      'private',
+      userA,
+      'NOTES',
+      { parentId: String(sharedRoot) },
+    );
+    await insertStandalonePage('Shared grandchild', 'shared', userA, 'NOTES', {
+      parentId: String(privateMiddle),
+    });
+    await insertConfluencePage(String(privateParent), 'Numeric parent-id collision', 'DEV');
+    await assignReadableSpace(userB, 'DEV');
+
+    currentUserId = userB;
+    const tree = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(tree.statusCode, tree.body).toBe(200);
+    const treeItems = tree.json().items;
+    expect(treeItems).toHaveLength(4);
+    expect(treeItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Numeric parent-id collision', parentId: null }),
+      expect.objectContaining({ id: String(sharedChild), parentId: null }),
+      expect.objectContaining({ title: 'Shared grandchild', parentId: null }),
+      expect.objectContaining({ id: String(sharedRoot), parentId: null }),
+    ]));
+    expect(tree.body).not.toContain(`"parentId":"${privateParent}"`);
+    expect(tree.body).not.toContain(`"parentId":"${privateMiddle}"`);
+
+    const list = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=NOTES' });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.json().items).toEqual([
+      expect.objectContaining({ id: String(sharedChild), parentId: null }),
+      expect.objectContaining({ title: 'Shared grandchild', parentId: null }),
+      expect.objectContaining({ id: String(sharedRoot), parentId: null }),
+    ]);
+
+    const detail = await app.inject({ method: 'GET', url: `/api/pages/${sharedChild}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({ id: String(sharedChild), parentId: null });
+
+    const children = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${sharedRoot}/children?depth=3`,
+    });
+    expect(children.statusCode, children.body).toBe(200);
+    expect(children.json()).toEqual({ children: [] });
+    expect(children.body).not.toContain('Private middle');
+    expect(children.body).not.toContain('Shared grandchild');
+  });
+
   it('limits Confluence pages to spaces assigned through real RBAC state', async () => {
     await insertConfluencePage('conf-dev', 'Dev page', 'DEV');
     await insertConfluencePage('conf-secret', 'Secret page', 'SECRET');

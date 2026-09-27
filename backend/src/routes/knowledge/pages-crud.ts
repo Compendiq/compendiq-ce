@@ -50,7 +50,11 @@ import {
 } from '../../core/db/advisory-locks.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
-import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpaces,
+  isSystemAdmin,
+  userCanAccessPage,
+} from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
@@ -730,7 +734,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const pi = vals.length + obVals.length + 1;
       const dataSql = `
         SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
-               cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+               CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id,
+               cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
                cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
                cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
                cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
@@ -739,6 +744,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
                cp.baseline_id, cp.frozen_version
         FROM pages cp
+        LEFT JOIN pages parent_page ON parent_page.source = cp.source
+         AND (
+          (cp.source = 'confluence' AND parent_page.confluence_id = cp.parent_id)
+          OR (cp.source = 'standalone' AND parent_page.id::text = cp.parent_id)
+         )
+          AND parent_page.deleted_at IS NULL
+          AND ${visiblePagesPredicate(1, 2, 'parent_page')}
         ${wc}
         ORDER BY ${ob}
         LIMIT $${pi} OFFSET $${pi + 1}
@@ -880,10 +892,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               cp.baseline_id, cp.frozen_version
        FROM pages cp
-       LEFT JOIN pages parent_page ON (
-         parent_page.confluence_id = cp.parent_id
-         OR CAST(parent_page.id AS TEXT) = cp.parent_id
-       ) AND parent_page.deleted_at IS NULL
+       LEFT JOIN pages parent_page ON parent_page.source = cp.source
+        AND (
+         (cp.source = 'confluence' AND parent_page.confluence_id = cp.parent_id)
+         OR (cp.source = 'standalone' AND parent_page.id::text = cp.parent_id)
+        )
+         AND parent_page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2, 'parent_page')}
        ${treeWhereClause}
        ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
@@ -1093,17 +1108,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0]!;
 
-    // Access control: Confluence pages require RBAC space access; standalone pages
-    // require ownership or shared visibility
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      // Standalone: owner or shared
-      if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
+    // Reuse the page authority, including the system-admin and page-ACE arms.
+    if (!(await userCanAccessPage(userId, row.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    let visibleParentId = row.parent_id;
+    if (visibleParentId !== null) {
+      const parentResult = await query<{ id: number }>(
+        `SELECT parent.id
+         FROM pages parent
+         WHERE parent.source = $2
+           AND (($2 = 'confluence' AND parent.confluence_id = $1)
+             OR ($2 = 'standalone' AND parent.id::text = $1))
+           AND parent.deleted_at IS NULL
+         LIMIT 1`,
+        [visibleParentId, row.source],
+      );
+      const parent = parentResult.rows[0];
+      if (!parent || !(await userCanAccessPage(userId, parent.id))) {
+        visibleParentId = null;
       }
     }
 
@@ -1138,7 +1162,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       renderedBodyHtml,
       bodyText: row.body_text,
       version: row.version,
-      parentId: row.parent_id,
+      parentId: visibleParentId,
       labels: row.labels,
       author: row.author,
       lastModifiedAt: row.last_modified_at,
@@ -1300,16 +1324,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = pageResult.rows[0]!;
 
-    // Access control: same pattern as GET /pages/:id
-    if (page.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!page.space_key || !spaces.includes(page.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
+    if (!(await userCanAccessPage(userId, page.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
     }
 
     // Children are linked via parent_id which stores the confluence_id string
@@ -1321,6 +1337,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cap total nodes to prevent unbounded recursive queries (DoS protection)
     const MAX_TOTAL_NODES = 200;
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const systemAdmin = await isSystemAdmin(userId);
 
     // Single recursive CTE replaces the N+1 fetchChildren() function.
     // Fetches the entire subtree in one round-trip, then assembles the
@@ -1343,17 +1361,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth,
                 p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
-         WHERE p.parent_id = $1 AND p.deleted_at IS NULL
+         WHERE p.parent_id = $1
+           AND p.deleted_at IS NULL
+           AND ($6::boolean OR ${visiblePagesPredicate(4, 5, 'p')})
          UNION ALL
          SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1,
                 p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
          JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
-         WHERE p.deleted_at IS NULL AND t.depth < $2
+         WHERE p.deleted_at IS NULL
+           AND t.depth < $2
+           AND ($6::boolean OR ${visiblePagesPredicate(4, 5, 'p')})
        )
        SELECT * FROM tree ORDER BY depth, ${sortColumn} ${sortOrder}
        LIMIT $3`,
-      [parentLookupId, depth, MAX_TOTAL_NODES],
+      [parentLookupId, depth, MAX_TOTAL_NODES, accessibleSpaces, userId, systemAdmin],
     );
 
     // Assemble flat rows into nested tree structure

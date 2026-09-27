@@ -778,6 +778,20 @@ serves any reader of a shared page, and counting rows the tree hides
 (`visiblePagesPredicate`) both disclosed their existence and offered an expander
 that yields nothing.
 
+**Hierarchy metadata follows the page ACL, not the space container.** A local
+space is discoverable to every authenticated user, but its private standalone
+pages are not. `GET /spaces/:key/tree`, `/pages/tree`, `/pages`, page detail,
+breadcrumbs and the recursive children route apply the shared visibility rule
+to page rows and to parent resolution. When a visible child has an invisible
+direct parent, present the child as a root (`parentId: null`, and depth zero on
+the local-space wire); breadcrumbs keep only the contiguous visible suffix and
+children traversal stops at the hidden node. Never retain the hidden parent ID
+or original depth as a hierarchy oracle. The local-space tree is a per-user,
+generation-checked entry in the `pages` cache namespace so visibility changes
+invalidate it with the existing page writers. The local-space list is uncached:
+its metadata and caller-visible page count/home page belong to independent
+invalidation domains.
+
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a

@@ -106,6 +106,35 @@ unchanged. Explicit links and hierarchy do not depend on embeddings; current
 bodies and parent IDs recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
 
+### Page hierarchy read authorization
+
+```mermaid
+flowchart LR
+    caller["Authenticated caller"] --> authority["visiblePagesPredicate<br/>+ system-admin bypass"]
+    authority --> rows["Visible page rows"]
+    authority --> parents["Visible parent rows"]
+    rows --> projection["Tree / list / detail / breadcrumb projection"]
+    parents --> projection
+    writes["Visibility and hierarchy writes"] --> generation["Per-user + global pages<br/>cache generation"]
+    generation --> projection
+```
+
+Local-space access grants access to the space container, not to every
+standalone page assigned to it. Page list and hierarchy routes apply the shared
+page-visibility definition before returning rows. Parent identity is projected
+only when the direct parent is also visible. A visible child whose parent is
+not visible is presented as a root (`parentId: null`; local-tree depth resets to
+zero), and breadcrumbs retain only the contiguous visible suffix. Descendant
+tree walks do not traverse through an invisible node.
+
+`GET /api/spaces/:key/tree` uses the generational `pages` cache namespace with
+a per-user key. Page visibility, ownership, hierarchy and lifecycle writers
+invalidate that namespace; generation-checked fills cannot restore a tree
+computed before an invalidation. `GET /api/spaces/local` combines mutable space
+metadata with caller-visible page counts and home-page identity, so it remains
+uncached rather than pretending one of those two independent invalidation
+domains covers both.
+
 ### Immutable page baselines (#275 foundation, #276 enforcement)
 
 Immutable baselines and their #276 writer enforcement are CE `core` facilities

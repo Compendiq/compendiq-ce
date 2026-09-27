@@ -257,6 +257,97 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     ]);
   });
 
+  it('scopes local tree rows, parent metadata, counts, and home-page identity to the caller', async () => {
+    await insertLocalSpace('VISIBLE', actorId);
+    const privateParent = await insertStandalonePage(
+      'Private parent',
+      'private',
+      actorId,
+      'VISIBLE',
+    );
+    const sharedChild = await insertStandalonePage(
+      'Shared child',
+      'shared',
+      actorId,
+      'VISIBLE',
+      { parentId: String(privateParent) },
+    );
+    const sharedRoot = await insertStandalonePage('Shared root', 'shared', actorId, 'VISIBLE');
+    await setTreePosition(privateParent, `/${privateParent}`, 0);
+    await setTreePosition(sharedChild, `/${privateParent}/${sharedChild}`, 1);
+    await setTreePosition(sharedRoot, `/${sharedRoot}`, 0);
+    await query('UPDATE spaces SET custom_home_page_id = $2 WHERE space_key = $1', [
+      'VISIBLE',
+      privateParent,
+    ]);
+
+    actorId = otherUserId;
+    const readerTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
+    expect(readerTree.statusCode, readerTree.body).toBe(200);
+    expect(readerTree.json()).toMatchObject({ spaceKey: 'VISIBLE', total: 2 });
+    expect(readerTree.json().items).toEqual([
+      expect.objectContaining({
+        id: sharedChild,
+        title: 'Shared child',
+        parentId: null,
+        depth: 0,
+      }),
+      expect.objectContaining({
+        id: sharedRoot,
+        title: 'Shared root',
+        parentId: null,
+        depth: 0,
+      }),
+    ]);
+    expect(readerTree.body).not.toContain('Private parent');
+    expect(readerTree.body).not.toContain(`"parentId":"${privateParent}"`);
+
+    const readerSpaces = await app.inject({ method: 'GET', url: '/api/spaces/local' });
+    expect(readerSpaces.statusCode, readerSpaces.body).toBe(200);
+    expect(readerSpaces.json()).toEqual([
+      expect.objectContaining({
+        key: 'VISIBLE',
+        pageCount: 2,
+        homepageId: null,
+        customHomePageId: null,
+      }),
+    ]);
+
+    const readerBreadcrumb = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${sharedChild}/breadcrumb`,
+    });
+    expect(readerBreadcrumb.statusCode, readerBreadcrumb.body).toBe(200);
+    expect(readerBreadcrumb.json()).toMatchObject({
+      ancestors: [],
+      current: { id: sharedChild, title: 'Shared child' },
+    });
+    expect(readerBreadcrumb.body).not.toContain('Private parent');
+
+    actorId = (
+      await query<{ created_by_user_id: string }>(
+        'SELECT created_by_user_id FROM pages WHERE id = $1',
+        [privateParent],
+      )
+    ).rows[0]!.created_by_user_id;
+    const ownerTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
+    expect(ownerTree.json().items).toEqual([
+      expect.objectContaining({ id: privateParent, parentId: null }),
+      expect.objectContaining({ id: sharedChild, parentId: String(privateParent), depth: 1 }),
+      expect.objectContaining({ id: sharedRoot, parentId: null }),
+    ]);
+
+    const adminId = await insertUser(`spaces-admin-${randomUUID()}`);
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [adminId]);
+    actorId = adminId;
+    const adminTree = await app.inject({ method: 'GET', url: '/api/spaces/VISIBLE/tree' });
+    expect(adminTree.json().items.map((item: { id: number }) => item.id)).toEqual([
+      privateParent,
+      sharedChild,
+      sharedRoot,
+    ]);
+  });
+
   it('conceals an inaccessible Confluence tree and returns it after a real role assignment', async () => {
     await query(
       `INSERT INTO spaces (space_key, space_name, source, last_synced)

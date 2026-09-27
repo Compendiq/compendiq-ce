@@ -234,8 +234,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       instance.redis = redis;
       // The route graph reads attachment configuration at module load; install
       // the suite sandbox before loading it.
-      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      const [{ pagesCrudRoutes }, { localSpacesRoutes }] = await Promise.all([
+        import('./pages-crud.js'),
+        import('./local-spaces.js'),
+      ]);
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      await instance.register(localSpacesRoutes, { prefix: '/api' });
     });
     registerOrdinaryPageWriteReconcilers();
   });
@@ -314,24 +318,37 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     expect(await pageRow(pageId)).toMatchObject({ title: 'Current', body_html: '<p>x</p>', version: 4 });
   });
 
-  it('makes a visibility-only update visible through another user’s already-cached tree without bumping content', async () => {
-    await insertLocalSpace('LOCAL', currentUserId);
-    const pageId = await insertStandalonePage('Private page', 'private', currentUserId, 'LOCAL');
+  it('evicts both cached tree variants when a visibility-only update grants or revokes access', async () => {
+    const owner = currentUserId;
+    await insertLocalSpace('LOCAL', owner);
+    const pageId = await insertStandalonePage('Private page', 'private', owner, 'LOCAL');
     const otherUser = await insertUser(`page-update-other-${randomUUID()}`);
-    currentUserId = otherUser;
-    const before = await app.inject({ method: 'GET', url: '/api/pages/tree' });
-    expect(before.json<{ items: Array<{ id: string }> }>().items.some((item) => item.id === String(pageId))).toBe(false);
 
-    currentUserId = (await query<{ created_by_user_id: string }>(
-      'SELECT created_by_user_id FROM pages WHERE id = $1', [pageId],
-    )).rows[0]!.created_by_user_id;
+    async function treeContainsPage(url: string): Promise<boolean> {
+      const response = await app.inject({ method: 'GET', url });
+      expect(response.statusCode, response.body).toBe(200);
+      return response
+        .json<{ items: Array<{ id: string | number }> }>()
+        .items.some((item) => String(item.id) === String(pageId));
+    }
+
+    currentUserId = otherUser;
+    expect(await treeContainsPage('/api/pages/tree')).toBe(false);
+    expect(await treeContainsPage('/api/spaces/LOCAL/tree')).toBe(false);
+
+    currentUserId = owner;
     const original = await pageRow(pageId);
-    const response = await app.inject({
+    const shared = await app.inject({
       method: 'PUT',
       url: `/api/pages/${pageId}`,
-      payload: { title: 'Private page', bodyHtml: '<p>x</p>', version: 1, visibility: 'shared' },
+      payload: {
+        title: 'Private page',
+        bodyHtml: '<p>x</p>',
+        version: 1,
+        visibility: 'shared',
+      },
     });
-    expect(response.statusCode, response.body).toBe(200);
+    expect(shared.statusCode, shared.body).toBe(200);
 
     const changed = await pageRow(pageId);
     expect(changed).toMatchObject({
@@ -340,8 +357,25 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
       content_revision: original.content_revision,
     });
     currentUserId = otherUser;
-    const after = await app.inject({ method: 'GET', url: '/api/pages/tree' });
-    expect(after.json<{ items: Array<{ id: string }> }>().items.some((item) => item.id === String(pageId))).toBe(true);
+    expect(await treeContainsPage('/api/pages/tree')).toBe(true);
+    expect(await treeContainsPage('/api/spaces/LOCAL/tree')).toBe(true);
+
+    currentUserId = owner;
+    const revoked = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: {
+        title: 'Private page',
+        bodyHtml: '<p>x</p>',
+        version: 1,
+        visibility: 'private',
+      },
+    });
+    expect(revoked.statusCode, revoked.body).toBe(200);
+
+    currentUserId = otherUser;
+    expect(await treeContainsPage('/api/pages/tree')).toBe(false);
+    expect(await treeContainsPage('/api/spaces/LOCAL/tree')).toBe(false);
   });
   it('rechecks current authority after the lifecycle lock before accepting a stale shared-page writer', async () => {
     const owner = currentUserId;
