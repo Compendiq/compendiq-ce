@@ -11,7 +11,7 @@ function isCookieSecure(request: FastifyRequest): boolean {
   return process.env.NODE_ENV === 'production' && request.protocol === 'https';
 }
 import bcrypt from 'bcrypt';
-import { RegisterSchema, LoginSchema } from '@compendiq/contracts';
+import { RegisterSchema, LoginSchema, REFRESH_BUSY_CODE, LOGOUT_BUSY_CODE } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { createRegistrationUser } from '../../core/services/account-bootstrap-service.js';
 import {
@@ -271,9 +271,12 @@ export async function authRoutes(fastify: FastifyInstance) {
         });
     } catch (err) {
       if (err instanceof RefreshSessionBusyError) {
-        // Rolled back before anything committed: the cookie is still valid.
+        // Rolled back before anything committed: the cookie is still valid,
+        // and the code tells the client this 503 is safe to retry.
         logger.warn({ err }, 'Refresh token rotation timed out');
-        throw fastify.httpErrors.serviceUnavailable('Refresh temporarily unavailable');
+        throw Object.assign(fastify.httpErrors.serviceUnavailable('Refresh temporarily unavailable'), {
+          code: REFRESH_BUSY_CODE,
+        });
       }
       logger.debug({ err }, 'Refresh token verification failed');
       throw fastify.httpErrors.unauthorized('Invalid refresh token');
@@ -288,7 +291,9 @@ export async function authRoutes(fastify: FastifyInstance) {
     // logout, keep the cookie, and let the client retry.
     const logoutIncomplete = (err: RefreshSessionBusyError) => {
       logger.warn({ err, userId }, 'Logout revocation timed out; nothing was revoked');
-      return fastify.httpErrors.serviceUnavailable('Sign-out did not complete. Please try again.');
+      return Object.assign(fastify.httpErrors.serviceUnavailable('Sign-out did not complete. Please try again.'), {
+        code: LOGOUT_BUSY_CODE,
+      });
     };
 
     // Try to extract user ID from Bearer token first

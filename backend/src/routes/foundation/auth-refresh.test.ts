@@ -29,6 +29,7 @@ const dbAvailable = await isDbAvailable();
 interface InjectedResponse {
   statusCode: number;
   headers: Record<string, string | string[] | number | undefined>;
+  json(): unknown;
 }
 
 function refreshCookieOf(response: InjectedResponse): string | null {
@@ -502,6 +503,7 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       }
 
       expect(busy.statusCode).toBe(503);
+      expect(busy.json()).toMatchObject({ code: 'refresh_busy' });
       expect(refreshCookieOf(busy)).toBeNull();
       expect(await activeJtis('family', initial.family)).toEqual([initial.jti]);
       expect((await refreshRoute(initial.token)).statusCode).toBe(200);
@@ -665,6 +667,7 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       // Three 5s lock waits: locked attempt, fallback, locked retry.
       expect(elapsed).toBeLessThan(20_000);
       expect(busy.statusCode).toBe(503);
+      expect(busy.json()).toMatchObject({ code: 'logout_busy' });
       expect(busy.headers['set-cookie']).toBeUndefined();
       expect((await activeJtis('user_id', testUserId)).sort()).toEqual([presented.jti, other.jti].sort());
 

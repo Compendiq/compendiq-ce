@@ -453,7 +453,7 @@ describe.skipIf(!canRun)('buildApp — error handler information leakage', () =>
     await closeTestApp(app);
   });
 
-  it('forwards only allow-listed collab error codes', async () => {
+  it('forwards only allow-listed error codes', async () => {
     process.env.NODE_ENV = 'development';
 
     const app = await createTestApp();
@@ -475,6 +475,13 @@ describe.skipIf(!canRun)('buildApp — error handler information leakage', () =>
         localVersion: 7,
       });
     });
+    // The SPA retries a refresh/logout 503 only when it carries this code.
+    app.get('/test/refresh-busy', async () => {
+      throw Object.assign(new Error('busy'), { statusCode: 503, code: 'refresh_busy' });
+    });
+    app.get('/test/logout-busy', async () => {
+      throw Object.assign(new Error('busy'), { statusCode: 503, code: 'logout_busy' });
+    });
 
     const leaky = await app.inject({ method: 'GET', url: '/test/leaky-code' });
     expect(leaky.statusCode).toBe(400);
@@ -493,6 +500,15 @@ describe.skipIf(!canRun)('buildApp — error handler information leakage', () =>
       code: 'confluence_modified',
       remoteVersion: 9,
       localVersion: 7,
+    });
+
+    expect((await app.inject({ method: 'GET', url: '/test/refresh-busy' })).json()).toMatchObject({
+      statusCode: 503,
+      code: 'refresh_busy',
+    });
+    expect((await app.inject({ method: 'GET', url: '/test/logout-busy' })).json()).toMatchObject({
+      statusCode: 503,
+      code: 'logout_busy',
     });
 
     await closeTestApp(app);
