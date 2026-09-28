@@ -390,9 +390,9 @@ export async function revokeToken(jti: string): Promise<void> {
 /**
  * Runs a revocation UPDATE under the owner's row lock so a concurrent
  * rotation cannot insert a successor that the UPDATE's snapshot would miss.
- * If the lock stays unavailable past its deadline, the UPDATE still runs
- * without it: a revocation must not be skipped because the users row was
- * busy. On that degraded path a successor committed by the stalled lock
+ * If the locked transaction hits a deadline (5s lock wait or 10s statement),
+ * the UPDATE still runs without the lock: a revocation must not be skipped
+ * because the database was busy. On that degraded path a successor committed by the stalled lock
  * holder or a rotation queued behind it can escape the UPDATE's snapshot —
  * the exposure every revocation had before the lock existed.
  */
@@ -403,7 +403,7 @@ async function revokeUnderUserLock(userId: string, sql: string, params: unknown[
     });
   } catch (error) {
     if (!(error instanceof RefreshSessionBusyError)) throw error;
-    logger.warn({ userId }, 'Refresh token revocation ran without the session lock after a lock timeout');
+    logger.warn({ userId }, 'Refresh token revocation ran without the session lock after a deadline');
     await query(sql, params);
   }
 }
