@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Header destinations, tree on the chassis, one lifted workspace card
+  (ADR-010 v1.7, v1.8).** Pages / AI / Graph move from the left icon rail to flat
+  tabs in the top bar. The route's sidebar (page tree, AI conversations,
+  settings) now sits directly on the frame in a wider left column, and the
+  page inspector is attached inside the workspace card beside the document,
+  resizable from its own left edge like the tree. The frame is one flat colour
+  in both themes (the diagonal chassis wash is retired; in light mode it is now
+  `#F5F5F5`), and the card carries
+  a light shadow that follows its rounded corners. The edit toolbar now folds
+  tools into Insert by measured overflow, so it no longer grows a horizontal
+  scrollbar that lifted its tools off centre at some widths. The mobile drawer
+  and inspector sheet are unchanged.
+
 - **Rejected page deletes no longer corrupt Library caches (#1668).** Page
   removal now waits for a successful DELETE, adjusts totals only for cached
   result sets that contain the confirmed row, and invalidates page, tree, pin,

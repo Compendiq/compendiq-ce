@@ -47,7 +47,7 @@ export function SettingsSidebar({
       initial={reduceEffects ? false : { width: 0, opacity: 0 }}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-      className="app-sidebar relative flex flex-col border-r overflow-hidden"
+      className="app-sidebar relative flex flex-col overflow-hidden"
     >
       {/* Same 48px chrome height as SidebarTreeView's — the two sidebars share
           MainNavStrip precisely so this row cannot drift between routes. The

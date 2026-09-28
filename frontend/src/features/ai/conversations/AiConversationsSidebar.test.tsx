@@ -117,12 +117,11 @@ describe('AiConversationsSidebar', () => {
     expect(useUiStore.getState().treeSidebarWidth).toBe(282);
   });
 
-  // The desktop shell renders <MainNavChassisRail /> outside the workspace card
-  // (AppLayout.tsx:509) and passes embedMainNav={false} to every sidebar in the
-  // slot; a pane that painted the strip anyway would put a second Pages/AI/Graph
-  // column beside it. The collapse control has to survive that branch, which is
-  // why the tree keeps two of them (SidebarTreeView.tsx:875-883 and :1087-1096).
-  it('drops the in-rail nav strip when the chassis owns it, and keeps Collapse', async () => {
+  // On desktop the header's tabs own Pages / AI / Graph and AppLayout passes
+  // embedMainNav={false} to every sidebar; a pane that painted the strip
+  // anyway would show the destinations twice. The collapse control has to
+  // survive that branch, which is why the tree keeps two of them.
+  it('drops the in-rail nav strip when the header owns the destinations, and keeps Collapse', async () => {
     mockList(3);
     const { unmount } = renderPane();
     expect(await screen.findByRole('link', { name: /Pages/ })).toBeInTheDocument();

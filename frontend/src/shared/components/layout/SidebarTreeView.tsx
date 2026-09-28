@@ -770,7 +770,7 @@ export function SidebarTreeView({
           animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-r overflow-hidden"
+          className="app-sidebar flex flex-col items-center overflow-hidden"
         >
           {/* Keep the collapsed control in the same 48px chrome row as the
               expanded main-nav toolbar, so both panes start their content on
@@ -839,7 +839,7 @@ export function SidebarTreeView({
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex max-w-full flex-col border-r overflow-hidden',
+        'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
       )}
     >
@@ -871,7 +871,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-background px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-card border border-border px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption

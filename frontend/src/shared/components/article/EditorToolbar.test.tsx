@@ -785,4 +785,45 @@ describe('EditorToolbar', () => {
     }
   });
 
+  // The width thresholds only estimate how wide the tools render. When the
+  // real tools are wider, the cluster overflows and a horizontal scrollbar
+  // appears under them, lifting them off the 48px row's centre while Tags and
+  // Save stay put. Folding must follow the measured overflow, not the guess.
+  it('keeps folding tools into Insert until the formatting cluster stops overflowing', () => {
+    const TOOL_PX = 60;
+    const CLUSTER_PX = 520;
+    const scrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!;
+    const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+    Object.defineProperty(Element.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: Element) {
+        return this.getAttribute('data-testid') === 'toolbar-scroll'
+          ? this.querySelectorAll('button').length * TOOL_PX
+          : 0;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: Element) {
+        return this.getAttribute('data-testid') === 'toolbar-scroll' ? CLUSTER_PX : 0;
+      },
+    });
+
+    try {
+      // No ResizeObserver in jsdom: the width estimate stays at its 1200px
+      // default, which by itself would show every tool.
+      render(<EditorToolbar editor={createMockEditor()} />);
+
+      const cluster = screen.getByTestId('toolbar-scroll');
+      expect(cluster.scrollWidth).toBeLessThanOrEqual(CLUSTER_PX);
+      expect(screen.queryByRole('button', { name: 'Strikethrough (Ctrl+Shift+X)' })).not.toBeInTheDocument();
+
+      openInsertMenu();
+      expect(screen.getByText('Strikethrough')).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(Element.prototype, 'scrollWidth', scrollWidth);
+      Object.defineProperty(Element.prototype, 'clientWidth', clientWidth);
+    }
+  });
+
 });

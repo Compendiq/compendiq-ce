@@ -510,17 +510,6 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #09090a;
-  --app-chassis-highlight: #101011;
-  --app-chassis-shade: #070708;
-  /* Owner exception (2026-09-12): a restrained multi-grey wash on the outer
-     frame only. One continuous image; panes and controls remain flat. */
-  --app-chassis-tones: linear-gradient(
-    115deg,
-    var(--app-chassis-highlight) 0%,
-    var(--app-chassis) 32%,
-    var(--app-chassis-shade) 68%,
-    var(--app-chassis) 100%
-  );
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
@@ -532,7 +521,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
-
+  --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
@@ -780,9 +769,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is the frame's own step. On 2026-09-15 the owner selected Nordic Slate
-     (Edition 2: Balanced Console), pinning Canvas to #e8ecf0 (1.171:1 on Pane).
-     It was #ededed from 2026-09-12; #f0efed from 2026-09-11 (1.149:1); above
+     Canvas is the frame's own step. On 2026-09-28 the owner pinned it to
+     #f5f5f5 (1.090:1 on Pane), a light neutral grey for the flat frame; it was
+     #e8ecf0 from 2026-09-15 (Nordic Slate, Edition 2: Balanced Console,
+     1.187:1), #ededed from 2026-09-12; #f0efed from 2026-09-11 (1.149:1); above
      Workspace for a day (#f9f8f7 → #fdfdfd → #fafaf9), where it measured 1.04:1
      once the workspace and rail hairlines came off — a boundary you could not
      see without the line — and it was #e8e8e8 until 2026-09-11, where the owner
@@ -934,20 +924,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      both.
 
      THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
-     ceiling on how light. The left destination rail labels ("Pages", "AI",
-     "Graph") are 12px --color-muted-foreground on this surface, so 1.4.3 applies
-     at 4.5:1, and #616878 clears that floor here (4.70:1 on #e8ecf0; earlier #686866
-     cleared 4.56:1 on prior #e8e8e8). Lighter is always safe for them; any deeper grey needs
+     ceiling on how light. The left navigation's 12px secondary labels are
+     --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
+     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
+     #e8ecf0). Lighter is always safe for them; any deeper grey needs
      --color-muted-foreground darkened first, and workspace-themes.test.ts pins
-     that relationship so the rail cannot lose its labels to a later retune.
+     that relationship so the labels cannot be lost to a later retune.
      --color-border-interactive on Canvas is over the 1.4.11 floor. Every
      other neutral in this block is fitted to white and to this frame, which is
      why the ramp reads near-neutral rather than beige. The rail's destinations
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
-  --app-chassis: #e8ecf0;
-  --app-chassis-highlight: #f0f3f6;
-  --app-chassis-shade: #e3e8ef;
+  --app-chassis: #f5f5f5;
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -972,6 +960,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
+  --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1085,21 +1074,16 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 30px wider than the header band (74px
-     at the compact 44px header), giving the labelled destinations breathing
-     room outside their controls after the rail's padding. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 30px);
+  /* Left column on the chassis; the boot skeleton reserves this width for the
+     tree, whose own default and reset are the same 282px. */
+  --app-nav-rail-width: 282px;
   --app-shell-radius: 0px;
-  --app-rail-gap: 0px;
-  --app-rail-radius: 0px;
 }
 
 @media (min-width: 768px) {
   :root {
     --app-inset: 12px;
     --app-shell-radius: 12px;
-    --app-rail-gap: 4px;
-    --app-rail-radius: 12px;
   }
 }
 
@@ -1107,17 +1091,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   :root {
     --app-inset: 16px;
     --app-shell-radius: 14px;
-    --app-rail-gap: 6px;
-    --app-rail-radius: 14px;
   }
 }
 
 @utility app-chassis {
+  /* One flat colour on every side of the workspace card. The tree column and
+     the header are transparent over it, so any image here (the retired
+     diagonal wash) showed as a tonal band around the card's left corners. */
   background: var(--app-chassis);
-  background-image: var(--app-chassis-tones);
-  /* Destinations live on the left chassis. A matching inset there stacked a
-     second grey gutter beside the 48px rail; keep the inset on the end and
-     bottom so the workspace card still floats off the right and floor. */
   padding-inline-start: 0;
   padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
@@ -1126,6 +1107,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility app-shell {
   min-height: 0;
+  padding-top: 4px;
 }
 
 /* The workspace card is defined by value and shape, not by a line: the chassis
@@ -1137,39 +1119,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @utility app-workspace {
   background: var(--app-shell-bg);
   border-radius: var(--app-shell-radius);
+  box-shadow: var(--app-workspace-shadow);
   min-width: 0;
 }
 
-@utility app-body-with-rail {
-  gap: 0;
-}
-
-/* Detached sibling of the workspace card. Its boundary is the --app-rail-gap
-   strip of Canvas on one side and the chassis inset on the other three, plus
-   the same Pane-over-Canvas step the workspace uses — so it needs no hairline
-   either. Below `md` it is the inspector sheet over a dimmed backdrop, where a
-   border would be the only line on screen. */
+/* The inspector is attached inside the workspace card, beside <main>. The
+   card clips it to the shared outer radius; the 1px left hairline is its only
+   boundary with the document. Below `md` it is the inspector sheet instead. */
 @utility app-context-rail {
   background: var(--app-rail-bg);
-  border-radius: var(--app-rail-radius);
-}
-
-/* Sibling of the workspace card: same height, matching radius, and an explicit
-   gutter from --app-rail-gap. The gutter belongs to this positioning context
-   so ArticleRightPane's resize separator can fill it rather than borrowing
-   hit area from the panel. Do not stretch through the bottom inset — that
-   squared the rail to the viewport and made a short island when height did
-   not fill. */
-@utility app-rail-beside {
-  align-self: stretch;
-  min-height: 0;
-  height: 100%;
-  padding-left: var(--app-rail-gap);
-  position: relative;
-}
-
-.app-rail-beside .app-context-rail {
-  height: 100%;
+  border-left-width: 1px;
+  border-color: var(--color-border);
 }
 
 /* The rail's tab row inherits the rail, exactly as the left navigation's title
@@ -1210,7 +1170,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: var(--color-card);
+  background: transparent;
   border-color: var(--color-border);
 }
 

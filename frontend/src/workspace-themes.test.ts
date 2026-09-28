@@ -262,8 +262,9 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // against the frame, which is not an edge; then #ebeae8; then #e8e8e8 on
   // 2026-09-07, asked for as "more gray" (1.23:1 on Pane); #f0efed on
   // 2026-09-11, asked for as a lighter shell frame (1.149:1 on Pane); #ededed
-  // on 2026-09-12 (1.171:1 on Pane); and on 2026-09-15 to #e8ecf0 (Nordic Slate
-  // Edition 2: Balanced Console, 1.171:1 on Pane). Asserting a hue rule on it would
+  // on 2026-09-12 (1.171:1 on Pane); on 2026-09-15 to #e8ecf0 (Nordic Slate
+  // Edition 2: Balanced Console, 1.187:1 on Pane); and on 2026-09-28 to #f5f5f5,
+  // a light neutral flat frame (1.090:1 on Pane). Asserting a hue rule on it would
   // assert the ramp over the owner's own value, so it gets the stricter check
   // instead — its exact value — which catches drift in EITHER direction rather
   // than trading one unguarded token for another. The card edge is measured in
@@ -271,7 +272,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#e8ecf0',
+    '--app-chassis': '#f5f5f5',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -420,19 +421,23 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // Paper's surfaces must be four distinct steps, in this order: Canvas is the
-  // frame and the deepest step, Chrome one 8-bit step above it (the two are one
-  // family by intent — the frame and the panel bands should not read as separate
-  // greys), Workspace above that, and Pane brightest. Canvas moved under Chrome
-  // on 2026-08-31 when the workspace and rail hairlines came off and the
-  // Canvas/Pane step became the whole card boundary.
-  it('spaces the four Paper surfaces as an ordered ladder', () => {
-    const ys = (['--app-chassis', '--app-header-bg', '--color-background', '--color-card'] as const).map(
+  // Paper's in-card surfaces must be three distinct steps, in this order: Chrome
+  // (the Library results header bands), Workspace (the card's own fill) and
+  // Pane, brightest. The frame is owner-pinned (#f5f5f5 since 2026-09-28) and
+  // no longer the deepest step: it sits outside the card and never touches
+  // Chrome or Workspace, so its only ordering duty is to stay below Pane — the
+  // unlined white card's edge, whose 1.08:1 floor app-shell-layout.test.ts
+  // measures.
+  it('spaces the Paper in-card surfaces as an ordered ladder, with the frame below Pane', () => {
+    const ys = (['--app-header-bg', '--color-background', '--color-card'] as const).map(
       (name) => luminance(token(lightBlock, name)),
     );
     for (let i = 1; i < ys.length; i++) {
       expect(ys[i]!, `surface ${i} must sit above surface ${i - 1}`).toBeGreaterThan(ys[i - 1]!);
     }
+    expect(luminance(token(lightBlock, '--app-chassis')), 'the frame must sit below Pane').toBeLessThan(
+      luminance(token(lightBlock, '--color-card')),
+    );
   });
 
   // The ≥1.35 floor this test used to hold on Paper's hairline is gone, and the
@@ -927,7 +932,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--shadow-overlay(-sm)?\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);
