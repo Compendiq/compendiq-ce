@@ -33,8 +33,10 @@ function spaceLevelVisibility(spacesParamIdx: number, userParamIdx: number, alia
  *
  * The user parameter is typed `uuid` (the `created_by_user_id` column type)
  * and compared to the TEXT `principal_id` through an explicit cast. A group
- * principal is cast to INTEGER only inside a CASE, so a non-numeric
- * principal can never reach the cast regardless of qual ordering.
+ * principal is parsed like `userCanAccessPage` does (any digit string naming
+ * an int4 group id, leading zeros allowed), but only inside nested CASEs, so
+ * a non-numeric or out-of-range principal denies instead of erroring
+ * regardless of qual ordering.
  */
 export function visiblePagesPredicate(spacesParamIdx: number, userParamIdx: number, alias = 'cp'): string {
   const user = `$${userParamIdx}::uuid`;
@@ -52,8 +54,10 @@ export function visiblePagesPredicate(spacesParamIdx: number, userParamIdx: numb
                    (restriction_ace.principal_type = 'user'
                      AND restriction_ace.principal_id = (${user})::text)
                    OR (restriction_ace.principal_type = 'group'
-                     AND (CASE WHEN restriction_ace.principal_id ~ '^[0-9]{1,9}$'
-                               THEN restriction_ace.principal_id::integer END) IN (
+                     AND (CASE WHEN restriction_ace.principal_id ~ '^0*[0-9]{1,10}$'
+                               THEN CASE WHEN restriction_ace.principal_id::bigint <= 2147483647
+                                         THEN restriction_ace.principal_id::integer END
+                          END) IN (
                        SELECT restriction_membership.group_id
                          FROM group_memberships restriction_membership
                         WHERE restriction_membership.user_id = ${user}

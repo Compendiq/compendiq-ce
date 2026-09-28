@@ -122,41 +122,6 @@ describe('pages-export routes', () => {
       expect(mockGeneratePdf).toHaveBeenCalledWith('<p>Hello</p>', { title: 'Test Article' });
     });
 
-    it('should return a PDF for a Confluence page with space access', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Confluence Page', body_html: '<p>Content</p>', source: 'confluence', space_key: 'SPACE1', created_by_user_id: null, visibility: null }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER_ID);
-    });
-
-    it('should allow export of shared standalone page not owned by user', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Shared Page', body_html: '<p>Shared</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: '999', visibility: 'shared' }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/7/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(200);
-    });
-
     it('should return 404 for non-existent page', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [],

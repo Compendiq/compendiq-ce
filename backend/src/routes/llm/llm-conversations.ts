@@ -36,6 +36,7 @@ import {
   userCanAccessPage,
   userCanEditPage,
 } from '../../core/services/rbac-service.js';
+import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
@@ -137,8 +138,9 @@ function decodeCursor(raw: string | undefined): { updatedAt: string; id: string 
 
 /**
  * Read-time source annotation (#1361): mark a KB source `unavailable` when its
- * page is trashed or no longer visible to the caller — the retrieval path's
- * own predicate, bound the same way rag-service binds it. External/web
+ * page is trashed or no longer readable by the caller under the non-RAG list
+ * predicate (`visiblePagesPredicate`, which also applies page restrictions;
+ * retrieval itself stays space-level). External/web
  * sources carry no pageId and are never annotated. Nothing is written back.
  */
 async function annotateUnavailableSources(messages: StoredChatMessage[], userId: string): Promise<StoredChatMessage[]> {
@@ -408,6 +410,14 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // and credentials under admission immediately before provider dispatch.
     const writeStaysLocal = await pageWriteStaysLocal(userId, existingPage.source);
     if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    // A Confluence page is applied only when the caller may read it under the
+    // shared list rule (space role plus page restrictions). This also covers
+    // the local-write branch taken when the caller's Confluence integration is
+    // off, which has no provider-side authority check, and it runs before the
+    // collab/version/layout checks so a denied page answers like a missing one.
+    if (!(await authorizedPageIds(userId, [existingPage.id])).has(existingPage.id)) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 

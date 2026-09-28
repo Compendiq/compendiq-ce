@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import {
   NotificationListQuerySchema,
   NotificationPreferenceUpdateSchema,
@@ -99,6 +100,11 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       return reply.badRequest('Invalid page ID');
     }
 
+    // Same caller-bound read rule as the page list: a missing, unreadable or
+    // restricted page is one 404, never an FK error or a silent success.
+    if (!(await authorizedPageIds(request.userId, [pageId])).has(pageId)) {
+      return reply.notFound('Page not found');
+    }
     await watchArticle(pageId, request.userId);
     return { message: 'Watching article' };
   });

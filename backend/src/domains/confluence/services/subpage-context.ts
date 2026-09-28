@@ -57,10 +57,10 @@ export async function fetchSubPages(
   const queue: Array<{ id: string; depth: number }> = [{ id: parentId, depth: 1 }];
   const visited = new Set<string>();
 
-  // #814: gate every descendant through the same visibility predicate the RAG
-  // path uses, so a caller can never pull a sub-page from a space they lack
-  // RBAC access to (or another user's private standalone page) into the LLM
-  // prompt. Soft-deleted children are excluded via `deleted_at IS NULL`.
+  // #814: gate every descendant through the non-RAG list predicate, so a
+  // caller can never pull a sub-page from a space they lack RBAC access to,
+  // another user's private standalone page, or a restricted page they hold no
+  // ACE for into the LLM prompt. Soft-deleted children are excluded via `deleted_at IS NULL`.
   const spaces = await getUserAccessibleSpacesMemoized(userId);
 
   while (queue.length > 0 && subPages.length < MAX_SUB_PAGES) {

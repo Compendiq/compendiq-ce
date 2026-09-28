@@ -60,8 +60,10 @@ BEGIN
      WHERE ace.resource_type = 'page'
        AND ace.principal_type = 'group'
        -- Same principal parsing as `visiblePagesPredicate`.
-       AND (CASE WHEN ace.principal_id ~ '^[0-9]{1,9}$'
-                 THEN ace.principal_id::integer END) IN (
+       AND (CASE WHEN ace.principal_id ~ '^0*[0-9]{1,10}$'
+                 THEN CASE WHEN ace.principal_id::bigint <= 2147483647
+                           THEN ace.principal_id::integer END
+            END) IN (
          CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE OLD.group_id END,
          CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE NEW.group_id END
        )

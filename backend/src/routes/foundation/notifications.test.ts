@@ -9,6 +9,12 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Watch routes gate on the caller-bound read rule; that gate is proven against
+// real PostgreSQL in page-restriction-page-probes.integration.test.ts.
+vi.mock('../../core/services/authorized-pages.js', () => ({
+  authorizedPageIds: vi.fn(async (_userId: string, ids: number[]) => new Set(ids)),
+}));
+
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
 vi.mock('../../core/db/postgres.js', () => ({

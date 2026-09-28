@@ -3509,7 +3509,7 @@ own 2s `SET LOCAL statement_timeout` — a second budget, not a restatement of
 the first: the gate has no `indexed` condition, and above 4000 dimensions no
 HNSW index is built, so the leg legitimately scans sequentially while the
 answer path waits (review r3) — kNN-searches
-`page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
+`page_image_embeddings` under the same `ragRetrievalPagesPredicate` (then named `visiblePagesPredicate`) the vector leg
 uses — the shared fragment, never a copy, since an image row carries no ACL of
 its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
 page's best image ranks it once, so image COUNT cannot beat image QUALITY).
@@ -4721,7 +4721,7 @@ behind an unchanged identity (ADR-025 D12's counterpart).
 images, base64, descriptions and provider error bodies never enter general
 logs or audit events; `page_image_analyses.error` and the analysis inspection
 route are `requireAdmin`. Retrieval, snippets, thumbnails, byte access and
-conversation replay apply `visiblePagesPredicate` and the EE per-page filter
+conversation replay apply the retrieval visibility predicate (`ragRetrievalPagesPredicate`; replay annotation uses `visiblePagesPredicate`) and the EE per-page filter
 before any derived text or byte is read. Derived text never touches
 `body_storage`, `body_html`, `body_text`, editor content or any upstream
 round trip *(epic)*.
@@ -4988,7 +4988,7 @@ flowchart LR
 What is gone from the query path relative to ADR-025 P3: the second query
 embed, the kNN over `page_image_embeddings`, the `EXISTS` gate, the second
 vector-pool connection, and `degraded_reason = 'image_leg_unavailable'`.
-What is unchanged: `visiblePagesPredicate` and the EE per-page filter run
+What is unchanged: the retrieval visibility predicate (now `ragRetrievalPagesPredicate`) and the EE per-page filter run
 before any chunk is read; `rag_ef_search` sizing; `/api/search` pagination;
 deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
 

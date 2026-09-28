@@ -92,8 +92,6 @@ interface PageContext {
   confluenceId: string | null;
   source: string;
   spaceKey: string | null;
-  visibility: string;
-  createdByUserId: string | null;
   version: number;
   contentRevision: string;
   lifecycleRevision: string;
@@ -194,13 +192,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       confluence_id: string | null;
       space_key: string | null;
       source: string;
-      visibility: string;
-      created_by_user_id: string | null;
       version: number;
       contentRevision: string;
       lifecycleRevision: string;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.visibility, cp.created_by_user_id,
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source,
               cp.version,
               cp.content_revision::text AS "contentRevision",
               cp.lifecycle_revision::text AS "lifecycleRevision"
@@ -218,8 +214,6 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       confluenceId: page.confluence_id,
       source: page.source,
       spaceKey: page.space_key,
-      visibility: page.visibility,
-      createdByUserId: page.created_by_user_id,
       version: page.version,
       contentRevision: page.contentRevision,
       lifecycleRevision: page.lifecycleRevision,

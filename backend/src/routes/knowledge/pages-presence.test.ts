@@ -114,7 +114,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/presence/heartbeat', () => {
     expect(r.statusCode).toBe(401);
   });
 
-  it('returns 403 when the user cannot read the page space', async () => {
+  it('answers an unreadable page like a missing one (404)', async () => {
     const { token } = await createUserAndLogin('presence_noaccess');
     const { id } = await insertPage('LOCKED', 'cf-1');
 
@@ -124,7 +124,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/presence/heartbeat', () => {
       headers: { authorization: `Bearer ${token}` },
       payload: { isEditing: false },
     });
-    expect(r.statusCode).toBe(403);
+    expect(r.statusCode).toBe(404);
   });
 
   it('returns 204 and records a heartbeat for an authorised user', async () => {
@@ -151,7 +151,7 @@ describe.skipIf(!canRun)('GET /api/pages/:id/presence (SSE)', () => {
     expect(r.statusCode).toBe(401);
   });
 
-  it('returns 403 when the user cannot read the page space', async () => {
+  it('answers an unreadable page like a missing one (404)', async () => {
     const { token } = await createUserAndLogin('presence_sse_noaccess');
     const { id } = await insertPage('LOCKED2', 'cf-3');
 
@@ -160,7 +160,7 @@ describe.skipIf(!canRun)('GET /api/pages/:id/presence (SSE)', () => {
       url: `/api/pages/${id}/presence`,
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(r.statusCode).toBe(403);
+    expect(r.statusCode).toBe(404);
   });
 
   it('two SSE clients on the same page see each other within 2s of a heartbeat', async () => {

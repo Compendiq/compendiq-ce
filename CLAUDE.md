@@ -186,7 +186,7 @@ quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
 that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
 clicks). Since migration 109 (#1527) **`judged_by` is the sixth key column**:
 the stored page-id arrays are retrieved under the judging admin's
-`visiblePagesPredicate`, so a key without the judge let one admin's click
+`ragRetrievalPagesPredicate`, so a key without the judge let one admin's click
 physically overwrite another admin's evidence. One query is still ONE McNemar
 trial, and that invariant now lives in the READ path: `judgementsForReport`
 collapses to `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC,
@@ -831,7 +831,8 @@ bodies to a user goes through it (or `authorizedPageIds` for id gates):
 lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
 rows too), graphs, space summaries, pins, embedding status, sub-page LLM
 context, duplicates, verification, versions, exports, attachments, bulk
-selection and LLM conversation/page references. A restricted page answers
+selection, drafts, presence, watch, improvement apply and LLM
+conversation/page references. A restricted page answers
 exactly like a missing one, and a hidden restricted parent re-roots its
 children like a hidden private parent. Never use it inside RAG retrieval:
 retrieval SQL (both legs, lexical chunk resolution, the identifier pin and its

@@ -79,7 +79,7 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
     }
     const allowed = await userCanAccessPage(userId, pageId);
     if (!allowed) {
-      throw fastify.httpErrors.forbidden('Access denied');
+      throw fastify.httpErrors.notFound('Page not found');
     }
 
     // --- SSE stream ---
@@ -165,7 +165,7 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
     }
     const allowed = await userCanAccessPage(userId, pageId);
     if (!allowed) {
-      throw fastify.httpErrors.forbidden('Access denied');
+      throw fastify.httpErrors.notFound('Page not found');
     }
 
     const meta = await fetchUserMeta(userId);
@@ -188,7 +188,7 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
     }
     const allowed = await userCanAccessPage(userId, pageId);
     if (!allowed) {
-      throw fastify.httpErrors.forbidden('Access denied');
+      return reply.code(204).send();
     }
 
     await removeViewer(id, userId);
