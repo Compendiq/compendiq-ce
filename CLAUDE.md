@@ -829,8 +829,10 @@ restricted pages and still hide other users' private standalone pages. Every
 surface that returns page rows, titles, snippets, labels, counts, hierarchy or
 bodies to a user goes through it (or `authorizedPageIds` for id gates):
 lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
-rows too, authorized over the whole candidate pool BEFORE the `limit` slice so
-hidden pages never take result slots), graphs, space summaries, pins, embedding
+rows too: a pool of `max(rag_fetch_width, 2 × limit)` pages is authorized BEFORE
+the `limit` slice, so results fall short only when more than `pool − limit`
+unreadable pages rank in it, and the analytics row counts the returned set),
+graphs, space summaries, pins, embedding
 status, sub-page LLM
 context, duplicates, verification, versions, exports, attachments, bulk
 selection, drafts, presence, watch and LLM conversation/page

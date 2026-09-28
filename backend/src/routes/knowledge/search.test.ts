@@ -64,6 +64,10 @@ vi.mock('../../domains/llm/services/rag-service.js', async () => {
     vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
     hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
     recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
+    // The tracked fire-and-forget variant writes the same row; one spy covers both.
+    trackSearchAnalytics: (...args: unknown[]) => {
+      mockRecordAnalytics(...args);
+    },
     getEmbeddingCoverage: (...args: unknown[]) => mockGetEmbeddingCoverage(...args),
     deriveDegradedReason: actual.deriveDegradedReason,
     resolveStageLimit: actual.resolveStageLimit,
@@ -736,15 +740,22 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // 3rd arg: the page-search candidate pool, max(width 10, 2 × limit 10).
       // 4th arg: the route's own coverage reading, handed over so hybridSearch
       // does not probe a second time (review r1). 5th arg: #1351's spaceKey
-      // scoping option — undefined here since the request carries none.
+      // scoping option — undefined here since the request carries none — and
+      // the suppressed service-side analytics row the route writes instead.
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined, surface: 'search' },
+        {
+          spaceKey: undefined,
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
       const body = response.json();
       expect(body.mode).toBe('hybrid');
@@ -768,9 +779,14 @@ describe('Search Routes', () => {
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: 'DEV', surface: 'search' },
+        {
+          spaceKey: 'DEV',
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
     });
 
@@ -938,9 +954,14 @@ describe('Search Routes', () => {
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined, surface: 'search' },
+        {
+          spaceKey: undefined,
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
     });
 

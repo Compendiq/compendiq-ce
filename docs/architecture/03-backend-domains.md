@@ -143,8 +143,9 @@ page-restriction arm `userCanAccessPage` applies. A Confluence page with
 directly or through a group, in both editions. System
 administrators are exempt from that restriction arm only, so their listings
 are unchanged: restricted pages stay visible, other users' private standalone
-pages stay hidden. Semantic and hybrid `/api/search` authorize the whole
-retrieval candidate pool before applying `limit`. RAG retrieval is the one
+pages stay hidden. Semantic and hybrid `/api/search` retrieve a pool of
+`max(rag_fetch_width, 2 × limit)` pages, authorize all of it, then apply
+`limit` (see `09-flow-rag-chat.md`). RAG retrieval is the one
 exception: it uses the separately named space-level
 `ragRetrievalPagesPredicate` and keeps ADR-023's
 Enterprise-gated post-filter. Parent identity is projected only when the

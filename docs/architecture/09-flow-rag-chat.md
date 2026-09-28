@@ -1286,13 +1286,20 @@ context — applies page restrictions in both editions through
 lexical chunk resolution, the identifier pin and its excerpt, and the
 embedding-coverage denominator that describes that corpus), and restriction
 enforcement inside retrieval stays this flag-gated post-filter. `/api/search`
-semantic and hybrid modes reuse the retrieval legs but authorize their whole
-candidate pool through `visiblePagesPredicate` before applying `limit`, so a
-page search never shows a restricted page the keyword mode would hide, and a
-hidden page never takes one of the caller's result slots.
+semantic and hybrid modes reuse the retrieval legs but retrieve a page-search
+candidate pool of `max(rag_fetch_width, 2 × limit)` pages (capped at
+`RAG_FETCH_WIDTH_MAX`), authorize the whole pool through
+`visiblePagesPredicate`, and only then slice to `limit`. A page search
+therefore never shows a restricted page the keyword mode would hide, and a
+response is short only when fewer than `limit` readable pages rank inside the
+pool — too few readable matches, or more than `pool − limit` unreadable pages
+ranked above them. The route suppresses `hybridSearch`'s own analytics row
+and records one for the returned set, so `result_count` is what the caller
+received.
 
 **Fusion has a stable head.** When the stage limit exceeds the configured
-width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and
+width (`/api/search?mode=hybrid` with `limit ≥ 6` at the default width in CE,
+because its pool is `2 × limit`, and
 every EE-ACL request whose `ceil(topK×1.5)` floor exceeds it), fusion runs
 twice: the head takes its **order** from RRF over the first width rows of each
 leg — the same page sequence a narrower request returns — its **entries** from

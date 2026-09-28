@@ -173,4 +173,65 @@ describe.skipIf(!available)('GET /api/search semantic and hybrid modes — page 
         .toEqual([...restricted].sort());
     },
   );
+
+  it.each(['semantic', 'hybrid'] as const)(
+    '%s: fills limit = rag_fetch_width and records the returned count, not the pool',
+    async (mode) => {
+      // Ten more readable DOCS pages: R now reads 14 matches. The two
+      // restricted pages still rank first in both legs.
+      const restricted = [fx.pages.hushedLeaf, fx.pages.hushedParent];
+      for (let i = 0; i < 10; i++) {
+        const page = await query<{ id: number }>(
+          `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage,
+                              body_html, embedding_dirty, labels)
+           VALUES ($1, 'confluence', 'DOCS', $2, $3, '', $4, FALSE, '{}')
+           RETURNING id`,
+          [`c-filler-${i}`, `Filler ${i}`, `${SEARCH_TERM} fillerbody${i}`, `<p>${SEARCH_TERM}</p>`],
+        );
+        await query(
+          `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+           VALUES ($1, 0, $2, $3, $4::jsonb)`,
+          [
+            page.rows[0]!.id,
+            `${SEARCH_TERM} fillerbody${i}`,
+            pgvector.toSql(queryVector),
+            JSON.stringify({ page_title: `Filler ${i}`, section_title: `Filler ${i}`, space_key: 'DOCS' }),
+          ],
+        );
+      }
+      const rotated = queryVector.map((value, i) => (i === 0 ? value + 0.05 : value));
+      await query(
+        'UPDATE page_embeddings SET embedding = $1 WHERE NOT (page_id = ANY($2::int[]))',
+        [pgvector.toSql(rotated), restricted],
+      );
+      await query(
+        `UPDATE pages SET body_text = repeat($1 || ' ', 20) || body_text WHERE id = ANY($2::int[])`,
+        [SEARCH_TERM, restricted],
+      );
+
+      // limit 10 equals the default fetch width; limit 20 exceeds the 14
+      // readable matches, so the recorded count must be 14, not the pool.
+      for (const [limit, expected] of [[10, 10], [20, 14]] as const) {
+        await flushSearchAnalytics();
+        await query('DELETE FROM search_analytics');
+        currentUserId = fx.readerId;
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/search?q=${SEARCH_TERM}&mode=${mode}&limit=${limit}`,
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const ids = response.json<{ items: Array<{ id: number }> }>().items.map((item) => item.id);
+        expect(ids).toHaveLength(expected);
+        expect(ids).not.toContain(fx.pages.hushedLeaf);
+        expect(ids).not.toContain(fx.pages.hushedParent);
+
+        await flushSearchAnalytics();
+        const rows = await query<{ result_count: number; surface: string | null }>(
+          'SELECT result_count, surface FROM search_analytics WHERE user_id = $1',
+          [fx.readerId],
+        );
+        expect(rows.rows).toEqual([{ result_count: expected, surface: 'search' }]);
+      }
+    },
+  );
 });
