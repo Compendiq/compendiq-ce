@@ -17,7 +17,16 @@ function jwt(serial: number): string {
 }
 
 interface FakeServer {
-  state: { cookie: string | null; inFlight: number; maxInFlight: number; reuse: number };
+  state: {
+    cookie: string | null;
+    inFlight: number;
+    maxInFlight: number;
+    reuse: number;
+    /** Refresh requests still to answer with the retry-safe busy 503. */
+    busy: number;
+    /** Successful rotations. */
+    rotated: number;
+  };
   live: Set<string>;
   familyOf: Map<string, string>;
   fetchImpl: (input: RequestInfo | URL) => Promise<Response>;
@@ -28,7 +37,7 @@ function createServer(): FakeServer {
   const familyOf = new Map<string, string>([['c0', 'original']]);
   const live = new Set(['c0']);
   const consumed = new Set<string>();
-  const state = { cookie: 'c0' as string | null, inFlight: 0, maxInFlight: 0, reuse: 0 };
+  const state = { cookie: 'c0' as string | null, inFlight: 0, maxInFlight: 0, reuse: 0, busy: 0, rotated: 0 };
 
   function mint(family: string): Response {
     serial += 1;
@@ -57,8 +66,17 @@ function createServer(): FakeServer {
 
     if (url === '/api/auth/login') return mint(`login-${serial}`);
     if (url === '/api/auth/refresh') {
+      if (state.busy > 0) {
+        // The session lock stayed busy: rolled back, nothing consumed.
+        state.busy -= 1;
+        return new Response(JSON.stringify({ statusCode: 503, message: 'busy', code: 'refresh_busy' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (presented && live.delete(presented)) {
         consumed.add(presented);
+        state.rotated += 1;
         return mint(familyOf.get(presented)!);
       }
       if (presented && consumed.has(presented)) {
@@ -181,5 +199,55 @@ describe.each(lockBackends)('cross-tab refresh-cookie serialization with $name',
     expect(server.state.reuse).toBe(0);
     expect(server.familyOf.get(server.state.cookie!)).toMatch(/^login-/);
     expect(server.live.has(server.state.cookie!)).toBe(true);
+  });
+
+  it('releases the lock during the busy backoff and adopts the token a sibling tab refreshed meanwhile', async () => {
+    // Fake only the timers the backoff, lease and latency use; fake-indexeddb
+    // and BroadcastChannel keep their real scheduling.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      // One step of fake time plus one real macrotask turn for fake-indexeddb.
+      const tick = async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        const turn = Promise.withResolvers<void>();
+        setImmediate(turn.resolve);
+        await turn.promise;
+      };
+      const settle = async <T,>(promise: Promise<T>): Promise<T> => {
+        let done = false;
+        const tracked = promise.finally(() => { done = true; });
+        for (let step = 0; !done && step < 1_000; step++) await tick();
+        return tracked;
+      };
+      const tabA = await openTab();
+      const tabB = await openTab();
+      // Real, expired JWTs: each tab's setAuth reaches the other over
+      // BroadcastChannel, and an expired token is never adopted.
+      const expired = (tab: string) =>
+        `${btoa('{"alg":"HS256"}')}.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60, tab }))}.sig`;
+      tabA.store.useAuthStore.getState().setAuth(expired('a'), USER);
+      tabB.store.useAuthStore.getState().setAuth(expired('b'), USER);
+      await tick();
+      server.state.busy = 1;
+
+      const refreshA = tabA.api.refreshAccessTokenOnce();
+      let aSettled = false;
+      void refreshA.finally(() => { aSettled = true; }).catch(() => {});
+      for (let step = 0; server.state.busy > 0 && step < 50; step++) await tick();
+      expect(server.state.busy).toBe(0);
+
+      // Tab B refreshes inside A's 1s backoff, so A must not be holding the lock.
+      const tokenB = await settle(tabB.api.refreshAccessTokenOnce());
+      expect(tokenB).not.toBeNull();
+      expect(aSettled).toBe(false);
+      expect(server.state.rotated).toBe(1);
+
+      await expect(settle(refreshA)).resolves.toBe(tokenB);
+      expect(server.state.rotated).toBe(1);
+      expect(server.state.reuse).toBe(0);
+      expect([...server.live]).toEqual([server.state.cookie]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

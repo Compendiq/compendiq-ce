@@ -77,7 +77,14 @@ describe('useSessionInit', () => {
     });
   });
 
-  it('keeps the session when the refresh endpoint stays unavailable', async () => {
+  function refreshBusy(): Response {
+    return new Response(JSON.stringify({ statusCode: 503, message: 'busy', code: 'refresh_busy' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  it('keeps the session without retrying after a network error', async () => {
     vi.useFakeTimers();
     storeState = {
       isAuthenticated: true,
@@ -86,9 +93,25 @@ describe('useSessionInit', () => {
       clearAuth: mockClearAuth,
     };
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch')
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValue(new Response('busy', { status: 503 }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderHook(() => useSessionInit());
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session when the refresh stays busy', async () => {
+    vi.useFakeTimers();
+    storeState = {
+      isAuthenticated: true,
+      accessToken: null,
+      setAuth: mockSetAuth,
+      clearAuth: mockClearAuth,
+    };
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => refreshBusy());
 
     renderHook(() => useSessionInit());
     await vi.advanceTimersByTimeAsync(5_000);
@@ -107,7 +130,7 @@ describe('useSessionInit', () => {
     };
 
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(refreshBusy())
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),

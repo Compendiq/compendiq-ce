@@ -10,6 +10,9 @@ import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import type { CollabAwarenessUser } from './merge-presence';
 
 const MESSAGE_CONTROL = 4;
+// Rejoin pauses after an unavailable token refresh, as in use-presence.
+const REJOIN_BACKOFF_START_MS = 1_000;
+const REJOIN_BACKOFF_CAP_MS = 30_000;
 
 export type CollabJoinError = 'unauthorized' | 'forbidden' | 'not_found';
 export type CollabReadOnlyReason =
@@ -109,6 +112,9 @@ export function useCollabProvider({
 
     let cancelled = false;
     let blocked = false;
+    let rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
+    // Same timer-handle type use-presence uses for its reconnect timer.
+    let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
     const joinedRevision = latestRevision.current;
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
@@ -185,17 +191,24 @@ export function useCollabProvider({
               preserveReadOnly('unauthorized');
               return;
             }
+            rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
             ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
             ws.connect();
           },
           () => {
-            // Refresh temporarily unavailable (it already retried with
-            // backoff): keep the session and rejoin. A still-stale token is
-            // closed with 4401 again, which retries the refresh.
+            // Refresh temporarily unavailable: keep the session and rejoin
+            // after a growing pause (like presence), so a busy session lock
+            // is not hammered. A still-stale token is closed with 4401 again,
+            // which retries the refresh.
             if (cancelled || blocked) return;
-            const current = useAuthStore.getState().accessToken;
-            if (current) ws.protocols = [COLLAB_WS_PROTOCOL, current];
-            ws.connect();
+            const delay = rejoinBackoffMs;
+            rejoinBackoffMs = Math.min(rejoinBackoffMs * 2, REJOIN_BACKOFF_CAP_MS);
+            rejoinTimer = setTimeout(() => {
+              if (cancelled || blocked) return;
+              const current = useAuthStore.getState().accessToken;
+              if (current) ws.protocols = [COLLAB_WS_PROTOCOL, current];
+              ws.connect();
+            }, delay);
           },
         );
         return;
@@ -215,6 +228,7 @@ export function useCollabProvider({
 
     return () => {
       cancelled = true;
+      clearTimeout(rejoinTimer);
       awareness.off('update', refreshAwareness);
       ws.destroy();
       awareness.destroy();
