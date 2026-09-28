@@ -406,12 +406,15 @@ describe.skipIf(!canRun)('resetFromHtml vs in-flight persist (#1474)', () => {
         // persist must be queued on the init lock (already holding the page
         // lifecycle lock) before the reset begins, and the reset marker must be
         // set before the holder lets the persist through. A fixed 50 ms sleep let
-        // a slow shard start the persist after the reset had committed.
+        // a slow shard start the persist after the reset had committed. pg_locks
+        // is cluster-wide and sibling workers' databases reuse page ids, so the
+        // count is scoped to this database.
         await vi.waitFor(async () => {
           const waiting = await query<{ count: string }>(
             `SELECT COUNT(*)::text AS count FROM pg_locks
               WHERE locktype = 'advisory' AND classid = $1 AND objid = $2
-                AND objsubid = 2 AND NOT granted`,
+                AND objsubid = 2 AND NOT granted
+                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
             [COLLAB_INIT_LOCK_KEY, pageId],
           );
           expect(Number(waiting.rows[0]!.count)).toBe(1);
