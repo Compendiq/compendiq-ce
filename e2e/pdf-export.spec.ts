@@ -23,7 +23,6 @@ test.describe('PDF export', () => {
     await page.goto(`/pages/${pageId}`);
     await expect(page.getByTestId('edit-page-btn')).toBeVisible();
     await page.getByRole('tab', { name: 'Details', exact: true }).click();
-    await page.locator('summary').filter({ hasText: 'More actions' }).click();
     const downloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Export PDF', exact: true }).click();
     const download = await downloadPromise;
