@@ -316,6 +316,7 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(refresh).toHaveBeenCalledTimes(9);
     expect(Socket.instances).toHaveLength(3);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(Socket.instances).toHaveLength(4);
     const thirdRejoin = Socket.instances[3]!;
 
     await act(async () => { thirdRejoin.close(4401, 'unauthorized'); });
