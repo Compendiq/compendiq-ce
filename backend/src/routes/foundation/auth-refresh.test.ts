@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
-import type { PoolClient } from 'pg';
+import type { PoolClient, QueryResult } from 'pg';
 import {
   setupTestDb,
   truncateAllTables,
@@ -20,6 +20,7 @@ import {
   revokeTokenFamily,
   revokeAllUserTokens,
   cleanupExpiredTokens,
+  RefreshSessionBusyError,
   verifyToken,
 } from '../../core/plugins/auth.js';
 import { authRoutes } from './auth.js';
@@ -131,6 +132,10 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
   afterAll(async () => {
     await app?.close();
     await teardownTestDb();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('generateRefreshToken', () => {
@@ -570,6 +575,95 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       expect(logout.statusCode).toBe(200);
       expect(await activeJtis('user_id', testUserId)).toEqual([]);
     }, 30_000);
+
+    it('terminates a rotation stalled idle in its transaction so a falling-back logout finishes in bounded time', async () => {
+      const initial = await generateRefreshToken(testPayload());
+      const accessToken = await generateAccessToken(testPayload());
+
+      // Stall the real rotation right after it claimed the presented JTI:
+      // its transaction then sits idle holding the users row and that row.
+      let reachedStall!: () => void;
+      const stalled = new Promise<void>((resolve) => { reachedStall = resolve; });
+      let resume!: () => void;
+      const gate = new Promise<void>((resolve) => { resume = resolve; });
+      const pool = getPool();
+      const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
+      vi.spyOn(pool, 'connect').mockImplementationOnce((async () => {
+        const client = await connect();
+        const run = client.query.bind(client) as (sql: string, params?: unknown[]) => Promise<QueryResult>;
+        return Object.assign(client, {
+          query: async (sql: string, params?: unknown[]) => {
+            const result = await run(sql, params);
+            if (sql.includes('RETURNING jti')) {
+              reachedStall();
+              await gate;
+            }
+            return result;
+          },
+        });
+      }) as never);
+      // Real timer on purpose: the bound under test is PostgreSQL's own clock.
+      // Without that bound the stall would outlive the test, so resume it
+      // late enough to fail the elapsed assertion rather than hang.
+      const giveUp = setTimeout(() => resume(), 25_000);
+
+      try {
+        const rotation = refreshRoute(initial.token);
+        await stalled;
+        const started = Date.now();
+        const logout = await app.inject({
+          method: 'POST',
+          url: '/api/auth/logout',
+          headers: { authorization: `Bearer ${accessToken}` },
+        });
+        const elapsed = Date.now() - started;
+
+        expect(logout.statusCode).toBe(200);
+        // 5s lock wait, then the fallback waits until PostgreSQL ends the
+        // rotation 10s into its idle period, then the locked retry runs.
+        expect(elapsed).toBeLessThan(15_000);
+        expect(await activeJtis('user_id', testUserId)).toEqual([]);
+
+        resume();
+        // PostgreSQL rolled the stalled rotation back: nothing was consumed.
+        expect((await rotation).statusCode).toBe(503);
+        expect(await activeJtis('user_id', testUserId)).toEqual([]);
+      } finally {
+        clearTimeout(giveUp);
+        resume();
+      }
+    }, 40_000);
+
+    it('bounds the unlocked revocation fallback and reports a revocation that never ran', async () => {
+      const initial = await generateRefreshToken(testPayload());
+      // A foreign transaction without any deadline holds the users row and a
+      // token row and never finishes on its own; the real timer only frees it
+      // if the code under test waits unbounded (PostgreSQL's clock is under test).
+      const holder = await getPool().connect();
+      const giveUp = setTimeout(() => {
+        holder.query('ROLLBACK').catch(() => {});
+      }, 25_000);
+      let outcome!: unknown;
+      let elapsed = 0;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', [testUserId]);
+        await holder.query('SELECT jti FROM refresh_tokens WHERE jti = $1 FOR UPDATE', [initial.jti]);
+
+        const started = Date.now();
+        outcome = await revokeAllUserTokens(testUserId).then(() => 'revoked', (error: unknown) => error);
+        elapsed = Date.now() - started;
+      } finally {
+        clearTimeout(giveUp);
+        await holder.query('ROLLBACK').catch(() => {});
+        holder.release();
+      }
+
+      // Three 5s lock waits: locked attempt, fallback, locked retry.
+      expect(elapsed).toBeLessThan(20_000);
+      expect(outcome).toBeInstanceOf(RefreshSessionBusyError);
+      expect(await activeJtis('user_id', testUserId)).toEqual([initial.jti]);
+    }, 40_000);
   });
 
   describe('Logout with expired access token (refresh cookie fallback)', () => {

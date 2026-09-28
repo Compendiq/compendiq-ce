@@ -80,11 +80,62 @@ export class RefreshSessionBusyError extends Error {
 
 // Session-row lock holders only run a few indexed statements plus one JWT
 // signature, so these deadlines are only reached when the database is stuck.
-// They keep a request from waiting indefinitely behind the new lock.
+// They keep a request from waiting indefinitely behind the new lock. The idle
+// deadline bounds the holder instead: PostgreSQL terminates a session
+// transaction whose client stalls between statements, which releases the
+// users row and every refresh_tokens row it claimed.
 const SESSION_LOCK_TIMEOUT = '5s';
 const SESSION_STATEMENT_TIMEOUT = '10s';
+const SESSION_IDLE_TIMEOUT = '10s';
 const LOCK_NOT_AVAILABLE = '55P03';
 const QUERY_CANCELED = '57014';
+const IDLE_IN_TRANSACTION_TIMEOUT = '25P03';
+
+function isDeadlineError(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return code === LOCK_NOT_AVAILABLE || code === QUERY_CANCELED || code === IDLE_IN_TRANSACTION_TIMEOUT;
+}
+
+/**
+ * Runs `work` in one transaction with transaction-local lock-wait, statement
+ * and idle deadlines. Hitting one rolls the transaction back. When PostgreSQL
+ * ends the session (idle deadline), the checked-out client emits that error
+ * outside any query; it is captured here — pg-pool leaves checked-out clients
+ * without an error listener — and rethrown in place of the generic
+ * "not queryable" error of the next statement.
+ */
+async function withBoundedTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  let connectionError: Error | undefined;
+  const onConnectionError = (error: Error) => {
+    connectionError ??= error;
+  };
+  client.on('error', onConnectionError);
+  let releaseError: Error | undefined;
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT set_config('lock_timeout', $1, true),
+              set_config('statement_timeout', $2, true),
+              set_config('idle_in_transaction_session_timeout', $3, true)`,
+      [SESSION_LOCK_TIMEOUT, SESSION_STATEMENT_TIMEOUT, SESSION_IDLE_TIMEOUT],
+    );
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      // A connection that cannot roll back must not return to the pool.
+      releaseError = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    }
+    throw connectionError ?? error;
+  } finally {
+    client.removeListener('error', onConnectionError);
+    client.release(releaseError ?? connectionError);
+  }
+}
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -226,45 +277,27 @@ interface SessionUserRow {
  * transaction. `FOR NO KEY UPDATE` still admits foreign-key inserts that
  * reference the user from unrelated tables.
  *
- * Lock waits and statements are deadline-bounded; hitting a deadline rolls
- * back and surfaces RefreshSessionBusyError.
+ * Lock waits, statements and idle gaps are deadline-bounded; hitting a
+ * deadline rolls back and surfaces RefreshSessionBusyError.
  */
 async function withUserSessionLock<T>(
   userId: string,
   work: (client: PoolClient, user: SessionUserRow | undefined) => Promise<T>,
 ): Promise<T> {
-  const client = await getPool().connect();
-  let releaseError: Error | undefined;
   try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
-      [SESSION_LOCK_TIMEOUT, SESSION_STATEMENT_TIMEOUT],
-    );
-    const locked = await client.query<SessionUserRow>(
-      `SELECT id, username, role, email, display_name, deactivated_at
-         FROM users
-        WHERE id = $1
-          FOR NO KEY UPDATE`,
-      [userId],
-    );
-    const result = await work(client, locked.rows[0]);
-    await client.query('COMMIT');
-    return result;
+    return await withBoundedTransaction(async (client) => {
+      const locked = await client.query<SessionUserRow>(
+        `SELECT id, username, role, email, display_name, deactivated_at
+           FROM users
+          WHERE id = $1
+            FOR NO KEY UPDATE`,
+        [userId],
+      );
+      return work(client, locked.rows[0]);
+    });
   } catch (error) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackError) {
-      // A connection that cannot roll back must not return to the pool.
-      releaseError = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
-    }
-    const code = (error as { code?: unknown } | null)?.code;
-    if (code === LOCK_NOT_AVAILABLE || code === QUERY_CANCELED) {
-      throw new RefreshSessionBusyError();
-    }
+    if (isDeadlineError(error)) throw new RefreshSessionBusyError();
     throw error;
-  } finally {
-    client.release(releaseError);
   }
 }
 
@@ -391,12 +424,16 @@ export async function revokeToken(jti: string): Promise<void> {
  * Runs a revocation UPDATE under the owner's row lock so a concurrent
  * rotation cannot insert a successor that the UPDATE's snapshot would miss.
  * If the locked transaction hits a deadline (5s lock wait or 10s statement),
- * the UPDATE runs without the lock immediately — a revocation must not be
- * skipped because the database was busy — and then once more under the lock.
- * Acquiring the lock proves the stalled holder (and every rotation queued
- * ahead) has committed, so a successor it inserted after the unlocked
- * UPDATE's snapshot is revoked too. Only if that second wait also times out
- * can such a successor survive (the pre-lock exposure).
+ * the UPDATE runs without the users-row lock immediately — a revocation must
+ * not be skipped because the database was busy — and then once more under the
+ * lock. The unlocked UPDATE runs in its own transaction with the same 5s/10s
+ * deadlines, and a stalled holder is ended by its own 10s idle deadline, so
+ * neither step waits without bound. Acquiring the lock proves the stalled
+ * holder (and every rotation queued ahead) has finished, so a successor it
+ * inserted after the unlocked UPDATE's snapshot is revoked too. Only if that
+ * second wait also times out can such a successor survive (the pre-lock
+ * exposure); if the unlocked UPDATE timed out as well, nothing was revoked and
+ * RefreshSessionBusyError is thrown.
  */
 async function revokeUnderUserLock(userId: string, sql: string, params: unknown[]): Promise<void> {
   const revokeLocked = () => withUserSessionLock(userId, async (client) => {
@@ -404,15 +441,25 @@ async function revokeUnderUserLock(userId: string, sql: string, params: unknown[
   });
   try {
     await revokeLocked();
+    return;
   } catch (error) {
     if (!(error instanceof RefreshSessionBusyError)) throw error;
-    await query(sql, params);
-    try {
-      await revokeLocked();
-    } catch (retryError) {
-      if (!(retryError instanceof RefreshSessionBusyError)) throw retryError;
-      logger.warn({ userId }, 'Refresh token revocation could not take the session lock; ran unlocked only');
-    }
+  }
+
+  let ranUnlocked = true;
+  try {
+    await withBoundedTransaction((client) => client.query(sql, params));
+  } catch (error) {
+    if (!isDeadlineError(error)) throw error;
+    ranUnlocked = false;
+    logger.warn({ userId }, 'Unlocked refresh token revocation hit its deadline; retrying under the session lock');
+  }
+
+  try {
+    await revokeLocked();
+  } catch (retryError) {
+    if (!(retryError instanceof RefreshSessionBusyError) || !ranUnlocked) throw retryError;
+    logger.warn({ userId }, 'Refresh token revocation could not take the session lock; ran unlocked only');
   }
 }
 
