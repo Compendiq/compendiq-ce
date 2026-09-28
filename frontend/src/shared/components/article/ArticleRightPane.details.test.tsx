@@ -89,7 +89,7 @@ describe('Details trust and draft continuity', () => {
   it('does not certify failed indexing when the error text is absent and a human verification exists', async () => {
     renderDetails({ embeddingStatus: 'failed', verifiedAt: '2026-09-02T12:00:00Z' });
     await waitFor(() => expect(screen.getByText('Search indexing failed')).toBeVisible());
-    expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('Embedding Failed');
+    expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('Indexing failed');
     expect(screen.queryByText(/Indexed for AI search|Verified and ready for AI search/)).not.toBeInTheDocument();
   });
 

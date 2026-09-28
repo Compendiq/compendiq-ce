@@ -37,6 +37,8 @@ import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { PageLifecycleSection } from './PageLifecycleSection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
+import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
+import { formatDateStamp } from '../../lib/format-relative-time';
 import { Button } from '../Button';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
@@ -352,9 +354,7 @@ export function ArticleRightPane({
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
   const verifiedAt = page?.verifiedAt ?? null;
-  const verifiedDateStr = verifiedAt
-    ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    : null;
+  const verifiedDateStr = verifiedAt ? formatDateStamp(verifiedAt) : null;
 
   const overallHealth = useMemo(() => {
     const indexing = page?.embeddingStatus
@@ -1681,7 +1681,7 @@ export function ArticleRightPane({
 
           <div className="mt-3">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-md', neutralChipInk)}>
                 {page.source === 'standalone' ? <FolderOpen size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}
               </span>
               <div className="min-w-0">
@@ -1780,11 +1780,11 @@ export function ArticleRightPane({
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
               <span
-                className="inline-flex min-h-[24px] items-center gap-1 rounded-full border border-border bg-background/45 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+                className={statusChipClass}
                 data-testid="verification-chip"
                 title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
               >
-                <ShieldCheck size={12} aria-hidden="true" />
+                <ShieldCheck size={12} className="shrink-0" aria-hidden="true" />
                 <span>{verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}</span>
               </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
@@ -1824,7 +1824,7 @@ export function ArticleRightPane({
                 {page.labels.map((label) => (
                   <span
                     key={label}
-                    className="inline-flex max-w-full items-center break-words rounded border border-border bg-background/45 px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                    className={cn('inline-flex max-w-full items-center break-words rounded border border-border px-2 py-0.5 text-xs font-medium', neutralChipInk)}
                   >
                     {label}
                   </span>
@@ -1927,7 +1927,7 @@ export function ArticleRightPane({
                   data-testid="show-in-graph-btn"
                 >
                   <GitGraph size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Show in Graph</span>
+                  <span className="truncate">Show in graph</span>
                 </button>
               )}
 
@@ -2021,7 +2021,7 @@ export function ArticleRightPane({
                 ) : (
                   <Gauge size={15} className="shrink-0 opacity-70" />
                 )}
-                <span className="truncate">Re-check Quality</span>
+                <span className="truncate">Re-check quality</span>
               </button>
             </div>
           </details>
@@ -2029,7 +2029,7 @@ export function ArticleRightPane({
         </div>
       )}
       {!editing && page && (
-        <div className="px-2 pb-5 pt-1">
+        <div className="px-3 pb-5 pt-1">
           <details className="group">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
@@ -2041,7 +2041,7 @@ export function ArticleRightPane({
             </summary>
             <Button
               variant="destructive-ghost"
-              size="sm"
+              size="md"
               onClick={handleDelete}
               className="nm-action-destructive mt-0.5 w-full justify-start gap-2"
               title={`Move to trash (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}

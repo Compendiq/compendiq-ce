@@ -231,8 +231,11 @@ export function NotesInspectorPanel({
       className={cn('flex min-h-0 flex-col overflow-hidden bg-card text-card-foreground', className)}
       data-testid="notes-inspector-panel"
     >
-      {/* Header with Filters and Add Note button */}
-      <div className="shrink-0 border-b border-border p-3">
+      {/* Header with Filters and Add Note button. No horizontal inset of its
+          own: the panel sits inside the Details section's `px-3`, and a second
+          inset put the filter track 12px further in than the "Notes" heading
+          above it. */}
+      <div className="shrink-0 border-b border-border pb-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div
             role="tablist"
@@ -311,7 +314,7 @@ export function NotesInspectorPanel({
         aria-labelledby={filter === 'open' ? 'notes-tab-open' : 'notes-tab-resolved'}
         hidden={showNewNoteForm && !isLoading && !isError && displayedThreads.length === 0}
         tabIndex={0}
-        className="nm-focus-ring min-h-0 flex-1 overflow-y-auto p-3 space-y-3 -outline-offset-2"
+        className="nm-focus-ring min-h-0 flex-1 overflow-y-auto py-3 space-y-3 -outline-offset-2"
       >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
@@ -335,17 +338,22 @@ export function NotesInspectorPanel({
             </button>
           </div>
         ) : displayedThreads.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-4 text-center text-xs text-muted-foreground px-4">
-            <MessageSquare size={28} className="text-muted-foreground/30 mb-2" />
-            <p className="font-medium text-foreground/80 mb-1">
-              {filter === 'open' ? 'No open notes' : 'No resolved notes'}
-            </p>
-            <p className="text-xs leading-relaxed">
+          /* One row, not a 156px illustration: the empty state used to stand
+             between Document health and Page actions on every page that had
+             no notes yet, which is most of them. The guidance stays; the
+             ceremony goes. */
+          <p className="flex items-start gap-2 text-xs text-muted-foreground">
+            <MessageSquare size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>
+              <span className="font-medium text-foreground/80">
+                {filter === 'open' ? 'No open notes' : 'No resolved notes'}
+              </span>
+              {' — '}
               {filter === 'open'
-                ? 'Highlight text in the editor to add an inline note, or click "New note" above.'
-                : 'Resolved note threads will appear here.'}
-            </p>
-          </div>
+                ? 'highlight text in the editor to add an inline note, or use New note above.'
+                : 'resolved note threads will appear here.'}
+            </span>
+          </p>
         ) : (
           displayedThreads.map((thread) => (
             <CommentThread

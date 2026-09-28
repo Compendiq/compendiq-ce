@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
+import { Clock } from 'lucide-react';
 import { cn } from '../../lib/cn';
-import { neutralChipInk } from './neutral-chip';
+import { statusChipClass } from './neutral-chip';
 
 interface FreshnessBadgeProps {
   lastModified: string;
@@ -21,13 +22,14 @@ interface FreshnessLevel {
  * and a stale one as a broken connection. The label is the channel; the exact
  * date stays in the tooltip.
  *
- * The chip is the TINT recipe (neutral-chip.ts), not `bg-muted`: this badge
- * renders on PagePreview's nm-card-elevated hover card, where bg-muted
- * measured 1.05:1 in Graphite — no visible pill, just bare floating text
- * beside the space-key chip. The tint steps up from both grounds it sits on
- * (1.33:1 on card-elevated, 1.29:1 on ArticleRightPane's nm-card in Graphite;
- * 1.23:1 on both in Paper), the border-border hairline defines the shape, and
- * the secondary ink measures 7.63–9.73:1 across all four.
+ * The chip is the shared status recipe (neutral-chip.ts), not `bg-muted`:
+ * this badge renders on PagePreview's nm-card-elevated hover card, where
+ * bg-muted measured 1.05:1 in Graphite — no visible pill, just bare floating
+ * text beside the space-key chip — and on the inspector's flat Pane, where it
+ * measures 1.04:1. The tint steps up from both grounds, the border-border
+ * hairline defines the shape, and the secondary ink measures 7.5:1+ on all
+ * four. The clock is the glyph every sibling in the Document health row also
+ * carries: the shape channel does not depend on which chip happens to render.
  */
 function getFreshnessLevel(lastModified: string): FreshnessLevel {
   const now = new Date();
@@ -56,11 +58,12 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
       aria-label={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
       className={cn(
-        'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        neutralChipInk,
+        statusChipClass,
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className,
       )}
     >
+      <Clock size={12} className="shrink-0" aria-hidden="true" />
       {level.label}
     </span>
   );
