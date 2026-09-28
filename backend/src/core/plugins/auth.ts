@@ -99,10 +99,13 @@ function isDeadlineError(error: unknown): boolean {
 /**
  * Runs `work` in one transaction with transaction-local lock-wait, statement
  * and idle deadlines. Hitting one rolls the transaction back. When PostgreSQL
- * ends the session (idle deadline), the checked-out client emits that error
- * outside any query; it is captured here — pg-pool leaves checked-out clients
- * without an error listener — and rethrown in place of the generic
- * "not queryable" error of the next statement.
+ * ends the session (idle deadline), pg reports it one of two ways: an idle
+ * client emits the 25P03 error outside any query, and an in-flight query
+ * rejects with it while the socket close emits a code-less "Connection
+ * terminated unexpectedly". Connection errors are captured here — pg-pool
+ * leaves checked-out clients without an error listener — and whichever error
+ * carries a deadline SQLSTATE is rethrown, so callers can tell a deadline from
+ * a real failure.
  */
 async function withBoundedTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
@@ -130,6 +133,8 @@ async function withBoundedTransaction<T>(work: (client: PoolClient) => Promise<T
       // A connection that cannot roll back must not return to the pool.
       releaseError = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
     }
+    if (isDeadlineError(error)) throw error;
+    if (isDeadlineError(connectionError)) throw connectionError;
     throw connectionError ?? error;
   } finally {
     client.removeListener('error', onConnectionError);
