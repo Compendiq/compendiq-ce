@@ -75,12 +75,15 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   serialize on the same users row — the admin paths because they `UPDATE` the
   row and delete `refresh_tokens` in one transaction. A successor therefore
   commits either before a revocation (and is revoked by it) or after it (and
-  its claim finds nothing to rotate); it can never escape.
+  its claim finds nothing to rotate); it cannot escape while the lock is
+  obtainable.
 - Lock waits are bounded by `lock_timeout` 5s and statements by
   `statement_timeout` 10s. A timeout rolls back — the cookie was not consumed —
   and the refresh route answers `503` instead of hanging. Family revocation and
-  logout never give up on a timeout: they run their `UPDATE` without the lock
-  instead.
+  logout do not give up on a timeout: they run their `UPDATE` without the lock
+  instead. Only on that degraded path (the users row held for more than 5s)
+  can a successor committed by a stalled or queued rotation outlive the
+  revocation — the same exposure every revocation had before the lock existed.
 
 ### Client-side token refresh
 

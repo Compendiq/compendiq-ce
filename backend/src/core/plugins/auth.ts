@@ -392,8 +392,9 @@ export async function revokeToken(jti: string): Promise<void> {
  * rotation cannot insert a successor that the UPDATE's snapshot would miss.
  * If the lock stays unavailable past its deadline, the UPDATE still runs
  * without it: a revocation must not be skipped because the users row was
- * busy (only a successor committed later by that same lock holder could then
- * escape, as before the lock existed).
+ * busy. On that degraded path a successor committed by the stalled lock
+ * holder or a rotation queued behind it can escape the UPDATE's snapshot —
+ * the exposure every revocation had before the lock existed.
  */
 async function revokeUnderUserLock(userId: string, sql: string, params: unknown[]): Promise<void> {
   try {

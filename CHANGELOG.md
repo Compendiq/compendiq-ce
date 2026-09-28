@@ -211,8 +211,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh token can never yield two usable successors. A replayed or
   concurrently re-presented token revokes its family as before, and family
   revocation, logout, role changes and deactivation serialize with rotation so
-  no successor can outlive them. Lock waits are bounded; a timeout returns 503
-  without consuming the cookie. In the SPA, refresh, login, registration,
+  no successor can outlive them. Lock waits are bounded: a refresh that times
+  out returns 503 without consuming the cookie, and a revocation that times out
+  still runs without the lock (with only the pre-existing, unlocked
+  guarantees). In the SPA, refresh, login, registration,
   setup, SSO exchange and logout requests are serialized across tabs (Web Locks,
   or an IndexedDB lease on plain-HTTP deployments), so tabs sharing the cookie
   no longer log each other out by refreshing at the same moment.
