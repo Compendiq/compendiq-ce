@@ -443,6 +443,29 @@ describe('logoutApi', () => {
     expect(mockClearAuth).toHaveBeenCalled();
   });
 
+  it('keeps the session and rejects when the server could not revoke anything (503)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Sign-out did not complete. Please try again.' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(logoutApi()).rejects.toMatchObject({
+      statusCode: 503,
+      message: 'Sign-out did not complete. Please try again.',
+    });
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  it('still clears auth on other logout failures', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status: 500 }));
+
+    await logoutApi();
+
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
   it('sends request without Authorization when no token', async () => {
     storeState.accessToken = null;
 

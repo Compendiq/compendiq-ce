@@ -268,11 +268,14 @@ function messageFromErrorBody(
 
 /**
  * Call the backend logout endpoint to revoke tokens and clear the refresh cookie,
- * then clear frontend auth state. Always clears frontend state even if the backend
- * call fails (e.g. network error or expired token).
+ * then clear frontend auth state. Frontend state is cleared even if the backend
+ * call fails (e.g. network error or expired token), except on 503: the server
+ * could not revoke anything and kept the cookie, so the session stays and this
+ * rejects with an ApiError the caller shows, leaving a retry possible.
  */
 export async function logoutApi(): Promise<void> {
   const { accessToken } = useAuthStore.getState();
+  let res: Response | null = null;
   try {
     const headers: HeadersInit = {};
     if (accessToken) {
@@ -280,13 +283,16 @@ export async function logoutApi(): Promise<void> {
     }
     // Logout clears the refresh cookie; keep it from overlapping another
     // tab's refresh of the same cookie.
-    await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
+    res = await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
       headers,
       credentials: 'include',
     }));
   } catch {
     // Best effort — always clear frontend state below
+  }
+  if (res?.status === 503) {
+    throw new ApiError(503, 'Sign-out did not complete. Please try again.');
   }
   useAuthStore.getState().clearAuth();
 }
