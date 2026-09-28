@@ -32,6 +32,7 @@ import {
   COLLAB_PERSIST_DEBOUNCE_MS,
   loadOrInitCollabDoc,
   persistAndSnapshot,
+  isCollabResetting,
 } from './collab-persistence.js';
 import { yDocToHtml } from './collab-schema.js';
 import { admitPageRuntime, releasePageRuntime, withPageWriteTransaction } from './page-write-admission.js';
@@ -401,9 +402,22 @@ describe.skipIf(!canRun)('resetFromHtml vs in-flight persist (#1474)', () => {
         await holder.query('BEGIN');
         await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
         const persistP = persistAndSnapshot(pageId, roomB.doc, roomB.admission!);
-        await new Promise((r) => setTimeout(r, 50));
+        // Observe the ordering this case is about instead of sleeping for it: the
+        // persist must be queued on the init lock (already holding the page
+        // lifecycle lock) before the reset begins, and the reset marker must be
+        // set before the holder lets the persist through. A fixed 50 ms sleep let
+        // a slow shard start the persist after the reset had committed.
+        await vi.waitFor(async () => {
+          const waiting = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count FROM pg_locks
+              WHERE locktype = 'advisory' AND classid = $1 AND objid = $2
+                AND objsubid = 2 AND NOT granted`,
+            [COLLAB_INIT_LOCK_KEY, pageId],
+          );
+          expect(Number(waiting.rows[0]!.count)).toBe(1);
+        }, { timeout: 10_000 });
         const resetP = runtime!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
-        await new Promise((r) => setTimeout(r, 50));
+        await vi.waitFor(() => expect(isCollabResetting(pageId)).toBe(true), { timeout: 10_000 });
         await holder.query('ROLLBACK');
         await resetP;
         await persistP;
