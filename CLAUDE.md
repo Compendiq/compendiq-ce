@@ -121,15 +121,20 @@ calls `rotateRefreshToken`: under the user's row lock it claims the presented
 JTI with `UPDATE ... WHERE revoked = FALSE RETURNING` and inserts the
 same-family successor before the same commit; a replay or concurrent loser
 revokes the family. Family revocation and logout take the same lock (if the
-5s lock wait or 10s statement deadline expires they run the UPDATE unlocked,
-then retry it once under the lock so a stalled rotation's successor is still
-revoked), and admin role change / deactivation conflict with it by updating
-the users row. Never
+5s lock wait or 10s statement deadline expires they run the UPDATE unlocked in
+its own transaction with the same deadlines, then retry it once under the lock
+so a stalled rotation's successor is still revoked; a session transaction idle
+for 10s is terminated by PostgreSQL), and admin role change / deactivation
+conflict with it by updating the users row. Never
 rebuild rotation from `verifyRefreshToken` + `revokeToken` +
 `generateRefreshToken`. In the SPA every request that presents or sets the
 refresh cookie (refresh, login, register, setup-admin, OIDC exchange, logout)
 goes through `withAuthCookieLock` (Web Locks, IndexedDB lease on plain HTTP);
 it is not re-entrant, so hold it around the request only.
+`refreshAccessTokenOnce()` resolves `null` only when the session is gone
+(then `clearAuth()`); transient failures (network, 5xx incl. the busy-lock
+503, 408, 429) retry under the lock and then reject with
+`RefreshUnavailableError` — callers must keep auth state on that rejection.
 
 ## Testing & Mocks
 

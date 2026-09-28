@@ -77,15 +77,20 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   commits either before a revocation (and is revoked by it) or after it (and
   its claim finds nothing to rotate); it cannot escape while the lock is
   obtainable.
-- Lock waits are bounded by `lock_timeout` 5s and statements by
-  `statement_timeout` 10s. A timeout rolls back — the cookie was not consumed —
-  and the refresh route answers `503` instead of hanging. Family revocation and
-  logout do not give up on a timeout (a lock wait over 5s or a statement over
-  10s inside the locked transaction): they run their `UPDATE` without the lock
-  at once, then once more under the lock. Getting the lock proves the stalled
-  holder and every rotation queued ahead have committed, so their successors
-  are revoked too. Only if that second lock wait also times out can such a
-  successor survive — the exposure every revocation had before the lock.
+- Lock waits are bounded by `lock_timeout` 5s, statements by
+  `statement_timeout` 10s, and a session transaction whose client stalls
+  between statements by `idle_in_transaction_session_timeout` 10s (PostgreSQL
+  then terminates it, releasing the users row and any claimed token row). A
+  timeout rolls back — the cookie was not consumed — and the refresh route
+  answers `503` instead of hanging. Family revocation and logout do not give up
+  on a timeout (a lock wait over 5s or a statement over 10s inside the locked
+  transaction): they run their `UPDATE` without the users-row lock at once, in
+  its own transaction with the same 5s/10s deadlines, then once more under the
+  lock. Getting the lock proves the stalled holder and every rotation queued
+  ahead have finished, so their successors are revoked too. Only if that
+  second lock wait also times out can such a successor survive — the exposure
+  every revocation had before the lock. If the unlocked `UPDATE` timed out as
+  well, nothing was revoked and the call fails with `RefreshSessionBusyError`.
 
 ### Client-side token refresh
 
@@ -112,6 +117,15 @@ one `POST /api/auth/refresh`:
   independent refresh here would race the deduped path — the loser presents an
   already-rotated (revoked) JTI, tripping token-family reuse detection and
   logging the user out despite a valid session.
+
+`refreshAccessTokenOnce()` resolves `null` only when the session is gone
+(`401`/`403` or another non-transient answer); callers then `clearAuth()`. A
+network error, `5xx` (including the retry-safe `503` for a busy session lock),
+`408` or `429` is transient: the refresh is retried after 1s and 3s under the
+cross-tab lock and then rejects with `RefreshUnavailableError` (an `ApiError`
+with status `503`). Callers keep the session and surface that error — `apiFetch`
+throws it, `useSessionInit` leaves auth as is, presence reconnects with backoff
+and the collaboration socket rejoins.
 
 #### Cross-tab auth-cookie lock
 
