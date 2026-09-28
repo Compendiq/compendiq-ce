@@ -90,7 +90,8 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   ahead have finished, so their successors are revoked too. Only if that
   second lock wait also times out can such a successor survive — the exposure
   every revocation had before the lock. If the unlocked `UPDATE` timed out as
-  well, nothing was revoked and the call fails with `RefreshSessionBusyError`.
+  well, nothing was revoked and the call fails with `RefreshSessionBusyError`
+  (logout then answers `503`, see below).
 
 ### Client-side token refresh
 
@@ -241,6 +242,17 @@ moment cannot leave a live successor behind, except when the lock-timeout
 fallback described under rotation times out twice), clears the cookie, and records
 `audit_log(action='logout')`. The access token is short-lived enough that
 blacklisting is not needed in CE; EE may add it.
+
+If the revocation fails with `RefreshSessionBusyError` (the locked attempt and
+the unlocked fallback both timed out, or a reused cookie's family revocation
+did), nothing was revoked: logout answers `503`, keeps the cookie and leaves the
+tokens as they are, so the client can retry. A cookie-only logout revokes the
+presented JTI as part of the user-wide revocation; the separate single-JTI
+revoke runs only as a best-effort step when that revocation fails otherwise.
+Every other failure keeps the best-effort behavior: `200` and a cleared cookie.
+On the client, `logoutApi()` keeps auth state on that `503` and rejects; the
+user menu shows a "Sign-out did not complete" toast with a **Retry** action.
+Any other logout failure still clears client auth.
 
 On the client, `useClearCacheOnLogout` (wired in `App.tsx`) wipes the
 in-memory TanStack Query cache on every authenticated→unauthenticated

@@ -215,13 +215,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out returns 503 without consuming the cookie, a rotation that stalls inside
   its transaction is ended by the database after 10s idle, and a revocation
   that times out runs without the lock under its own deadlines and then retries
-  once under it, so a stalled rotation's successor is still revoked. In the
-  SPA, refresh, login, registration, setup, SSO exchange and logout requests
-  are serialized across tabs (Web Locks, or an IndexedDB lease on plain-HTTP
-  deployments), so tabs sharing the cookie no longer log each other out by
-  refreshing at the same moment, and a refresh that fails transiently (503,
-  other server errors, network errors) is retried and then reported without
-  signing the user out.
+  once under it, so a stalled rotation's successor is still revoked. If a
+  logout's revocation cannot run at all, logout answers 503 and keeps the
+  cookie instead of reporting success, and the SPA keeps the session and offers
+  a retry. In the SPA, refresh, login, registration, setup, SSO exchange and
+  logout requests are serialized across tabs (Web Locks, or an IndexedDB lease
+  on plain-HTTP deployments), so tabs sharing the cookie no longer log each
+  other out by refreshing at the same moment, and a refresh that fails
+  transiently (503, other server errors, network errors) is retried and then
+  reported without signing the user out.
 
 - **Page saves are now single-flight per editing session (#1662).** Rapid
   repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
