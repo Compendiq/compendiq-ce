@@ -14,33 +14,65 @@ describe('FreshnessBadge', () => {
 
   it('renders "Fresh" for content modified less than 7 days ago', () => {
     render(<FreshnessBadge lastModified="2026-03-03T12:00:00Z" />);
-    expect(screen.getByText('Fresh')).toBeInTheDocument();
+    expect(screen.getByText(/^Fresh\b/)).toBeInTheDocument();
   });
 
   it('renders "Recent" for content modified 7-30 days ago', () => {
     render(<FreshnessBadge lastModified="2026-02-15T12:00:00Z" />);
-    expect(screen.getByText('Recent')).toBeInTheDocument();
+    expect(screen.getByText(/^Recent\b/)).toBeInTheDocument();
   });
 
   it('renders "Aging" for content modified 30-90 days ago', () => {
     render(<FreshnessBadge lastModified="2026-01-01T12:00:00Z" />);
-    expect(screen.getByText('Aging')).toBeInTheDocument();
+    expect(screen.getByText(/^Aging\b/)).toBeInTheDocument();
   });
 
   it('renders "Stale" for content modified more than 90 days ago', () => {
     render(<FreshnessBadge lastModified="2025-06-01T12:00:00Z" />);
-    expect(screen.getByText('Stale')).toBeInTheDocument();
+    expect(screen.getByText(/^Stale\b/)).toBeInTheDocument();
   });
 
-  it('shows tooltip with exact date on hover', () => {
+  // The date is visible, not tooltip-only: a keyboard or touch user never
+  // sees `title`, so the edit time has to be in the text itself, after the
+  // band word that carries the measurement.
+  it('shows the band word first, then the relative edit time, in the visible text', () => {
     render(<FreshnessBadge lastModified="2026-03-03T12:00:00Z" />);
-    const badge = screen.getByText('Fresh');
-    expect(badge.getAttribute('title')).toContain('Last modified:');
+    expect(screen.getByText('Fresh · edited 2d ago')).toBeInTheDocument();
+  });
+
+  it('falls back to the edit date beyond a week, still visible', () => {
+    const lastModified = '2026-01-01T12:00:00Z';
+    render(<FreshnessBadge lastModified={lastModified} />);
+    expect(
+      screen.getByText(`Aging · edited ${new Date(lastModified).toLocaleDateString()}`),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the exact timestamp in title as a pointer supplement', () => {
+    const lastModified = '2026-03-03T12:00:00Z';
+    render(<FreshnessBadge lastModified={lastModified} />);
+    const badge = screen.getByText(/^Fresh\b/);
+    expect(badge).toHaveAttribute(
+      'title',
+      `Last modified: ${new Date(lastModified).toLocaleString()}`,
+    );
+  });
+
+  // Passive means passive: a readout that takes focus is a Tab stop with
+  // nothing to do, and an aria-label replaced the visible text (date
+  // included) with a different name.
+  it('is not focusable and takes its accessible name from the visible text', () => {
+    const { container } = render(<FreshnessBadge lastModified="2026-03-03T12:00:00Z" />);
+    const badge = screen.getByText(/^Fresh\b/);
+    expect(badge).not.toHaveAttribute('role');
+    expect(badge).not.toHaveAttribute('tabindex');
+    expect(badge).not.toHaveAttribute('aria-label');
+    expect(container.querySelectorAll('[tabindex], button, a[href], input')).toHaveLength(0);
   });
 
   it('applies custom className', () => {
     render(<FreshnessBadge lastModified="2026-03-03T12:00:00Z" className="custom-class" />);
-    const badge = screen.getByText('Fresh');
+    const badge = screen.getByText(/^Fresh\b/);
     expect(badge.className).toContain('custom-class');
   });
 
@@ -65,7 +97,7 @@ describe('FreshnessBadge', () => {
     ['Stale', '2025-06-01T12:00:00Z'],
   ])('%s renders as the neutral tinted chip — no status hue, no hex literal', (label, lastModified) => {
     render(<FreshnessBadge lastModified={lastModified} />);
-    const badge = screen.getByText(label);
+    const badge = screen.getByText(new RegExp(`^${label}\\b`));
     expect(badge.className).toContain('bg-foreground/10');
     expect(badge.className).toContain('text-secondary-foreground');
     expect(badge.className).toContain('border-border');

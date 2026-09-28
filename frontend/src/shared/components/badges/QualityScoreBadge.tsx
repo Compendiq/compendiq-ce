@@ -120,6 +120,16 @@ function getScoreConfig(
  * Four segments, filled to the band. `aria-hidden` because the adjacent text
  * already says "74 Good" — this is the scanning channel, not the accessible
  * one.
+ *
+ * Being the scanning channel makes the segments information-bearing graphics
+ * (WCAG 1.4.11), so empty ones take `--color-border-interactive`, not the
+ * `--color-border` separator (1.11:1 Graphite / 1.17:1 Paper on the pane —
+ * a low score read as a single tick). Measured in workspace-themes.test.ts:
+ * empty ≥3:1 on every ground the chip sits on, and filled ≥3:1 from empty.
+ *
+ * Forced colours repaint both fills to Canvas, so there filled segments take
+ * CanvasText and empty ones a 1px CanvasText outline with no fill: solid
+ * versus hollow keeps the count readable without any colour at all.
  */
 function QualityMeter({ band }: { band: number }) {
   return (
@@ -130,7 +140,9 @@ function QualityMeter({ band }: { band: number }) {
           data-filled={i < band ? 'true' : 'false'}
           className={cn(
             'h-2 w-[3px] rounded-[1px]',
-            i < band ? 'bg-foreground' : 'bg-border',
+            i < band
+              ? 'bg-foreground forced-colors:bg-[CanvasText]'
+              : 'bg-border-interactive forced-colors:border forced-colors:border-[CanvasText] forced-colors:bg-transparent',
           )}
         />
       ))}

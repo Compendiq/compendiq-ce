@@ -17,9 +17,11 @@
  * resting/hovered) and 9.73/7.98:1 (Paper) — 7.3:1+ on every ground these
  * chips sit on, elevated hover cards included.
  *
- * The one deliberate holdout is EmbeddingStatusBadge's resting states, which
- * keep `bg-muted` on ArticleRightPane's non-hovering nm-card, where muted is a
- * real value step — check the ground before "unifying" in either direction.
+ * There is no holdout: EmbeddingStatusBadge's resting states used to keep
+ * `bg-muted` with no border on ArticleRightPane's nm-card, which measured
+ * 1.04:1 against the pane — no visible pill. They now wear
+ * `inspectorChipClass` like FreshnessBadge; only the live states
+ * (`embedding`, `failed`) override fill/ink, and each carries a glyph.
  */
 
 /** Just the fill + ink pair, for chips that carry their own geometry. */
@@ -27,3 +29,11 @@ export const neutralChipInk = 'bg-foreground/10 text-secondary-foreground';
 
 /** The full row-chip class, as worn by the PagesPage / PageViewPage badges. */
 export const neutralChipClass = `inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium ${neutralChipInk}`;
+
+/**
+ * The article inspector's passive readout chip (verification, freshness,
+ * embedding at rest): the same tint, hairline and pill as the row chip, on
+ * the 13px control scale at a 24px minimum height. Passive means passive —
+ * no `role`, no `tabIndex`, and the accessible name is the visible text.
+ */
+export const inspectorChipClass = `inline-flex min-h-6 items-center gap-1 rounded-full border border-border px-2 text-xs font-medium ${neutralChipInk}`;

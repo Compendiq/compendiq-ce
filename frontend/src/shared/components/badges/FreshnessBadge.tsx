@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { cn } from '../../lib/cn';
-import { neutralChipInk } from './neutral-chip';
+import { formatRelativeTime } from '../../lib/format-relative-time';
+import { inspectorChipClass } from './neutral-chip';
 
 interface FreshnessBadgeProps {
   lastModified: string;
@@ -18,16 +19,23 @@ interface FreshnessLevel {
  * QualityScoreBadge. It used to wear the full status vocabulary: Fresh in the
  * connected green, Aging literally in `status-syncing`, Stale in the
  * disconnected red, so a page untouched for a month read as a space mid-sync
- * and a stale one as a broken connection. The label is the channel; the exact
- * date stays in the tooltip.
+ * and a stale one as a broken connection.
  *
- * The chip is the TINT recipe (neutral-chip.ts), not `bg-muted`: this badge
- * renders on PagePreview's nm-card-elevated hover card, where bg-muted
- * measured 1.05:1 in Graphite — no visible pill, just bare floating text
- * beside the space-key chip. The tint steps up from both grounds it sits on
- * (1.33:1 on card-elevated, 1.29:1 on ArticleRightPane's nm-card in Graphite;
- * 1.23:1 on both in Paper), the border-border hairline defines the shape, and
- * the secondary ink measures 7.63–9.73:1 across all four.
+ * The band word leads (the 7/30/90-day bands are the measurement) and the
+ * relative edit time follows it IN the visible text: a date that lives only in
+ * `title` never reaches a keyboard or touch user. `title` keeps the exact
+ * timestamp as a pointer-only supplement.
+ *
+ * Passive means passive: no `role`, no `tabIndex`, no `aria-label` — the
+ * accessible name is the visible text, and a Tab walk does not stop here.
+ *
+ * The chip is `inspectorChipClass` (neutral-chip.ts): the compositing tint,
+ * not `bg-muted`, because this badge also renders on PagePreview's elevated
+ * hover card, where bg-muted measured 1.05:1 in Graphite. The tint steps up
+ * from both grounds it sits on (1.33:1 on card-elevated, 1.29:1 on
+ * ArticleRightPane's nm-card in Graphite; 1.23:1 on both in Paper), the
+ * border-border hairline defines the shape, and the secondary ink measures
+ * 7.63–9.73:1 across all four.
  */
 function getFreshnessLevel(lastModified: string): FreshnessLevel {
   const now = new Date();
@@ -47,21 +55,15 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
     () => new Date(lastModified).toLocaleString(),
     [lastModified],
   );
+  const relative = useMemo(() => formatRelativeTime(lastModified), [lastModified]);
 
   return (
     <span
       title={`Last modified: ${formattedDate}`}
-      tabIndex={0}
-      role="note"
-      aria-label={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
-      className={cn(
-        'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        neutralChipInk,
-        className,
-      )}
+      className={cn(inspectorChipClass, 'whitespace-nowrap', className)}
     >
-      {level.label}
+      {`${level.label} · edited ${relative}`}
     </span>
   );
 }

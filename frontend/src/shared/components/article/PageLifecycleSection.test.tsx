@@ -8,6 +8,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PageLifecycleState } from '@compendiq/contracts';
 import { PageLifecycleSection } from './PageLifecycleSection';
@@ -81,9 +82,11 @@ function json(body: unknown, status = 200): Response {
 function renderSection(page: PageLifecycleState | undefined) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <PageLifecycleSection pageId="42" page={page} />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PageLifecycleSection pageId="42" page={page} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -115,6 +118,20 @@ describe('PageLifecycleSection', () => {
     const denied = screen.getByTestId('freeze-denied');
     expect(denied).toHaveTextContent('Someone is editing this article right now');
     expect(denied.tagName).toBe('P');
+  });
+
+  it('routes the Confluence-integration refusal to the settings that fix it', () => {
+    renderSection({ ...EDITABLE, canFreeze: false, freezeDeniedReason: 'confluence_integration_enabled' });
+    const denied = screen.getByTestId('freeze-denied');
+    const link = within(denied).getByRole('link', { name: 'Confluence settings' });
+    expect(link).toHaveAttribute('href', '/settings/personal/confluence');
+  });
+
+  it('leaves refusals the reader cannot fix in settings as plain prose', () => {
+    renderSection({ ...EDITABLE, canFreeze: false, freezeDeniedReason: 'baseline_creation_disabled' });
+    const denied = screen.getByTestId('freeze-denied');
+    expect(denied).toHaveTextContent('Freezing is switched off for this deployment.');
+    expect(within(denied).queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('reports a frozen article without claiming anyone approved it', () => {

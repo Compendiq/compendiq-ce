@@ -76,6 +76,18 @@ describe('NotesInspectorPanel', () => {
     });
   });
 
+  it('lists threads as divided rows, not cards nested in the region', async () => {
+    renderNotesPanel();
+    const thread = await screen.findByTestId('comment-thread-c-1');
+    expect(thread.classList).not.toContain('rounded-lg');
+    expect(thread.classList).not.toContain('bg-card');
+    expect(thread.classList).not.toContain('border');
+    const list = document.getElementById('notes-threads-list')!;
+    expect(list.classList).toContain('divide-y');
+    expect(list.classList).toContain('divide-border');
+    expect(list.classList).not.toContain('space-y-3');
+  });
+
   it('switches to resolved note threads when resolved filter is clicked', async () => {
     renderNotesPanel();
     await waitFor(() => {

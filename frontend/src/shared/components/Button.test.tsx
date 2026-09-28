@@ -42,6 +42,20 @@ describe('Button component', () => {
     expect(button.className).toContain('border-transparent');
   });
 
+  it('gives both destructive variants the Steel focus outline, never a red one', () => {
+    render(
+      <>
+        <Button variant="destructive">Delete space</Button>
+        <Button variant="destructive-ghost">Remove</Button>
+      </>,
+    );
+    for (const name of ['Delete space', 'Remove']) {
+      const button = screen.getByRole('button', { name });
+      expect(button.className).toContain('focus-visible:outline-ring');
+      expect(button.className).not.toContain('outline-destructive');
+    }
+  });
+
   it('renders ai variant', () => {
     render(<Button variant="ai">Generate</Button>);
     const button = screen.getByRole('button', { name: 'Generate' });

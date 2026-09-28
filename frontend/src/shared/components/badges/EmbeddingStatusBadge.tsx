@@ -1,7 +1,8 @@
-import { Loader2, type LucideIcon } from 'lucide-react';
+import { AlertCircle, Loader2, type LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { EmbeddingStatus } from '../../hooks/use-pages';
+import { inspectorChipClass } from './neutral-chip';
 
 interface EmbeddingStatusBadgeProps {
   /** Legacy boolean prop for backward compatibility */
@@ -20,6 +21,7 @@ interface EmbeddingStatusBadgeProps {
 interface StatusConfig {
   label: string;
   title: string;
+  /** Overrides on top of `inspectorChipClass`; empty = the neutral recipe. */
   badgeClass: string;
   /** Glyph channel — the differentiator that outlives reduced motion. */
   icon?: LucideIcon;
@@ -34,28 +36,21 @@ function getStatusConfig(
   switch (status) {
     case 'not_embedded':
       return {
-        label: 'Not Embedded',
+        label: 'Not indexed',
         title: 'Content has not been indexed for AI search',
-        // Token-based neutral, same as `embedded` below — the label is the
-        // differentiator. This carried hardcoded warm-gray hexes behind a
-        // `dark:` variant, and with no `@custom-variant dark` in this app,
-        // `dark:` compiles to the OS media query: OS-dark + user-picked Paper
-        // rendered the dark pill on the white page. Tokens follow the active
-        // theme. (The hexes had replaced status-inactive/20, which failed AA
-        // — the muted pairing passes on every surface it lands on.)
-        //
-        // Deliberately `bg-muted`, NOT the row chips' `bg-foreground/10`
-        // tint (neutral-chip.ts): this badge renders only on ArticleRightPane's
-        // non-hovering nm-card, where muted is a real value step. The tint
-        // recipe exists for chips on rows that hover with `bg-accent` (== muted
-        // in Graphite) and for the elevated hover card — check the ground
-        // before "unifying" in either direction.
-        badgeClass: 'bg-muted text-muted-foreground',
+        // The resting states wear the shared neutral recipe
+        // (`inspectorChipClass`: tint + `border-border` hairline + secondary
+        // ink). They used to keep `bg-muted` with no border on the inspector's
+        // nm-card, which measured 1.04:1 against the pane — no visible pill.
+        // Tokens only: a `dark:` variant here compiles to the OS media query
+        // (no `@custom-variant dark` in this app), so it would track the OS,
+        // not the picked theme.
+        badgeClass: '',
         animate: false,
       };
     case 'embedding':
       return {
-        label: 'Embedding...',
+        label: 'Embedding…',
         title: 'Content is being indexed for AI search',
         // `--color-status-embedding` no longer carries a hue: it resolves to
         // body ink, because it had been byte-identical to `--color-primary`
@@ -80,19 +75,18 @@ function getStatusConfig(
         // hairline token is the ceiling (1.414 / 1.264) and is what
         // neutral-chip.ts settled on for a fill this subtle.
         //
-        // Ink stays full strength. `text-status-embedding` measures 14.36:1
-        // (Paper) / 11.62:1 (Graphite) on its own fill, against the resting
-        // states' muted-on-muted 4.54 / 6.75:1. That value step is the real
-        // separator from `not_embedded` / `embedded`, because the FILL is not
-        // one: in Paper this tint (1.225:1 vs Pane) and their `bg-muted`
-        // (1.193:1) are 2.7% apart, which nobody can see.
-        badgeClass: 'bg-status-embedding/10 text-status-embedding border border-border',
+        // The fill therefore does NOT separate this state from the resting
+        // ones — it is the same measured tint. What does: the glyph below, the
+        // label, and the ink — `text-status-embedding` is full body ink
+        // (14.36:1 Paper / 11.62:1 Graphite on its own fill) against the
+        // resting states' secondary ink.
+        badgeClass: 'bg-status-embedding/10 text-status-embedding',
         // The load-bearing channel, and the reason this state does not depend
         // on motion. index.css's blanket `prefers-reduced-motion` rule clamps
         // every animation to 0.01ms and one iteration, so for those users the
-        // pulse below simply does not exist and the pill is a static neutral
-        // chip. A stopped Loader2 is still a visible arc that no sibling state
-        // carries — the same reasoning WorkersTab's Processing pill is built on.
+        // pulse below simply does not exist. A stopped Loader2 is still a
+        // visible arc that no sibling state carries — the same reasoning
+        // WorkersTab's Processing pill is built on.
         icon: Loader2,
         animate: true,
       };
@@ -105,19 +99,21 @@ function getStatusConfig(
         // Neutral, deliberately: "Embedded <date>" is the resting state of
         // every healthy page — a freshness readout, not an event. Painting it
         // the connected green put a permanent green pill on every Details tab
-        // and diluted the one hue that means "a connection is up". The live
-        // states above/below keep their reserved hues (Steel = embedding,
-        // red on failure).
-        badgeClass: 'bg-muted text-muted-foreground',
+        // and diluted the one hue that means "a connection is up".
+        badgeClass: '',
         animate: false,
       };
     case 'failed':
       return {
-        label: 'Embedding Failed',
+        label: 'Indexing failed',
         title: embeddingError
           ? `Embedding failed: ${embeddingError}`
           : 'Last embedding attempt failed — click retry to try again',
-        badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
+        badgeClass:
+          'bg-status-disconnected/20 text-status-disconnected border-status-disconnected/30',
+        // Colour is never the only channel: the alert glyph names the state
+        // for anyone who cannot tell this red from the neutral chips.
+        icon: AlertCircle,
         animate: false,
       };
   }
@@ -133,21 +129,27 @@ function resolveStatus(props: EmbeddingStatusBadgeProps): EmbeddingStatus {
   return 'not_embedded';
 }
 
+/**
+ * A passive readout: no `role`, no `tabIndex`, no `aria-label` — the
+ * accessible name is the visible label and a Tab walk does not stop on it.
+ * `title` supplements with the exact timestamp / error for pointer users.
+ *
+ * The one operable part, Retry, is a real sibling button beside the chip —
+ * never nested inside it — at the 32px control height.
+ */
 export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
   const { embeddedAt, embeddingError, onRetry, className } = props;
   const status = resolveStatus(props);
   const config = getStatusConfig(status, embeddedAt, embeddingError);
 
-  return (
+  const chip = (
     <span
       title={config.title}
-      tabIndex={0}
-      role="note"
-      aria-label={config.title}
       data-testid={status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge'}
       data-status={status}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        inspectorChipClass,
+        'gap-1.5 whitespace-nowrap',
         config.badgeClass,
         config.animate && 'animate-pulse',
         className,
@@ -155,27 +157,35 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
     >
       {config.icon && (
         <config.icon
-          size={11}
+          size={12}
           className={cn('shrink-0', config.animate && 'animate-spin')}
           data-testid="embedding-status-glyph"
           aria-hidden="true"
         />
       )}
       {config.label}
-      {status === 'failed' && onRetry && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onRetry();
-          }}
-          className="ml-0.5 rounded px-1 py-0.5 text-[11px] font-semibold text-status-disconnected hover:bg-status-disconnected/20 hover:text-status-disconnected/80"
-          title="Retry embedding"
-          data-testid="embedding-retry-button"
-        >
-          Retry
-        </button>
-      )}
+    </span>
+  );
+
+  if (status !== 'failed' || !onRetry) return chip;
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {chip}
+      <button
+        type="button"
+        onClick={(e) => {
+          // List rows are buttons: a retry must not also open the row.
+          e.stopPropagation();
+          e.preventDefault();
+          onRetry();
+        }}
+        className="nm-button-ghost h-8 text-xs"
+        aria-label="Retry indexing"
+        data-testid="embedding-retry-button"
+      >
+        Retry
+      </button>
     </span>
   );
 }
