@@ -134,7 +134,8 @@ committed, and presenting the consumed cookie again would be token reuse. Both
 cases reject with `RefreshUnavailableError` (an `ApiError` with status `503`).
 Callers keep the session and surface that error — `apiFetch` throws it,
 `useSessionInit` leaves auth as is, presence reconnects with backoff and the
-collaboration socket rejoins after a pause that doubles from 1s up to 30s.
+collaboration socket rejoins after a pause that doubles from 1s up to 30s and
+starts over at 1s once a socket connects.
 
 #### Cross-tab auth-cookie lock
 

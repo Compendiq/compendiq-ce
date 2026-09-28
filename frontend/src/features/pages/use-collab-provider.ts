@@ -177,6 +177,8 @@ export function useCollabProvider({
       if (!cancelled && isSynced) setSynced(true);
     });
     ws.on('status', ({ status }: { status: string }) => {
+      // A connected socket ends any refresh outage, as in use-presence.
+      if (status === 'connected') rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
       if (!cancelled && !blocked) setConnected(status === 'connected');
     });
     ws.on('closed', (event: { code: number; reason: string }) => {
@@ -191,7 +193,6 @@ export function useCollabProvider({
               preserveReadOnly('unauthorized');
               return;
             }
-            rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
             ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
             ws.connect();
           },

@@ -271,8 +271,8 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     let refreshes = 0;
     const refresh = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       refreshes += 1;
-      // Two full refresh rounds (3 attempts each) stay busy, then it succeeds.
-      if (refreshes <= 6) return busy();
+      // Three full refresh rounds (3 attempts each) stay busy, then it succeeds.
+      if (refreshes <= 9) return busy();
       return new Response(JSON.stringify({ accessToken: 'jwt-fresh', user }), {
         status: 200, headers: { 'content-type': 'application/json' },
       });
@@ -301,12 +301,26 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_999); });
     expect(refresh).toHaveBeenCalledTimes(6);
     expect(Socket.instances).toHaveLength(2);
+    // Meanwhile another tab refreshed and its token reached this tab.
+    act(() => { useAuthStore.getState().setAuth('jwt-other-tab', user); });
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     const secondRejoin = Socket.instances[2]!;
+    expect(secondRejoin.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-other-tab']);
 
+    // That rejoin connects, which ends the outage: a later busy round starts
+    // the backoff over at 1s instead of the escalated 4s.
+    act(() => { secondRejoin.open(); });
+    expect(result.current.connected).toBe(true);
     await act(async () => { secondRejoin.close(4401, 'unauthorized'); });
-    const reconnect = Socket.instances[3]!;
-    expect(refresh).toHaveBeenCalledTimes(7);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    expect(refresh).toHaveBeenCalledTimes(9);
+    expect(Socket.instances).toHaveLength(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const thirdRejoin = Socket.instances[3]!;
+
+    await act(async () => { thirdRejoin.close(4401, 'unauthorized'); });
+    const reconnect = Socket.instances[4]!;
+    expect(refresh).toHaveBeenCalledTimes(10);
     expect(reconnect.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
     expect(result.current.ydoc).toBe(draft);
     expect(result.current.error).toBeNull();
