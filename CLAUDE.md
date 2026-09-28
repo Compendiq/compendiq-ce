@@ -116,6 +116,18 @@ row commit together. Registration keeps its pre-bcrypt policy probe for the
 ordinary closed case, then rechecks under the lock so setup cannot close the
 bootstrap window between policy and insert.
 
+**Refresh-token rotation is a single-use transaction.** `/api/auth/refresh`
+calls `rotateRefreshToken`: under the user's row lock it claims the presented
+JTI with `UPDATE ... WHERE revoked = FALSE RETURNING` and inserts the
+same-family successor before the same commit; a replay or concurrent loser
+revokes the family. Family revocation and logout take the same lock, and admin
+role change / deactivation conflict with it by updating the users row. Never
+rebuild rotation from `verifyRefreshToken` + `revokeToken` +
+`generateRefreshToken`. In the SPA every request that presents or sets the
+refresh cookie (refresh, login, register, setup-admin, OIDC exchange, logout)
+goes through `withAuthCookieLock` (Web Locks, IndexedDB lease on plain HTTP);
+it is not re-entrant, so hold it around the request only.
+
 ## Testing & Mocks
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
