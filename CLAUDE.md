@@ -831,8 +831,8 @@ bodies to a user goes through it (or `authorizedPageIds` for id gates):
 lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
 rows too), graphs, space summaries, pins, embedding status, sub-page LLM
 context, duplicates, verification, versions, exports, attachments, bulk
-selection, drafts, presence, watch, improvement apply and LLM
-conversation/page references. A restricted page answers
+selection, drafts, presence, watch and LLM conversation/page
+references. A restricted page answers
 exactly like a missing one, and a hidden restricted parent re-roots its
 children like a hidden private parent. Never use it inside RAG retrieval:
 retrieval SQL (both legs, lexical chunk resolution, the identifier pin and its

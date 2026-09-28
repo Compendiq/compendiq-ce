@@ -36,7 +36,6 @@ import {
   userCanAccessPage,
   userCanEditPage,
 } from '../../core/services/rbac-service.js';
-import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
@@ -410,14 +409,6 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // and credentials under admission immediately before provider dispatch.
     const writeStaysLocal = await pageWriteStaysLocal(userId, existingPage.source);
     if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
-    // A Confluence page is applied only when the caller may read it under the
-    // shared list rule (space role plus page restrictions). This also covers
-    // the local-write branch taken when the caller's Confluence integration is
-    // off, which has no provider-side authority check, and it runs before the
-    // collab/version/layout checks so a denied page answers like a missing one.
-    if (!(await authorizedPageIds(userId, [existingPage.id])).has(existingPage.id)) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 

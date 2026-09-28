@@ -1,7 +1,7 @@
 /**
  * Page-scoped routes a reader can probe by id must answer a restricted page
- * exactly like a missing one and never return its draft, title or body
- * (real PostgreSQL + Redis; only the collab-room probe boundary is real too).
+ * exactly like a missing one and never return its draft (real PostgreSQL +
+ * Redis).
  */
 import type { FastifyInstance } from 'fastify';
 import { createClient, type RedisClientType } from 'redis';
@@ -11,7 +11,6 @@ import { setRedisClient } from '../../core/services/redis-cache.js';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { notificationRoutes } from '../foundation/notifications.js';
-import { llmConversationRoutes } from '../llm/llm-conversations.js';
 import { seedRestrictionFixture, type RestrictionFixture } from './page-restriction.test-helpers.js';
 import { pagesCrudRoutes } from './pages-crud.js';
 import { pagesPresenceRoutes } from './pages-presence.js';
@@ -43,7 +42,6 @@ describe.skipIf(!available)('page probes — restricted pages answer like missin
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
       await instance.register(pagesPresenceRoutes, { prefix: '/api' });
       await instance.register(notificationRoutes, { prefix: '/api' });
-      await instance.register(llmConversationRoutes, { prefix: '/api' });
     });
   });
 
@@ -82,23 +80,5 @@ describe.skipIf(!available)('page probes — restricted pages answer like missin
     expect(draft.status).toBe(200);
     expect(draft.body).toContain('hushdraft');
     expect((await probe(fx.groupReaderId, 'POST', `/api/pages/${leaf}/watch`)).status).toBe(200);
-  });
-
-  it('applying an improvement with Confluence off never touches or names a restricted page', async () => {
-    await query(
-      `INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)
-       ON CONFLICT (user_id) DO UPDATE SET confluence_enabled = FALSE`,
-      [fx.readerId],
-    );
-    const restricted = await probe(fx.readerId, 'POST', '/api/llm/improvements/apply', {
-      pageId: String(fx.pages.hushedLeaf), improvedMarkdown: 'overwritten',
-    });
-    const missing = await probe(fx.readerId, 'POST', '/api/llm/improvements/apply', {
-      pageId: String(MISSING_ID), improvedMarkdown: 'overwritten',
-    });
-    expect(restricted).toEqual(missing);
-    expect(restricted.body).not.toContain('Hushed Leaf');
-    const page = await query<{ body_text: string }>('SELECT body_text FROM pages WHERE id = $1', [fx.pages.hushedLeaf]);
-    expect(page.rows[0]!.body_text).toContain('hushleafbody');
   });
 });
