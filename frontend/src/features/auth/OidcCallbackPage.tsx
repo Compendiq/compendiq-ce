@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth-store';
+import { withAuthCookieLock } from '../../shared/lib/auth-cookie-lock';
 
 /**
  * OIDC callback page: exchanges the one-time login code from the URL
@@ -33,12 +34,14 @@ export function OidcCallbackPage() {
 
     async function exchangeCode() {
       try {
-        const response = await fetch('/api/auth/oidc/exchange', {
+        // The response sets the refresh cookie: serialize with other tabs'
+        // refreshes (see auth-cookie-lock).
+        const response = await withAuthCookieLock(() => fetch('/api/auth/oidc/exchange', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code: loginCode }),
           credentials: 'include',
-        });
+        }));
 
         if (!response.ok) {
           const body = await response.json().catch(() => ({ message: 'Exchange failed' }));

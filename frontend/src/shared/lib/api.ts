@@ -1,4 +1,5 @@
 import { useAuthStore } from '../../stores/auth-store';
+import { withAuthCookieLock } from './auth-cookie-lock';
 
 const API_BASE = '/api';
 
@@ -41,14 +42,27 @@ async function refreshAccessToken(): Promise<string | null> {
  * Deduplicates concurrent refresh calls. When multiple requests get 401
  * simultaneously (e.g. page load with expired token), only the first
  * triggers an actual refresh; all others await the same promise.
- * Without this, concurrent refreshes race to rotate the token, and the
- * backend's reuse detection revokes the entire token family.
+ *
+ * The refresh itself runs under the browser-wide auth-cookie lock, so tabs
+ * sharing the HttpOnly refresh cookie never present it concurrently — the
+ * backend treats refresh tokens as single-use and revokes the whole family
+ * when one is presented twice. A tab that waited while another tab rotated
+ * the cookie adopts the token that tab broadcast (auth-store
+ * BroadcastChannel) instead of rotating again; without a broadcast it
+ * rotates the already-updated cookie in turn.
  */
 let pendingRefresh: Promise<string | null> | null = null;
 
 export function refreshAccessTokenOnce(): Promise<string | null> {
   if (!pendingRefresh) {
-    pendingRefresh = refreshAccessToken().finally(() => {
+    const observedToken = useAuthStore.getState().accessToken;
+    pendingRefresh = withAuthCookieLock(() => {
+      const current = useAuthStore.getState().accessToken;
+      if (current && current !== observedToken && !isTokenExpired(current)) {
+        return Promise.resolve<string | null>(current);
+      }
+      return refreshAccessToken();
+    }).finally(() => {
       pendingRefresh = null;
     });
   }
@@ -103,7 +117,16 @@ export async function apiFetch<T = unknown>(
     headers.set('Content-Type', 'application/json');
   }
 
-  let res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+  const request = () => fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+  // Login/registration responses replace the refresh cookie. Send them under
+  // the auth-cookie lock so a refresh in another tab cannot present the
+  // previous cookie concurrently and overwrite the new session's cookie with
+  // a successor of the old one.
+  const send = path === '/auth/login' || path === '/auth/register'
+    ? () => withAuthCookieLock(request)
+    : request;
+
+  let res = await send();
 
   // Reactive token refresh on 401 (covers both expired tokens and
   // page-reload where accessToken was cleared from memory but
@@ -112,7 +135,7 @@ export async function apiFetch<T = unknown>(
     const newToken = await refreshAccessTokenOnce();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+      res = await send();
     } else {
       useAuthStore.getState().clearAuth();
       throw new ApiError(401, 'Session expired');
@@ -215,11 +238,13 @@ export async function logoutApi(): Promise<void> {
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;
     }
-    await fetch(`${API_BASE}/auth/logout`, {
+    // Logout clears the refresh cookie; keep it from overlapping another
+    // tab's refresh of the same cookie.
+    await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
       headers,
       credentials: 'include',
-    });
+    }));
   } catch {
     // Best effort — always clear frontend state below
   }
