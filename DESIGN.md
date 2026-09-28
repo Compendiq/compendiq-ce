@@ -18,7 +18,7 @@ colors:
   hover-graphite: "#1d1e1e"
   pressed-graphite: "#212226"
   selected-graphite: "#282a2e"
-  canvas-paper: "#e8ecf0"
+  canvas-paper: "#f5f5f5"
   chrome-paper: "#f0f3f6"
   workspace-paper: "#f4f6f8"
   pane-paper: "#ffffff"

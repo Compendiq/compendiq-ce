@@ -1695,6 +1695,24 @@ shadow reaches the chassis margin; the card clips its own content, and
 `workspace-themes.test.ts` admits that one token; `AppLayout.test.tsx` fails
 if either ancestor clips again.
 
+### v1.8 — owner pin: Paper chassis `#F5F5F5` (2026-09-28)
+
+**Owner decision.** *"Change the color of --app-chassis to F5F5F5 (Bright mode
+only)."*
+
+Paper only; Graphite is untouched. `--app-chassis` goes from `#E8ECF0` to
+`#F5F5F5`, a light neutral grey for the flat frame. Measured from the tokens:
+the white card's edge is 1.090:1 (the 1.08:1 floor in `app-shell-layout.test.ts`
+still holds, with less headroom than 1.187:1 had), secondary ink on the frame
+rises to 5.12:1, Steel to 5.87:1 and the interactive edge to 3.50:1.
+
+The frame is now lighter than Chrome (`#F0F3F6`) and level with Workspace
+(`#F4F6F8`), so it is no longer the deepest Paper step. Neither touches it —
+Chrome paints only the Library results header bands and Workspace only the
+card's fill under its white panes — so `workspace-themes.test.ts` now orders
+the in-card surfaces (Chrome → Workspace → Pane) and requires only that the
+frame sit below Pane. It still pins the exact owner value.
+
 ---
 ## ADR-011: Docker Deployment Architecture
 

@@ -769,9 +769,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is the frame's own step. On 2026-09-15 the owner selected Nordic Slate
-     (Edition 2: Balanced Console), pinning Canvas to #e8ecf0 (1.171:1 on Pane).
-     It was #ededed from 2026-09-12; #f0efed from 2026-09-11 (1.149:1); above
+     Canvas is the frame's own step. On 2026-09-28 the owner pinned it to
+     #f5f5f5 (1.090:1 on Pane), a light neutral grey for the flat frame; it was
+     #e8ecf0 from 2026-09-15 (Nordic Slate, Edition 2: Balanced Console,
+     1.187:1), #ededed from 2026-09-12; #f0efed from 2026-09-11 (1.149:1); above
      Workspace for a day (#f9f8f7 → #fdfdfd → #fafaf9), where it measured 1.04:1
      once the workspace and rail hairlines came off — a boundary you could not
      see without the line — and it was #e8e8e8 until 2026-09-11, where the owner
@@ -923,18 +924,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      both.
 
      THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
-     ceiling on how light. The left destination rail labels ("Pages", "AI",
-     "Graph") are 12px --color-muted-foreground on this surface, so 1.4.3 applies
-     at 4.5:1, and #616878 clears that floor here (4.70:1 on #e8ecf0; earlier #686866
-     cleared 4.56:1 on prior #e8e8e8). Lighter is always safe for them; any deeper grey needs
+     ceiling on how light. The left navigation's 12px secondary labels are
+     --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
+     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
+     #e8ecf0). Lighter is always safe for them; any deeper grey needs
      --color-muted-foreground darkened first, and workspace-themes.test.ts pins
-     that relationship so the rail cannot lose its labels to a later retune.
+     that relationship so the labels cannot be lost to a later retune.
      --color-border-interactive on Canvas is over the 1.4.11 floor. Every
      other neutral in this block is fitted to white and to this frame, which is
      why the ramp reads near-neutral rather than beige. The rail's destinations
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
-  --app-chassis: #e8ecf0;
+  --app-chassis: #f5f5f5;
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
