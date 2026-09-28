@@ -526,6 +526,50 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       expect((await refreshRoute(first.token)).statusCode).toBe(401);
       expect((await refreshRoute(second.token)).statusCode).toBe(401);
     }, 20_000);
+
+    it('revokes the successor of a rotation that stalls between claim and commit while logout falls back', async () => {
+      const initial = await generateRefreshToken(testPayload());
+      const accessToken = await generateAccessToken(testPayload());
+      // A rotation, done by hand so it can stall: users-row lock + claim.
+      const rotation = await getPool().connect();
+      let logout!: InjectedResponse;
+      try {
+        await rotation.query('BEGIN');
+        await rotation.query('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', [testUserId]);
+        await rotation.query('UPDATE refresh_tokens SET revoked = TRUE WHERE jti = $1', [initial.jti]);
+
+        const logoutAttempt = app.inject({
+          method: 'POST',
+          url: '/api/auth/logout',
+          headers: { authorization: `Bearer ${accessToken}` },
+        });
+        // After the 5s lock deadline the unlocked UPDATE runs; it snapshots
+        // before the successor exists and waits on the claimed row.
+        const fellBack = await waitForDatabaseCondition(async () => {
+          const waiting = await query<{ n: number }>(
+            `SELECT COUNT(*)::int AS n FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'
+                AND query LIKE 'UPDATE refresh_tokens SET revoked = TRUE WHERE user_id%'`,
+          );
+          return waiting.rows[0]!.n >= 1;
+        });
+        expect(fellBack).toBe(true);
+
+        await rotation.query(
+          `INSERT INTO refresh_tokens (user_id, jti, family, expires_at)
+           VALUES ($1, 'stalled-successor', $2, NOW() + INTERVAL '7 days')`,
+          [testUserId, initial.family],
+        );
+        await rotation.query('COMMIT');
+        logout = await logoutAttempt;
+      } finally {
+        await rotation.query('ROLLBACK').catch(() => {});
+        rotation.release();
+      }
+
+      expect(logout.statusCode).toBe(200);
+      expect(await activeJtis('user_id', testUserId)).toEqual([]);
+    }, 30_000);
   });
 
   describe('Logout with expired access token (refresh cookie fallback)', () => {

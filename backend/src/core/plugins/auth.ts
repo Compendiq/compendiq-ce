@@ -391,20 +391,28 @@ export async function revokeToken(jti: string): Promise<void> {
  * Runs a revocation UPDATE under the owner's row lock so a concurrent
  * rotation cannot insert a successor that the UPDATE's snapshot would miss.
  * If the locked transaction hits a deadline (5s lock wait or 10s statement),
- * the UPDATE still runs without the lock: a revocation must not be skipped
- * because the database was busy. On that degraded path a successor committed by the stalled lock
- * holder or a rotation queued behind it can escape the UPDATE's snapshot —
- * the exposure every revocation had before the lock existed.
+ * the UPDATE runs without the lock immediately — a revocation must not be
+ * skipped because the database was busy — and then once more under the lock.
+ * Acquiring the lock proves the stalled holder (and every rotation queued
+ * ahead) has committed, so a successor it inserted after the unlocked
+ * UPDATE's snapshot is revoked too. Only if that second wait also times out
+ * can such a successor survive (the pre-lock exposure).
  */
 async function revokeUnderUserLock(userId: string, sql: string, params: unknown[]): Promise<void> {
+  const revokeLocked = () => withUserSessionLock(userId, async (client) => {
+    await client.query(sql, params);
+  });
   try {
-    await withUserSessionLock(userId, async (client) => {
-      await client.query(sql, params);
-    });
+    await revokeLocked();
   } catch (error) {
     if (!(error instanceof RefreshSessionBusyError)) throw error;
-    logger.warn({ userId }, 'Refresh token revocation ran without the session lock after a deadline');
     await query(sql, params);
+    try {
+      await revokeLocked();
+    } catch (retryError) {
+      if (!(retryError instanceof RefreshSessionBusyError)) throw retryError;
+      logger.warn({ userId }, 'Refresh token revocation could not take the session lock; ran unlocked only');
+    }
   }
 }
 
