@@ -1031,7 +1031,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       expect(await authoredState(pageId)).toEqual(untouched);
     });
 
-    it('restores locally for a space member and for an ACE holder on a restricted page', async () => {
+    it('restores locally for a space member, and for one holding an ACE on a restricted page', async () => {
       await configureConfluence('OPS');
       await switchIntegration(false);
       const member = await syncedPage('restore-member');

@@ -367,9 +367,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const existingPage = existing.rows[0]!;
 
     // Page authority for a local write: the PUT /pages/:id rule — page access
-    // (space role, or a page ACE on a restricted page; owner/shared for a
-    // standalone article) AND edit rights. With `client` it reads inside the
-    // write transaction and bypasses the RBAC caches.
+    // AND edit rights. A synced page needs a role on its space (plus an ACE
+    // when the page is restricted); a standalone article needs its owner or
+    // shared visibility. With `client` it reads inside the write transaction
+    // and bypasses the RBAC caches.
     const canWritePageLocally = async (pageId: number, client?: PoolClient): Promise<boolean> =>
       (await userCanAccessPage(userId, pageId, client))
       && (await userCanEditPage(userId, pageId, client));

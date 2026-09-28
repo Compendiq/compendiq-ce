@@ -472,10 +472,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     }
 
     // #1623: the local write has no Confluence-side authority, so it applies
-    // the PUT /pages/:id rule itself — page access (space role, or an ACE on a
-    // restricted page) AND edit rights — here, before the collab-room 409,
-    // and again under the page fence. A caller's own integration toggle must
-    // not skip the page authority `currentRestoreClient` re-checks remotely.
+    // the PUT /pages/:id rule itself — page access AND edit rights (a role on
+    // the page's space, plus an ACE on a restricted page) — here, before the
+    // collab-room 409, and again under the page fence. A caller's own
+    // integration toggle must not skip the page authority
+    // `currentRestoreClient` re-checks remotely.
     const staysLocal = ctx.source !== 'confluence' || !(await isConfluenceEnabled(userId));
     const canWritePageLocally = async (client?: PoolClient): Promise<boolean> =>
       (await userCanAccessPage(userId, ctx.id, client))

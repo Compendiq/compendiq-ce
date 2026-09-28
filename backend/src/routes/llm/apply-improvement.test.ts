@@ -10,6 +10,7 @@ import {
   reconcilePageWriteIntent,
 } from '../../core/services/page-write-admission.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
+import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import {
   isDbAvailable,
@@ -136,6 +137,8 @@ async function grantSpace(user: string, spaceKey: string): Promise<void> {
      ON CONFLICT DO NOTHING`,
     [spaceKey, user, role.rows[0]!.id],
   );
+  // The role-assignment routes clear the RBAC space cache the same way.
+  await invalidateRbacCache(user);
 }
 
 async function insertAcceptedImprovement(
@@ -871,15 +874,24 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         expect(await readPage(layoutPage)).toMatchObject({ version: 4, body_html: layoutHtml });
       });
 
-      it('denies a space member on a restricted page without an ACE and admits them once granted', async () => {
+      it('requires both the space role and, on a restricted page, an ACE', async () => {
         const pageId = await syncedOpsPage('page-restricted');
         await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
-        await grantSpace(outsiderId, 'OPS');
+        await query(
+          `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ('page', $1, 'user', $2, 'edit')`,
+          [pageId, outsiderId],
+        );
         userId = outsiderId;
         await setIntegration(outsiderId, false);
 
-        const denied = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
-        expect(denied.statusCode).toBe(404);
+        const aceWithoutRole = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+        expect(aceWithoutRole.statusCode).toBe(404);
+
+        await grantSpace(outsiderId, 'OPS');
+        await query('DELETE FROM access_control_entries WHERE resource_id = $1', [pageId]);
+        const roleWithoutAce = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+        expect(roleWithoutAce.statusCode).toBe(404);
         expect(await readPage(pageId)).toMatchObject({ version: 5, body_text: 'Shared runbook body' });
 
         await query(

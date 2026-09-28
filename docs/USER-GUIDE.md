@@ -36,7 +36,7 @@ submits credentials. Turn the switch off and Compendiq runs standalone:
   movable and deletable, and the AI keeps using them. Those edits are local and
   are not sent to Confluence. Page permissions still apply: you can change a
   synced page only if you could change it with the switch on (a role on its
-  space, or explicit access to a restricted page).
+  space and, for a restricted page, explicit access to that page as well).
 - **Your credentials are kept.** Switching the integration off does not erase
   your Confluence URL or PAT, so switching back on takes one click and no
   re-entry.

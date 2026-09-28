@@ -196,8 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Local writes to synced pages keep page authority when Confluence is off.**
   AI Improve **Apply** and version **Restore** now authorize a synced page's
-  local write with the same rule as `PUT /pages/:id`: page access (a role on the
-  page's space, or an ACE on a restricted page) plus edit rights. The rule is
+  local write with the same rule as `PUT /pages/:id`: page access plus edit
+  rights, meaning a role on the page's space and, on a restricted page, an ACE
+  as well. The rule is
   checked before the write and again inside its fenced transaction. Previously,
   a user who switched their own integration off could apply an improvement to
   any synced page, or restore a restricted or spaceless one. A denied Apply now
