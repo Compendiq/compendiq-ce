@@ -2926,7 +2926,8 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > flag-gated `filterAccessiblePages` post-filter, because CE retrieval is
 > space-level by design (ADR-022) and the per-page RAG gate is the Enterprise
 > feature. `/api/search` semantic/hybrid modes reuse retrieval but authorize
-> the rows they return with the non-RAG predicate. ACE and group-membership
+> their whole candidate pool with the non-RAG predicate before applying the
+> caller's `limit`. ACE and group-membership
 > writes queue page-cache invalidation in the database (migration 129), so
 > every writer — including sync's sweep, relocation and the EE bulk route —
 > fences the `pages` cache generation without its own cache calls.

@@ -304,20 +304,20 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // silently got answers from the whole accessible corpus.
       const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit, { spaceKey });
 
-      // Deduplicate by pageId (take best chunk per page), then honour the
-      // caller's return width — the wider fetch is ranking headroom, not a
-      // bigger response.
+      // Deduplicate by pageId (take best chunk per page). The wider fetch is
+      // ranking headroom, not a bigger response: authorize the WHOLE deduped
+      // pool first, then honour the caller's return width, so a page the
+      // caller cannot read never consumes one of their result slots.
       const seen = new Set<number>();
-      const deduped = vectorResults
-        .filter((r) => {
-          if (seen.has(r.pageId)) return false;
-          seen.add(r.pageId);
-          return true;
-        })
-        .slice(0, limit);
+      const deduped = vectorResults.filter((r) => {
+        if (seen.has(r.pageId)) return false;
+        seen.add(r.pageId);
+        return true;
+      });
 
-      const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {
+      const rankedHead = deduped.slice(0, limit);
+      const maxScore = rankedHead.length > 0 ? Math.max(...rankedHead.map((r) => r.score)) : null;
+      recordSearchAnalytics(userId, q, rankedHead.length, maxScore, 'semantic', {
         degradedReason,
         embeddingCoverage,
         // #1284 — this is the page-search surface, and the #1105 refuse gate
@@ -331,7 +331,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
       // Pages removed since retrieval, or not readable by this caller, have no
       // canonical result to return.
-      const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
+      const items = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
         ...metadata.get(r.pageId)!,
@@ -374,6 +374,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // parallel vector + keyword search, RRF fusion, and deduplication internally.
     if (effectiveMode === 'hybrid') {
       let deduped;
+      // Ask for the fused stage pool rather than `limit`, then authorize the
+      // pool before slicing below, so pages the caller cannot read never
+      // consume their result slots. The pool is `resolveStageLimit`'s width,
+      // which already floors at the fetch width, so the legs' own stage limit
+      // stays unchanged unless the EE ACL headroom applies.
+      const stageLimit = resolveStageLimit(limit, await getRagFetchWidth(), false);
       try {
         // Hand over this request's coverage reading (null = probe failed) so
         // hybridSearch skips its own probe — one COUNT per request, and the
@@ -383,7 +389,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // confidence it computed. The verdict is real — the same formula, on
         // the same returned set — but this surface never GATES on it, so the
         // row is labelled 'search' and the Retrieval readout leaves it out.
-        deduped = await hybridSearch(userId, q, limit, cov, { spaceKey, surface: 'search' });
+        deduped = await hybridSearch(userId, q, stageLimit, cov, { spaceKey, surface: 'search' });
       } catch (err) {
         if (err instanceof CircuitBreakerOpenError) {
           reply.status(503).send({
@@ -405,7 +411,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }
 
       const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
-      const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
+      const items = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
         ...metadata.get(r.pageId)!,

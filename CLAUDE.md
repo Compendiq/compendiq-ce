@@ -829,7 +829,9 @@ restricted pages and still hide other users' private standalone pages. Every
 surface that returns page rows, titles, snippets, labels, counts, hierarchy or
 bodies to a user goes through it (or `authorizedPageIds` for id gates):
 lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
-rows too), graphs, space summaries, pins, embedding status, sub-page LLM
+rows too, authorized over the whole candidate pool BEFORE the `limit` slice so
+hidden pages never take result slots), graphs, space summaries, pins, embedding
+status, sub-page LLM
 context, duplicates, verification, versions, exports, attachments, bulk
 selection, drafts, presence, watch and LLM conversation/page
 references. A restricted page answers

@@ -133,4 +133,44 @@ describe.skipIf(!available)('GET /api/search semantic and hybrid modes — page 
     expect(admin.ids).toEqual(expect.arrayContaining([fx.pages.hushedLeaf, fx.pages.hushedParent]));
     expect(admin.ids).not.toContain(fx.pages.readerPrivate);
   });
+
+  it.each(['semantic', 'hybrid'] as const)(
+    '%s: restricted top-ranked pages do not consume R\'s result slots',
+    async (mode) => {
+      // Rank both restricted pages first in each leg: an exact query vector
+      // for them, a slightly rotated one for every other page, and a
+      // keyword-dense body only they carry.
+      const restricted = [fx.pages.hushedLeaf, fx.pages.hushedParent];
+      const rotated = queryVector.map((value, i) => (i === 0 ? value + 0.05 : value));
+      await query(
+        'UPDATE page_embeddings SET embedding = $1 WHERE NOT (page_id = ANY($2::int[]))',
+        [pgvector.toSql(rotated), restricted],
+      );
+      await query(
+        `UPDATE pages SET body_text = repeat($1 || ' ', 20) || body_text WHERE id = ANY($2::int[])`,
+        [SEARCH_TERM, restricted],
+      );
+      // R reads Open Root, Visible Child, Shared Note and Reader Private.
+      for (const limit of [2, 4]) {
+        currentUserId = fx.readerId;
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/search?q=${SEARCH_TERM}&mode=${mode}&limit=${limit}`,
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        const ids = response.json<{ items: Array<{ id: number }> }>().items.map((item) => item.id);
+        expect(ids).toHaveLength(limit);
+        expect(ids).not.toContain(fx.pages.hushedLeaf);
+        expect(ids).not.toContain(fx.pages.hushedParent);
+      }
+      // The group ACE holder sees the restricted pages at the head.
+      currentUserId = fx.groupReaderId;
+      const group = await app.inject({
+        method: 'GET',
+        url: `/api/search?q=${SEARCH_TERM}&mode=${mode}&limit=2`,
+      });
+      expect(group.json<{ items: Array<{ id: number }> }>().items.map((item) => item.id).sort())
+        .toEqual([...restricted].sort());
+    },
+  );
 });

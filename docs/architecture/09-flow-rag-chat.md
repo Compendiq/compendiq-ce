@@ -1286,9 +1286,10 @@ context — applies page restrictions in both editions through
 lexical chunk resolution, the identifier pin and its excerpt, and the
 embedding-coverage denominator that describes that corpus), and restriction
 enforcement inside retrieval stays this flag-gated post-filter. `/api/search`
-semantic and hybrid modes reuse the retrieval legs but authorize the rows they
-return through `visiblePagesPredicate`, so a page search never shows a
-restricted page the keyword mode would hide.
+semantic and hybrid modes reuse the retrieval legs but authorize their whole
+candidate pool through `visiblePagesPredicate` before applying `limit`, so a
+page search never shows a restricted page the keyword mode would hide, and a
+hidden page never takes one of the caller's result slots.
 
 **Fusion has a stable head.** When the stage limit exceeds the configured
 width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and
