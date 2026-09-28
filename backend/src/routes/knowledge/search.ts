@@ -174,8 +174,18 @@ async function generateSearchEmbedding(
   }
 }
 
-/** Read current source and lifecycle metadata, never infer it from retrieved chunks. */
-async function getSearchPageMetadata(pageIds: number[]): Promise<Map<number, {
+/**
+ * Read current source and lifecycle metadata, never infer it from retrieved
+ * chunks. Semantic and hybrid modes reuse RAG retrieval, which is space-level
+ * by design (ADR-022/ADR-023); this page-search surface authorizes each
+ * returned row with the caller-bound list definition, so a restricted page
+ * the caller may not read drops out here exactly as it does in keyword mode.
+ */
+async function getSearchPageMetadata(
+  pageIds: number[],
+  searchSpaces: string[],
+  userId: string,
+): Promise<Map<number, {
   source: PageSource;
   isFrozen: boolean;
   baselineId: string | null;
@@ -188,8 +198,11 @@ async function getSearchPageMetadata(pageIds: number[]): Promise<Map<number, {
     baseline_id: string | null;
     frozen_version: number | null;
   }>(
-    'SELECT id, source, baseline_id, frozen_version FROM pages WHERE id = ANY($1::int[])',
-    [pageIds],
+    `SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version
+       FROM pages cp
+      WHERE cp.id = ANY($1::int[])
+        AND ${visiblePagesPredicate(2, 3)}`,
+    [pageIds, searchSpaces, userId],
   );
   return new Map(rows.map((row) => [row.id, { source: row.source, ...freezeSummary(row) }]));
 }
@@ -315,8 +328,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
         surface: 'search',
       }).catch(() => {});
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId));
-      // Pages removed since retrieval no longer have a canonical result to return.
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      // Pages removed since retrieval, or not readable by this caller, have no
+      // canonical result to return.
       const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
@@ -390,7 +404,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId));
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
       const items = deduped.filter((r) => metadata.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,

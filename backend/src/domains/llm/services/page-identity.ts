@@ -10,7 +10,7 @@
  * memoized per instance: the caller builds one reader and hands it to both.
  *
  * **No visibility predicate, deliberately.** The page ids arrive from
- * retrieval, which applied `visiblePagesPredicate` and the EE per-page filter
+ * retrieval, which applied `ragRetrievalPagesPredicate` and the EE per-page filter
  * before any derived text was read (ADR-027 D14); a second predicate here
  * would be a second place for that rule to drift. A reader must therefore
  * never be given a page id that came from a request.

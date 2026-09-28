@@ -37,7 +37,7 @@
  * much as names it. That guard is not a formality this module routes around:
  * it is the reason the pick lives behind a service boundary at all. The read
  * is only safe because retrieval has ALREADY applied the visibility predicate
- * to the pages it returned (`visiblePagesPredicate` in the kNN and both text
+ * to the pages it returned (`ragRetrievalPagesPredicate` in the kNN and both text
  * legs, plus the EE per-page filter over the fused set), and this function's
  * whole input is that post-ACL set. It reads bytes for a page the caller was
  * handed; it must never be given a page id from a request.

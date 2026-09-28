@@ -10,6 +10,7 @@ import { getPageBaselineGovernanceHook } from '../../core/services/page-baseline
 import { readFrozenPageAttachment } from '../../core/services/page-baseline-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { logger } from '../../core/utils/logger.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType } from '../../domains/confluence/services/attachment-handler.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
@@ -644,14 +645,15 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     const { pageId } = request.params as { pageId: string };
     const userId = request.userId;
 
-    // Verify the page belongs to the user's accessible spaces (RBAC)
+    // The page must be readable under the list definition (space access,
+    // page restrictions); an unreadable page answers like a missing one.
     const listSpaces = await getUserAccessibleSpaces(userId);
     const pageResult = await query<{ confluence_id: string }>(
       `SELECT cp.confluence_id
        FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = $2`,
-      [listSpaces, pageId],
+       WHERE cp.confluence_id = $1
+         AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, listSpaces, userId],
     );
     if (pageResult.rows.length === 0) {
       return reply.status(404).send({
@@ -697,7 +699,8 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const attachSpaces = await getUserAccessibleSpaces(userId);
-    // Look up by confluence_id (Confluence pages) in accessible spaces
+    // Look up by confluence_id among pages the caller may read (list
+    // definition incl. page restrictions).
     let pageResult = await query<{
       id: number;
       body_storage: string | null;
@@ -706,13 +709,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.id, cp.body_storage, cp.space_key, cp.source
        FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = $2`,
-      [attachSpaces, pageId],
+       WHERE cp.confluence_id = $1
+         AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, attachSpaces, userId],
     );
     // Fallback: standalone pages use integer PK as their attachment pageId.
-    // Deliberately NOT visiblePagesPredicate(): this branch is standalone-only
-    // by construction (Confluence pages were handled by the query above).
     if (pageResult.rows.length === 0 && /^\d+$/.test(pageId)) {
       pageResult = await query<{
         id: number;
@@ -724,9 +725,9 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
          FROM pages cp
          WHERE cp.id = $1
            AND cp.source = 'standalone'
-           AND (cp.visibility = 'shared' OR cp.created_by_user_id = $2)
-           AND cp.deleted_at IS NULL`,
-        [Number(pageId), userId],
+           AND cp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(2, 3)}`,
+        [Number(pageId), attachSpaces, userId],
       );
     }
     const cachedPage = pageResult.rows[0];
@@ -1009,11 +1010,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       `SELECT cp.id, cp.source, cp.confluence_id, cp.space_key,
               cp.content_revision::text, cp.lifecycle_revision::text
          FROM pages cp
-        WHERE cp.space_key = ANY($1::text[])
-          AND cp.confluence_id = $2
+        WHERE cp.confluence_id = $1
           AND cp.source = 'confluence'
-          AND cp.deleted_at IS NULL`,
-      [putSpaces, pageId],
+          AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, putSpaces, userId],
     );
     const page = pageResult.rows[0];
     if (!page || !page.confluence_id) {

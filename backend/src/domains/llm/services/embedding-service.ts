@@ -14,6 +14,7 @@ import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { authorizedPageIds } from '../../../core/services/authorized-pages.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
@@ -928,8 +929,13 @@ interface ProcessDirtyPagesOpts {
  * as failed, the loop waits for the breaker to recover and retries.
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
+ * The run itself is global (every dirty page), but the events go to `userId`:
+ * a page title appears in `currentPage` or the error list only when that
+ * user may read the page under `visiblePagesPredicate`, re-checked per batch.
+ * Counts stay global because they describe the worker's whole queue.
  *
- * userId is used only for the Redis embedding-lock. The embedding provider is resolved via resolveUsecase('embedding').
+ * userId is used for the Redis embedding-lock and for that title check. The
+ * embedding provider is resolved via resolveUsecase('embedding').
  */
 export async function processDirtyPages(
   userId: string,
@@ -1103,7 +1109,16 @@ export async function processDirtyPages(
         [batchPageIds],
       );
 
+      // The reembed-all system caller consumes counts only and is no user,
+      // so it gets no titles at all.
+      const readableIds = onProgress && userId !== REEMBED_ALL_LOCK_USER
+        ? await authorizedPageIds(userId, batchPageIds)
+        : new Set<number>();
+      const errorEntry = (title: string | undefined, message: string) =>
+        (title ? `${title}: ${message}` : message);
+
       for (const page of batch.rows) {
+        const shownTitle = readableIds.has(page.id) ? page.title : undefined;
         // Holder-epoch guard (plan §2.10): re-read the lock key every
         // GUARD_CHECK_EVERY pages from inside the per-page loop too, so a
         // force-release mid-batch aborts quickly rather than after the
@@ -1153,7 +1168,7 @@ export async function processDirtyPages(
               total: batchTotal,
               completed: totalProcessed,
               failed: totalErrors,
-              currentPage: page.title,
+              currentPage: shownTitle,
               percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
             });
           }
@@ -1183,7 +1198,7 @@ export async function processDirtyPages(
                   total: batchTotal,
                   completed: totalProcessed,
                   failed: totalErrors,
-                  currentPage: page.title,
+                  currentPage: shownTitle,
                   percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
                   reason: `Circuit breaker open, waiting ${Math.round(waitMs / 1000)}s for recovery (attempt ${cbRetries + 1}/${MAX_CIRCUIT_BREAKER_RETRIES})`,
                 });
@@ -1210,7 +1225,7 @@ export async function processDirtyPages(
                     total: batchTotal,
                     completed: totalProcessed,
                     failed: totalErrors,
-                    currentPage: page.title,
+                    currentPage: shownTitle,
                     percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
                   });
                 }
@@ -1230,7 +1245,7 @@ export async function processDirtyPages(
                   totalErrors++;
                   batchRemainingDirty++;
                   consecutiveFailures++;
-                  errorList.push(`${page.title}: ${toUserFacingEmbeddingError(retryErr)}`);
+                  errorList.push(errorEntry(shownTitle, toUserFacingEmbeddingError(retryErr)));
                   cbSuccess = true; // Mark as handled (failed, but handled)
                   break;
                 }
@@ -1263,7 +1278,7 @@ export async function processDirtyPages(
           batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
-          errorList.push(`${page.title}: ${toUserFacingEmbeddingError(err)}`);
+          errorList.push(errorEntry(shownTitle, toUserFacingEmbeddingError(err)));
 
           // Pause after too many consecutive failures to let the server recover
           if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {
@@ -1294,7 +1309,7 @@ export async function processDirtyPages(
               total: batchTotal,
               completed: totalProcessed,
               failed: totalErrors,
-              currentPage: page.title,
+              currentPage: shownTitle,
               percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
             });
           }

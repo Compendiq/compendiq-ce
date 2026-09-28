@@ -71,15 +71,20 @@ type ConversationListRow = ConversationRow & {
  * on read (a whitespace-only first question yields '' — the DB column stays
  * nullable so the migration cannot fail on a legacy row); the page join is
  * `deleted_at IS NULL` because pages are SOFT deleted and the FK's SET NULL
- * only fires on a hard delete. No visibility predicate on the join: page_ref
- * was authorised at write time (llm-ask.ts), and the row records where the
- * user started a conversation they were allowed to have.
+ * only fires on a hard delete. page_ref was authorised at write time
+ * (llm-ask.ts), but the chip is re-authorised on every read through
+ * `visiblePagesPredicate`: a page the caller can no longer read (a
+ * restriction added after the ask, a revoked ACE or space role) answers
+ * `pageId`/`pageTitle` null, the same as a trashed page. The row itself stays.
  */
 const SUMMARY_COLUMNS = `c.id, COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation') AS title,
-       c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at`;
-const SUMMARY_FROM = `FROM llm_conversations c
-    LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL`;
-// (`SUMMARY_FROM` is used by both the list route and the GET :id detail route below.)
+       c.title_source, c.model, p.id AS page_ref, p.title AS page_title, c.created_at, c.updated_at`;
+/** FROM clause for the list and GET :id routes; binds accessible spaces and the caller. */
+function summaryFrom(spacesParamIdx: number, userParamIdx: number): string {
+  return `FROM llm_conversations c
+    LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL
+      AND ${visiblePagesPredicate(spacesParamIdx, userParamIdx, 'p')}`;
+}
 
 function toSummary(r: ConversationRow): ConversationSummary {
   return {
@@ -170,12 +175,18 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const result = await query<ConversationListRow>(
       `SELECT ${SUMMARY_COLUMNS},
               to_char(c.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at
-       ${SUMMARY_FROM}
+       ${summaryFrom(5, 1)}
        WHERE c.user_id = $1
          AND ($2::timestamptz IS NULL OR (c.updated_at, c.id) < ($2::timestamptz, $3::uuid))
        ORDER BY c.updated_at DESC, c.id DESC
        LIMIT $4`,
-      [request.userId, after?.updatedAt ?? null, after?.id ?? null, limit + 1],
+      [
+        request.userId,
+        after?.updatedAt ?? null,
+        after?.id ?? null,
+        limit + 1,
+        await getUserAccessibleSpacesMemoized(request.userId),
+      ],
     );
     const page = result.rows.slice(0, limit);
     const last = page[page.length - 1];
@@ -188,9 +199,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { id } = ConversationIdParamSchema.parse(request.params);
     const result = await query<ConversationRow & { messages: StoredChatMessage[] }>(
       `SELECT ${SUMMARY_COLUMNS}, c.messages
-       ${SUMMARY_FROM}
+       ${summaryFrom(3, 2)}
        WHERE c.id = $1 AND c.user_id = $2`,
-      [id, request.userId],
+      [id, request.userId, await getUserAccessibleSpacesMemoized(request.userId)],
     );
     if (result.rows.length === 0) {
       throw fastify.httpErrors.notFound('Conversation not found');
@@ -216,10 +227,15 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       `UPDATE llm_conversations c
           SET title = $3, title_source = 'user'
         WHERE c.id = $1 AND c.user_id = $2
-        RETURNING c.id, c.title, c.title_source, c.model, c.page_ref,
-                  (SELECT p.title FROM pages p WHERE p.id = c.page_ref AND p.deleted_at IS NULL) AS page_title,
+        RETURNING c.id, c.title, c.title_source, c.model,
+                  (SELECT p.id FROM pages p
+                    WHERE p.id = c.page_ref AND p.deleted_at IS NULL
+                      AND ${visiblePagesPredicate(4, 2, 'p')}) AS page_ref,
+                  (SELECT p.title FROM pages p
+                    WHERE p.id = c.page_ref AND p.deleted_at IS NULL
+                      AND ${visiblePagesPredicate(4, 2, 'p')}) AS page_title,
                   c.created_at, c.updated_at`,
-      [id, request.userId, title],
+      [id, request.userId, title, await getUserAccessibleSpacesMemoized(request.userId)],
     );
     if (result.rows.length === 0) {
       throw fastify.httpErrors.notFound('Conversation not found');
@@ -239,11 +255,18 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId } = ImprovementsQuerySchema.parse(request.query);
     const userId = request.userId;
 
-    let sql = 'SELECT li.id, p.confluence_id, li.improvement_type, li.model, li.status, li.created_at FROM llm_improvements li LEFT JOIN pages p ON p.id = li.page_id WHERE li.user_id = $1';
-    const values: unknown[] = [userId];
+    // The rows are the caller's own and all stay listed; the page link is
+    // re-authorised on read, so a page they can no longer read (restricted,
+    // revoked, trashed) answers no confluenceId and never matches the filter.
+    let sql = `SELECT li.id, p.confluence_id, li.improvement_type, li.model, li.status, li.created_at
+       FROM llm_improvements li
+       LEFT JOIN pages p ON p.id = li.page_id AND p.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 1, 'p')}
+      WHERE li.user_id = $1`;
+    const values: unknown[] = [userId, await getUserAccessibleSpacesMemoized(userId)];
 
     if (pageId) {
-      sql += ' AND p.confluence_id = $2';
+      sql += ' AND p.confluence_id = $3';
       values.push(pageId);
     }
 

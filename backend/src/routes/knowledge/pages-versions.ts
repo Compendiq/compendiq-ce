@@ -10,6 +10,7 @@ import {
   type RestoreResult,
 } from '../../domains/knowledge/services/version-tracker.js';
 import { getUserAccessibleSpaces, userCanAccessPage, userCanEditPage } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
@@ -177,15 +178,17 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
   const cache = new RedisCache(fastify.redis);
 
   /**
-   * Resolve the `:id` route param (numeric PK or legacy confluence_id) to the
-   * internal page row, then enforce RBAC — Confluence pages require space
-   * access, standalone pages require ownership or shared visibility.
+   * Resolve the `:id` route param (numeric PK or legacy confluence_id) to a
+   * live page the caller may read under the list definition
+   * (`visiblePagesPredicate`: space access, standalone ownership or sharing,
+   * and page restrictions).
    *
-   * Returns `null` when the page doesn't exist (callers decide 404 vs.
-   * pass-through). Throws 403 when the user lacks access.
+   * Returns `null` when the page doesn't exist OR the caller may not read it,
+   * so an unreadable page is indistinguishable from a missing one.
    */
   async function resolveAndAuthorize(userId: string, id: string): Promise<PageContext | null> {
     const isNumericId = /^\d+$/.test(id);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
       id: number;
       confluence_id: string | null;
@@ -197,25 +200,18 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       contentRevision: string;
       lifecycleRevision: string;
     }>(
-      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id, version,
-              content_revision::text AS "contentRevision",
-              lifecycle_revision::text AS "lifecycleRevision"
-       FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-      [isNumericId ? parseInt(id, 10) : id],
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.visibility, cp.created_by_user_id,
+              cp.version,
+              cp.content_revision::text AS "contentRevision",
+              cp.lifecycle_revision::text AS "lifecycleRevision"
+         FROM pages cp
+        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
+          AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}`,
+      [isNumericId ? parseInt(id, 10) : id, accessibleSpaces, userId],
     );
     if (result.rows.length === 0) return null;
     const page = result.rows[0]!;
-
-    if (page.source === 'standalone') {
-      if (page.visibility === 'private' && page.created_by_user_id !== userId) {
-        throw fastify.httpErrors.forbidden('Access denied');
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        throw fastify.httpErrors.forbidden('Access denied to this space');
-      }
-    }
 
     return {
       id: page.id,
@@ -467,9 +463,6 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
-    if (ctx.source === 'standalone' && ctx.createdByUserId !== userId && ctx.visibility !== 'shared') {
-      throw fastify.httpErrors.forbidden('Not authorized to edit this page');
-    }
 
     // #1623: the local write has no Confluence-side authority, so it applies
     // the PUT /pages/:id rule itself — page access AND edit rights (a role on

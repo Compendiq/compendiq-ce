@@ -31,7 +31,9 @@ const mockQueryFn = vi.fn();
 const mockPageSources = new Map<number, 'confluence' | 'standalone'>();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (sql: string, params?: unknown[]) => {
-    if (sql === 'SELECT id, source, baseline_id, frozen_version FROM pages WHERE id = ANY($1::int[])') {
+    // Result metadata (semantic/hybrid). Its caller-bound authorization is
+    // proven against real PostgreSQL in search-restriction.integration.test.ts.
+    if (sql.includes('SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version')) {
       return Promise.resolve({
         rows: (params![0] as number[]).flatMap((id) => {
           const source = mockPageSources.get(id);

@@ -213,7 +213,7 @@ describe('production retrieval benchmark admin routes', () => {
   it('returns a persisted run for polling, scoped to the admin who started it (r2)', async () => {
     // `fetchBenchmarkRun`'s own doc states why `requestedBy` exists: the report
     // carries page TITLES retrieved under the starting admin's ACL
-    // (`visiblePagesPredicate` admits their private standalone pages), so an
+    // (`ragRetrievalPagesPredicate` admits their private standalone pages), so an
     // unscoped read hands admin B titles admin A can see and B cannot. This was
     // the ONE caller of the shared lifecycle module that omitted it — the
     // compare side has passed it since #1260 — so the module's argument was

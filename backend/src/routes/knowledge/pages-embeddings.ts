@@ -102,7 +102,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       filterSpaceKeys && filterSpaceKeys.length > 0
         ? [...filterSpaceKeys].sort().join(',')
         : 'all';
-    const cacheKey = `graph:v2:${view}:${cacheSpaceKey}`;
+    const cacheKey = `graph:v3:${view}:${cacheSpaceKey}`;
     const cacheReceipt = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cacheReceipt.value !== null) return cacheReceipt.value;
 

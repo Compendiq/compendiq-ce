@@ -120,46 +120,64 @@ Recommendations remain bounded to five, ordered by persisted evidence score.
 ```mermaid
 flowchart LR
     caller["Authenticated caller"] --> visibility["Assigned Confluence spaces<br/>Shared standalone<br/>Own private standalone"]
-    visibility --> rows["Caller-visible page rows"]
+    visibility --> restriction{"inherit_perms = FALSE?"}
+    restriction -->|no| rows["Caller-visible page rows"]
+    restriction -->|"yes: user or group ACE,<br/>or system admin"| rows
     visibility --> parents["Visible unambiguous parent rows"]
-    rows --> projection["Tree / list / graph / pins / facets<br/>space page counts + home ids"]
+    rows --> projection["Tree / list / graph / pins / facets / search<br/>space page counts + home ids / sub-page context"]
     parents --> projection
     writes["Page + RBAC visibility writes"] --> generation["Per-user + global pages<br/>cache generation"]
+    aceWrites["ACE + group membership rows<br/>(CE routes, sync, relocate, EE)"] --> queue["page_cache_invalidation_queue<br/>(migration 129 triggers)"]
+    queue --> generation
     generation --> projection
 ```
 
 Local-space access grants access to the space container, not to every
-standalone page assigned to it. Page-derived list and hierarchy projections
-reuse the shared caller-bound list definition: Confluence pages in assigned
-spaces, shared standalone pages, and the caller's own private standalone pages.
-This preserves the established system-administrator list behavior. Apart from
-the focused graph's existing page-ACE filter, hierarchy reads add no separate
-page-ACE policy. Parent identity is projected
-only when the direct parent is visible and its stored key identifies one live
-candidate. Mixed-source parent/child links remain valid because the parent's
-source determines its canonical stored key.
+standalone page assigned to it. Every non-RAG page read — list and hierarchy
+projections, search rows and facets, graphs, pins, counts, verification, and
+sub-page LLM context — uses the shared caller-bound list definition
+`visiblePagesPredicate`: Confluence pages in assigned spaces, shared
+standalone pages, and the caller's own private standalone pages, plus the
+page-restriction arm `userCanAccessPage` applies. A Confluence page with
+`inherit_perms = FALSE` additionally needs a page ACE naming the caller
+directly or through a group, in both editions. System
+administrators are exempt from that restriction arm only, so their listings
+are unchanged: restricted pages stay visible, other users' private standalone
+pages stay hidden. RAG retrieval is the one exception: it uses the separately
+named space-level `ragRetrievalPagesPredicate` and keeps ADR-023's
+Enterprise-gated post-filter. Parent identity is projected only when the
+direct parent is visible and its stored key identifies one live candidate.
+Mixed-source parent/child links remain valid because the parent's source
+determines its canonical stored key.
 
-A visible child whose parent is not visible is presented as a root
-(`parentId: null`); this includes full, clustered, and focused graph nodes. The
-local tree recomputes all descendant depths from that visible forest.
-Breadcrumbs retain only the contiguous visible suffix, and descendant tree
-walks do not traverse through an invisible or ambiguous node. `/has-children`
+A visible child whose parent is not visible — another user's private page or
+a restricted page without an ACE — is presented as a root (`parentId: null`);
+this includes full, clustered, and focused graph nodes. The local tree
+recomputes all descendant depths from that visible forest. Breadcrumbs retain
+only the contiguous visible suffix, and descendant tree walks do not traverse
+through an invisible or ambiguous node. `/has-children`
 and `/children` answer a collision with an unreadable row like the detail
 route (no children, status 200); 409 is reserved for collisions among
 readable rows.
 
 Hierarchy trees, lists and graphs use the generational `pages` cache namespace
-with per-user keys. Page visibility, ownership, hierarchy and lifecycle writers
-invalidate that namespace. RBAC invalidation also advances its generation, so
-role and group membership changes cannot reuse or refill a pre-change
-projection. Each fill captures its generation before reading RBAC inputs and
-gates access before serving a cached body, unless the RBAC input is part of the
-cache key, as the space list is in `/pages/filters`. Cache-key versioning prevents
-pre-fix values surviving a
-deployment. `GET /api/spaces/local` and `GET /api/spaces` combine mutable space
-metadata with caller-visible page counts and home-page identity, so they remain
-uncached rather than pretending one of those two independent invalidation
-domains covers both.
+with per-user keys. Page visibility, ownership, hierarchy, lifecycle and
+`inherit_perms` writers invalidate that namespace. RBAC invalidation also
+advances its generation, so role and group membership changes cannot reuse or
+refill a pre-change projection. Each fill captures its generation before
+reading RBAC inputs and gates access before serving a cached body, unless the
+RBAC input is part of the cache key, as the space list is in `/pages/filters`.
+Page ACE rows and group memberships behind
+page ACEs are fenced in the database: migration 129 queues the affected pages
+in the writer's own transaction, and the page publication worker drains the
+queue with a namespace-wide generation bump. That covers writers that never
+call CE cache code — Confluence restriction sync and its sweep, page
+relocation, and the Enterprise bulk permission route; the CE admin ACE routes
+additionally invalidate synchronously. Cache-key versioning prevents pre-fix
+values surviving a deployment. `GET /api/spaces/local` and `GET /api/spaces`
+combine mutable space metadata with caller-visible page counts and home-page
+identity, so they remain uncached rather than pretending one of those two
+independent invalidation domains covers both.
 
 ### Immutable page baselines (#275 foundation, #276 enforcement)
 
@@ -678,7 +696,7 @@ it consumes are #1615's and reach it through one import point:
 - **`lexical-chunk-resolution.ts`** (#1617) — D10's query-time SQL, as
   fragments rather than a second copy: the derived candidate arm
   (`MAX(ts_rank(chunk_tsv, q)) GROUP BY page_id`, carrying the caller's
-  `visiblePagesPredicate`), the per-page `LATERAL` best-chunk resolution, and
+  `ragRetrievalPagesPredicate`), the per-page `LATERAL` best-chunk resolution, and
   the mapper that turns its columns into `chunkText`/`chunkIndex`/
   `sectionTitle`/`derived`. `keywordSearch` and `lookupIdentifier` are its two
   callers and differ in ONE argument — the pin adopts the resolved chunk only
@@ -727,7 +745,7 @@ already applied that gate may reach it. **It is a service because of the P0
 guard, not despite it.** `resolveAttachmentBytes` applies no ACL and
 `attachment-store.test.ts` fails if any file under `src/routes` names it, so
 the read is legal only where retrieval has already applied
-`visiblePagesPredicate` and the EE per-page filter — and that argument is what
+`ragRetrievalPagesPredicate` and the EE per-page filter — and that argument is what
 the module boundary records. `routes/llm/llm-ask.ts` reaches
 `pickRetrievedImages`, never the store.
 

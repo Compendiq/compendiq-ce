@@ -2162,7 +2162,7 @@ describe('RAG Service', () => {
 
       const [sql, params] = mocks.mockClientQuery.mock.calls[2] as [string, unknown[]];
       expect(sql).toContain('AND cp.space_key = $5');
-      // visiblePagesPredicate ($1/$4) stays in place — the scope is an
+      // ragRetrievalPagesPredicate ($1/$4) stays in place — the scope is an
       // additional narrowing condition, not a replacement for ACL.
       expect(sql).toContain('space_key = ANY($1::text[])');
       expect(params[4]).toBe('DEV');

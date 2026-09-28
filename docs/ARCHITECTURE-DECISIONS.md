@@ -2910,6 +2910,26 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > query. Fusion note: when the stage limit exceeds the configured width,
 > ranking uses a stable head (`fuseWithStableHead`) — the pool floors widen
 > what the filter sees, never the head ordering.
+>
+> **Amended (page restrictions outside RAG, 2026-09-28):** this ADR's
+> "zero behaviour change" for CE and EE-without-the-flag now covers **RAG
+> retrieval only**. Every non-RAG read (lists, trees, hierarchy, search rows
+> and facets, graphs, counts, pins, sub-page LLM context, versions, exports,
+> attachments, LLM page references) applies page restrictions in both
+> editions through `visiblePagesPredicate`: a Confluence page with
+> `inherit_perms = FALSE` needs a user or group page ACE for the caller, on top
+> of the space-level list definition; system administrators are exempt from
+> that arm only, so their listings are unchanged. A restriction created
+> through the CE admin routes, the EE bulk route or sync therefore hides the
+> page everywhere the detail route already refused it. Retrieval SQL keeps a
+> separately named `ragRetrievalPagesPredicate` (space-level) and this ADR's
+> flag-gated `filterAccessiblePages` post-filter, because CE retrieval is
+> space-level by design (ADR-022) and the per-page RAG gate is the Enterprise
+> feature. `/api/search` semantic/hybrid modes reuse retrieval but authorize
+> the rows they return with the non-RAG predicate. ACE and group-membership
+> writes queue page-cache invalidation in the database (migration 129), so
+> every writer — including sync's sweep, relocation and the EE bulk route —
+> fences the `pages` cache generation without its own cache calls.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.

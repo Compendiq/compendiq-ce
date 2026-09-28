@@ -176,7 +176,7 @@ export interface DerivedImageSource {
  * tree from `confluence_id IS NULL` is the rule `attachment-store.ts`
  * documents as wrong — so this takes ONE batched identity read over the
  * distinct pages that actually have derived rows. No visibility predicate: the
- * rows arrive from retrieval, which applied `visiblePagesPredicate` and the EE
+ * rows arrive from retrieval, which applied `ragRetrievalPagesPredicate` and the EE
  * per-page filter before any derived text was read (D14), and a second
  * predicate here would be a second place for that rule to drift.
  *

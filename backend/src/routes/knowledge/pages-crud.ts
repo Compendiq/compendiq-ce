@@ -540,7 +540,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // results after edits, embedding status during processing).
     const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || dateFrom || dateTo);
     const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
-    const cacheKey = `list:v2:${filterParts}`;
+    const cacheKey = `list:v3:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
@@ -840,7 +840,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const params = PageTreeQuerySchema.parse(request.query);
 
-    const cacheKey = `tree:v2:${params.spaceKey ?? 'all'}`;
+    const cacheKey = `tree:v3:${params.spaceKey ?? 'all'}`;
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
@@ -940,7 +940,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cache key based on sorted space list to ensure consistency
     const spacesKey = [...filterSpaces].sort().join(',');
-    const cacheKey = `filters:v2:${spacesKey}`;
+    const cacheKey = `filters:v3:${spacesKey}`;
 
     const { value: cached, generation } = await cache.getWithGeneration<{
       authors: string[]; labels: string[];

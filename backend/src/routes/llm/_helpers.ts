@@ -1,6 +1,8 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import {
@@ -62,28 +64,54 @@ export interface ResolvedPageRef {
 // (long numeric strings are Confluence ids and would overflow the cast).
 const SAFE_INT4_DIGITS = 9;
 
-/**
- * Resolve a route-level `pageId` to the page row. The frontend passes the
- * INTERNAL `pages.id` (its /pages/:id route param) while API callers may
- * pass the Confluence id — both are numeric strings, so the internal id is
- * tried first, mirroring the precedence of /llm/improvements/apply.
- */
-export async function resolvePageRef(pageId: string): Promise<ResolvedPageRef | undefined> {
+/** Optional caller gate for {@link lookupPageRef}: the visibility predicate's bound values. */
+interface PageRefReader {
+  spaces: string[];
+  userId: string;
+}
+
+async function lookupPageRef(pageId: string, reader?: PageRefReader): Promise<ResolvedPageRef | undefined> {
   type Row = { id: number; confluence_id: string | null; title: string };
+  // Both lookups carry the gate, so a restricted internal id falls through to
+  // the Confluence-id lookup exactly as a missing one does (no oracle).
+  const gate = reader ? ` AND ${visiblePagesPredicate(2, 3, 'pages')}` : '';
+  const gateValues = reader ? [reader.spaces, reader.userId] : [];
   if (/^\d+$/.test(pageId) && pageId.length <= SAFE_INT4_DIGITS) {
     const byId = await query<Row>(
-      'SELECT id, confluence_id, title FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [parseInt(pageId, 10)],
+      `SELECT id, confluence_id, title FROM pages WHERE id = $1 AND deleted_at IS NULL${gate}`,
+      [parseInt(pageId, 10), ...gateValues],
     );
     const row = byId.rows[0];
     if (row) return { id: row.id, confluenceId: row.confluence_id, title: row.title };
   }
   const byConfluenceId = await query<Row>(
-    'SELECT id, confluence_id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-    [pageId],
+    `SELECT id, confluence_id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL${gate}`,
+    [pageId, ...gateValues],
   );
   const row = byConfluenceId.rows[0];
   return row ? { id: row.id, confluenceId: row.confluence_id, title: row.title } : undefined;
+}
+
+/**
+ * Resolve a route-level `pageId` to the page row. The frontend passes the
+ * INTERNAL `pages.id` (its /pages/:id route param) while API callers may
+ * pass the Confluence id — both are numeric strings, so the internal id is
+ * tried first, mirroring the precedence of /llm/improvements/apply.
+ * Unauthorized: callers gate the result themselves.
+ */
+export async function resolvePageRef(pageId: string): Promise<ResolvedPageRef | undefined> {
+  return lookupPageRef(pageId);
+}
+
+/**
+ * {@link resolvePageRef} restricted to pages the caller may read under
+ * `visiblePagesPredicate` (space access, standalone visibility and page
+ * restrictions). A page the caller cannot read resolves exactly like one
+ * that does not exist, so its title never reaches a prompt or a row.
+ */
+export async function resolveReadablePageRef(userId: string, pageId: string): Promise<ResolvedPageRef | undefined> {
+  const spaces = await getUserAccessibleSpacesMemoized(userId);
+  return lookupPageRef(pageId, { spaces, userId });
 }
 
 export async function assembleContextIfNeeded(
@@ -93,17 +121,19 @@ export async function assembleContextIfNeeded(
   includeSubPages?: boolean,
   opts?: { protectMedia?: boolean; layoutTokens?: boolean },
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
-  if (includeSubPages && pageId) {
-    // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
-    // Confluence id (pages.parent_id), so an unresolved internal id would
-    // silently fetch no children and title the parent "Untitled".
-    const resolved = await resolvePageRef(pageId);
+  // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
+  // Confluence id (pages.parent_id; the DB id for standalone pages). A page
+  // the caller cannot read, or that does not exist, contributes neither its
+  // title nor its sub-page tree: the request falls back to the caller's own
+  // content alone, so both cases produce the same prompt.
+  const resolved = includeSubPages && pageId ? await resolveReadablePageRef(userId, pageId) : undefined;
+  if (resolved) {
     const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
     const assembled = await assembleSubPageContext(
       userId,
-      resolved?.confluenceId ?? pageId,
+      resolved.confluenceId ?? String(resolved.id),
       parentHtml,
-      resolved?.title ?? 'Untitled',
+      resolved.title,
       undefined,
       // #765: tokens for the PARENT page only — apply-time skeleton
       // alignment runs against the parent, and without its tokens any

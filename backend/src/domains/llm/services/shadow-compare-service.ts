@@ -222,7 +222,7 @@ export { BenchmarkRunSlotBusyError };
 /**
  * Null for an unknown id, for a run of another kind (the compare surface must
  * not serve or poll production-benchmark runs) AND for another admin's run:
- * the report's page titles came out of `visiblePagesPredicate` scoped to the
+ * the report's page titles came out of `ragRetrievalPagesPredicate` scoped to the
  * admin who started it, private standalone pages included, so an unscoped
  * read hands admin B titles only admin A can see.
  */
@@ -365,7 +365,7 @@ async function executeShadowCompare(
       if (!liveVector || !candidateVector) {
         throw new Error('The embedding provider answered without a vector');
       }
-      // The same probe both times — SQL, ACL (`visiblePagesPredicate` scoped
+      // The same probe both times — SQL, ACL (`ragRetrievalPagesPredicate` scoped
       // to the requesting admin), ef_search — differing ONLY in the column.
       liveResults = await vectorSearch(adminUserId, liveVector, config.topK);
       candidateResults = await vectorSearch(adminUserId, candidateVector, config.topK, {
@@ -472,7 +472,7 @@ function publicErrorMessage(err: unknown): string {
 // name behind a different provider" is a different index, so pooling those
 // judgements would score one migration's evidence into another migration's
 // verdict. The JUDGE is the sixth column since #1527: the page-id arrays are
-// retrieved under the judging admin's `visiblePagesPredicate`, so a key
+// retrieved under the judging admin's `ragRetrievalPagesPredicate`, so a key
 // without it let one admin's click physically destroy another's evidence.
 // One query is still ONE McNemar trial — that invariant lives in the READ
 // path now, where `judgementsForReport` collapses to the most recently judged
@@ -615,7 +615,7 @@ async function judgementsForReport(
   // ONE trial per query (#1527). 109 keys the table per JUDGE, so two admins
   // who judged the same query hold two rows — both retained for audit, and
   // each carrying the page-id arrays its own author saw under their
-  // `visiblePagesPredicate`. One query is one McNemar trial, so reading both
+  // `ragRetrievalPagesPredicate`. One query is one McNemar trial, so reading both
   // would double N and the evidence behind the p drawn from it. `DISTINCT ON`
   // keeps exactly the most recently judged row per query, WHOLE: the trial's
   // expected set and discordance therefore come from one named judge's

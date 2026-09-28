@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Page restrictions now apply to every non-RAG read.** A Confluence page
+  with custom permissions (`inherit_perms = false` plus page ACEs, from the
+  admin access-control routes, the Enterprise bulk route or restriction sync)
+  was refused by page detail but still appeared, for users with a role on its
+  space and no ACE, in lists, trees, hierarchy, search results and snippets,
+  facets, graphs, space counts and home pages, pins, status counts, sub-page
+  LLM context and several page-scoped routes. All of them now apply the
+  restriction in both editions; administrators' listings are unchanged. RAG
+  retrieval keeps its documented gate (space-level, plus the Enterprise
+  `rag_permission_enforcement` post-filter). ACE and group-membership changes
+  now invalidate page caches from the database, so no cached view keeps a
+  newly restricted page.
+
 ### Changed
 
 - **Inspector Details: Source first, remedies beside warnings, deletion fenced

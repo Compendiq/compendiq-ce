@@ -26,7 +26,7 @@
  *
  * And one security rule, D14 (`:4536-4538`): the derived arm is the one NEW
  * place a lexical candidate can enter, so it joins `pages` and carries the
- * same `visiblePagesPredicate` the authored arm does. It reads
+ * same `ragRetrievalPagesPredicate` the authored arm does. It reads
  * `page_embeddings` — derived TEXT — so the predicate must be inside the
  * query, not applied to its output.
  */
@@ -61,7 +61,7 @@ export function lexicalTsQuery(parser: LexicalParser, language: FtsLanguage, tex
  * MAX(ts_rank(derived.chunk_tsv,q)))` the ADR specifies, expressed so a page
  * present in only one arm needs no `coalesce`.
  *
- * `visibility` is the caller's `visiblePagesPredicate(...)` over alias `cp`
+ * `visibility` is the caller's `ragRetrievalPagesPredicate(...)` over alias `cp`
  * and `extraPageFilter` its optional space narrowing — the same fragments the
  * authored arm binds, at the same parameter indexes, so the two arms cannot
  * drift apart (D14).

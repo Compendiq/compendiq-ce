@@ -53,6 +53,7 @@ import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
@@ -396,7 +397,7 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     second.close();
   });
 
-  it('ACL denial after 101 is 4403 (userCanAccessPage false)', async () => {
+  it('ACL denial after 101 closes like a missing page (4404 not_found)', async () => {
     const owner = await createUser('collab_acl_owner');
     const stranger = await createUser('collab_acl_stranger');
     const pageId = await insertStandalone({ ownerId: owner.userId, visibility: 'private' });
@@ -405,7 +406,49 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     const ws = openWhatwg(pageId, stranger.token);
     const closed = await waitClose(ws);
     expect(closed.opened).toBe(true);
-    expect(closed.code).toBe(4403);
+    expect(closed.code).toBe(4404);
+    expect(closed.reason).toBe('not_found');
+  });
+
+  it('a restricted page closes for a reader exactly like a missing one; G and admin join until G loses the ACE', async () => {
+    const fx = await seedRestrictionFixture();
+    await enableCollabFlag();
+    const tokens = new Map<string, string>();
+    for (const userId of [fx.readerId, fx.groupReaderId, fx.adminId]) {
+      const user = await query<{ username: string; role: 'user' | 'admin' }>(
+        'SELECT username, role FROM users WHERE id = $1',
+        [userId],
+      );
+      tokens.set(userId, await generateAccessToken({ sub: userId, ...user.rows[0]! }));
+    }
+    const closeOf = async (pageId: number, userId: string) => {
+      const { code, reason, opened } = await waitClose(openWhatwg(pageId, tokens.get(userId)!));
+      return { code, reason, opened };
+    };
+    const joins = async (pageId: number, userId: string): Promise<void> => {
+      const ws = openWhatwg(pageId, tokens.get(userId)!);
+      await waitOpen(ws);
+      await exchangeSyncStep1(ws, new Y.Doc());
+      ws.close();
+      await waitClose(ws);
+    };
+
+    const missing = await closeOf(9_999_999, fx.readerId);
+    expect(missing).toEqual({ code: 4404, reason: 'not_found', opened: true });
+    expect(await closeOf(fx.pages.hushedLeaf, fx.readerId)).toEqual(missing);
+
+    // A trashed restricted page must not reveal "trashed" to a reader, while
+    // an authorized user keeps the specific reason.
+    await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [fx.pages.hushedParent]);
+    expect(await closeOf(fx.pages.hushedParent, fx.readerId)).toEqual(missing);
+    expect(await closeOf(fx.pages.hushedParent, fx.groupReaderId))
+      .toEqual({ code: 4404, reason: 'trashed', opened: true });
+
+    await joins(fx.pages.hushedLeaf, fx.groupReaderId);
+    await joins(fx.pages.hushedLeaf, fx.adminId);
+
+    await query('DELETE FROM access_control_entries WHERE id = ANY($1::int[])', [fx.groupAceIds]);
+    expect(await closeOf(fx.pages.hushedLeaf, fx.groupReaderId)).toEqual(missing);
   });
 
   it('flag off → 4403 after 101', async () => {

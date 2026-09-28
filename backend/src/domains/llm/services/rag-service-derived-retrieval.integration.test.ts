@@ -388,7 +388,7 @@ describe.skipIf(!dbAvailable)('ADR-027 D10–D12 — derived chunks in retrieval
   it('keeps a derived chunk on an invisible page out of the candidate set entirely', async () => {
     // ADR-027 D14, and the one NEW place the rule can be broken: the derived
     // arm reads `page_embeddings` — derived TEXT — so it has to join `pages`
-    // and carry `visiblePagesPredicate` itself. Dropping that clause makes
+    // and carry `ragRetrievalPagesPredicate` itself. Dropping that clause makes
     // this page a candidate, and its description then reaches the reranker
     // and the answer.
     const secret = await seedPage({

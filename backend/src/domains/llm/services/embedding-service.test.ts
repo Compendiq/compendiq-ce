@@ -131,6 +131,15 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
 }));
 
+// processDirtyPages authorizes the titles it streams per batch. These tests
+// script `mocks.query` statement by statement, so that check reads as "every
+// candidate readable" here; the restriction behaviour itself runs against real
+// PostgreSQL in `routes/llm/page-restriction-llm-surfaces.integration.test.ts`.
+// A plain function survives the per-test `vi.resetAllMocks()`.
+vi.mock('../../../core/services/authorized-pages.js', () => ({
+  authorizedPageIds: async (_userId: string, candidateIds: readonly number[] = []) => new Set(candidateIds),
+}));
+
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
   getSharedLlmSettings: vi.fn().mockResolvedValue({
     llmProvider: 'ollama',

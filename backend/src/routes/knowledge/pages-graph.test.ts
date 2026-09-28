@@ -317,7 +317,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const first = await app.inject({ method: 'GET', url });
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json().nodes[0].title).toBe('Child article');
-      const cacheKey = `kb:${actorId}:pages:graph:v2:individual:DEV`;
+      const cacheKey = `kb:${actorId}:pages:graph:v3:individual:DEV`;
       const ttl = await redis.ttl(cacheKey);
       expect(ttl).toBeGreaterThan(0);
       expect(ttl).toBeLessThanOrEqual(300);

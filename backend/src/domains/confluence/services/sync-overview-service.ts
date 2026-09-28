@@ -4,6 +4,7 @@ import { attachmentExists, extractDrawioDiagramNames } from './attachment-handle
 import { extractImageReferences } from '../../../core/services/image-references.js';
 import { getSyncStatus } from './sync-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 
 interface OverviewRow {
   space_key: string;
@@ -72,10 +73,13 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
      -- with zero live pages still appears; a WHERE predicate on cp would drop
      -- the row entirely. Soft-deleted pages (deleted_at set, purged only after
      -- 30 days) must not inflate pageCount/asset counts/issues or flip a space
-     -- to 'degraded'.
+     -- to 'degraded'. The visibility predicate sits in the JOIN for the same
+     -- reason: a page the caller may not read (a restricted page without an
+     -- ACE for them) contributes no count, title or issue.
      LEFT JOIN pages cp ON cp.space_key = s.space_key AND cp.deleted_at IS NULL
+       AND ${visiblePagesPredicate(1, 2)}
      ORDER BY s.space_key, cp.title NULLS LAST`,
-    [overviewSpaces],
+    [overviewSpaces, userId],
   );
 
   // Lazy backfill (#887): rows whose persisted asset columns are still NULL

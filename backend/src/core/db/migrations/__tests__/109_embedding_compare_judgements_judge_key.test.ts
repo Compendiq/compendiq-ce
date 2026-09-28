@@ -8,7 +8,7 @@ const dbAvailable = await isDbAvailable();
 // by (query, live PAIR, candidate PAIR) with no judge, so on a multi-admin
 // instance the second admin's `DO UPDATE` physically overwrote the first
 // admin's `live_page_ids` / `candidate_page_ids` — arrays retrieved under
-// THAT admin's `visiblePagesPredicate`, and therefore unrecoverable evidence.
+// THAT admin's `ragRetrievalPagesPredicate`, and therefore unrecoverable evidence.
 // 109 adds `judged_by` to the key so every judge's row survives on disk; the
 // one-trial-per-query invariant the McNemar N depends on moves to the READ
 // path (`judgementsForReport` collapses to the newest judgement per query).

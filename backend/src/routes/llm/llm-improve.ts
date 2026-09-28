@@ -15,7 +15,7 @@ import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-aud
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   assembleContextIfNeeded,
-  resolvePageRef,
+  resolveReadablePageRef,
   resolveSystemPrompt,
   checkCacheWithLock,
   sendCachedSSE,
@@ -211,12 +211,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     // Pre-insert improvement record so we have the row to update after
-    // streaming. resolvePageRef accepts both id forms — the frontend passes
-    // the INTERNAL pages.id, which the old confluence_id-only subquery never
-    // matched, so UI-driven improvements silently skipped this record.
+    // streaming. The ref accepts both id forms — the frontend passes the
+    // INTERNAL pages.id, which the old confluence_id-only subquery never
+    // matched, so UI-driven improvements silently skipped this record. A page
+    // the caller cannot read gets no row, exactly like a missing page.
     let improvementId: string | undefined;
     if (body.pageId) {
-      const page = await resolvePageRef(body.pageId);
+      const page = await resolveReadablePageRef(userId, body.pageId);
       if (page) {
         const insertResult = await query<{ id: string }>(
           `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
