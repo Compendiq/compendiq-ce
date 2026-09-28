@@ -300,11 +300,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       return { nodes: [], edges: [], centerId: id };
     }
 
-    // Resolve the complete vertex set before traversal: shared-list
-    // visibility plus page-level ACEs (`inherit_perms = false` Confluence
-    // pages need an ACE). Filtering before each per-hop limit prevents a
-    // hidden vertex from consuming the bound or becoming an intermediate path.
-    // An ACE-denied center answers exactly like a missing one.
+    // Resolve the complete vertex set before traversal: `authorizedPageIds`
+    // is `visiblePagesPredicate`, so page restrictions (`inherit_perms = false`
+    // Confluence pages) apply to every vertex. Filtering before each per-hop
+    // limit prevents a hidden vertex from consuming the bound or becoming an
+    // intermediate path. An unreadable center answers exactly like a missing one.
     const centerPageId = pageResult.rows[0]!.id;
     const accessiblePageSet = await authorizedPageIds(userId);
     if (!accessiblePageSet.has(centerPageId)) {
