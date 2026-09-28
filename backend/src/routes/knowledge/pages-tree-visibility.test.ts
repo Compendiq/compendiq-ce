@@ -273,6 +273,9 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     });
     await assignReadableSpace(userB, 'DEV');
 
+    // Requested by its PK, the Confluence parent is the only row the resolver
+    // matches (rows.length === 1); only its canonical key collides with the
+    // readable standalone row, so this 409 comes from the canonical-key check.
     currentUserId = userB;
     const response = await app.inject({
       method: 'GET',
@@ -282,6 +285,13 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(response.statusCode, response.body).toBe(409);
     expect(response.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
     expect(response.body).not.toContain('Canonical child');
+
+    const legacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${confluenceParent}/has-children`,
+    });
+    expect(legacy.statusCode, legacy.body).toBe(409);
+    expect(legacy.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
   });
 
   it('invalidates cached hierarchy rows on space-role changes without widening admins', async () => {

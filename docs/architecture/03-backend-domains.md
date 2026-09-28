@@ -153,7 +153,8 @@ with per-user keys. Page visibility, ownership, hierarchy and lifecycle writers
 invalidate that namespace. RBAC invalidation also advances its generation, so
 role and group membership changes cannot reuse or refill a pre-change
 projection. Each fill captures its generation before reading RBAC inputs and
-gates access before serving a cached body. Cache-key versioning prevents
+gates access before serving a cached body, unless the RBAC input is part of the
+cache key, as the space list is in `/pages/filters`. Cache-key versioning prevents
 pre-fix values surviving a
 deployment. `GET /api/spaces/local` and `GET /api/spaces` combine mutable space
 metadata with caller-visible page counts and home-page identity, so they remain

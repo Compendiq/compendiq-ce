@@ -813,7 +813,10 @@ that generation, fencing in-flight fills across role and group changes. A fill
 MUST capture its generation (`getWithGeneration`) before reading any input it
 depends on (`getUserAccessibleSpaces`, space source), then run the access gate
 before serving a cached body (#817); capturing it after the RBAC read lets a
-pre-revocation fill publish under the post-revocation generation.
+pre-revocation fill publish under the post-revocation generation. The
+exception is an RBAC input that is itself part of the cache key, as in
+`/pages/filters` (`filters:v2:<sorted spaces>`): a request with the fresh list
+misses the stale entry, so reading the spaces first is safe there.
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.
