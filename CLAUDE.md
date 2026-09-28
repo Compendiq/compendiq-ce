@@ -870,15 +870,17 @@ locally-deleted page re-imported by the sync upsert).
 **The mode changes where a write lands, never who may make it.** The toggle
 belongs to the caller, so it must not relax page authority. Every local write
 to a synced page must enforce at least the `PUT /pages/:id` rule,
-`userCanAccessPage` AND `userCanEditPage` (a role on the page's space and,
-on an `inherit_perms = false` page, an ACE as well). It must check that rule before any
-content-dependent answer and again with the transaction client under the page
-fence. AI-improve apply and version restore call the two predicates directly.
-Collab commit uses `assertCurrentCollabMutationAuthority`. Draft publish, delete
-and the bulk paths use `loadAuthorizedContentWriteState`. A new local-write
-branch must not rely on the Confluence branch's admission callback for
-authority, because that callback never runs when the write stays local.
-AI-improve apply answers a denied page with the same 404 as a missing one.
+`userCanAccessPage` AND `userCanEditPage` (a role on the page's space and, on
+an `inherit_perms = false` page, an ACE as well). It must check that rule
+before any content-dependent answer and again with the transaction client
+under the page fence. AI-improve apply, version restore and the local branch
+of `applyLabelChanges` (`PUT /pages/:id/labels`, `POST /pages/:id/apply-tags`)
+call the two predicates directly. Collab commit uses
+`assertCurrentCollabMutationAuthority`. Draft publish, delete and the bulk paths
+use `loadAuthorizedContentWriteState`. A new local-write branch must not rely
+on the Confluence branch's admission callback for authority, because that
+callback never runs when the write stays local. AI-improve apply and the label
+routes answer a denied page with the same 404 as a missing one.
 
 **A skip that is a choice reports differently from a skip that is a gap.**
 `VersionBackfillStatusSchema` gained `skipped_confluence_off` beside #763's

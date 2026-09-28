@@ -261,6 +261,19 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
     const actorId = await createUser();
     await configureConfluence(actorId, false);
     await query(`INSERT INTO spaces (space_key, space_name) VALUES ('OFF', 'Integration off')`);
+    // Switching the integration off changes where the write lands, not who may
+    // make it: the synced page still needs a role on its space.
+    const role = await query<{ id: number }>(
+      `INSERT INTO roles (name, display_name, permissions)
+       VALUES ('auto-tag-off-editor', 'Label editor', ARRAY['read', 'write'])
+       RETURNING id`,
+    );
+    await query(
+      `INSERT INTO space_role_assignments
+         (space_key, principal_type, principal_id, role_id)
+       VALUES ('OFF', 'user', $1, $2)`,
+      [actorId, role.rows[0]!.id],
+    );
     const standalone = await query<{ id: number }>(
       `INSERT INTO pages
          (title, labels, source, visibility, created_by_user_id)
