@@ -7,9 +7,12 @@ import { refreshAccessTokenOnce } from '../lib/api';
  * persist in localStorage) while holding no in-memory access token — the token
  * is deliberately never persisted (CWE-922), so a reload or new tab always
  * starts without one. In that state, attempt a silent token refresh using the
- * httpOnly refresh cookie. If the refresh fails (expired session, revoked
+ * httpOnly refresh cookie. If the session is gone (expired session, revoked
  * token, etc.), clear auth so the user is redirected to login immediately
- * instead of seeing broken API errors.
+ * instead of seeing broken API errors. If the refresh endpoint is only
+ * unavailable (RefreshUnavailableError), keep the session: the cookie is still
+ * valid, and the next request's reactive 401 refresh tries again and surfaces
+ * the error.
  *
  * The refresh is routed through the shared refreshAccessTokenOnce() helper so it
  * joins the same single-flight promise as apiFetch's reactive 401 refresh. In
@@ -37,9 +40,13 @@ export function useSessionInit() {
     if (!isAuthenticated || accessToken || attempted.current) return;
     attempted.current = true;
 
-    (async () => {
-      const token = await refreshAccessTokenOnce();
-      if (!token) clearAuth();
-    })();
+    refreshAccessTokenOnce().then(
+      (token) => {
+        if (!token) clearAuth();
+      },
+      () => {
+        // Transient refresh failure: keep the session (see above).
+      },
+    );
   }, [isAuthenticated, accessToken, clearAuth]);
 }

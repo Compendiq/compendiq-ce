@@ -14,7 +14,7 @@ vi.mock('../../stores/auth-store', () => ({
 }));
 
 // Import after mocks are set up
-const { apiFetch, logoutApi, ApiError } = await import('./api');
+const { apiFetch, logoutApi, ApiError, RefreshUnavailableError } = await import('./api');
 
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
@@ -37,6 +37,7 @@ describe('apiFetch', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -100,6 +101,52 @@ describe('apiFetch', () => {
 
     await expect(apiFetch('/test')).rejects.toThrow('Session expired');
     expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('keeps the session through transient refresh failures and retries until the refresh succeeds', async () => {
+    vi.useFakeTimers();
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      // Refresh attempt 1: network failure; attempt 2: session lock busy.
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: 'ok' }), { headers: { 'Content-Type': 'application/json' } }),
+      );
+
+    const result = apiFetch('/test');
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    await expect(result).resolves.toEqual({ data: 'ok' });
+    expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(3);
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a 503 without clearing auth when the refresh stays unavailable', async () => {
+    vi.useFakeTimers();
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+      String(input) === '/api/auth/refresh'
+        ? new Response('busy', { status: 503 })
+        : new Response('Unauthorized', { status: 401 }),
+    );
+
+    const result = apiFetch('/test');
+    const settled = expect(result).rejects.toBeInstanceOf(RefreshUnavailableError);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    await settled;
+    await expect(result).rejects.toMatchObject({ statusCode: 503 });
+    expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(3);
+    expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
   it('deduplicates concurrent refresh calls on multiple 401s', async () => {

@@ -23,18 +23,53 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The refresh endpoint failed transiently on every attempt: a network error,
+ * a 5xx (the backend answers 503 without consuming the cookie when the
+ * session lock is busy), 408 or 429. The refresh cookie may still be valid,
+ * so callers keep the session and surface this error instead of logging out.
+ */
+export class RefreshUnavailableError extends ApiError {
+  constructor() {
+    super(503, 'Your session could not be refreshed right now. Please try again.');
+    this.name = 'RefreshUnavailableError';
+  }
+}
+
+/** Pauses before the second and third refresh attempt after a transient failure. */
+const REFRESH_RETRY_DELAYS_MS = [1_000, 3_000];
+
+/**
+ * Resolves the new access token, or `null` when the session is gone (any
+ * non-transient rejection such as 401/403). Transient failures are retried
+ * with backoff and then reject with RefreshUnavailableError.
+ */
 async function refreshAccessToken(): Promise<string | null> {
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    useAuthStore.getState().setAuth(data.accessToken, data.user);
-    return data.accessToken;
-  } catch {
-    return null;
+  for (let attempt = 0; ; attempt += 1) {
+    let res: Response | null = null;
+    try {
+      res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      // Network failure: the cookie may still be valid; retried below.
+    }
+    if (res?.ok) {
+      try {
+        const data = await res.json();
+        useAuthStore.getState().setAuth(data.accessToken, data.user);
+        return data.accessToken;
+      } catch {
+        return null;
+      }
+    }
+    if (res && res.status < 500 && res.status !== 408 && res.status !== 429) return null;
+    const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) throw new RefreshUnavailableError();
+    const pause = Promise.withResolvers<void>();
+    setTimeout(pause.resolve, delay);
+    await pause.promise;
   }
 }
 
@@ -49,7 +84,12 @@ async function refreshAccessToken(): Promise<string | null> {
  * when one is presented twice. A tab that waited while another tab rotated
  * the cookie adopts the token that tab broadcast (auth-store
  * BroadcastChannel) instead of rotating again; without a broadcast it
- * rotates the already-updated cookie in turn.
+ * rotates the already-updated cookie in turn. Transient retries also run
+ * under the lock.
+ *
+ * Resolves `null` only when the session is gone (callers then clear auth);
+ * rejects with RefreshUnavailableError when the refresh endpoint stayed
+ * unavailable, in which case callers must keep the session.
  */
 let pendingRefresh: Promise<string | null> | null = null;
 

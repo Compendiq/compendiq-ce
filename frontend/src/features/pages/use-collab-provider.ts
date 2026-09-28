@@ -177,16 +177,27 @@ export function useCollabProvider({
       if (cancelled || blocked) return;
       setWritable(false);
       if (event.code === 4401) {
-        void refreshAccessTokenOnce().then((fresh) => {
-          if (cancelled || blocked) return;
-          if (!fresh) {
-            setError('unauthorized');
-            preserveReadOnly('unauthorized');
-            return;
-          }
-          ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
-          ws.connect();
-        });
+        refreshAccessTokenOnce().then(
+          (fresh) => {
+            if (cancelled || blocked) return;
+            if (!fresh) {
+              setError('unauthorized');
+              preserveReadOnly('unauthorized');
+              return;
+            }
+            ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
+            ws.connect();
+          },
+          () => {
+            // Refresh temporarily unavailable (it already retried with
+            // backoff): keep the session and rejoin. A still-stale token is
+            // closed with 4401 again, which retries the refresh.
+            if (cancelled || blocked) return;
+            const current = useAuthStore.getState().accessToken;
+            if (current) ws.protocols = [COLLAB_WS_PROTOCOL, current];
+            ws.connect();
+          },
+        );
         return;
       }
       const joinError = closeCodeError(event.code);

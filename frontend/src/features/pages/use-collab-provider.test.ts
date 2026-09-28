@@ -263,4 +263,36 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(draft!.getText('draft').toString()).toBe('Draft during refresh');
     expect(result.current.writable).toBe(false);
   });
+
+  it('keeps the session and rejoins when the token refresh is temporarily unavailable', async () => {
+    const refresh = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ accessToken: 'jwt-fresh', user }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }));
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '5',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); hydrate(socket, 'Draft during outage'); });
+    const draft = result.current.ydoc;
+
+    await act(async () => { socket.close(4401, 'unauthorized'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(result.current.error).toBeNull();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+
+    // The rejoin still carries the stale token; its 4401 retries the refresh.
+    const rejoin = Socket.instances[1]!;
+    expect(rejoin.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
+    await act(async () => { rejoin.close(4401, 'unauthorized'); });
+    const reconnect = Socket.instances[2]!;
+    expect(refresh).toHaveBeenCalledTimes(4);
+    expect(reconnect.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
+    expect(result.current.ydoc).toBe(draft);
+    expect(result.current.error).toBeNull();
+  });
 });
