@@ -80,6 +80,17 @@ describe('one destructive treatment', () => {
     );
   });
 
+  // Focus is one Steel outline on every control (DESIGN.md). A red ring on the
+  // destructive action reads as an error state, not keyboard position.
+  it('focuses with the Steel ring, not the destructive hue', () => {
+    const css = readFileSync(join(SRC, 'index.css'), 'utf-8');
+    const start = css.indexOf('@utility nm-action-destructive');
+    const block = css.slice(start, css.indexOf('@utility', start + 1));
+    const focus = block.slice(block.indexOf('&:focus-visible'));
+    expect(focus).toMatch(/outline:\s*2px solid var\(--color-ring\)/);
+    expect(focus.slice(0, focus.indexOf('}'))).not.toMatch(/--color-destructive/);
+  });
+
   it.each(UNIFIED)('%s uses it', (file) => {
     expect(codeOf(file)).toMatch(/nm-action-destructive/);
   });
@@ -137,10 +148,12 @@ describe('one destructive treatment', () => {
 describe('deleting a page is not promoted by collapsing the inspector', () => {
   const pane = codeOf('shared/components/article/ArticleRightPane.tsx');
 
-  // Expanded, Delete sits behind a "Danger zone" disclosure and then a confirm
-  // dialog. The collapsed rail used to raise it to a top-level icon among ten
-  // unlabelled glyphs, so the safety around deleting a page became a function
-  // of a layout preference.
+  // Expanded, Delete is a row in the Details tab — an ordinary
+  // `nm-action-destructive` row for a standalone page (30-day restorable
+  // trash) and behind the "Danger zone" disclosure for a Confluence page
+  // (irreversible upstream) — and then a confirm dialog. The collapsed rail
+  // used to raise it to a top-level icon among ten unlabelled glyphs, so the
+  // safety around deleting a page became a function of a layout preference.
   it('the collapsed rail carries no delete control', () => {
     const railStart = pane.indexOf('data-testid="article-right-pane-rail"');
     expect(railStart, 'collapsed rail not found').toBeGreaterThan(-1);
@@ -151,7 +164,7 @@ describe('deleting a page is not promoted by collapsing the inspector', () => {
     expect(rail, 'Delete handler must stay off the rail').not.toMatch(/handleDelete/);
   });
 
-  it('still offers it behind the expanded Danger zone, through the same confirm', () => {
+  it('still offers it in the expanded Details tab, through the same confirm', () => {
     expect(pane).toMatch(/handleDelete/);
     expect(pane).toMatch(/setConfirmTrashOpen\(true\)/);
   });

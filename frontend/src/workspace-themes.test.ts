@@ -705,6 +705,50 @@ describe('Measured contrast — Paper (light)', () => {
   });
 });
 
+/**
+ * The quality meter (QualityScoreBadge) is the scanning channel for a score:
+ * filled-segment count is what a column of scores is read by. That makes its
+ * segments information-bearing graphics under WCAG 1.4.11, so the EMPTY
+ * segment has to clear 3:1 against whatever it sits on — the old `--color-border`
+ * separator measured 1.11:1 (Graphite) and 1.17:1 (Paper) on the pane, which
+ * made a "35 Poor" meter read as one lonely tick. And filled must read as
+ * clearly MORE than empty, so that step is held to the same 3:1.
+ *
+ * An empty segment is `--color-border-interactive`, a flat token, so both
+ * contrasts are measured per ground; an ink alpha was tried and refused —
+ * no single alpha clears both steps on a selected row in both themes. The
+ * meter never sits on a bare surface: the score chip paints `bg-muted/40`
+ * under it, and the inspector trigger goes to full `bg-muted` on hover. The
+ * grounds are that tint over the pane (inspector), the workspace (list rows)
+ * and a selected row, plus the hover fill.
+ */
+describe('Quality meter segments clear the non-text floor', () => {
+  for (const [themeName, block] of [
+    ['Graphite', darkBlock],
+    ['Paper', lightBlock],
+  ] as const) {
+    const muted = token(block, '--color-muted');
+    const grounds = {
+      'chip on pane': composite(muted, 0.4, token(block, '--color-card')),
+      'chip on workspace': composite(muted, 0.4, token(block, '--color-background')),
+      'chip on selected row': composite(muted, 0.4, token(block, '--color-selected')),
+      'chip hover': muted,
+    };
+    const empty = token(block, '--color-border-interactive');
+    const filled = token(block, '--color-foreground');
+
+    it(`${themeName}: an empty segment clears 3:1 on every ground the chip sits on`, () => {
+      for (const [name, ground] of Object.entries(grounds)) {
+        expectContrast(`${themeName} empty segment on ${name}`, empty, ground, 3);
+      }
+    });
+
+    it(`${themeName}: a filled segment steps ≥3:1 away from an empty one`, () => {
+      expectContrast(`${themeName} filled vs empty segment`, filled, empty, 3);
+    });
+  }
+});
+
 describe('Both themes declare a complete, symmetric token set', () => {
   // A token present in dark but missing in light silently falls back to the
   // dark value — which is how a light theme ends up with one graphite surface.

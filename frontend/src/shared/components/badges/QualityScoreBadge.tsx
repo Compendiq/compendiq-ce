@@ -122,13 +122,21 @@ function getScoreConfig(
  * already says "74 Good" — this is the scanning channel, not the accessible
  * one.
  *
- * The empty segments are ink at 50%, not `bg-border`: on the inspector's
- * trigger the hairline measured 1.11:1 against the fill, so "45 Poor" read as
- * a single tick rather than one of four and the length channel this meter
- * exists for was gone. Ink at 50% composites to ≥3.3:1 against the trigger in
- * both themes and stays ≥3.3:1 short of the filled segment, so 1-of-4 and
- * 4-of-4 are both legible — and a token retune moves filled and empty
- * together, because both are the same ink.
+ * The empty segments are `--color-border-interactive`, not `bg-border`: on the
+ * inspector's trigger the hairline measured 1.11:1 against the fill, so
+ * "45 Poor" read as a single tick rather than one of four and the length
+ * channel this meter exists for was gone. Being the scanning channel makes
+ * the segments information-bearing graphics (WCAG 1.4.11), so
+ * workspace-themes.test.ts holds BOTH steps to 3:1 on every ground the chip
+ * sits on — the tint over pane, workspace and a selected row, plus the hover
+ * fill. Ink at an alpha cannot do that: no single alpha clears empty-vs-ground
+ * AND filled-vs-empty on a selected row in both themes (50% is 2.96:1 in
+ * Graphite, 45% is 2.82:1 in Paper), while the interactive edge measures
+ * 4.25 / 3.82:1 on the pane and 3.40 / 4.64:1 short of the filled ink.
+ *
+ * Forced colours repaint both fills to Canvas, so there filled segments take
+ * CanvasText and empty ones a 1px CanvasText outline with no fill: solid
+ * versus hollow keeps the count readable without any colour at all.
  */
 function QualityMeter({ band }: { band: number }) {
   return (
@@ -139,7 +147,9 @@ function QualityMeter({ band }: { band: number }) {
           data-filled={i < band ? 'true' : 'false'}
           className={cn(
             'h-2 w-[3px] rounded-[1px]',
-            i < band ? 'bg-foreground' : 'bg-foreground/50',
+            i < band
+              ? 'bg-foreground forced-colors:bg-[CanvasText]'
+              : 'bg-border-interactive forced-colors:border forced-colors:border-[CanvasText] forced-colors:bg-transparent',
           )}
         />
       ))}

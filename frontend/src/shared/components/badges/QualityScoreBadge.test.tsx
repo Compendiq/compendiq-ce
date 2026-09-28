@@ -137,6 +137,43 @@ describe('QualityScoreBadge', () => {
     expect(screen.getByTestId('quality-meter')).toHaveAttribute('aria-hidden', 'true');
   });
 
+  it('draws empty segments in the ≥3:1 interactive-border token, distinct from filled ink', () => {
+    // WCAG 1.4.11: the meter is the scanning channel, so an empty segment must
+    // be visible. The `--color-border` separator measured 1.11:1 on the pane and
+    // made "35 Poor" read as a single tick; workspace-themes.test.ts measures
+    // the token against every ground the chip sits on.
+    render(<QualityScoreBadge qualityScore={35} qualityStatus="analyzed" showDetails />);
+    const meter = screen.getByTestId('quality-meter');
+    const [filled] = Array.from(meter.querySelectorAll<HTMLElement>('[data-filled="true"]'));
+    const empties = Array.from(meter.querySelectorAll<HTMLElement>('[data-filled="false"]'));
+    expect(empties).toHaveLength(3);
+    for (const empty of empties) {
+      const classes = empty.className.split(/\s+/);
+      expect(classes).toContain('bg-border-interactive');
+      expect(classes).not.toContain('bg-border');
+    }
+    const filledClasses = filled!.className.split(/\s+/);
+    expect(filledClasses).toContain('bg-foreground');
+    expect(filledClasses).not.toContain('bg-border-interactive');
+  });
+
+  it('keeps solid-versus-hollow segments under forced colours', () => {
+    // Forced colours repaint both fills to Canvas, which would erase the meter.
+    // Filled segments take CanvasText; empty ones an unfilled CanvasText outline.
+    render(<QualityScoreBadge qualityScore={55} qualityStatus="analyzed" />);
+    const meter = screen.getByTestId('quality-meter');
+    const filled = meter.querySelector<HTMLElement>('[data-filled="true"]')!;
+    const empty = meter.querySelector<HTMLElement>('[data-filled="false"]')!;
+    expect(filled.className.split(/\s+/)).toContain('forced-colors:bg-[CanvasText]');
+    expect(empty.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        'forced-colors:border',
+        'forced-colors:border-[CanvasText]',
+        'forced-colors:bg-transparent',
+      ]),
+    );
+  });
+
   it('renders no meter for the non-score states', () => {
     const { rerender } = render(
       <QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />,

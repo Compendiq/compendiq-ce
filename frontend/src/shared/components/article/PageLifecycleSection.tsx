@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
 import * as Dialog from '@radix-ui/react-dialog';
+import { Link } from 'react-router-dom';
 import { Loader2, Lock, LockOpen } from 'lucide-react';
+import { CONFLUENCE_SETTINGS_PATH } from '../../lib/routes';
 import type { PageLifecycleState } from '@compendiq/contracts';
 import { PageBaselineHistory } from './PageBaselineHistory';
 import { PageGovernanceSection } from './PageGovernanceSection';
@@ -189,7 +191,20 @@ export function PageLifecycleSection({ pageId, page }: PageLifecycleSectionProps
           never only as the `title` of a disabled control. */}
       {!frozen && !page.canFreeze && denialExplanation(page.freezeDeniedReason) && (
         <p className="mt-2 text-xs text-muted-foreground" data-testid="freeze-denied">
-          {denialExplanation(page.freezeDeniedReason)}
+          {/* The one refusal the reader can fix themselves gets its route; the
+              branch is on the reason code, so rewording the sentence never
+              silently drops the link. */}
+          {page.freezeDeniedReason === 'confluence_integration_enabled' ? (
+            <>
+              Turn off the Confluence integration for your account in{' '}
+              <Link className="underline underline-offset-2 hover:text-foreground" to={CONFLUENCE_SETTINGS_PATH}>
+                Confluence settings
+              </Link>{' '}
+              before freezing.
+            </>
+          ) : (
+            denialExplanation(page.freezeDeniedReason)
+          )}
         </p>
       )}
       {frozen && !page.canUnfreeze && (
@@ -331,7 +346,7 @@ function FreezeDialog({
               </div>
               <div className="flex items-center justify-between gap-3 py-0.5">
                 <dt className="text-muted-foreground">Manifest</dt>
-                <dd className="font-mono text-[11px] text-muted-foreground">
+                <dd className="font-mono text-xs text-muted-foreground">
                   {preview.data.manifestDigest.slice(0, 12)}…
                 </dd>
               </div>
@@ -372,7 +387,7 @@ function FreezeDialog({
             aria-describedby="freeze-signatories-help"
             data-testid="freeze-signatories"
           />
-          <p id="freeze-signatories-help" className="mt-1 text-[11px] text-muted-foreground">
+          <p id="freeze-signatories-help" className="mt-1 text-xs text-muted-foreground">
             Recorded as reported by you. This is not verified agreement from those people.
           </p>
 

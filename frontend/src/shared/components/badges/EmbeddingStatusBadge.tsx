@@ -90,9 +90,9 @@ function getStatusConfig(
         // The load-bearing channel, and the reason this state does not depend
         // on motion. index.css's blanket `prefers-reduced-motion` rule clamps
         // every animation to 0.01ms and one iteration, so for those users the
-        // pulse below simply does not exist and the pill is a static neutral
-        // chip. A stopped Loader2 is still a visible arc that no sibling state
-        // carries — the same reasoning WorkersTab's Processing pill is built on.
+        // pulse below simply does not exist. A stopped Loader2 is still a
+        // visible arc that no sibling state carries — the same reasoning
+        // WorkersTab's Processing pill is built on.
         icon: Loader2,
         animate: true,
       };
@@ -137,22 +137,27 @@ function resolveStatus(props: EmbeddingStatusBadgeProps): EmbeddingStatus {
   return 'not_embedded';
 }
 
+/**
+ * A passive readout: no `role`, no `tabIndex`, no `aria-label` — the
+ * accessible name is the visible label and a Tab walk does not stop on it.
+ * `title` supplements with the exact timestamp / error for pointer users.
+ *
+ * The one operable part, Retry, is a real sibling button beside the chip —
+ * never nested inside it — at the 32px control height.
+ */
 export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
   const { embeddedAt, embeddingError, onRetry, className } = props;
   const status = resolveStatus(props);
   const config = getStatusConfig(status, embeddedAt, embeddingError);
 
-  return (
+  const chip = (
     <span
       title={config.title}
-      tabIndex={0}
-      role="note"
-      aria-label={config.title}
       data-testid={status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge'}
       data-status={status}
       className={cn(
         statusChipClass,
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'whitespace-nowrap',
         config.badgeClass,
         config.animate && 'animate-pulse',
         className,
@@ -165,20 +170,28 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
         aria-hidden="true"
       />
       {config.label}
-      {status === 'failed' && onRetry && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onRetry();
-          }}
-          className="ml-0.5 rounded px-1 py-0.5 text-xs font-semibold text-status-disconnected hover:bg-status-disconnected/20 hover:text-status-disconnected/80"
-          title="Retry indexing"
-          data-testid="embedding-retry-button"
-        >
-          Retry
-        </button>
-      )}
+    </span>
+  );
+
+  if (status !== 'failed' || !onRetry) return chip;
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {chip}
+      <button
+        type="button"
+        onClick={(e) => {
+          // List rows are buttons: a retry must not also open the row.
+          e.stopPropagation();
+          e.preventDefault();
+          onRetry();
+        }}
+        className="nm-button-ghost h-8 text-xs"
+        aria-label="Retry indexing"
+        data-testid="embedding-retry-button"
+      >
+        Retry
+      </button>
     </span>
   );
 }

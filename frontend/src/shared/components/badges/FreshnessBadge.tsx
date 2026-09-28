@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Clock } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { formatRelativeTime } from '../../lib/format-relative-time';
 import { statusChipClass } from './neutral-chip';
 
 interface FreshnessBadgeProps {
@@ -19,8 +20,15 @@ interface FreshnessLevel {
  * QualityScoreBadge. It used to wear the full status vocabulary: Fresh in the
  * connected green, Aging literally in `status-syncing`, Stale in the
  * disconnected red, so a page untouched for a month read as a space mid-sync
- * and a stale one as a broken connection. The label is the channel; the exact
- * date stays in the tooltip.
+ * and a stale one as a broken connection.
+ *
+ * The band word leads (the 7/30/90-day bands are the measurement) and the
+ * relative edit time follows it IN the visible text: a date that lives only in
+ * `title` never reaches a keyboard or touch user. `title` keeps the exact
+ * timestamp as a pointer-only supplement.
+ *
+ * Passive means passive: no `role`, no `tabIndex`, no `aria-label` — the
+ * accessible name is the visible text, and a Tab walk does not stop here.
  *
  * The chip is the shared status recipe (neutral-chip.ts), not `bg-muted`:
  * this badge renders on PagePreview's nm-card-elevated hover card, where
@@ -49,22 +57,16 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
     () => new Date(lastModified).toLocaleString(),
     [lastModified],
   );
+  const relative = useMemo(() => formatRelativeTime(lastModified), [lastModified]);
 
   return (
     <span
       title={`Last modified: ${formattedDate}`}
-      tabIndex={0}
-      role="note"
-      aria-label={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
-      className={cn(
-        statusChipClass,
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        className,
-      )}
+      className={cn(statusChipClass, 'whitespace-nowrap', className)}
     >
       <Clock size={12} className="shrink-0" aria-hidden="true" />
-      {level.label}
+      {`${level.label} · edited ${relative}`}
     </span>
   );
 }

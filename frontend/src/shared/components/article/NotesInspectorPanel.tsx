@@ -314,7 +314,7 @@ export function NotesInspectorPanel({
         aria-labelledby={filter === 'open' ? 'notes-tab-open' : 'notes-tab-resolved'}
         hidden={showNewNoteForm && !isLoading && !isError && displayedThreads.length === 0}
         tabIndex={0}
-        className="nm-focus-ring min-h-0 flex-1 overflow-y-auto py-3 space-y-3 -outline-offset-2"
+        className="nm-focus-ring min-h-0 flex-1 overflow-y-auto py-1 divide-y divide-border -outline-offset-2"
       >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
@@ -365,6 +365,7 @@ export function NotesInspectorPanel({
               onJumpToAnchor={jump}
               isSubmittingReply={addNote.isPending}
               isSelected={String(thread.id) === String(selectedCommentId)}
+              presentation="row"
             />
           ))
         )}

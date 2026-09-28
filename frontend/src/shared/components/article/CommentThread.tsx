@@ -37,6 +37,13 @@ interface CommentThreadProps {
   onJumpToAnchor?: (commentId: string) => void;
   isSubmittingReply?: boolean;
   isSelected?: boolean;
+  /**
+   * `card` (default) is a self-contained bordered tile for the sidebar and
+   * popover. `row` is for a list that already owns the frame — the Notes
+   * region is bordered and focusable, so a card inside it is a nested card;
+   * rows carry no border, fill or radius and the list divides them.
+   */
+  presentation?: 'card' | 'row';
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -62,6 +69,7 @@ export function CommentThread({
   onJumpToAnchor,
   isSubmittingReply = false,
   isSelected = false,
+  presentation = 'card',
 }: CommentThreadProps) {
   const isResolved = Boolean(comment.resolved ?? comment.isResolved);
   const [showReplies, setShowReplies] = useState(!isResolved);
@@ -91,9 +99,18 @@ export function CommentThread({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: reduceEffects ? 0.05 : 0.15 }}
       className={cn(
-        'rounded-lg border border-border bg-card p-3 text-card-foreground transition-colors',
-        isResolved && 'border-border/60 bg-muted/20',
-        isSelected && 'ring-2 ring-ring border-primary/50 bg-accent/30',
+        presentation === 'card'
+          ? cn(
+              'rounded-lg border border-border bg-card p-3 text-card-foreground transition-colors',
+              isResolved && 'border-border/60 bg-muted/20',
+              isSelected && 'ring-2 ring-ring border-primary/50 bg-accent/30',
+            )
+          : cn(
+              'px-1 py-3 transition-colors',
+              // Selection keeps a shape channel (the inset Steel ring), not a
+              // tint alone; the radius exists only while the ring does.
+              isSelected && 'rounded-md bg-accent/30 ring-2 ring-inset ring-ring',
+            ),
       )}
       data-testid={`comment-thread-${comment.id}`}
     >

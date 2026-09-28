@@ -80,7 +80,7 @@ describe('EmbeddingStatusBadge', () => {
   it('keeps all four states distinguishable without colour', () => {
     const signatures = (['not_embedded', 'embedding', 'embedded', 'failed'] as const).map(
       (status) => {
-        const { unmount } = render(
+        const { container, unmount } = render(
           <EmbeddingStatusBadge embeddingStatus={status} onRetry={() => {}} />,
         );
         const badge = screen.getByTestId(
@@ -91,7 +91,7 @@ describe('EmbeddingStatusBadge', () => {
         const signature = [
           badge.textContent,
           glyph!.getAttribute('class')?.match(/lucide-[\w-]+/)?.[0] ?? '-',
-          badge.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
+          container.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
         ].join('|');
         unmount();
         return signature;
@@ -124,34 +124,37 @@ describe('EmbeddingStatusBadge', () => {
     expect(badge).toHaveTextContent(/Indexed 1h ago/);
   });
 
-  it('renders failed state with red styling', () => {
+  // Red is never the only channel: the failed chip carries a glyph too.
+  it('renders failed state with red styling and an alert glyph', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Indexing failed');
     expect(badge.className).toContain('text-status-disconnected');
     expect(badge.className).toContain('bg-status-disconnected/20');
+    expect(badge.querySelector('[data-testid="embedding-status-glyph"]')).toBeTruthy();
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 
-  it('shows retry button for failed state when onRetry is provided', () => {
+  // Retry is a real 32px control beside the chip — nesting it inside a passive
+  // readout put an 11px button in a pill a screen reader announced as a note.
+  it('renders Retry as a sibling button outside the chip', () => {
     const onRetry = vi.fn();
     render(<EmbeddingStatusBadge embeddingStatus="failed" onRetry={onRetry} />);
-    const retryBtn = screen.getByTestId('embedding-retry-button');
-    expect(retryBtn).toBeInTheDocument();
+    const badge = screen.getByTestId('embedding-status-badge');
+    const retryBtn = screen.getByRole('button', { name: /retry/i });
+    expect(retryBtn).toHaveAttribute('type', 'button');
     expect(retryBtn).toHaveTextContent('Retry');
+    expect(badge.contains(retryBtn)).toBe(false);
+    expect(retryBtn.parentElement).toBe(badge.parentElement);
+    expect(retryBtn.className).toContain('h-8');
+    expect(retryBtn.className).not.toContain('text-[11px]');
+    fireEvent.click(retryBtn);
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('does not show retry button for failed state when onRetry is not provided', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     expect(screen.queryByTestId('embedding-retry-button')).not.toBeInTheDocument();
-  });
-
-  it('calls onRetry when retry button is clicked', () => {
-    const onRetry = vi.fn();
-    render(<EmbeddingStatusBadge embeddingStatus="failed" onRetry={onRetry} />);
-    const retryBtn = screen.getByTestId('embedding-retry-button');
-    fireEvent.click(retryBtn);
-    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('stops event propagation when retry button is clicked', () => {
@@ -179,13 +182,6 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedding" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge.getAttribute('title')).toContain('being indexed');
-  });
-
-  it('shows tooltip with date for embedded state', () => {
-    const date = '2026-01-15T12:00:00Z';
-    render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={date} />);
-    const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge.getAttribute('title')).toContain('Indexed for AI search on');
   });
 
   it('shows tooltip for failed state', () => {
@@ -237,6 +233,42 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" className="custom-class" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge.className).toContain('custom-class');
+  });
+
+  // ---- Passive readout ----
+
+  // Passive means passive: a chip that takes focus is a Tab stop with nothing
+  // to do, and an aria-label replaced the visible label with the tooltip copy.
+  it.each(['not_embedded', 'embedding', 'embedded', 'failed'] as const)(
+    '%s chip is not focusable and is named by its visible text',
+    (status) => {
+      const { container } = render(<EmbeddingStatusBadge embeddingStatus={status} />);
+      const badge = screen.getByTestId(
+        status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge',
+      );
+      expect(badge).not.toHaveAttribute('role');
+      expect(badge).not.toHaveAttribute('tabindex');
+      expect(badge).not.toHaveAttribute('aria-label');
+      expect(container.querySelectorAll('[tabindex], button, a[href], input')).toHaveLength(0);
+    },
+  );
+
+  it('offers exactly one Tab stop in the failed state — the Retry button', () => {
+    const { container } = render(
+      <EmbeddingStatusBadge embeddingStatus="failed" onRetry={() => {}} />,
+    );
+    const stops = container.querySelectorAll('[tabindex], button, a[href], input');
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toBe(screen.getByTestId('embedding-retry-button'));
+  });
+
+  it('keeps the exact embedded timestamp in title as a pointer supplement', () => {
+    const date = '2026-01-15T12:00:00Z';
+    render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={date} />);
+    expect(screen.getByTestId('embedding-status-badge')).toHaveAttribute(
+      'title',
+      `Indexed for AI search on ${new Date(date).toLocaleString()}`,
+    );
   });
 
   // ---- No animation for non-embedding states ----

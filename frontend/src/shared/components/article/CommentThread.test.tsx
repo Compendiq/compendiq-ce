@@ -198,4 +198,45 @@ describe('CommentThread', () => {
     );
     expect(screen.getByTestId('comment-thread-c-1')).toBeInTheDocument();
   });
+
+  it('keeps the bordered card by default for the sidebar and popover', () => {
+    render(
+      <CommentThread comment={baseComment} onReply={vi.fn()} onResolve={vi.fn()} onUnresolve={vi.fn()} />,
+    );
+    const thread = screen.getByTestId('comment-thread-c-1');
+    for (const token of ['rounded-lg', 'border', 'border-border', 'bg-card', 'p-3']) {
+      expect(thread.classList).toContain(token);
+    }
+  });
+
+  it('renders as a row with no border, radius or fill inside a framed list', () => {
+    render(
+      <CommentThread
+        comment={{ ...baseComment, resolved: true }}
+        onReply={vi.fn()}
+        onResolve={vi.fn()}
+        onUnresolve={vi.fn()}
+        presentation="row"
+      />,
+    );
+    const tokens = [...screen.getByTestId('comment-thread-c-1').classList];
+    expect(tokens.filter((t) => /^(rounded|border|bg-)/.test(t))).toEqual([]);
+  });
+
+  it('marks a selected row with the Steel ring, not a tint alone', () => {
+    render(
+      <CommentThread
+        comment={baseComment}
+        onReply={vi.fn()}
+        onResolve={vi.fn()}
+        onUnresolve={vi.fn()}
+        presentation="row"
+        isSelected
+      />,
+    );
+    const thread = screen.getByTestId('comment-thread-c-1');
+    expect(thread.classList).toContain('ring-2');
+    expect(thread.classList).toContain('ring-ring');
+    expect(thread.classList).not.toContain('border');
+  });
 });

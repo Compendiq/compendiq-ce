@@ -30,9 +30,9 @@ const variantStyles: Record<ButtonVariant, string> = {
   ghost:
     'border-transparent bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent active:bg-secondary focus-visible:outline-ring',
   destructive:
-    'bg-destructive text-destructive-foreground border-transparent hover:bg-[color-mix(in_oklab,var(--color-destructive)_86%,var(--color-foreground))] active:bg-[color-mix(in_oklab,var(--color-destructive)_74%,var(--color-foreground))] focus-visible:outline-destructive',
+    'bg-destructive text-destructive-foreground border-transparent hover:bg-[color-mix(in_oklab,var(--color-destructive)_86%,var(--color-foreground))] active:bg-[color-mix(in_oklab,var(--color-destructive)_74%,var(--color-foreground))] focus-visible:outline-ring',
   'destructive-ghost':
-    'border-transparent bg-transparent text-destructive hover:bg-destructive/10 active:bg-destructive/15 focus-visible:outline-destructive',
+    'border-transparent bg-transparent text-destructive hover:bg-destructive/10 active:bg-destructive/15 focus-visible:outline-ring',
   ai:
     'border-transparent bg-status-ai/10 text-status-ai hover:bg-status-ai/20 active:bg-status-ai/25 focus-visible:outline-status-ai',
 };

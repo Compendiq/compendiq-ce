@@ -75,6 +75,9 @@ interface PageDetail extends PageSummary, Partial<PageLifecycleState> {
   createdByUserId?: string | number | null;
   /** Last human verification stamp (`pages.verified_at`). */
   verifiedAt?: string | null;
+  /** An unpublished draft exists beside the published body (standalone pages). */
+  hasDraft?: boolean;
+  draftUpdatedAt?: string | null;
 }
 
 interface PaginatedPages {

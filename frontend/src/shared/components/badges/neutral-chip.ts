@@ -37,6 +37,8 @@ export const neutralChipClass = `inline-flex items-center gap-1 rounded-full bor
  * hairline, 13px label, and a leading 12px glyph on EVERY state so the shape
  * channel never depends on which state happens to render. A state that
  * carries its own hue (indexing in progress, failed) overrides the fill and
- * ink on top of this class; the geometry never changes.
+ * ink on top of this class; the geometry never changes. Passive means
+ * passive — no `role`, no `tabIndex`, no `aria-label`; the accessible name
+ * is the visible text.
  */
 export const statusChipClass = `inline-flex min-h-6 items-center gap-1.5 rounded-full border border-border px-2.5 text-xs font-medium ${neutralChipInk}`;
