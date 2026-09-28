@@ -393,7 +393,7 @@ export function useDeletePage() {
           && query.queryKey[1] !== null
         ),
       }, (old) => {
-        if (!old?.items.some((page) => page.id === id)) return old;
+        if (!old?.items?.some((page) => page.id === id)) return old;
         const total = Math.max(0, old.total - 1);
         return {
           ...old,

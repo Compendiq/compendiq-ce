@@ -123,7 +123,7 @@ describe('useDeletePage cache consistency', () => {
     expect(cached(queryClient, listKey)).toEqual(pages([firstPage, secondPage]));
   });
 
-  it('does not invent a lower total for a disjoint filtered cache', async () => {
+  it('does not touch any cached list before the DELETE settles', async () => {
     const deleteResponse = deferred<Response>();
     vi.stubGlobal('fetch', vi.fn(() => deleteResponse.promise));
     const { queryClient, wrapper } = setup();
