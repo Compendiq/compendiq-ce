@@ -127,17 +127,21 @@ so a stalled rotation's successor is still revoked; a session transaction idle
 for 10s is terminated by PostgreSQL), and admin role change / deactivation
 conflict with it by updating the users row. When both the locked revocation
 and its fallback time out (`RefreshSessionBusyError`), nothing was revoked:
-logout answers 503 and keeps the cookie, and `logoutApi()` keeps client auth
-and rejects so the user menu can offer a retry. Never
+logout answers 503 with `code: "logout_busy"` and keeps the cookie, and
+`logoutApi()` keeps client auth and rejects on that marked 503 only (an
+unmarked proxy 503 still clears auth) so the user menu can offer a retry. Never
 rebuild rotation from `verifyRefreshToken` + `revokeToken` +
 `generateRefreshToken`. In the SPA every request that presents or sets the
 refresh cookie (refresh, login, register, setup-admin, OIDC exchange, logout)
 goes through `withAuthCookieLock` (Web Locks, IndexedDB lease on plain HTTP);
 it is not re-entrant, so hold it around the request only.
 `refreshAccessTokenOnce()` resolves `null` only when the session is gone
-(then `clearAuth()`); transient failures (network, 5xx incl. the busy-lock
-503, 408, 429) retry under the lock and then reject with
-`RefreshUnavailableError` — callers must keep auth state on that rejection.
+(then `clearAuth()`). It retries only the backend's marked busy 503
+(`REFRESH_BUSY_CODE`, `code: "refresh_busy"`), taking the lock per attempt and
+adopting a sibling tab's token on each acquisition; network errors and other
+5xx/408/429 are never retried (the rotation may have committed). All of these
+reject with `RefreshUnavailableError` — callers must keep auth state on that
+rejection.
 
 ## Testing & Mocks
 

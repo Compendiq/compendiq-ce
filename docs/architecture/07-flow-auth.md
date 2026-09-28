@@ -82,7 +82,10 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   between statements by `idle_in_transaction_session_timeout` 10s (PostgreSQL
   then terminates it, releasing the users row and any claimed token row). A
   timeout rolls back — the cookie was not consumed — and the refresh route
-  answers `503` instead of hanging. Family revocation and logout do not give up
+  answers `503` with body `code: "refresh_busy"` instead of hanging (pg reports
+  a terminated session either as the 25P03 error or, for an in-flight
+  statement, a code-less connection error; the transaction helper rethrows
+  whichever carries the deadline SQLSTATE). Family revocation and logout do not give up
   on a timeout (a lock wait over 5s or a statement over 10s inside the locked
   transaction): they run their `UPDATE` without the users-row lock at once, in
   its own transaction with the same 5s/10s deadlines, then once more under the
@@ -120,13 +123,18 @@ one `POST /api/auth/refresh`:
   logging the user out despite a valid session.
 
 `refreshAccessTokenOnce()` resolves `null` only when the session is gone
-(`401`/`403` or another non-transient answer); callers then `clearAuth()`. A
-network error, `5xx` (including the retry-safe `503` for a busy session lock),
-`408` or `429` is transient: the refresh is retried after 1s and 3s under the
-cross-tab lock and then rejects with `RefreshUnavailableError` (an `ApiError`
-with status `503`). Callers keep the session and surface that error — `apiFetch`
-throws it, `useSessionInit` leaves auth as is, presence reconnects with backoff
-and the collaboration socket rejoins.
+(`401`/`403` or another non-transient answer); callers then `clearAuth()`. Only
+the backend's retry-safe busy `503` (body `code: "refresh_busy"`,
+`REFRESH_BUSY_CODE` in `@compendiq/contracts`) is retried, after 1s and 3s.
+Each attempt takes the cross-tab lock on its own, so the lock is free during the
+backoff, and each acquisition first adopts a token another tab refreshed
+meanwhile. A network error, any other `5xx`, `408` or `429` is not retried —
+after a lost response or a proxy error the rotation may already have
+committed, and presenting the consumed cookie again would be token reuse. Both
+cases reject with `RefreshUnavailableError` (an `ApiError` with status `503`).
+Callers keep the session and surface that error — `apiFetch` throws it,
+`useSessionInit` leaves auth as is, presence reconnects with backoff and the
+collaboration socket rejoins after a pause that doubles from 1s up to 30s.
 
 #### Cross-tab auth-cookie lock
 
@@ -245,14 +253,16 @@ blacklisting is not needed in CE; EE may add it.
 
 If the revocation fails with `RefreshSessionBusyError` (the locked attempt and
 the unlocked fallback both timed out, or a reused cookie's family revocation
-did), nothing was revoked: logout answers `503`, keeps the cookie and leaves the
-tokens as they are, so the client can retry. A cookie-only logout revokes the
-presented JTI as part of the user-wide revocation; the separate single-JTI
-revoke runs only as a best-effort step when that revocation fails otherwise.
-Every other failure keeps the best-effort behavior: `200` and a cleared cookie.
-On the client, `logoutApi()` keeps auth state on that `503` and rejects; the
-user menu shows a "Sign-out did not complete" toast with a **Retry** action.
-Any other logout failure still clears client auth.
+did), nothing was revoked: logout answers `503` with body
+`code: "logout_busy"`, keeps the cookie and leaves the tokens as they are, so
+the client can retry. A cookie-only logout revokes the presented JTI as part of
+the user-wide revocation; the separate single-JTI revoke runs only as a
+best-effort step when that revocation fails otherwise. Every other failure
+keeps the best-effort behavior: `200` and a cleared cookie. On the client,
+`logoutApi()` keeps auth state on that marked `503` and rejects; the user menu
+shows a "Sign-out did not complete" toast with a **Retry** action. Any other
+logout failure, including an unmarked `503` from a proxy, still clears client
+auth.
 
 On the client, `useClearCacheOnLogout` (wired in `App.tsx`) wipes the
 in-memory TanStack Query cache on every authenticated→unauthenticated
