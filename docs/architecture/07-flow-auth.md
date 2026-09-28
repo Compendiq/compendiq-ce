@@ -40,10 +40,61 @@ sequenceDiagram
 
     FE->>FE: store accessToken in memory
     Note over FE: useTokenRefreshTimer<br/>schedules silent refresh
+    FE->>FE: acquire cross-tab auth-cookie lock
     FE->>BE: POST /api/auth/refresh (cookie sent)
-    BE->>DB: validate refresh_tokens row
-    BE-->>FE: 200 { accessToken (new) }
+    BE->>DB: BEGIN, lock users row (FOR NO KEY UPDATE)
+    BE->>DB: UPDATE refresh_tokens SET revoked WHERE jti AND NOT revoked RETURNING
+    alt claimed
+        BE->>DB: INSERT successor (same family), COMMIT
+        BE-->>FE: 200 { accessToken (new) }<br/>Set-Cookie: successor
+    else already revoked (replay or concurrent loser)
+        BE->>DB: revoke whole family, COMMIT
+        BE-->>FE: 401
+    end
+    FE->>FE: release lock
 ```
+
+### Refresh-token rotation (single use)
+
+`POST /api/auth/refresh` calls `rotateRefreshToken()`, one transaction that
+holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
+
+- The presented JTI is **claimed** with a conditional
+  `UPDATE … WHERE revoked = FALSE RETURNING`, and the same-family successor is
+  inserted before the same `COMMIT`. One JTI can therefore produce at most one
+  successor, even under concurrent requests.
+- A request whose claim finds the row already revoked — a sequential replay or
+  the loser of a concurrent race — follows the reuse policy: it revokes the
+  whole family in that transaction, records `SESSION_REVOKED`
+  (`token_reuse_detected`) and gets `401`. There is no multi-tab grace; the
+  SPA avoids self-inflicted reuse by serializing its own requests (below).
+- A deactivated user's presented JTI is revoked and the request gets `401`; a
+  missing user or unknown JTI gets `401`.
+- Family revocation (`revokeTokenFamily`, reached from the logout path's reuse
+  check), logout (`revokeAllUserTokens`), role changes and deactivation all
+  serialize on the same users row — the admin paths because they `UPDATE` the
+  row and delete `refresh_tokens` in one transaction. A successor therefore
+  commits either before a revocation (and is revoked by it) or after it (and
+  its claim finds nothing to rotate); it cannot escape while the lock is
+  obtainable.
+- Lock waits are bounded by `lock_timeout` 5s, statements by
+  `statement_timeout` 10s, and a session transaction whose client stalls
+  between statements by `idle_in_transaction_session_timeout` 10s (PostgreSQL
+  then terminates it, releasing the users row and any claimed token row). A
+  timeout rolls back — the cookie was not consumed — and the refresh route
+  answers `503` with body `code: "refresh_busy"` instead of hanging (pg reports
+  a terminated session either as the 25P03 error or, for an in-flight
+  statement, a code-less connection error; the transaction helper rethrows
+  whichever carries the deadline SQLSTATE). Family revocation and logout do not give up
+  on a timeout (a lock wait over 5s or a statement over 10s inside the locked
+  transaction): they run their `UPDATE` without the users-row lock at once, in
+  its own transaction with the same 5s/10s deadlines, then once more under the
+  lock. Getting the lock proves the stalled holder and every rotation queued
+  ahead have finished, so their successors are revoked too. Only if that
+  second lock wait also times out can such a successor survive — the exposure
+  every revocation had before the lock. If the unlocked `UPDATE` timed out as
+  well, nothing was revoked and the call fails with `RefreshSessionBusyError`
+  (logout then answers `503`, see below).
 
 ### Client-side token refresh
 
@@ -52,8 +103,8 @@ The SPA keeps the access token **in memory only** — it is never written to
 re-minted from the HttpOnly refresh cookie via `useSessionInit` (see below).
 Only non-sensitive `user` + `isAuthenticated` are persisted. The token is
 refreshed four ways, all funneling through the single-flight
-`refreshAccessTokenOnce()` so concurrent requests trigger exactly one
-`POST /api/auth/refresh`:
+`refreshAccessTokenOnce()` so concurrent requests in one tab trigger exactly
+one `POST /api/auth/refresh`:
 
 - **Scheduled** — `useTokenRefreshTimer` refreshes shortly before expiry.
 - **Proactive (#965)** — `apiFetch` decodes the token's `exp` and, if it is
@@ -71,6 +122,42 @@ refreshed four ways, all funneling through the single-flight
   already-rotated (revoked) JTI, tripping token-family reuse detection and
   logging the user out despite a valid session.
 
+`refreshAccessTokenOnce()` resolves `null` only when the session is gone
+(`401`/`403` or another non-transient answer); callers then `clearAuth()`. Only
+the backend's retry-safe busy `503` (body `code: "refresh_busy"`,
+`REFRESH_BUSY_CODE` in `@compendiq/contracts`) is retried, after 1s and 3s.
+Each attempt takes the cross-tab lock on its own, so the lock is free during the
+backoff, and each acquisition first adopts a token another tab refreshed
+meanwhile. A network error, any other `5xx`, `408` or `429` is not retried —
+after a lost response or a proxy error the rotation may already have
+committed, and presenting the consumed cookie again would be token reuse. Both
+cases reject with `RefreshUnavailableError` (an `ApiError` with status `503`).
+Callers keep the session and surface that error — `apiFetch` throws it,
+`useSessionInit` leaves auth as is, presence reconnects with backoff and the
+collaboration socket rejoins after a pause that doubles from 1s up to 30s and
+starts over at 1s once a socket connects.
+
+#### Cross-tab auth-cookie lock
+
+Tabs of one browser share the HttpOnly refresh cookie, and the server treats a
+second presentation of a rotated cookie as reuse. Every request that presents
+or replaces the cookie therefore runs under one browser-wide lock
+(`withAuthCookieLock`, `shared/lib/auth-cookie-lock.ts`): refresh, login,
+registration, setup-admin, OIDC exchange and logout. Only the request itself
+is held, never the follow-up work, so the lock is not re-entered.
+
+- Secure contexts use the Web Locks API, which the browser releases when a tab
+  closes or navigates.
+- Plain-HTTP deployments have no Web Locks, so the lock is an IndexedDB lease:
+  a `readwrite` transaction on one store is serialized across the origin's
+  tabs, making the check-and-take atomic. The holder renews the lease every
+  5s; a lease left by a tab that died expires after 20s.
+- Without either API the request runs unserialized.
+
+A tab that waited while another tab rotated the cookie adopts the access token
+that tab broadcast (below) instead of rotating again; without a broadcast it
+rotates the already-updated cookie in turn.
+
 #### Cross-tab coordination (#1054)
 
 Token adoption and logout are propagated between tabs over an **in-memory,
@@ -81,8 +168,9 @@ in-memory auth (and, via `useClearCacheOnLogout`, the cached user data) in every
 other tab. The `BroadcastChannel` is feature-guarded; where it is unavailable
 the retained `localStorage` `storage` event still coordinates **logout**
 (because `isAuthenticated` persists), and each tab otherwise re-mints its own
-token from the refresh cookie. Received messages are applied under a
-re-entrancy guard so a tab never echoes a change it just received.
+token from the refresh cookie, one tab at a time behind the auth-cookie lock.
+Received messages are applied under a re-entrancy guard so a tab never echoes
+a change it just received.
 
 ### Registration quirks
 
@@ -157,9 +245,25 @@ migration and no env var.
 
 ### Logout
 
-`POST /api/auth/logout` deletes the refresh token row, clears the cookie,
-and records `audit_log(action='logout')`. The access token is short-lived
-enough that blacklisting is not needed in CE; EE may add it.
+`POST /api/auth/logout` revokes every refresh token of the identified user
+under the same users-row lock as rotation (so a refresh committing at the same
+moment cannot leave a live successor behind, except when the lock-timeout
+fallback described under rotation times out twice), clears the cookie, and records
+`audit_log(action='logout')`. The access token is short-lived enough that
+blacklisting is not needed in CE; EE may add it.
+
+If the revocation fails with `RefreshSessionBusyError` (the locked attempt and
+the unlocked fallback both timed out, or a reused cookie's family revocation
+did), nothing was revoked: logout answers `503` with body
+`code: "logout_busy"`, keeps the cookie and leaves the tokens as they are, so
+the client can retry. A cookie-only logout revokes the presented JTI as part of
+the user-wide revocation; the separate single-JTI revoke runs only as a
+best-effort step when that revocation fails otherwise. Every other failure
+keeps the best-effort behavior: `200` and a cleared cookie. On the client,
+`logoutApi()` keeps auth state on that marked `503` and rejects; the user menu
+shows a "Sign-out did not complete" toast with a **Retry** action. Any other
+logout failure, including an unmarked `503` from a proxy, still clears client
+auth.
 
 On the client, `useClearCacheOnLogout` (wired in `App.tsx`) wipes the
 in-memory TanStack Query cache on every authenticated→unauthenticated
@@ -364,6 +468,7 @@ None of them are stylistic.
 | Frontend session init | `frontend/src/shared/hooks/useSessionInit.ts` |
 | Refresh timer | `frontend/src/shared/hooks/useTokenRefreshTimer.ts` |
 | API client (single-flight + proactive/reactive refresh) | `frontend/src/shared/lib/api.ts` |
+| Cross-tab auth-cookie lock (Web Locks / IndexedDB lease) | `frontend/src/shared/lib/auth-cookie-lock.ts` |
 | OIDC callback UI | `frontend/src/features/auth/OidcCallbackPage.tsx` |
 | OIDC admin config UI | `frontend/src/features/admin/OidcSettingsPage.tsx` |
 | SSO probe tri-state + notice copy (visible and announced) | `frontend/src/features/settings/login/sso-notice.ts` |

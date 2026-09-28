@@ -71,7 +71,7 @@ Compendiq implements defense-in-depth across every layer:
 
 ### Authentication & Authorization
 
-- **JWT with rotation** -- short-lived access tokens (15 min) + refresh tokens (7 days) with family-based revocation for reuse detection
+- **JWT with atomic rotation** -- short-lived access tokens (15 min) + single-use refresh tokens (7 days): each rotation consumes the old token and inserts its successor in one transaction, and reuse revokes the whole token family
 - **bcrypt password hashing** with 12 salt rounds
 - **RBAC** with custom roles and granular permissions
 - **OIDC/SSO** support for enterprise identity providers

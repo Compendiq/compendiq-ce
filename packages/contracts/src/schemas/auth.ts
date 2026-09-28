@@ -24,6 +24,16 @@ export const AuthResponseSchema = z.object({
 });
 
 /**
+ * `code` of the 503 bodies `POST /api/auth/refresh` and `POST /api/auth/logout`
+ * send when the user's session lock stayed busy. The transaction rolled back
+ * before anything was consumed or revoked, so the same request is safe to
+ * repeat. Any other 503 (an edge proxy, a lost response) carries no such
+ * guarantee.
+ */
+export const REFRESH_BUSY_CODE = 'refresh_busy' as const;
+export const LOGOUT_BUSY_CODE = 'logout_busy' as const;
+
+/**
  * Public registration policy (#1051). Returned by the unauthenticated
  * `GET /api/auth/registration-policy` so the SPA knows whether to render the
  * self-service signup toggle. Deliberately minimal — it exposes only the

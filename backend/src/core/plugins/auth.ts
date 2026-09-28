@@ -2,7 +2,8 @@ import fp from 'fastify-plugin';
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import * as jose from 'jose';
 import { randomUUID } from 'crypto';
-import { query } from '../db/postgres.js';
+import type { PoolClient } from 'pg';
+import { getPool, query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
 import { enterRbacScope } from '../services/rbac-request-scope.js';
@@ -54,6 +55,93 @@ interface RefreshTokenPayload extends JwtPayload {
   family: string;
 }
 
+export interface RotatedRefreshSession {
+  accessToken: string;
+  refreshToken: string;
+  user: {
+    id: string;
+    username: string;
+    role: 'user' | 'admin';
+    email: string | null;
+    displayName: string | null;
+  };
+}
+
+/**
+ * The user-row lock or a statement inside the session transaction hit its
+ * deadline. The transaction rolled back, so nothing was consumed or revoked.
+ */
+export class RefreshSessionBusyError extends Error {
+  constructor() {
+    super('Refresh session is busy');
+    this.name = 'RefreshSessionBusyError';
+  }
+}
+
+// Session-row lock holders only run a few indexed statements plus one JWT
+// signature, so these deadlines are only reached when the database is stuck.
+// They keep a request from waiting indefinitely behind the new lock. The idle
+// deadline bounds the holder instead: PostgreSQL terminates a session
+// transaction whose client stalls between statements, which releases the
+// users row and every refresh_tokens row it claimed.
+const SESSION_LOCK_TIMEOUT = '5s';
+const SESSION_STATEMENT_TIMEOUT = '10s';
+const SESSION_IDLE_TIMEOUT = '10s';
+const LOCK_NOT_AVAILABLE = '55P03';
+const QUERY_CANCELED = '57014';
+const IDLE_IN_TRANSACTION_TIMEOUT = '25P03';
+
+function isDeadlineError(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return code === LOCK_NOT_AVAILABLE || code === QUERY_CANCELED || code === IDLE_IN_TRANSACTION_TIMEOUT;
+}
+
+/**
+ * Runs `work` in one transaction with transaction-local lock-wait, statement
+ * and idle deadlines. Hitting one rolls the transaction back. When PostgreSQL
+ * ends the session (idle deadline), pg reports it one of two ways: an idle
+ * client emits the 25P03 error outside any query, and an in-flight query
+ * rejects with it while the socket close emits a code-less "Connection
+ * terminated unexpectedly". Connection errors are captured here — pg-pool
+ * leaves checked-out clients without an error listener — and whichever error
+ * carries a deadline SQLSTATE is rethrown, so callers can tell a deadline from
+ * a real failure.
+ */
+async function withBoundedTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  let connectionError: Error | undefined;
+  const onConnectionError = (error: Error) => {
+    connectionError ??= error;
+  };
+  client.on('error', onConnectionError);
+  let releaseError: Error | undefined;
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT set_config('lock_timeout', $1, true),
+              set_config('statement_timeout', $2, true),
+              set_config('idle_in_transaction_session_timeout', $3, true)`,
+      [SESSION_LOCK_TIMEOUT, SESSION_STATEMENT_TIMEOUT, SESSION_IDLE_TIMEOUT],
+    );
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      // A connection that cannot roll back must not return to the pool.
+      releaseError = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    }
+    if (isDeadlineError(error)) throw error;
+    if (isDeadlineError(connectionError)) throw connectionError;
+    throw connectionError ?? error;
+  } finally {
+    client.removeListener('error', onConnectionError);
+    client.release(releaseError ?? connectionError);
+  }
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     userId: string;
@@ -85,37 +173,43 @@ export async function generateAccessToken(payload: JwtPayload): Promise<string> 
 }
 
 /**
- * Generates a refresh token with JTI and token family for rotation/revocation.
- * If family is not provided, creates a new token family (e.g., on login).
+ * Generates a refresh token for a new token family (login, registration,
+ * setup, OIDC). Rotation inside an existing family goes through
+ * rotateRefreshToken(), which consumes the old JTI in the same transaction.
  */
 export async function generateRefreshToken(
   payload: JwtPayload,
-  family?: string,
 ): Promise<{ token: string; jti: string; family: string }> {
-  const jti = randomUUID();
-  const tokenFamily = family ?? randomUUID();
-  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+  const refresh = await signRefreshToken(payload, randomUUID());
 
+  // Store the JTI in the database
+  await query(
+    `INSERT INTO refresh_tokens (user_id, jti, family, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [payload.sub, refresh.jti, refresh.family, refresh.expiresAt],
+  );
+
+  return { token: refresh.token, jti: refresh.jti, family: refresh.family };
+}
+
+async function signRefreshToken(
+  payload: JwtPayload,
+  family: string,
+): Promise<{ token: string; jti: string; family: string; expiresAt: Date }> {
+  const jti = randomUUID();
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
   const token = await new jose.SignJWT({
     username: payload.username,
     role: payload.role,
     jti,
-    family: tokenFamily,
+    family,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setIssuer(JWT_ISSUER)
     .setExpirationTime('7d')
     .sign(getJwtSecret());
-
-  // Store the JTI in the database
-  await query(
-    `INSERT INTO refresh_tokens (user_id, jti, family, expires_at)
-     VALUES ($1, $2, $3, $4)`,
-    [payload.sub, jti, tokenFamily, expiresAt],
-  );
-
-  return { token, jti, family: tokenFamily };
+  return { token, jti, family, expiresAt };
 }
 
 export async function verifyToken(token: string): Promise<JwtPayload> {
@@ -129,11 +223,7 @@ export async function verifyToken(token: string): Promise<JwtPayload> {
   };
 }
 
-/**
- * Verifies a refresh token and checks JTI validity against the database.
- * Returns the full payload including JTI and family.
- */
-export async function verifyRefreshToken(token: string): Promise<RefreshTokenPayload> {
+async function decodeRefreshToken(token: string): Promise<RefreshTokenPayload> {
   const { payload } = await jose.jwtVerify(token, getJwtSecret(), {
     issuer: JWT_ISSUER,
   });
@@ -145,37 +235,6 @@ export async function verifyRefreshToken(token: string): Promise<RefreshTokenPay
     throw new Error('Refresh token missing JTI or family');
   }
 
-  // Check if JTI exists and is not revoked
-  const result = await query<{ revoked: boolean }>(
-    'SELECT revoked FROM refresh_tokens WHERE jti = $1',
-    [jti],
-  );
-
-  if (result.rows.length === 0) {
-    throw new Error('Refresh token JTI not found');
-  }
-
-  if (result.rows[0]!.revoked) {
-    // Reuse detection: revoked token used again = security breach
-    // Revoke the entire token family
-    logger.warn({ jti, family, userId: payload.sub }, 'Refresh token reuse detected - revoking entire family');
-    await revokeTokenFamily(family);
-    // #307 Finding #5: emit SESSION_REVOKED so the Authentication
-    // compliance report can surface session-hijack events. Use
-    // `reason: 'token_reuse_detected'` (distinct from `'logout'`) so the
-    // report can separate voluntary logouts from forced revocations.
-    // logAuditEvent is try/catch-wrapped internally so an audit failure
-    // never suppresses the security-response throw below.
-    await logAuditEvent(
-      payload.sub as string,
-      'SESSION_REVOKED',
-      'user',
-      payload.sub as string,
-      { reason: 'token_reuse_detected', family, jti },
-    );
-    throw new Error('Refresh token reuse detected - family revoked');
-  }
-
   return {
     sub: payload.sub as string,
     username: payload.username as string,
@@ -185,25 +244,254 @@ export async function verifyRefreshToken(token: string): Promise<RefreshTokenPay
   };
 }
 
+async function reportRefreshTokenReuse(payload: RefreshTokenPayload): Promise<void> {
+  logger.warn(
+    { jti: payload.jti, family: payload.family, userId: payload.sub },
+    'Refresh token reuse detected - revoking entire family',
+  );
+  // #307 Finding #5: emit SESSION_REVOKED so the Authentication
+  // compliance report can surface session-hijack events. Use
+  // `reason: 'token_reuse_detected'` (distinct from `'logout'`) so the
+  // report can separate voluntary logouts from forced revocations.
+  // logAuditEvent is try/catch-wrapped internally so an audit failure
+  // never suppresses the caller's security-response throw.
+  await logAuditEvent(
+    payload.sub,
+    'SESSION_REVOKED',
+    'user',
+    payload.sub,
+    { reason: 'token_reuse_detected', family: payload.family, jti: payload.jti },
+  );
+}
+
+interface SessionUserRow {
+  id: string;
+  username: string;
+  role: 'user' | 'admin';
+  email: string | null;
+  display_name: string | null;
+  deactivated_at: Date | null;
+}
+
 /**
- * Marks a specific JTI as revoked (used during token rotation).
+ * Runs `work` in one transaction that holds the user's row lock. Every
+ * refresh-token mutation that must not interleave with successor issuance
+ * (rotation, reuse-driven family revocation, logout) takes this lock. Admin
+ * role changes, deactivation and deletion conflict with it implicitly: they
+ * UPDATE/DELETE the same users row and remove refresh_tokens in that
+ * transaction. `FOR NO KEY UPDATE` still admits foreign-key inserts that
+ * reference the user from unrelated tables.
+ *
+ * Lock waits, statements and idle gaps are deadline-bounded; hitting a
+ * deadline rolls back and surfaces RefreshSessionBusyError.
+ */
+async function withUserSessionLock<T>(
+  userId: string,
+  work: (client: PoolClient, user: SessionUserRow | undefined) => Promise<T>,
+): Promise<T> {
+  try {
+    return await withBoundedTransaction(async (client) => {
+      const locked = await client.query<SessionUserRow>(
+        `SELECT id, username, role, email, display_name, deactivated_at
+           FROM users
+          WHERE id = $1
+            FOR NO KEY UPDATE`,
+        [userId],
+      );
+      return work(client, locked.rows[0]);
+    });
+  } catch (error) {
+    if (isDeadlineError(error)) throw new RefreshSessionBusyError();
+    throw error;
+  }
+}
+
+/**
+ * Verifies a refresh token and checks JTI validity against the database.
+ * Returns the full payload including JTI and family. A read-only check for
+ * logout; rotation must use rotateRefreshToken(), never verify + revoke +
+ * generate.
+ */
+export async function verifyRefreshToken(token: string): Promise<RefreshTokenPayload> {
+  const payload = await decodeRefreshToken(token);
+
+  // Check if JTI exists and is not revoked
+  const result = await query<{ revoked: boolean }>(
+    'SELECT revoked FROM refresh_tokens WHERE jti = $1',
+    [payload.jti],
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error('Refresh token JTI not found');
+  }
+
+  if (result.rows[0]!.revoked) {
+    // Reuse detection: revoked token used again = security breach
+    // Revoke the entire token family
+    await revokeTokenFamily(payload.family);
+    await reportRefreshTokenReuse(payload);
+    throw new Error('Refresh token reuse detected - family revoked');
+  }
+
+  return payload;
+}
+
+type RotationOutcome =
+  | { kind: 'rotated'; session: RotatedRefreshSession }
+  | { kind: 'reuse' }
+  | { kind: 'rejected'; reason: string };
+
+/**
+ * Single-use refresh-token rotation. Under the user's row lock it claims the
+ * presented JTI with a conditional `UPDATE ... WHERE revoked = FALSE
+ * RETURNING` and inserts the same-family successor before the same COMMIT.
+ * A request that loses the claim (concurrent or sequential replay) follows
+ * the reuse policy: the whole family is revoked in that transaction and the
+ * call rejects. Because family revocation, logout, role changes and
+ * deactivation serialize on the same row, a successor can never be inserted
+ * after one of them has committed.
+ */
+export async function rotateRefreshToken(token: string): Promise<RotatedRefreshSession> {
+  const payload = await decodeRefreshToken(token);
+
+  const outcome = await withUserSessionLock<RotationOutcome>(payload.sub, async (client, user) => {
+    if (!user) return { kind: 'rejected', reason: 'User not found' };
+
+    if (user.deactivated_at) {
+      // Revoke the presented JTI so a later reactivation cannot silently
+      // reuse it (PR #311 Finding #3).
+      await client.query(
+        'UPDATE refresh_tokens SET revoked = TRUE WHERE jti = $1 AND user_id = $2',
+        [payload.jti, payload.sub],
+      );
+      return { kind: 'rejected', reason: 'Account is deactivated' };
+    }
+
+    const claimed = await client.query(
+      `UPDATE refresh_tokens
+          SET revoked = TRUE
+        WHERE jti = $1 AND user_id = $2 AND family = $3 AND revoked = FALSE
+        RETURNING jti`,
+      [payload.jti, payload.sub, payload.family],
+    );
+    if (claimed.rowCount === 0) {
+      const existing = await client.query(
+        'SELECT 1 FROM refresh_tokens WHERE jti = $1 AND user_id = $2 AND family = $3',
+        [payload.jti, payload.sub, payload.family],
+      );
+      if (existing.rowCount === 0) return { kind: 'rejected', reason: 'Refresh token JTI not found' };
+      await client.query(
+        'UPDATE refresh_tokens SET revoked = TRUE WHERE family = $1 AND user_id = $2',
+        [payload.family, payload.sub],
+      );
+      return { kind: 'reuse' };
+    }
+
+    const claims: JwtPayload = { sub: user.id, username: user.username, role: user.role };
+    const successor = await signRefreshToken(claims, payload.family);
+    await client.query(
+      `INSERT INTO refresh_tokens (user_id, jti, family, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [user.id, successor.jti, successor.family, successor.expiresAt],
+    );
+    return {
+      kind: 'rotated',
+      session: {
+        accessToken: await generateAccessToken(claims),
+        refreshToken: successor.token,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          email: user.email,
+          displayName: user.display_name,
+        },
+      },
+    };
+  });
+
+  if (outcome.kind === 'rotated') return outcome.session;
+  if (outcome.kind === 'reuse') {
+    await reportRefreshTokenReuse(payload);
+    throw new Error('Refresh token reuse detected - family revoked');
+  }
+  throw new Error(outcome.reason);
+}
+
+/**
+ * Marks a specific JTI as revoked (logout).
  */
 export async function revokeToken(jti: string): Promise<void> {
   await query('UPDATE refresh_tokens SET revoked = TRUE WHERE jti = $1', [jti]);
 }
 
 /**
- * Revokes all tokens in a family (security breach response).
+ * Runs a revocation UPDATE under the owner's row lock so a concurrent
+ * rotation cannot insert a successor that the UPDATE's snapshot would miss.
+ * If the locked transaction hits a deadline (5s lock wait or 10s statement),
+ * the UPDATE runs without the users-row lock immediately — a revocation must
+ * not be skipped because the database was busy — and then once more under the
+ * lock. The unlocked UPDATE runs in its own transaction with the same 5s/10s
+ * deadlines, and a stalled holder is ended by its own 10s idle deadline, so
+ * neither step waits without bound. Acquiring the lock proves the stalled
+ * holder (and every rotation queued ahead) has finished, so a successor it
+ * inserted after the unlocked UPDATE's snapshot is revoked too. Only if that
+ * second wait also times out can such a successor survive (the pre-lock
+ * exposure); if the unlocked UPDATE timed out as well, nothing was revoked and
+ * RefreshSessionBusyError is thrown.
  */
-export async function revokeTokenFamily(family: string): Promise<void> {
-  await query('UPDATE refresh_tokens SET revoked = TRUE WHERE family = $1', [family]);
+async function revokeUnderUserLock(userId: string, sql: string, params: unknown[]): Promise<void> {
+  const revokeLocked = () => withUserSessionLock(userId, async (client) => {
+    await client.query(sql, params);
+  });
+  try {
+    await revokeLocked();
+    return;
+  } catch (error) {
+    if (!(error instanceof RefreshSessionBusyError)) throw error;
+  }
+
+  let ranUnlocked = true;
+  try {
+    await withBoundedTransaction((client) => client.query(sql, params));
+  } catch (error) {
+    if (!isDeadlineError(error)) throw error;
+    ranUnlocked = false;
+    logger.warn({ userId }, 'Unlocked refresh token revocation hit its deadline; retrying under the session lock');
+  }
+
+  try {
+    await revokeLocked();
+  } catch (retryError) {
+    if (!(retryError instanceof RefreshSessionBusyError) || !ranUnlocked) throw retryError;
+    logger.warn({ userId }, 'Refresh token revocation could not take the session lock; ran unlocked only');
+  }
 }
 
 /**
- * Revokes all refresh tokens for a user (logout).
+ * Revokes all tokens in a family (security breach response), serialized with
+ * rotation on the owner's row lock.
+ */
+export async function revokeTokenFamily(family: string): Promise<void> {
+  const owner = await query<{ user_id: string }>(
+    'SELECT user_id FROM refresh_tokens WHERE family = $1 LIMIT 1',
+    [family],
+  );
+  const userId = owner.rows[0]?.user_id;
+  if (!userId) return;
+  await revokeUnderUserLock(
+    userId,
+    'UPDATE refresh_tokens SET revoked = TRUE WHERE family = $1 AND user_id = $2',
+    [family, userId],
+  );
+}
+
+/**
+ * Revokes all refresh tokens for a user (logout), serialized with rotation
+ * on the user's row lock.
  */
 export async function revokeAllUserTokens(userId: string): Promise<void> {
-  await query('UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1', [userId]);
+  await revokeUnderUserLock(userId, 'UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1', [userId]);
 }
 
 /**

@@ -1,4 +1,6 @@
+import { LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
+import { withAuthCookieLock } from './auth-cookie-lock';
 
 const API_BASE = '/api';
 
@@ -22,33 +24,103 @@ export class ApiError extends Error {
   }
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+/**
+ * The refresh did not complete, but the session may still be valid: a network
+ * error, a server or proxy error, 408/429, or the backend's retry-safe busy
+ * 503 on every attempt. Callers keep the session and surface this error
+ * instead of logging out.
+ */
+export class RefreshUnavailableError extends ApiError {
+  constructor() {
+    super(503, 'Your session could not be refreshed right now. Please try again.');
+    this.name = 'RefreshUnavailableError';
+  }
+}
+
+/** Pauses before the second and third attempt after a retry-safe busy 503. */
+const REFRESH_RETRY_DELAYS_MS = [1_000, 3_000];
+
+/** A 503 whose body carries `code`: the backend rolled back, so a retry is safe. */
+async function isMarkedBusy(res: Response, code: string): Promise<boolean> {
+  if (res.status !== 503) return false;
+  const body: unknown = await res.json().catch(() => null);
+  return typeof body === 'object' && body !== null && 'code' in body && body.code === code;
+}
+
+const REFRESH_BUSY = Symbol('refresh busy');
+
+/**
+ * One `POST /auth/refresh`. Resolves the new access token, `null` when the
+ * session is gone (401/403 and other non-transient 4xx), or REFRESH_BUSY for
+ * the backend's retry-safe busy 503. Rejects with RefreshUnavailableError for
+ * every other transient failure without retrying: after a network error or a
+ * proxy 5xx the rotation may already have committed, and presenting the
+ * consumed cookie again would be treated as token reuse.
+ */
+async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
+  let res: Response;
   try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
+    res = await fetch(`${API_BASE}/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    useAuthStore.getState().setAuth(data.accessToken, data.user);
-    return data.accessToken;
   } catch {
-    return null;
+    throw new RefreshUnavailableError();
   }
+  if (res.ok) {
+    try {
+      const data = await res.json();
+      useAuthStore.getState().setAuth(data.accessToken, data.user);
+      return data.accessToken;
+    } catch {
+      return null;
+    }
+  }
+  if (await isMarkedBusy(res, REFRESH_BUSY_CODE)) return REFRESH_BUSY;
+  if (res.status >= 500 || res.status === 408 || res.status === 429) throw new RefreshUnavailableError();
+  return null;
 }
 
 /**
  * Deduplicates concurrent refresh calls. When multiple requests get 401
  * simultaneously (e.g. page load with expired token), only the first
  * triggers an actual refresh; all others await the same promise.
- * Without this, concurrent refreshes race to rotate the token, and the
- * backend's reuse detection revokes the entire token family.
+ *
+ * Each attempt runs under the browser-wide auth-cookie lock, so tabs sharing
+ * the HttpOnly refresh cookie never present it concurrently — the backend
+ * treats refresh tokens as single-use and revokes the whole family when one
+ * is presented twice. On every acquisition a tab first adopts a token another
+ * tab broadcast (auth-store BroadcastChannel) since this refresh began,
+ * instead of rotating again; without a broadcast it rotates the
+ * already-updated cookie in turn. After the backend's retry-safe busy 503 the
+ * lock is released for the backoff, so other tabs (and logout) are not held
+ * up and a sibling's successful refresh is adopted on the next attempt.
+ *
+ * Resolves `null` only when the session is gone (callers then clear auth);
+ * rejects with RefreshUnavailableError when the refresh did not complete, in
+ * which case callers must keep the session.
  */
 let pendingRefresh: Promise<string | null> | null = null;
 
+async function refreshWithBackoff(observedToken: string | null): Promise<string | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    const outcome = await withAuthCookieLock(async () => {
+      const current = useAuthStore.getState().accessToken;
+      if (current && current !== observedToken && !isTokenExpired(current)) return current;
+      return refreshAttempt();
+    });
+    if (outcome !== REFRESH_BUSY) return outcome;
+    const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) throw new RefreshUnavailableError();
+    const pause = Promise.withResolvers<void>();
+    setTimeout(pause.resolve, delay);
+    await pause.promise;
+  }
+}
+
 export function refreshAccessTokenOnce(): Promise<string | null> {
   if (!pendingRefresh) {
-    pendingRefresh = refreshAccessToken().finally(() => {
+    pendingRefresh = refreshWithBackoff(useAuthStore.getState().accessToken).finally(() => {
       pendingRefresh = null;
     });
   }
@@ -103,7 +175,16 @@ export async function apiFetch<T = unknown>(
     headers.set('Content-Type', 'application/json');
   }
 
-  let res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+  const request = () => fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+  // Login/registration responses replace the refresh cookie. Send them under
+  // the auth-cookie lock so a refresh in another tab cannot present the
+  // previous cookie concurrently and overwrite the new session's cookie with
+  // a successor of the old one.
+  const send = path === '/auth/login' || path === '/auth/register'
+    ? () => withAuthCookieLock(request)
+    : request;
+
+  let res = await send();
 
   // Reactive token refresh on 401 (covers both expired tokens and
   // page-reload where accessToken was cleared from memory but
@@ -112,7 +193,7 @@ export async function apiFetch<T = unknown>(
     const newToken = await refreshAccessTokenOnce();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+      res = await send();
     } else {
       useAuthStore.getState().clearAuth();
       throw new ApiError(401, 'Session expired');
@@ -205,23 +286,32 @@ function messageFromErrorBody(
 
 /**
  * Call the backend logout endpoint to revoke tokens and clear the refresh cookie,
- * then clear frontend auth state. Always clears frontend state even if the backend
- * call fails (e.g. network error or expired token).
+ * then clear frontend auth state. Frontend state is cleared even if the backend
+ * call fails (e.g. network error, proxy error or expired token), except on the
+ * backend's marked busy 503: the server could not revoke anything and kept the
+ * cookie, so the session stays and this rejects with an ApiError the caller
+ * shows, leaving a retry possible.
  */
 export async function logoutApi(): Promise<void> {
   const { accessToken } = useAuthStore.getState();
+  let res: Response | null = null;
   try {
     const headers: HeadersInit = {};
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;
     }
-    await fetch(`${API_BASE}/auth/logout`, {
+    // Logout clears the refresh cookie; keep it from overlapping another
+    // tab's refresh of the same cookie.
+    res = await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
       headers,
       credentials: 'include',
-    });
+    }));
   } catch {
     // Best effort — always clear frontend state below
+  }
+  if (res && await isMarkedBusy(res, LOGOUT_BUSY_CODE)) {
+    throw new ApiError(503, 'Sign-out did not complete. Please try again.', LOGOUT_BUSY_CODE);
   }
   useAuthStore.getState().clearAuth();
 }

@@ -124,7 +124,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
-import { COLLAB_WS_PROTOCOL, type OidcConfig } from '@compendiq/contracts';
+import { COLLAB_WS_PROTOCOL, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE, type OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -482,7 +482,12 @@ export async function buildApp() {
     }
 
     const code = (error as { code?: unknown }).code;
-    const publicCodes = new Set(['collab_session_active', 'confluence_modified']);
+    const publicCodes = new Set<string>([
+      'collab_session_active',
+      'confluence_modified',
+      REFRESH_BUSY_CODE,
+      LOGOUT_BUSY_CODE,
+    ]);
     const remoteVersion = (error as { remoteVersion?: unknown }).remoteVersion;
     const localVersion = (error as { localVersion?: unknown }).localVersion;
     reply.status(statusCode).send({

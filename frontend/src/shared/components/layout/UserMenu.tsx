@@ -2,6 +2,7 @@ import { useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { BarChart3, Compass, Keyboard, LogOut, Settings, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useOnboardingActions } from '../../hooks/use-onboarding';
@@ -15,6 +16,16 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
   const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
   const { reopen: reopenOnboarding } = useOnboardingActions();
   const [signOutOpen, setSignOutOpen] = useState(false);
+
+  // A 503 means the server revoked nothing and kept the session: say so and
+  // offer a retry instead of pretending the user is signed out.
+  const signOut = () => {
+    logoutApi().catch((error: unknown) => {
+      toast.error(error instanceof Error ? error.message : 'Sign-out did not complete. Please try again.', {
+        action: { label: 'Retry', onClick: signOut },
+      });
+    });
+  };
 
   return (
     <>
@@ -109,7 +120,7 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
         confirmLabel="Sign out"
         onConfirm={() => {
           setSignOutOpen(false);
-          void logoutApi();
+          signOut();
         }}
         onCancel={() => setSignOutOpen(false)}
       />

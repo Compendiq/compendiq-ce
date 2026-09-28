@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { toast } from 'sonner';
 import { UserMenu } from './UserMenu';
 
 const mockLogoutApi = vi.fn().mockResolvedValue(undefined);
@@ -207,6 +208,39 @@ describe('UserMenu', () => {
     await vi.waitFor(() => {
       expect(mockLogoutApi).toHaveBeenCalled();
     });
+  });
+
+  it('tells the user sign-out did not complete and retries from the toast', async () => {
+    vi.mocked(toast.error).mockClear();
+    mockLogoutApi
+      .mockRejectedValueOnce(new Error('Sign-out did not complete. Please try again.'))
+      .mockResolvedValueOnce(undefined);
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    fireEvent.click(screen.getByText('Sign out'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await vi.waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        'Sign-out did not complete. Please try again.',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Retry' }) }),
+      );
+    });
+    const action = vi.mocked(toast.error).mock.calls[0]![1]?.action;
+    if (!action || typeof action !== 'object' || !('onClick' in action)) throw new Error('toast offers no retry');
+    // The handler ignores its click event.
+    const click = new MouseEvent('click') as unknown as Parameters<typeof action.onClick>[0];
+    action.onClick(click);
+
+    await vi.waitFor(() => {
+      expect(mockLogoutApi).toHaveBeenCalledTimes(2);
+    });
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 
   it('does not sign out when the confirm is cancelled', async () => {

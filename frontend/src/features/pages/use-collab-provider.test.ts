@@ -263,4 +263,67 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(draft!.getText('draft').toString()).toBe('Draft during refresh');
     expect(result.current.writable).toBe(false);
   });
+
+  it('keeps the session and rejoins with growing pauses while the token refresh stays busy', async () => {
+    const busy = () => new Response(JSON.stringify({ statusCode: 503, message: 'busy', code: 'refresh_busy' }), {
+      status: 503, headers: { 'content-type': 'application/json' },
+    });
+    let refreshes = 0;
+    const refresh = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      refreshes += 1;
+      // Three full refresh rounds (3 attempts each) stay busy, then it succeeds.
+      if (refreshes <= 9) return busy();
+      return new Response(JSON.stringify({ accessToken: 'jwt-fresh', user }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '5',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); hydrate(socket, 'Draft during outage'); });
+    const draft = result.current.ydoc;
+
+    // Round 1: attempts at 0s, 1s, 4s give up; the rejoin waits 1s more.
+    await act(async () => { socket.close(4401, 'unauthorized'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(Socket.instances).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const rejoin = Socket.instances[1]!;
+    // The rejoin still carries the stale token; its 4401 retries the refresh.
+    expect(rejoin.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
+
+    // Round 2 gives up after 4s again; this time the rejoin waits 2s.
+    await act(async () => { rejoin.close(4401, 'unauthorized'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_999); });
+    expect(refresh).toHaveBeenCalledTimes(6);
+    expect(Socket.instances).toHaveLength(2);
+    // Meanwhile another tab refreshed and its token reached this tab.
+    act(() => { useAuthStore.getState().setAuth('jwt-other-tab', user); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const secondRejoin = Socket.instances[2]!;
+    expect(secondRejoin.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-other-tab']);
+
+    // That rejoin connects, which ends the outage: a later busy round starts
+    // the backoff over at 1s instead of the escalated 4s.
+    act(() => { secondRejoin.open(); });
+    expect(result.current.connected).toBe(true);
+    await act(async () => { secondRejoin.close(4401, 'unauthorized'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    expect(refresh).toHaveBeenCalledTimes(9);
+    expect(Socket.instances).toHaveLength(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(Socket.instances).toHaveLength(4);
+    const thirdRejoin = Socket.instances[3]!;
+
+    await act(async () => { thirdRejoin.close(4401, 'unauthorized'); });
+    const reconnect = Socket.instances[4]!;
+    expect(refresh).toHaveBeenCalledTimes(10);
+    expect(reconnect.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
+    expect(result.current.ydoc).toBe(draft);
+    expect(result.current.error).toBeNull();
+  });
 });

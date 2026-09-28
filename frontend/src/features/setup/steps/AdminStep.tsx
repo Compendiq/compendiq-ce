@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../stores/auth-store';
+import { withAuthCookieLock } from '../../../shared/lib/auth-cookie-lock';
 
 interface AdminStepProps {
   onNext: () => void;
@@ -25,12 +26,14 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
 
     setLoading(true);
     try {
-      const res = await fetch('/api/setup/admin', {
+      // The response sets the refresh cookie: serialize with other tabs'
+      // refreshes (see auth-cookie-lock).
+      const res = await withAuthCookieLock(() => fetch('/api/setup/admin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ username, password }),
-      });
+      }));
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({ message: 'Failed to create admin account' }));

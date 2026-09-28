@@ -30,6 +30,7 @@ vi.mock('bcrypt', () => ({
 const mockGenerateAccessToken = vi.fn().mockResolvedValue('mock-access-token');
 const mockGenerateRefreshToken = vi.fn().mockResolvedValue({ token: 'mock-refresh-token', jti: 'mock-jti' });
 const mockVerifyRefreshToken = vi.fn();
+const mockRotateRefreshToken = vi.fn();
 const mockRevokeToken = vi.fn();
 const mockRevokeAllUserTokens = vi.fn();
 const mockCleanupExpiredTokens = vi.fn();
@@ -38,6 +39,8 @@ vi.mock('../../core/plugins/auth.js', () => ({
   generateAccessToken: (...a: unknown[]) => mockGenerateAccessToken(...a),
   generateRefreshToken: (...a: unknown[]) => mockGenerateRefreshToken(...a),
   verifyRefreshToken: (...a: unknown[]) => mockVerifyRefreshToken(...a),
+  rotateRefreshToken: (...a: unknown[]) => mockRotateRefreshToken(...a),
+  RefreshSessionBusyError: class extends Error {},
   revokeToken: (...a: unknown[]) => mockRevokeToken(...a),
   revokeAllUserTokens: (...a: unknown[]) => mockRevokeAllUserTokens(...a),
   cleanupExpiredTokens: (...a: unknown[]) => mockCleanupExpiredTokens(...a),
@@ -454,22 +457,17 @@ describe('Auth routes', () => {
   // POST /refresh
   // ==========================================================================
 
+  // Rotation semantics (single-use claim, reuse, deactivation, missing user)
+  // run against real PostgreSQL in auth-refresh.test.ts; these cover the
+  // route's HTTP mapping only.
   describe('POST /api/auth/refresh', () => {
-    it('should rotate tokens and return a new accessToken', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        jti: 'old-jti',
-        family: 'token-family-1',
+    it('should set the rotated refresh cookie and return the new session', async () => {
+      const user = { id: TEST_USER.id, username: TEST_USER.username, role: 'user', email: null, displayName: null };
+      mockRotateRefreshToken.mockResolvedValue({
+        accessToken: 'new-access-token',
+        refreshToken: 'new-refresh-token',
+        user,
       });
-      // SELECT user by id
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
-      });
-      mockRevokeToken.mockResolvedValue(undefined);
-      mockGenerateAccessToken.mockResolvedValue('new-access-token');
-      mockGenerateRefreshToken.mockResolvedValue({ token: 'new-refresh-token', jti: 'new-jti' });
 
       const response = await app.inject({
         method: 'POST',
@@ -478,30 +476,11 @@ describe('Auth routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.accessToken).toBe('new-access-token');
-      expect(body.user).toEqual({
-        id: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        email: null,
-        displayName: null,
-      });
-
-      // Verify old token was revoked
-      expect(mockRevokeToken).toHaveBeenCalledWith('old-jti');
-
-      // Verify new refresh cookie was set
+      expect(mockRotateRefreshToken).toHaveBeenCalledWith('valid-refresh-token');
+      expect(JSON.parse(response.body)).toEqual({ accessToken: 'new-access-token', user });
       const setCookieHeader = response.headers['set-cookie'];
-      expect(setCookieHeader).toBeDefined();
       const cookieStr = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
       expect(cookieStr).toContain('kb_refresh=new-refresh-token');
-
-      // Verify family was passed for rotation tracking
-      expect(mockGenerateRefreshToken).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: TEST_USER.id }),
-        'token-family-1',
-      );
     });
 
     it('should return 401 when no refresh cookie is present', async () => {
@@ -515,78 +494,18 @@ describe('Auth routes', () => {
       expect(body.error).toContain('No refresh token');
     });
 
-    it('should return 401 when refresh token is invalid or expired', async () => {
-      mockVerifyRefreshToken.mockRejectedValue(new Error('Token expired'));
+    it('should return 401 without a cookie when rotation rejects the token', async () => {
+      mockRotateRefreshToken.mockRejectedValue(new Error('Refresh token reuse detected - family revoked'));
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'expired-token' },
+        cookies: { kb_refresh: 'replayed-token' },
       });
 
       expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-    });
-
-    it('should return 401 when user no longer exists', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: 'deleted-user-id',
-        username: 'deleted',
-        role: 'user',
-        jti: 'some-jti',
-        family: 'some-family',
-      });
-      // User lookup returns empty
-      mockQuery.mockResolvedValueOnce({ rows: [] });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'valid-token-deleted-user' },
-      });
-
-      expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-    });
-
-    // PR #311 Finding #3 — defence-in-depth: deactivated users must not be
-    // able to mint fresh access tokens via /refresh even if their refresh
-    // JTI row somehow survives deactivation.
-    it('should return 401 when user is deactivated', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        jti: 'some-jti',
-        family: 'some-family',
-      });
-      // User exists but is deactivated
-      mockQuery.mockResolvedValueOnce({
-        rows: [
-          {
-            id: TEST_USER.id,
-            username: TEST_USER.username,
-            role: TEST_USER.role,
-            email: null,
-            display_name: null,
-            deactivated_at: new Date('2026-01-01T00:00:00Z'),
-          },
-        ],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'valid-token-deactivated-user' },
-      });
-
-      expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-      // The deactivated-user refresh must not mint a new access token.
-      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+      expect(JSON.parse(response.body).error).toContain('Invalid refresh token');
+      expect(response.headers['set-cookie']).toBeUndefined();
     });
   });
 
@@ -639,9 +558,7 @@ describe('Auth routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Logged out');
 
-      // Verify specific refresh JTI was revoked
-      expect(mockRevokeToken).toHaveBeenCalledWith('refresh-jti');
-      // Verify all user tokens were revoked
+      // Every token of the cookie's user (the presented JTI included) was revoked
       expect(mockRevokeAllUserTokens).toHaveBeenCalledWith(TEST_USER.id);
     });
 

@@ -205,6 +205,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy cursors are rejected with 400; the conversation sidebar restarts its
   traversal from the first page when that happens.
 
+- **Refresh-token rotation is atomic and single-use.** `POST /api/auth/refresh`
+  now claims the presented refresh token with a conditional update and inserts
+  its successor in the same transaction under the user's row lock, so one
+  refresh token can never yield two usable successors. A replayed or
+  concurrently re-presented token revokes its family as before, and family
+  revocation, logout, role changes and deactivation serialize with rotation so
+  no successor can outlive them. Lock waits are bounded: a refresh that times
+  out returns a retry-safe 503 (`code: "refresh_busy"`) without consuming the
+  cookie, a rotation that stalls inside its transaction is ended by the
+  database after 10s idle, and a revocation that times out runs without the
+  lock under its own deadlines and then retries once under it, so a stalled
+  rotation's successor is still revoked. If a logout's revocation cannot run at
+  all, logout answers 503 (`code: "logout_busy"`) and keeps the cookie instead
+  of reporting success, and the SPA keeps the session and offers a retry. In
+  the SPA, refresh, login, registration, setup, SSO exchange and logout
+  requests are serialized across tabs (Web Locks, or an IndexedDB lease on
+  plain-HTTP deployments), so tabs sharing the cookie no longer log each other
+  out by refreshing at the same moment. A refresh that fails transiently no
+  longer signs the user out: only the retry-safe 503 is retried (with the lock
+  released between attempts), and network or proxy errors are reported without
+  a retry.
+
 - **Page saves are now single-flight per editing session (#1662).** Rapid
   repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
   draw.io work or commit a collaborative snapshot, now share the operation
