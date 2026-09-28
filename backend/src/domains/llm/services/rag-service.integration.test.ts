@@ -7,7 +7,7 @@ import {
 } from '../../../test-db-helper.js';
 import { query, getPool } from '../../../core/db/postgres.js';
 import pgvector from 'pgvector';
-import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { ragRetrievalPagesPredicate } from '../../../core/services/page-visibility.js';
 
 // Deterministic 1024-dim vector for fixtures and queries
 function fakeVec(seed: number): number[] {
@@ -523,6 +523,67 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     const ids = results.map((r) => r.pageId).sort((a, b) => a - b);
     expect(ids).toContain(pageA);
     expect(ids).toContain(pageB);
+  });
+
+  // Page-restriction policy: non-RAG surfaces now apply page restrictions through
+  // `visiblePagesPredicate`, while retrieval keeps `ragRetrievalPagesPredicate`
+  // (space-level) and the flag-gated post-filter. Every retrieval leg and the
+  // identifier pin with its excerpt must still admit a restricted page in CE.
+  it('flag OFF — both legs and the identifier pin still admit a restricted page without an ACE', async () => {
+    ragPermissionEnforcementEnabled = false;
+
+    const user = '12121212-1212-4121-8121-121212121212';
+    await ensureUser(user);
+    await ensureSpaceAndViewerRole(user, 'OPS');
+    const restricted = await insertPage({
+      spaceKey: 'OPS',
+      title: 'Quarantine Ledger',
+      bodyText: 'quarantine ledger reconciliation steps',
+      vec: fakeVec(7),
+      inheritPerms: false,
+    });
+
+    expect((await vectorSearch(user, fakeVec(7), 10)).map((r) => r.pageId)).toContain(restricted);
+    expect((await keywordSearch(user, 'quarantine ledger', 10)).map((r) => r.pageId)).toContain(restricted);
+    const pinned = await hybridSearch(user, 'find "Quarantine Ledger"', 5, undefined, { pinIdentifiers: true });
+    expect(pinned[0]).toMatchObject({ pageId: restricted, pinned: true });
+  });
+
+  it('flag ON — the post-filter still decides restricted retrieval, including group ACEs and the pin', async () => {
+    ragPermissionEnforcementEnabled = true;
+
+    const reader = '13131313-1313-4131-8131-131313131313';
+    const groupReader = '14141414-1414-4141-8141-141414141414';
+    await ensureUser(reader);
+    await ensureUser(groupReader);
+    await ensureSpaceAndViewerRole(reader, 'OPS');
+    await ensureSpaceAndViewerRole(groupReader, 'OPS');
+    const group = await query<{ id: number }>(
+      "INSERT INTO groups (name) VALUES ('rag-restriction-legal') RETURNING id",
+    );
+    await query('INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2)', [
+      group.rows[0]!.id,
+      groupReader,
+    ]);
+    const restricted = await insertPage({
+      spaceKey: 'OPS',
+      title: 'Quarantine Ledger',
+      bodyText: 'quarantine ledger reconciliation steps',
+      vec: fakeVec(7),
+      inheritPerms: false,
+    });
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission, source, synced_at)
+       VALUES ('page', $1, 'group', $2, 'read', 'confluence', NOW())`,
+      [restricted, String(group.rows[0]!.id)],
+    );
+
+    const pinQuery = 'find "Quarantine Ledger"';
+    expect((await hybridSearch(reader, pinQuery, 5, undefined, { pinIdentifiers: true })).map((r) => r.pageId))
+      .not.toContain(restricted);
+    const allowed = await hybridSearch(groupReader, pinQuery, 5, undefined, { pinIdentifiers: true });
+    expect(allowed[0]).toMatchObject({ pageId: restricted, pinned: true });
   });
 
   // Case 2: space access but no page-read ACE → blocked from restricted chunks.
@@ -1096,7 +1157,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
     // a join/predicate combination the planner cannot serve from an index
     // path) — at which point the leg silently degrades to a full scan on
     // the chat path. The probe therefore mirrors vectorSearch's query
-    // BYTE-FOR-SHAPE: same JOIN, same visiblePagesPredicate, same
+    // BYTE-FOR-SHAPE: same JOIN, same ragRetrievalPagesPredicate, same
     // deleted_at filter, same select list — a bare single-table probe
     // certifies a layer that was never at risk (#1269 review m11). Tiny
     // fixture tables make the planner prefer a seq scan on cost alone, so
@@ -1128,7 +1189,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans
                 pe.embedding <=> $2 AS distance
          FROM page_embeddings pe
          JOIN pages cp ON pe.page_id = cp.id
-         WHERE ${visiblePagesPredicate(1, 4)}
+         WHERE ${ragRetrievalPagesPredicate(1, 4)}
          AND cp.deleted_at IS NULL
          ORDER BY pe.embedding <=> $2
          LIMIT $3`,

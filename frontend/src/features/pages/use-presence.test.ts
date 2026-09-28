@@ -248,14 +248,14 @@ describe('usePresence', () => {
     unmount();
   });
 
-  it('does not reconnect after a 403 from the SSE endpoint', async () => {
+  it.each([403, 404])('does not reconnect after a %i from the SSE endpoint', async (status) => {
     let sseOpens = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = typeof url === 'string' ? url : (url as URL).toString();
       if (init?.method === 'POST' && urlStr.includes('/heartbeat')) return new Response(null, { status: 204 });
       if (init?.method === 'DELETE') return new Response(null, { status: 204 });
       sseOpens += 1;
-      return new Response(null, { status: 403 });
+      return new Response(null, { status });
     });
 
     const { unmount } = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });

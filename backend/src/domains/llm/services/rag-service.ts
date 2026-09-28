@@ -12,7 +12,7 @@ import {
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
 import { chooseLexicalParser } from '../../../core/utils/lexical-query.js';
-import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { ragRetrievalPagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
@@ -340,7 +340,7 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * `admin_settings.rag_ef_search` (default 100), resolved by `efSearchFor`.
  *
  * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
- * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
+ * as an additional predicate ALONGSIDE `ragRetrievalPagesPredicate` — it can only
  * ever shrink the ACL-visible set, never widen it. Standalone pages carry no
  * `space_key` (NULL), so scoping excludes them, matching the keyword-mode
  * filter `routes/knowledge/search.ts` has always applied. Optional and
@@ -358,7 +358,7 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * `halfvec`, and `<=>` resolves the untyped parameter from the column's own
  * type — a `::vector` cast would break exactly the halfvec case the shadow
  * tiering exists for. Everything but the column identifier — the fan-out, the
- * ef_search coverage, `visiblePagesPredicate` — is shared by construction.
+ * ef_search coverage, `ragRetrievalPagesPredicate` — is shared by construction.
  */
 export type VectorSearchColumn = 'embedding' | 'embedding_next';
 
@@ -461,7 +461,7 @@ export async function vectorSearch(
                   pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
-           WHERE ${visiblePagesPredicate(1, 4)}
+           WHERE ${ragRetrievalPagesPredicate(1, 4)}
            AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
            ORDER BY pe.${column} <=> $2
            LIMIT $3`,
@@ -603,7 +603,7 @@ export async function keywordSearch(
       //  - `cand` is the page CANDIDATE UNION: pages whose `pages.tsv`
       //    matches (unchanged, index-driven, and the ONLY contributor of an
       //    authored rank) plus pages holding a matching DERIVED chunk. Both
-      //    arms carry `visiblePagesPredicate` and the space narrowing at the
+      //    arms carry `ragRetrievalPagesPredicate` and the space narrowing at the
       //    same parameter indexes — the derived arm reads derived TEXT, so
       //    D14 must hold inside the query, not over its output.
       //  - `ranked` collapses the union with `MAX(rank) GROUP BY page_id`,
@@ -624,7 +624,7 @@ export async function keywordSearch(
       // page's rank is the same `ts_rank` value it was before this change, so
       // arm C's lexical numbers stand beside the historical ones.
       const tsq = lexicalTsQuery(parser, ftsLang, 2);
-      const visibility = visiblePagesPredicate(1, 4);
+      const visibility = ragRetrievalPagesPredicate(1, 4);
       const spaceFilter = spaceKey ? ' AND cp.space_key = $5' : '';
       const result = await query<{
         page_id: number;
@@ -1072,7 +1072,7 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
        ))::int AS embedded,
        COUNT(*)::int AS total
      FROM pages cp
-     WHERE ${visiblePagesPredicate(1, 2)}
+     WHERE ${ragRetrievalPagesPredicate(1, 2)}
        AND cp.deleted_at IS NULL
        AND COALESCE(cp.page_type, 'page') != 'folder'
        AND cp.body_html IS NOT NULL
@@ -1506,7 +1506,7 @@ async function lookupIdentifier(
                    best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
             FROM pages cp
             ${bestChunkLateralSql(tsq)}
-            WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+            WHERE ${ragRetrievalPagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
   };
   type Row = {
     page_id: number;

@@ -753,6 +753,14 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         finish(4404, 'not_found');
         return;
       }
+      // Authorize before revealing lifecycle state: a page the caller may not
+      // access closes exactly like a missing one, so `trashed`/`folder` never
+      // confirm that an unreadable page exists. The trash-inclusive check
+      // keeps the specific reasons for users who could access the page.
+      if (!(await userCanAccessPage(auth.userId, pageId, undefined, true))) {
+        finish(4404, 'not_found');
+        return;
+      }
       const row = page.rows[0]!;
       if (row.deleted_at) {
         finish(4404, 'trashed');
@@ -760,12 +768,6 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       }
       if ((row.page_type ?? 'page') === 'folder') {
         finish(4404, 'folder');
-        return;
-      }
-
-      const allowed = await userCanAccessPage(auth.userId, pageId);
-      if (!allowed) {
-        finish(4403, 'forbidden');
         return;
       }
 

@@ -406,7 +406,8 @@ describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Re
       const denied = await fetch(`${baseUrl}/api/pages/${pageA}/presence`, {
         headers: { authorization: `Bearer ${readerId}` },
       });
-      expect(denied.status).toBe(403);
+      // Unreadable answers exactly like missing (no existence oracle).
+      expect(denied.status).toBe(404);
       await denied.arrayBuffer();
 
       const revokedBaseline = randomUUID();

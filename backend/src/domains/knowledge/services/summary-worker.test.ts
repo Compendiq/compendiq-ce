@@ -153,7 +153,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   });
 
   describe('getSummaryStatus', () => {
-    it('should return aggregate counts across all pages', async () => {
+    it('should return aggregate counts across the pages the caller may read', async () => {
       // Insert pages with various summary statuses
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
@@ -164,7 +164,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
         [testSpaceKey],
       );
 
-      const status = await getSummaryStatus();
+      const status = await getSummaryStatus(testUserId);
       expect(status.totalPages).toBe(4);
       expect(status.summarizedPages).toBe(1);
       expect(status.pendingPages).toBe(1);

@@ -21,6 +21,9 @@ const noRedis = null as unknown as RedisClientType;
 // Lock, resolver, sweep and candidate queries run against a shared CI Postgres
 // before the provider request lands; the default 1s wait is too tight there.
 const HELD_WAIT = { timeout: 10_000 };
+// getQualityStatus scopes its page counts to a caller; these tests only read
+// the worker-wide `isProcessing`, so any caller id serves.
+const STATUS_READER = '00000000-0000-4000-8000-000000000001';
 
 function respondWithReport(res: ServerResponse, text = report): void {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -135,7 +138,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
     expect(rows[0]!.quality_error).not.toContain('PRIVATE_PROVIDER_BODY');
     expect(rows[1]!.quality_error).toContain('parse');
     expect(rows[2]!.quality_score).toBe(75);
-    expect((await getQualityStatus()).isProcessing).toBe(false);
+    expect((await getQualityStatus(STATUS_READER)).isProcessing).toBe(false);
   });
 
   it('does not abandon the next article when a page update unexpectedly rejects', async () => {
@@ -163,7 +166,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
     const first = entrypoint === 'direct' ? processBatch() : triggerQualityBatch();
     try {
       await vi.waitFor(() => expect(held).toBeDefined(), HELD_WAIT);
-      expect((await getQualityStatus()).isProcessing).toBe(true);
+      expect((await getQualityStatus(STATUS_READER)).isProcessing).toBe(true);
       // Make the row look recoverable even to the stale-row sweep. The shared
       // entrypoint lock, not just the timestamp hedge, must prevent recovery.
       await query(`UPDATE pages SET quality_analyzed_at = NULL WHERE title = 'in flight'`);
@@ -177,7 +180,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
     }
     expect(calls).toBe(2);
     expect((await pageStates()).map((row) => row.quality_status)).toEqual(['analyzed', 'analyzed']);
-    expect((await getQualityStatus()).isProcessing).toBe(false);
+    expect((await getQualityStatus(STATUS_READER)).isProcessing).toBe(false);
   });
 
   it('retains the five-page batch boundary rather than draining the backlog', async () => {
@@ -231,7 +234,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
       expect((await pageStates()).map((row) => row.quality_status)).toEqual(['analyzed', 'pending']);
       expect(calls).toBe(1);
       expect(await redis!.get(lockKey)).toBe('replacement-owner');
-      expect((await getQualityStatus()).isProcessing).toBe(false);
+      expect((await getQualityStatus(STATUS_READER)).isProcessing).toBe(false);
     } finally {
       // Let any held response finish before restoring timers or DB state.
       respond = (res) => respondWithReport(res);

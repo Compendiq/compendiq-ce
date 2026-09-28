@@ -186,7 +186,7 @@ quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
 that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
 clicks). Since migration 109 (#1527) **`judged_by` is the sixth key column**:
 the stored page-id arrays are retrieved under the judging admin's
-`visiblePagesPredicate`, so a key without the judge let one admin's click
+`ragRetrievalPagesPredicate`, so a key without the judge let one admin's click
 physically overwrite another admin's evidence. One query is still ONE McNemar
 trial, and that invariant now lives in the READ path: `judgementsForReport`
 collapses to `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC,
@@ -786,10 +786,9 @@ page-derived space summaries use the existing caller-bound list definition:
 Confluence pages in assigned spaces, shared standalone pages, and the caller's
 own private standalone pages. System administrators retain that same list
 behavior; hierarchy reads do not introduce an admin bypass. The focused graph
-(`/pages/:id/graph/local`) additionally keeps `authorizedPageIds` (page ACEs for
-`inherit_perms = false` Confluence pages) for its center, vertex set and
-traversal, as it did before; an ACE-denied parent there is a hidden parent.
-When a visible child has an invisible direct
+(`/pages/:id/graph/local`) resolves its center, vertex set and traversal through
+`authorizedPageIds`, which is this same predicate, so an ACE-denied parent there
+is a hidden parent. When a visible child has an invisible direct
 parent, present the child as a root (`parentId: null`) and rebase every
 descendant's local-tree depth from that visible root; breadcrumbs keep only the
 contiguous visible suffix and children traversal stops at the hidden node.
@@ -815,11 +814,39 @@ depends on (`getUserAccessibleSpaces`, space source), then run the access gate
 before serving a cached body (#817); capturing it after the RBAC read lets a
 pre-revocation fill publish under the post-revocation generation. The
 exception is an RBAC input that is itself part of the cache key, as in
-`/pages/filters` (`filters:v2:<sorted spaces>`): a request with the fresh list
+`/pages/filters` (`filters:v3:<sorted spaces>`): a request with the fresh list
 misses the stale entry, so reading the spaces first is safe there.
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.
+
+**Page restrictions apply to every non-RAG read; RAG keeps its own gate.**
+`visiblePagesPredicate` is that list definition PLUS `userCanAccessPage`'s
+restriction arm: a Confluence page with `inherit_perms = FALSE` also needs a
+page ACE for the caller (user principal, or a group they belong to), in both
+editions. Admins are exempt from that arm only — their listings keep
+restricted pages and still hide other users' private standalone pages. Every
+surface that returns page rows, titles, snippets, labels, counts, hierarchy or
+bodies to a user goes through it (or `authorizedPageIds` for id gates):
+lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
+rows too: a pool of `max(rag_fetch_width, 2 × limit)` pages is authorized BEFORE
+the `limit` slice, so results fall short only when more than `pool − limit`
+unreadable pages rank in it or fewer than `limit` readable pages match, and the analytics row counts the returned set),
+graphs, space summaries, pins, embedding
+status, sub-page LLM
+context, duplicates, verification, versions, exports, attachments, bulk
+selection, drafts, presence, watch and LLM conversation/page
+references. A restricted page answers
+exactly like a missing one, and a hidden restricted parent re-roots its
+children like a hidden private parent. Never use it inside RAG retrieval:
+retrieval SQL (both legs, lexical chunk resolution, the identifier pin and its
+excerpt, the coverage denominator; shadow compare and the production
+benchmark through them) uses `ragRetrievalPagesPredicate`, which is
+space-level by design (ADR-022/ADR-023) and gated per page only by the EE
+`rag_permission_enforcement` post-filter. ACE rows and group memberships
+behind page ACEs are fenced in the database (migration 129 queues the pages;
+the page publication worker bumps the `pages` generation), so sync, relocate
+and the EE bulk route need no cache code of their own.
 
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their

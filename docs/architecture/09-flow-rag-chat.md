@@ -222,7 +222,8 @@ reopened answer shows the same thumbnails rather than a duplicate page chip;
 `similarity` on that shape stays `null` either way.
 `GET /llm/conversations/:id` annotates a
 source `unavailable: true` at read time when its page is trashed or no longer
-visible to the caller (`visiblePagesPredicate`, the retrieval path's own rule).
+visible to the caller (`visiblePagesPredicate`, the non-RAG list rule, which
+also applies page restrictions).
 
 `search_analytics.max_score` deliberately still stores the **fusion** value for
 `hybrid` and `keyword_fallback` rows. Repointing it at `vectorScore` would make
@@ -316,7 +317,7 @@ flowchart LR
   `page_image_analyses`, which is what keeps the query path independent of the
   analysis store.
 - **Security.** The derived arm is the one NEW place a lexical candidate can
-  enter, so it joins `pages` and carries the same `visiblePagesPredicate` the
+  enter, so it joins `pages` and carries the same `ragRetrievalPagesPredicate` the
   authored arm does — inside the query, because it reads derived TEXT
   (ADR-027 D14).
 - **The rerank window does not move.** A derived document goes through the
@@ -1277,8 +1278,28 @@ count, so before − kept IS the ACL rejection count again. When the feature
 is off (CE or EE without the flag), the second post-filter does not run; the
 fetch width applies either way.
 
+**Retrieval is the only space-level page reader.** Every non-RAG
+surface — lists, trees, search result rows, graphs, counts, pins, sub-page
+context — applies page restrictions in both editions through
+`visiblePagesPredicate`. Retrieval SQL keeps its own named
+`ragRetrievalPagesPredicate` (space-level; the vector and keyword legs,
+lexical chunk resolution, the identifier pin and its excerpt, and the
+embedding-coverage denominator that describes that corpus), and restriction
+enforcement inside retrieval stays this flag-gated post-filter. `/api/search`
+semantic and hybrid modes reuse the retrieval legs but retrieve a page-search
+candidate pool of `max(rag_fetch_width, 2 × limit)` pages (capped at
+`RAG_FETCH_WIDTH_MAX`), authorize the whole pool through
+`visiblePagesPredicate`, and only then slice to `limit`. A page search
+therefore never shows a restricted page the keyword mode would hide, and a
+response is short only when fewer than `limit` readable pages rank inside the
+pool — too few readable matches, or more than `pool − limit` unreadable pages
+ranked above them. The route suppresses `hybridSearch`'s own analytics row
+and records one for the returned set, so `result_count` is what the caller
+received.
+
 **Fusion has a stable head.** When the stage limit exceeds the configured
-width (`/api/search?mode=hybrid&limit=11..20` at the default width in CE, and
+width (`/api/search?mode=hybrid` with `limit ≥ 6` at the default width in CE,
+because its pool is `2 × limit`, and
 every EE-ACL request whose `ceil(topK×1.5)` floor exceeds it), fusion runs
 twice: the head takes its **order** from RRF over the first width rows of each
 leg — the same page sequence a narrower request returns — its **entries** from
@@ -1322,7 +1343,8 @@ retrieved chunks. Before assembly, `/llm/ask` enforces the same access check
 as `GET /pages/:id` on the parent (`userCanAccessPage`) and skips the branch
 on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
 spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
-every descendant query, so cross-space or soft-deleted sub-pages never reach
+every descendant query, so cross-space, page-restricted (no ACE for the
+caller, in both editions) or soft-deleted sub-pages never reach
 the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 
 ## Image input flow (#1154)
@@ -1429,7 +1451,7 @@ turn.
 RBAC, no per-page ACE — and `attachment-store.test.ts` walks `src/routes` and
 fails if any file there so much as names it. That guard is the reason the pick
 lives behind a service boundary: the read is safe *only* because retrieval has
-already applied `visiblePagesPredicate` (and the EE per-page filter) to the
+already applied `ragRetrievalPagesPredicate` (and the EE per-page filter) to the
 pages it returned, and the service's whole input is that post-ACL set. Nothing
 was added to an allow-list, because there is no allow-list — the mechanism is
 a directory walk, and `domains/llm` is outside it by construction. A future
@@ -1815,7 +1837,7 @@ test pins that.
   `keywordSearch(userId, question, limit, opts)` both take an optional
   `opts.spaceKey`, threaded into `HybridSearchOptions.spaceKey` and applied
   as an `AND cp.space_key = $n` predicate alongside — never instead of —
-  `visiblePagesPredicate`, so it can only narrow the ACL-visible set, never
+  `ragRetrievalPagesPredicate`, so it can only narrow the ACL-visible set, never
   widen it. Local pages can belong to named spaces and follow the same
   `cp.space_key = $n` filter; unassigned pages are excluded by a selected
   space. Optional and `undefined` by default: `/llm/ask`, deep search

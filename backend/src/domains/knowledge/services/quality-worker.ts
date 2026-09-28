@@ -29,6 +29,8 @@
  */
 
 import { query } from '../../../core/db/postgres.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
@@ -543,9 +545,12 @@ export async function forceQualityRescan(): Promise<number> {
 }
 
 /**
- * Get aggregate quality analysis status.
+ * Get aggregate quality analysis status over the pages `userId` may read
+ * (`visiblePagesPredicate`, the embedding-status scope): any signed-in user
+ * reads these counts, so a page they cannot see must not move them.
+ * `isProcessing`, `lastRunAt` and the model describe the worker and stay global.
  */
-export async function getQualityStatus(): Promise<{
+export async function getQualityStatus(userId: string): Promise<{
   totalPages: number;
   analyzedPages: number;
   analyzingPages: number;
@@ -558,6 +563,7 @@ export async function getQualityStatus(): Promise<{
   intervalMinutes: number;
   model: string;
 }> {
+  const spaces = await getUserAccessibleSpaces(userId);
   const [result, assignment] = await Promise.all([
     query<{
       total: string;
@@ -576,8 +582,9 @@ export async function getQualityStatus(): Promise<{
          COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
          COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
          ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
-       FROM pages
-       WHERE deleted_at IS NULL`,
+       FROM pages cp
+       WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}`,
+      [spaces, userId],
     ),
     resolveQualityAssignment(),
   ]);

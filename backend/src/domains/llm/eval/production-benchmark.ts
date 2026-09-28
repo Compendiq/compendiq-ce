@@ -142,7 +142,7 @@ export async function createProductionBenchmarkRun(
  * `requestedBy` is required here for the reason `fetchBenchmarkRun` states
  * (review r2): this report's `queries[].baseline.pages` carries page TITLES
  * that `hybridSearch` retrieved under the STARTING admin's own ACL, and
- * `visiblePagesPredicate` admits their private standalone pages — so an
+ * `ragRetrievalPagesPredicate` admits their private standalone pages — so an
  * unscoped read hands admin B titles admin A can see and B cannot. It was the
  * one caller of the shared lifecycle module that omitted the argument while
  * the compare side beside it passed it.

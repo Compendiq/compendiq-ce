@@ -266,7 +266,7 @@ const DEFAULT_DRIFT_TOLERANCE = 0.05;
  * already has them.
  *
  * For ids-mode: queries `pages` filtered by id OR confluence_id, restricted
- * to the user's RBAC scope (own standalone OR accessible spaces). Returns the
+ * to the pages the caller may read (`visiblePagesPredicate`). Returns the
  * matching rows, the input ids that didn't resolve, and the input ids that
  * resolved to two different pages. **Each input id contributes at most one
  * row** — it lands in exactly one of the three.
@@ -326,17 +326,16 @@ export async function resolveBulkSelection(
       content_revision: string;
       lifecycle_revision: string;
     }>(
-      // Deliberately NOT visiblePagesPredicate(): ids-mode grants owners access
-      // to their private pages regardless of visibility, and the space branch
-      // is not gated on source = 'confluence'.
+      // Same read authorization as lists (`visiblePagesPredicate`, incl. page
+      // restrictions): an id the caller may not read resolves like an id that
+      // does not exist.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels,
               cp.created_by_user_id, cp.content_revision::text, cp.lifecycle_revision::text
          FROM pages cp
        WHERE (cp.id::text = ANY($1::text[]) OR cp.confluence_id = ANY($2::text[]))
          AND cp.deleted_at IS NULL
-         AND ((cp.source = 'standalone' AND (cp.visibility = 'shared' OR cp.created_by_user_id = $3))
-              OR cp.space_key = ANY($4::text[]))`,
-      [numericIds, confluenceStringIds, userId, accessibleSpaces],
+         AND ${visiblePagesPredicate(3, 4)}`,
+      [numericIds, confluenceStringIds, accessibleSpaces, userId],
     );
 
     // Match each *input* id to the row(s) it hit, rather than mapping each row

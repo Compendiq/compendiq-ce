@@ -18,6 +18,7 @@ import {
   insertStandalonePage,
   insertUser,
 } from '../knowledge/pages.test-helpers.js';
+import { grantSpaceRole } from '../knowledge/page-restriction.test-helpers.js';
 import { llmConversationRoutes } from './llm-conversations.js';
 
 const CONV_1 = '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a';
@@ -433,6 +434,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
     });
 
     it('returns the caller’s persisted improvement history and filters it by Confluence page id', async () => {
+      // The page link is re-authorised on read, so the caller needs ENG access.
+      await grantSpaceRole(userId, 'ENG');
       const firstPage = await insertConfluencePage('page-abc', 'First page', 'ENG');
       const secondPage = await insertConfluencePage('page-other', 'Second page', 'ENG');
       const firstId = await insertImprovement({

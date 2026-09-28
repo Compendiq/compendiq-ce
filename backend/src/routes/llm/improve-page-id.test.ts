@@ -243,7 +243,8 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(response.statusCode).toBe(200);
 
     expect(selects[0]!.sql).toContain('WHERE id = $1');
-    expect(selects[0]!.params).toEqual([11]);
+    // The lookup also binds the caller's readable spaces and id (visibility gate).
+    expect(selects[0]!.params[0]).toBe(11);
     const insertCall = (mockQuery.mock.calls as unknown[][]).find(
       (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
     );

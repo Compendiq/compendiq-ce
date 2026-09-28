@@ -17,6 +17,9 @@ let server: Server;
 let baseUrl: string;
 let calls = 0;
 let respond: (response: ServerResponse) => void;
+// Status counts cover the caller's readable pages; an administrator reads
+// every page in the SUMMARY space.
+let statusReaderId: string;
 
 function sendSummary(response: ServerResponse, content = 'The deployment runs nightly.') {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -71,6 +74,10 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     calls = 0;
     respond = (response) => sendSummary(response);
     await query("INSERT INTO spaces (space_key, space_name) VALUES ('SUMMARY', 'Summary tests')");
+    const reader = await query<{ id: string }>(
+      "INSERT INTO users (username, password_hash, role) VALUES ('summary-status-admin', 'x', 'admin') RETURNING id",
+    );
+    statusReaderId = reader.rows[0]!.id;
     const provider = await query<{ id: string }>(
       `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
        VALUES ('summary-test', $1, 'none', TRUE, $2) RETURNING id`,
@@ -102,7 +109,7 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     expect(failed).toMatchObject({ summary_status: 'failed', summary_retry_count: 1, summary_text: null });
     expect(failed.summary_error).toContain('HTTP 400');
     expect(failed.summary_error).not.toContain(PRIVATE_PROVIDER_BODY);
-    expect((await getSummaryStatus()).isProcessing).toBe(false);
+    expect((await getSummaryStatus(statusReaderId)).isProcessing).toBe(false);
 
     respond = (response) => sendSummary(response);
     expect(await runSummaryBatch('manual-model')).toEqual({ processed: 1, errors: 0 });
@@ -139,7 +146,7 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     };
 
     expect(await runSummaryBatch()).toEqual({ processed: 0, errors: 5 });
-    const status = await getSummaryStatus();
+    const status = await getSummaryStatus(statusReaderId);
     expect(status.failedPages).toBe(5);
     expect(status.pendingPages).toBe(1);
     expect(calls).toBe(3); // Remaining failures are real breaker rejections, not HTTP requests.
@@ -163,13 +170,13 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     const first = owner === 'direct' ? runSummaryBatch() : triggerSummaryBatch();
     try {
       await vi.waitFor(() => expect(heldResponse).toBeDefined(), HELD_WAIT);
-      expect((await getSummaryStatus()).isProcessing).toBe(true);
+      expect((await getSummaryStatus(statusReaderId)).isProcessing).toBe(true);
       expect((await readPage(id)).summary_status).toBe('summarizing');
 
       expect(await runSummaryBatch()).toEqual({ processed: 0, errors: 0 });
       await triggerSummaryBatch();
       expect((await readPage(id)).summary_status).toBe('summarizing');
-      expect((await getSummaryStatus()).isProcessing).toBe(true);
+      expect((await getSummaryStatus(statusReaderId)).isProcessing).toBe(true);
       expect(calls).toBe(1);
     } finally {
       if (heldResponse) sendSummary(heldResponse);
@@ -177,7 +184,7 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     }
 
     expect(await readPage(id)).toMatchObject({ summary_status: 'summarized', summary_retry_count: 0 });
-    expect((await getSummaryStatus()).isProcessing).toBe(false);
+    expect((await getSummaryStatus(statusReaderId)).isProcessing).toBe(false);
     expect(await runSummaryBatch()).toEqual({ processed: 0, errors: 0 });
     expect(calls).toBe(1);
   });

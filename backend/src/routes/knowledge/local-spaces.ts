@@ -352,7 +352,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // Capture the cache generation before reading any input the fill depends
     // on (space source, RBAC spaces). An invalidation that lands after an
     // input read then fences this fill instead of publishing it as current.
-    const cacheKey = `space-tree:v2:${key}`;
+    const cacheKey = `space-tree:v3:${key}`;
     const { value: cached, generation } = await cache.getWithGeneration(
       userId,
       'pages',

@@ -14,9 +14,10 @@ const adminMax = async () => (await getRateLimits()).admin.max;
 export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // GET /api/llm/quality-status - aggregate quality analysis stats
-  fastify.get('/llm/quality-status', async () => {
-    return getQualityStatus();
+  // GET /api/llm/quality-status - aggregate quality analysis stats over the
+  // pages the caller may read
+  fastify.get('/llm/quality-status', async (request) => {
+    return getQualityStatus(request.userId);
   });
 
   // POST /api/llm/quality-rescan - admin only: force re-analysis of all pages
@@ -30,9 +31,10 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
 
   // ======== Background Summary Status & Actions (Issue #323) ========
 
-  // GET /api/llm/summary-status - get overall summary worker stats
-  fastify.get('/llm/summary-status', async () => {
-    return getSummaryStatus();
+  // GET /api/llm/summary-status - summary worker stats over the pages the
+  // caller may read
+  fastify.get('/llm/summary-status', async (request) => {
+    return getSummaryStatus(request.userId);
   });
 
   // POST /api/llm/summary-rescan - admin: reset all summaries to re-generate

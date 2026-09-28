@@ -540,7 +540,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // results after edits, embedding status during processing).
     const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || dateFrom || dateTo);
     const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
-    const cacheKey = `list:v2:${filterParts}`;
+    const cacheKey = `list:v3:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
@@ -840,7 +840,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const params = PageTreeQuerySchema.parse(request.query);
 
-    const cacheKey = `tree:v2:${params.spaceKey ?? 'all'}`;
+    const cacheKey = `tree:v3:${params.spaceKey ?? 'all'}`;
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
@@ -940,7 +940,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cache key based on sorted space list to ensure consistency
     const spacesKey = [...filterSpaces].sort().join(',');
-    const cacheKey = `filters:v2:${spacesKey}`;
+    const cacheKey = `filters:v3:${spacesKey}`;
 
     const { value: cached, generation } = await cache.getWithGeneration<{
       authors: string[]; labels: string[];
@@ -2938,30 +2938,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const pageId = parseInt(id, 10);
 
+    // Same caller-bound read rule as GET /pages/:id (space access, standalone
+    // visibility and page restrictions). An unreadable page is 404 exactly
+    // like a missing one — no existence oracle.
+    const spaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
-      id: number; source: string; created_by_user_id: string | null;
-      visibility: string; space_key: string | null; draft_body_html: string | null;
+      id: number; draft_body_html: string | null;
       draft_body_text: string | null; draft_updated_at: Date | null;
       draft_updated_by: string | null;
     }>(
-      `SELECT id, source, created_by_user_id, visibility, space_key, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by FROM pages WHERE id = $1 AND deleted_at IS NULL`,
-      [pageId],
+      `SELECT cp.id, cp.draft_body_html, cp.draft_body_text, cp.draft_updated_at, cp.draft_updated_by
+         FROM pages cp
+        WHERE cp.id = $1 AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, spaces, userId],
     );
     if (!result.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
     const row = result.rows[0]!;
-
-    // Access control: Confluence pages require RBAC space access; standalone pages
-    // require ownership or shared visibility. Use 404 (no existence oracle) to
-    // match GET /pages/:id semantics.
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     if (!row.draft_body_html) throw fastify.httpErrors.notFound('No draft exists');
 

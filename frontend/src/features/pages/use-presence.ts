@@ -95,8 +95,10 @@ export function usePresence(pageId: string | null | undefined): {
           },
           signal: abort.signal,
         });
-        if (res.status === 403) {
-          // Forbidden — retrying won't help. Park until unmount.
+        if (res.status === 403 || res.status === 404) {
+          // Missing or unreadable (the server answers both with 404 so page
+          // restrictions are no existence oracle) — retrying won't help.
+          // Park until unmount.
           cancelled = true;
           if (heartbeatTimer) {
             clearInterval(heartbeatTimer);

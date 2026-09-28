@@ -31,6 +31,8 @@
 
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
@@ -101,7 +103,13 @@ async function resolveSummaryAssignment(): Promise<SummaryAssignment | null> {
   }
 }
 
-export async function getSummaryStatus(): Promise<SummaryStatus> {
+/**
+ * Summary worker status. The page counts cover only the pages `userId` may
+ * read (`visiblePagesPredicate`, the embedding-status scope), because any
+ * signed-in user reads them; the worker fields stay global.
+ */
+export async function getSummaryStatus(userId: string): Promise<SummaryStatus> {
+  const spaces = await getUserAccessibleSpaces(userId);
   const [result, assignment] = await Promise.all([
     query<{
       total: string;
@@ -118,9 +126,9 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
         COUNT(*) FILTER (WHERE summary_status = 'pending')       AS pending,
         COUNT(*) FILTER (WHERE summary_status = 'failed')        AS failed,
         COUNT(*) FILTER (WHERE summary_status = 'skipped')       AS skipped
-      FROM pages
-      WHERE deleted_at IS NULL
-    `),
+      FROM pages cp
+      WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}
+    `, [spaces, userId]),
     resolveSummaryAssignment(),
   ]);
 

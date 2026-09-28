@@ -393,7 +393,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(response.json().backfillStatus).toBeUndefined();
   });
 
-  it('returns an empty list for a missing page and enforces private-page and space RBAC', async () => {
+  it('answers an unreadable private or out-of-space page exactly like a missing one', async () => {
     const privatePageId = await seedPage();
     await query(
       `INSERT INTO spaces (space_key, space_name)
@@ -425,8 +425,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
     expect(missing.statusCode).toBe(200);
     expect(missing.json().versions).toEqual([]);
-    expect(privateDenied.statusCode).toBe(403);
-    expect(spaceDenied.statusCode).toBe(403);
+    expect(privateDenied.statusCode).toBe(200);
+    expect(privateDenied.json()).toEqual({ versions: [], pageId: String(privatePageId) });
+    expect(spaceDenied.statusCode).toBe(200);
+    expect(spaceDenied.json()).toEqual({ versions: [], pageId: String(restrictedPageId) });
   });
 
   it('returns current and historical detail from persisted rows and reports a missing version', async () => {
@@ -925,7 +927,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       headers: { 'x-test-user': otherUserId },
       payload: { version: 3 },
     });
-    expect(denied.statusCode).toBe(403);
+    expect(denied.statusCode).toBe(404);
 
     expect((await query(
       'SELECT title, body_html, version FROM pages WHERE id = $1',
@@ -1005,13 +1007,13 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
       await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
 
       const enabled = await restore(pageId);
-      expect(enabled.statusCode).toBe(403);
+      expect(enabled.statusCode).toBe(404);
       expect(confluenceRequests).toEqual([]);
 
       await switchIntegration(false);
       const disabled = await restore(pageId);
 
-      expect(disabled.statusCode).toBe(403);
+      expect(disabled.statusCode).toBe(404);
       expect(await authoredState(pageId)).toEqual(untouched);
       expect((await query(
         'SELECT id FROM page_versions WHERE page_id = $1 AND version_number = 3',
@@ -1027,7 +1029,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
 
       const response = await restore(pageId);
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(404);
       expect(await authoredState(pageId)).toEqual(untouched);
     });
 

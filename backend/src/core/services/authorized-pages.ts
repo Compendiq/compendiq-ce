@@ -1,17 +1,15 @@
 import { query } from '../db/postgres.js';
 import { visiblePagesPredicate } from './page-visibility.js';
-import {
-  filterAccessiblePages,
-  getUserAccessibleSpacesMemoized,
-} from './rbac-service.js';
+import { getUserAccessibleSpacesMemoized } from './rbac-service.js';
 
 /**
- * Resolve page ids through both visibility layers used by read APIs.
+ * Resolve the live page ids a caller may read on non-RAG surfaces.
  *
- * The SQL predicate is the CE visibility boundary. The batched filter then
- * applies page-level ACEs supplied by the shared CE/EE RBAC contract. Keeping
- * the returned set explicit lets graph traversal remove inaccessible vertices
- * before per-hop ordering and limits are applied.
+ * `visiblePagesPredicate` carries both the space-level list definition and
+ * the page-restriction arm, so the returned set is exactly what lists, trees
+ * and graphs show. Keeping the set explicit lets graph traversal remove
+ * inaccessible vertices before per-hop ordering and limits are applied, and
+ * lets single-page surfaces answer "not found" for a restricted page.
  */
 export async function authorizedPageIds(
   userId: string,
@@ -33,5 +31,5 @@ export async function authorizedPageIds(
     values,
   );
 
-  return filterAccessiblePages(userId, rows.rows.map((row) => row.id));
+  return new Set(rows.rows.map((row) => row.id));
 }

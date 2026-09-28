@@ -2910,6 +2910,29 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > query. Fusion note: when the stage limit exceeds the configured width,
 > ranking uses a stable head (`fuseWithStableHead`) — the pool floors widen
 > what the filter sees, never the head ordering.
+>
+> **Amended (page restrictions outside RAG, 2026-09-28):** this ADR's
+> "zero behaviour change" for CE and EE-without-the-flag now covers **RAG
+> retrieval only**. Every non-RAG read (lists, trees, hierarchy, search rows
+> and facets, graphs, counts, pins, sub-page LLM context, versions, exports,
+> attachments, LLM page references) applies page restrictions in both
+> editions through `visiblePagesPredicate`: a Confluence page with
+> `inherit_perms = FALSE` needs a user or group page ACE for the caller, on top
+> of the space-level list definition; system administrators are exempt from
+> that arm only, so their listings are unchanged. A restriction created
+> through the CE admin routes, the EE bulk route or sync therefore hides the
+> page everywhere the detail route already refused it. Retrieval SQL keeps a
+> separately named `ragRetrievalPagesPredicate` (space-level) and this ADR's
+> flag-gated `filterAccessiblePages` post-filter, because CE retrieval is
+> space-level by design (ADR-022) and the per-page RAG gate is the Enterprise
+> feature. `/api/search` semantic/hybrid modes reuse retrieval over a
+> page-search pool of `max(rag_fetch_width, 2 × limit)` pages, authorize the
+> whole pool with the non-RAG predicate, then slice to the caller's `limit`;
+> results fall short only when more than `pool − limit` unreadable pages (or
+> too few readable matches) rank in the pool. ACE and group-membership
+> writes queue page-cache invalidation in the database (migration 129), so
+> every writer — including sync's sweep, relocation and the EE bulk route —
+> fences the `pages` cache generation without its own cache calls.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.
@@ -3489,7 +3512,7 @@ own 2s `SET LOCAL statement_timeout` — a second budget, not a restatement of
 the first: the gate has no `indexed` condition, and above 4000 dimensions no
 HNSW index is built, so the leg legitimately scans sequentially while the
 answer path waits (review r3) — kNN-searches
-`page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
+`page_image_embeddings` under the same `ragRetrievalPagesPredicate` (then named `visiblePagesPredicate`) the vector leg
 uses — the shared fragment, never a copy, since an image row carries no ACL of
 its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
 page's best image ranks it once, so image COUNT cannot beat image QUALITY).
@@ -4701,7 +4724,7 @@ behind an unchanged identity (ADR-025 D12's counterpart).
 images, base64, descriptions and provider error bodies never enter general
 logs or audit events; `page_image_analyses.error` and the analysis inspection
 route are `requireAdmin`. Retrieval, snippets, thumbnails, byte access and
-conversation replay apply `visiblePagesPredicate` and the EE per-page filter
+conversation replay apply the retrieval visibility predicate (`ragRetrievalPagesPredicate`; replay annotation uses `visiblePagesPredicate`) and the EE per-page filter
 before any derived text or byte is read. Derived text never touches
 `body_storage`, `body_html`, `body_text`, editor content or any upstream
 round trip *(epic)*.
@@ -4968,7 +4991,7 @@ flowchart LR
 What is gone from the query path relative to ADR-025 P3: the second query
 embed, the kNN over `page_image_embeddings`, the `EXISTS` gate, the second
 vector-pool connection, and `degraded_reason = 'image_leg_unavailable'`.
-What is unchanged: `visiblePagesPredicate` and the EE per-page filter run
+What is unchanged: the retrieval visibility predicate (now `ragRetrievalPagesPredicate`) and the EE per-page filter run
 before any chunk is read; `rag_ef_search` sizing; `/api/search` pagination;
 deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
 

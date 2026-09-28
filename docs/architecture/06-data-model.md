@@ -653,6 +653,12 @@ lock would let delivery delete the old entry before the new change becomes visib
 Intent-owned publication also retains its terminal-only partial queue index.
 Delivery clears either queue only after real cache invalidation succeeds.
 
+Migration 129 adds the same queueing for page ACEs (`access_control_entries`
+rows with `resource_type = 'page'`: insert, delete, or a principal/resource
+change — not a `synced_at`/`source`/permission-name refresh) and for
+`group_memberships` changes of groups that hold page ACEs, because both decide
+which restricted pages non-RAG reads return.
+
 `page_relocation_preparations` holds exact operation-owned rollback/publication
 state outside the generic intent's 32 KiB metadata ceiling. Its source-page FK
 prevents deletion while preparation remains necessary. Settlement removes it
@@ -930,7 +936,7 @@ together, which matters most for #1114's query-side prefix.
   kind-aware, because failing a comparison with "start a new benchmark" names
   a run its admin never started. A compare run is additionally scoped to
   `requested_by` on read: its report carries page titles retrieved under that
-  admin's own ACL (`visiblePagesPredicate` admits their private standalone
+  admin's own ACL (`ragRetrievalPagesPredicate` admits their private standalone
   pages). The 091 one-active partial unique index is deliberately NOT scoped
   by kind: both runs spend the shared LLM queue, so one at a time is the
   point, and the 092 heartbeat recovery covers both.
@@ -951,7 +957,7 @@ together, which matters most for #1114's query-side prefix.
   had no admin dimension, so the last judge of a query physically OVERWROTE the
   earlier judge's `live_page_ids` / `candidate_page_ids` / `judged_by` —
   irrecoverably, because those arrays come from `vectorSearch(adminUserId, …)`
-  filtered through `visiblePagesPredicate`, i.e. they are that admin's view and
+  filtered through `ragRetrievalPagesPredicate`, i.e. they are that admin's view and
   nobody else's. Now every judge's row persists. The reason the key had no
   judge in the first place still holds — one query is one trial and McNemar
   counts trials, so reading two rows for one query would inflate both N and the

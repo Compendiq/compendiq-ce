@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { generatePdf } from '../../core/services/pdf-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { PDFDocument } from 'pdf-lib';
 import { BatchExportBodySchema } from '@compendiq/contracts';
 import { z } from 'zod';
@@ -16,13 +17,17 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const pageId = parseInt(id, 10);
 
-    const result = await query<{
-      title: string; body_html: string;
-      source: string | null; space_key: string | null;
-      created_by_user_id: string | null; visibility: string | null;
-    }>(
-      'SELECT title, body_html, source, space_key, created_by_user_id, visibility FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [pageId],
+    // Access control is the list definition (space access, standalone
+    // ownership or sharing, page restrictions): an unreadable page answers
+    // exactly like a missing one.
+    const spaces = await getUserAccessibleSpaces(request.userId);
+    const result = await query<{ title: string; body_html: string }>(
+      `SELECT cp.title, cp.body_html
+         FROM pages cp
+        WHERE cp.id = $1
+          AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, spaces, request.userId],
     );
 
     if (!result.rows.length) {
@@ -30,20 +35,6 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
     }
 
     const row = result.rows[0]!;
-
-    // Access control: Confluence pages require RBAC space access; standalone pages
-    // require ownership or shared visibility (matches pages-crud.ts pattern)
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(request.userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      // Standalone: owner or shared
-      if (row.created_by_user_id !== request.userId && row.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    }
 
     const pdfBuffer = await generatePdf(row.body_html, { title: row.title });
 
@@ -62,37 +53,27 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/export/pdf', async (request, reply) => {
     const { pageIds } = BatchExportBodySchema.parse(request.body);
 
-    const placeholders = pageIds.map((_, i) => `$${i + 1}`).join(',');
-    const result = await query<{
-      id: number; title: string; body_html: string;
-      source: string | null; space_key: string | null;
-      created_by_user_id: string | null; visibility: string | null;
-    }>(
-      `SELECT id, title, body_html, source, space_key, created_by_user_id, visibility FROM pages WHERE id IN (${placeholders}) AND deleted_at IS NULL ORDER BY title`,
-      pageIds,
+    // Only pages the caller may read under the list definition; unreadable
+    // ids are indistinguishable from missing ones.
+    const spaces = await getUserAccessibleSpaces(request.userId);
+    const result = await query<{ id: number; title: string; body_html: string }>(
+      `SELECT cp.id, cp.title, cp.body_html
+         FROM pages cp
+        WHERE cp.id = ANY($1::int[])
+          AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}
+        ORDER BY cp.title`,
+      [pageIds, spaces, request.userId],
     );
 
     if (!result.rows.length) {
       throw fastify.httpErrors.notFound('No pages found');
     }
 
-    // RBAC: filter to pages the user can access
-    const spaces = await getUserAccessibleSpaces(request.userId);
-    const authorized = result.rows.filter((row) => {
-      if (row.source === 'confluence') {
-        return row.space_key ? spaces.includes(row.space_key) : false;
-      }
-      return row.created_by_user_id === request.userId || row.visibility === 'shared';
-    });
-
-    if (!authorized.length) {
-      throw fastify.httpErrors.notFound('No accessible pages found');
-    }
-
     // Generate individual PDFs and merge with pdf-lib
     const merged = await PDFDocument.create();
 
-    for (const row of authorized) {
+    for (const row of result.rows) {
       const pdfBytes = await generatePdf(row.body_html, { title: row.title });
       const doc = await PDFDocument.load(pdfBytes);
       const pages = await merged.copyPages(doc, doc.getPageIndices());

@@ -437,6 +437,55 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     expect(otherAces.map((a) => a.source).sort()).toEqual(['confluence', 'local']);
   });
 
+  // Page ACEs decide non-RAG list visibility, so every sync ACE
+  // write must reach the durable page-cache invalidation queue that the page
+  // publication worker drains (migration 129), even when `inherit_perms` does
+  // not change and no CE route calls the cache layer.
+  async function queuedPageIds(): Promise<number[]> {
+    const res = await query<{ page_id: number }>(
+      'SELECT page_id FROM page_cache_invalidation_queue ORDER BY page_id',
+    );
+    return res.rows.map((row) => row.page_id);
+  }
+
+  it('queues cache invalidation when a sync grant or sweep changes principals of a restricted page', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const userB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    await insertUser(userA, 'alice');
+    await insertUser(userB, 'bob');
+    await ensureSpace('DOCS');
+    const pageDbId = await insertPage('c-350', 'DOCS');
+
+    const firstRun = makeMockClient();
+    firstRun.restrictionsByPage.set('c-350', [
+      readRestriction([{ userKey: 'keyalice', username: 'alice' }, { userKey: 'keybob', username: 'bob' }]),
+    ]);
+    await __internal.syncPageRestrictions(firstRun as never, fakePage('c-350'), new Date('2026-01-01T10:00:00Z'), new Map());
+    expect(await getInheritPerms(pageDbId)).toBe(false);
+
+    // Bob is de-listed upstream: the page stays restricted and only the
+    // end-of-run sweep removes his ACE.
+    await query('DELETE FROM page_cache_invalidation_queue');
+    const secondStartedAt = new Date('2026-01-02T10:00:00Z');
+    const secondRun = makeMockClient();
+    secondRun.restrictionsByPage.set('c-350', [readRestriction([{ userKey: 'keyalice', username: 'alice' }])]);
+    await __internal.syncPageRestrictions(secondRun as never, fakePage('c-350'), secondStartedAt, new Map());
+    // Refreshing alice's existing ACE changes no principal: nothing queued.
+    expect(await queuedPageIds()).toEqual([]);
+    await __internal.sweepStaleConfluenceAces(secondStartedAt, ['DOCS']);
+    expect((await getAces(pageDbId)).map((ace) => ace.principal_id)).toEqual([userA]);
+    expect(await queuedPageIds()).toEqual([pageDbId]);
+
+    // Bob is re-listed: a new ACE row on a page that is already restricted.
+    await query('DELETE FROM page_cache_invalidation_queue');
+    const thirdRun = makeMockClient();
+    thirdRun.restrictionsByPage.set('c-350', [
+      readRestriction([{ userKey: 'keyalice', username: 'alice' }, { userKey: 'keybob', username: 'bob' }]),
+    ]);
+    await __internal.syncPageRestrictions(thirdRun as never, fakePage('c-350'), new Date('2026-01-03T10:00:00Z'), new Map());
+    expect(await queuedPageIds()).toEqual([pageDbId]);
+  });
+
   it('stale-ACE sweep is scoped to the run\'s spaces — ACEs in spaces this run did not visit survive', async () => {
     // Regression for #859 (Fix 1): the end-of-run sweep must only age out
     // ACEs for pages in the spaces this run actually synced. A run over

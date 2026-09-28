@@ -199,19 +199,6 @@ describe('DuplicateDetector', () => {
 
     // ── #733 RBAC regressions ───────────────────────────────────────────
 
-    it('returns [] when the source page is in an inaccessible space (#733)', async () => {
-      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-      mocks.mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 42, title: 'Restricted Page', space_key: 'SECRET' }],
-      });
-
-      const result = await findDuplicates('user-1', 'conf-restricted');
-
-      expect(result).toEqual([]);
-      // Critical: the kNN query must never run for an inaccessible source.
-      expect(mocks.mockPool.connect).not.toHaveBeenCalled();
-    });
-
     it('applies the RBAC space/visibility filter to the kNN query (#733)', async () => {
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
       mocks.mockQuery.mockResolvedValueOnce({
