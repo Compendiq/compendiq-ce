@@ -2116,42 +2116,49 @@ export function ArticleRightPane({
       </div>
       )}
 
-    </m.aside>
-    {!isSheet && (
-      <div
-        role="separator"
-        aria-label="Resize page sidebar"
-        aria-orientation="vertical"
-        aria-valuemin={ARTICLE_SIDEBAR_MIN_WIDTH}
-        aria-valuemax={ARTICLE_SIDEBAR_MAX_WIDTH}
-        aria-valuenow={width}
-        tabIndex={0}
-        onMouseDown={handleResizeStart}
-        onDoubleClick={() => setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH)}
-        onKeyDown={handleResizeKeyDown}
-        className={cn(
-          'group absolute inset-y-0 left-0 z-10 cursor-col-resize outline-none',
-          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-        )}
-        style={{ width: 'var(--app-rail-gap)' }}
-        title="Drag to resize · Double-click to reset"
-      >
-        <span
-          data-testid="article-right-pane-resize-grip"
+      {/* Resize handle — on the left operable edge, matching the tree's resize affordance */}
+      {!isSheet && (
+        <div
+          role="separator"
+          aria-label="Resize page sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={ARTICLE_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={ARTICLE_SIDEBAR_MAX_WIDTH}
+          aria-valuenow={width}
+          aria-valuetext={`${width} pixels`}
+          tabIndex={0}
+          onMouseDown={handleResizeStart}
+          onDoubleClick={() => setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH)}
+          onKeyDown={handleResizeKeyDown}
           className={cn(
-            'pointer-events-none absolute top-1/2 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
-            'group-hover:opacity-100 group-focus-visible:opacity-100',
-            isResizing && 'opacity-100',
+            'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
+            'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           )}
-          style={{ left: 'calc((var(--app-rail-gap) - 2px) / 2)' }}
-          aria-hidden="true"
+          title="Drag to resize · Double-click to reset"
         >
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-        </span>
-      </div>
-    )}
+          <span
+            className={cn(
+              'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+            aria-hidden="true"
+          />
+          <span
+            data-testid="article-right-pane-resize-grip"
+            className={cn(
+              'pointer-events-none absolute top-1/2 left-0.5 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
+              isResizing && 'opacity-100',
+            )}
+            aria-hidden="true"
+          >
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+          </span>
+        </div>
+      )}
+    </m.aside>
     {confirmTrashDialog}
     {relocateDialog}
     </>

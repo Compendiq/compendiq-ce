@@ -1643,6 +1643,58 @@ The dusty-rose collaboration caret moves to `#9C4D6E`: the old swatch measured
 5.68:1 on Paper. The existing logo-parity and caret-contrast guards remain
 unchanged.
 
+### v1.7 — header destinations, tree on the chassis, one lifted card (2026-09-28)
+
+**Owner decisions**, chosen from four mockups (the "Notion flat tabs" option)
+and then refined: *"Move the 3 menu buttons in the side rail to the top bar.
+Then move the left side panel into the left side rail … make the width of the
+left side rail wider."* The tree should live on the chassis like the old
+rail; the rail and the frame share one colour; the right panel is attached to
+the main area and resizable like the left; a light shadow goes around the
+main area; the frame's colour must match at the card's left corner.
+
+- **Destinations are header tabs.** Pages / AI / Graph move from the 74px
+  chassis rail to flat tabs beside the logo (`MainNavHeaderTabs`: icon + label,
+  Steel icon and 2px underline on the current tab, `aria-current="page"`). The
+  `g p` / `g a` / `g g` shortcuts are unchanged. Below `md` the mobile drawer
+  still carries the strip through `embedMainNav`.
+- **The route's sidebar sits on the chassis.** `MainNavChassisRail` is now only
+  the desktop host for the tree / conversations / settings sidebar, outside the
+  workspace card. `.app-sidebar` is transparent with no `border-r`, so the
+  column reads as the frame; the space selector carries Pane plus a hairline
+  so the one control in its row stays visible. Default and reset width stay
+  282px (`--app-nav-rail-width` reserves it in the boot skeleton). An 8px gap
+  (`ml-2`) and 4px top inset hold the card off the column.
+- **The inspector is attached inside the card.** `ArticleRightPane` mounts in
+  `.app-workspace` beside `<main>`, split from it by a 1px left hairline
+  (`.app-context-rail`); the card's radius clips both. Its resize handle
+  moved from the retired gutter onto the pane's own left edge and matches the
+  tree's (8px hit area, hover line, three-dot grip, 400–1200px, double-click
+  and Home reset, arrow keys). `app-body-with-rail`, `app-rail-beside`,
+  `--app-rail-gap` and `--app-rail-radius` are deleted.
+
+The chassis and shadow half came from a follow-up: *"Add a light shadow
+around the main area. Fix the corner on the left where the background colour
+is not the same as the rest of the area around."*
+
+The v1.6 wash is retired. Once the left tree moved onto the chassis with a
+transparent ground, the diagonal image showed through the tree column and the
+gap beside the card: lighter at the top left, darkest at the card's bottom-left
+corner, so the frame no longer read as one surface. `.app-chassis` now paints
+the flat `--app-chassis` base in both themes; `--app-chassis-tones`,
+`--app-chassis-highlight` and `--app-chassis-shade` are deleted, and the
+first-paint boot shell drops its image with them.
+
+The workspace card (`.app-workspace`) carries `--app-workspace-shadow`, a
+narrow exception to v0.6's overlay-only shadow: a 1px rim that traces the
+radius plus a soft contact and ambient shadow (5% white rim in Graphite, 4%
+black in Paper). It is the one in-flow surface allowed a shadow, and it never
+grows on hover. `app-shell` and `panel-wrapper` carry no overflow clip so the
+shadow reaches the chassis margin; the card clips its own content, and
+`app-chassis` (`h-screen`, `overflow-hidden`) still stops page scroll.
+`workspace-themes.test.ts` admits that one token; `AppLayout.test.tsx` fails
+if either ancestor clips again.
+
 ---
 ## ADR-011: Docker Deployment Architecture
 

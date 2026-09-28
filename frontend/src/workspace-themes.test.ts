@@ -927,7 +927,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--shadow-overlay(-sm)?\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);

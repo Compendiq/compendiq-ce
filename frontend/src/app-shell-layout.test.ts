@@ -110,23 +110,26 @@ describe('Inset shell tokens', () => {
       ['graphite', darkBlock],
       ['paper', lightBlock],
     ] as const) {
-      for (const stop of ['--app-chassis-highlight', '--app-chassis', '--app-chassis-shade']) {
-        expect(
-          contrast(tokenHex(block, '--color-card'), tokenHex(block, stop)),
-          `${theme}: the unlined workspace card needs a readable value step at ${stop}`,
-        ).toBeGreaterThanOrEqual(1.08);
-      }
+      expect(
+        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
+        `${theme}: the workspace card needs a readable value step above the chassis`,
+      ).toBeGreaterThanOrEqual(1.08);
     }
   });
 
-  it('keeps navigation labels and focus indicators readable across the chassis wash', () => {
+  it('keeps navigation labels and focus indicators readable on the chassis', () => {
     for (const block of [darkBlock, lightBlock]) {
-      for (const stop of ['--app-chassis-highlight', '--app-chassis', '--app-chassis-shade']) {
-        const ground = tokenHex(block, stop);
-        expect(contrast(tokenHex(block, '--color-muted-foreground'), ground), stop).toBeGreaterThanOrEqual(4.5);
-        expect(contrast(tokenHex(block, '--color-primary'), ground), stop).toBeGreaterThanOrEqual(3);
-      }
+      const ground = tokenHex(block, '--app-chassis');
+      expect(contrast(tokenHex(block, '--color-muted-foreground'), ground)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(tokenHex(block, '--color-primary'), ground)).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it('paints the chassis one flat colour so the frame matches on every side of the card', () => {
+    const block = extractBlock(css, '@utility app-chassis {');
+    expect(block).toMatch(/background:\s*var\(--app-chassis\)/);
+    expect(block).not.toMatch(/background-image/);
+    expect(css).not.toMatch(/--app-chassis-tones/);
   });
 
   it('the context rail matches the central pane and stays off the chassis', () => {
@@ -145,7 +148,7 @@ describe('Inset shell tokens', () => {
 });
 
 describe('Inset shell utilities', () => {
-  const utilities = ['app-chassis', 'app-shell', 'app-workspace', 'app-context-rail', 'app-body-with-rail'];
+  const utilities = ['app-chassis', 'app-shell', 'app-workspace', 'app-context-rail'];
 
   it('declares the shell utilities', () => {
     for (const name of utilities) {
@@ -176,36 +179,30 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the chassis destination column is 30px wider than the header is tall', () => {
-    const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 30px\)/);
-    expect(nav).toContain('w-[var(--app-nav-rail-width)]');
+  it('the boot skeleton reserves the left column at the tree’s default width', () => {
+    const skeleton = read('shared/components/feedback/AppLoadingFallback.tsx');
+    expect(css).toMatch(/--app-nav-rail-width:\s*282px/);
+    expect(skeleton).toContain('w-[var(--app-nav-rail-width)]');
   });
 
-
-  it('left navigation, including title and footer chrome, paints the same surface as main', () => {
+  it('left navigation has a transparent background, inheriting the app-shell ground', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*var\(--color-card\)/);
+    expect(sidebar).toMatch(/background:\s*transparent/);
     expect(pane).toMatch(/background:\s*var\(--color-card\)/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
     );
   });
 
-  it('the workspace utility is the detached card: unlined, radiused, unshadowed', () => {
+  it('the workspace utility is the radiused card with its resting shadow', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
-    // The card is inset, radiused and a value step above Canvas. A border here
-    // was a third statement of the same boundary and read as a frame drawn
-    // around the work; the owner removed it on 2026-08-31. Retune --app-chassis
-    // if the card stops reading. The width token went with it, so a `1px`
-    // reappearing anywhere in the ladder is caught too.
     expect(block).not.toMatch(/border:/);
     expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
     expect(css).not.toMatch(/--app-shell-border-width/);
-    expect(block).not.toMatch(/box-shadow:/);
+    expect(block).toMatch(/box-shadow:\s*var\(--app-workspace-shadow\)/);
   });
 
   it('the layout shell wrapper does not add a second card around the rail', () => {
@@ -214,48 +211,20 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/box-shadow:/);
   });
 
-  it('the article rail matches the workspace card height, not the viewport floor', () => {
-    const block = extractBlock(css, '@utility app-rail-beside {');
-    expect(block).toMatch(/height:\s*100%/);
-    expect(block).not.toMatch(/margin-bottom:\s*calc\(-1 \* var\(--app-inset\)\)/);
-    expect(appLayout).toMatch(/app-rail-beside/);
-    expect(appLayout).not.toMatch(/app-rail-to-floor/);
-    expect(css).not.toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
-  });
-
-  it('the context rail utility is an unlined, radiused, unshadowed pane', () => {
+  it('the context rail utility carries a left border dividing it from the main pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
-    expect(block).toMatch(/border-radius:\s*var\(--app-rail-radius\)/);
-    // Same reasoning as the workspace card: the --app-rail-gap strip of Canvas
-    // and the Pane/Canvas step carry the boundary. Below `md` this element is
-    // the inspector sheet over a dimmed backdrop, where a border would be the
-    // only line on screen.
-    expect(block).not.toMatch(/border:/);
-    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
+    expect(block).toMatch(/border-left-width:\s*1px/);
+    expect(block).toMatch(/border-color:\s*var\(--color-border\)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
   });
 
-  it('the rail wrapper owns an explicit grabbable gutter', () => {
-    const bodyBlock = extractBlock(css, '@utility app-body-with-rail {');
-    const railBlock = extractBlock(css, '@utility app-rail-beside {');
-    expect(bodyBlock).toMatch(/gap:\s*0/);
-    expect(railBlock).toMatch(/padding-left:\s*var\(--app-rail-gap\)/);
-    expect(railBlock).toMatch(/position:\s*relative/);
-  });
-
-  it('mobile is edge-to-edge; md and xl step the inset, radius and rail gutter', () => {
+  it('mobile is edge-to-edge; md and xl step the inset and card radius', () => {
     expect(css).toMatch(/--app-inset:\s*0px/);
     expect(css).toMatch(/--app-shell-radius:\s*0px/);
-    expect(css).toMatch(/--app-rail-gap:\s*0px/);
-    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px[\s\S]*?--app-rail-gap:\s*4px/);
-    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px[\s\S]*?--app-rail-gap:\s*6px/);
-  });
-
-  it('rail radius matches the workspace card so the two siblings share a bottom curve', () => {
-    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-shell-radius:\s*12px[\s\S]*?--app-rail-radius:\s*12px/);
-    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-shell-radius:\s*14px[\s\S]*?--app-rail-radius:\s*14px/);
+    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px[\s\S]*?--app-shell-radius:\s*12px/);
+    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px[\s\S]*?--app-shell-radius:\s*14px/);
   });
 
   it('does not apply transform on chassis or shell (would trap position:fixed)', () => {
@@ -369,25 +338,27 @@ describe('AppLayout structure', () => {
     expect(skipAt).toBeLessThan(shellAt);
   });
 
-  it('keeps left navigation inside the workspace, not as a detached card', () => {
+  it('mounts left navigation in the chassis rail outside the workspace card', () => {
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
     expect(workspaceAt).toBeGreaterThan(-1);
-    const sidebarAt = appLayout.indexOf('<SidebarTreeView', workspaceAt);
+    const chassisNavAt = appLayout.indexOf('<MainNavChassisRail');
+    const sidebarAt = appLayout.indexOf('<SidebarTreeView');
     const mainAt = appLayout.indexOf('id="main-content"');
-    expect(sidebarAt).toBeGreaterThan(workspaceAt);
-    expect(mainAt).toBeGreaterThan(sidebarAt);
+    expect(chassisNavAt).toBeGreaterThan(-1);
+    expect(chassisNavAt).toBeLessThan(workspaceAt);
+    expect(sidebarAt).toBeLessThan(workspaceAt);
+    expect(mainAt).toBeGreaterThan(workspaceAt);
     const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
     expect(paneAt).toBeGreaterThan(mainAt);
   });
 
-  it('mounts the article inspector outside the workspace as the context rail', () => {
+  it('mounts the article inspector attached inside the workspace card', () => {
     const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
     const paneAt = appLayout.indexOf('<ArticleRightPane', workspaceAt);
-    expect(paneAt).toBeGreaterThan(workspaceAt);
-    const afterWorkspace = appLayout.slice(workspaceAt, paneAt);
-    // The pane must not sit inside the workspace wrapper: a closing of
-    // app-workspace has to appear before ArticleRightPane.
-    expect(afterWorkspace).toMatch(/<\/div>/);
+    const mainAt = appLayout.indexOf('id="main-content"');
+    expect(workspaceAt).toBeGreaterThan(-1);
+    expect(mainAt).toBeGreaterThan(workspaceAt);
+    expect(paneAt).toBeGreaterThan(mainAt);
   });
 
   it('hosts a chassis-level mobile inspector sheet before the workspace', () => {
@@ -407,25 +378,6 @@ describe('AppLayout structure', () => {
     const value = match![1]!;
     expect(value).not.toMatch(/\bp-3\b/);
     expect(value).not.toMatch(/\bgap-2\.5\b/);
-  });
-
-  it('the destination rail sits flush against the workspace, 4px past the header band', () => {
-    expect(appLayout).toMatch(/data-testid="app-shell"[^>]*className="[^"]*"/);
-    const shellClass = /data-testid="app-shell"[^>]*className="([^"]+)"/.exec(appLayout)?.[1] ?? '';
-    expect(shellClass).not.toMatch(/\bgap-/);
-    const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(nav).toContain('w-[var(--app-nav-rail-width)]');
-    expect(nav).toContain('items-center');
-    expect(nav).toContain('px-1');
-    expect(nav).toMatch(/h-10 w-10/);
-  });
-
-  it('mounts the chassis destination rail outside the workspace card', () => {
-    expect(appLayout).toMatch(/MainNavChassisRail/);
-    const chassisNavAt = appLayout.indexOf('<MainNavChassisRail');
-    const workspaceAt = appLayout.indexOf('data-testid="app-workspace"');
-    expect(chassisNavAt).toBeGreaterThan(-1);
-    expect(chassisNavAt).toBeLessThan(workspaceAt);
   });
 
   it('keeps desktop trees off the in-tree Pages/AI/Graph strip', () => {

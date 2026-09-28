@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Popover from '@radix-ui/react-popover';
 import { useEditorState } from '@tiptap/react';
@@ -789,6 +789,9 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>, fallback: num
   return width;
 }
 
+/** Lowest fold threshold: below it every foldable tool is already in Insert. */
+const MIN_FOLD_BUDGET = 400;
+
 export function EditorToolbar({
   editor,
   headerNumbering,
@@ -813,7 +816,30 @@ export function EditorToolbar({
   // the right instead of being pushed past the pane edge.
   const containerWidth = useElementWidth(containerRef, 1200);
   const actionsWidth = useElementWidth(actionsRef, 0);
-  const toolsBudget = Math.max(0, containerWidth - actionsWidth);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // The thresholds below estimate tool widths, and real labels (the block-type
+  // name, Insert) can render wider, so the tools cluster may still overflow at
+  // a budget that passes them. Any overflow puts a horizontal scrollbar under
+  // the tools and lifts them off the 48px row's centre while Tags/Save stay
+  // put. So the measured overflow is charged against the budget, one render at
+  // a time, until the next tool folds into Insert. It is keyed to the widths it
+  // was measured at, so a resize starts again from the estimate.
+  const widthsKey = `${containerWidth}:${actionsWidth}`;
+  const [fit, setFit] = useState({ key: widthsKey, shortfall: 0 });
+  const shortfall = fit.key === widthsKey ? fit.shortfall : 0;
+  const toolsBudget = Math.max(0, containerWidth - actionsWidth - shortfall);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const overflow = el.scrollWidth - el.clientWidth;
+    // Below the lowest threshold nothing is left to fold; stop there rather
+    // than re-rendering forever.
+    if (overflow <= 1 || toolsBudget < MIN_FOLD_BUDGET) return;
+    setFit({ key: widthsKey, shortfall: shortfall + overflow });
+    // The folded set is a function of toolsBudget alone (the block-type
+    // trigger is fixed-width), so these are every input the overflow has.
+  }, [toolsBudget, widthsKey, shortfall]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const roving = useToolbarRovingFocus(rootRef);
@@ -828,7 +854,7 @@ export function EditorToolbar({
   const showUnderline = toolsBudget >= 640;
   const showColor = toolsBudget >= 520;
   const showBulletList = toolsBudget >= 460;
-  const showInsertLabel = toolsBudget >= 400;
+  const showInsertLabel = toolsBudget >= MIN_FOLD_BUDGET;
 
   // Subscribe to editor state so the toggles re-render on selection and
   // formatting changes (#16).
@@ -880,6 +906,7 @@ export function EditorToolbar({
         onFocus={roving.onFocus}
       >
         <div
+          ref={scrollRef}
           data-testid="toolbar-scroll"
           className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-0.5 overflow-x-auto sm:gap-x-1"
         >

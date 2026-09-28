@@ -1199,7 +1199,7 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText(/ENG/)).toBeInTheDocument();
   });
 
-  it('places a visible resize grip in the gutter beside the pane', () => {
+  it('places a visible resize grip on the pane edge matching the tree resize affordance', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     const pane = screen.getByTestId('article-right-pane');
@@ -1208,9 +1208,10 @@ describe('ArticleRightPane', () => {
     expect(handle).toHaveAttribute('aria-valuemin', '400');
     expect(handle).toHaveAttribute('aria-valuemax', '1200');
     expect(handle).toHaveAttribute('tabindex', '0');
-    expect(handle).toHaveStyle({ width: 'var(--app-rail-gap)' });
-    expect(pane).not.toContainElement(handle);
-    expect(screen.getByTestId('article-right-pane-resize-grip')).toBeVisible();
+    expect(handle.className).toContain('w-2');
+    expect(handle.className).toContain('cursor-col-resize');
+    expect(pane).toContainElement(handle);
+    expect(handle).toContainElement(screen.getByTestId('article-right-pane-resize-grip'));
   });
 
   it('supports keyboard resizing and double-click reset', () => {

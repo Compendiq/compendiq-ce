@@ -32,26 +32,18 @@ function LibraryListSkeleton() {
 
 function WorkspaceBones() {
   return (
-    <div className="app-shell flex min-h-0 flex-1 overflow-hidden">
-      <div
+    <div className="app-shell flex min-h-0 flex-1">
+      <aside
         aria-hidden="true"
-        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-3 pt-1 md:flex"
+        className="hidden w-[var(--app-nav-rail-width)] shrink-0 flex-col gap-2 border-r border-border p-3 md:flex"
       >
-        <Bone className="h-10 w-10 rounded-lg" />
-        <Bone className="h-10 w-10 rounded-lg" />
-        <Bone className="h-10 w-10 rounded-lg" />
-      </div>
+        <Bone className="h-8 w-full" />
+        <Bone className="mt-3 h-3 w-16" />
+        {Array.from({ length: 10 }).map((_, i) => (
+          <Bone key={i} className="h-7 w-full" />
+        ))}
+      </aside>
       <div className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        <aside
-          aria-hidden="true"
-          className="hidden w-[282px] shrink-0 flex-col gap-2 border-r border-border p-3 md:flex"
-        >
-          <Bone className="h-8 w-full" />
-          <Bone className="mt-3 h-3 w-16" />
-          {Array.from({ length: 10 }).map((_, i) => (
-            <Bone key={i} className="h-7 w-full" />
-          ))}
-        </aside>
         <div className="min-h-0 flex-1 overflow-hidden px-4 pt-5 sm:px-6">
           <LibraryListSkeleton />
         </div>
@@ -87,6 +79,13 @@ export function AppBootSkeleton({
       <BootAnnouncer label="Loading Compendiq" />
       <header className="app-header relative z-10 flex shrink-0 items-center px-3">
         <Logo className="h-6 w-auto text-foreground md:ml-3" title="Compendiq" />
+        {quiet ? null : (
+          <div aria-hidden="true" className="hidden md:flex items-center gap-1 ml-4">
+            <Bone className="h-7 w-16 rounded-md" />
+            <Bone className="h-7 w-12 rounded-md" />
+            <Bone className="h-7 w-16 rounded-md" />
+          </div>
+        )}
       </header>
       {quiet ? null : <WorkspaceBones />}
     </div>

@@ -157,20 +157,18 @@ describe('AppLayout', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders header without nav pills (nav moved to sidebar)', () => {
+  it('renders header with Notion flat destination tabs', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // Nav pills are no longer in the header — they live in SidebarTreeView
     const header = document.querySelector('header');
     expect(header).toBeTruthy();
-    // "Graph" and "AI Assistant" should NOT be in the header anymore
-    // (they're in the mocked sidebar which doesn't render them)
-    expect(header!.querySelector('a[href="/graph"]')).toBeNull();
-    expect(header!.querySelector('a[href="/ai"]')).toBeNull();
+    expect(header!.querySelector('a[href="/"]')).toBeInTheDocument();
+    expect(header!.querySelector('a[href="/ai"]')).toBeInTheDocument();
+    expect(header!.querySelector('a[href="/graph"]')).toBeInTheDocument();
   });
 
   it('does not put a route title in the header', () => {
@@ -230,35 +228,25 @@ describe('AppLayout', () => {
     const header = chassis.querySelector('header');
     expect(header).toBeTruthy();
     expect(workspace.contains(header!)).toBe(false);
-    expect(workspace.contains(screen.getByTestId('article-right-pane'))).toBe(false);
+    expect(workspace.contains(screen.getByTestId('article-right-pane'))).toBe(true);
     expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
-  it('puts Pages / AI / Graph on the chassis, outside the workspace card', () => {
+  it('puts destination tabs in the header and sidebar on the chassis, outside the workspace card', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    const nav = screen.getByTestId('main-nav-chassis');
-    expect(nav).toHaveAccessibleName('Main navigation');
-    expect(screen.getByTestId('app-workspace').contains(nav)).toBe(false);
+    const chassisRail = screen.getByTestId('main-nav-chassis');
+    expect(chassisRail).toHaveAccessibleName('Navigation sidebar');
+    expect(screen.getByTestId('app-workspace').contains(chassisRail)).toBe(false);
     expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
-    expect(nav.className).toContain('w-[var(--app-nav-rail-width)]');
-    expect(nav.className).toContain('items-center');
-    expect(nav.className).toContain('px-1');
-    const pages = screen.getByRole('link', { name: 'Pages' });
-    const ai = screen.getByRole('link', { name: 'AI chat, full page' });
-    const graph = screen.getByRole('link', { name: 'Graph' });
-    for (const link of [pages, ai, graph]) {
-      expect(link.className).toContain('w-10');
-      expect(link.className).toContain('h-10');
-      expect(link.className).not.toContain('w-full');
-      expect(link.className).not.toContain('w-auto');
-    }
+    const headerNav = screen.getByTestId('main-nav-header');
+    expect(headerNav).toHaveAccessibleName('Main navigation');
     const shell = screen.getByTestId('app-shell');
     expect(shell.className).not.toMatch(/\bgap-/);
     const logo = screen.getByTestId('header-chassis-slot');
@@ -620,7 +608,7 @@ describe('AppLayout', () => {
     expect(scrollEl.className).toContain('overflow-y-auto');
   });
 
-  it('root layout container prevents outer scrolling with overflow-hidden', () => {
+  it('stops outer scrolling at the chassis without clipping the workspace shadow', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -630,7 +618,11 @@ describe('AppLayout', () => {
     const chassis = screen.getByTestId('app-chassis');
     expect(chassis.className).toContain('overflow-hidden');
     expect(chassis.className).toContain('h-screen');
-    expect(screen.getByTestId('app-shell').className).toContain('overflow-hidden');
+    // The workspace card's box-shadow reaches into the chassis margin; a clip
+    // on either ancestor between them cuts it off on every side.
+    expect(screen.getByTestId('app-shell').className).not.toContain('overflow-hidden');
+    expect(screen.getByTestId('panel-wrapper').className).not.toContain('overflow-hidden');
+    expect(screen.getByTestId('app-workspace').className).toContain('overflow-hidden');
   });
 
   it('panel wrapper is edge-to-edge (no padding) for flat chrome layout', () => {
@@ -648,7 +640,7 @@ describe('AppLayout', () => {
     expect(panelWrapper.className).not.toContain('gap-2.5');
   });
 
-  it('keeps left nav and main content in one workspace; the inspector sits outside it', () => {
+  it('mounts left nav in the chassis rail, and main content with attached inspector inside the workspace card', () => {
     render(
       <AppLayout>
         <div>article</div>
@@ -656,16 +648,17 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/pages/123') },
     );
     const workspace = screen.getByTestId('app-workspace');
+    const chassisRail = screen.getByTestId('main-nav-chassis');
     const pane = screen.getByTestId('article-right-pane');
     const main = document.getElementById('main-content');
-    expect(workspace.contains(screen.getByTestId('sidebar-tree-view'))).toBe(true);
+    expect(chassisRail.contains(screen.getByTestId('sidebar-tree-view'))).toBe(true);
+    expect(workspace.contains(screen.getByTestId('sidebar-tree-view'))).toBe(false);
     expect(workspace.contains(main)).toBe(true);
-    expect(workspace.contains(pane)).toBe(false);
-    expect(screen.getByTestId('panel-wrapper').contains(pane)).toBe(true);
+    expect(workspace.contains(pane)).toBe(true);
   });
 
-  it('does not detach the inspector on non-article routes', () => {
-    render(
+  it('mounts the inspector only on article routes', () => {
+    const { unmount } = render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
@@ -673,17 +666,16 @@ describe('AppLayout', () => {
     );
     expect(screen.getByTestId('app-workspace')).toBeInTheDocument();
     expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
-    expect(screen.getByTestId('panel-wrapper').className).not.toMatch(/app-body-with-rail/);
-  });
+    unmount();
 
-  it('applies the rail gutter only on article routes', () => {
     render(
       <AppLayout>
         <div>article</div>
       </AppLayout>,
       { wrapper: createWrapper('/pages/123') },
     );
-    expect(screen.getByTestId('panel-wrapper').className).toMatch(/app-body-with-rail/);
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('app-workspace').contains(screen.getByTestId('article-right-pane'))).toBe(true);
   });
 
   it('has mobile sidebar toggle button', () => {

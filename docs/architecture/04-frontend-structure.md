@@ -68,37 +68,43 @@ flowchart TB
 
 ## Authenticated inset shell
 
-`AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
-around a rounded **app shell**. The top app header and destination rail also
-paint the chassis, so the outer frame (header, left rail, bottom rail) is
-continuous on all sides; internal panel toolbars paint Chrome (`--app-header-bg`). The composition is:
+`AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on
+`md+`). The top app header — logo, then the Pages / AI / Graph tabs
+(`MainNavHeaderTabs`), then the session cluster — and the left navigation
+column (`MainNavChassisRail` hosting the route's sidebar) are transparent over
+it, so the frame is one colour on every side of a single rounded **workspace
+card**, which carries the light `--app-workspace-shadow` (ADR-010 v1.7). The
+composition is:
 ```mermaid
 flowchart TB
-    chassis["viewport chassis --app-chassis"]
-    shell["app shell --app-shell-*"]
-    header["top app header --app-chassis"]
-    workspace["primary workspace<br/>left nav + main"]
-    rail["context rail --app-rail-*<br/>Outline · Details · Assistant"]
+    chassis["viewport chassis --app-chassis (flat)"]
+    header["top app header<br/>logo · Pages / AI / Graph tabs · session"]
+    shell["app shell (no overflow clip)"]
+    left["left column MainNavChassisRail<br/>SidebarTreeView | AiConversationsSidebar | SettingsSidebar<br/>transparent, resizable"]
+    card["workspace card --app-shell-* + --app-workspace-shadow<br/>main [+ attached inspector on article routes]"]
 
     chassis --> header
     chassis --> shell
-    shell --> workspace
-    shell --> rail
+    shell --> left
+    shell --> card
 ```
 
-Mobile (`<md`) is edge-to-edge: inset, shell radius and rail gap are 0.
+Mobile (`<md`) is edge-to-edge: inset and shell radius are 0, the
+destinations and sidebar live in the navigation drawer, and the inspector is a
+sheet.
 
 ## Article route panels (#1126)
 
-On `/pages/:id` the shell renders the **workspace** (left nav + main) and a
-**detached context rail** as siblings in one flex row, so each region scrolls
-independently and the editor column shrinks around the rail rather than
-having anything float above it.
+On `/pages/:id` the workspace card holds `<main>` and the **attached
+inspector** side by side, split by the inspector's 1px left hairline; each
+region scrolls independently and the editor column shrinks around the
+inspector rather than having anything float above it. Both side panels resize
+from their inner edge.
 
 ```mermaid
 flowchart LR
-    workspace["workspace<br/>SidebarTreeView | main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
-    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
+    workspace["workspace card<br/>main [data-scroll-container]<br/>PageViewPage · TipTap"]
+    rail["ArticleRightPane (attached)<br/>400–1200px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
     workspace --- rail
     workspace --> connections["ArticleConnections (#1314)<br/>read-mode article footer<br/>linked · section · related"]
@@ -145,7 +151,7 @@ enters the viewport, not on ordinary re-renders or background refetches.
 - Below `md` there is no right side to dock into, so the same inspector
   (`ArticleRightPane` with `presentation="sheet"`) is a right-hand slide-over
   — Outline, Details and Assistant together, matching the left nav drawer.
-  Chassis **AI** is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
+  The header's **AI** tab is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
   the inspector tab is **Assistant**. The laptop-width force-collapse of the
   page tree is gone: 768–1439 keeps the user's tree preference.
 - **Baseline lifecycle is a Details section, a badge and a tree glyph (#277).**
@@ -820,15 +826,15 @@ the backend side.
   colours**: `--surface-backdrop`, `--surface-card` and
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
-  palette is designed out. Paper's panes — document, left navigation, context
-  rail — are pure white; its neutrals sit a hair off neutral toward warm, below
+  palette is designed out. Paper's panes — document and the attached
+  inspector — are pure white; its neutrals sit a hair off neutral toward warm, below
   the perceptual threshold, so do not describe it as a warm palette. Its frame
-  (gutter, left destination rail, top app header) is `#EBEAE8`: the darkest step
+  (gutter, left navigation column, top app header) is `#EBEAE8`: the darkest step
   and a real grey, deepened twice in v1.1 — once when the workspace and
   context-rail hairlines were removed and the value step became the only thing
   drawing the card, then again when the owner asked for "more gray" (1.202:1 on
   Pane, the same rung `--color-selected` occupies). It is the floor of the range:
-  the destination rail's 12px labels are `--color-muted-foreground` on it at
+  the navigation's 12px secondary labels are `--color-muted-foreground` on it at
   4.51:1, so a deeper frame needs the secondary ink darkened first, and
   `workspace-themes.test.ts` pins that pair. Hover, press and selection are three
   separate tokens rather than one shared fill — with a perceptual floor between
@@ -846,10 +852,10 @@ the backend side.
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
-- **The shell draws no lines.** The workspace card and the context rail carry no
-  border — inset, radius and the Pane-over-Canvas step draw both — and neither
-  does any pane's own first row: it inherits the pane rather than painting
-  Chrome, and the 48px chrome band across the top of every pane draws no
+- **The shell draws no frame lines.** The workspace card carries no border —
+  inset, radius, the Pane-over-Canvas step and its light resting shadow draw it
+  (ADR-010 v1.7) — and no pane's own first row paints Chrome, and the 48px
+  chrome band across the top of every pane draws no
   hairline either. That band is now held by HEIGHT alone: the sidebar's chrome
   row, the article context strip and the inspector's tab row all resolve to
   exactly 48px so the panes start their content on one y, and
@@ -859,7 +865,7 @@ the backend side.
   one line left in the control — is `--color-border-interactive` in both
   `panel-tab-active` and `nm-pill-active`, because a selected segment's STATE has
   to clear 1.4.11. The lines that remain are the ones nothing else
-  states: the left navigation's `border-r` (both sides are Pane), card borders
+  states: the attached inspector's left hairline (both sides are Pane), card borders
   (a card paints Pane on a Pane), `--color-border-interactive` on anything
   operable **except the one owner exception, `nm-composer`** (quiet hairline by
   explicit decision; focus-within restores a ≥3:1 border plus ring), and the two
@@ -869,8 +875,8 @@ the backend side.
   1.08:1 floor under the card's value step, since an unlined card fails
   silently (ADR-010 v1.1).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
-  the outer frame and top app header, Workspace paints navigation, Chrome
-  paints internal panel toolbars, and the content pane sits one value step up.
+  the outer frame, top app header and left navigation, Workspace fills the card,
+  Chrome paints internal panel toolbars, and the content pane sits one value step up.
   This is why the document is the brightest thing on screen and navigation recedes.
   Both themes are the same token-driven ladder — there are deliberately **no**
   `[data-theme-type="light"]` shell overrides, and a test fails if one returns.
