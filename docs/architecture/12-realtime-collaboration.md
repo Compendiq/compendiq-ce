@@ -98,14 +98,14 @@ sequenceDiagram
     N->>F: Upgrade headers forwarded
     F->>F: Map Sec-WebSocket-Protocol JWT onto Authorization Bearer
     F-->>B: 101 Switching Protocols subprotocol compendiq.collab.v1
-    F->>F: verify JWT and userCanAccessPage and flag and page row
+    F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
         B->>B: refreshAccessTokenOnce then reconnect
-    else no access or flag off
+    else flag off or upgrade rate limited
         F-->>B: close 4403
         B->>B: destroy provider do not reconnect
-    else missing or folder or trashed
+    else missing or no page access or folder or trashed
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
     else ok
@@ -119,8 +119,8 @@ sequenceDiagram
 | Code | When |
 |------|------|
 | **4401** | Missing / invalid / expired JWT, deactivated user (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) |
-| **4403** | Authenticated but no page access, or flag off at join or mid-session, or write attempted while read-only |
-| **4404** | Missing page, `page_type = 'folder'`, or committed trash (`deleted_at`) |
+| **4403** | Flag off at join or mid-session, upgrade rate limit, page access revoked mid-session, or write attempted while read-only |
+| **4404** | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) |
 | **1001** | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect |
 | HTTP 401 (no socket) | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. |
 

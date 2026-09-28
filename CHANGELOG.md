@@ -20,7 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retrieval keeps its documented gate (space-level, plus the Enterprise
   `rag_permission_enforcement` post-filter). ACE and group-membership changes
   now invalidate page caches from the database, so no cached view keeps a
-  newly restricted page.
+  newly restricted page. Semantic and hybrid `/api/search` authorize the
+  candidate pool before applying `limit`, so hidden pages no longer take
+  result slots.
+- **Status changes for unreadable pages.** Presence heartbeat and stream
+  answer 404 instead of 403 (leaving answers 204); the version list answers
+  200 with no versions instead of 403; single versions, semantic diff and
+  restore answer 404 instead of 403; a collaboration join closes 4404 instead
+  of 4403 (mid-session revocation still closes 4403); watching an unreadable
+  or missing page answers 404.
 
 ### Changed
 
