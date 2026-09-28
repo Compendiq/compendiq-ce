@@ -70,7 +70,6 @@ vi.mock('../../domains/llm/services/rag-service.js', async () => {
     },
     getEmbeddingCoverage: (...args: unknown[]) => mockGetEmbeddingCoverage(...args),
     deriveDegradedReason: actual.deriveDegradedReason,
-    resolveStageLimit: actual.resolveStageLimit,
     DEGRADED_COVERAGE_THRESHOLD: actual.DEGRADED_COVERAGE_THRESHOLD,
   };
 });
@@ -611,8 +610,8 @@ describe('Search Routes', () => {
       // The vector leg counts CHUNKS while `limit` counts pages-after-dedup:
       // fetching exactly `limit` rows under-delivered whenever one page's
       // chunks occupied several top slots. The route now fetches
-      // resolveStageLimit(limit, width, false) chunks and slices to `limit`
-      // after dedupe.
+      // searchCandidatePool chunks (`max(width, 2×limit)`, capped at
+      // RAG_FETCH_WIDTH_MAX) and slices to `limit` after dedupe.
       mockQueryFn.mockResolvedValue({ rows: [] });
       const fakeEmbedding = new Array(768).fill(0.1);
       mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
@@ -634,7 +633,7 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // Fetch width: max(default width 10, limit 2) = 10 chunks requested.
+      // searchCandidatePool: max(default width 10, 2×limit 4) = 10 chunks requested.
       expect(mockVectorSearch).toHaveBeenCalledTimes(1);
       expect(mockVectorSearch.mock.calls[0]?.[2]).toBe(10);
       // Return width: sliced to the caller's limit AFTER dedupe-by-page.

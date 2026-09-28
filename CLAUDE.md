@@ -831,7 +831,7 @@ bodies to a user goes through it (or `authorizedPageIds` for id gates):
 lists, trees, children, breadcrumbs, search rows and facets (semantic/hybrid
 rows too: a pool of `max(rag_fetch_width, 2 × limit)` pages is authorized BEFORE
 the `limit` slice, so results fall short only when more than `pool − limit`
-unreadable pages rank in it, and the analytics row counts the returned set),
+unreadable pages rank in it or fewer than `limit` readable pages match, and the analytics row counts the returned set),
 graphs, space summaries, pins, embedding
 status, sub-page LLM
 context, duplicates, verification, versions, exports, attachments, bulk
