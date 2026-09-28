@@ -1475,6 +1475,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       });
       // Authorization is asynchronous. Observe the closed gate rather than
       // assuming one event-loop turn includes the administrator/audit commit.
+      // Each probe is a full lock-taking transaction; the default 1 s budget
+      // lapsed mid-probe on a loaded shard ("function didn't resolve in time").
       await expect.poll(async () => {
         try {
           await withPageWriteTransaction([sqlPageId], async () => undefined);
@@ -1483,7 +1485,7 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
           if (!(error instanceof PageWriteError)) throw error;
           return error.reason;
         }
-      }).toBe('runtime_quiescing');
+      }, { timeout: 10_000 }).toBe('runtime_quiescing');
       await reservationClient.query('COMMIT');
       reservationClient.release();
       reservationClientReleased = true;

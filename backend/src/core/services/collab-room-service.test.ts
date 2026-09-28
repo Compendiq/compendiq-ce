@@ -1387,7 +1387,8 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         const waiting = await query<{ count: string }>(
           `SELECT COUNT(*)::text AS count FROM pg_locks
             WHERE locktype = 'advisory' AND classid = $1 AND objid = $2
-              AND objsubid = 2 AND NOT granted`,
+              AND objsubid = 2 AND NOT granted
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
           [PAGE_LIFECYCLE_LOCK_KEY, pageId],
         );
         expect(Number(waiting.rows[0]!.count)).toBeGreaterThanOrEqual(2);
