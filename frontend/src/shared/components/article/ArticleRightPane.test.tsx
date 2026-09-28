@@ -279,7 +279,7 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('More actions'));
     expect(moreActions).toHaveAttribute('open');
     expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
-    expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Show in graph').closest('details')).toBe(moreActions);
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
   });
@@ -1547,11 +1547,15 @@ describe('ArticleRightPane', () => {
       });
     });
 
-    it('renders the last verification date on the chip', () => {
+    it('renders the last verification date on the chip, with the year', () => {
       currentMockPage = { ...mockPage, verifiedAt: '2026-03-01T12:00:00Z' };
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
+      // The one date stamp the inspector uses (formatDateStamp): day precision
+      // and always the year, so "Verified Mar 1" cannot sit beside an
+      // "Indexed 8/24/2026" and read as the newer of the two.
       const expected = new Date('2026-03-01T12:00:00Z').toLocaleDateString(undefined, {
+        year: 'numeric',
         month: 'short',
         day: 'numeric',
       });
