@@ -1304,7 +1304,10 @@ together, which matters most for #1114's query-side prefix.
   the current live state, then applies the target snapshot as a **new** bumped
   version. Older versions remain, `embedding_dirty` is raised, and — for
   Confluence-sourced pages — the restored content is pushed upstream as a new
-  Confluence version so the next sync doesn't clobber the revert. Retention
+  Confluence version so the next sync doesn't clobber the revert. A restore that
+  stays local (a standalone page, or the caller's integration is off) applies
+  the `PUT /pages/:id` authority, `userCanAccessPage` AND `userCanEditPage`,
+  both before the write and under the page fence. Retention
   keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
   (`data-retention-service.ts`).
 - **Cached asset expectations** (`pages.expected_image_files` /

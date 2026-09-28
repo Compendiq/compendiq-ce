@@ -1,9 +1,10 @@
+import type { PoolClient } from 'pg';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
-import { getUserAccessibleSpaces, userCanAccessPage } from '../../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, userCanAccessPage, userCanEditPage } from '../../../core/services/rbac-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getClientForUser } from '../../confluence/services/sync-service.js';
 import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
@@ -195,6 +196,26 @@ function mergeLabels(current: readonly string[], add: readonly string[], remove:
 }
 
 /**
+ * Authority for a label write that stays local (#1623). A synced page gets the
+ * PUT /pages/:id rule, page access AND edit rights (a role on its space, plus
+ * an ACE when restricted), because the caller's own integration toggle must
+ * not skip what the Confluence branch re-checks under admission. A standalone
+ * article keeps the routes' existing page-access rule. With `client` the
+ * check reads inside the write transaction and bypasses the RBAC caches.
+ */
+async function canWriteLabelsLocally(
+  userId: string,
+  page: { id: number; source: string },
+  client?: PoolClient,
+): Promise<boolean> {
+  if (!(await userCanAccessPage(userId, page.id, client))) return false;
+  return page.source === 'standalone' || userCanEditPage(userId, page.id, client);
+}
+
+/** Reason of a denied local label write; routes answer it with their ordinary 404. */
+export const LABEL_WRITE_DENIED_REASON = 'page_not_found';
+
+/**
  * Apply an authored label mutation through the lifecycle fence. Confluence
  * mutations reserve a durable intent before the first remote call and settle
  * only after the matching local row commits.
@@ -216,6 +237,11 @@ export async function applyLabelChanges(
   if (!initial) throw new Error(`Page not found: ${pageId}`);
 
   if (await pageWriteStaysLocal(userId, initial.source)) {
+    // Checked before the fence so a denied caller learns nothing about the
+    // page's lifecycle (e.g. a 423 for a frozen page), then again under it.
+    if (!(await canWriteLabelsLocally(userId, initial))) {
+      throw new PageWriteError(404, LABEL_WRITE_DENIED_REASON, 'Page not found');
+    }
     return withPageWriteTransaction([initial.id], async (client) => {
       const fresh = await client.query<TagPage>(
         `SELECT id, confluence_id, source, space_key, labels,
@@ -225,6 +251,13 @@ export async function applyLabelChanges(
       );
       const page = fresh.rows[0];
       if (!page) throw new Error(`Page not found: ${pageId}`);
+      const actor = await client.query(
+        'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+        [userId],
+      );
+      if (actor.rowCount !== 1 || !(await canWriteLabelsLocally(userId, page, client))) {
+        throw new PageWriteError(404, LABEL_WRITE_DENIED_REASON, 'Page not found');
+      }
       const labels = mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []);
       await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, labels]);
       return labels;

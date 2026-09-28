@@ -194,6 +194,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local writes to synced pages while Confluence is off** (AI improvement
+  apply, version restore, label edits) now require the same page access and
+  edit rights as the page editor.
+
 - **Conversation pagination retains PostgreSQL microseconds (#1667).** Opaque
   keyset cursors now carry the exact six-digit `updated_at` ordering key plus
   the UUID tiebreaker, so conversations inside the same millisecond are returned

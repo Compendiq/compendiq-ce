@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
+import { PageWriteError } from '../../core/services/page-write-admission.js';
 import {
   autoTagPage,
   applyTags,
@@ -9,6 +10,7 @@ import {
   autoTagAllPages,
   ALLOWED_TAGS,
   AllowedTag,
+  LABEL_WRITE_DENIED_REASON,
 } from '../../domains/knowledge/services/auto-tagger.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { z } from 'zod';
@@ -36,6 +38,23 @@ async function assertPageAccess(
     throw fastify.httpErrors.notFound('Page not found');
   }
 }
+
+/**
+ * A local label write re-checks page-edit authority inside the service
+ * (#1623). Answer its denial with the exact 404 `assertPageAccess` gives, so a
+ * refused write reads like a missing page.
+ */
+async function concealLabelWriteDenial<T>(fastify: FastifyInstance, write: Promise<T>): Promise<T> {
+  try {
+    return await write;
+  } catch (err) {
+    if (err instanceof PageWriteError && err.reason === LABEL_WRITE_DENIED_REASON) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    throw err;
+  }
+}
+
 // `model` is optional: when omitted, the route resolves the auto_tag use-case
 // assignment from admin settings (issue #214). Frontend can stop asking the
 // user to pick a model for auto-tag once the admin has configured one.
@@ -124,7 +143,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`No valid tags. Allowed: ${ALLOWED_TAGS.join(', ')}`);
     }
 
-    const mergedLabels = await applyTags(userId, id, validTags);
+    const mergedLabels = await concealLabelWriteDenial(fastify, applyTags(userId, id, validTags));
 
     // Invalidate cache
     await cache.invalidate(userId, 'pages');
@@ -143,13 +162,13 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     // Authority remains source-aware and is checked before reserving a remote
-    // effect. The service re-resolves the page and performs the mutation under
-    // the shared lifecycle fence.
+    // effect. The service re-resolves the page, re-checks page-edit authority
+    // for a local write, and performs the mutation under the lifecycle fence.
     await assertPageAccess(fastify, userId, id);
-    const labels = await applyLabelChanges(userId, id, {
+    const labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
       add: addLabels,
       remove: removeLabels,
-    });
+    }));
 
     await cache.invalidate(userId, 'pages');
     return { labels };

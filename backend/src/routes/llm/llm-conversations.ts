@@ -34,6 +34,7 @@ import {
   getUserAccessibleSpaces,
   getUserAccessibleSpacesMemoized,
   userCanAccessPage,
+  userCanEditPage,
 } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
@@ -365,18 +366,25 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const existingPage = existing.rows[0]!;
 
-    // IDOR guard (#734): a standalone page is writable only by its owner
-    // unless it is explicitly shared — same rule as PATCH /pages/:id.
-    // Respond 404 (not 403/409) so another user's private page never leaks
-    // its existence, title, or version; this must run before the version
-    // check below to avoid a 404-vs-409 existence oracle. The Confluence
+    // Page authority for a local write: the PUT /pages/:id rule — page access
+    // AND edit rights. A synced page needs a role on its space (plus an ACE
+    // when the page is restricted); a standalone article needs its owner or
+    // shared visibility. With `client` it reads inside the write transaction
+    // and bypasses the RBAC caches.
+    const canWritePageLocally = async (pageId: number, client?: PoolClient): Promise<boolean> =>
+      (await userCanAccessPage(userId, pageId, client))
+      && (await userCanEditPage(userId, pageId, client));
+
+    // #1623: a standalone article, and a synced one while the CALLER's
+    // integration is off, take the local write below. That branch has no
+    // Confluence-side authority, so it is authorized here — before the
+    // version check, the collab-room 409 and the layout 422 — and answers
+    // 404 exactly like a missing page, so a page the caller may not edit
+    // leaks neither its existence nor its version (#734). The Confluence
     // branch re-resolves active identity, local page/space authority, mode,
     // and credentials under admission immediately before provider dispatch.
-    if (
-      existingPage.source === 'standalone' &&
-      existingPage.created_by_user_id !== userId &&
-      existingPage.visibility !== 'shared'
-    ) {
+    const writeStaysLocal = await pageWriteStaysLocal(userId, existingPage.source);
+    if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
@@ -469,7 +477,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     // #1623 — a standalone page and a synced page while Confluence is off use
     // the same local-only fenced transaction. No upstream call is made.
-    if (await pageWriteStaysLocal(userId, existingPage.source)) {
+    if (writeStaysLocal) {
       newVersion = await withPageWriteTransaction([existingPage.id], async (client) => {
         const fresh = await client.query<PageRow>(
           `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
@@ -477,6 +485,14 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         );
         const page = fresh.rows[0];
         if (!page) throw fastify.httpErrors.notFound('Page not found');
+        // Authority can change while the write waits for the page fence.
+        const actor = await client.query(
+          'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+          [userId],
+        );
+        if (actor.rowCount !== 1 || !(await canWritePageLocally(existingPage.id, client))) {
+          throw fastify.httpErrors.notFound('Page not found');
+        }
         if (page.version !== currentVersion || page.body_html !== existingPage.body_html) {
           throw fastify.httpErrors.conflict(
             'Page has been modified since you loaded it. Please refresh and try again.',
