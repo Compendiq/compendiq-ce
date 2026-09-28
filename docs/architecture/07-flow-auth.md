@@ -81,9 +81,10 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   `statement_timeout` 10s. A timeout rolls back — the cookie was not consumed —
   and the refresh route answers `503` instead of hanging. Family revocation and
   logout do not give up on a timeout: they run their `UPDATE` without the lock
-  instead. Only on that degraded path (the users row held for more than 5s)
-  can a successor committed by a stalled or queued rotation outlive the
-  revocation — the same exposure every revocation had before the lock existed.
+  instead. Only on that degraded path (a lock wait over 5s or a statement over
+  10s inside the locked transaction) can a successor committed by a stalled or
+  queued rotation outlive the revocation — the same exposure every revocation
+  had before the lock existed.
 
 ### Client-side token refresh
 
@@ -221,7 +222,8 @@ migration and no env var.
 
 `POST /api/auth/logout` revokes every refresh token of the identified user
 under the same users-row lock as rotation (so a refresh committing at the same
-moment cannot leave a live successor behind), clears the cookie, and records
+moment cannot leave a live successor behind, except on the lock-timeout
+fallback described under rotation), clears the cookie, and records
 `audit_log(action='logout')`. The access token is short-lived enough that
 blacklisting is not needed in CE; EE may add it.
 

@@ -121,8 +121,9 @@ calls `rotateRefreshToken`: under the user's row lock it claims the presented
 JTI with `UPDATE ... WHERE revoked = FALSE RETURNING` and inserts the
 same-family successor before the same commit; a replay or concurrent loser
 revokes the family. Family revocation and logout take the same lock (falling
-back to an unlocked UPDATE only if the 5s lock wait times out), and admin role
-change / deactivation conflict with it by updating the users row. Never
+back to an unlocked UPDATE only if the 5s lock wait or 10s statement deadline
+expires), and admin role change / deactivation conflict with it by updating
+the users row. Never
 rebuild rotation from `verifyRefreshToken` + `revokeToken` +
 `generateRefreshToken`. In the SPA every request that presents or sets the
 refresh cookie (refresh, login, register, setup-admin, OIDC exchange, logout)
