@@ -927,7 +927,10 @@ not an omission.
   validates that same canonical six-digit shape plus the UUID and passes the timestamp string
   unchanged to PostgreSQL. Malformed cursors and legacy three-digit cursors are 400: a legacy
   cursor has already discarded the boundary microseconds, so accepting it would silently skip
-  rows and is not a safe compatibility path. The cursor stays opaque to clients. Response
+  rows and is not a safe compatibility path. The cursor stays opaque to clients;
+  `useConversationList` resets its infinite query on a 400 while pages are loaded, so a
+  sidebar left open across the deploy re-reads from page one instead of replaying the
+  rejected cursor on every refetch. Response
   timestamps remain `created_at.toISOString()` / `updated_at.toISOString()` as the contract
   requires. `p.deleted_at IS NULL` is on the join
   because pages are soft-deleted (`029_standalone_columns.sql`) and `ON DELETE SET NULL` fires

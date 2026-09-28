@@ -978,8 +978,12 @@ by `(updated_at DESC, id DESC)`, so its opaque cursor carries a six-digit UTC
 that cursor from node-postgres's JavaScript `Date`: it truncates microseconds
 and can skip every remaining row in the boundary millisecond. Decode validates
 the canonical six-digit timestamp without normalising it through `Date`.
-Legacy three-digit cursors are rejected rather than accepted unsafely; clients
-must treat cursors as opaque and restart traversal after a deployment.
+Legacy three-digit cursors are rejected with 400 rather than accepted unsafely.
+TanStack keeps every served cursor in the list's `pageParams` and replays them
+on each refetch, so `useConversationList` resets its query — restarting from
+page one — when a 400 arrives while pages are loaded; a first-page 400 has no
+cursor in play and stays a rendered failure, which is what keeps the reset from
+looping.
 
 **The article inspector has a 400px minimum when expanded.** Persisted narrower widths are clamped on hydration, and the resize separator reports the same minimum; its double-click reset returns to 400px. The dock composer uses a labelled violet **Skill · current action** control — which `/ai` adopted on 2026-09-01, so both surfaces now name the selected action instead of one of them showing a bare icon — and its dropdown deliberately excludes the five `create-*` templates — creation remains available from the full-page AI flow and the dock's new-page empty state, while plain Generate stays in the dock menu. This later owner decision supersedes the preceding #1361 paragraph's older list of dock actions. When collapsed, Assistant is a first-class violet rail action immediately above Outline, never duplicated in More actions. Outline closes when the pointer moves onto another part of the rail while remaining hoverable over its own flyout. More actions closes on Escape or outside pointer press and restores trigger focus on Escape. The left navigation, central content pane, and inspector body all paint `--color-card`; only their toolbar bands paint `--app-header-bg`.
 

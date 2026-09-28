@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   useInfiniteQuery,
+  useQueryClient,
   type InfiniteData,
   type UseInfiniteQueryResult,
 } from '@tanstack/react-query';
@@ -51,6 +52,7 @@ export interface ConversationListResult {
 }
 
 export function useConversationList(): ConversationListResult {
+  const queryClient = useQueryClient();
   const query = useInfiniteQuery<
     ConversationListResponse,
     ApiError,
@@ -76,6 +78,20 @@ export function useConversationList(): ConversationListResult {
     retry: false,
     staleTime: 30_000,
   });
+
+  // The route answers 400 only for a cursor it cannot resume (#1667): the
+  // list never sends `limit`, and a cursor minted before a precision change
+  // has already lost the microseconds that made its page boundary exact. That
+  // cursor lives in TanStack's stored pageParams, so every refetch — the
+  // pending-title poll, a stale remount, the pane's retry button — would replay
+  // it and fail again. Restart from the first page instead. Gated on loaded
+  // data so a first-page 400 (no cursor in play) surfaces as a failure rather
+  // than resetting in a loop: the reset clears the data, so it fires once.
+  const staleCursor = query.isError && query.error.statusCode === 400 && query.data !== undefined;
+  useEffect(() => {
+    if (!staleCursor) return;
+    void queryClient.resetQueries({ queryKey: CONVERSATIONS_LIST_KEY, exact: true });
+  }, [staleCursor, queryClient]);
 
   const rows = useMemo(
     () => query.data?.pages.flatMap((page) => page.items) ?? [],
