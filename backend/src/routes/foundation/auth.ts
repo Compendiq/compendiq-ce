@@ -17,6 +17,8 @@ import { createRegistrationUser } from '../../core/services/account-bootstrap-se
 import {
   generateAccessToken,
   generateRefreshToken,
+  rotateRefreshToken,
+  RefreshSessionBusyError,
   verifyRefreshToken,
   revokeToken,
   revokeAllUserTokens,
@@ -247,60 +249,16 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Verify token and check JTI in database (handles reuse detection)
-      const payload = await verifyRefreshToken(refreshTokenCookie);
+      // Claims the presented JTI and inserts its successor in one
+      // transaction under the user's row lock; replay or a concurrent loser
+      // revokes the whole family (reuse policy). Deactivated / missing users
+      // are rejected under the same lock (PR #311 Finding #3).
+      const rotated = await rotateRefreshToken(refreshTokenCookie);
 
-      // Verify user still exists AND is active. The deactivation flow already
-      // DELETEs refresh_tokens rows so the JTI check above would normally
-      // fail first, but re-reading `deactivated_at` here is defence in depth
-      // for any future path that surfaces a valid JTI (race with token
-      // issue, EE SSO re-issue, bug in the revocation flow). See PR #311
-      // Finding #3.
-      const result = await query<{
-        id: string;
-        username: string;
-        role: string;
-        email: string | null;
-        display_name: string | null;
-        deactivated_at: Date | null;
-      }>(
-        'SELECT id, username, role, email, display_name, deactivated_at FROM users WHERE id = $1',
-        [payload.sub],
-      );
-      if (result.rows.length === 0) {
-        throw fastify.httpErrors.unauthorized('User not found');
-      }
-
-      const user = result.rows[0]!;
-      if (user.deactivated_at) {
-        // Revoke the JTI we just verified so a subsequent reactivation
-        // can't silently reuse the same refresh token.
-        await revokeToken(payload.jti).catch(() => {});
-        throw fastify.httpErrors.unauthorized('Account is deactivated');
-      }
-
-      // Token rotation: revoke old JTI
-      await revokeToken(payload.jti);
-
-      // Issue new tokens (same family)
-      const accessToken = await generateAccessToken({
-        sub: user.id,
-        username: user.username,
-        role: user.role as 'user' | 'admin',
-      });
-      const { token: newRefreshToken } = await generateRefreshToken(
-        {
-          sub: user.id,
-          username: user.username,
-          role: user.role as 'user' | 'admin',
-        },
-        payload.family, // Same family for rotation tracking
-      );
-
-      await logAuditEvent(user.id, 'TOKEN_REFRESH', 'user', user.id, {}, request);
+      await logAuditEvent(rotated.user.id, 'TOKEN_REFRESH', 'user', rotated.user.id, {}, request);
 
       reply
-        .setCookie(REFRESH_COOKIE, newRefreshToken, {
+        .setCookie(REFRESH_COOKIE, rotated.refreshToken, {
           httpOnly: true,
           secure: isCookieSecure(request),
           sameSite: 'lax',
@@ -308,16 +266,15 @@ export async function authRoutes(fastify: FastifyInstance) {
           maxAge: REFRESH_MAX_AGE,
         })
         .send({
-          accessToken,
-          user: {
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            email: user.email,
-            displayName: user.display_name,
-          },
+          accessToken: rotated.accessToken,
+          user: rotated.user,
         });
     } catch (err) {
+      if (err instanceof RefreshSessionBusyError) {
+        // Rolled back before anything committed: the cookie is still valid.
+        logger.warn({ err }, 'Refresh token rotation timed out');
+        throw fastify.httpErrors.serviceUnavailable('Refresh temporarily unavailable');
+      }
       logger.debug({ err }, 'Refresh token verification failed');
       throw fastify.httpErrors.unauthorized('Invalid refresh token');
     }
