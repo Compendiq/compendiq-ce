@@ -349,7 +349,17 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { key } = KeyParamSchema.parse(request.params);
 
-    // #817: gate cross-space access BEFORE reading the cache so a revoked user
+    // Capture the cache generation before reading any input the fill depends
+    // on (space source, RBAC spaces). An invalidation that lands after an
+    // input read then fences this fill instead of publishing it as current.
+    const cacheKey = `space-tree:v2:${key}`;
+    const { value: cached, generation } = await cache.getWithGeneration(
+      userId,
+      'pages',
+      cacheKey,
+    );
+
+    // #817: gate cross-space access BEFORE serving the cache so a revoked user
     // cannot replay their own per-user cached tree during the TTL window.
     // Verify the space exists and resolve its source for the RBAC gate.
     const spaceCheck = await query<{ source: string }>(
@@ -368,12 +378,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Space not found');
     }
 
-    const cacheKey = `space-tree:v2:${key}`;
-    const { value: cached, generation } = await cache.getWithGeneration(
-      userId,
-      'pages',
-      cacheKey,
-    );
     if (cached) return cached;
 
     const result = await query<{

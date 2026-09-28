@@ -6,6 +6,7 @@ import { computePageRelationships } from '../../domains/llm/services/embedding-s
 import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 import { toPageIdText } from '../../core/utils/page-id-text.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
@@ -299,20 +300,19 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       return { nodes: [], edges: [], centerId: id };
     }
 
+    // Resolve the complete vertex set before traversal: shared-list
+    // visibility plus page-level ACEs (`inherit_perms = false` Confluence
+    // pages need an ACE). Filtering before each per-hop limit prevents a
+    // hidden vertex from consuming the bound or becoming an intermediate path.
+    // An ACE-denied center answers exactly like a missing one.
     const centerPageId = pageResult.rows[0]!.id;
+    const accessiblePageSet = await authorizedPageIds(userId);
+    if (!accessiblePageSet.has(centerPageId)) {
+      return { nodes: [], edges: [], centerId: id };
+    }
     await ensureDeterministicRelationships();
 
-    // Resolve the complete shared-list-visible vertex set before traversal.
-    // Filtering before each per-hop limit prevents a hidden vertex from
-    // consuming the bound or becoming an intermediate path.
-    const accessiblePages = await query<{ id: number }>(
-      `SELECT cp.id
-       FROM pages cp
-       WHERE cp.deleted_at IS NULL
-         AND ${visiblePagesPredicate(1, 2)}`,
-      [graphSpaces, userId],
-    );
-    const accessiblePageIds = accessiblePages.rows.map((row) => row.id);
+    const accessiblePageIds = [...accessiblePageSet];
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE visible_parent_relationships AS (
          SELECT LEAST(child.id, parent.id) AS page_id_1,

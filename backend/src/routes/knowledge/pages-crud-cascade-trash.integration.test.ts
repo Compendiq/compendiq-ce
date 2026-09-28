@@ -579,10 +579,14 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
 
     /**
      * A numeric key can name one row by primary key and another by Confluence
-     * id. Detail still resolves the primary-key page itself, but no hierarchy
-     * reader may choose one candidate for the parent edge.
+     * id. The Confluence decoy is inserted FIRST, so it is the physical-first
+     * match, and it lives in a space this caller cannot read. Detail resolves
+     * the caller's own PK row (200); the deprecated route must not be stricter
+     * than detail (#1636) nor answer with a distinct status that reveals the
+     * unreadable decoy. No hierarchy reader may pick one candidate for the
+     * parent edge, so both answer the same fail-closed `hasChildren: false`.
      */
-    it('does not traverse an ambiguous parent key while resolving detail by PK', async () => {
+    it('answers like detail when the caller’s PK collides with an unreadable decoy', async () => {
       await insertConfluencePage(String(PARKED_PK), 'Decoy', 'OTHER');
       const target = await insertStandalonePage('Target', 'private', userA, 'NOTES');
       // Park the standalone row on the decoy's identifier: it is now the second
@@ -612,7 +616,8 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         method: 'GET',
         url: `/api/pages/${PARKED_PK}/has-children`,
       });
-      expect(response.statusCode).toBe(409);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ hasChildren: detailBody.hasChildren });
     });
 
     /**

@@ -1239,9 +1239,27 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       id: number;
       confluence_id: string | null;
       source: string;
+      canonical_key_hidden_collision: boolean;
       canonical_key_ambiguous: boolean;
     }>(
       `SELECT page.id, page.confluence_id, page.source,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+                  AND NOT COALESCE(${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'candidate')}, false)
+              ) AS canonical_key_hidden_collision,
               EXISTS (
                 SELECT 1
                 FROM pages candidate
@@ -1279,6 +1297,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const parentLookupId = page.source === 'confluence'
       ? page.confluence_id!
       : String(page.id);
+    // A collision with a row the caller cannot see fails closed exactly like
+    // the detail route's `hasChildren` (no distinct status, so no existence
+    // oracle). 409 is reserved for collisions among rows the caller can read.
+    if (page.canonical_key_hidden_collision) {
+      return { hasChildren: false };
+    }
     if (page.canonical_key_ambiguous) {
       throw fastify.httpErrors.conflict('Page identifier is ambiguous');
     }
@@ -1344,10 +1368,28 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       source: string;
       visibility: string;
       created_by_user_id: string | null;
+      canonical_key_hidden_collision: boolean;
       canonical_key_ambiguous: boolean;
     }>(
       `SELECT page.id, page.confluence_id, page.space_key, page.source,
               page.visibility, page.created_by_user_id,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+                  AND NOT COALESCE(${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'candidate')}, false)
+              ) AS canonical_key_hidden_collision,
               EXISTS (
                 SELECT 1
                 FROM pages candidate
@@ -1390,6 +1432,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ? page.confluence_id!
       : String(page.id);
 
+    // Same fail-closed rule as /has-children and the detail route.
+    if (page.canonical_key_hidden_collision) {
+      return { children: [] };
+    }
     if (page.canonical_key_ambiguous) {
       throw fastify.httpErrors.conflict('Page identifier is ambiguous');
     }

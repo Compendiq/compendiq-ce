@@ -227,6 +227,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   released between attempts), and network or proxy errors are reported without
   a retry.
 
+- **Page hierarchy metadata follows per-page visibility.** Local-space trees,
+  page lists and trees, breadcrumbs, children, graphs, pins, filter facets and
+  space summaries now show only pages the caller can read (assigned Confluence
+  spaces, shared standalone pages, the caller's own private pages); a hidden
+  parent is presented as a root. `/has-children` and `/children` answer a
+  collision with an unreadable page like the detail route instead of 409, and
+  the focused graph keeps enforcing Confluence page restrictions. Cached trees
+  and lists are invalidated by role and group changes.
+
 - **Page saves are now single-flight per editing session (#1662).** Rapid
   repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
   draw.io work or commit a collaborative snapshot, now share the operation

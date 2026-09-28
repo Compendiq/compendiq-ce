@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { query } from '../../core/db/postgres.js';
-import { invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import {
   isDbAvailable,
@@ -401,6 +401,39 @@ describe.skipIf(!available)('local spaces routes — real PostgreSQL and Redis',
     expect(allowed.json().items).toEqual([
       expect.objectContaining({ id: page, confluenceId: 'secure-root', source: 'confluence' }),
     ]);
+  });
+
+  it('does not publish a local tree filled from RBAC input read before a revocation', async () => {
+    await insertLocalSpace('TEAM', actorId);
+    const moved = await insertConfluencePage('moved-in', 'Moved Confluence row', 'TEAM');
+    await setTreePosition(moved, `/${moved}`, 0);
+    await assignSpace(actorId, 'TEAM');
+    // The route reads this warm RBAC entry; the revocation lands right after it.
+    expect(await getUserAccessibleSpaces(actorId)).toEqual(['TEAM']);
+
+    const spacesKey = `rbac:spaces:${actorId}`;
+    const originalGet = redis.get.bind(redis);
+    let revoked = false;
+    const getSpy = vi.spyOn(redis, 'get').mockImplementation((async (key: string) => {
+      const value = await originalGet(key);
+      if (key === spacesKey && !revoked) {
+        revoked = true;
+        await query('DELETE FROM space_role_assignments WHERE principal_id = $1', [actorId]);
+        await invalidateRbacCache(actorId);
+      }
+      return value;
+    }) as typeof redis.get);
+    try {
+      const inFlight = await app.inject({ method: 'GET', url: '/api/spaces/TEAM/tree' });
+      expect(inFlight.statusCode, inFlight.body).toBe(200);
+      expect(revoked).toBe(true);
+    } finally {
+      getSpy.mockRestore();
+    }
+
+    const afterRevocation = await app.inject({ method: 'GET', url: '/api/spaces/TEAM/tree' });
+    expect(afterRevocation.statusCode, afterRevocation.body).toBe(200);
+    expect(afterRevocation.json()).toEqual({ spaceKey: 'TEAM', items: [], total: 0 });
   });
 
   it('moves a real subtree and rewrites every descendant path under one admitted transaction', async () => {

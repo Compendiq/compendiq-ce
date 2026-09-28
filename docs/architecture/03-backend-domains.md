@@ -100,10 +100,12 @@ flowchart LR
 ```
 
 Connection-panel authorization removes inaccessible source/target pages before
-ranking. The focused graph uses the hierarchy list contract instead: assigned
+ranking. The focused graph uses the hierarchy list contract (assigned
 Confluence spaces, shared standalone pages, and the caller's own private
-standalone pages. It applies that visibility before traversal, limits, and
-counts, so an unavailable intermediate cannot expose second-hop neighbors.
+standalone pages) plus page-level ACEs for `inherit_perms = false` Confluence
+pages, through `authorizedPageIds`. It applies that set before traversal,
+limits, and counts, so an unavailable intermediate cannot expose second-hop
+neighbors, and an ACE-denied parent is treated as a hidden parent.
 Missing, ambiguous, and inaccessible centers return the same caller-keyed empty
 response. Focused-graph hierarchy links are derived from the caller-visible
 vertex set for both traversal and edge output; node `parentId` is retained only
@@ -130,8 +132,9 @@ Local-space access grants access to the space container, not to every
 standalone page assigned to it. Page-derived list and hierarchy projections
 reuse the shared caller-bound list definition: Confluence pages in assigned
 spaces, shared standalone pages, and the caller's own private standalone pages.
-This preserves the established system-administrator list behavior and does not
-add a separate page-ACE policy to hierarchy reads. Parent identity is projected
+This preserves the established system-administrator list behavior. Apart from
+the focused graph's existing page-ACE filter, hierarchy reads add no separate
+page-ACE policy. Parent identity is projected
 only when the direct parent is visible and its stored key identifies one live
 candidate. Mixed-source parent/child links remain valid because the parent's
 source determines its canonical stored key.
@@ -140,13 +143,18 @@ A visible child whose parent is not visible is presented as a root
 (`parentId: null`); this includes full, clustered, and focused graph nodes. The
 local tree recomputes all descendant depths from that visible forest.
 Breadcrumbs retain only the contiguous visible suffix, and descendant tree
-walks do not traverse through an invisible or ambiguous node.
+walks do not traverse through an invisible or ambiguous node. `/has-children`
+and `/children` answer a collision with an unreadable row like the detail
+route (no children, status 200); 409 is reserved for collisions among
+readable rows.
 
 Hierarchy trees, lists and graphs use the generational `pages` cache namespace
 with per-user keys. Page visibility, ownership, hierarchy and lifecycle writers
 invalidate that namespace. RBAC invalidation also advances its generation, so
 role and group membership changes cannot reuse or refill a pre-change
-projection. Cache-key versioning prevents pre-fix values surviving a
+projection. Each fill captures its generation before reading RBAC inputs and
+gates access before serving a cached body. Cache-key versioning prevents
+pre-fix values surviving a
 deployment. `GET /api/spaces/local` and `GET /api/spaces` combine mutable space
 metadata with caller-visible page counts and home-page identity, so they remain
 uncached rather than pretending one of those two independent invalidation

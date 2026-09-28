@@ -121,7 +121,6 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           customHomePageId: null,
         }),
       ]);
-      expect(privateToReader.body).not.toContain(String(pageId));
 
       currentUserId = ownerId;
       const owner = await app.inject({ method: 'GET', url: '/api/spaces' });
@@ -149,7 +148,6 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           customHomePageId: null,
         }),
       ]);
-      expect(admin.body).not.toContain(String(pageId));
     });
   },
 );

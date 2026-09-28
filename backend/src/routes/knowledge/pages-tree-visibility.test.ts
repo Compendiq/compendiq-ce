@@ -196,13 +196,16 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(children.body).not.toContain('Private middle');
     expect(children.body).not.toContain('Shared grandchild');
   });
-  it('fails closed when a readable numeric page id collides with a hidden parent key', async () => {
+  it('fails closed like detail when a readable numeric page id collides with a hidden parent key', async () => {
     const readableRoot = await insertStandalonePage(
       'Readable collision root',
       'shared',
       userA,
       'NOTES',
     );
+    await insertStandalonePage('Readable child', 'shared', userA, 'NOTES', {
+      parentId: String(readableRoot),
+    });
     await insertConfluencePage(String(readableRoot), 'Hidden colliding parent', 'SECRET');
     await insertConfluencePage('hidden-child', 'Hidden child', 'SECRET', {
       parentId: String(readableRoot),
@@ -213,17 +216,44 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(detail.statusCode, detail.body).toBe(200);
     expect(detail.json()).toMatchObject({ hasChildren: false });
 
+    // No distinct status: a hidden collision must not be distinguishable from
+    // the detail route's fail-closed answer.
     const children = await app.inject({
       method: 'GET',
       url: `/api/pages/${readableRoot}/children`,
     });
-    expect(children.statusCode, children.body).toBe(409);
-    expect(children.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    expect(children.statusCode, children.body).toBe(200);
+    expect(children.json()).toEqual({ children: [] });
     const legacy = await app.inject({
       method: 'GET',
       url: `/api/pages/${readableRoot}/has-children`,
     });
-    expect(legacy.statusCode, legacy.body).toBe(409);
+    expect(legacy.statusCode, legacy.body).toBe(200);
+    expect(legacy.json()).toEqual({ hasChildren: false });
+  });
+
+  it('still reports 409 when every colliding candidate is readable', async () => {
+    const readableRoot = await insertStandalonePage(
+      'Readable collision root',
+      'shared',
+      userA,
+      'NOTES',
+    );
+    await insertStandalonePage('Readable child', 'shared', userA, 'NOTES', {
+      parentId: String(readableRoot),
+    });
+    await insertConfluencePage(String(readableRoot), 'Readable colliding parent', 'DEV');
+    await assignReadableSpace(userB, 'DEV');
+
+    currentUserId = userB;
+    for (const suffix of ['children', 'has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${readableRoot}/${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    }
   });
 
   it('rejects a canonical Confluence root key that collides before children traversal', async () => {
