@@ -154,11 +154,9 @@ export async function notionRoutes(fastify: FastifyInstance) {
         });
         const created = items.filter((i) => i.status === 'success');
         if (created.length > 0) {
-          if (body.visibility === 'shared') {
-            await cache.invalidateAcrossUsers('pages');
-          } else {
-            await cache.invalidate(userId, 'pages');
-          }
+          // A private overwrite can revoke visibility from every other reader, so
+          // successful imports must advance the shared page-cache generation too.
+          await cache.invalidateAcrossUsers('pages');
         }
         for (const item of created) {
           await logAuditEvent(

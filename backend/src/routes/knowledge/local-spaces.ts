@@ -3,7 +3,11 @@ import { query, getPool } from '../../core/db/postgres.js';
 import type { PoolClient } from 'pg';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpaces,
+  userCanAccessPage,
+} from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import {
   assertPageHierarchyParentsAvailable,
   lockPageWrites,
@@ -155,15 +159,12 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
   fastify.get('/spaces/local', async (request) => {
     const userId = request.userId;
 
-    const cacheKey = 'local-spaces:list';
-    const cached = await cache.get<unknown[]>(userId, 'spaces', cacheKey);
-    if (cached) return cached;
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
-    // #352: surface `custom_home_page_id` (and the resolved wire-format
-    // `homepageId`) so the frontend "Show home content" toggle works for
-    // local spaces too — same shape as routes/confluence/spaces.ts. Local
-    // spaces have no Confluence-derived `homepage_id`, so the resolution
-    // collapses to "custom_home_page_id or null".
+    // Resolve page-derived fields per caller. This route deliberately remains
+    // uncached: space metadata and page visibility have independent
+    // invalidation generations, so caching their combined projection under
+    // either namespace can retain a stale page count or private home-page id.
     const result = await query<{
       space_key: string;
       space_name: string;
@@ -175,19 +176,26 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cs.space_key, cs.space_name, cs.description, cs.icon, cs.created_by,
               cs.last_synced AS created_at,
-              cs.custom_home_page_id
+              visible_home.id AS custom_home_page_id
        FROM spaces cs
+       LEFT JOIN pages visible_home
+         ON visible_home.id = cs.custom_home_page_id
+        AND visible_home.deleted_at IS NULL
+        AND ${visiblePagesPredicate(1, 2, 'visible_home')}
        WHERE cs.source = 'local'
        ORDER BY cs.space_name`,
+      [accessibleSpaces, userId],
     );
 
     // Get page counts per local space
     const countsResult = await query<{ space_key: string; count: string }>(
-      `SELECT space_key, COUNT(*) as count
-       FROM pages
-       WHERE space_key IN (SELECT space_key FROM spaces WHERE source = 'local')
-         AND deleted_at IS NULL
-       GROUP BY space_key`,
+      `SELECT p.space_key, COUNT(*) as count
+       FROM pages p
+       WHERE p.space_key IN (SELECT space_key FROM spaces WHERE source = 'local')
+         AND p.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2, 'p')}
+       GROUP BY p.space_key`,
+      [accessibleSpaces, userId],
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));
 
@@ -209,7 +217,6 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       customHomePageId: row.custom_home_page_id,
     }));
 
-    await cache.set(userId, 'spaces', cacheKey, spaces);
     return spaces;
   });
 
@@ -342,7 +349,17 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { key } = KeyParamSchema.parse(request.params);
 
-    // #817: gate cross-space access BEFORE reading the cache so a revoked user
+    // Capture the cache generation before reading any input the fill depends
+    // on (space source, RBAC spaces). An invalidation that lands after an
+    // input read then fences this fill instead of publishing it as current.
+    const cacheKey = `space-tree:v2:${key}`;
+    const { value: cached, generation } = await cache.getWithGeneration(
+      userId,
+      'pages',
+      cacheKey,
+    );
+
+    // #817: gate cross-space access BEFORE serving the cache so a revoked user
     // cannot replay their own per-user cached tree during the TTL window.
     // Verify the space exists and resolve its source for the RBAC gate.
     const spaceCheck = await query<{ source: string }>(
@@ -356,15 +373,11 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // are accessible to all authenticated users (same model as the move handler
     // and GET /api/pages/tree). 404 (not 403) so a restricted space is
     // indistinguishable from a nonexistent one (no existence oracle).
-    if (spaceCheck.rows[0]!.source !== 'local') {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(key)) {
-        throw fastify.httpErrors.notFound('Space not found');
-      }
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    if (spaceCheck.rows[0]!.source !== 'local' && !accessibleSpaces.includes(key)) {
+      throw fastify.httpErrors.notFound('Space not found');
     }
 
-    const cacheKey = `space-tree:${key}`;
-    const cached = await cache.get(userId, 'spaces', cacheKey);
     if (cached) return cached;
 
     const result = await query<{
@@ -372,36 +385,95 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       title: string;
       page_type: string;
       parent_numeric_id: number | null;
-      depth: number;
       sort_order: number;
       source: string;
       confluence_id: string | null;
     }>(
       `SELECT p.id, p.title, p.page_type, parent_page.id as parent_numeric_id,
-              p.depth, p.sort_order, p.source, p.confluence_id
+              p.sort_order, p.source, p.confluence_id
        FROM pages p
        LEFT JOIN pages parent_page ON (
          parent_page.confluence_id = p.parent_id
-         OR CAST(parent_page.id AS TEXT) = p.parent_id
-       ) AND parent_page.deleted_at IS NULL
-       WHERE p.space_key = $1 AND p.deleted_at IS NULL
+         OR parent_page.id::text = p.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND (parent_collision.confluence_id = p.parent_id
+                  OR parent_collision.id::text = p.parent_id)
+             AND parent_collision.id <> parent_page.id
+         )
+         AND ${visiblePagesPredicate(2, 3, 'parent_page')}
+       WHERE p.space_key = $1
+         AND p.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 3, 'p')}
        ORDER BY p.sort_order, p.title`,
-      [key],
+      [key, accessibleSpaces, userId],
     );
+
+    const parentById = new Map(
+      result.rows.map((row) => [row.id, row.parent_numeric_id]),
+    );
+    const depthById = new Map<number, number>();
+    const displayDepth = (pageId: number): number => {
+      const memoized = depthById.get(pageId);
+      if (memoized !== undefined) return memoized;
+
+      const chain: number[] = [];
+      const chainIndex = new Map<number, number>();
+      let currentId = pageId;
+      let baseDepth = 0;
+
+      while (true) {
+        const knownDepth = depthById.get(currentId);
+        if (knownDepth !== undefined) {
+          baseDepth = knownDepth;
+          break;
+        }
+
+        const cycleStart = chainIndex.get(currentId);
+        if (cycleStart !== undefined) {
+          for (let i = cycleStart; i < chain.length; i += 1) {
+            depthById.set(chain[i]!, 0);
+          }
+          chain.length = cycleStart;
+          break;
+        }
+
+        chainIndex.set(currentId, chain.length);
+        chain.push(currentId);
+        const parentId = parentById.get(currentId) ?? null;
+        if (parentId === null || !parentById.has(parentId)) {
+          depthById.set(chain.pop()!, 0);
+          break;
+        }
+        currentId = parentId;
+      }
+
+      for (let i = chain.length - 1; i >= 0; i -= 1) {
+        baseDepth += 1;
+        depthById.set(chain[i]!, baseDepth);
+      }
+      return depthById.get(pageId) ?? 0;
+    };
 
     const items = result.rows.map((row) => ({
       id: row.id,
       title: row.title,
       pageType: row.page_type ?? 'page',
-      parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
-      depth: row.depth,
+      parentId: row.parent_numeric_id !== null ? String(row.parent_numeric_id) : null,
+      // Rebase the complete visible forest. Resetting only direct children of a
+      // hidden parent leaves deeper rows with a depth gap that reveals it.
+      depth: displayDepth(row.id),
       sortOrder: row.sort_order,
       source: row.source,
       confluenceId: row.confluence_id,
     }));
 
     const response = { spaceKey: key, items, total: items.length };
-    await cache.set(userId, 'spaces', cacheKey, response, 300);
+    await cache.setIfCurrent(userId, 'pages', cacheKey, generation, response, 300);
     return response;
   });
 
@@ -602,6 +674,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
           if (err instanceof RelocateError) throw fastify.httpErrors.conflict(err.message);
           throw err;
         }
+        if (!(await userCanAccessPage(userId, parent.id, txClient))) {
+          throw fastify.httpErrors.badRequest('Parent page not found');
+        }
 
         // Prevent circular reference (#891): reject moving a page under itself or
         // under any of its own descendants. Walk the ancestor chain of the target
@@ -680,8 +755,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       txClient.release();
     }
 
-    await cache.invalidate(userId, 'pages');
-    await cache.invalidate(userId, 'spaces');
+    // Moving one page can move a mixed-visibility subtree and changes hierarchy
+    // for every reader who can see any affected row.
+    await cache.invalidateAcrossUsers('pages');
     await logAuditEvent(userId, 'PAGE_MOVED', 'page', String(id),
       { parentId: moved.parentId, spaceKey: moved.spaceKey }, request);
 
@@ -775,7 +851,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       txClient.release();
     }
 
-    await cache.invalidate(userId, 'pages');
+    // Reordering a shared/Confluence sibling changes every authorized reader's
+    // tree, so the per-user cache namespace must be invalidated globally.
+    await cache.invalidateAcrossUsers('pages');
     await logAuditEvent(userId, 'PAGE_REORDERED', 'page', String(id),
       { sortOrder: newIndex }, request);
 
@@ -786,7 +864,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/breadcrumb', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
-
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
     const page = await query<{
       id: number;
       title: string;
@@ -794,19 +872,18 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       path: string | null;
     }>(
-      'SELECT id, title, parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [id],
+      `SELECT page.id, page.title, page.parent_id, page.space_key, page.path
+       FROM pages page
+       WHERE page.id = $1
+         AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 3, 'page')}`,
+      [id, accessibleSpaces, userId],
     );
 
     if (page.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    // #733: the breadcrumb leaks titles/structure of the page and all its
-    // ancestors — require page access; 404 to avoid an existence oracle.
-    if (!(await userCanAccessPage(userId, page.rows[0]!.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     // Fetch all ancestors in a single query using the materialized path column.
     // The path format is /id1/id2/id3 -- we extract the ancestor IDs, exclude
@@ -822,17 +899,46 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         .filter((pid) => pid !== currentPage.id);
 
       if (pathIds.length > 0) {
-        const ancestors = await query<{ id: number; title: string }>(
-          `SELECT id, title FROM pages
-           WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
-          [pathIds],
+        const ancestors = await query<{ id: number; title: string; parent_id: string | null }>(
+          `SELECT ancestor.id, ancestor.title, ancestor.parent_id
+           FROM pages ancestor
+           WHERE ancestor.id = ANY($1::int[])
+             AND ancestor.deleted_at IS NULL
+             AND ${visiblePagesPredicate(2, 3, 'ancestor')}`,
+          [pathIds, accessibleSpaces, userId],
+        );
+        const ancestorMap = new Map(ancestors.rows.map((row) => [row.id, row]));
+        const parentKeys = Array.from(new Set([
+          currentPage.parent_id,
+          ...ancestors.rows.map((row) => row.parent_id),
+        ].filter((key): key is string => key !== null)));
+        const candidateRows = parentKeys.length === 0
+          ? { rows: [] as Array<{ parent_key: string; candidate_ids: number[] }> }
+          : await query<{ parent_key: string; candidate_ids: number[] }>(
+              `SELECT requested.parent_key,
+                      array_agg(candidate.id ORDER BY candidate.id) AS candidate_ids
+               FROM unnest($1::text[]) AS requested(parent_key)
+               JOIN pages candidate
+                 ON candidate.confluence_id = requested.parent_key
+                 OR candidate.id::text = requested.parent_key
+               WHERE candidate.deleted_at IS NULL
+               GROUP BY requested.parent_key`,
+              [parentKeys],
+            );
+        const candidateMap = new Map(
+          candidateRows.rows.map((row) => [row.parent_key, row.candidate_ids]),
         );
 
-        // Order ancestors according to their position in the path
-        const ancestorMap = new Map(ancestors.rows.map((r) => [r.id, r]));
-        for (const pid of pathIds) {
-          const ancestor = ancestorMap.get(pid);
-          if (ancestor) crumbs.push({ id: ancestor.id, title: ancestor.title });
+        // Walk upward from the current page so the result is the contiguous
+        // visible, unambiguous suffix of the materialized path.
+        let childParentKey = currentPage.parent_id;
+        for (let index = pathIds.length - 1; index >= 0; index--) {
+          const ancestor = ancestorMap.get(pathIds[index]!);
+          if (!ancestor || childParentKey === null) break;
+          const candidates = candidateMap.get(childParentKey) ?? [];
+          if (candidates.length !== 1 || candidates[0] !== ancestor.id) break;
+          crumbs.unshift({ id: ancestor.id, title: ancestor.title });
+          childParentKey = ancestor.parent_id;
         }
       }
     } else if (currentPage.parent_id !== null) {
@@ -842,11 +948,25 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       let depth = 0;
 
       while (currentParentId !== null && depth < maxDepth) {
-        const parentResult: { rows: { id: number; title: string; parent_id: string | null }[] } =
-          await query<{ id: number; title: string; parent_id: string | null }>(
-            'SELECT id, title, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
-            [currentParentId],
-          );
+        const parentResult: {
+          rows: Array<{ id: number; title: string; parent_id: string | null }>;
+        } = await query<{ id: number; title: string; parent_id: string | null }>(
+          `SELECT parent.id, parent.title, parent.parent_id
+             FROM pages parent
+             WHERE (parent.confluence_id = $1 OR parent.id::text = $1)
+               AND parent.deleted_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM pages parent_collision
+                 WHERE (parent_collision.confluence_id = $1
+                        OR parent_collision.id::text = $1)
+                   AND parent_collision.id <> parent.id
+                   AND parent_collision.deleted_at IS NULL
+               )
+               AND ${visiblePagesPredicate(2, 3, 'parent')}
+             LIMIT 1`,
+          [currentParentId, accessibleSpaces, userId],
+        );
 
         if (parentResult.rows.length === 0) break;
         crumbs.unshift({ id: parentResult.rows[0]!.id, title: parentResult.rows[0]!.title });

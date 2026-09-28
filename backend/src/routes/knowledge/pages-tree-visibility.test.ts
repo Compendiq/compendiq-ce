@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { query } from '../../core/db/postgres.js';
+import { invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import {
   isDbAvailable,
@@ -131,12 +132,255 @@ describe.skipIf(!available)('GET /api/pages/tree — real visibility boundaries'
     expect(await treeTitles(userA)).toEqual(['Private note', 'Shared note']);
   });
 
-  it('limits Confluence pages to spaces assigned through real RBAC state', async () => {
+  it('cuts every hierarchy projection at an inaccessible parent boundary', async () => {
+    const privateParent = await insertStandalonePage(
+      'Private parent',
+      'private',
+      userA,
+      'NOTES',
+    );
+    const sharedChild = await insertStandalonePage(
+      'Shared child',
+      'shared',
+      userA,
+      'NOTES',
+      { parentId: String(privateParent) },
+    );
+    const sharedRoot = await insertStandalonePage('Shared root', 'shared', userA, 'NOTES');
+    const privateMiddle = await insertStandalonePage(
+      'Private middle',
+      'private',
+      userA,
+      'NOTES',
+      { parentId: String(sharedRoot) },
+    );
+    await insertStandalonePage('Shared grandchild', 'shared', userA, 'NOTES', {
+      parentId: String(privateMiddle),
+    });
+    await insertConfluencePage(String(privateParent), 'Numeric parent-id collision', 'DEV');
+    await assignReadableSpace(userB, 'DEV');
+
+    currentUserId = userB;
+    const tree = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(tree.statusCode, tree.body).toBe(200);
+    const treeItems = tree.json().items;
+    expect(treeItems).toHaveLength(4);
+    expect(treeItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Numeric parent-id collision', parentId: null }),
+      expect.objectContaining({ id: String(sharedChild), parentId: null }),
+      expect.objectContaining({ title: 'Shared grandchild', parentId: null }),
+      expect.objectContaining({ id: String(sharedRoot), parentId: null }),
+    ]));
+    expect(tree.body).not.toContain(`"parentId":"${privateParent}"`);
+    expect(tree.body).not.toContain(`"parentId":"${privateMiddle}"`);
+
+    const list = await app.inject({ method: 'GET', url: '/api/pages?spaceKey=NOTES' });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.json().items).toEqual([
+      expect.objectContaining({ id: String(sharedChild), parentId: null }),
+      expect.objectContaining({ title: 'Shared grandchild', parentId: null }),
+      expect.objectContaining({ id: String(sharedRoot), parentId: null }),
+    ]);
+
+    const detail = await app.inject({ method: 'GET', url: `/api/pages/${sharedChild}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({ id: String(sharedChild), parentId: null });
+
+    const children = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${sharedRoot}/children?depth=3`,
+    });
+
+    expect(children.statusCode, children.body).toBe(200);
+    expect(children.json()).toEqual({ children: [] });
+    expect(children.body).not.toContain('Private middle');
+    expect(children.body).not.toContain('Shared grandchild');
+  });
+  it('fails closed like detail when a readable numeric page id collides with a hidden parent key', async () => {
+    const readableRoot = await insertStandalonePage(
+      'Readable collision root',
+      'shared',
+      userA,
+      'NOTES',
+    );
+    await insertStandalonePage('Readable child', 'shared', userA, 'NOTES', {
+      parentId: String(readableRoot),
+    });
+    await insertConfluencePage(String(readableRoot), 'Hidden colliding parent', 'SECRET');
+    await insertConfluencePage('hidden-child', 'Hidden child', 'SECRET', {
+      parentId: String(readableRoot),
+    });
+
+    currentUserId = userB;
+    const detail = await app.inject({ method: 'GET', url: `/api/pages/${readableRoot}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({ hasChildren: false });
+
+    // No distinct status: a hidden collision must not be distinguishable from
+    // the detail route's fail-closed answer.
+    const children = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${readableRoot}/children`,
+    });
+    expect(children.statusCode, children.body).toBe(200);
+    expect(children.json()).toEqual({ children: [] });
+    const legacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${readableRoot}/has-children`,
+    });
+    expect(legacy.statusCode, legacy.body).toBe(200);
+    expect(legacy.json()).toEqual({ hasChildren: false });
+  });
+
+  it('still reports 409 when every colliding candidate is readable', async () => {
+    const readableRoot = await insertStandalonePage(
+      'Readable collision root',
+      'shared',
+      userA,
+      'NOTES',
+    );
+    await insertStandalonePage('Readable child', 'shared', userA, 'NOTES', {
+      parentId: String(readableRoot),
+    });
+    await insertConfluencePage(String(readableRoot), 'Readable colliding parent', 'DEV');
+    await assignReadableSpace(userB, 'DEV');
+
+    currentUserId = userB;
+    for (const suffix of ['children', 'has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${readableRoot}/${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    }
+  });
+
+  it('rejects a canonical Confluence root key that collides before children traversal', async () => {
+    const numericCandidate = await insertStandalonePage(
+      'Numeric collision candidate',
+      'shared',
+      userA,
+      'NOTES',
+    );
+    const confluenceParent = await insertConfluencePage(
+      String(numericCandidate),
+      'Confluence parent',
+      'DEV',
+    );
+    await insertConfluencePage('canonical-child', 'Canonical child', 'DEV', {
+      parentId: String(numericCandidate),
+    });
+    await assignReadableSpace(userB, 'DEV');
+
+    // Requested by its PK, the Confluence parent is the only row the resolver
+    // matches (rows.length === 1); only its canonical key collides with the
+    // readable standalone row, so this 409 comes from the canonical-key check.
+    currentUserId = userB;
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${confluenceParent}/children`,
+    });
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+    expect(response.body).not.toContain('Canonical child');
+
+    const legacy = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${confluenceParent}/has-children`,
+    });
+    expect(legacy.statusCode, legacy.body).toBe(409);
+    expect(legacy.json()).toMatchObject({ error: 'Page identifier is ambiguous' });
+  });
+
+  it('invalidates cached hierarchy rows on space-role changes without widening admins', async () => {
+    await insertConfluencePage('dev-page', 'Dev page', 'DEV');
+    const privateForeignPage = await insertStandalonePage(
+      'Private foreign note',
+      'private',
+      userA,
+      'NOTES',
+    );
+    await insertStandalonePage('Private child', 'private', userA, 'NOTES', {
+      parentId: String(privateForeignPage),
+    });
+    await insertStandalonePage('Shared note', 'shared', userA, 'NOTES');
+    await assignReadableSpace(userB, 'DEV');
+
+    expect(await treeTitles(userB)).toEqual(['Dev page', 'Shared note']);
+
+    await query(
+      `DELETE FROM space_role_assignments
+       WHERE space_key = 'DEV' AND principal_type = 'user' AND principal_id = $1`,
+      [userB],
+    );
+    await invalidateRbacCache(userB);
+    expect(await treeTitles(userB)).toEqual(['Shared note']);
+
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [userB]);
+    await invalidateRbacCache(userB);
+    expect(await treeTitles(userB)).toEqual(['Dev page', 'Shared note']);
+    const adminList = await app.inject({
+      method: 'GET',
+      url: '/api/pages?spaceKey=NOTES',
+    });
+    expect(adminList.statusCode, adminList.body).toBe(200);
+    expect(adminList.json().items.map((item: { title: string }) => item.title)).toEqual([
+      'Shared note',
+    ]);
+
+    const adminTree = await app.inject({
+      method: 'GET',
+      url: '/api/pages/tree?spaceKey=NOTES',
+    });
+    expect(adminTree.statusCode, adminTree.body).toBe(200);
+    expect(adminTree.json().items.map((item: { title: string }) => item.title)).toEqual([
+      'Shared note',
+    ]);
+
+    for (const suffix of ['', '/children', '/has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${privateForeignPage}${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.body).not.toContain('Private child');
+    }
+  });
+
+  it('does not widen Confluence hierarchy reads through page ACEs', async () => {
     await insertConfluencePage('conf-dev', 'Dev page', 'DEV');
-    await insertConfluencePage('conf-secret', 'Secret page', 'SECRET');
+    const secretPage = await insertConfluencePage('conf-secret', 'Secret page', 'SECRET');
+    await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [secretPage]);
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission)
+       VALUES ('page', $1, 'user', $2, 'read')`,
+      [secretPage, userB],
+    );
     await assignReadableSpace(userB, 'DEV');
 
     expect(await treeTitles(userB)).toEqual(['Dev page']);
+    for (const suffix of ['', '/children', '/has-children']) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${secretPage}${suffix}`,
+      });
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.body).not.toContain('Secret page');
+    }
+  });
+
+  it('does not treat a local container as authority for a moved Confluence page', async () => {
+    await insertConfluencePage('moved-conf', 'Moved Confluence page', 'NOTES');
+    await assignReadableSpace(userA, 'NOTES');
+
+    expect(await treeTitles(userA, '/api/pages/tree?spaceKey=NOTES')).toEqual([
+      'Moved Confluence page',
+    ]);
+    expect(await treeTitles(userB)).toEqual([]);
+    expect(await treeTitles(userB, '/api/pages/tree?spaceKey=NOTES')).toEqual([]);
   });
 
   it('keeps the space filter on top of the visibility and RBAC predicates', async () => {

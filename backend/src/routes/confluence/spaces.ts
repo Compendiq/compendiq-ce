@@ -7,6 +7,7 @@ import { getClientForUser, unsyncSpace } from '../../domains/confluence/services
 import { getUserAccessibleSpaces, userHasPermission, isSystemAdmin, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 
 export async function spacesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -16,47 +17,57 @@ export async function spacesRoutes(fastify: FastifyInstance) {
   fastify.get('/spaces', async (request) => {
     const userId = request.userId;
 
-    // Try Redis cache first
-    const cached = await cache.get<unknown[]>(userId, 'spaces', 'list');
-    if (cached) return cached;
-
-    // Fetch spaces the user has access to via RBAC from shared spaces.
-    // #352: customHomePageId overrides the Confluence-derived homepage_id
-    // when set — see migration 071. The COALESCE picks the custom page id
-    // first; otherwise the existing JOIN against confluence_id / id
-    // resolves the Confluence default.
+    // Resolve every page-derived field under the caller-bound shared
+    // visibility rule. This mixed space/page projection remains uncached:
+    // the two kinds of state have independent invalidation domains.
     const userSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
       space_key: string;
       space_name: string;
-      homepage_id: string | null;
       homepage_numeric_id: number | null;
-      custom_home_page_id: number | null;
+      custom_home_numeric_id: number | null;
       last_synced: Date;
       source: string;
     }>(
-      `SELECT cs.space_key, cs.space_name, cs.homepage_id,
-              hp.id as homepage_numeric_id,
-              cs.custom_home_page_id,
+      `SELECT cs.space_key, cs.space_name,
+              homepage.id AS homepage_numeric_id,
+              custom_home.id AS custom_home_numeric_id,
               cs.last_synced, cs.source
        FROM spaces cs
-       LEFT JOIN pages hp ON (
-         hp.confluence_id = cs.homepage_id
-         OR CAST(hp.id AS TEXT) = cs.homepage_id
-       ) AND hp.deleted_at IS NULL
+       LEFT JOIN LATERAL (
+         SELECT hp.id
+         FROM pages hp
+         WHERE (hp.confluence_id = cs.homepage_id OR hp.id::text = cs.homepage_id)
+           AND hp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(1, 2, 'hp')}
+           AND NOT EXISTS (
+             SELECT 1
+             FROM pages collision
+             WHERE collision.deleted_at IS NULL
+               AND collision.id <> hp.id
+               AND (collision.confluence_id = cs.homepage_id
+                    OR collision.id::text = cs.homepage_id)
+           )
+         LIMIT 1
+       ) homepage ON TRUE
+       LEFT JOIN pages custom_home
+         ON custom_home.id = cs.custom_home_page_id
+        AND custom_home.deleted_at IS NULL
+        AND ${visiblePagesPredicate(1, 2, 'custom_home')}
        WHERE cs.space_key = ANY($1::text[])
        ORDER BY cs.space_name`,
-      [userSpaces],
+      [userSpaces, userId],
     );
 
-    // Get page counts per space (scoped to user's RBAC access)
+    // Count only pages whose metadata this caller may read.
     const countsResult = await query<{ space_key: string; count: string }>(
       `SELECT cp.space_key, COUNT(*) as count
        FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
          AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2)}
        GROUP BY cp.space_key`,
-      [userSpaces],
+      [userSpaces, userId],
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));
 
@@ -68,12 +79,12 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       // wire-format `homepageId` stays a string of the integer pages.id
       // (matches the existing contract used by frontend/PagesPage.tsx).
       homepageId:
-        row.custom_home_page_id != null
-          ? String(row.custom_home_page_id)
+        row.custom_home_numeric_id != null
+          ? String(row.custom_home_numeric_id)
           : row.homepage_numeric_id
             ? String(row.homepage_numeric_id)
             : null,
-      customHomePageId: row.custom_home_page_id,
+      customHomePageId: row.custom_home_numeric_id,
       lastSynced: row.last_synced,
       pageCount: counts.get(row.space_key) ?? 0,
       source: row.source as 'confluence' | 'local',
@@ -94,7 +105,6 @@ export async function spacesRoutes(fastify: FastifyInstance) {
 
     const spaces = [...syncedSpaces, ...unsyncedSelections];
 
-    await cache.set(userId, 'spaces', 'list', spaces);
     return spaces;
   });
 

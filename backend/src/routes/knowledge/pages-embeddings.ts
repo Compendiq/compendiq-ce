@@ -5,7 +5,9 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
 import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { authorizedPageIds } from '../../core/services/authorized-pages.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
@@ -100,23 +102,27 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       filterSpaceKeys && filterSpaceKeys.length > 0
         ? [...filterSpaceKeys].sort().join(',')
         : 'all';
-    const cacheKey = `graph:${view}:${cacheSpaceKey}`;
+    const cacheKey = `graph:v2:${view}:${cacheSpaceKey}`;
     const cacheReceipt = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cacheReceipt.value !== null) return cacheReceipt.value;
 
-    // Fetch accessible spaces (RBAC).
-    // #360: when the user supplies one or more `spaceKey` values, intersect
-    // them with the RBAC-accessible set. The intersection IS the security
-    // gate — keys the user can't see are silently dropped, never reaching
-    // SQL. No SQL injection vector here because every value is bound as a
-    // text[] parameter.
+    // RBAC space keys are one arm of the shared page-visibility contract; they
+    // must not become a prerequisite for standalone pages. Apply an optional
+    // caller-selected space filter only after that full contract.
     const graphSpaces = await getUserAccessibleSpaces(userId);
-    const effectiveSpaces =
-      filterSpaceKeys && filterSpaceKeys.length > 0
-        ? graphSpaces.filter((s: string) => filterSpaceKeys.includes(s))
-        : graphSpaces;
-
-    if (effectiveSpaces.length === 0) {
+    const selectedSpaces = filterSpaceKeys && filterSpaceKeys.length > 0
+      ? filterSpaceKeys
+      : null;
+    const visiblePages = await query<{ id: number }>(
+      `SELECT cp.id
+       FROM pages cp
+       WHERE cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(1, 2)}
+         AND ($3::text[] IS NULL OR cp.space_key = ANY($3::text[]))`,
+      [graphSpaces, userId, selectedSpaces],
+    );
+    const visiblePageIds = visiblePages.rows.map((row) => row.id);
+    if (visiblePageIds.length === 0) {
       return {
         nodes: [],
         edges: [],
@@ -127,7 +133,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     if (view === 'clustered') {
       return await buildClusteredGraph(
         userId,
-        effectiveSpaces,
+        visiblePageIds,
         cache,
         cacheKey,
         cacheReceipt.generation,
@@ -139,7 +145,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const nodesResult = await query<{
       id: number;
       confluence_id: string | null;
-      space_key: string;
+      space_key: string | null;
       title: string;
       labels: string[];
       embedding_status: string;
@@ -147,11 +153,26 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
-              cp.embedding_status, cp.last_modified_at, cp.parent_id
+              cp.embedding_status, cp.last_modified_at,
+              CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id
        FROM pages cp
-       WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR parent_page.id::text = cp.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND parent_page.id = ANY($1::int[])
+         AND NOT EXISTS (
+           SELECT 1 FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND parent_collision.id <> parent_page.id
+             AND (parent_collision.confluence_id = cp.parent_id
+                  OR parent_collision.id::text = cp.parent_id)
+         )
+       WHERE cp.id = ANY($1::int[])
+         AND cp.deleted_at IS NULL
        ORDER BY cp.title ASC`,
-      [effectiveSpaces],
+      [visiblePageIds],
     );
 
     // Fetch embedding counts per page for node sizing
@@ -162,9 +183,10 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pe.page_id, COUNT(*) as count
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
-       WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
+       WHERE cp.id = ANY($1::int[])
+         AND cp.deleted_at IS NULL
        GROUP BY pe.page_id`,
-      [effectiveSpaces],
+      [visiblePageIds],
     );
 
     const embeddingCountMap = new Map<number, number>();
@@ -199,7 +221,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const nodes = nodesResult.rows.map((row) => ({
       id: String(row.id),
       confluenceId: row.confluence_id,
-      spaceKey: row.space_key,
+      spaceKey: row.space_key ?? '',
       title: row.title,
       labels: row.labels ?? [],
       embeddingStatus: row.embedding_status,
@@ -257,48 +279,90 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const { hops, edgeTypes, minScore, labels, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
 
     const isNumericId = /^\d+$/.test(id);
+    const graphSpaces = await getUserAccessibleSpaces(userId);
+    const centerSpaceParam = isNumericId ? 3 : 2;
+    const centerUserParam = isNumericId ? 4 : 3;
     const pageResult = await query<{ id: number }>(
+      `SELECT cp.id
+       FROM pages cp
+       WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
+         AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(centerSpaceParam, centerUserParam)}`,
       isNumericId
-        ? 'SELECT id FROM pages WHERE id = $1 AND deleted_at IS NULL'
-        : 'SELECT id FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-      [isNumericId ? parseInt(id, 10) : id],
+        ? [id, toPageIdText(id), graphSpaces, userId]
+        : [id, graphSpaces, userId],
     );
 
-    if (pageResult.rows.length === 0) {
+    // Missing, ambiguous, and inaccessible identifiers deliberately share the
+    // same response, including the caller-supplied center string. Never expose
+    // a canonical database id until the caller-bound query above admits it.
+    if (pageResult.rows.length !== 1) {
       return { nodes: [], edges: [], centerId: id };
     }
 
+    // Resolve the complete vertex set before traversal: shared-list
+    // visibility plus page-level ACEs (`inherit_perms = false` Confluence
+    // pages need an ACE). Filtering before each per-hop limit prevents a
+    // hidden vertex from consuming the bound or becoming an intermediate path.
+    // An ACE-denied center answers exactly like a missing one.
     const centerPageId = pageResult.rows[0]!.id;
-    const centerAccess = await authorizedPageIds(userId, [centerPageId]);
-    if (!centerAccess.has(centerPageId)) {
-      return { nodes: [], edges: [], centerId: String(centerPageId) };
+    const accessiblePageSet = await authorizedPageIds(userId);
+    if (!accessiblePageSet.has(centerPageId)) {
+      return { nodes: [], edges: [], centerId: id };
     }
-
     await ensureDeterministicRelationships();
 
-    // Resolve the complete CE+EE-visible vertex set before traversal. Passing
-    // it into the LATERAL edge scan removes inaccessible targets before the
-    // per-hop ORDER/LIMIT, so a hidden vertex cannot consume a bound or become
-    // an intermediate path to otherwise visible content.
-    const accessiblePageIds = [...await authorizedPageIds(userId)];
-
+    const accessiblePageIds = [...accessiblePageSet];
     const neighborResult = await query<{ page_id: number; hop: number }>(
-      `WITH RECURSIVE neighbors AS (
+      `WITH RECURSIVE visible_parent_relationships AS (
+         SELECT LEAST(child.id, parent.id) AS page_id_1,
+                GREATEST(child.id, parent.id) AS page_id_2,
+                'parent_child'::text AS relationship_type,
+                1.0::real AS score
+         FROM pages child
+         JOIN pages parent ON (
+           parent.confluence_id = child.parent_id
+           OR parent.id::text = child.parent_id
+         )
+           AND parent.deleted_at IS NULL
+           AND parent.id = ANY($6::int[])
+           AND parent.id <> child.id
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id = ANY($6::int[])
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = child.parent_id
+                    OR parent_collision.id::text = child.parent_id)
+           )
+         WHERE child.deleted_at IS NULL
+           AND child.parent_id IS NOT NULL
+           AND child.id = ANY($6::int[])
+       ),
+       visible_relationships AS (
+         SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
+         FROM page_relationships pr
+         WHERE pr.relationship_type <> 'parent_child'
+         UNION ALL
+         SELECT page_id_1, page_id_2, relationship_type, score
+         FROM visible_parent_relationships
+       ),
+       neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
          UNION
          SELECT next.page_id, n.hop + 1 AS hop
          FROM neighbors n
          CROSS JOIN LATERAL (
-           SELECT CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END AS page_id
-           FROM page_relationships pr
-           WHERE (pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id)
-             AND ($4::text[] IS NULL OR pr.relationship_type = ANY($4::text[]))
-             AND ($5::real IS NULL OR pr.score >= $5::real)
+           SELECT CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END AS page_id
+           FROM visible_relationships vr
+           WHERE (vr.page_id_1 = n.page_id OR vr.page_id_2 = n.page_id)
+             AND ($4::text[] IS NULL OR vr.relationship_type = ANY($4::text[]))
+             AND ($5::real IS NULL OR vr.score >= $5::real)
              AND (
-               CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END
+               CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END
              ) = ANY($6::int[])
-           ORDER BY pr.score DESC,
-             CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END ASC
+           ORDER BY vr.score DESC,
+             CASE WHEN vr.page_id_1 = n.page_id THEN vr.page_id_2 ELSE vr.page_id_1 END ASC
            LIMIT $3
          ) next
          WHERE n.hop < $2
@@ -332,8 +396,23 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
-              cp.embedding_status, cp.last_modified_at, cp.parent_id
+              cp.embedding_status, cp.last_modified_at,
+              CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id
        FROM pages cp
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR parent_page.id::text = cp.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND parent_page.id = ANY($2::int[])
+         AND NOT EXISTS (
+           SELECT 1 FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+              AND parent_collision.id = ANY($2::int[])
+             AND parent_collision.id <> parent_page.id
+             AND (parent_collision.confluence_id = cp.parent_id
+                  OR parent_collision.id::text = cp.parent_id)
+         )
        WHERE cp.id = ANY($1::int[])
          AND cp.id = ANY($2::int[])
          AND cp.deleted_at IS NULL
@@ -361,16 +440,50 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       relationship_type: string;
       score: number;
     }>(
-      `SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
-       FROM page_relationships pr
-       WHERE pr.page_id_1 = ANY($1::int[]) AND pr.page_id_2 = ANY($1::int[])
-         AND ($2::text[] IS NULL OR pr.relationship_type = ANY($2::text[]))
-         AND ($3::real IS NULL OR pr.score >= $3::real)
-       ORDER BY pr.score DESC`,
+      `WITH visible_parent_relationships AS (
+         SELECT LEAST(child.id, parent.id) AS page_id_1,
+                GREATEST(child.id, parent.id) AS page_id_2,
+                'parent_child'::text AS relationship_type,
+                1.0::real AS score
+         FROM pages child
+         JOIN pages parent ON (
+           parent.confluence_id = child.parent_id
+           OR parent.id::text = child.parent_id
+         )
+           AND parent.deleted_at IS NULL
+           AND parent.id = ANY($4::int[])
+           AND parent.id <> child.id
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id = ANY($4::int[])
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = child.parent_id
+                    OR parent_collision.id::text = child.parent_id)
+           )
+         WHERE child.deleted_at IS NULL
+           AND child.parent_id IS NOT NULL
+           AND child.id = ANY($4::int[])
+       ),
+       visible_relationships AS (
+         SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
+         FROM page_relationships pr
+         WHERE pr.relationship_type <> 'parent_child'
+         UNION ALL
+         SELECT page_id_1, page_id_2, relationship_type, score
+         FROM visible_parent_relationships
+       )
+       SELECT vr.page_id_1, vr.page_id_2, vr.relationship_type, vr.score
+       FROM visible_relationships vr
+       WHERE vr.page_id_1 = ANY($1::int[]) AND vr.page_id_2 = ANY($1::int[])
+         AND ($2::text[] IS NULL OR vr.relationship_type = ANY($2::text[]))
+         AND ($3::real IS NULL OR vr.score >= $3::real)
+       ORDER BY vr.score DESC`,
       [
         [...nodeIdSet],
         edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
         minScore ?? null,
+        accessiblePageIds,
       ],
     );
 
@@ -419,58 +532,73 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 
 async function buildClusteredGraph(
   userId: string,
-  effectiveSpaces: string[],
+  visiblePageIds: number[],
   cache: RedisCache,
   cacheKey: string,
   cacheGeneration: string | null,
 ) {
-  // Group pages by their top-level ancestor (parent_id IS NULL or 3rd-level ancestor).
-  // For simplicity, group by the root ancestor (the page with no parent in the same space).
-  // We use a CTE to walk up the parent chain and find each page's root ancestor.
+  // Resolve the visible forest once. A parent is usable only when its stored
+  // key identifies exactly one live page and that page is visible. Hidden,
+  // missing, and ambiguous parents all re-root the visible child.
   const clustersResult = await query<{
-    root_id: number;
-    root_title: string;
-    space_key: string;
+    root_id: number | null;
+    root_title: string | null;
+    space_key: string | null;
     article_count: string;
     page_ids: number[];
+    is_orphan: boolean;
   }>(
-    `WITH RECURSIVE ancestors AS (
-       SELECT id, parent_id, id AS root_id, title AS root_title, space_key, 0 AS depth
-       FROM pages
-       WHERE parent_id IS NULL AND space_key = ANY($1::text[]) AND deleted_at IS NULL
-       UNION ALL
-       SELECT p.id, p.parent_id, a.root_id, a.root_title, p.space_key, a.depth + 1
+    `WITH RECURSIVE visible AS MATERIALIZED (
+       SELECT p.id, p.confluence_id, p.source, p.parent_id, p.title, p.space_key
        FROM pages p
-       JOIN ancestors a ON p.parent_id = a.id::text
-       WHERE p.deleted_at IS NULL AND a.depth < 50
+       WHERE p.id = ANY($1::int[])
+         AND p.deleted_at IS NULL
+     ),
+     resolved AS MATERIALIZED (
+       SELECT visible.*,
+              resolved_parent.id AS parent_numeric_id
+       FROM visible
+       LEFT JOIN LATERAL (
+         SELECT MIN(candidate.id)::integer AS id
+         FROM pages candidate
+         WHERE candidate.deleted_at IS NULL
+           AND (candidate.confluence_id = visible.parent_id
+                OR candidate.id::text = visible.parent_id)
+         HAVING COUNT(*) = 1
+            AND BOOL_AND(candidate.id = ANY($1::int[]))
+       ) resolved_parent ON TRUE
+     ),
+     ancestors AS (
+       SELECT resolved.id, resolved.parent_numeric_id,
+              resolved.id AS root_id, resolved.title AS root_title,
+              resolved.space_key AS root_space_key, 0 AS depth
+       FROM resolved
+       WHERE resolved.parent_numeric_id IS NULL
+       UNION ALL
+       SELECT child.id, child.parent_numeric_id,
+              parent.root_id, parent.root_title, parent.root_space_key,
+              parent.depth + 1
+       FROM resolved child
+       JOIN ancestors parent ON child.parent_numeric_id = parent.id
+       WHERE parent.depth < 50
      )
-     SELECT root_id, root_title, space_key, COUNT(*) AS article_count,
-            array_agg(id) AS page_ids
+     SELECT ancestors.root_id, ancestors.root_title,
+            ancestors.root_space_key AS space_key,
+            COUNT(*) AS article_count, array_agg(ancestors.id) AS page_ids,
+            FALSE AS is_orphan
      FROM ancestors
-     GROUP BY root_id, root_title, space_key
-     ORDER BY COUNT(*) DESC`,
-    [effectiveSpaces],
-  );
-
-  // Pages without a root ancestor (orphans) -- group them by space
-  const orphanResult = await query<{
-    space_key: string;
-    article_count: string;
-    page_ids: number[];
-  }>(
-    `SELECT cp.space_key, COUNT(*) as article_count, array_agg(cp.id) as page_ids
-     FROM pages cp
-     WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL
-       AND cp.id NOT IN (
-         WITH RECURSIVE ancestors(id, depth) AS (
-           SELECT id, 0 FROM pages WHERE parent_id IS NULL AND space_key = ANY($1::text[]) AND deleted_at IS NULL
-           UNION ALL
-           SELECT p.id, a.depth + 1 FROM pages p JOIN ancestors a ON p.parent_id = a.id::text WHERE p.deleted_at IS NULL AND a.depth < 50
-         )
-         SELECT id FROM ancestors
-       )
-     GROUP BY cp.space_key`,
-    [effectiveSpaces],
+     GROUP BY ancestors.root_id, ancestors.root_title, ancestors.root_space_key
+     UNION ALL
+     SELECT NULL::integer AS root_id, NULL::text AS root_title,
+            resolved.space_key, COUNT(*) AS article_count,
+            array_agg(resolved.id) AS page_ids, TRUE AS is_orphan
+     FROM resolved
+     WHERE NOT EXISTS (
+       SELECT 1 FROM ancestors WHERE ancestors.id = resolved.id
+     )
+     GROUP BY resolved.space_key
+     ORDER BY article_count DESC`,
+    [visiblePageIds],
   );
 
   // Build cluster nodes
@@ -484,28 +612,19 @@ async function buildClusteredGraph(
   }> = [];
 
   for (const row of clustersResult.rows) {
+    const spaceKey = row.space_key ?? '';
     clusterNodes.push({
-      id: `cluster-${row.root_id}`,
+      id: row.is_orphan
+        ? `cluster-orphan-${spaceKey || 'unassigned'}`
+        : `cluster-${row.root_id!}`,
       type: 'cluster',
-      spaceKey: row.space_key,
-      title: row.root_title,
+      spaceKey,
+      title: row.is_orphan
+        ? `${spaceKey || 'Unassigned'} (ungrouped)`
+        : row.root_title!,
       articleCount: parseInt(row.article_count, 10),
       pageIds: row.page_ids,
     });
-  }
-
-  // Add orphan clusters (pages that didn't belong to any root ancestor tree)
-  for (const row of orphanResult.rows) {
-    if (parseInt(row.article_count, 10) > 0) {
-      clusterNodes.push({
-        id: `cluster-orphan-${row.space_key}`,
-        type: 'cluster',
-        spaceKey: row.space_key,
-        title: `${row.space_key} (ungrouped)`,
-        articleCount: parseInt(row.article_count, 10),
-        pageIds: row.page_ids,
-      });
-    }
   }
 
   // Compute inter-cluster edges based on cross-cluster relationships

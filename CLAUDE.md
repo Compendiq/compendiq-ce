@@ -778,6 +778,49 @@ serves any reader of a shared page, and counting rows the tree hides
 (`visiblePagesPredicate`) both disclosed their existence and offered an expander
 that yields nothing.
 
+**Hierarchy metadata follows shared list visibility, not the space container.**
+A local space is discoverable to every authenticated user, but its private
+standalone pages are not. `GET /spaces/:key/tree`, `/pages/tree`, `/pages`,
+page detail, breadcrumbs, recursive children, graphs, pins, filter facets and
+page-derived space summaries use the existing caller-bound list definition:
+Confluence pages in assigned spaces, shared standalone pages, and the caller's
+own private standalone pages. System administrators retain that same list
+behavior; hierarchy reads do not introduce an admin bypass. The focused graph
+(`/pages/:id/graph/local`) additionally keeps `authorizedPageIds` (page ACEs for
+`inherit_perms = false` Confluence pages) for its center, vertex set and
+traversal, as it did before; an ACE-denied parent there is a hidden parent.
+When a visible child has an invisible direct
+parent, present the child as a root (`parentId: null`) and rebase every
+descendant's local-tree depth from that visible root; breadcrumbs keep only the
+contiguous visible suffix and children traversal stops at the hidden node.
+Full, clustered, and focused graphs apply the same hidden-parent projection.
+The focused graph resolves its center in one caller-visible query and returns
+the same caller-keyed empty payload for missing, ambiguous, or inaccessible
+input, so identifier normalization cannot become an existence oracle. It also
+derives hierarchy traversal and `parent_child` output edges from caller-visible
+parent candidates; inaccessible identifier collisions cannot alter the
+response. Mixed-source parent/child links are valid, but a stored key that
+identifies multiple applicable parent candidates fails closed. `/has-children`
+and `/children` answer a canonical-key collision with a row the caller cannot
+read exactly like detail's `hasChildren` (`false` / no children, status 200);
+409 `Page identifier is ambiguous` is reserved for collisions among readable
+rows, so the status is never a hidden-row oracle. Never retain a
+hidden or ambiguous parent ID or original depth as a hierarchy oracle.
+Hierarchy trees
+and lists are per-user, generation-checked entries in the `pages` cache
+namespace. Visibility/hierarchy writers and every RBAC invalidation advance
+that generation, fencing in-flight fills across role and group changes. A fill
+MUST capture its generation (`getWithGeneration`) before reading any input it
+depends on (`getUserAccessibleSpaces`, space source), then run the access gate
+before serving a cached body (#817); capturing it after the RBAC read lets a
+pre-revocation fill publish under the post-revocation generation. The
+exception is an RBAC input that is itself part of the cache key, as in
+`/pages/filters` (`filters:v2:<sorted spaces>`): a request with the fresh list
+misses the stale entry, so reading the spaces first is safe there.
+Local-space and shared space lists remain uncached because their mutable space
+metadata and caller-visible page count/home page belong to independent
+invalidation domains.
+
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a

@@ -37,6 +37,7 @@ vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
     invalidate = vi.fn().mockResolvedValue(undefined);
+    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
   },
 }));
 

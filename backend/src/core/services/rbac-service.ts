@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
-import { getRedisClient } from './redis-cache.js';
+import { getRedisClient, RedisCache } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
 import { getScopedSpaces, setScopedSpaces } from './rbac-request-scope.js';
 
@@ -48,8 +48,8 @@ async function setCache(key: string, data: unknown, ttl = RBAC_CACHE_TTL): Promi
 }
 
 /**
- * Invalidate all RBAC cache entries for a user.
- * Called when any role/group/ACE write occurs.
+ * Invalidate RBAC lookups and every page projection whose rows depend on them.
+ * A generation bump also fences an in-flight pre-revocation cache fill.
  */
 export async function invalidateRbacCache(userId?: string): Promise<void> {
   const redis = getRedisClient();
@@ -64,6 +64,9 @@ export async function invalidateRbacCache(userId?: string): Promise<void> {
         await redis.del(result.keys);
       }
     } while (cursor !== '0');
+    const pageCache = new RedisCache(redis);
+    if (userId) await pageCache.invalidate(userId, 'pages');
+    else await pageCache.invalidateAcrossUsers('pages');
     logger.debug({ userId, pattern }, 'RBAC cache invalidated');
   } catch (err) {
     logger.error({ err, userId }, 'RBAC cache invalidation error');

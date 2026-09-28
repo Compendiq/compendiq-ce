@@ -578,18 +578,15 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
     });
 
     /**
-     * The route decides from ONE row, and the numeric id arm is a
-     * dual-identifier lookup: a page whose PK equals another page's
-     * `confluence_id` matches both. The Confluence decoy is inserted FIRST, so
-     * it is the physical-first match — which is the row the route used to read.
-     * Resolving it ran the space check against a space this caller cannot read
-     * and 404'd an id `GET /api/pages/:id` serves 200, making the deprecated
-     * route stricter than the detail route for a legitimate caller.
-     *
-     * The row choice must be PK-first — the resolution the detail route applies
-     * to a numeric id (`cp.id = $1`) — so the two cannot disagree.
+     * A numeric key can name one row by primary key and another by Confluence
+     * id. The Confluence decoy is inserted FIRST, so it is the physical-first
+     * match, and it lives in a space this caller cannot read. Detail resolves
+     * the caller's own PK row (200); the deprecated route must not be stricter
+     * than detail (#1636) nor answer with a distinct status that reveals the
+     * unreadable decoy. No hierarchy reader may pick one candidate for the
+     * parent edge, so both answer the same fail-closed `hasChildren: false`.
      */
-    it('resolves the PK row when the identifier also matches another page’s confluence_id', async () => {
+    it('answers like detail when the caller’s PK collides with an unreadable decoy', async () => {
       await insertConfluencePage(String(PARKED_PK), 'Decoy', 'OTHER');
       const target = await insertStandalonePage('Target', 'private', userA, 'NOTES');
       // Park the standalone row on the decoy's identifier: it is now the second
@@ -613,14 +610,14 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       const detail = await app.inject({ method: 'GET', url: `/api/pages/${PARKED_PK}` });
       expect(detail.statusCode).toBe(200);
       const detailBody = detail.json() as { hasChildren: boolean };
-      expect(detailBody.hasChildren).toBe(true);
+      expect(detailBody.hasChildren).toBe(false);
 
       const response = await app.inject({
         method: 'GET',
         url: `/api/pages/${PARKED_PK}/has-children`,
       });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ hasChildren: true });
+      expect(response.json()).toEqual({ hasChildren: detailBody.hasChildren });
     });
 
     /**
