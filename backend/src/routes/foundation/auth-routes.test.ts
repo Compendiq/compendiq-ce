@@ -558,9 +558,7 @@ describe('Auth routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Logged out');
 
-      // Verify specific refresh JTI was revoked
-      expect(mockRevokeToken).toHaveBeenCalledWith('refresh-jti');
-      // Verify all user tokens were revoked
+      // Every token of the cookie's user (the presented JTI included) was revoked
       expect(mockRevokeAllUserTokens).toHaveBeenCalledWith(TEST_USER.id);
     });
 

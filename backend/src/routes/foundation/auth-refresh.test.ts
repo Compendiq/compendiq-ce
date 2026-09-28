@@ -20,7 +20,6 @@ import {
   revokeTokenFamily,
   revokeAllUserTokens,
   cleanupExpiredTokens,
-  RefreshSessionBusyError,
   verifyToken,
 } from '../../core/plugins/auth.js';
 import { authRoutes } from './auth.js';
@@ -634,24 +633,28 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       }
     }, 40_000);
 
-    it('bounds the unlocked revocation fallback and reports a revocation that never ran', async () => {
-      const initial = await generateRefreshToken(testPayload());
-      // A foreign transaction without any deadline holds the users row and a
-      // token row and never finishes on its own; the real timer only frees it
-      // if the code under test waits unbounded (PostgreSQL's clock is under test).
+    it('answers 503 and keeps the cookie and every token when logout could revoke nothing, then succeeds on retry', async () => {
+      const presented = await generateRefreshToken(testPayload());
+      const other = await generateRefreshToken(testPayload());
+      // Cookie only: the expired-access-token path that also verifies the JTI.
+      const logout = () => app.inject({ method: 'POST', url: '/api/auth/logout', cookies: { kb_refresh: presented.token } });
+      // A foreign transaction without any deadline holds the users row and
+      // another session's token row and never finishes on its own; the real
+      // timer only frees it if the code under test waits unbounded
+      // (PostgreSQL's clock is under test).
       const holder = await getPool().connect();
       const giveUp = setTimeout(() => {
         holder.query('ROLLBACK').catch(() => {});
       }, 25_000);
-      let outcome!: unknown;
+      let busy!: InjectedResponse;
       let elapsed = 0;
       try {
         await holder.query('BEGIN');
         await holder.query('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', [testUserId]);
-        await holder.query('SELECT jti FROM refresh_tokens WHERE jti = $1 FOR UPDATE', [initial.jti]);
+        await holder.query('SELECT jti FROM refresh_tokens WHERE jti = $1 FOR UPDATE', [other.jti]);
 
         const started = Date.now();
-        outcome = await revokeAllUserTokens(testUserId).then(() => 'revoked', (error: unknown) => error);
+        busy = await logout();
         elapsed = Date.now() - started;
       } finally {
         clearTimeout(giveUp);
@@ -661,8 +664,14 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
 
       // Three 5s lock waits: locked attempt, fallback, locked retry.
       expect(elapsed).toBeLessThan(20_000);
-      expect(outcome).toBeInstanceOf(RefreshSessionBusyError);
-      expect(await activeJtis('user_id', testUserId)).toEqual([initial.jti]);
+      expect(busy.statusCode).toBe(503);
+      expect(busy.headers['set-cookie']).toBeUndefined();
+      expect((await activeJtis('user_id', testUserId)).sort()).toEqual([presented.jti, other.jti].sort());
+
+      const retried = await logout();
+      expect(retried.statusCode).toBe(200);
+      expect(String(retried.headers['set-cookie'])).toContain('kb_refresh=;');
+      expect(await activeJtis('user_id', testUserId)).toEqual([]);
     }, 40_000);
   });
 
@@ -693,7 +702,7 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       // Verify and get payload with JTI
       const payload = await verifyRefreshToken(refreshToken);
 
-      // Revoke specific JTI (as the logout route does before revoking all)
+      // Revoke specific JTI (the logout route's best-effort step when revoking all fails)
       await revokeToken(payload.jti);
 
       // Then revoke all user tokens

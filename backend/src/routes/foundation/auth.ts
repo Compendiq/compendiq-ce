@@ -282,6 +282,14 @@ export async function authRoutes(fastify: FastifyInstance) {
 
   fastify.post('/logout', async (request, reply) => {
     let userId: string | null = null;
+    let presentedJti: string | null = null;
+    // RefreshSessionBusyError means neither the locked revocation nor its
+    // bounded fallback ran: nothing was revoked. Report that instead of a
+    // logout, keep the cookie, and let the client retry.
+    const logoutIncomplete = (err: RefreshSessionBusyError) => {
+      logger.warn({ err, userId }, 'Logout revocation timed out; nothing was revoked');
+      return fastify.httpErrors.serviceUnavailable('Sign-out did not complete. Please try again.');
+    };
 
     // Try to extract user ID from Bearer token first
     try {
@@ -302,15 +310,16 @@ export async function authRoutes(fastify: FastifyInstance) {
         if (refreshTokenCookie) {
           const payload = await verifyRefreshToken(refreshTokenCookie);
           userId = payload.sub;
-          // Also revoke this specific JTI since we verified it
-          await revokeToken(payload.jti);
+          presentedJti = payload.jti;
         }
-      } catch {
+      } catch (err) {
+        // A reused cookie whose family revocation timed out.
+        if (err instanceof RefreshSessionBusyError) throw logoutIncomplete(err);
         // Refresh token also invalid — nothing to revoke
       }
     }
 
-    // Revoke all tokens for the identified user
+    // Revoke all tokens for the identified user (this includes the presented JTI)
     if (userId) {
       try {
         await revokeAllUserTokens(userId);
@@ -323,8 +332,10 @@ export async function authRoutes(fastify: FastifyInstance) {
           { reason: 'logout' },
           request,
         );
-      } catch {
-        // Best effort
+      } catch (err) {
+        if (err instanceof RefreshSessionBusyError) throw logoutIncomplete(err);
+        // Best effort: at least revoke the verified cookie's JTI.
+        if (presentedJti) await revokeToken(presentedJti).catch(() => {});
       }
     }
 
