@@ -141,6 +141,55 @@ describe('useConversationList', () => {
     expect(result.current.rows.map((r) => r.id)).toEqual(['a']);
   });
 
+  it('restarts from the first page when a stored cursor is rejected with 400 (#1667)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ items: [summary('a', 'Alpha')], nextCursor: 'legacy-cursor' }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'BadRequestError', message: 'Invalid cursor', statusCode: 400 }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [summary('a', 'Alpha'), summary('b', 'Beta')], nextCursor: null }));
+
+    const { result } = renderHook(() => useConversationList(), { wrapper: createWrapper() });
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.query.fetchNextPage();
+    });
+
+    // The rejected cursor is dropped from pageParams: the list is re-read from
+    // page one, no longer errored, and holds the fresh rows.
+    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['a', 'b']));
+    expect(result.current.query.isError).toBe(false);
+    expect(result.current.query.hasNextPage).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/llm/conversations?cursor=legacy-cursor');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/llm/conversations');
+  });
+
+  it('does not reset on a first-page 400, where no cursor was in play', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Invalid cursor' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result } = renderHook(() => useConversationList(), { wrapper: createWrapper() });
+
+    await waitFor(() => expect(result.current.query.isError).toBe(true));
+    // Give a wrongly-triggered reset time to refetch; it must not.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 20);
+      await promise;
+    });
+    expect(result.current.query.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   describe('pending auto-title polling (#1361 PR 3)', () => {
     const now = Date.parse('2026-08-23T12:00:00.000Z');
 

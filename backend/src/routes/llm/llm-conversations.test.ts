@@ -23,6 +23,8 @@ import { llmConversationRoutes } from './llm-conversations.js';
 const CONV_1 = '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a';
 const CONV_2 = '6a1f9f0b-2c3d-4e4f-9a5b-6c7d8e9f0a1b';
 const CONV_3 = '7b2a0a1c-3d4e-4f50-8b6c-7d8e9f0a1b2c';
+const CONV_4 = '8c3b1b2d-4e5f-4061-9c7d-8e9f0a1b2c3d';
+const CONV_5 = '9d4c2c3e-5f60-4172-8d8e-9f0a1b2c3d4e';
 
 const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
@@ -90,6 +92,25 @@ async function insertImprovement(input: {
 
 async function get(url: string) {
   return app.inject({ method: 'GET', url });
+}
+
+async function traverseConversationPages(limit: number): Promise<{
+  items: Array<{ id: string }>;
+  pageCount: number;
+  terminalCursor: null;
+}> {
+  const items: Array<{ id: string }> = [];
+  let cursor: string | null = null;
+  for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    const queryString = cursor ? `?limit=${limit}&cursor=${encodeURIComponent(cursor)}` : `?limit=${limit}`;
+    const response = await get(`/api/llm/conversations${queryString}`);
+    expect(response.statusCode, response.body).toBe(200);
+    const page = response.json<{ items: Array<{ id: string }>; nextCursor: string | null }>();
+    items.push(...page.items);
+    cursor = page.nextCursor;
+    if (cursor === null) return { items, pageCount: pageNumber + 1, terminalCursor: cursor };
+  }
+  throw new Error('Conversation pagination did not terminate');
 }
 
 describe.skipIf(!dbAvailable || !redisAvailable)(
@@ -198,30 +219,35 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       });
     });
 
-    it('uses a stable keyset cursor across actual rows', async () => {
-      await insertConversation({ id: CONV_1, title: 'c0', updatedAt: '2026-01-03T00:00:00.000Z' });
-      await insertConversation({ id: CONV_2, title: 'c1', updatedAt: '2026-01-02T00:00:00.000Z' });
-      await insertConversation({ id: CONV_3, title: 'c2', updatedAt: '2026-01-01T00:00:00.000Z' });
-      await insertConversation({
-        id: '8c3b1b2d-4e5f-4061-9c7d-8e9f0a1b2c3d',
-        ownerId: otherUserId,
-        title: 'not visible',
-        updatedAt: '2026-01-04T00:00:00.000Z',
-      });
+    it.each([1, 2])(
+      'preserves microsecond ordering and the UUID tiebreaker across all pages at limit=%i',
+      async (limit) => {
+        await insertConversation({ id: CONV_1, title: 'microsecond 900', updatedAt: '2026-09-27T12:00:00.123900Z' });
+        await insertConversation({ id: CONV_2, title: 'microsecond 800', updatedAt: '2026-09-27T12:00:00.123800Z' });
+        await insertConversation({ id: CONV_3, title: 'microsecond 700', updatedAt: '2026-09-27T12:00:00.123700Z' });
+        await insertConversation({ id: CONV_4, title: 'same timestamp lower id', updatedAt: '2026-09-27T12:00:00.123600Z' });
+        await insertConversation({ id: CONV_5, title: 'same timestamp higher id', updatedAt: '2026-09-27T12:00:00.123600Z' });
+        await insertConversation({
+          id: randomUUID(),
+          ownerId: otherUserId,
+          title: 'not visible',
+          updatedAt: '2026-09-27T12:00:00.123950Z',
+        });
 
-      const first = await get('/api/llm/conversations?limit=2');
-      expect(first.statusCode).toBe(200);
-      const page1 = first.json<{ items: Array<{ id: string }>; nextCursor: string | null }>();
-      expect(page1.items.map((item) => item.id)).toEqual([CONV_1, CONV_2]);
-      expect(page1.nextCursor).toEqual(expect.any(String));
+        const traversal = await traverseConversationPages(limit);
+        expect(traversal.items.map((item) => item.id)).toEqual([CONV_1, CONV_2, CONV_3, CONV_5, CONV_4]);
+        expect(new Set(traversal.items.map((item) => item.id)).size).toBe(traversal.items.length);
+        expect(traversal.pageCount).toBe(Math.ceil(5 / limit));
+        expect(traversal.terminalCursor).toBeNull();
+      },
+    );
 
-      const second = await get(`/api/llm/conversations?limit=2&cursor=${encodeURIComponent(page1.nextCursor!)}`);
-      expect(second.statusCode, second.body).toBe(200);
-      expect(second.json()).toMatchObject({ items: [{ id: CONV_3 }], nextCursor: null });
-    });
-
-    it('rejects malformed cursors, oversized limits, and non-UUID ids before reading a row', async () => {
+    it('rejects malformed and precision-losing cursors, oversized limits, and non-UUID ids before reading a row', async () => {
       expect((await get('/api/llm/conversations?cursor=not-base64-json')).statusCode).toBe(400);
+      for (const timestamp of ['2026-02-31T12:00:00.123456Z', '2026-09-27T12:00:00.123Z']) {
+        const cursor = Buffer.from(JSON.stringify([timestamp, CONV_1])).toString('base64url');
+        expect((await get(`/api/llm/conversations?cursor=${cursor}`)).statusCode).toBe(400);
+      }
       expect((await get('/api/llm/conversations?limit=101')).statusCode).toBe(400);
       expect((await get('/api/llm/conversations/conv-1')).statusCode).toBe(400);
       expect((await app.inject({ method: 'DELETE', url: '/api/llm/conversations/conv-1' })).statusCode).toBe(400);

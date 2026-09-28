@@ -910,7 +910,9 @@ not an omission.
 - **`GET /llm/conversations?limit&cursor`** — keyset pagination:
   ```sql
   SELECT c.id, COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation') AS title,
-         c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at
+         c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at,
+         to_char(c.updated_at AT TIME ZONE 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at
     FROM llm_conversations c
     LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL
    WHERE c.user_id = $1
@@ -918,11 +920,19 @@ not an omission.
    ORDER BY c.updated_at DESC, c.id DESC
    LIMIT $4
   ```
-  fetch `limit + 1`; if more, `nextCursor = base64url(JSON.stringify([updatedAtISO, id]))` of
-  the last returned row, else `null`. A malformed cursor is a 400. The handler emits
-  `created_at.toISOString()` / `updated_at.toISOString()` (the same string the cursor is built
-  from; today's handlers return raw `Date`s, `llm-conversations.ts:25-31`, which the contract's
-  `z.string()` would reject in a round-trip test). `p.deleted_at IS NULL` is on the join
+  Fetch `limit + 1`; if more, `nextCursor =
+  base64url(JSON.stringify([cursor_updated_at, id]))` of the last returned row, else `null`.
+  `cursor_updated_at` is the exact six-digit PostgreSQL ordering key in UTC; it never passes
+  through node-postgres's JavaScript `Date`, which has only millisecond precision. Decode
+  validates that same canonical six-digit shape plus the UUID and passes the timestamp string
+  unchanged to PostgreSQL. Malformed cursors and legacy three-digit cursors are 400: a legacy
+  cursor has already discarded the boundary microseconds, so accepting it would silently skip
+  rows and is not a safe compatibility path. The cursor stays opaque to clients;
+  `useConversationList` resets its infinite query on a 400 while pages are loaded, so a
+  sidebar left open across the deploy re-reads from page one instead of replaying the
+  rejected cursor on every refetch. Response
+  timestamps remain `created_at.toISOString()` / `updated_at.toISOString()` as the contract
+  requires. `p.deleted_at IS NULL` is on the join
   because pages are soft-deleted (`029_standalone_columns.sql`) and `ON DELETE SET NULL` fires
   only on a hard delete — a trashed page yields no chip. No visibility predicate on this join:
   `page_ref` was authorised at write time (Save path 2), and the row records where the user

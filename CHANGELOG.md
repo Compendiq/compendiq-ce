@@ -165,6 +165,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Conversation pagination retains PostgreSQL microseconds (#1667).** Opaque
+  keyset cursors now carry the exact six-digit `updated_at` ordering key plus
+  the UUID tiebreaker, so conversations inside the same millisecond are returned
+  exactly once instead of disappearing after a page boundary. Precision-losing
+  legacy cursors are rejected with 400; the conversation sidebar restarts its
+  traversal from the first page when that happens.
+
 - **Page saves are now single-flight per editing session (#1662).** Rapid
   repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
   draw.io work or commit a collaborative snapshot, now share the operation
