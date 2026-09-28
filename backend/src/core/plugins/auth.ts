@@ -388,9 +388,28 @@ export async function revokeToken(jti: string): Promise<void> {
 }
 
 /**
- * Revokes all tokens in a family (security breach response). Holds the
- * owner's row lock so a concurrent rotation cannot insert a successor that
- * this UPDATE's snapshot would miss.
+ * Runs a revocation UPDATE under the owner's row lock so a concurrent
+ * rotation cannot insert a successor that the UPDATE's snapshot would miss.
+ * If the lock stays unavailable past its deadline, the UPDATE still runs
+ * without it: a revocation must not be skipped because the users row was
+ * busy (only a successor committed later by that same lock holder could then
+ * escape, as before the lock existed).
+ */
+async function revokeUnderUserLock(userId: string, sql: string, params: unknown[]): Promise<void> {
+  try {
+    await withUserSessionLock(userId, async (client) => {
+      await client.query(sql, params);
+    });
+  } catch (error) {
+    if (!(error instanceof RefreshSessionBusyError)) throw error;
+    logger.warn({ userId }, 'Refresh token revocation ran without the session lock after a lock timeout');
+    await query(sql, params);
+  }
+}
+
+/**
+ * Revokes all tokens in a family (security breach response), serialized with
+ * rotation on the owner's row lock.
  */
 export async function revokeTokenFamily(family: string): Promise<void> {
   const owner = await query<{ user_id: string }>(
@@ -399,12 +418,11 @@ export async function revokeTokenFamily(family: string): Promise<void> {
   );
   const userId = owner.rows[0]?.user_id;
   if (!userId) return;
-  await withUserSessionLock(userId, async (client) => {
-    await client.query(
-      'UPDATE refresh_tokens SET revoked = TRUE WHERE family = $1 AND user_id = $2',
-      [family, userId],
-    );
-  });
+  await revokeUnderUserLock(
+    userId,
+    'UPDATE refresh_tokens SET revoked = TRUE WHERE family = $1 AND user_id = $2',
+    [family, userId],
+  );
 }
 
 /**
@@ -412,9 +430,7 @@ export async function revokeTokenFamily(family: string): Promise<void> {
  * on the user's row lock.
  */
 export async function revokeAllUserTokens(userId: string): Promise<void> {
-  await withUserSessionLock(userId, async (client) => {
-    await client.query('UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1', [userId]);
-  });
+  await revokeUnderUserLock(userId, 'UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1', [userId]);
 }
 
 /**

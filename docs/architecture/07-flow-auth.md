@@ -78,7 +78,9 @@ holds the user's row lock (`SELECT … FROM users … FOR NO KEY UPDATE`):
   its claim finds nothing to rotate); it can never escape.
 - Lock waits are bounded by `lock_timeout` 5s and statements by
   `statement_timeout` 10s. A timeout rolls back — the cookie was not consumed —
-  and the route answers `503` instead of hanging.
+  and the refresh route answers `503` instead of hanging. Family revocation and
+  logout never give up on a timeout: they run their `UPDATE` without the lock
+  instead.
 
 ### Client-side token refresh
 

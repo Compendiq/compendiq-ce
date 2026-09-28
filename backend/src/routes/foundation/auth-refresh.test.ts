@@ -502,6 +502,30 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       expect(await activeJtis('family', initial.family)).toEqual([initial.jti]);
       expect((await refreshRoute(initial.token)).statusCode).toBe(200);
     }, 20_000);
+
+    it('still revokes every session on logout when the users row stays locked past the deadline', async () => {
+      const first = await generateRefreshToken(testPayload());
+      const second = await generateRefreshToken(testPayload());
+      const accessToken = await generateAccessToken(testPayload());
+      // NO KEY UPDATE, like a concurrent admin edit: the logout audit insert's
+      // foreign-key check (KEY SHARE) must still get through.
+      const blocker = await holdRow('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', testUserId);
+      let logout!: InjectedResponse;
+      try {
+        logout = await app.inject({
+          method: 'POST',
+          url: '/api/auth/logout',
+          headers: { authorization: `Bearer ${accessToken}` },
+        });
+      } finally {
+        await blocker.release();
+      }
+
+      expect(logout.statusCode).toBe(200);
+      expect(await activeJtis('user_id', testUserId)).toEqual([]);
+      expect((await refreshRoute(first.token)).statusCode).toBe(401);
+      expect((await refreshRoute(second.token)).statusCode).toBe(401);
+    }, 20_000);
   });
 
   describe('Logout with expired access token (refresh cookie fallback)', () => {
