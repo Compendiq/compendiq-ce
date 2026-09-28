@@ -6,6 +6,7 @@
  * through a group ACE; the administrator keeps today's listings (restricted
  * pages visible, other users' private standalone pages not).
  */
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -26,6 +27,7 @@ import { localSpacesRoutes } from './local-spaces.js';
 import {
   RESTRICTED_TITLES,
   SEARCH_TERM,
+  insertPageAce,
   restrictedLeaks,
   seedRestrictionFixture,
   type RestrictionFixture,
@@ -267,6 +269,34 @@ describe.skipIf(!available)('page restrictions on non-RAG read surfaces', () => 
     expect(await status(fx.readerId)).toBe(4);
     expect(await status(fx.groupReaderId)).toBe(5);
     expect(await status(fx.adminId)).toBe(5);
+  });
+
+  it('does not admit a user or group ACE holder without a space role (restrictions only narrow)', async () => {
+    const aceOnlyUser = async (label: string): Promise<string> => {
+      const username = `restriction-${label}-${randomUUID()}`;
+      const res = await query<{ id: string }>(
+        `INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'user') RETURNING id`,
+        [username, `${username}@test`],
+      );
+      fixtureUserIds.add(res.rows[0]!.id);
+      return res.rows[0]!.id;
+    };
+    const userAceOnly = await aceOnlyUser('user-ace-only');
+    await insertPageAce(fx.pages.hushedLeaf, 'user', userAceOnly);
+    const groupAceOnly = await aceOnlyUser('group-ace-only');
+    await query('INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2)', [fx.groupId, groupAceOnly]);
+
+    for (const userId of [userAceOnly, groupAceOnly]) {
+      expect((await request(userId, `/api/pages/${fx.pages.hushedLeaf}`)).statusCode).toBe(404);
+      for (const url of [
+        '/api/pages?limit=50',
+        '/api/pages/tree',
+        `/api/search?q=${SEARCH_TERM}`,
+        `/api/pages/${fx.pages.hushedLeaf}/graph/local`,
+      ]) {
+        expect(restrictedLeaks(await ok(userId, url)), url).toEqual([]);
+      }
+    }
   });
 
   describe('revocation and cache fencing', () => {
