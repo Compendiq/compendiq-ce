@@ -380,15 +380,36 @@ export function useDeletePage() {
   return useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/pages/${id}`, { method: 'DELETE' }),
-    onMutate: async (id) => {
+    onSuccess: async (_data, id) => {
+      // A list request already in flight can contain the deleted row. Cancel it
+      // before applying the confirmed result so that stale response cannot put
+      // the row back while the settlement invalidation starts a fresh request.
       await queryClient.cancelQueries({ queryKey: ['pages'] });
-      // Remove from all paginated list caches optimistically
-      queryClient.setQueriesData<PaginatedPages>({ queryKey: ['pages'] }, (old) => {
-        if (!old?.items) return old;
-        return { ...old, items: old.items.filter((p) => p.id !== id), total: Math.max(0, old.total - 1) };
+      queryClient.setQueriesData<PaginatedPages>({
+        queryKey: ['pages'],
+        predicate: (query) => (
+          query.queryKey.length === 2
+          && typeof query.queryKey[1] === 'object'
+          && query.queryKey[1] !== null
+        ),
+      }, (old) => {
+        if (!old?.items?.some((page) => page.id === id)) return old;
+        const total = Math.max(0, old.total - 1);
+        return {
+          ...old,
+          items: old.items.filter((page) => page.id !== id),
+          total,
+          totalPages: total === 0 ? 0 : Math.ceil(total / old.limit),
+        };
       });
+      // Standalone deletes move the confirmed row into Trash. Confluence and
+      // permanent deletes leave it absent there; either way the server owns
+      // the resulting collection.
+      queryClient.invalidateQueries({ queryKey: ['trash'] });
     },
     onSettled: () => {
+      // Prefix invalidation reconciles active lists, trees, pins and details,
+      // while marking inactive entries stale for a fetch when next mounted.
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'], refetchType: 'none' });
     },
