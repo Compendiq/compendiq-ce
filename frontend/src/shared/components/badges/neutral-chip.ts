@@ -1,7 +1,8 @@
 /**
  * The settled neutral-chip recipe for CATEGORY and MEASUREMENT chips —
  * Local/Confluence, Shared/Private, Draft, the RBAC principal type, page
- * freshness. One recipe, stated once, because it was measured once:
+ * freshness, and the inspector's status readouts. One recipe, stated once,
+ * because it was measured once:
  *
  * The fill is the compositing tint `bg-foreground/10`, never `bg-muted`.
  * Chips on hoverable rows share their row's `hover:bg-accent` ground, and in
@@ -17,11 +18,11 @@
  * resting/hovered) and 9.73/7.98:1 (Paper) — 7.3:1+ on every ground these
  * chips sit on, elevated hover cards included.
  *
- * There is no holdout: EmbeddingStatusBadge's resting states used to keep
- * `bg-muted` with no border on ArticleRightPane's nm-card, which measured
- * 1.04:1 against the pane — no visible pill. They now wear
- * `inspectorChipClass` like FreshnessBadge; only the live states
- * (`embedding`, `failed`) override fill/ink, and each carries a glyph.
+ * There is no holdout any more. EmbeddingStatusBadge's resting states used to
+ * keep `bg-muted` on the argument that the inspector was an `nm-card` where
+ * muted is a real value step; the inspector is now the flat `app-context-rail`
+ * on Pane, where `bg-muted` measures 1.04:1 in Graphite — the pill was gone
+ * and only its text floated in the row. The tint measures 1.34:1 there.
  */
 
 /** Just the fill + ink pair, for chips that carry their own geometry. */
@@ -31,9 +32,13 @@ export const neutralChipInk = 'bg-foreground/10 text-secondary-foreground';
 export const neutralChipClass = `inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium ${neutralChipInk}`;
 
 /**
- * The article inspector's passive readout chip (verification, freshness,
- * embedding at rest): the same tint, hairline and pill as the row chip, on
- * the 13px control scale at a 24px minimum height. Passive means passive —
- * no `role`, no `tabIndex`, and the accessible name is the visible text.
+ * The inspector's passive status chip — verification, freshness, search
+ * index. One geometry for the whole Document health row: 24px tall, pill,
+ * hairline, 13px label, and a leading 12px glyph on EVERY state so the shape
+ * channel never depends on which state happens to render. A state that
+ * carries its own hue (indexing in progress, failed) overrides the fill and
+ * ink on top of this class; the geometry never changes. Passive means
+ * passive — no `role`, no `tabIndex`, no `aria-label`; the accessible name
+ * is the visible text.
  */
-export const inspectorChipClass = `inline-flex min-h-6 items-center gap-1 rounded-full border border-border px-2 text-xs font-medium ${neutralChipInk}`;
+export const statusChipClass = `inline-flex min-h-6 items-center gap-1.5 rounded-full border border-border px-2.5 text-xs font-medium ${neutralChipInk}`;

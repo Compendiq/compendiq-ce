@@ -39,7 +39,8 @@ import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { PageLifecycleSection } from './PageLifecycleSection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
-import { inspectorChipClass, neutralChipInk } from '../badges/neutral-chip';
+import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
+import { formatDateStamp } from '../../lib/format-relative-time';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
@@ -410,9 +411,7 @@ export function ArticleRightPane({
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
   const verifiedAt = page?.verifiedAt ?? null;
-  const verifiedDateStr = verifiedAt
-    ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    : null;
+  const verifiedDateStr = verifiedAt ? formatDateStamp(verifiedAt) : null;
 
   // Each unhealthy state names the one action that fixes it (`remedy`), so the
   // sentence and its button are read together rather than hunted for.
@@ -1581,6 +1580,9 @@ export function ArticleRightPane({
   const sourceTitle = isStandalone
     ? (page?.spaceKey ? `Local space · ${page.spaceKey}` : 'Local space')
     : (page?.spaceKey ? `Confluence · ${page.spaceKey}` : 'Confluence');
+  // One absolute stamp (day precision, with the year) is the visible date;
+  // time-of-day belongs in the `title` — the inspector's rule since #1673.
+  const lastSyncedStamp = page?.lastSynced ? formatDateStamp(page.lastSynced) : null;
   const lastSyncedExact = page?.lastSynced ? new Date(page.lastSynced).toLocaleString() : null;
   const actionRowShape = 'flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-medium';
   const actionRowBase = cn(
@@ -1795,7 +1797,7 @@ export function ArticleRightPane({
           <section data-testid="details-source">
             <h3 className="text-xs font-semibold text-foreground">Source</h3>
             <div className="mt-3 flex min-w-0 items-center gap-2">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-md', neutralChipInk)}>
                 {isStandalone ? <FolderOpen size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}
               </span>
               <div className="min-w-0">
@@ -1869,7 +1871,7 @@ export function ArticleRightPane({
                           {formatRelativeTime(page.lastSynced)}
                         </time>
                         <span className="block tabular-nums text-muted-foreground" data-testid="last-synced-exact">
-                          {lastSyncedExact}
+                          {lastSyncedStamp}
                         </span>
                       </dd>
                     </div>
@@ -2020,11 +2022,11 @@ export function ArticleRightPane({
             </span>
             <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
               <span
-                className={inspectorChipClass}
+                className={statusChipClass}
                 data-testid="verification-chip"
                 title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
               >
-                <ShieldCheck size={12} aria-hidden="true" />
+                <ShieldCheck size={12} className="shrink-0" aria-hidden="true" />
                 <span>{verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}</span>
               </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
@@ -2125,6 +2127,7 @@ export function ArticleRightPane({
                   </button>
                 )}
               />
+
             )}
 
             <button
@@ -2146,7 +2149,7 @@ export function ArticleRightPane({
                 data-testid="show-in-graph-btn"
               >
                 <GitGraph size={15} className="shrink-0 opacity-70" aria-hidden="true" />
-                <span className="truncate">Show in Graph</span>
+                <span className="truncate">Show in graph</span>
               </button>
             )}
 

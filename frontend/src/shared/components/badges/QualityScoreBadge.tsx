@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
+import Markdown from 'react-markdown';
 import { ChevronDown, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
@@ -65,7 +66,7 @@ function getScoreConfig(
   // Handle non-analyzed statuses first
   if (status === 'analyzing') {
     return {
-      label: 'Analyzing...',
+      label: 'Analyzing…',
       badgeClass: 'bg-status-ai/20 text-status-ai border border-status-ai/30',
       animate: true,
       band: null,
@@ -74,7 +75,7 @@ function getScoreConfig(
 
   if (status === 'failed') {
     return {
-      label: 'Analysis Failed',
+      label: 'Analysis failed',
       // The one quality state that IS attention-worthy, so it is the one that
       // earns amber. Tokens, not hex literals, so the palette tests can see it.
       badgeClass: 'bg-warning/10 text-warning border border-warning/30',
@@ -96,7 +97,7 @@ function getScoreConfig(
 
   if (score === null || score === undefined || status === 'pending' || !status) {
     return {
-      label: 'Not Scored',
+      label: 'Not scored',
       badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
       animate: false,
       band: null,
@@ -106,7 +107,7 @@ function getScoreConfig(
   // Score-based labels — one neutral chip for every band; the meter carries the
   // difference. Deliberately no per-band colour: see the note above.
   const label =
-    score >= 90 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Needs Work' : 'Poor';
+    score >= 90 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Needs work' : 'Poor';
 
   return {
     label: `${score} ${label}`,
@@ -121,11 +122,17 @@ function getScoreConfig(
  * already says "74 Good" — this is the scanning channel, not the accessible
  * one.
  *
- * Being the scanning channel makes the segments information-bearing graphics
- * (WCAG 1.4.11), so empty ones take `--color-border-interactive`, not the
- * `--color-border` separator (1.11:1 Graphite / 1.17:1 Paper on the pane —
- * a low score read as a single tick). Measured in workspace-themes.test.ts:
- * empty ≥3:1 on every ground the chip sits on, and filled ≥3:1 from empty.
+ * The empty segments are `--color-border-interactive`, not `bg-border`: on the
+ * inspector's trigger the hairline measured 1.11:1 against the fill, so
+ * "45 Poor" read as a single tick rather than one of four and the length
+ * channel this meter exists for was gone. Being the scanning channel makes
+ * the segments information-bearing graphics (WCAG 1.4.11), so
+ * workspace-themes.test.ts holds BOTH steps to 3:1 on every ground the chip
+ * sits on — the tint over pane, workspace and a selected row, plus the hover
+ * fill. Ink at an alpha cannot do that: no single alpha clears empty-vs-ground
+ * AND filled-vs-empty on a selected row in both themes (50% is 2.96:1 in
+ * Graphite, 45% is 2.82:1 in Paper), while the interactive edge measures
+ * 4.25 / 3.82:1 on the pane and 3.40 / 4.64:1 short of the filled ink.
  *
  * Forced colours repaint both fills to Canvas, so there filled segments take
  * CanvasText and empty ones a 1px CanvasText outline with no fill: solid
@@ -270,11 +277,30 @@ function QualityScoreDisclosure({ config, ...props }: QualityScoreBadgeProps & {
               </dl>
               {props.qualityAnalyzedAt && (
                 <p className="mt-3 text-muted-foreground">
-                  Analyzed <time dateTime={props.qualityAnalyzedAt}>{new Date(props.qualityAnalyzedAt).toLocaleString()}</time>
+                  Analyzed{' '}
+                  <time
+                    dateTime={props.qualityAnalyzedAt}
+                    title={new Date(props.qualityAnalyzedAt).toLocaleString()}
+                  >
+                    {formatRelativeTime(props.qualityAnalyzedAt)}
+                  </time>
                 </p>
               )}
               {props.qualitySummary && (
-                <p className="mt-3 whitespace-pre-wrap break-words leading-relaxed">{props.qualitySummary}</p>
+                <div className="mt-3 break-words leading-relaxed [&_p+p]:mt-2 [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mt-2 [&_ol]:list-decimal [&_ol]:pl-4">
+                  {/* The summary is LLM prose and arrives as Markdown — bold
+                      runs, the odd list. The same renderer the chat surfaces
+                      use, fenced to inline emphasis and lists: no headings, no
+                      links, no raw HTML. It used to print `**bold**` literally
+                      inside a whitespace-pre-wrap paragraph. */}
+                  <Markdown
+                    skipHtml
+                    allowedElements={['p', 'strong', 'em', 'code', 'ul', 'ol', 'li', 'br']}
+                    unwrapDisallowed
+                  >
+                    {props.qualitySummary}
+                  </Markdown>
+                </div>
               )}
             </>
           ) : (

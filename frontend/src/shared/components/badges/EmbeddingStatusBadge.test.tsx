@@ -10,26 +10,29 @@ describe('EmbeddingStatusBadge', () => {
     expect(screen.getByText('Not indexed')).toBeInTheDocument();
   });
 
-  it('renders "Embedded" when embeddingDirty is false (legacy)', () => {
+  it('renders "Indexed" when embeddingDirty is false (legacy)', () => {
     render(<EmbeddingStatusBadge embeddingDirty={false} />);
-    expect(screen.getByText('Embedded')).toBeInTheDocument();
+    expect(screen.getByText('Indexed')).toBeInTheDocument();
   });
 
   // ---- New 4-state embeddingStatus prop ----
 
-  it('renders not_embedded state token-neutral — no hex literals, no dark: variant', () => {
+  it('renders not_embedded state on the neutral chip recipe — no bg-muted, no hex, no dark: variant', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
     const badge = screen.getByTestId('badge-not-embedded');
     expect(badge).toHaveTextContent('Not indexed');
-    // The old warm-gray hexes hid behind a `dark:` variant, which — with no
-    // `@custom-variant dark` in this app — compiles to the OS media query, so
-    // OS-dark + user-picked Paper rendered a dark pill on the white page.
-    // Resting states wear the neutral chip recipe: `bg-muted` with no border
-    // measured 1.04:1 against the inspector pane — an invisible pill.
-    expect(badge.className).toContain('border-border');
+    // `bg-muted` measured 1.04:1 against the inspector's flat Pane in
+    // Graphite: the pill vanished and only its text floated in the row. The
+    // compositing tint (neutral-chip.ts) steps up from that ground, and the
+    // hairline defines the shape. The old warm-gray hexes hid behind a
+    // `dark:` variant, which — with no `@custom-variant dark` in this app —
+    // compiles to the OS media query, so OS-dark + user-picked Paper rendered
+    // a dark pill on the white page.
     expect(badge.className).toContain('bg-foreground/10');
     expect(badge.className).toContain('text-secondary-foreground');
+    expect(badge.className).toContain('border-border');
     expect(badge.className).not.toContain('bg-muted');
+    expect(badge.className).not.toContain('text-muted-foreground');
     expect(badge.className).not.toMatch(/#[0-9a-fA-F]{3,8}|dark:/);
     expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
@@ -42,16 +45,18 @@ describe('EmbeddingStatusBadge', () => {
   // re-stating the ink class would only mirror the stylesheet. What has to
   // hold instead is the two non-colour channels plus the measured weight
   // ceiling.
-  it('renders embedding state hueless — label and glyph carry the state', () => {
+  it('renders embedding state hueless — label and spinner glyph carry the state', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedding" />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent('Embedding…');
+    expect(badge).toHaveTextContent('Indexing…');
     expect(badge).toHaveAttribute('data-status', 'embedding');
 
-    // Channel 1 — a glyph no sibling state renders. This is the one that has
-    // to survive `prefers-reduced-motion: reduce`, under which index.css
-    // clamps every animation to 0.01ms and a single iteration.
-    expect(badge.querySelector('[data-testid="embedding-status-glyph"]')).toBeTruthy();
+    // Channel 1 — the spinner arc, a glyph no sibling state renders. This is
+    // the one that has to survive `prefers-reduced-motion: reduce`, under
+    // which index.css clamps every animation to 0.01ms and a single
+    // iteration: a stopped Loader2 is still a visible arc.
+    const glyph = badge.querySelector('[data-testid="embedding-status-glyph"]');
+    expect(glyph?.getAttribute('class')).toContain('lucide-loader-circle');
     // Channel 2 — motion, a redundant enhancement on top, never the only one.
     expect(badge.className).toContain('animate-pulse');
 
@@ -61,7 +66,8 @@ describe('EmbeddingStatusBadge', () => {
     // the fill at 20% measured 1.527 / 1.746:1, and any `border-` utility
     // bound to this token composites over the fill and reaches 1.439 / 1.592:1
     // at the pill's outer edge. The 10% fill (1.225 / 1.278:1) and the quiet
-    // hairline token are the pair that fits.
+    // hairline token are the pair that fits — and the fill must REPLACE the
+    // recipe's resting tint, not stack on it.
     const utilities = badge.className.split(/\s+/);
     expect(utilities.filter((c) => c.startsWith('bg-'))).toEqual(['bg-status-embedding/10']);
     expect(utilities.filter((c) => c.startsWith('border-'))).toEqual(['border-border']);
@@ -69,7 +75,8 @@ describe('EmbeddingStatusBadge', () => {
 
   // With `embedding` hueless too, three of the four states are neutral. What
   // keeps them apart is enumerated here so a future relabel cannot quietly
-  // collapse two of them into the same rendering.
+  // collapse two of them into the same rendering: every state carries a glyph
+  // now, so the glyph's identity is part of the signature, not its presence.
   it('keeps all four states distinguishable without colour', () => {
     const signatures = (['not_embedded', 'embedding', 'embedded', 'failed'] as const).map(
       (status) => {
@@ -79,9 +86,11 @@ describe('EmbeddingStatusBadge', () => {
         const badge = screen.getByTestId(
           status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge',
         );
+        const glyph = badge.querySelector('[data-testid="embedding-status-glyph"]');
+        expect(glyph, `${status} renders no glyph`).toBeTruthy();
         const signature = [
           badge.textContent,
-          badge.querySelector('[data-testid="embedding-status-glyph"]') ? 'glyph' : '-',
+          glyph!.getAttribute('class')?.match(/lucide-[\w-]+/)?.[0] ?? '-',
           container.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
         ].join('|');
         unmount();
@@ -89,6 +98,7 @@ describe('EmbeddingStatusBadge', () => {
       },
     );
     expect(new Set(signatures).size).toBe(4);
+    expect(new Set(signatures.map((s) => s.split('|')[1])).size).toBe(4);
   });
 
   // "Embedded <date>" is the resting state of every healthy page — a
@@ -99,8 +109,9 @@ describe('EmbeddingStatusBadge', () => {
   it('renders embedded state neutral, not in the connected green', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent('Embedded');
-    expect(badge.className).toContain('border-border');
+    expect(badge).toHaveTextContent('Indexed');
+    expect(badge.className).toContain('bg-foreground/10');
+    expect(badge.className).toContain('text-secondary-foreground');
     expect(badge.className).not.toContain('bg-muted');
     expect(badge.className).not.toMatch(/status-connected|success|green/);
     expect(badge).toHaveAttribute('data-status', 'embedded');
@@ -110,7 +121,7 @@ describe('EmbeddingStatusBadge', () => {
     const recentDate = new Date(Date.now() - 3600_000).toISOString(); // 1 hour ago
     render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={recentDate} />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent(/Embedded 1h ago/);
+    expect(badge).toHaveTextContent(/Indexed 1h ago/);
   });
 
   // Red is never the only channel: the failed chip carries a glyph too.
@@ -188,7 +199,7 @@ describe('EmbeddingStatusBadge', () => {
     );
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge.getAttribute('title')).toContain('Connection refused: Ollama server not reachable');
-    expect(badge.getAttribute('title')).toContain('Embedding failed:');
+    expect(badge.getAttribute('title')).toContain('Indexing failed:');
   });
 
   it('shows generic tooltip when failed with no embeddingError', () => {

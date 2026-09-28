@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
+import { Clock } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
-import { inspectorChipClass } from './neutral-chip';
+import { statusChipClass } from './neutral-chip';
 
 interface FreshnessBadgeProps {
   lastModified: string;
@@ -29,13 +30,14 @@ interface FreshnessLevel {
  * Passive means passive: no `role`, no `tabIndex`, no `aria-label` — the
  * accessible name is the visible text, and a Tab walk does not stop here.
  *
- * The chip is `inspectorChipClass` (neutral-chip.ts): the compositing tint,
- * not `bg-muted`, because this badge also renders on PagePreview's elevated
- * hover card, where bg-muted measured 1.05:1 in Graphite. The tint steps up
- * from both grounds it sits on (1.33:1 on card-elevated, 1.29:1 on
- * ArticleRightPane's nm-card in Graphite; 1.23:1 on both in Paper), the
- * border-border hairline defines the shape, and the secondary ink measures
- * 7.63–9.73:1 across all four.
+ * The chip is the shared status recipe (neutral-chip.ts), not `bg-muted`:
+ * this badge renders on PagePreview's nm-card-elevated hover card, where
+ * bg-muted measured 1.05:1 in Graphite — no visible pill, just bare floating
+ * text beside the space-key chip — and on the inspector's flat Pane, where it
+ * measures 1.04:1. The tint steps up from both grounds, the border-border
+ * hairline defines the shape, and the secondary ink measures 7.5:1+ on all
+ * four. The clock is the glyph every sibling in the Document health row also
+ * carries: the shape channel does not depend on which chip happens to render.
  */
 function getFreshnessLevel(lastModified: string): FreshnessLevel {
   const now = new Date();
@@ -61,8 +63,9 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
     <span
       title={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
-      className={cn(inspectorChipClass, 'whitespace-nowrap', className)}
+      className={cn(statusChipClass, 'whitespace-nowrap', className)}
     >
+      <Clock size={12} className="shrink-0" aria-hidden="true" />
       {`${level.label} · edited ${relative}`}
     </span>
   );

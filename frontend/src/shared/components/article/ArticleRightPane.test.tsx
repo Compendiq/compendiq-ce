@@ -5,6 +5,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
 import { apiFetch } from '../../lib/api';
+import { formatDateStamp } from '../../lib/format-relative-time';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -268,7 +269,7 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Open in Confluence' })).toBeVisible());
-    for (const label of ['Version history', 'Pin', 'Show in Graph', 'Export PDF']) {
+    for (const label of ['Version history', 'Pin', 'Show in graph', 'Export PDF']) {
       expect(screen.getByText(label).closest('details')).toBeNull();
     }
     expect(screen.queryByText('More actions')).not.toBeInTheDocument();
@@ -744,12 +745,16 @@ describe('ArticleRightPane', () => {
     expect(region).toBeEmptyDOMElement();
   });
 
-  it('shows when a Confluence page last synced, with the exact time visible', () => {
+  it('shows when a Confluence page last synced, with the date stamp visible', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    const exact = new Date(mockPage.lastSynced).toLocaleString();
+    const stamp = formatDateStamp(mockPage.lastSynced);
     expect(screen.getByText('Last synced')).toBeInTheDocument();
-    expect(screen.getByTestId('last-synced-exact')).toHaveTextContent(exact);
+    expect(screen.getByTestId('last-synced-exact')).toHaveTextContent(stamp);
+    expect(screen.getByTestId('last-synced-exact').closest('dd')).toHaveAttribute(
+      'title',
+      new Date(mockPage.lastSynced).toLocaleString(),
+    );
     // Rendered text, not a tooltip: the pane's entrance animation starts at
     // opacity 0 in jsdom, so this asserts it is not screen-reader-only instead.
     expect(screen.getByTestId('last-synced-exact')).not.toHaveClass('sr-only');
@@ -1675,11 +1680,15 @@ describe('ArticleRightPane', () => {
       });
     });
 
-    it('renders the last verification date on the chip', () => {
+    it('renders the last verification date on the chip, with the year', () => {
       currentMockPage = { ...mockPage, verifiedAt: '2026-03-01T12:00:00Z' };
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
+      // The one date stamp the inspector uses (formatDateStamp): day precision
+      // and always the year, so "Verified Mar 1" cannot sit beside an
+      // "Indexed 8/24/2026" and read as the newer of the two.
       const expected = new Date('2026-03-01T12:00:00Z').toLocaleDateString(undefined, {
+        year: 'numeric',
         month: 'short',
         day: 'numeric',
       });

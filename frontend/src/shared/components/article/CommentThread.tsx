@@ -106,7 +106,7 @@ export function CommentThread({
               isSelected && 'ring-2 ring-ring border-primary/50 bg-accent/30',
             )
           : cn(
-              '-mx-2 px-2 py-3 transition-colors',
+              'px-1 py-3 transition-colors',
               // Selection keeps a shape channel (the inset Steel ring), not a
               // tint alone; the radius exists only while the ring does.
               isSelected && 'rounded-md bg-accent/30 ring-2 ring-inset ring-ring',

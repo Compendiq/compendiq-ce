@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Inspector Details: Source first, remedies beside warnings, deletion fenced
+  by consequence.** The tab opens with a **Source** block — `Confluence · KEY`
+  or `Local space · KEY`, last synced (date stamp visible, time-of-day in the
+  tooltip), version, the Confluence link — and carries the Confluence verbs:
+  `Pull latest from Confluence…` now confirms first and states what it does
+  (replaces the local title and content, keeps labels and any draft; the
+  collapsed rail's Re-sync uses the same confirm), and `Move to Confluence…`
+  sits there for local articles. Document health puts its remedy on the same
+  block (`Index now` / `Retry indexing` / `Re-check quality` / `Open
+  Assistant`, which only opens the Assistant tab) beside `Record verification`,
+  and names the quality band when the page is healthy. Page actions are one
+  flat list of 32px rows with no `More actions`; a local article's `Move to
+  trash` is an ordinary row (it is restorable for 30 days) while a Confluence
+  page's `Delete in Confluence…` and `Move to a local space — deletes the
+  Confluence page` sit behind the Danger zone. Freshness and index chips are
+  passive (no tab stop; the date is in the visible text) and the index Retry
+  is a real 32px button; the quality meter's empty segments move from ink at
+  50% to the interactive-border token — the one value that clears 3:1 against
+  every ground the chip sits on and 3:1 short of a filled segment in both
+  themes — and stay legible under forced colours; every destructive control
+  focuses in Steel; note threads are hairline-separated rows; the freeze
+  refusal links to Confluence settings; the mobile inspector's close control
+  is 32px.
+- **Inspector Details: one status-chip recipe, legible in Graphite.** The
+  Document health row's verification, freshness and search-index chips now
+  share one 24px pill with a hairline, the compositing tint, secondary ink and
+  a leading glyph on every state; the label chips and the space tile take the
+  same fill. The `Not Embedded` pill and the space tile were `bg-muted`, which
+  measured 1.04:1 on the inspector's pane in Graphite and vanished. The quality
+  meter's empty segments are now ink at 50% instead of the hairline, so a low
+  score reads as one of four rather than a single tick. The index chip says
+  `Not indexed` / `Indexing…` / `Indexed <date>` / `Indexing failed`, matching
+  the health sentence above it; every readout in the panel is sentence case;
+  the inspector prints one absolute date stamp (day precision, with the year)
+  everywhere a date appears; the quality summary renders its Markdown emphasis
+  instead of printing `**bold**`; the embedding Retry control and `Move to
+  trash` meet the 13px / 32px floors; and the empty Notes state is one row
+  aligned with its heading instead of a 156px illustration.
+
 - **Header destinations, tree on the chassis, one lifted workspace card
   (ADR-010 v1.7, v1.8).** Pages / AI / Graph move from the left icon rail to flat
   tabs in the top bar. The route's sidebar (page tree, AI conversations,

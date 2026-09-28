@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FreshnessBadge, getFreshnessLevel } from './FreshnessBadge';
+import { formatDateStamp } from '../../lib/format-relative-time';
 
 describe('FreshnessBadge', () => {
   beforeEach(() => {
@@ -44,7 +45,7 @@ describe('FreshnessBadge', () => {
     const lastModified = '2026-01-01T12:00:00Z';
     render(<FreshnessBadge lastModified={lastModified} />);
     expect(
-      screen.getByText(`Aging · edited ${new Date(lastModified).toLocaleDateString()}`),
+      screen.getByText(`Aging · edited ${formatDateStamp(lastModified)}`),
     ).toBeInTheDocument();
   });
 

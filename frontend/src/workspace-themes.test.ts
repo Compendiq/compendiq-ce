@@ -714,7 +714,10 @@ describe('Measured contrast — Paper (light)', () => {
  * made a "35 Poor" meter read as one lonely tick. And filled must read as
  * clearly MORE than empty, so that step is held to the same 3:1.
  *
- * The meter never sits on a bare surface: the score chip paints `bg-muted/40`
+ * An empty segment is `--color-border-interactive`, a flat token, so both
+ * contrasts are measured per ground; an ink alpha was tried and refused —
+ * no single alpha clears both steps on a selected row in both themes. The
+ * meter never sits on a bare surface: the score chip paints `bg-muted/40`
  * under it, and the inspector trigger goes to full `bg-muted` on hover. The
  * grounds are that tint over the pane (inspector), the workspace (list rows)
  * and a selected row, plus the hover fill.
