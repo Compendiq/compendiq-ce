@@ -697,6 +697,11 @@ caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
 
 On `POST /llm/improvements/apply` the route:
 
+0. Authorizes a local write, meaning a standalone page or a synced page while
+   the caller's integration is off. The `PUT /pages/:id` rule applies:
+   `userCanAccessPage` AND `userCanEditPage`. A denial answers the same 404 a
+   missing page gets, before any of the steps below can answer 409 or 422.
+   The rule is re-checked on the transaction client under the page fence.
 1. Re-derives the same token map from the **current** `body_html` stored in
    the DB (same deterministic order — no token map needs to be persisted).
 2. Calls `markdownToHtml(improvedMarkdown, { layoutSkeleton })` on the LLM

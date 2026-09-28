@@ -957,4 +957,128 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(missing.statusCode).toBe(404);
     expect((await query('SELECT id FROM page_versions WHERE page_id = $1', [pageId])).rows).toEqual([]);
   });
+
+  describe('restore of a synced page while the caller has Confluence switched off', () => {
+    async function switchIntegration(enabled: boolean): Promise<void> {
+      await query('UPDATE user_settings SET confluence_enabled = $2 WHERE user_id = $1', [userId, enabled]);
+    }
+
+    async function syncedPage(confluenceId: string, spaceKey: string | null = 'OPS'): Promise<number> {
+      const pageId = await seedPage({
+        source: 'confluence',
+        confluenceId,
+        spaceKey,
+        visibility: 'shared',
+        ownerId: null,
+        version: 3,
+      });
+      await seedVersion(pageId, 1, 'Historical title', '<p>Historical body</p>', 'Historical body');
+      return pageId;
+    }
+
+    async function restore(pageId: number) {
+      return app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/1/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 3 },
+      });
+    }
+
+    async function authoredState(pageId: number) {
+      return (await query(
+        'SELECT title, body_html, version, local_modified_by::text AS local_modified_by FROM pages WHERE id = $1',
+        [pageId],
+      )).rows[0];
+    }
+
+    const untouched = {
+      title: 'Current title',
+      body_html: '<p>Current body</p>',
+      version: 3,
+      local_modified_by: null,
+    };
+
+    it('refuses a restricted page without an ACE exactly as the enabled integration does', async () => {
+      await configureConfluence('OPS');
+      const pageId = await syncedPage('restore-restricted');
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+
+      const enabled = await restore(pageId);
+      expect(enabled.statusCode).toBe(403);
+      expect(confluenceRequests).toEqual([]);
+
+      await switchIntegration(false);
+      const disabled = await restore(pageId);
+
+      expect(disabled.statusCode).toBe(403);
+      expect(await authoredState(pageId)).toEqual(untouched);
+      expect((await query(
+        'SELECT id FROM page_versions WHERE page_id = $1 AND version_number = 3',
+        [pageId],
+      )).rows).toEqual([]);
+    });
+
+    it('refuses a synced page without a space for a caller who holds no role at all', async () => {
+      await configureConfluence('OPS');
+      await query('DELETE FROM space_role_assignments');
+      await switchIntegration(false);
+      const pageId = await syncedPage('restore-spaceless', null);
+
+      const response = await restore(pageId);
+
+      expect(response.statusCode).toBe(403);
+      expect(await authoredState(pageId)).toEqual(untouched);
+    });
+
+    it('restores locally for a space member and for an ACE holder on a restricted page', async () => {
+      await configureConfluence('OPS');
+      await switchIntegration(false);
+      const member = await syncedPage('restore-member');
+      const restricted = await syncedPage('restore-ace');
+      await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [restricted]);
+      await query(
+        `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+         VALUES ('page', $1, 'user', $2, 'edit')`,
+        [restricted, userId],
+      );
+
+      for (const pageId of [member, restricted]) {
+        const response = await restore(pageId);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toMatchObject({ version: 4, source: 'confluence', pushedToConfluence: false });
+        expect(await authoredState(pageId)).toEqual({
+          title: 'Historical title',
+          body_html: '<p>Historical body</p>',
+          version: 4,
+          local_modified_by: userId,
+        });
+      }
+      expect(confluenceRequests).toEqual([]);
+    });
+
+    it('re-checks authority inside the write transaction after the space role is revoked', async () => {
+      await configureConfluence('OPS');
+      await switchIntegration(false);
+      const pageId = await syncedPage('restore-revoked-role');
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = restore(pageId);
+        await waitForBlockedLifecycleLock();
+        await blocker.query('DELETE FROM space_role_assignments WHERE principal_id = $1', [userId]);
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(403);
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
+      expect(await authoredState(pageId)).toEqual(untouched);
+    });
+  });
 });

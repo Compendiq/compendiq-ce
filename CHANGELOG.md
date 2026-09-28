@@ -194,6 +194,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local writes to synced pages keep page authority when Confluence is off.**
+  AI Improve **Apply** and version **Restore** now authorize a synced page's
+  local write with the same rule as `PUT /pages/:id`: page access (a role on the
+  page's space, or an ACE on a restricted page) plus edit rights. The rule is
+  checked before the write and again inside its fenced transaction. Previously,
+  a user who switched their own integration off could apply an improvement to
+  any synced page, or restore a restricted or spaceless one. A denied Apply now
+  answers 404, exactly like a missing page, before any version, collaboration
+  or layout response. A denied Restore answers 403, as that route already does
+  for space denials. Behaviour with the integration on is unchanged.
+
 - **Conversation pagination retains PostgreSQL microseconds (#1667).** Opaque
   keyset cursors now carry the exact six-digit `updated_at` ordering key plus
   the UUID tiebreaker, so conversations inside the same millisecond are returned

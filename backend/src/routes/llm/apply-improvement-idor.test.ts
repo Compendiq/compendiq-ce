@@ -10,9 +10,8 @@ import { generateAccessToken } from '../../core/plugins/auth.js';
 // page because the handler resolved the page without checking
 // created_by_user_id / visibility. These tests run against real Postgres
 // (test-db-helper) with the full app (real auth, real route), mirroring the
-// llm-providers.test.ts pattern. Confluence-sourced pages are out of scope:
-// that branch pushes through the caller's own Confluence client, so
-// Confluence ACLs apply.
+// llm-providers.test.ts pattern. Synced pages, whose local write is taken when
+// the caller's integration is off, are covered in apply-improvement.test.ts.
 
 const dbAvailable = await isDbAvailable();
 

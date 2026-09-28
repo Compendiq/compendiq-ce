@@ -110,6 +110,66 @@ async function enableConfluence(enabled: boolean, configured = true): Promise<vo
   );
 }
 
+/** Sets one user's own integration mode, the toggle any user controls. */
+async function setIntegration(user: string, enabled: boolean): Promise<void> {
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, 'https://confluence.example.test', $2, $3)
+     ON CONFLICT (user_id) DO UPDATE SET
+       confluence_url = EXCLUDED.confluence_url,
+       confluence_pat = EXCLUDED.confluence_pat,
+       confluence_enabled = EXCLUDED.confluence_enabled`,
+    [user, encryptPat('caller-personal-access-token'), enabled],
+  );
+}
+
+async function grantSpace(user: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ('apply-editor', 'Apply editor', ARRAY['read', 'write'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)
+     ON CONFLICT DO NOTHING`,
+    [spaceKey, user, role.rows[0]!.id],
+  );
+}
+
+async function insertAcceptedImprovement(
+  user: string,
+  pageId: number,
+  improvedMarkdown: string,
+): Promise<string> {
+  const inserted = await query<{ id: string }>(
+    `INSERT INTO llm_improvements
+       (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+     VALUES ($1, $2, 'clarity', 'test-model', 'old', $3, 'completed')
+     RETURNING id`,
+    [user, pageId, improvedMarkdown],
+  );
+  return inserted.rows[0]!.id;
+}
+
+async function improvementStatus(id: string): Promise<string | undefined> {
+  const result = await query<{ status: string }>(
+    'SELECT status FROM llm_improvements WHERE id = $1',
+    [id],
+  );
+  return result.rows[0]?.status;
+}
+
+async function pageUpdateAuditCount(pageId: number): Promise<number> {
+  const result = await query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM audit_log
+      WHERE action = 'PAGE_UPDATED' AND resource_id = $1`,
+    [String(pageId)],
+  );
+  return Number(result.rows[0]!.count);
+}
+
 function acceptNextConfluenceUpdate(): void {
   mockHttpRequest.mockImplementationOnce(async (url: string, options: Record<string, unknown>) => {
     lastConfluenceRequest = { url, options };
@@ -742,6 +802,166 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         body_html: bodyHtml,
         body_storage: '<p>original storage</p>',
         version: 4,
+      });
+    });
+
+    describe('page authority on the local write a switched-off integration takes', () => {
+      // OPS is granted only to the space member (`userId` when the test
+      // starts, via enableConfluence). The outsider holds no role on OPS
+      // and switches their OWN integration off, which every user may do.
+      const improvedMarkdown = '## Outsider rewrite\n\nReplaced shared content.';
+      let outsiderId: string;
+
+      beforeEach(async () => {
+        outsiderId = otherUserId;
+        await enableConfluence(true);
+      });
+
+      async function syncedOpsPage(confluenceId: string): Promise<number> {
+        const pageId = await insertConfluencePage(confluenceId, 'Shared runbook', 'OPS');
+        await setPageContent(pageId, '<p>Shared runbook body</p>', 5, '<p>Shared storage</p>');
+        return pageId;
+      }
+
+      it('answers a caller without a space role exactly like a missing page and changes nothing', async () => {
+        const pageId = await syncedOpsPage('page-outsider');
+        const improvementId = await insertAcceptedImprovement(outsiderId, pageId, improvedMarkdown);
+        userId = outsiderId;
+        await setIntegration(outsiderId, false);
+
+        const missing = await apply({ pageId: '987654', improvedMarkdown, version: 5 });
+        const denied = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Taken over' });
+        const deniedByConfluenceId = await apply({ pageId: 'page-outsider', improvedMarkdown });
+
+        expect(missing.statusCode).toBe(404);
+        expect(denied.statusCode).toBe(missing.statusCode);
+        expect(denied.json()).toEqual(missing.json());
+        expect(deniedByConfluenceId.statusCode).toBe(404);
+        expect(deniedByConfluenceId.json()).toEqual(missing.json());
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect(await readPage(pageId)).toMatchObject({
+          title: 'Shared runbook',
+          body_html: '<p>Shared runbook body</p>',
+          body_text: 'Shared runbook body',
+          version: 5,
+          local_modified_at: null,
+          local_modified_by: null,
+          embedding_dirty: false,
+        });
+        expect(await improvementStatus(improvementId)).toBe('completed');
+        expect(await pageUpdateAuditCount(pageId)).toBe(0);
+      });
+
+      it('denies before any content-dependent answer: stale version and lost layout both read as missing', async () => {
+        const layoutHtml = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal"><div class="confluence-layout-cell"><p>Left</p></div><div class="confluence-layout-cell"><p>Right</p></div></div></div>';
+        const stalePage = await syncedOpsPage('page-stale');
+        const layoutPage = await insertConfluencePage('page-layout-oracle', 'Layout', 'OPS');
+        await setPageContent(layoutPage, layoutHtml, 4, '<p>layout storage</p>');
+        userId = outsiderId;
+        await setIntegration(outsiderId, false);
+
+        const stale = await apply({ pageId: String(stalePage), improvedMarkdown, version: 1 });
+        const layout = await apply({ pageId: String(layoutPage), improvedMarkdown: 'Flattened.', version: 4 });
+
+        expect(stale.statusCode).toBe(404);
+        expect(stale.json()).toEqual({ error: 'Page not found' });
+        expect(layout.statusCode).toBe(404);
+        expect(layout.json()).toEqual({ error: 'Page not found' });
+        expect(await readPage(stalePage)).toMatchObject({ version: 5, body_text: 'Shared runbook body' });
+        expect(await readPage(layoutPage)).toMatchObject({ version: 4, body_html: layoutHtml });
+      });
+
+      it('denies a space member on a restricted page without an ACE and admits them once granted', async () => {
+        const pageId = await syncedOpsPage('page-restricted');
+        await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [pageId]);
+        await grantSpace(outsiderId, 'OPS');
+        userId = outsiderId;
+        await setIntegration(outsiderId, false);
+
+        const denied = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+        expect(denied.statusCode).toBe(404);
+        expect(await readPage(pageId)).toMatchObject({ version: 5, body_text: 'Shared runbook body' });
+
+        await query(
+          `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ('page', $1, 'user', $2, 'edit')`,
+          [pageId, outsiderId],
+        );
+        const granted = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+        expect(granted.statusCode, granted.body).toBe(200);
+        expect(await readPage(pageId)).toMatchObject({ version: 6, local_modified_by: outsiderId });
+      });
+
+      it('lets a caller with a space role apply locally and marks their improvement applied', async () => {
+        const pageId = await syncedOpsPage('page-authorized');
+        await grantSpace(outsiderId, 'OPS');
+        const improvementId = await insertAcceptedImprovement(outsiderId, pageId, improvedMarkdown);
+        userId = outsiderId;
+        await setIntegration(outsiderId, false);
+
+        const response = await apply({ pageId: String(pageId), improvedMarkdown, version: 5, title: 'Improved runbook' });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toEqual({ id: pageId, title: 'Improved runbook', version: 6 });
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect(await readPage(pageId)).toMatchObject({
+          title: 'Improved runbook',
+          body_text: 'Outsider rewrite Replaced shared content.',
+          body_storage: '<p>Shared storage</p>',
+          version: 6,
+          local_modified_by: outsiderId,
+        });
+        expect(await improvementStatus(improvementId)).toBe('applied');
+        expect(await pageUpdateAuditCount(pageId)).toBe(1);
+      });
+
+      it('re-checks authority inside the write transaction after the role is revoked', async () => {
+        const pageId = await syncedOpsPage('page-revoked');
+        await grantSpace(outsiderId, 'OPS');
+        const improvementId = await insertAcceptedImprovement(outsiderId, pageId, improvedMarkdown);
+        userId = outsiderId;
+        await setIntegration(outsiderId, false);
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        try {
+          const pending = apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+          await waitForBlockedLifecycleLock();
+          await blocker.query(
+            `DELETE FROM space_role_assignments WHERE principal_type = 'user' AND principal_id = $1`,
+            [outsiderId],
+          );
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode).toBe(404);
+          expect(response.json()).toEqual({ error: 'Page not found' });
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+        expect(await readPage(pageId)).toMatchObject({ version: 5, body_text: 'Shared runbook body', local_modified_by: null });
+        expect(await improvementStatus(improvementId)).toBe('completed');
+      });
+
+      it('keeps the enabled-integration answer for a caller without a space role', async () => {
+        const pageId = await syncedOpsPage('page-enabled-outsider');
+        userId = outsiderId;
+        await setIntegration(outsiderId, true);
+
+        const response = await apply({ pageId: String(pageId), improvedMarkdown, version: 5 });
+
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toMatchObject({ reason: 'not_authorized' });
+        expect(mockHttpRequest).not.toHaveBeenCalled();
+        expect(await readPage(pageId)).toMatchObject({ version: 5, body_text: 'Shared runbook body' });
+        expect((await query(
+          `SELECT status FROM page_write_intents
+            WHERE kind = 'page.ai_apply' AND page_ids = ARRAY[$1]::integer[]`,
+          [pageId],
+        )).rows).toEqual([{ status: 'cancelled' }]);
       });
     });
 
