@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -128,6 +129,11 @@ function rows(...groups: RetrievedImagePage[][]): RetrievedImagePage[] {
  */
 function distinctPng(tag: string): Buffer {
   return Buffer.concat([buildPng(4, 4), Buffer.from(tag.padEnd(8, '.'), 'ascii')]);
+}
+
+/** Hex SHA-256 of `bytes` — the image identity the pick reports as `sha256`. */
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 describe('pickRetrievedImages — the gate costs nothing when there is nothing to pick', () => {
@@ -289,7 +295,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
       { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${jpeg.toString('base64')}` } },
     ]);
     expect(picked.used).toEqual([
-      { pageId: 7, source: 'confluence', attachmentKey: 'shot.png', bytes: jpeg.length },
+      { pageId: 7, source: 'confluence', attachmentKey: 'shot.png', bytes: jpeg.length, sha256: sha256(jpeg) },
     ]);
     expect(picked.skipped).toEqual({ missing: 0, invalid: 0, overBudget: 0, duplicate: 0 });
   });
@@ -305,7 +311,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
     );
 
     expect(picked.used).toEqual([
-      { pageId: 9, source: 'local', attachmentKey: 'pasted.png', bytes: png.length },
+      { pageId: 9, source: 'local', attachmentKey: 'pasted.png', bytes: png.length, sha256: sha256(png) },
     ]);
   });
 
@@ -641,8 +647,8 @@ describe('pickRetrievedImages — byte-identical pictures', () => {
 });
 
 describe('retrievedImagesCacheComponent', () => {
-  const use = (pageId: number, attachmentKey: string, bytes = 100) =>
-    ({ pageId, source: 'confluence' as const, attachmentKey, bytes });
+  const use = (pageId: number, attachmentKey: string) =>
+    ({ pageId, source: 'confluence' as const, attachmentKey, bytes: 100, sha256: 'a'.repeat(64) });
 
   it('is undefined when nothing was sent — the absence of images is not a 0-length set', () => {
     // Every deployment without a vision model is in this branch on every ask.
@@ -668,10 +674,25 @@ describe('retrievedImagesCacheComponent', () => {
     );
   });
 
-  it('separates the same file at a different size — an edited picture is different evidence', () => {
-    expect(retrievedImagesCacheComponent([use(1, 'a.png', 100)])).not.toBe(
-      retrievedImagesCacheComponent([use(1, 'a.png', 200)]),
-    );
+  it('separates a replaced picture of the SAME size — the key is the bytes sent, not their length', async () => {
+    // An attachment replaced in place by a different picture of identical
+    // length is different evidence. Keyed on the size, the old picture's
+    // answer was served for the TTL.
+    pageRows([{ id: 7, confluence_id: 'c7', source: 'confluence' }]);
+    const before = distinctPng('before');
+    const after = distinctPng('after');
+    expect(after.length).toBe(before.length);
+
+    await writeConfluenceFile('c7', 'shot.png', before);
+    const first = await pickRetrievedImages(rows(page(7, [hit('shot.png', 0.7)])), { max: 2 });
+    await writeConfluenceFile('c7', 'shot.png', after);
+    const second = await pickRetrievedImages(rows(page(7, [hit('shot.png', 0.7)])), { max: 2 });
+
+    expect(first.used[0]!.bytes).toBe(second.used[0]!.bytes);
+    expect(retrievedImagesCacheComponent(first.used)).not.toBe(retrievedImagesCacheComponent(second.used));
+    expect(retrievedImagesCacheComponent(first.used)).toBe(retrievedImagesCacheComponent([
+      { pageId: 7, source: 'confluence', attachmentKey: 'shot.png', bytes: before.length, sha256: sha256(before) },
+    ]));
   });
 
   it('hashes the filenames rather than concatenating them into a Redis key', () => {
