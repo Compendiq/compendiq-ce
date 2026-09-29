@@ -55,20 +55,24 @@ export function buildLlmCacheKey(
 
 /**
  * Build a cache key for a RAG Q&A call.
- * Based on: model + question + sorted top-K doc IDs + the prompt text as sent.
- * This means the cache automatically invalidates when documents are re-embedded
- * (because the top-K results will change).
  *
- * `prompt` is REQUIRED because the answer cache is shared across users while
- * the prompt is assembled per caller: the page tree behind `pageId`, the
- * caller's custom system prompt, fetched external docs and web results all
- * depend on who asks and what they may read. A key that names those inputs
- * (a page id, a URL list) instead of carrying what they produced served one
- * caller's answer, grounded in a private or restricted page tree, to a caller
- * whose own assembly had excluded it. Two callers share an entry only when
- * the text sent to the model is identical, so a hit can
- * never widen the current caller's grounding, and an edit or a permission
- * change that alters the assembled text moves the key.
+ * The hash of `prompt` — the system and user text exactly as sent — is what
+ * guarantees a hit never widens the current caller's grounding. It is
+ * REQUIRED because the answer cache is shared across users while the prompt
+ * is assembled per caller: the page tree behind `pageId`, the caller's custom
+ * system prompt, fetched external docs and web results all depend on who asks
+ * and what they may read. A key that names those inputs (a page id, a URL
+ * list) instead of carrying what they produced served one caller's answer,
+ * grounded in a private or restricted page tree, to a caller whose own
+ * assembly had excluded it. Two callers share an entry only when the text
+ * sent to the model is identical, and an edit or a permission change that
+ * alters the assembled text moves the key.
+ *
+ * Every other component is retained namespacing: it can only cause misses,
+ * never let two different prompts share an entry. The model, provider,
+ * thinking flag and image digests name inputs the text does not carry; the
+ * question, doc IDs, external URLs, reference text, deep-search flag and
+ * assembly counts are already reflected in the text.
  *
  * When `provider` is supplied (issue #217), it is folded into the hash so
  * that admin flips of the `chat` use-case provider do not serve a stale
