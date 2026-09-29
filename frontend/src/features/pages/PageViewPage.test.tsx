@@ -127,10 +127,14 @@ vi.mock('../../shared/components/article/Editor', async () => {
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
-    getDraft: () => mockDraftContent,
-    clearDraft: vi.fn(),
   };
 });
+
+vi.mock('../../shared/lib/editor-drafts', async () => ({
+  ...(await vi.importActual<typeof import('../../shared/lib/editor-drafts')>('../../shared/lib/editor-drafts')),
+  readDraft: () => mockDraftContent,
+  clearDraft: vi.fn(),
+}));
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,

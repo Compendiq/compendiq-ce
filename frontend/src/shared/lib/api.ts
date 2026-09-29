@@ -1,6 +1,7 @@
 import { LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
+import { discardDraftsOnSignOut } from './editor-drafts';
 
 const API_BASE = '/api';
 
@@ -291,9 +292,13 @@ function messageFromErrorBody(
  * backend's marked busy 503: the server could not revoke anything and kept the
  * cookie, so the session stays and this rejects with an ApiError the caller
  * shows, leaving a retry possible.
+ *
+ * A completed sign-out also discards the user's local editor drafts, so the
+ * next account in this browser cannot be offered them. Other session loss
+ * (plain `clearAuth()`) keeps them for the same user's next sign-in.
  */
 export async function logoutApi(): Promise<void> {
-  const { accessToken } = useAuthStore.getState();
+  const { accessToken, user } = useAuthStore.getState();
   let res: Response | null = null;
   try {
     const headers: HeadersInit = {};
@@ -313,5 +318,6 @@ export async function logoutApi(): Promise<void> {
   if (res && await isMarkedBusy(res, LOGOUT_BUSY_CODE)) {
     throw new ApiError(503, 'Sign-out did not complete. Please try again.', LOGOUT_BUSY_CODE);
   }
+  discardDraftsOnSignOut(user?.id ?? null);
   useAuthStore.getState().clearAuth();
 }

@@ -31,7 +31,8 @@ import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
-import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, EditorContextToolbars } from '../../shared/components/article/Editor';
+import { clearDraft, pageDraftKey, readDraft } from '../../shared/lib/editor-drafts';
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
@@ -131,7 +132,7 @@ export function PageViewPage() {
   });
 
   const contentRef = useRef<HTMLDivElement>(null);
-  const draftKey = id ? `page-${id}` : undefined;
+  const draftKey = id ? pageDraftKey(id) : undefined;
 
   const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
@@ -295,7 +296,7 @@ export function PageViewPage() {
   // left open across navigation (e.g. Cancel then browser-Back) would run
   // its confirm action against page B's draftKey/id — clearing page B's
   // draft or trashing page B. Draft state is intentionally NOT cleared
-  // here: the per-page localStorage draft is keyed by id and its
+  // here: the per-page localStorage draft is keyed by account and id and its
   // restore-on-edit feature must survive navigation.
   useEffect(() => {
     if (previousPageIdRef.current !== id) {
@@ -471,7 +472,7 @@ export function PageViewPage() {
       setEditing(true);
       return;
     }
-    const draft = getDraft(`page-${id}`);
+    const draft = draftKey ? readDraft(draftKey) : null;
     if (draft && draft !== page.bodyHtml) {
       // Defer edit mode until the user decides in the ConfirmDialog below:
       // confirm restores the draft, the labeled cancel action edits the
@@ -482,7 +483,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave]);
+  }, [id, page, collabConfig?.enabled, draftKey, captureScrollOffset, contentWriteRefusal, rejectStartEditingDuringSave]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;

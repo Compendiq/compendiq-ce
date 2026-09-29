@@ -73,6 +73,7 @@ import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar
 import { InlineCompletionExtension } from './InlineCompletionExtension';
 import { SpellcheckExtension } from './SpellcheckExtension';
 import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
+import { beginDraftEdit, persistDraft, type PendingDraft } from '../../lib/editor-drafts';
 import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
 import {
   getClientInferenceManager,
@@ -333,7 +334,10 @@ interface EditorProps {
   onChange?: (dirty: boolean) => void;
   editable?: boolean;
   placeholder?: string;
-  /** Key for localStorage auto-save (e.g. "page-draft-12345"). Omit to disable. */
+  /**
+   * Logical draft name for local auto-save (e.g. `pageDraftKey(id)`), stored
+   * per signed-in account by `shared/lib/editor-drafts`. Omit to disable.
+   */
   draftKey?: string;
   /** Remove the nm-card wrapper (use inside an already-styled card). Default false. */
   naked?: boolean;
@@ -647,28 +651,6 @@ async function rewriteHtmlImageSrcs(
 
 const AUTO_SAVE_DELAY = 2000;
 
-// eslint-disable-next-line react-refresh/only-export-components
-export function getDraft(key: string): string | null {
-  try {
-    return localStorage.getItem(`draft:${key}`);
-  } catch {
-    return null;
-  }
-}
-
-// Keys whose pending unmount-flush must be suppressed because the parent
-// explicitly cleared the draft (page saved or edit cancelled). Prevents the
-// #877 flush-on-unmount from resurrecting a draft the user just discarded.
-const suppressedFlushKeys = new Set<string>();
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function clearDraft(key: string): void {
-  try {
-    localStorage.removeItem(`draft:${key}`);
-  } catch { /* ignore */ }
-  suppressedFlushKeys.add(key);
-}
-
 function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
@@ -718,10 +700,10 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
 
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // draftKey of a debounced draft awaiting write, so unmount can flush it
-  // (#877). We store only the key and serialize the editor lazily at flush
-  // time (#954) rather than snapshotting getHTML() on every keystroke.
-  const pendingDraftRef = useRef<string | null>(null);
+  // Debounced draft awaiting write, so unmount can flush it (#877). It holds
+  // the account scope captured when the edit was made, and the editor is
+  // serialized lazily at write time (#954) rather than on every keystroke.
+  const pendingDraftRef = useRef<PendingDraft | null>(null);
   // Ref for the editor instance so async paste/drop handlers can insert images
   const editorRef = useRef<EditorType | null>(null);
   // Keep pageId in a ref so editorProps closures see the latest value
@@ -782,38 +764,30 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   const saveDraft = useCallback(() => {
     if (!draftKey) return;
-    // Fresh edits mean there IS unsaved work again — allow it to be flushed.
-    suppressedFlushKeys.delete(draftKey);
-    pendingDraftRef.current = draftKey;
-    if (timerRef.current) clearTimeout(timerRef.current);
+    clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    const pending = beginDraftEdit(draftKey);
+    pendingDraftRef.current = pending;
+    if (!pending) return;
     timerRef.current = setTimeout(() => {
-      // Serialize lazily here (once per debounce window) instead of on every
-      // keystroke (#954). editorRef is still live — the timer only fires while
-      // mounted; the unmount path clears it and flushes separately below.
-      try {
-        const html = editorRef.current?.getHTML();
-        if (html != null) localStorage.setItem(`draft:${draftKey}`, html);
-      } catch { /* quota exceeded — ignore */ }
+      // editorRef is still live — the timer only fires while mounted; the
+      // unmount path clears it and flushes separately below.
+      persistDraft(pending, () => editorRef.current?.getHTML());
       pendingDraftRef.current = null;
       timerRef.current = undefined;
     }, AUTO_SAVE_DELAY);
   }, [draftKey]);
 
   // Flush any pending debounced draft on unmount so navigating away within
-  // the AUTO_SAVE_DELAY window still persists the last edit (#877). Skip keys
-  // the parent explicitly cleared (save/cancel) to avoid resurrecting a
-  // discarded draft. Uses refs only, so [] deps are correct.
+  // the AUTO_SAVE_DELAY window still persists the last edit (#877).
+  // persistDraft drops it if the parent cleared the draft (save/cancel) or the
+  // user signed out since the edit. Uses refs only, so [] deps are correct.
   useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    const pendingKey = pendingDraftRef.current;
-    if (pendingKey && !suppressedFlushKeys.has(pendingKey)) {
-      // This cleanup runs before useEditor's own teardown, so editorRef still
-      // points at a live editor we can serialize (#954).
-      try {
-        const html = editorRef.current?.getHTML();
-        if (html != null) localStorage.setItem(`draft:${pendingKey}`, html);
-      } catch { /* quota exceeded — ignore */ }
-    }
+    clearTimeout(timerRef.current);
+    const pending = pendingDraftRef.current;
+    // This cleanup runs before useEditor's own teardown, so editorRef still
+    // points at a live editor we can serialize (#954).
+    if (pending) persistDraft(pending, () => editorRef.current?.getHTML());
     pendingDraftRef.current = null;
   }, []);
 
