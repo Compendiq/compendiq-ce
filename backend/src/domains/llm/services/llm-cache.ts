@@ -55,12 +55,20 @@ export function buildLlmCacheKey(
 
 /**
  * Build a cache key for a RAG Q&A call.
- * Based on: model + question + sorted top-K doc IDs + optional sub-page context.
+ * Based on: model + question + sorted top-K doc IDs + the prompt text as sent.
  * This means the cache automatically invalidates when documents are re-embedded
  * (because the top-K results will change).
  *
- * The `includeSubPages` and `pageId` parameters ensure that identical questions
- * produce different cache keys when sub-page context is toggled on/off.
+ * `prompt` is REQUIRED because the answer cache is shared across users while
+ * the prompt is assembled per caller: the page tree behind `pageId`, the
+ * caller's custom system prompt, fetched external docs and web results all
+ * depend on who asks and what they may read. A key that names those inputs
+ * (a page id, a URL list) instead of carrying what they produced served one
+ * caller's answer, grounded in a private or restricted page tree, to a caller
+ * whose own assembly had excluded it. Two callers share an entry only when
+ * the text sent to the model is identical, so a hit can
+ * never widen the current caller's grounding, and an edit or a permission
+ * change that alters the assembled text moves the key.
  *
  * When `provider` is supplied (issue #217), it is folded into the hash so
  * that admin flips of the `chat` use-case provider do not serve a stale
@@ -70,9 +78,9 @@ export function buildRagCacheKey(
   model: string,
   question: string,
   docIds: string[],
-  options?: {
-    includeSubPages?: boolean;
-    pageId?: string;
+  options: {
+    /** The system and user message text exactly as sent to the model. */
+    prompt: { system: string; user: string };
     externalUrls?: string[];
     searchWeb?: boolean;
     provider?: string;
@@ -132,26 +140,26 @@ export function buildRagCacheKey(
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
-  const subPageSuffix = options?.includeSubPages && options?.pageId
-    ? `subpages:${options.pageId}`
-    : '';
-  const externalSuffix = options?.externalUrls?.length
+  const promptSuffix = `prompt:${createHash('sha256')
+    .update(JSON.stringify([options.prompt.system, options.prompt.user]))
+    .digest('hex')}`;
+  const externalSuffix = options.externalUrls?.length
     ? `ext:${[...options.externalUrls].sort().join(',')}`
     : '';
-  const webSuffix = options?.searchWeb ? 'web:1' : '';
-  const providerSuffix = options?.provider ? `provider:${options.provider}` : '';
+  const webSuffix = options.searchWeb ? 'web:1' : '';
+  const providerSuffix = options.provider ? `provider:${options.provider}` : '';
   // Thinking-on responses are slower and reason differently — they must live
   // in a separate cache namespace so a prior thinking-off answer can't be
   // replayed when the user toggles Think on (and vice versa).
-  const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
-  const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
-  const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
-  const deepSuffix = options?.deepSearch ? 'deep:1' : '';
-  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
-  const retrievedImagesSuffix = options?.retrievedImages ? `rimg:${options.retrievedImages}` : '';
-  const referenceSuffix = options?.referenceText ? `ref:${options.referenceText}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
+  const thinkingSuffix = options.thinking ? 'think:1' : '';
+  const contextSuffix = options.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
+  const assembledSuffix = options.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
+  const pinnedSuffix = options.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
+  const deepSuffix = options.deepSearch ? 'deep:1' : '';
+  const imageSuffix = options.imageHash ? `img:${options.imageHash}` : '';
+  const retrievedImagesSuffix = options.retrievedImages ? `rimg:${options.retrievedImages}` : '';
+  const referenceSuffix = options.referenceText ? `ref:${options.referenceText}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
 }
 
 export class LlmCache {

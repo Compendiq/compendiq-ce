@@ -103,7 +103,9 @@ sequenceDiagram
         BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid / duplicate bytes / over the base64 budget
         note right of BE: parts order: text, then the USER's own attachment,<br/>then the retrieved ones#59; ONE system sentence, and only when<br/>a picture really was attached#59; any gate failing = text-only and<br/>UNQUALIFIED (D8): no sentence, no caveat, no degradation copy#59;<br/>retrieved images NEVER join otherGrounding — the pick runs AFTER<br/>the refusal decision, so a refused turn reads no bytes
     end
+    BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails, tree, docs, reference)
     note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL.<br/>#35;1115 P4 adds the ATTACHED-IMAGE identity for the same reason:<br/>the doc-id list cannot see whether the model could SEE those pages
+    note right of BE: the key carries the PROMPT TEXT AS SENT (system + user),<br/>never the request's pageId: the page tree, custom prompt and<br/>fetched docs are assembled per caller, so a hit needs the<br/>same authorized text and never widens the caller's grounding
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
@@ -112,7 +114,6 @@ sequenceDiagram
     else miss (stampede lock)
         BE->>CACHE: SET lock UUID NX EX 120
         CACHE-->>BE: unique acquisition token<br/>(SET NX EX)
-        BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
         BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
         BE->>PROV: streamChat(config, resolvedModel, messages)
         loop chunks
@@ -120,7 +121,7 @@ sequenceDiagram
             BE-->>FE: SSE { content: delta }
         end
         PROV-->>BE: done
-        BE->>CACHE: setCachedResponse(key, answer)
+        BE->>CACHE: setCachedResponse(key, answer)<br/>(history-free asks only — a follow-up is<br/>grounded in the asker's own thread)
         BE->>CONV: append user turn + answer + sources (atomic jsonb ||)
         BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
         BE-->>FE: SSE { done:true, conversationId, sources }
@@ -142,6 +143,28 @@ continuations descending from the frame it is called in, so entering it after
 an await would leave the route handler without the scope and the memo dead at
 runtime (#899). The memoised wrapper falls back to the raw resolver outside a
 scope (background workers, tests that skip the opt-in).
+
+### Answer-cache scope
+
+The answer cache (`kb:llm:*`) is shared by every caller, but the prompt is not:
+the page tree behind `pageId` passes the caller's own page gate
+(`userCanAccessPage` on the root, `visiblePagesPredicate` on every descendant,
+so private standalone pages and restricted pages drop out per caller), the
+system prompt carries the caller's custom `ask` prompt, and external docs and
+web results are whatever this request fetched. So `buildRagCacheKey` requires
+the **system and user message text as sent** and hashes it into the key; it no
+longer carries `includeSubPages`/`pageId`. Keyed on the request's `pageId`, a
+caller whose assembly had excluded a private or restricted tree was served the
+answer an authorized caller got from that tree. Keyed on the text, two callers
+share an entry only when the model saw the same thing, so a hit never widens
+the current caller's grounding, while callers with identical authorized context
+still share it. An edit or a permission change that alters the assembled text
+moves the key, so it is never answered from content the caller can no longer
+read. The prompt is therefore built before the lookup, below the refusal gate
+and the #1115 P4 pick. Only a history-free ask writes the cache (the same
+condition that reads it): a follow-up is grounded in the asker's own earlier
+turns, which the key does not carry. The key change cold-starts every
+deployment's answer cache once, for one `LLM_CACHE_TTL`.
 
 ### Score semantics (#1117)
 

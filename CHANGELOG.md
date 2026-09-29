@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restore answer 404 instead of 403; a collaboration join closes 4404 instead
   of 4403 (mid-session revocation still closes 4403); watching an unreadable
   or missing page answers 404.
+- **The shared AI answer cache no longer replays answers from pages the
+  asker cannot read.** `POST /api/llm/ask` builds its page-tree context per
+  user (private standalone pages and restricted pages drop out), but the
+  cached answer was keyed on the requested page id. A user who asked the same
+  question with the same page selected received the answer another user had
+  generated from content they may not read, and it was saved to their
+  conversation. Cached answers are now keyed on the exact prompt the model
+  receives, so a cached answer is served only when it was generated from the
+  same context; users with the same readable context still share cached
+  answers. Edits and permission changes that change that context no longer
+  hit an older answer. Follow-up questions in an existing conversation are no
+  longer written to the shared cache. Existing cached answers stop matching
+  once, for one `LLM_CACHE_TTL`.
 
 ### Changed
 

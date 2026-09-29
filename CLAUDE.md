@@ -1365,6 +1365,15 @@ delete; an expired holder must never delete a successor's lease. Redis acquire
 errors still fall back to unlocked generation, and the deliberate cache-wait
 timeout still generates without ownership and must not release the live holder.
 
+The LLM response cache is shared across users, so its key must carry the
+prompt text the model receives, never a request field that names an input
+(a `pageId`, a URL list). `buildLlmCacheKey` hashes the system and user text;
+`buildRagCacheKey` requires `prompt: { system, user }`, because `/llm/ask`
+assembles the page tree, custom prompt and fetched docs per caller.
+Anything added to a prompt must reach that text or the key. Only history-free
+asks write the `/llm/ask` cache; a follow-up is grounded in the asker's own
+thread, which the key does not carry.
+
 Quality/Summary batch entrypoints own their local guard, Redis lease and
 `isProcessing` state for every caller, including BullMQ. Do not put locking
 back only in timer/manual wrappers: scheduled runs would reclaim live rows.
