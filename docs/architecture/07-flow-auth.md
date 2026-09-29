@@ -30,8 +30,8 @@ sequenceDiagram
         alt mismatch
             BE-->>FE: 401
         else match
-            BE->>BE: generateAccessToken() (HS256, 15m)
-            BE->>BE: generateRefreshToken() (7d)
+            BE->>BE: generateAccessToken() (HS256, typ at+jwt, 15m)
+            BE->>BE: generateRefreshToken() (typ rt+jwt, 7d)
             BE->>DB: INSERT refresh_tokens
             BE->>DB: INSERT audit_log (login_success)
             BE-->>FE: 200 { accessToken }<br/>Set-Cookie: refreshToken (httpOnly)
@@ -53,6 +53,42 @@ sequenceDiagram
     end
     FE->>FE: release lock
 ```
+
+### Token purpose (access vs refresh)
+
+Access and refresh JWTs are both HS256 with `JWT_SECRET` and issuer
+`compendiq`, so the signature alone cannot tell them apart. Each carries its
+purpose in the signed `typ` header (RFC 8725 §3.11 explicit typing):
+
+| Token | `typ` | Accepted by |
+|-------|-------|-------------|
+| Access | `at+jwt` (RFC 9068) | `verifyToken()` only |
+| Refresh | `rt+jwt` | `decodeRefreshToken()` only (rotation, logout) |
+
+- `verifyToken()` is the one bearer verifier: `fastify.authenticate`, the
+  collaboration socket's `authenticateSocket` (subprotocol or `Authorization`)
+  and the logout route's bearer lookup all go through it, and it requires
+  `typ: at+jwt`. A refresh token — live or already revoked — therefore never
+  authenticates as a bearer. This matters because the bearer path never reads
+  `refresh_tokens`: before the marker, a refresh JWT revoked by logout still
+  worked as a 7-day bearer token.
+- The refresh decoder requires `typ: rt+jwt` plus `jti` and `family`, so an
+  access token presented as the `kb_refresh` cookie gets `401`. Refresh
+  tokens issued before the marker (no `typ`, but `jti` + `family`) are still
+  accepted so existing sessions rotate — the JTI is still claimed in
+  `refresh_tokens` — and their successors carry the marker. They have all
+  expired seven days after the upgrade.
+- Access tokens issued before the marker are rejected. The SPA handles that
+  `401` like an expired token: `apiFetch`, SSE, presence and the other
+  fetchers refresh once through `refreshAccessTokenOnce()` and retry, and the
+  collaboration socket's `4401` close refreshes and reconnects. A
+  single-instance upgrade therefore costs each open tab one silent refresh.
+  During a rolling multi-instance upgrade, a refresh served by an
+  old-version instance returns an unmarked access token that new-version
+  instances reject, so some requests can fail with `401` (the user stays
+  signed in) until the rollout finishes.
+- Any new token kind signed with `JWT_SECRET` needs its own `typ` and its own
+  verifier; never verify a bearer token without `verifyToken()`.
 
 ### Refresh-token rotation (single use)
 
@@ -302,7 +338,7 @@ sequenceDiagram
     participant RB as Redis cache-bus
 
     C->>BE: request + Bearer JWT
-    BE->>BE: jose.jwtVerify (HS256)
+    BE->>BE: jose.jwtVerify (HS256, typ at+jwt)
     BE->>UC: getUserSecurityState(sub)
     alt cache fresh (< 30s)
         UC-->>BE: cached state (Map lookup, no I/O)
