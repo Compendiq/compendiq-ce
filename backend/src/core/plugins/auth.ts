@@ -44,6 +44,16 @@ if (ACCESS_TOKEN_EXPIRY !== CONFIGURED_ACCESS_TOKEN_EXPIRY) {
 }
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
 
+// Access and refresh tokens share one HS256 secret and issuer, so each
+// carries an explicit `typ` header naming its purpose (RFC 8725 §3.11), and
+// each verifier requires its own: a refresh token, live or revoked, must
+// never authenticate as a bearer access token. The header sits in the
+// signed JOSE header, so it cannot be changed without the secret. Access
+// tokens use RFC 9068's registered `at+jwt`; `rt+jwt` has no registration
+// and only has to differ from it.
+const ACCESS_TOKEN_TYPE = 'at+jwt';
+const REFRESH_TOKEN_TYPE = 'rt+jwt';
+
 interface JwtPayload {
   sub: string;
   username: string;
@@ -165,7 +175,7 @@ function getJwtSecret(): Uint8Array {
 
 export async function generateAccessToken(payload: JwtPayload): Promise<string> {
   return new jose.SignJWT({ username: payload.username, role: payload.role })
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader({ alg: 'HS256', typ: ACCESS_TOKEN_TYPE })
     .setSubject(payload.sub)
     .setIssuer(JWT_ISSUER)
     .setExpirationTime(ACCESS_TOKEN_EXPIRY)
@@ -204,7 +214,7 @@ async function signRefreshToken(
     jti,
     family,
   })
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader({ alg: 'HS256', typ: REFRESH_TOKEN_TYPE })
     .setSubject(payload.sub)
     .setIssuer(JWT_ISSUER)
     .setExpirationTime('7d')
@@ -212,9 +222,16 @@ async function signRefreshToken(
   return { token, jti, family, expiresAt };
 }
 
+/**
+ * Verifies a bearer access token. Only a token issued by
+ * generateAccessToken() passes: the `typ` check rejects refresh tokens and
+ * every token minted without the access marker, including access tokens
+ * issued before the marker existed (the SPA refreshes once on that 401).
+ */
 export async function verifyToken(token: string): Promise<JwtPayload> {
   const { payload } = await jose.jwtVerify(token, getJwtSecret(), {
     issuer: JWT_ISSUER,
+    typ: ACCESS_TOKEN_TYPE,
   });
   return {
     sub: payload.sub as string,
@@ -224,7 +241,7 @@ export async function verifyToken(token: string): Promise<JwtPayload> {
 }
 
 async function decodeRefreshToken(token: string): Promise<RefreshTokenPayload> {
-  const { payload } = await jose.jwtVerify(token, getJwtSecret(), {
+  const { payload, protectedHeader } = await jose.jwtVerify(token, getJwtSecret(), {
     issuer: JWT_ISSUER,
   });
 
@@ -233,6 +250,15 @@ async function decodeRefreshToken(token: string): Promise<RefreshTokenPayload> {
 
   if (!jti || !family) {
     throw new Error('Refresh token missing JTI or family');
+  }
+
+  // Refresh tokens issued before the purpose marker carry no `typ` at all.
+  // They stay accepted so existing sessions keep rotating (the JTI is still
+  // claimed in refresh_tokens) and their successors carry the marker. Every
+  // such token has expired 7 days after the marker shipped; then this
+  // exception can go.
+  if (protectedHeader.typ !== REFRESH_TOKEN_TYPE && protectedHeader.typ !== undefined) {
+    throw new Error('Token is not a refresh token');
   }
 
   return {
