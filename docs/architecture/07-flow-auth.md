@@ -290,10 +290,15 @@ account signing in to the same browser shares, so they are scoped to the
 signed-in user's id (`shared/lib/editor-drafts.ts`, GHSA-r652-53hc-h6jh) and
 follow a different rule from the cache wipe. A **completed explicit sign-out**
 (`logoutApi()` past the `logout_busy` check) deletes the signing-out user's
-drafts plus any legacy unscoped `draft:*` key and advances a sign-out epoch,
-kept in memory and in `localStorage` so every tab sees it; a pending autosave
-or unmount flush captured before that epoch, or by a different user than the
-one now signed in, is dropped instead of written. Any other session loss (a
+drafts plus any legacy unscoped `draft:*` key, advances a sign-out epoch and
+sets a per-user signed-out marker, both kept in `localStorage` so every tab
+sees them (the epoch also in memory). A pending autosave or unmount flush
+captured before that epoch, for a user carrying the marker, or by a different
+user than the one now signed in, is dropped instead of written, and no draft
+edit starts for a marked user — so a tab that has not yet received the
+`logout` message cannot write the user's draft back. The marker is cleared
+when that user next signs in (`setAuth` for a user who was not already
+signed in). Any other session loss (a
 refresh that finds the session gone, an expired token) keeps the user's
 drafts — and still flushes the pending one into that user's scope — so the
 same user can restore them after signing back in. Legacy unscoped keys are

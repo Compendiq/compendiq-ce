@@ -16,10 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Drafts are now stored per user id and only ever offered to that user.
   Signing out from the account menu now **discards that user's unsaved local
   drafts** (the sign-out confirmation does not warn about them), and no
-  pending autosave can recreate them afterwards, in any tab. A session that
-  ends without a sign-out (expiry, a failed refresh) keeps them for the same
-  user's next sign-in. Drafts saved by earlier versions have no owner: they
-  are deleted at app start and are never offered.
+  pending autosave or edit still in flight in another tab can recreate them.
+  A session that ends without a sign-out (expiry, a failed refresh) keeps
+  them for the same user's next sign-in. Drafts saved by earlier versions
+  have no owner: they are deleted at app start and are never offered.
 - **Page restrictions now apply to every non-RAG read.** A Confluence page
   with custom permissions (`inherit_perms = false` plus page ACEs, from the
   admin access-control routes, the Enterprise bulk route or restriction sync)

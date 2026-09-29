@@ -23,6 +23,25 @@ function writeDraftAs(user: typeof ALICE, draftKey: string, html: string) {
   persistDraft(pending, () => html);
 }
 
+/**
+ * A second tab: fresh module instances sharing this origin's storage, whose
+ * store rehydrates the persisted auth blob. Static imports cannot give a
+ * second instance of the same module, hence the dynamic import.
+ */
+async function openSecondTab() {
+  vi.resetModules();
+  return import('./editor-drafts');
+}
+
+function storedValuesContaining(text: string): string[] {
+  const hits: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key && localStorage.getItem(key)?.includes(text)) hits.push(key);
+  }
+  return hits;
+}
+
 beforeEach(() => {
   localStorage.clear();
 });
@@ -71,15 +90,36 @@ describe('editor drafts', () => {
     const pending = beginDraftEdit('page-4');
     if (!pending) throw new Error('expected a signed-in draft scope');
 
-    // A second tab: fresh module instances sharing this origin's storage,
-    // whose store rehydrates Alice from the persisted auth blob.
-    vi.resetModules();
-    const otherTab = await import('./editor-drafts');
+    const otherTab = await openSecondTab();
     otherTab.discardDraftsOnSignOut(ALICE.id);
 
     // This tab has not processed the logout yet: Alice is still signed in here.
     persistDraft(pending, () => '<p>resurrected</p>');
     expect(readDraft('page-4')).toBeNull();
+  });
+
+  it('refuses an edit a tab starts after another tab signed the same user out', async () => {
+    signIn(ALICE);
+    const otherTab = await openSecondTab();
+    otherTab.discardDraftsOnSignOut(ALICE.id);
+
+    // This tab has not processed the logout yet, so Alice still types here…
+    const pending = beginDraftEdit('page-6');
+    // …then the logout message arrives and the editor unmounts and flushes.
+    useAuthStore.getState().clearAuth();
+    if (pending) persistDraft(pending, () => '<p>late keystroke</p>');
+
+    expect(storedValuesContaining('late keystroke')).toEqual([]);
+  });
+
+  it('keeps drafts again once the signed-out user signs back in', async () => {
+    signIn(ALICE);
+    const otherTab = await openSecondTab();
+    otherTab.discardDraftsOnSignOut(ALICE.id);
+    useAuthStore.getState().clearAuth();
+
+    writeDraftAs(ALICE, 'page-7', '<p>after sign-in</p>');
+    expect(readDraft('page-7')).toBe('<p>after sign-in</p>');
   });
 
   it('purges legacy unscoped drafts and nothing else', () => {
