@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question with the same page selected received the answer another user had
   generated from content they may not read, and it was saved to their
   conversation. Cached answers are now keyed on the exact prompt the model
-  receives, so a cached answer is served only when it was generated from the
+  receives, including the exact bytes of any knowledge-base images shown to
+  it, so a cached answer is served only when it was generated from the
   same context; users with the same readable context still share cached
   answers. Edits and permission changes that change that context no longer
   hit an older answer. Follow-up questions in an existing conversation are no

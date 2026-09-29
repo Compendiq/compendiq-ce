@@ -160,7 +160,9 @@ share an entry only when the model saw the same thing, so a hit never widens
 the current caller's grounding, while callers with identical authorized context
 still share it. An edit or a permission change that alters the assembled text
 moves the key, so it is never answered from content the caller can no longer
-read. The prompt is therefore built before the lookup, below the refusal gate
+read. Image parts are not text, so they enter by content identity: the
+user's attachment as `imageHash`, the retrieved images as the SHA-256 of the
+bytes sent. The prompt is built before the lookup, below the refusal gate
 and the #1115 P4 pick. Only a history-free ask writes the cache (the same
 condition that reads it): a follow-up is grounded in the asker's own earlier
 turns, which the key does not carry. The key change cold-starts every
@@ -1579,7 +1581,10 @@ SEE them, so without it a vision-capable model's image-augmented answer and a
 text-only model's answer over the same pages share one key for the TTL — as do
 the same model's answers either side of an admin moving the cap, or of a
 picture being deleted from one of those pages. It is a count plus a hash of
-the `(pageId, store, key, size)` tuples, and `undefined` when nothing was
+the `(pageId, store, key, sha256)` tuples — the SHA-256 of the bytes actually
+sent, so a picture replaced by a different one of the same size is a
+different key (it was keyed on the byte length until the answer-cache scope
+fix) — and `undefined` when nothing was
 attached, which keeps "no pictures" from colliding with a future "0 pictures".
 It does **not** preserve pre-P4 keys: `hashLlmInputs` writes a `\x00`
 separator per component, so a 15th component moves every digest whether or not

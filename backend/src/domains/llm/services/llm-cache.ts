@@ -111,7 +111,7 @@ export function buildRagCacheKey(
     /**
      * #1115 P4: the RETRIEVED images the request actually carried, as
      * `retrievedImagesCacheComponent` renders them (count + a hash of the
-     * page/store/key/size tuples), or `undefined` when none were sent.
+     * page/store/key/content-digest tuples), or `undefined` when none were sent.
      *
      * The doc-id component above says which pages ground the answer and
      * nothing about whether the model could SEE them, so without this a

@@ -1370,7 +1370,9 @@ prompt text the model receives, never a request field that names an input
 (a `pageId`, a URL list). `buildLlmCacheKey` hashes the system and user text;
 `buildRagCacheKey` requires `prompt: { system, user }`, because `/llm/ask`
 assembles the page tree, custom prompt and fetched docs per caller.
-Anything added to a prompt must reach that text or the key. Only history-free
+Anything added to a prompt must reach that text or the key; image parts enter
+by the digest of their bytes (`imageHash`, the retrieved images' `sha256`),
+never by name or size. Only history-free
 asks write the `/llm/ask` cache; a follow-up is grounded in the asker's own
 thread, which the key does not carry.
 
