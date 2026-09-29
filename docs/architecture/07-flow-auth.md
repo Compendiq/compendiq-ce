@@ -81,8 +81,12 @@ purpose in the signed `typ` header (RFC 8725 §3.11 explicit typing):
 - Access tokens issued before the marker are rejected. The SPA handles that
   `401` like an expired token: `apiFetch`, SSE, presence and the other
   fetchers refresh once through `refreshAccessTokenOnce()` and retry, and the
-  collaboration socket's `4401` close refreshes and reconnects. An upgrade
-  therefore costs each open tab one silent refresh.
+  collaboration socket's `4401` close refreshes and reconnects. A
+  single-instance upgrade therefore costs each open tab one silent refresh.
+  During a rolling multi-instance upgrade, a refresh served by an
+  old-version instance returns an unmarked access token that new-version
+  instances reject, so some requests can fail with `401` (the user stays
+  signed in) until the rollout finishes.
 - Any new token kind signed with `JWT_SECRET` needs its own `typ` and its own
   verifier; never verify a bearer token without `verifyToken()`.
 

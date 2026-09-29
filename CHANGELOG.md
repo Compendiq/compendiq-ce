@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker, and `/api/auth/refresh` refuses access tokens. Access tokens issued
   before this change are refused, and open tabs refresh them silently once.
   Unmarked refresh tokens from existing sessions still rotate into marked
-  ones, so nobody is signed out.
+  ones, so nobody is signed out. During a rolling multi-instance upgrade, a
+  refresh answered by an instance still on the old version returns an
+  unmarked access token that upgraded instances refuse, so some requests can
+  fail with `401` (without signing the user out) until the rollout finishes.
 
 - **Page restrictions now apply to every non-RAG read.** A Confluence page
   with custom permissions (`inherit_perms = false` plus page ACEs, from the

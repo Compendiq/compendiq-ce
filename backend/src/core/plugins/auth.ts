@@ -256,7 +256,7 @@ async function decodeRefreshToken(token: string): Promise<RefreshTokenPayload> {
   // They stay accepted so existing sessions keep rotating (the JTI is still
   // claimed in refresh_tokens) and their successors carry the marker. Every
   // such token has expired 7 days after the marker shipped; then this
-  // exception can go.
+  // exception can go (#1683).
   if (protectedHeader.typ !== REFRESH_TOKEN_TYPE && protectedHeader.typ !== undefined) {
     throw new Error('Token is not a refresh token');
   }
