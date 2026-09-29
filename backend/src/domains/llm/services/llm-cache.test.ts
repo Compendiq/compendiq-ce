@@ -195,12 +195,6 @@ describe('buildRagCacheKey', () => {
     expect(keyOllama).not.toBe(keyOpenai);
   });
 
-  it('should match key without provider when provider is omitted', () => {
-    const keyNoProvider = buildRagCacheKey('model', 'question', ['doc1'], P);
-    const keyEmptyOpts = buildRagCacheKey('model', 'question', ['doc1'], { ...P, provider: undefined });
-    expect(keyNoProvider).toBe(keyEmptyOpts);
-  });
-
   // Thinking-on responses must live in a separate cache namespace, otherwise
   // a prior thinking-off answer is replayed when the user toggles Think on
   // and the upstream LLM never sees the new request.

@@ -60,14 +60,14 @@ function sseEvents(body: string): SseEvent[] {
     .map((line) => JSON.parse(line.slice(6)) as SseEvent);
 }
 
-async function createUser(name: string): Promise<User> {
+async function createUser(name: string, role: 'user' | 'admin' = 'user'): Promise<User> {
   const result = await query<{ id: string }>(
-    `INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'user') RETURNING id`,
-    [name, `${name}@test`],
+    `INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', $3) RETURNING id`,
+    [name, `${name}@test`, role],
   );
   const id = result.rows[0]!.id;
   await query('INSERT INTO user_settings (user_id) VALUES ($1)', [id]);
-  return { id, token: await generateAccessToken({ sub: id, username: name, role: 'user' }) };
+  return { id, token: await generateAccessToken({ sub: id, username: name, role }) };
 }
 
 /** A space role carrying `llm:query` — the route's global permission. */
@@ -108,12 +108,13 @@ async function insertConfluencePage(
   return result.rows[0]!.id;
 }
 
-async function insertUserAce(pageId: number, userId: string): Promise<void> {
-  await query(
+async function insertUserAce(pageId: number, userId: string): Promise<number> {
+  const result = await query<{ id: number }>(
     `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
-     VALUES ('page', $1, 'user', $2, 'read')`,
+     VALUES ('page', $1, 'user', $2, 'read') RETURNING id`,
     [pageId, userId],
   );
+  return result.rows[0]!.id;
 }
 
 async function ask(user: User, payload: Record<string, unknown>): Promise<AskResult> {
@@ -391,6 +392,42 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     const afterEdit = await ask(a, body);
     expect(afterEdit.cached).toBe(false);
     expect(afterEdit.content).toBe(PUBLIC_ONLY);
+    expect(stub.streamCalls).toBe(2);
+  });
+
+  it('does not replay a cached answer to its own asker after that asker\'s ACE is revoked', async () => {
+    const a = await createUser('ask-cache-revoked');
+    const admin = await createUser('ask-cache-admin', 'admin');
+    await insertSpace('DOCS', 'confluence');
+    await grantAsker(a.id, 'DOCS');
+    const restricted = await insertConfluencePage('c-revoked', 'Revoked plan', `Revoked plan ${SECRET}`, {
+      inheritPerms: false,
+    });
+    const aceId = await insertUserAce(restricted, a.id);
+    const body = { question: QUESTION, pageId: String(restricted), includeSubPages: true, referenceText: REFERENCE };
+
+    const warmed = await ask(a, body);
+    expect(warmed.cached).toBe(false);
+    expect(warmed.content).toBe(SECRET);
+    expect(stub.streamCalls).toBe(1);
+
+    // Revoked through the admin route, which also invalidates the RBAC and
+    // page caches as it does in production.
+    const revoke = await app.inject({
+      method: 'DELETE',
+      url: `/api/access-control/${aceId}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(revoke.statusCode, revoke.body).toBe(200);
+
+    // Same user, byte-identical body, same (empty) retrieval: only the
+    // assembled prompt lost the page.
+    const again = await ask(a, body);
+    expect(again.sources).toEqual(warmed.sources);
+    expect(again.refused).toBe(false);
+    expect(again.cached).toBe(false);
+    expect(again.body).not.toContain(SECRET);
+    expect(again.content).toBe(PUBLIC_ONLY);
     expect(stub.streamCalls).toBe(2);
   });
 });
