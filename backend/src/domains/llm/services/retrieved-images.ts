@@ -156,6 +156,8 @@ export interface RetrievedImageUse {
   attachmentKey: string;
   /** RAW bytes on disk, not the base64 length. */
   bytes: number;
+  /** SHA-256 (hex) of exactly the bytes that were sent. */
+  sha256: string;
 }
 
 export interface RetrievedImagesSkipped {
@@ -430,6 +432,7 @@ export async function pickRetrievedImages(
       source: candidate.source,
       attachmentKey: candidate.key,
       bytes: resolved.bytes.length,
+      sha256: digest,
     });
   }
 
@@ -447,11 +450,15 @@ export async function pickRetrievedImages(
  * other for the TTL — and so do the same model's answers either side of an
  * admin moving the cap, or of an image being deleted from a page.
  *
- * The keys are hashed rather than concatenated because an attachment filename
- * is free-form user content and the cache key is a Redis key.
+ * Each image is identified by the digest of the bytes that were SENT, not by
+ * its size: an attachment replaced by a different picture of the same length
+ * is different evidence, and a length-keyed entry would serve the old
+ * picture's answer for the TTL. The whole component is hashed because an
+ * attachment filename is free-form user content and the cache key is a
+ * Redis key.
  */
 export function retrievedImagesCacheComponent(used: RetrievedImageUse[]): string | undefined {
   if (used.length === 0) return undefined;
-  const canonical = used.map((u) => `${u.pageId}:${u.source}:${u.attachmentKey}:${u.bytes}`).join('|');
+  const canonical = used.map((u) => `${u.pageId}:${u.source}:${u.attachmentKey}:${u.sha256}`).join('|');
   return `${used.length}-${createHash('sha256').update(canonical).digest('hex').slice(0, 16)}`;
 }
