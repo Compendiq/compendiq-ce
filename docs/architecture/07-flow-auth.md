@@ -285,6 +285,22 @@ trigger a refetch. The route sat on the loading fallback forever, *above* its
 own `<Navigate to="/login">`, and only a manual reload recovered. Mutation
 state is still cleared outright.
 
+Local (non-collaborative) editor drafts live in `localStorage`, which every
+account signing in to the same browser shares, so they are scoped to the
+signed-in user's id (`shared/lib/editor-drafts.ts`, GHSA-r652-53hc-h6jh) and
+follow a different rule from the cache wipe. A **completed explicit sign-out**
+(`logoutApi()` past the `logout_busy` check) deletes the signing-out user's
+drafts plus any legacy unscoped `draft:*` key and advances a sign-out epoch,
+kept in memory and in `localStorage` so every tab sees it; a pending autosave
+or unmount flush captured before that epoch, or by a different user than the
+one now signed in, is dropped instead of written. Any other session loss (a
+refresh that finds the session gone, an expired token) keeps the user's
+drafts — and still flushes the pending one into that user's scope — so the
+same user can restore them after signing back in. Legacy unscoped keys are
+also deleted once at app start (`main.tsx`) and are never read. The sign-out
+confirmation does not warn about unsaved editor changes; a completed sign-out
+discards them.
+
 ## Per-request revocation check (#737)
 
 `authenticate` does not trust the JWT alone: after signature verification it
