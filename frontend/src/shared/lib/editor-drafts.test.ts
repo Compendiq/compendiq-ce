@@ -122,6 +122,21 @@ describe('editor drafts', () => {
     expect(readDraft('page-7')).toBe('<p>after sign-in</p>');
   });
 
+  it("keeps drafts again once the signed-out user's live session refreshes its token", async () => {
+    signIn(ALICE);
+    const otherTab = await openSecondTab();
+    // The other tab's logout request never reached the server, so Alice's
+    // session stays live; this tab has not processed that logout yet.
+    otherTab.discardDraftsOnSignOut(ALICE.id);
+
+    // Token refresh while Alice is still authenticated here.
+    signIn(ALICE);
+    const pending = beginDraftEdit('page-8');
+    expect(pending).not.toBeNull();
+    if (pending) persistDraft(pending, () => '<p>after refresh</p>');
+    expect(readDraft('page-8')).toBe('<p>after refresh</p>');
+  });
+
   it('purges legacy unscoped drafts and nothing else', () => {
     writeDraftAs(ALICE, 'page-5', '<p>scoped</p>');
     localStorage.setItem('draft:page-5', '<p>legacy page</p>');

@@ -12,9 +12,14 @@ import { useAuthStore } from '../../stores/auth-store';
  * Lifecycle:
  * - An explicit sign-out (`discardDraftsOnSignOut`, called by `logoutApi`)
  *   deletes the signing-out user's drafts and every legacy unscoped key,
- *   advances the sign-out epoch so no pending autosave can recreate them, and
- *   marks the user signed out so no tab starts or writes a draft for them
- *   until they sign in again (`forgetDraftSignOut`, called by `setAuth`).
+ *   advances the sign-out epoch so pending autosaves are dropped, and marks
+ *   the user signed out so no draft is started or written for them until
+ *   their session is established again (`forgetDraftSignOut`, called by
+ *   `setAuth` on sign-in and token refresh). The signing-out tab is fenced
+ *   synchronously; other tabs are fenced once the epoch and marker writes are
+ *   visible to them — browsers may replicate localStorage asynchronously
+ *   between tabs in different processes, so a write in that sub-millisecond
+ *   window can survive, but only under the signed-out user's own scope.
  * - Any other session loss (refresh failure, expiry → `clearAuth`) keeps the
  *   user's drafts, so the same user can restore them after signing back in.
  * - Legacy `draft:<key>` entries written before drafts were scoped are never
@@ -171,7 +176,7 @@ export function discardDraftsOnSignOut(userId: string | null): void {
   removeDraftKeys((key) => isLegacyDraftKey(key) || (prefix !== null && key.startsWith(prefix)));
 }
 
-/** `userId` signed in: their drafts may be kept again. */
+/** `userId` has a live session (sign-in or token refresh): their drafts may be kept again. */
 export function forgetDraftSignOut(userId: string): void {
   try {
     localStorage.removeItem(signedOutMarkerKey(userId));
