@@ -34,7 +34,7 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
-import { generateAccessToken } from '../../core/plugins/auth.js';
+import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
 import { COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
@@ -199,7 +199,7 @@ async function disableCollabFlag(): Promise<void> {
 async function signExpiredToken(userId: string, username: string, role: 'user' | 'admin'): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET);
   return new jose.SignJWT({ username, role })
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader({ alg: 'HS256', typ: 'at+jwt' })
     .setSubject(userId)
     .setIssuer('compendiq')
     .setExpirationTime(Math.floor(Date.now() / 1000) - 30)
@@ -494,6 +494,22 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened).toBe(true);
     expect(closed.code).toBe(4401);
+  });
+
+  it('never authenticates a refresh JWT, live or revoked (4401)', async () => {
+    const { userId } = await createUser('collab_refresh');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const refresh = await generateRefreshToken({ sub: userId, username: 'collab_refresh', role: 'user' });
+
+    const live = await waitClose(openWhatwg(pageId, refresh.token));
+    expect(live.opened).toBe(true);
+    expect(live.code).toBe(4401);
+
+    await revokeAllUserTokens(userId);
+    const revoked = await waitClose(openWhatwg(pageId, refresh.token));
+    expect(revoked.opened).toBe(true);
+    expect(revoked.code).toBe(4401);
   });
 
   it('accepts Authorization: Bearer (Node ws) and selects only the named subprotocol', async () => {

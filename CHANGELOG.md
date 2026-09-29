@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A session that ends without a sign-out (expiry, a failed refresh) keeps
   them for the same user's next sign-in. Drafts saved by earlier versions
   have no owner: they are deleted at app start and are never offered.
+- **A refresh token no longer works as an access token.** Access and refresh
+  tokens were signed with the same key and issuer, and the bearer check did
+  not look at the token's purpose. A refresh token, including one already
+  revoked by logout, was therefore accepted as `Authorization: Bearer` on
+  protected API routes and the collaboration socket for up to seven days.
+  Each token now declares its purpose in its signed `typ` header (`at+jwt` for
+  access, `rt+jwt` for refresh). Every bearer check requires the access
+  marker, and `/api/auth/refresh` refuses access tokens. Access tokens issued
+  before this change are refused, and open tabs refresh them silently once.
+  Unmarked refresh tokens from existing sessions still rotate into marked
+  ones, so nobody is signed out. During a rolling multi-instance upgrade, a
+  refresh answered by an instance still on the old version returns an
+  unmarked access token that upgraded instances refuse, so some requests can
+  fail with `401` (without signing the user out) until the rollout finishes.
 - **Page restrictions now apply to every non-RAG read.** A Confluence page
   with custom permissions (`inherit_perms = false` plus page ACEs, from the
   admin access-control routes, the Enterprise bulk route or restriction sync)
