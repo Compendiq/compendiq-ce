@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Editor drafts are private to the account that wrote them.** The
+  non-collaborative editor's autosaved draft was stored in the browser under
+  the page alone, survived sign-out, and was offered through **Restore
+  draft?** to the next account that opened the same page in that browser.
+  Drafts are now stored per user id and only ever offered to that user.
+  Signing out from the account menu now **discards that user's unsaved local
+  drafts** (the sign-out confirmation does not warn about them). Pending
+  autosaves in the signing-out tab are fenced immediately; those in other
+  tabs are fenced once the sign-out is visible to them (browsers may
+  replicate storage between tabs with a sub-millisecond delay), and anything
+  written in that window stays under the signed-out user's own scope and is
+  never offered to another account.
+  A session that ends without a sign-out (expiry, a failed refresh) keeps
+  them for the same user's next sign-in. Drafts saved by earlier versions
+  have no owner: they are deleted at app start and are never offered.
 - **A refresh token no longer works as an access token.** Access and refresh
   tokens were signed with the same key and issuer, and the bearer check did
   not look at the token's purpose. A refresh token, including one already
@@ -23,7 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh answered by an instance still on the old version returns an
   unmarked access token that upgraded instances refuse, so some requests can
   fail with `401` (without signing the user out) until the rollout finishes.
-
 - **Page restrictions now apply to every non-RAG read.** A Confluence page
   with custom permissions (`inherit_perms = false` plus page ACEs, from the
   admin access-control routes, the Enterprise bulk route or restriction sync)

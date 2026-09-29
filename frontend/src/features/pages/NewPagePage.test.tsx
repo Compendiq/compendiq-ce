@@ -158,7 +158,6 @@ vi.mock('../../shared/components/article/Editor', async () => {
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
-    clearDraft: vi.fn(),
   };
 });
 
