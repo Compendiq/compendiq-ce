@@ -295,10 +295,16 @@ sets a per-user signed-out marker, both kept in `localStorage` so every tab
 sees them (the epoch also in memory). A pending autosave or unmount flush
 captured before that epoch, for a user carrying the marker, or by a different
 user than the one now signed in, is dropped instead of written, and no draft
-edit starts for a marked user — so a tab that has not yet received the
-`logout` message cannot write the user's draft back. The marker is cleared
-when that user next signs in (`setAuth` for a user who was not already
-signed in). Any other session loss (a
+edit starts for a marked user. In the signing-out tab this fence is
+synchronous. Another tab that has not yet received the `logout` message is
+fenced as soon as the epoch and marker writes are visible to it; browsers may
+replicate `localStorage` asynchronously between tabs in different processes,
+so a write landing in that sub-millisecond window can survive — only ever
+under the signed-out user's own scope, never offered to another account. The
+marker is cleared whenever that user's session is established again
+(`setAuth`, on sign-in and on token refresh alike: a refresh only succeeds
+while the server session is live, e.g. when the logout request never reached
+the server). Any other session loss (a
 refresh that finds the session gone, an expired token) keeps the user's
 drafts — and still flushes the pending one into that user's scope — so the
 same user can restore them after signing back in. Legacy unscoped keys are

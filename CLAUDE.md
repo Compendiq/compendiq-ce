@@ -143,6 +143,16 @@ adopting a sibling tab's token on each acquisition; network errors and other
 reject with `RefreshUnavailableError` — callers must keep auth state on that
 rejection.
 
+**Editor drafts are per-account (GHSA-r652-53hc-h6jh).** Local editor drafts
+live in `localStorage`, shared by every account in the browser. Build and
+access draft keys only through `frontend/src/shared/lib/editor-drafts.ts`
+(`draft:u:<userId>:<key>`); nothing reads or writes a draft without a
+signed-in user. Legacy unscoped `draft:*` keys are purged and never imported.
+An explicit sign-out (`logoutApi()`, after the `logout_busy` check) discards
+the user's drafts and fences pending writes via the sign-out epoch and the
+per-user signed-out marker (cleared by `setAuth`); non-explicit session loss
+(`clearAuth()` on expiry or a failed refresh) keeps them for the same user.
+
 ## Testing & Mocks
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.

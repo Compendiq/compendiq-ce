@@ -15,8 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   draft?** to the next account that opened the same page in that browser.
   Drafts are now stored per user id and only ever offered to that user.
   Signing out from the account menu now **discards that user's unsaved local
-  drafts** (the sign-out confirmation does not warn about them), and no
-  pending autosave or edit still in flight in another tab can recreate them.
+  drafts** (the sign-out confirmation does not warn about them). Pending
+  autosaves in the signing-out tab are fenced immediately; those in other
+  tabs are fenced once the sign-out is visible to them (browsers may
+  replicate storage between tabs with a sub-millisecond delay), and anything
+  written in that window stays under the signed-out user's own scope and is
+  never offered to another account.
   A session that ends without a sign-out (expiry, a failed refresh) keeps
   them for the same user's next sign-in. Drafts saved by earlier versions
   have no owner: they are deleted at app start and are never offered.
