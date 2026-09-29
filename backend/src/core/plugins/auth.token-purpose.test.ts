@@ -11,7 +11,7 @@ import {
 } from '../../test-db-helper.js';
 import { query } from '../db/postgres.js';
 import { buildApp } from '../../app.js';
-import { generateAccessToken, generateRefreshToken, verifyToken } from './auth.js';
+import { generateAccessToken, generateRefreshToken, revokeToken, verifyToken } from './auth.js';
 import { _resetForTests } from '../services/user-security-cache.js';
 
 /**
@@ -147,6 +147,21 @@ describe.skipIf(!dbAvailable)('token purpose separation (GHSA-527x-q8px-qhhg)', 
 
     expect((await getSettings(refresh.token)).statusCode).toBe(401);
     expect((await refreshWith(refresh.token)).statusCode).toBe(401);
+  });
+
+  it('does not let a revoked refresh token, sent as bearer, log out the other sessions', async () => {
+    const user = await createUser('purpose_logout_bearer');
+    const stolen = await generateRefreshToken(claimsOf(user));
+    const other = await generateRefreshToken(claimsOf(user));
+    await revokeToken(stolen.jti);
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/api/auth/logout',
+      headers: { authorization: `Bearer ${stolen.token}` },
+    });
+    expect(logout.statusCode).toBe(200);
+    expect(await isRevoked(other.jti)).toBe(false);
   });
 
   it('rejects a legacy (unmarked) refresh token as a bearer access token', async () => {
