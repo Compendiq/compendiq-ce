@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Dependency security updates.** `nodemailer` 9.1.1 → 10.0.13 (address
+  parser denial of service, cross-transport TLS server-name reuse, malformed
+  envelope recipients); `brace-expansion` → 1.1.21 / 2.1.7 / 5.0.12 and
+  `fast-uri` → 3.1.8 (transitive). `@types/nodemailer` is dropped because
+  nodemailer 10 ships its own type declarations. Nodemailer 10 requires
+  Node.js 20+; Compendiq already requires 22+.
+
 - **Editor drafts are private to the account that wrote them.** The
   non-collaborative editor's autosaved draft was stored in the browser under
   the page alone, survived sign-out, and was offered through **Restore
