@@ -40,7 +40,6 @@ export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
-export const COLLAB_COMMIT_DUMP_TIMEOUT_MS = vitestIntOr('COLLAB_COMMIT_DUMP_TIMEOUT_MS', 2_000);
 /** Rounds allowed for the owner set to hold still before a read is refused. */
 const OWNER_CORRELATION_ATTEMPTS = 3;
 
@@ -388,7 +387,11 @@ export async function createCollabRuntime(
             if (dumpRounds.get(room.pageId)?.id === requestId) dumpRounds.delete(room.pageId);
             resolve(ok);
           };
-          timer = setTimeout(() => finish(false), COLLAB_COMMIT_DUMP_TIMEOUT_MS);
+          // Production waits 2 s. Vitest keeps that for answered rounds (a peer
+          // dump transaction queues on the page lifecycle lock, which a loaded
+          // runner can hold for longer than any short override); it is read per
+          // round so a test can shorten only a round it leaves unanswered.
+          timer = setTimeout(() => finish(false), vitestIntOr('COLLAB_COMMIT_DUMP_TIMEOUT_MS', 2_000));
           timer.unref();
           dumpRounds.set(room.pageId, {
             id: requestId, lifecycleRevision: room.lifecycleRevision, remaining, finish,

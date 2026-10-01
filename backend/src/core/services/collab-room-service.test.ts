@@ -165,6 +165,20 @@ async function namedSubscriberId(name: string): Promise<string | undefined> {
   return subscriber?.match(/(?:^| )id=(\d+)/)?.[1];
 }
 
+/**
+ * Answered rounds keep the production 2 s commit-dump deadline, which a
+ * correct round meets on a loaded runner. A round a test leaves unanswered on
+ * purpose would idle for all of it, so shorten rounds armed until restore.
+ */
+function shortenUnansweredRoundDeadline(): () => void {
+  const previous = process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS;
+  process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS = '200';
+  return () => {
+    if (previous === undefined) delete process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS;
+    else process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS = previous;
+  };
+}
+
 async function cleanupKeys(): Promise<void> {
   if (!main) return;
   if (usedPageIds.length === 0) return;
@@ -310,6 +324,9 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     const staleDoc = new Y.Doc();
     Y.applyUpdate(staleDoc, Y.encodeStateAsUpdate(runtimeB!.getRoom(pageId)!.doc));
     appendParagraph(staleDoc, 'UNRELATED_ROUND_MUST_NOT_APPLY');
+    // The cached snapshot above was an answered round; the next one waits on an
+    // owner that never answers.
+    const restoreDeadline = shortenUnansweredRoundDeadline();
     try {
       await main!.del(`collab:active:${pageId}`);
       const requestCount = observed.requests.length;
@@ -333,6 +350,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       }));
       expect(await pending).toMatchObject({ reason: 'collab_state_unavailable' });
     } finally {
+      restoreDeadline();
       await releasePageRuntime(unavailableOwner);
       staleDoc.destroy();
       await observed.subscriber.quit();
@@ -352,6 +370,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     });
     const respondingOwner = await admitPageRuntime(pageId, USER_B, 'collab_room');
     const observed = await observeSnapshotRequests(pageId, runtimeA!.podId);
+    let restoreDeadline: (() => void) | undefined;
     try {
       const pending = runtimeA!.prepareCommitSnapshot(pageId, USER_A, '0').then(
         async (snapshot) => {
@@ -361,6 +380,9 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         (error: unknown) => error,
       );
       await vi.waitFor(() => expect(observed.requests).toHaveLength(1));
+      // That round is answered below with the full deadline. The round re-armed
+      // for the grown owner set asks a joining owner that never answers.
+      restoreDeadline = shortenUnansweredRoundDeadline();
       const joiningOwner = await admitPageRuntime(pageId, USER_B, 'collab_room');
       try {
         await main!.publish(collabDocChannel(pageId), JSON.stringify({
@@ -375,6 +397,7 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         await releasePageRuntime(joiningOwner);
       }
     } finally {
+      restoreDeadline?.();
       await releasePageRuntime(respondingOwner);
       await observed.subscriber.quit();
     }
