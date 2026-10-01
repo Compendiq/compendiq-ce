@@ -441,6 +441,15 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       expect(await runtimeB!.handleInboundFrame(
         pageId, 'connected-peer', encodeSyncUpdate(Y.encodeStateAsUpdate(peerDraft)),
       )).toBe('ok');
+      // That edit debounced the peer's BYTEA persist by 2 s, the same delay as
+      // the reconnect retry above, so it fired during the rejoin's correlation
+      // round and held the page lifecycle lock past the dump deadline on a
+      // loaded host. Keeping the edit in the peer's memory also means only the
+      // round, not a persisted merge, can carry it to the cached room.
+      const peerRoom = runtimeB!.getRoom(pageId)!;
+      expect(peerRoom.persistTimer).not.toBeNull();
+      clearTimeout(peerRoom.persistTimer!);
+      peerRoom.persistTimer = null;
       // PING is ordered after the peer's publication on this same connection.
       await main!.ping();
       expect(await namedSubscriberId(name)).toBeUndefined();
@@ -450,6 +459,17 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         expect(replacementId).toBeDefined();
         expect(replacementId).not.toBe(subscriberId);
       }, { timeout: 5_000 });
+      const persisted = await query<{ doc_state: Buffer }>(
+        'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
+        [pageId],
+      );
+      const persistedDoc = new Y.Doc();
+      try {
+        Y.applyUpdate(persistedDoc, new Uint8Array(persisted.rows[0]!.doc_state));
+        expect(yDocToHtml(persistedDoc)).not.toContain('MISSED_WHILE_UNSUBSCRIBED');
+      } finally {
+        persistedDoc.destroy();
+      }
 
       let syncRead: Promise<CollabInboundResult> | undefined;
       const joined = await isolatedRuntime.attachSocket(pageId, {
