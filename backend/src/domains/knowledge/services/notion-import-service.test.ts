@@ -605,10 +605,14 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     try {
       await fileRequested.promise;
       waiter = runNotionImport({ userId, client, pageIds: ['child'], visibility: 'shared' });
-      await expect.poll(async () => (await query(
-        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2 AND NOT granted`,
+      // pg_locks is cluster-wide; scope to this database so another worker's
+      // notion import lock can never satisfy or inflate the waiter count.
+      expect(await waitForDatabaseCondition(async () => (await query(
+        `SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2 AND NOT granted
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
         [NOTION_IMPORT_LOCK_KEY, notionImportLockId(`notion-import-owner:${userId}`) >>> 0],
-      )).rows.length).toBe(1);
+      )).rows.length === 1)).toBe(true);
       releaseFile.resolve();
       const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
       expect(winnerItems[0]).toMatchObject({ status: 'success' });
@@ -3794,14 +3798,14 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     try {
       // The file has staged and the metadata/activation phase is waiting on
       // the real backup barrier. No guessed elapsed delay separates phases.
-      await expect.poll(async () => (await query<{ waiting: boolean }>(
+      expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM pg_locks
             WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted
               AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
          ) AS waiting`,
         [ATTACHMENT_SNAPSHOT_LOCK_ID, blocker],
-      )).rows[0]!.waiting).toBe(true);
+      )).rows[0]!.waiting)).toBe(true);
       const stagedNames = await readdir(pageDir);
       expect(stagedNames.some((name) => name.endsWith('.stage'))).toBe(true);
       await chmod(pageDir, 0o555);
@@ -3903,14 +3907,14 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
           'SELECT pg_backend_pid() AS pid',
         )).rows[0]!.pid;
         releaseFirstFile.resolve();
-        await expect.poll(async () => (await query<{ waiting: boolean }>(
+        expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
           `SELECT EXISTS (
              SELECT 1 FROM pg_locks
               WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted
                 AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
            ) AS waiting`,
           [ATTACHMENT_SNAPSHOT_LOCK_ID, blocker],
-        )).rows[0]!.waiting).toBe(true);
+        )).rows[0]!.waiting)).toBe(true);
         expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rows)
           .toHaveLength(1);
         expect(readFileSync(join(displacedPageDir, 'uncertain.bin'))).toEqual(
