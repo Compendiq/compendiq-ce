@@ -515,9 +515,18 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   const input = { dir, runId: 'sheet', fixture, querySetSha, armReports, controls: null, command: 'scripts/judge-arms.ts --unblind --run-id sheet', seed: 1, iterations: 200 };
   let verdictLines: string[] = [];
 
+  // Item ids are pinned and interleaved across arms (B: 0,2,4,6; C: 1,3,5,7).
+  // In production they are `randomUUID`s, and the sheet's order IS item-id
+  // order — a uniform permutation that comes out BBBBCCCC one time in
+  // C(8,4) = 70, so asserting "not grouped" on random ids was a coin flip.
+  // Pinned ids make a merge that keeps source order (BBBBCCCC) or groups by
+  // arm fail every run, instead of only when the dice say so.
+  const pinnedIds: Record<'B' | 'C', string[]> = { B: [0, 2, 4, 6].map(uuid), C: [1, 3, 5, 7].map(uuid) };
+
   beforeAll(async () => {
     for (const arm of ['B', 'C'] as const) {
-      const generated = await generateArmAnswers(stubAsk(arm), fixture, { arm });
+      const ids = [...pinnedIds[arm]];
+      const generated = await generateArmAnswers(stubAsk(arm), fixture, { arm, _itemId: () => ids.shift()! });
       writeAnswerProvenance(dir, `run-${arm}`, provenanceFor(arm, generated, writeAnswerArtifacts(dir, `run-${arm}`, generated)));
     }
   });
@@ -537,11 +546,12 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     expect(sheet.sources[0]!.provenanceSha256).toBe(sha256File(join(dir, 'provenance-run-B.json')));
     expect(sheet.mappingSha256).toBe(sha256File(join(dir, 'mapping-sheet.json')));
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
-    // The judge's file: no arm anywhere, and the rows are not grouped by arm.
+    // The judge's file: no arm anywhere, and the rows are in item-id order —
+    // not source order, not grouped by arm.
     expect(JSON.stringify(rows)).not.toMatch(/"arm"/);
+    expect(rows.map((r) => r.itemId)).toEqual([...pinnedIds.B, ...pinnedIds.C].sort());
     const mapping = JSON.parse(readFileSync(join(dir, 'mapping-sheet.json'), 'utf8')) as Mapping;
-    const armsInOrder = rows.map((r) => mapping[r.itemId]!.arm).join('');
-    expect(armsInOrder).not.toBe('BBBBCCCC');
+    expect(rows.map((r) => mapping[r.itemId]!.arm).join('')).toBe('BCBCBCBC');
     expect(JSON.parse(readFileSync(sheetPath(dir, 'sheet'), 'utf8'))).toMatchObject({ runId: 'sheet', items: 8 });
   });
 
