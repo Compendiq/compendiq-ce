@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { useClearCacheOnLogout } from './useClearCacheOnLogout';
 import { useAuthStore } from '../../stores/auth-store';
+import { useUiStore } from '../../stores/ui-store';
+import { logoutApi } from '../lib/api';
 
 function Probe() {
   useClearCacheOnLogout();
@@ -110,5 +112,30 @@ describe('useClearCacheOnLogout', () => {
 
     expect(localStorage.getItem('compendiq:last-confluence-space')).toBeNull();
     expect(localStorage.getItem('compendiq:library-recent-spaces')).toBeNull();
+  });
+
+  // The sidebar tree's selected space is persisted in `compendiq-ui`, which is
+  // shared by every account in the browser.
+  it("does not start the next account in the previous account's sidebar space", async () => {
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a', { id: 'user-a', username: 'alice', role: 'user' });
+    });
+    renderProbe(new QueryClient());
+    act(() => {
+      useUiStore.getState().setTreeSidebarSpaceKey('ALICE-PRIVATE');
+    });
+    expect(localStorage.getItem('compendiq-ui')).toContain('ALICE-PRIVATE');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+    await act(async () => {
+      await logoutApi();
+    });
+    vi.restoreAllMocks();
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: 'user-b', username: 'bob', role: 'user' });
+    });
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
+    expect(localStorage.getItem('compendiq-ui')).not.toContain('ALICE-PRIVATE');
   });
 });
