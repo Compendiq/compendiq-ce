@@ -17,11 +17,13 @@ import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createClient, type RedisClientType } from 'redis';
 import type { FastifyInstance } from 'fastify';
+import type { PoolClient } from 'pg';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
+  waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { getPool, query } from '../../core/db/postgres.js';
@@ -193,20 +195,40 @@ async function freezePage(pageId: number, actorId: string, secretTitle = 'FROZEN
   );
 }
 
-async function waitForAdvisoryWaiter(lockId: number, description: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const waiting = await query<{ waiting: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM pg_locks
-          WHERE locktype = 'advisory'
-            AND objid = $1
-            AND NOT granted
-       ) AS waiting`,
-      [lockId],
-    );
-    if (waiting.rows[0]?.waiting) return;
-  }
-  throw new Error(`request did not wait for ${description}`);
+/**
+ * Whether a request has queued behind `blockerPid` on advisory key `lockId`
+ * in `mode`, waiting on observed lock state rather than a count of probes.
+ *
+ * The old loop gave up after 200 back-to-back pg_locks SELECTs, which is no
+ * deadline at all: the request only reaches the barrier after RBAC, the
+ * admission transaction and its intent-reservation COMMIT, and those durable
+ * commits stretch under CI load while a read-only probe stays cheap. Locally
+ * the barrier was reached after ~50 probes; on a loaded CI runner 200 ran out.
+ *
+ * Pinning the waiter to the blocker's pid scopes the probe to this worker's
+ * database: pg_locks is cluster-wide and every worker runs this file's fixed
+ * lock keys, so an unpinned `objid` match could see a sibling's waiter.
+ * Returns false on timeout so the caller's `finally` releases the blocker
+ * before the assertion fails.
+ */
+async function waitForAdvisoryWaiter(
+  lockId: number,
+  mode: 'ShareLock' | 'ExclusiveLock',
+  blockerPid: number,
+): Promise<boolean> {
+  return waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_locks
+        WHERE locktype = 'advisory' AND mode = $2 AND NOT granted
+          AND classid = 0 AND objid = $1
+          AND $3 = ANY(pg_blocking_pids(pid))
+     ) AS waiting`,
+    [lockId, mode, blockerPid],
+  )).rows[0]?.waiting === true);
+}
+
+async function backendPid(client: PoolClient): Promise<number> {
+  return (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
 }
 
 /**
@@ -1052,11 +1074,16 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         parentId: String(root),
       });
       const holder = await getPool().connect();
+      let pendingDelete: Promise<{ statusCode: number }> | undefined;
       try {
         await holder.query('BEGIN');
         await holder.query('SELECT pg_advisory_xact_lock_shared($1)', [PAGE_HIERARCHY_LOCK_ID]);
-        const pendingDelete = app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
-        await waitForAdvisoryWaiter(PAGE_HIERARCHY_LOCK_ID, 'the hierarchy fence');
+        const holderPid = await backendPid(holder);
+        pendingDelete = app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+        expect(
+          await waitForAdvisoryWaiter(PAGE_HIERARCHY_LOCK_ID, 'ExclusiveLock', holderPid),
+          'request did not wait for the hierarchy fence',
+        ).toBe(true);
         await holder.query('UPDATE pages SET parent_id = $1 WHERE id = $2', [
           String(destination),
           child,
@@ -1068,8 +1095,11 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
         expect(await liveIds([root])).toEqual([]);
         expect((await liveIds([destination, child])).sort()).toEqual([destination, child].sort());
       } finally {
-        await holder.query('ROLLBACK').catch(() => undefined);
-        holder.release();
+        // Release the fence before settling the request queued on it, so a
+        // missed wait cannot leave the DELETE running into the next beforeEach.
+        const rollbackError = await holder.query('ROLLBACK').then(() => undefined, (error: Error) => error);
+        holder.release(rollbackError);
+        await Promise.allSettled(pendingDelete ? [pendingDelete] : []);
       }
     });
 
@@ -1319,32 +1349,46 @@ describe.skipIf(!available)('cascading standalone trash (#1636) — real Postgre
       const attachmentBlocker = await getPool().connect();
       const hierarchyProbe = await getPool().connect();
       let pendingDelete: Promise<{ statusCode: number }> | undefined;
+      let probeHoldsHierarchy = false;
       try {
         await attachmentBlocker.query('SELECT pg_advisory_lock($1)', [
           ATTACHMENT_SNAPSHOT_LOCK_ID,
         ]);
+        const blockerPid = await backendPid(attachmentBlocker);
         pendingDelete = app.inject({
           method: 'DELETE',
           url: `/api/pages/${page}?permanent=true`,
         });
-        await waitForAdvisoryWaiter(ATTACHMENT_SNAPSHOT_LOCK_ID, 'the attachment barrier');
+        expect(
+          await waitForAdvisoryWaiter(ATTACHMENT_SNAPSHOT_LOCK_ID, 'ShareLock', blockerPid),
+          'request did not wait for the attachment barrier',
+        ).toBe(true);
 
         const probe = await hierarchyProbe.query<{ acquired: boolean }>(
           'SELECT pg_try_advisory_lock($1) AS acquired',
           [PAGE_HIERARCHY_LOCK_ID],
         );
-        if (probe.rows[0]?.acquired) {
+        probeHoldsHierarchy = probe.rows[0]?.acquired === true;
+        if (probeHoldsHierarchy) {
           await hierarchyProbe.query('SELECT pg_advisory_unlock($1)', [
             PAGE_HIERARCHY_LOCK_ID,
           ]);
+          probeHoldsHierarchy = false;
         }
         expect(probe.rows[0]?.acquired).toBe(false);
       } finally {
-        await attachmentBlocker.query('SELECT pg_advisory_unlock($1)', [
-          ATTACHMENT_SNAPSHOT_LOCK_ID,
-        ]);
-        attachmentBlocker.release();
-        hierarchyProbe.release();
+        // Session-level locks outlive release(): a connection whose unlock did
+        // not complete is destroyed rather than pooled still holding the lock.
+        // The barrier is released before the request queued on it is settled,
+        // so a missed wait cannot leave the DELETE running into the next test.
+        const unlockError = await attachmentBlocker
+          .query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID])
+          .then(() => undefined, (error: Error) => error);
+        attachmentBlocker.release(unlockError);
+        hierarchyProbe.release(
+          probeHoldsHierarchy ? new Error('hierarchy probe still holds its session lock') : undefined,
+        );
+        await Promise.allSettled(pendingDelete ? [pendingDelete] : []);
       }
 
       const response = await pendingDelete!;
