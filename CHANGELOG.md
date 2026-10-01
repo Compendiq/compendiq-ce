@@ -14,7 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   envelope recipients); `brace-expansion` → 1.1.21 / 2.1.7 / 5.0.12 and
   `fast-uri` → 3.1.8 (transitive). `@types/nodemailer` is dropped because
   nodemailer 10 ships its own type declarations. Nodemailer 10 requires
-  Node.js 20+; Compendiq already requires 22+.
+  Node.js 20+; Compendiq already requires 22+. `fastify` 5.12.1 → 5.12.5
+  (malformed URLs reaching encapsulated not-found handlers, request body and
+  header/boolean-schema validation bypasses, HTTP/2 trailer DoS),
+  `dompurify` → 3.4.16, and the transitive `@grpc/grpc-js` → 1.14.5 and
+  `nanoid` → 3.3.19.
 
 - **Editor drafts are private to the account that wrote them.** The
   non-collaborative editor's autosaved draft was stored in the browser under
