@@ -13,7 +13,6 @@ describe('test-setup short-circuits production wall-clock timings', () => {
     expect(setup).toMatch(/COLLAB_ACTIVE_TTL_SEC \?\?= '4'/);
     expect(setup).toMatch(/COLLAB_PING_INTERVAL_MS \?\?= '100'/);
     expect(setup).toMatch(/COLLAB_EMPTY_ROOM_GRACE_MS \?\?= '200'/);
-    expect(setup).toMatch(/COLLAB_COMMIT_DUMP_TIMEOUT_MS \?\?= '200'/);
     expect(setup).toMatch(/LLM_HEALTH_TIMEOUT_MS \?\?= '50'/);
   });
 
@@ -65,7 +64,6 @@ describe('production timings are Vitest-overridable', () => {
     expect(src).toMatch(/COLLAB_ACTIVE_TTL_SEC = vitestIntOr\('COLLAB_ACTIVE_TTL_SEC', 45\)/);
     expect(src).toMatch(/COLLAB_PING_INTERVAL_MS = vitestIntOr\('COLLAB_PING_INTERVAL_MS', 15_000\)/);
     expect(src).toMatch(/COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr\('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000\)/);
-    expect(src).toMatch(/COLLAB_COMMIT_DUMP_TIMEOUT_MS = vitestIntOr\('COLLAB_COMMIT_DUMP_TIMEOUT_MS', 2_000\)/);
   });
 
   it('LLM health probes use vitestIntOr rather than a literal 5000', () => {

@@ -14,10 +14,13 @@ process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // Production collab/health timings are wall-clock. Override them under
 // Vitest so files that wait on grace/TTL/probes don't sleep 10–45s each.
+// COLLAB_COMMIT_DUMP_TIMEOUT_MS deliberately keeps its production 2 s: every
+// answered correlation round must meet it on a loaded runner, and a 200 ms
+// override failed legitimate rounds there with `collab_state_unavailable`.
+// Tests that leave a round unanswered shorten that round themselves.
 process.env.COLLAB_ACTIVE_TTL_SEC ??= '4';
 process.env.COLLAB_PING_INTERVAL_MS ??= '100';
 process.env.COLLAB_EMPTY_ROOM_GRACE_MS ??= '200';
-process.env.COLLAB_COMMIT_DUMP_TIMEOUT_MS ??= '200';
 process.env.LLM_HEALTH_TIMEOUT_MS ??= '50';
 
 process.env.POSTGRES_URL =
