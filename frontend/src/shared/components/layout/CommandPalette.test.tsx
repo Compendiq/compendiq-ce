@@ -5,6 +5,9 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CommandPalette } from './CommandPalette';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
+import { useAuthStore } from '../../../stores/auth-store';
+import { logoutApi } from '../../lib/api';
+import { purgeLegacyRecentSearches } from '../../lib/recent-searches';
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -372,15 +375,105 @@ describe('CommandPalette', () => {
     unmount();
   });
 
-  it('shows recent searches from localStorage', async () => {
-    localStorage.setItem('kb-recent-searches', JSON.stringify(['previous search']));
+  // Same class as GHSA-r652-53hc-h6jh (editor drafts): localStorage is shared
+  // by every account that signs in to this browser.
+  describe('recent searches are private to the signed-in account', () => {
+    const ALICE = { id: 'user-alice', username: 'alice', role: 'user' as const };
+    const BOB = { id: 'user-bob', username: 'bob', role: 'user' as const };
+    const ALICE_TERM = 'alice acquisition plan';
 
-    useCommandPaletteStore.getState().open();
-    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+    /** Search `term` and open the matching page — the action that records a recent search. */
+    async function searchAndOpenResult(term: string) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        jsonResponse({ items: [{ id: '42', title: 'Matching Page', spaceKey: 'TST' }] }),
+      );
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByLabelText('Find a page or command'), { target: { value: term } });
+      fireEvent.click(await screen.findByText('Matching Page'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/42');
+      unmount();
+    }
 
-    expect(screen.getByText('previous search')).toBeInTheDocument();
-    expect(screen.getByText('Recent Searches')).toBeInTheDocument();
-    unmount();
+    /** Mount and open a fresh palette, as after a navigation or reload. */
+    function openFreshPalette() {
+      useCommandPaletteStore.getState().open();
+      return render(<CommandPalette />, { wrapper: createWrapper() });
+    }
+
+    function storageContains(text: string): boolean {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key && localStorage.getItem(key)?.includes(text)) return true;
+      }
+      return false;
+    }
+
+    beforeEach(() => {
+      useAuthStore.getState().clearAuth();
+    });
+
+    afterEach(() => {
+      useAuthStore.getState().clearAuth();
+    });
+
+    it("does not show one account's searches to the next account after sign-out", async () => {
+      useAuthStore.getState().setAuth('token-alice', ALICE);
+      await searchAndOpenResult(ALICE_TERM);
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+      await logoutApi();
+      useAuthStore.getState().setAuth('token-bob', BOB);
+
+      const { unmount } = openFreshPalette();
+      expect(screen.queryByText(ALICE_TERM)).not.toBeInTheDocument();
+      expect(screen.queryByText('Recent Searches')).not.toBeInTheDocument();
+      expect(storageContains(ALICE_TERM)).toBe(false);
+      unmount();
+    });
+
+    it('shows a user their own searches after a reload, and only them', async () => {
+      useAuthStore.getState().setAuth('token-alice', ALICE);
+      await searchAndOpenResult(ALICE_TERM);
+
+      const reloaded = openFreshPalette();
+      expect(screen.getByText('Recent Searches')).toBeInTheDocument();
+      expect(screen.getByText(ALICE_TERM)).toBeInTheDocument();
+      reloaded.unmount();
+
+      // The session ends without a sign-out (expiry): the terms stay Alice's,
+      // and the next account still cannot read them.
+      useAuthStore.getState().clearAuth();
+      useAuthStore.getState().setAuth('token-bob', BOB);
+      const asBob = openFreshPalette();
+      expect(screen.queryByText(ALICE_TERM)).not.toBeInTheDocument();
+      asBob.unmount();
+
+      useAuthStore.getState().clearAuth();
+      useAuthStore.getState().setAuth('token-alice', ALICE);
+      const asAlice = openFreshPalette();
+      expect(screen.getByText(ALICE_TERM)).toBeInTheDocument();
+      asAlice.unmount();
+    });
+
+    it('records nothing while no one is signed in', async () => {
+      await searchAndOpenResult('anonymous term');
+
+      expect(storageContains('anonymous term')).toBe(false);
+    });
+
+    it('never offers the legacy unscoped list and purges it', () => {
+      localStorage.setItem('kb-recent-searches', JSON.stringify(['previous owner term']));
+      useAuthStore.getState().setAuth('token-alice', ALICE);
+
+      const { unmount } = openFreshPalette();
+      expect(screen.queryByText('previous owner term')).not.toBeInTheDocument();
+      unmount();
+
+      purgeLegacyRecentSearches();
+      expect(localStorage.getItem('kb-recent-searches')).toBeNull();
+      expect(storageContains('previous owner term')).toBe(false);
+    });
   });
 
   it('shows keyboard hints in footer', async () => {

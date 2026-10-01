@@ -169,6 +169,12 @@ An explicit sign-out (`logoutApi()`, after the `logout_busy` check) discards
 the user's drafts and fences pending writes via the sign-out epoch and the
 per-user signed-out marker (cleared by `setAuth`); non-explicit session loss
 (`clearAuth()` on expiry or a failed refresh) keeps them for the same user.
+Command-palette recent searches follow the same rules through
+`frontend/src/shared/lib/recent-searches.ts`
+(`compendiq-recent-searches:u:<userId>`; legacy `kb-recent-searches` purged,
+never imported; deleted by `logoutApi()` on explicit sign-out). Any new
+per-user content kept in web storage and shown back in the UI belongs to the
+same class: scope it by user id the same way.
 
 ## Testing & Mocks
 
