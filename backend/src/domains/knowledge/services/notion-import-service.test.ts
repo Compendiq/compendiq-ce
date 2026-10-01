@@ -10,6 +10,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID, NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
@@ -2861,14 +2862,18 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         visibility: 'private',
         overwriteExisting: true,
       });
-      await expect.poll(async () => (await query<{ waiting: boolean }>(
+      // The import fetches from the fake Notion server and writes the body before
+      // its reparent UPDATE queues on the trigger lock; that took ~0.2-0.7 s idle
+      // and over 1 s under CI load, so expect.poll's 1 s default gave up first.
+      // Pinned to the blocker's pid, so a sibling worker's lock cannot satisfy it.
+      expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM pg_locks
             WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND NOT granted
               AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
          ) AS waiting`,
         [triggerLock, blockerPid],
-      )).rows[0]!.waiting).toBe(true);
+      )).rows[0]!.waiting)).toBe(true);
 
       let contenderEntered = false;
       contender = withPageHierarchyWriteTransaction(async (writeClient) => {
