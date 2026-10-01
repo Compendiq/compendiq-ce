@@ -10,6 +10,7 @@ import {
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
+  waitForDatabaseCondition,
 } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID, NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
@@ -160,6 +161,21 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     while (!server.requests.some((request) => request.url.includes(path))) {
       await setImmediate();
     }
+  }
+  /**
+   * Ungranted advisory-lock requests on (classid, objid) in THIS worker's
+   * database. pg_locks is cluster-wide and sibling workers run the same fixed
+   * Notion ids and gate keys, so an unscoped count can see their waiters.
+   */
+  async function countAdvisoryWaiters(classid: number, objids: number[]): Promise<number> {
+    const waiting = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM pg_locks
+        WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = ANY($2::bigint[])
+          AND NOT granted
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+      [classid, objids],
+    );
+    return Number(waiting.rows[0]!.count);
   }
   async function freezeImportedPage(pageId: number): Promise<void> {
     const revisions = await query<{ content_revision: string; lifecycle_revision: string }>(
@@ -604,10 +620,10 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     try {
       await fileRequested.promise;
       waiter = runNotionImport({ userId, client, pageIds: ['child'], visibility: 'shared' });
-      await expect.poll(async () => (await query(
-        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2 AND NOT granted`,
-        [NOTION_IMPORT_LOCK_KEY, notionImportLockId(`notion-import-owner:${userId}`) >>> 0],
-      )).rows.length).toBe(1);
+      expect(await waitForDatabaseCondition(async () => await countAdvisoryWaiters(
+        NOTION_IMPORT_LOCK_KEY,
+        [notionImportLockId(`notion-import-owner:${userId}`) >>> 0],
+      ) === 1)).toBe(true);
       releaseFile.resolve();
       const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
       expect(winnerItems[0]).toMatchObject({ status: 'success' });
@@ -2861,14 +2877,18 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         visibility: 'private',
         overwriteExisting: true,
       });
-      await expect.poll(async () => (await query<{ waiting: boolean }>(
+      // The import fetches from the fake Notion server and writes the body before
+      // its reparent UPDATE queues on the trigger lock; that took ~0.2-0.7 s idle
+      // and over 1 s under CI load, so expect.poll's 1 s default gave up first.
+      // Pinned to the blocker's pid, so a sibling worker's lock cannot satisfy it.
+      expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM pg_locks
             WHERE locktype = 'advisory' AND mode = 'ExclusiveLock' AND NOT granted
               AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
          ) AS waiting`,
         [triggerLock, blockerPid],
-      )).rows[0]!.waiting).toBe(true);
+      )).rows[0]!.waiting)).toBe(true);
 
       let contenderEntered = false;
       contender = withPageHierarchyWriteTransaction(async (writeClient) => {
@@ -3117,8 +3137,10 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
 
     const winnerClient = new NotionClient(TOKEN, { baseUrl: winnerServer.baseUrl });
     const waiterClient = new NotionClient(TOKEN, { baseUrl: waiterServer.baseUrl });
+    let winner: Promise<NotionImportItem[]> | undefined;
+    let waiter: Promise<NotionImportItem[]> | undefined;
     try {
-      const winner = runNotionImport({
+      winner = runNotionImport({
         userId,
         client: winnerClient,
         pageIds: [dashedId],
@@ -3126,7 +3148,7 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       });
       await winnerFileRequested.promise;
 
-      const waiter = runNotionImport({
+      waiter = runNotionImport({
         userId,
         client: waiterClient,
         pageIds: [undashedId],
@@ -3139,21 +3161,13 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       );
       const lockId = notionImportLockId(undashedId);
       let waiterWasBlocked = false;
-      while (!waiterSettled) {
-        const waiting = await query(
-          `SELECT 1 FROM pg_locks
-            WHERE locktype = 'advisory'
-              AND classid::bigint = $1
-              AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
-          [NOTION_IMPORT_LOCK_KEY, [lockId >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
-        );
-        if (waiting.rows.length > 0) {
-          waiterWasBlocked = true;
-          break;
-        }
-        await setImmediate();
-      }
+      await waitForDatabaseCondition(async () => {
+        waiterWasBlocked = await countAdvisoryWaiters(NOTION_IMPORT_LOCK_KEY, [
+          lockId >>> 0,
+          notionImportLockId(`notion-import-owner:${userId}`) >>> 0,
+        ]) > 0;
+        return waiterWasBlocked || waiterSettled;
+      });
 
       releaseWinnerFile.resolve();
       const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
@@ -3181,6 +3195,7 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         .toEqual(PNG);
     } finally {
       releaseWinnerFile.resolve();
+      await Promise.allSettled([winner, waiter].filter((run): run is Promise<NotionImportItem[]> => Boolean(run)));
       await waiterServer.close();
     }
   });
@@ -3239,19 +3254,8 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         pageIds: [firstId, secondId],
         visibility: 'shared',
       });
-      let secondAllocationBlocked = false;
-      while (!secondAllocationBlocked) {
-        const waiting = await query(
-          `SELECT 1 FROM pg_locks
-            WHERE locktype = 'advisory'
-              AND classid::bigint = 0
-              AND objid::bigint = $1
-              AND granted = FALSE`,
-          [allocationGateKey],
-        );
-        secondAllocationBlocked = waiting.rows.length > 0;
-        if (!secondAllocationBlocked) await setImmediate();
-      }
+      expect(await waitForDatabaseCondition(async () =>
+        await countAdvisoryWaiters(0, [allocationGateKey]) > 0)).toBe(true);
 
       const firstPlaceholder = await query(
         'SELECT 1 FROM pages WHERE notion_page_id = $1 AND body_html = $2',
@@ -3271,18 +3275,13 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         () => { waiterSettled = true; },
       );
       let waiterBlockedOnFirstPage = false;
-      while (!waiterSettled && !waiterBlockedOnFirstPage) {
-        const waiting = await query(
-          `SELECT 1 FROM pg_locks
-            WHERE locktype = 'advisory'
-              AND classid::bigint = $1
-              AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
-          [NOTION_IMPORT_LOCK_KEY, [notionImportLockId(firstId) >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
-        );
-        waiterBlockedOnFirstPage = waiting.rows.length > 0;
-        if (!waiterSettled && !waiterBlockedOnFirstPage) await setImmediate();
-      }
+      await waitForDatabaseCondition(async () => {
+        waiterBlockedOnFirstPage = await countAdvisoryWaiters(NOTION_IMPORT_LOCK_KEY, [
+          notionImportLockId(firstId) >>> 0,
+          notionImportLockId(`notion-import-owner:${userId}`) >>> 0,
+        ]) > 0;
+        return waiterBlockedOnFirstPage || waiterSettled;
+      });
 
       expect(waiterSettled).toBe(false);
       expect(waiterBlockedOnFirstPage).toBe(true);
@@ -3373,19 +3372,8 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         pageIds: [hostId, targetId],
         visibility: 'shared',
       });
-      let finalRewriteBlocked = false;
-      while (!finalRewriteBlocked) {
-        const waiting = await query(
-          `SELECT 1 FROM pg_locks
-            WHERE locktype = 'advisory'
-              AND classid::bigint = 0
-              AND objid::bigint = $1
-              AND granted = FALSE`,
-          [rewriteGateKey],
-        );
-        finalRewriteBlocked = waiting.rows.length > 0;
-        if (!finalRewriteBlocked) await setImmediate();
-      }
+      expect(await waitForDatabaseCondition(async () =>
+        await countAdvisoryWaiters(0, [rewriteGateKey]) > 0)).toBe(true);
 
       waiter = runNotionImport({
         userId,
@@ -3399,18 +3387,13 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
         () => { waiterSettled = true; },
       );
       let waiterBlockedOnPageLock = false;
-      while (!waiterSettled && !waiterBlockedOnPageLock) {
-        const waiting = await query(
-          `SELECT 1 FROM pg_locks
-            WHERE locktype = 'advisory'
-              AND classid::bigint = $1
-              AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
-          [NOTION_IMPORT_LOCK_KEY, [notionImportLockId(hostId) >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
-        );
-        waiterBlockedOnPageLock = waiting.rows.length > 0;
-        if (!waiterSettled && !waiterBlockedOnPageLock) await setImmediate();
-      }
+      await waitForDatabaseCondition(async () => {
+        waiterBlockedOnPageLock = await countAdvisoryWaiters(NOTION_IMPORT_LOCK_KEY, [
+          notionImportLockId(hostId) >>> 0,
+          notionImportLockId(`notion-import-owner:${userId}`) >>> 0,
+        ]) > 0;
+        return waiterBlockedOnPageLock || waiterSettled;
+      });
 
       expect(waiterSettled).toBe(false);
       expect(waiterBlockedOnPageLock).toBe(true);
@@ -3781,22 +3764,23 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       ],
     };
     const snapshot = await exportPostgresSnapshot();
-    const blocker = (await snapshot.client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
     let released = false;
-    const importing = runNotionImport({
-      userId, client, pageIds: ['home'], visibility: 'shared', overwriteExisting: true,
-    });
+    let importing: Promise<NotionImportItem[]> | undefined;
     try {
+      const blocker = (await snapshot.client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      importing = runNotionImport({
+        userId, client, pageIds: ['home'], visibility: 'shared', overwriteExisting: true,
+      });
       // The file has staged and the metadata/activation phase is waiting on
       // the real backup barrier. No guessed elapsed delay separates phases.
-      await expect.poll(async () => (await query<{ waiting: boolean }>(
+      expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM pg_locks
             WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted
               AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
          ) AS waiting`,
         [ATTACHMENT_SNAPSHOT_LOCK_ID, blocker],
-      )).rows[0]!.waiting).toBe(true);
+      )).rows[0]!.waiting)).toBe(true);
       const stagedNames = await readdir(pageDir);
       expect(stagedNames.some((name) => name.endsWith('.stage'))).toBe(true);
       await chmod(pageDir, 0o555);
@@ -3814,9 +3798,9 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       )).rows).toEqual([{ status: 'pending' }]);
       expect(await readdir(pageDir)).toEqual(stagedNames);
     } finally {
+      if (!released) await snapshot.close().catch(() => undefined);
       await chmod(pageDir, 0o755);
-      if (!released) await snapshot.close();
-      await importing.catch(() => undefined);
+      await importing?.catch(() => undefined);
     }
   });
 
@@ -3898,14 +3882,14 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
           'SELECT pg_backend_pid() AS pid',
         )).rows[0]!.pid;
         releaseFirstFile.resolve();
-        await expect.poll(async () => (await query<{ waiting: boolean }>(
+        expect(await waitForDatabaseCondition(async () => (await query<{ waiting: boolean }>(
           `SELECT EXISTS (
              SELECT 1 FROM pg_locks
               WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted
                 AND classid = 0 AND objid = $1 AND $2 = ANY(pg_blocking_pids(pid))
            ) AS waiting`,
           [ATTACHMENT_SNAPSHOT_LOCK_ID, blocker],
-        )).rows[0]!.waiting).toBe(true);
+        )).rows[0]!.waiting)).toBe(true);
         expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rows)
           .toHaveLength(1);
         expect(readFileSync(join(displacedPageDir, 'uncertain.bin'))).toEqual(
