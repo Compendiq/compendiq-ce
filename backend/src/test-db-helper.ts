@@ -122,16 +122,29 @@ export async function setupTestDb(): Promise<void> {
 const DEADLOCK = '40P01';
 const LOCK_NOT_AVAILABLE = '55P03';
 
+/**
+ * Empty every public table except `_migrations` in ONE `TRUNCATE` statement.
+ * Sequences are deliberately NOT restarted: ids climb across the files that
+ * share a worker database, and tests rely on that.
+ *
+ * One statement, not one `TRUNCATE … CASCADE` per table: each per-table
+ * CASCADE re-walked the FK graph and re-truncated every referencing table
+ * (`users` and `pages` fan out to most of the schema), which made this helper
+ * 2–4× slower than the single statement. It runs in every DB-backed
+ * `beforeEach`, under Vitest's 10-second hook budget, so that extra work is
+ * what a slow runner pays first.
+ */
 export async function truncateAllTables(): Promise<void> {
   const pool = getPool();
   const sql = `
     DO $$ DECLARE
-      r RECORD;
+      tables TEXT;
     BEGIN
-      FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != '_migrations')
-      LOOP
-        EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
-      END LOOP;
+      SELECT string_agg(quote_ident(tablename), ', ') INTO tables
+        FROM pg_tables WHERE schemaname = 'public' AND tablename != '_migrations';
+      IF tables IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || tables || ' CASCADE';
+      END IF;
       -- Restore mandatory singleton state exactly as a freshly migrated DB has
       -- it. Ordinary users/content remain empty; creation remains disabled.
       IF to_regclass('public.page_baseline_feature_state') IS NOT NULL THEN
