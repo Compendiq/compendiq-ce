@@ -3154,7 +3154,8 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
             WHERE locktype = 'advisory'
               AND classid::bigint = $1
               AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
+              AND granted = FALSE
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
           [NOTION_IMPORT_LOCK_KEY, [lockId >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
         );
         if (waiting.rows.length > 0) {
@@ -3286,7 +3287,8 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
             WHERE locktype = 'advisory'
               AND classid::bigint = $1
               AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
+              AND granted = FALSE
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
           [NOTION_IMPORT_LOCK_KEY, [notionImportLockId(firstId) >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
         );
         waiterBlockedOnFirstPage = waiting.rows.length > 0;
@@ -3414,7 +3416,8 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
             WHERE locktype = 'advisory'
               AND classid::bigint = $1
               AND objid::bigint = ANY($2::bigint[])
-              AND granted = FALSE`,
+              AND granted = FALSE
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
           [NOTION_IMPORT_LOCK_KEY, [notionImportLockId(hostId) >>> 0, notionImportLockId(`notion-import-owner:${userId}`) >>> 0]],
         );
         waiterBlockedOnPageLock = waiting.rows.length > 0;
