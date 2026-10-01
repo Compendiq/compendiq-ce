@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
+import { useUiStore } from '../../stores/ui-store';
 import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
 import { forgetRecentLibrarySpaces } from '../../features/pages/library-space-history';
 import { SETUP_STATUS_QUERY_KEY } from './useSetupStatus';
@@ -16,9 +17,11 @@ import { resetOnboardingSessionWrites } from './use-onboarding';
  * tab would read the previous user's cached pages, search results, and cached
  * `allowed` permission results (issue #885).
  *
- * It also drops the remembered New Page space (#1122): that lives in
- * localStorage rather than the query cache, so `queryClient.clear()` would
- * leave the previous user's space key behind.
+ * It also drops the remembered New Page space (#1122), the Library's recent
+ * spaces and the sidebar tree's selected space (persisted in `compendiq-ui`):
+ * those live in localStorage rather than the query cache, so
+ * `queryClient.clear()` would leave the previous user's space keys behind and
+ * the next user would start in the previous user's space.
  *
  * This is the single choke point for every clearAuth path — the logout button,
  * the api.ts token-expiry handlers, the cross-tab storage event, and a failed
@@ -53,6 +56,7 @@ export function useClearCacheOnLogout(): void {
       resetOnboardingSessionWrites(queryClient);
       forgetLastConfluenceSpace();
       forgetRecentLibrarySpaces();
+      useUiStore.getState().setTreeSidebarSpaceKey(undefined);
     }
     wasAuthenticated.current = isAuthenticated;
   }, [isAuthenticated, queryClient]);

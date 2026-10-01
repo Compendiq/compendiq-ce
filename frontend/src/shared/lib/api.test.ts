@@ -16,6 +16,7 @@ vi.mock('../../stores/auth-store', () => ({
 // Import after mocks are set up
 const { apiFetch, logoutApi, ApiError, RefreshUnavailableError } = await import('./api');
 const { beginDraftEdit, persistDraft, readDraft } = await import('./editor-drafts');
+const { readRecentSearches, rememberRecentSearch } = await import('./recent-searches');
 
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
@@ -483,21 +484,25 @@ describe('logoutApi', () => {
     expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
-  // GHSA-r652-53hc-h6jh: sign-out discards local editor drafts, but only once
-  // it has actually completed — a busy 503 keeps the session and its drafts.
-  it('keeps local drafts on the marked 503 and discards them once sign-out completes', async () => {
+  // GHSA-r652-53hc-h6jh: sign-out discards local editor drafts and recent
+  // searches, but only once it has actually completed — a busy 503 keeps the
+  // session and both.
+  it('keeps local drafts and recent searches on the marked 503 and discards them once sign-out completes', async () => {
     localStorage.clear();
     const pending = beginDraftEdit('page-7');
     if (!pending) throw new Error('expected a signed-in draft scope');
     persistDraft(pending, () => '<p>unsaved</p>');
+    rememberRecentSearch('quarterly numbers');
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(busyResponse('logout_busy'));
     await expect(logoutApi()).rejects.toMatchObject({ statusCode: 503 });
     expect(readDraft('page-7')).toBe('<p>unsaved</p>');
+    expect(readRecentSearches()).toEqual(['quarterly numbers']);
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 204 }));
     await logoutApi();
     expect(readDraft('page-7')).toBeNull();
+    expect(readRecentSearches()).toEqual([]);
   });
 
   it('clears auth on an unmarked 503 from a proxy', async () => {

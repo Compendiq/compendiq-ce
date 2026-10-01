@@ -2,6 +2,7 @@ import { LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
 import { discardDraftsOnSignOut } from './editor-drafts';
+import { discardRecentSearchesOnSignOut } from './recent-searches';
 
 const API_BASE = '/api';
 
@@ -293,9 +294,10 @@ function messageFromErrorBody(
  * cookie, so the session stays and this rejects with an ApiError the caller
  * shows, leaving a retry possible.
  *
- * A completed sign-out also discards the user's local editor drafts, so the
- * next account in this browser cannot be offered them. Other session loss
- * (plain `clearAuth()`) keeps them for the same user's next sign-in.
+ * A completed sign-out also discards the user's local editor drafts and
+ * command-palette recent searches, so the next account in this browser cannot
+ * be offered them. Other session loss (plain `clearAuth()`) keeps them for the
+ * same user's next sign-in.
  */
 export async function logoutApi(): Promise<void> {
   const { accessToken, user } = useAuthStore.getState();
@@ -319,5 +321,6 @@ export async function logoutApi(): Promise<void> {
     throw new ApiError(503, 'Sign-out did not complete. Please try again.', LOGOUT_BUSY_CODE);
   }
   discardDraftsOnSignOut(user?.id ?? null);
+  discardRecentSearchesOnSignOut(user?.id ?? null);
   useAuthStore.getState().clearAuth();
 }

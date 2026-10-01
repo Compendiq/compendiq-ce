@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A session that ends without a sign-out (expiry, a failed refresh) keeps
   them for the same user's next sign-in. Drafts saved by earlier versions
   have no owner: they are deleted at app start and are never offered.
+- **Command-palette recent searches are private to the account that made
+  them.** The terms listed under **Recent Searches** in the command palette
+  (Ctrl/⌘ K) were stored in the browser without an owner, survived sign-out,
+  and were shown to the next account that opened the palette in that browser.
+  They are now stored per user id and only shown to that user; nothing is
+  recorded while no one is signed in. Signing out from the account menu
+  deletes them; a session that ends without a sign-out keeps them for the same
+  user. The list saved by earlier versions has no owner: it is deleted at app
+  start and is never shown. Likewise, the space selected in the sidebar page
+  tree is now forgotten when the session ends, so the next account no longer
+  starts in the previous account's space.
 - **A refresh token no longer works as an access token.** Access and refresh
   tokens were signed with the same key and issuer, and the bearer check did
   not look at the token's purpose. A refresh token, including one already
