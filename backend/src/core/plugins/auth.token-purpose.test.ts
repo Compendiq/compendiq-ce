@@ -83,7 +83,7 @@ async function signRefreshShaped(
 }
 
 /** A refresh token as minted before purpose markers existed: no `typ` header. */
-async function mintLegacyRefreshToken(user: TestUser): Promise<{ token: string; jti: string }> {
+async function mintLegacyRefreshToken(user: TestUser): Promise<{ token: string; jti: string; family: string }> {
   const jti = randomUUID();
   const family = randomUUID();
   const token = await signRefreshShaped(user, { alg: 'HS256' }, jti, family);
@@ -92,7 +92,7 @@ async function mintLegacyRefreshToken(user: TestUser): Promise<{ token: string; 
      VALUES ($1, $2, $3, NOW() + INTERVAL '7 days')`,
     [user.id, jti, family],
   );
-  return { token, jti };
+  return { token, jti, family };
 }
 
 /** Access-shaped claims (no `jti`/`family`) under a caller-chosen header. */
@@ -236,20 +236,29 @@ describe.skipIf(!dbAvailable)('token purpose separation (GHSA-527x-q8px-qhhg)', 
     expect(await revokedInFamily(session.family)).toBe(0);
   });
 
-  it('rotates a legacy (unmarked) refresh token into purpose-marked successors', async () => {
-    const user = await createUser('purpose_legacy_rotation');
+  it('refuses a legacy (unmarked) refresh token at /auth/refresh without touching its family (#1683)', async () => {
+    const user = await createUser('purpose_legacy_refresh');
     const legacy = await mintLegacyRefreshToken(user);
 
+    // Its JTI row exists and is live, so only the `typ` check can turn it away.
     const res = await refreshWith(legacy.token);
+    expect(res.statusCode).toBe(401);
+    expect(refreshCookieOf(res.headers)).toBeNull();
+    expect(await isRevoked(legacy.jti)).toBe(false);
+    expect(await revokedInFamily(legacy.family)).toBe(0);
+  });
+
+  it('rotates a marked refresh token into purpose-marked successors', async () => {
+    const user = await createUser('purpose_marked_rotation');
+    const session = await generateRefreshToken(claimsOf(user));
+
+    const res = await refreshWith(session.token);
     expect(res.statusCode).toBe(200);
-    expect(await isRevoked(legacy.jti)).toBe(true);
+    expect(await isRevoked(session.jti)).toBe(true);
 
     const { accessToken } = res.json<{ accessToken: string }>();
     const successor = refreshCookieOf(res.headers);
     expect(successor).not.toBeNull();
-
-    // The successors carry the markers, so the session leaves the legacy
-    // path on its first rotation and behaves like any new session.
     expect(typOf(accessToken)).toBe('at+jwt');
     expect(typOf(successor!)).toBe('rt+jwt');
     expect((await getSettings(accessToken)).statusCode).toBe(200);
@@ -259,14 +268,5 @@ describe.skipIf(!dbAvailable)('token purpose separation (GHSA-527x-q8px-qhhg)', 
     expect(next.statusCode).toBe(200);
     expect(typOf(next.json<{ accessToken: string }>().accessToken)).toBe('at+jwt');
     expect(typOf(refreshCookieOf(next.headers)!)).toBe('rt+jwt');
-  });
-
-  it('keeps rejecting a replayed legacy refresh token after rotation', async () => {
-    const user = await createUser('purpose_legacy_replay');
-    const legacy = await mintLegacyRefreshToken(user);
-
-    expect((await refreshWith(legacy.token)).statusCode).toBe(200);
-    expect((await refreshWith(legacy.token)).statusCode).toBe(401);
-    expect((await getSettings(legacy.token)).statusCode).toBe(401);
   });
 });
