@@ -73,20 +73,15 @@ purpose in the signed `typ` header (RFC 8725 §3.11 explicit typing):
   `refresh_tokens`: before the marker, a refresh JWT revoked by logout still
   worked as a 7-day bearer token.
 - The refresh decoder requires `typ: rt+jwt` plus `jti` and `family`, so an
-  access token presented as the `kb_refresh` cookie gets `401`. Refresh
-  tokens issued before the marker (no `typ`, but `jti` + `family`) are still
-  accepted so existing sessions rotate — the JTI is still claimed in
-  `refresh_tokens` — and their successors carry the marker. They have all
-  expired seven days after the upgrade.
-- Access tokens issued before the marker are rejected. The SPA handles that
-  `401` like an expired token: `apiFetch`, SSE, presence and the other
-  fetchers refresh once through `refreshAccessTokenOnce()` and retry, and the
-  collaboration socket's `4401` close refreshes and reconnects. A
-  single-instance upgrade therefore costs each open tab one silent refresh.
-  During a rolling multi-instance upgrade, a refresh served by an
-  old-version instance returns an unmarked access token that new-version
-  instances reject, so some requests can fail with `401` (the user stays
-  signed in) until the rollout finishes.
+  access token presented as the `kb_refresh` cookie gets `401`, and so does
+  any refresh token minted before the marker (#1683).
+- Tokens issued before the marker are rejected on both paths. An unmarked
+  access token's `401` makes the SPA try a refresh, and that refresh also
+  gets `401` when the refresh cookie is unmarked, so the session ends and the
+  user signs in again. Upgrading from a release without the marker therefore
+  signs every user out once. During a rolling multi-instance upgrade, tokens
+  issued by an old-version instance are refused by new-version instances in
+  the same way until the rollout finishes.
 - Any new token kind signed with `JWT_SECRET` needs its own `typ` and its own
   verifier; never verify a bearer token without `verifyToken()`.
 
