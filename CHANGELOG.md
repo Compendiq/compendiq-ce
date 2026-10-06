@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-06
+
+> Minor: fixes for seven security advisories (GHSA-527x, -9v4v, -r652, -mvgq, -59q7, -v22g, -98hf), page restrictions on every read, Confluence as a per-user toggle (standalone mode), image analysis in retrieval (ADR-027), dependency security updates. **Every user signs in again once after upgrading.** 237 commits since v0.8.0.
+
 ### Security
 
 - **Dependency security updates.** `nodemailer` 9.1.1 → 10.0.13 (address
