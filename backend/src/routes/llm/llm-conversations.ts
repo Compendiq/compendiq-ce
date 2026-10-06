@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
@@ -11,12 +12,41 @@ import {
   type TitleSource,
   UpdateConversationSchema,
 } from '@compendiq/contracts';
-import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
+import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import {
+  CONFLUENCE_DISABLED_MESSAGE,
+  pageWriteStaysLocal,
+} from '../../domains/confluence/services/standalone-mode.js';
+import {
+  describeConfluencePagePut,
+  publishConfluencePagePut,
+  registerConfluencePagePutIntentReconcilers,
+} from '../../domains/confluence/services/page-put-intent-reconciler.js';
+import {
+  confirmPagePublication,
+  pagePublicationReceipt,
+} from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpaces,
+  getUserAccessibleSpacesMemoized,
+  userCanAccessPage,
+  userCanEditPage,
+} from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  PageWriteError,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+  type PageWriteIntent,
+} from '../../core/services/page-write-admission.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { ImprovementsQuerySchema } from './_helpers.js';
 
@@ -31,21 +61,30 @@ type ConversationRow = {
   created_at: Date;
   updated_at: Date;
 };
+type ConversationListRow = ConversationRow & {
+  /** PostgreSQL's full six-digit fractional precision, kept out of JavaScript Date. */
+  cursor_updated_at: string;
+};
 
 /**
  * The summary columns every conversation route returns. `title` is COALESCEd
  * on read (a whitespace-only first question yields '' — the DB column stays
  * nullable so the migration cannot fail on a legacy row); the page join is
  * `deleted_at IS NULL` because pages are SOFT deleted and the FK's SET NULL
- * only fires on a hard delete. No visibility predicate on the join: page_ref
- * was authorised at write time (llm-ask.ts), and the row records where the
- * user started a conversation they were allowed to have.
+ * only fires on a hard delete. page_ref was authorised at write time
+ * (llm-ask.ts), but the chip is re-authorised on every read through
+ * `visiblePagesPredicate`: a page the caller can no longer read (a
+ * restriction added after the ask, a revoked ACE or space role) answers
+ * `pageId`/`pageTitle` null, the same as a trashed page. The row itself stays.
  */
 const SUMMARY_COLUMNS = `c.id, COALESCE(NULLIF(trim(c.title), ''), 'Untitled conversation') AS title,
-       c.title_source, c.model, c.page_ref, p.title AS page_title, c.created_at, c.updated_at`;
-const SUMMARY_FROM = `FROM llm_conversations c
-    LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL`;
-// (`SUMMARY_FROM` is used by both the list route and the GET :id detail route below.)
+       c.title_source, c.model, p.id AS page_ref, p.title AS page_title, c.created_at, c.updated_at`;
+/** FROM clause for the list and GET :id routes; binds accessible spaces and the caller. */
+function summaryFrom(spacesParamIdx: number, userParamIdx: number): string {
+  return `FROM llm_conversations c
+    LEFT JOIN pages p ON p.id = c.page_ref AND p.deleted_at IS NULL
+      AND ${visiblePagesPredicate(spacesParamIdx, userParamIdx, 'p')}`;
+}
 
 function toSummary(r: ConversationRow): ConversationSummary {
   return {
@@ -60,24 +99,35 @@ function toSummary(r: ConversationRow): ConversationSummary {
   };
 }
 
-// Keyset cursor: the (updated_at, id) of the last row served. Keyset rather
-// than offset because this list is prepended-to on every ask (updated_at
-// bumps), so an offset page shifts under the reader; rename does NOT bump
-// updated_at, so paging is stable through it.
+// Keyset cursor: the exact PostgreSQL (updated_at, id) of the last row served.
+// Keep updated_at as a six-digit UTC string: node-postgres converts TIMESTAMPTZ
+// to Date and silently truncates its microseconds. Keyset comparison must use
+// the same precision as the ordering key or rows inside that millisecond vanish.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function encodeCursor(updatedAtIso: string, id: string): string {
-  return Buffer.from(JSON.stringify([updatedAtIso, id])).toString('base64url');
+const CURSOR_TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{6})Z$/;
+
+function isCursorTimestamp(value: string): boolean {
+  const match = CURSOR_TIMESTAMP_RE.exec(value);
+  if (!match) return false;
+  const millisecondIso = `${match[1]}.${match[2]!.slice(0, 3)}Z`;
+  const parsed = new Date(millisecondIso);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === millisecondIso;
 }
+
+function encodeCursor(updatedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify([updatedAt, id])).toString('base64url');
+}
+
 function decodeCursor(raw: string | undefined): { updatedAt: string; id: string } | null {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
     if (
       Array.isArray(parsed) && parsed.length === 2
-      && typeof parsed[0] === 'string' && !Number.isNaN(Date.parse(parsed[0]))
+      && typeof parsed[0] === 'string' && isCursorTimestamp(parsed[0])
       && typeof parsed[1] === 'string' && UUID_RE.test(parsed[1])
     ) {
-      return { updatedAt: new Date(parsed[0]).toISOString(), id: parsed[1] };
+      return { updatedAt: parsed[0], id: parsed[1] };
     }
   } catch {
     // fall through
@@ -87,8 +137,9 @@ function decodeCursor(raw: string | undefined): { updatedAt: string; id: string 
 
 /**
  * Read-time source annotation (#1361): mark a KB source `unavailable` when its
- * page is trashed or no longer visible to the caller — the retrieval path's
- * own predicate, bound the same way rag-service binds it. External/web
+ * page is trashed or no longer readable by the caller under the non-RAG list
+ * predicate (`visiblePagesPredicate`, which also applies page restrictions;
+ * retrieval itself stays space-level). External/web
  * sources carry no pageId and are never annotated. Nothing is written back.
  */
 async function annotateUnavailableSources(messages: StoredChatMessage[], userId: string): Promise<StoredChatMessage[]> {
@@ -110,6 +161,7 @@ async function annotateUnavailableSources(messages: StoredChatMessage[], userId:
 }
 
 export async function llmConversationRoutes(fastify: FastifyInstance) {
+  registerConfluencePagePutIntentReconcilers();
   fastify.addHook('onRequest', fastify.authenticate);
 
   // GET /api/llm/conversations?limit&cursor — the user's list, newest first (#1361)
@@ -121,18 +173,25 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     } catch {
       throw fastify.httpErrors.badRequest('Invalid cursor');
     }
-    const result = await query<ConversationRow>(
-      `SELECT ${SUMMARY_COLUMNS}
-       ${SUMMARY_FROM}
+    const result = await query<ConversationListRow>(
+      `SELECT ${SUMMARY_COLUMNS},
+              to_char(c.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at
+       ${summaryFrom(5, 1)}
        WHERE c.user_id = $1
          AND ($2::timestamptz IS NULL OR (c.updated_at, c.id) < ($2::timestamptz, $3::uuid))
        ORDER BY c.updated_at DESC, c.id DESC
        LIMIT $4`,
-      [request.userId, after?.updatedAt ?? null, after?.id ?? null, limit + 1],
+      [
+        request.userId,
+        after?.updatedAt ?? null,
+        after?.id ?? null,
+        limit + 1,
+        await getUserAccessibleSpacesMemoized(request.userId),
+      ],
     );
     const page = result.rows.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = result.rows.length > limit && last ? encodeCursor(last.updated_at.toISOString(), last.id) : null;
+    const nextCursor = result.rows.length > limit && last ? encodeCursor(last.cursor_updated_at, last.id) : null;
     return { items: page.map(toSummary), nextCursor };
   });
 
@@ -141,9 +200,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { id } = ConversationIdParamSchema.parse(request.params);
     const result = await query<ConversationRow & { messages: StoredChatMessage[] }>(
       `SELECT ${SUMMARY_COLUMNS}, c.messages
-       ${SUMMARY_FROM}
+       ${summaryFrom(3, 2)}
        WHERE c.id = $1 AND c.user_id = $2`,
-      [id, request.userId],
+      [id, request.userId, await getUserAccessibleSpacesMemoized(request.userId)],
     );
     if (result.rows.length === 0) {
       throw fastify.httpErrors.notFound('Conversation not found');
@@ -169,10 +228,15 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       `UPDATE llm_conversations c
           SET title = $3, title_source = 'user'
         WHERE c.id = $1 AND c.user_id = $2
-        RETURNING c.id, c.title, c.title_source, c.model, c.page_ref,
-                  (SELECT p.title FROM pages p WHERE p.id = c.page_ref AND p.deleted_at IS NULL) AS page_title,
+        RETURNING c.id, c.title, c.title_source, c.model,
+                  (SELECT p.id FROM pages p
+                    WHERE p.id = c.page_ref AND p.deleted_at IS NULL
+                      AND ${visiblePagesPredicate(4, 2, 'p')}) AS page_ref,
+                  (SELECT p.title FROM pages p
+                    WHERE p.id = c.page_ref AND p.deleted_at IS NULL
+                      AND ${visiblePagesPredicate(4, 2, 'p')}) AS page_title,
                   c.created_at, c.updated_at`,
-      [id, request.userId, title],
+      [id, request.userId, title, await getUserAccessibleSpacesMemoized(request.userId)],
     );
     if (result.rows.length === 0) {
       throw fastify.httpErrors.notFound('Conversation not found');
@@ -192,11 +256,18 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId } = ImprovementsQuerySchema.parse(request.query);
     const userId = request.userId;
 
-    let sql = 'SELECT li.id, p.confluence_id, li.improvement_type, li.model, li.status, li.created_at FROM llm_improvements li LEFT JOIN pages p ON p.id = li.page_id WHERE li.user_id = $1';
-    const values: unknown[] = [userId];
+    // The rows are the caller's own and all stay listed; the page link is
+    // re-authorised on read, so a page they can no longer read (restricted,
+    // revoked, trashed) answers no confluenceId and never matches the filter.
+    let sql = `SELECT li.id, p.confluence_id, li.improvement_type, li.model, li.status, li.created_at
+       FROM llm_improvements li
+       LEFT JOIN pages p ON p.id = li.page_id AND p.deleted_at IS NULL
+         AND ${visiblePagesPredicate(2, 1, 'p')}
+      WHERE li.user_id = $1`;
+    const values: unknown[] = [userId, await getUserAccessibleSpacesMemoized(userId)];
 
     if (pageId) {
-      sql += ' AND p.confluence_id = $2';
+      sql += ' AND p.confluence_id = $3';
       values.push(pageId);
     }
 
@@ -233,12 +304,73 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     // resolvePageRef in the improve route. The digit cap keeps long Confluence
     // ids out of the int4 cast (a 10+ digit id would error, not 404).
     type PageRow = {
-      id: number; version: number; title: string; space_key: string;
+      id: number; version: number; title: string; space_key: string | null;
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
+      contentRevision: string; lifecycleRevision: string;
     };
     const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
-              created_by_user_id, visibility`;
+              created_by_user_id, visibility, content_revision::text AS "contentRevision",
+              lifecycle_revision::text AS "lifecycleRevision"`;
+    const currentConfluenceClient = async (
+      client: PoolClient,
+      intent: PageWriteIntent,
+      expected: PageRow,
+    ): Promise<ConfluenceClient> => {
+      const actor = await client.query(
+        'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+        [userId],
+      );
+      if (actor.rowCount !== 1) {
+        throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+      }
+      const result = await client.query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+        [expected.id],
+      );
+      const current = result.rows[0];
+      if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      const admittedRevision = intent.revisions[expected.id];
+      if (
+        !admittedRevision ||
+        current.contentRevision !== admittedRevision.contentRevision ||
+        current.lifecycleRevision !== admittedRevision.lifecycleRevision ||
+        current.version !== expected.version ||
+        current.body_html !== expected.body_html ||
+        current.source !== 'confluence' ||
+        current.confluence_id !== expected.confluence_id
+      ) {
+        throw new PageWriteError(
+          409,
+          'stale_content_revision',
+          'Page has been modified since you loaded it. Please refresh and try again.',
+        );
+      }
+      const accessibleSpaces = await getUserAccessibleSpaces(userId, client);
+      if (
+        !current.space_key ||
+        !accessibleSpaces.includes(current.space_key) ||
+        !(await userCanAccessPage(userId, current.id, client))
+      ) {
+        throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+      }
+      if (!(await isConfluenceEnabled(userId, client))) {
+        throw new PageWriteError(
+          409,
+          'confluence_integration_disabled',
+          CONFLUENCE_DISABLED_MESSAGE,
+        );
+      }
+      const confluence = await getClientForUser(userId, client);
+      if (!confluence) {
+        throw new PageWriteError(
+          409,
+          'confluence_connection_changed',
+          'Confluence credentials changed before the remote write',
+        );
+      }
+      return confluence;
+    };
     let existing: { rows: PageRow[] } = { rows: [] };
     if (/^\d{1,9}$/.test(pageId)) {
       existing = await query<PageRow>(
@@ -258,18 +390,25 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const existingPage = existing.rows[0]!;
 
-    // IDOR guard (#734): a standalone page is writable only by its owner
-    // unless it is explicitly shared — same rule as PATCH /pages/:id.
-    // Respond 404 (not 403/409) so another user's private page never leaks
-    // its existence, title, or version; this must run before the version
-    // check below to avoid a 404-vs-409 existence oracle. Confluence-sourced
-    // pages are not gated here: that branch pushes through the caller's own
-    // Confluence client, so Confluence ACLs apply.
-    if (
-      existingPage.source === 'standalone' &&
-      existingPage.created_by_user_id !== userId &&
-      existingPage.visibility !== 'shared'
-    ) {
+    // Page authority for a local write: the PUT /pages/:id rule — page access
+    // AND edit rights. A synced page needs a role on its space (plus an ACE
+    // when the page is restricted); a standalone article needs its owner or
+    // shared visibility. With `client` it reads inside the write transaction
+    // and bypasses the RBAC caches.
+    const canWritePageLocally = async (pageId: number, client?: PoolClient): Promise<boolean> =>
+      (await userCanAccessPage(userId, pageId, client))
+      && (await userCanEditPage(userId, pageId, client));
+
+    // #1623: a standalone article, and a synced one while the CALLER's
+    // integration is off, take the local write below. That branch has no
+    // Confluence-side authority, so it is authorized here — before the
+    // version check, the collab-room 409 and the layout 422 — and answers
+    // 404 exactly like a missing page, so a page the caller may not edit
+    // leaks neither its existence nor its version (#734). The Confluence
+    // branch re-resolves active identity, local page/space authority, mode,
+    // and credentials under admission immediately before provider dispatch.
+    const writeStaysLocal = await pageWriteStaysLocal(userId, existingPage.source);
+    if (writeStaysLocal && !(await canWritePageLocally(existingPage.id))) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
@@ -281,6 +420,22 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
+    // The public apply request predates improvement ids. Bind its status side
+    // effect now, before conversion/remote latency can make a newer unrelated
+    // improvement look like the row this request accepted. An exact content
+    // match preserves direct/manual Apply calls, which have no history row.
+    const linkedImprovement = await query<{ id: string }>(
+      `SELECT id
+         FROM llm_improvements
+        WHERE user_id = $1
+          AND page_id = $2
+          AND status IN ('streaming', 'completed')
+          AND improved_content = $3
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [userId, existingPage.id, improvedMarkdown.slice(0, 50000)],
+    );
+    const improvementId = linkedImprovement.rows[0]?.id ?? null;
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -344,88 +499,152 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;
 
-    if (existingPage.source === 'standalone') {
-      // --- Standalone page: update local DB only (no Confluence sync) ---
-      newVersion = currentVersion + 1;
-      await query(
-        `UPDATE pages SET
-           title = $2, body_html = $3, body_text = $4,
-           version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-           -- #1115 P2 (review r2) — Apply rewrites the body, so it queues the
-           -- image index like every other body writer. It is safe today only
-           -- through protectMedia/restoreMedia and #723's drop-guard keeping
-           -- the img set intact across the markdown round trip — an invariant
-           -- of a different module that nothing on either side pins. One
-           -- reconcile pass per Apply, every row reused by content hash.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           -- Stamp local-edit markers (#305): chat write-back is a local
-           -- AI edit. Previously the write was invisible to sync, which
-           -- would overwrite the AI-improved content on the next pull.
-           local_modified_at = NOW(), local_modified_by = $6
-         WHERE id = $1`,
-        [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion, userId],
-      );
+    // #1623 — a standalone page and a synced page while Confluence is off use
+    // the same local-only fenced transaction. No upstream call is made.
+    if (writeStaysLocal) {
+      newVersion = await withPageWriteTransaction([existingPage.id], async (client) => {
+        const fresh = await client.query<PageRow>(
+          `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+          [existingPage.id],
+        );
+        const page = fresh.rows[0];
+        if (!page) throw fastify.httpErrors.notFound('Page not found');
+        // Authority can change while the write waits for the page fence.
+        const actor = await client.query(
+          'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+          [userId],
+        );
+        if (actor.rowCount !== 1 || !(await canWritePageLocally(existingPage.id, client))) {
+          throw fastify.httpErrors.notFound('Page not found');
+        }
+        if (page.version !== currentVersion || page.body_html !== existingPage.body_html) {
+          throw fastify.httpErrors.conflict(
+            'Page has been modified since you loaded it. Please refresh and try again.',
+          );
+        }
+        const nextVersion = page.version + 1;
+        await client.query(
+          `UPDATE pages SET
+             title = $2, body_html = $3, body_text = $4,
+             version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+             image_analysis_dirty = CASE
+               WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+               ELSE image_analysis_dirty
+             END,
+             embedding_status = 'not_embedded', embedded_at = NULL,
+             local_modified_at = NOW(), local_modified_by = $6
+           WHERE id = $1`,
+          [existingPage.id, pageTitle, bodyHtml, bodyText, nextVersion, userId],
+        );
+        if (improvementId !== null) {
+          const marked = await client.query(
+            `UPDATE llm_improvements
+                SET status = 'applied'
+              WHERE id = $1
+                AND user_id = $2
+                AND page_id = $3
+                AND status IN ('streaming', 'completed')`,
+            [improvementId, userId, existingPage.id],
+          );
+          if (marked.rowCount !== 1) {
+            throw fastify.httpErrors.conflict(
+              'The AI improvement changed before it could be marked applied.',
+            );
+          }
+        }
+        return nextVersion;
+      });
       await invalidateCollabDocAfterBodyWrite(existingPage.id);
+      await cache.invalidate(userId, 'pages');
     } else {
-      // --- Confluence page: sync to Confluence ---
       if (!existingPage.confluence_id) {
         throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       }
-      const client = await getClientForUser(userId);
-      if (!client) {
+      // Preserve the existing early configuration error. The post-admission
+      // resolver below is authoritative for dispatch.
+      if (!await getClientForUser(userId)) {
         throw fastify.httpErrors.badRequest('Confluence not configured');
       }
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml);
-      const page = await client.updatePage(confluenceId, pageTitle, storageBody, currentVersion);
-
-      const updatedBodyHtml = confluenceToHtml(
-        page.body?.storage?.value ?? storageBody,
+      const publication = describeConfluencePagePut({
+        kind: 'page.ai_apply',
+        actorId: userId,
+        pageId: existingPage.id,
         confluenceId,
-        existingPage.space_key,
-      );
-      const updatedBodyText = htmlToText(updatedBodyHtml);
-      newVersion = page.version.number;
+        title: pageTitle,
+        bodyStorage: storageBody,
+        expectedRemoteVersion: currentVersion,
+        improvementId,
+      });
+      const intent = await reservePageWriteIntent({
+        pageIds: [existingPage.id],
+        kind: publication.kind,
+        actorId: userId,
+        expectedRevisions: {
+          [existingPage.id]: {
+            contentRevision: existingPage.contentRevision,
+            lifecycleRevision: existingPage.lifecycleRevision,
+          },
+        },
+        effect: publication.effect,
+      });
 
-      await query(
-        `UPDATE pages SET
-           title = $2, body_storage = $3, body_html = $4, body_text = $5,
-           version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-           -- #1115 P2 (review r2) — see the standalone branch above. Gated on
-           -- body_html alone: that is where the src attributes are.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           -- Clear local-edit markers (#305): the Confluence push for
-           -- the AI-improved content has succeeded, so the local state
-           -- is now in sync with the remote.
-           local_modified_at = NULL, local_modified_by = NULL
-         WHERE id = $1`,
-        [existingPage.id, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, updatedBodyText, newVersion],
+      let admittedClient: ConfluenceClient;
+      try {
+        admittedClient = await withPageWriteTransaction(
+          [existingPage.id],
+          (lockedClient) => currentConfluenceClient(lockedClient, intent, existingPage),
+          { intent },
+        );
+      } catch (error) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        throw error;
+      }
+
+      // Persist only bounded identity/digests after provider success. A compact
+      // acknowledgment is durable before its confirming read, so a failed
+      // readback remains recoverable without replaying this PUT.
+      const publicationResult = await runPageWriteIntentEffect(
+        intent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (result) => result.receipt,
+        },
+        async () => {
+          const page = await admittedClient.updatePage(
+            confluenceId,
+            pageTitle,
+            storageBody,
+            currentVersion,
+          );
+          return {
+            page,
+            receipt: pagePublicationReceipt(confluenceId, currentVersion + 1, page),
+          };
+        },
       );
+      const confirmed = await withPageWriteTransaction([existingPage.id], async (lockedClient) => {
+        const currentClient = await currentConfluenceClient(lockedClient, intent, existingPage);
+        return confirmPagePublication(
+          currentClient,
+          publicationResult.receipt,
+          publicationResult.page,
+        );
+      }, { intent });
+      const published = await completePageWriteIntent(intent, (lockedClient) =>
+        publishConfluencePagePut(lockedClient, publication, {
+          confluenceId: confirmed.id,
+          title: confirmed.title,
+          bodyStorage: confirmed.body.storage.value,
+          remoteVersion: confirmed.version.number,
+        }, intent.id),
+      );
+      newVersion = published.newVersion;
     }
 
-    await invalidateCollabDocAfterBodyWrite(existingPage.id);
-
-    // Mark the most recent improvement record for this page as applied
-    await query(
-      `UPDATE llm_improvements SET status = 'applied'
-       WHERE id = (
-         SELECT li.id FROM llm_improvements li
-         WHERE li.user_id = $1 AND li.page_id = $2 AND li.status IN ('streaming', 'completed')
-         ORDER BY li.created_at DESC LIMIT 1
-       )`,
-      [userId, existingPage.id],
-    );
-
-    await cache.invalidate(userId, 'pages');
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(existingPage.id), { title: pageTitle, source: 'ai_improvement' }, request);
 
     return { id: existingPage.id, title: pageTitle, version: newVersion };

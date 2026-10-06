@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
+  ArrowRightLeft,
+  CheckCircle2,
   ChevronRight,
   Cpu,
   ExternalLink,
@@ -24,6 +26,8 @@ import {
   Trash2,
   History,
   ShieldCheck,
+  X,
+  type LucideIcon,
 } from 'lucide-react';
 
 import { AutoTagger } from '../../../features/pages/AutoTagger';
@@ -33,8 +37,10 @@ import { NotesInspectorPanel, usePageNotes } from './NotesInspectorPanel';
 import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
+import { PageLifecycleSection } from './PageLifecycleSection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
-import { Button } from '../Button';
+import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
+import { formatDateStamp } from '../../lib/format-relative-time';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
@@ -65,6 +71,8 @@ import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../lib/trash-copy';
+import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -238,6 +246,60 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
   );
 });
 
+/**
+ * The same four bands `QualityScoreBadge` names, so the health sentence and
+ * the badge beside it never disagree about what a score means.
+ */
+function qualityBandWord(score: number): string {
+  if (score >= 90) return 'Excellent';
+  if (score >= 70) return 'Good';
+  if (score >= 50) return 'Needs Work';
+  return 'Poor';
+}
+
+type HealthRemedy = 'index' | 'retry-index' | 'requality' | 'assistant' | null;
+
+/**
+ * One Document-health action: a 32px ghost button whose pending state is
+ * carried by the label, a spinner and `aria-busy` together.
+ */
+function HealthAction({
+  onClick,
+  pending = false,
+  icon: Icon,
+  label,
+  pendingLabel,
+  testId,
+  title,
+}: {
+  onClick: () => void;
+  pending?: boolean;
+  icon: LucideIcon;
+  label: string;
+  pendingLabel?: string;
+  testId: string;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      aria-busy={pending}
+      data-testid={testId}
+      title={title}
+      className="nm-button-ghost h-8 px-3 text-xs"
+    >
+      {pending ? (
+        <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" />
+      ) : (
+        <Icon size={13} className="shrink-0 opacity-70" aria-hidden="true" />
+      )}
+      <span>{pending && pendingLabel ? pendingLabel : label}</span>
+    </button>
+  );
+}
+
 // ---------- ArticleRightPane ----------
 
 /**
@@ -345,25 +407,57 @@ export function ArticleRightPane({
   const verifyMutation = useVerifyPage();
   const [relocateOpen, setRelocateOpen] = useState(false);
   const [verifyStatusMsg, setVerifyStatusMsg] = useState<string | null>(null);
+  const [confirmResyncOpen, setConfirmResyncOpen] = useState(false);
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
   const verifiedAt = page?.verifiedAt ?? null;
-  const verifiedDateStr = verifiedAt
-    ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    : null;
+  const verifiedDateStr = verifiedAt ? formatDateStamp(verifiedAt) : null;
 
-  const overallHealth = useMemo(() => {
-    if (page?.embeddingError || page?.qualityStatus === 'failed') {
-      return { label: 'Needs attention · Check failures detected', tone: 'warning' as const };
+  // Each unhealthy state names the one action that fixes it (`remedy`), so the
+  // sentence and its button are read together rather than hunted for.
+  const overallHealth = useMemo((): { label: string; tone: 'warning' | 'active' | 'neutral'; remedy: HealthRemedy } => {
+    const indexing = page?.embeddingStatus
+      ?? (page?.embeddingDirty ? 'not_embedded' : undefined);
+    if (indexing === 'failed') {
+      return {
+        label: page?.qualityStatus === 'failed'
+          ? 'Search indexing and quality analysis failed'
+          : 'Search indexing failed',
+        tone: 'warning',
+        remedy: 'retry-index',
+      };
     }
-    if (page?.embeddingStatus === 'embedding' || page?.qualityStatus === 'analyzing') {
-      return { label: 'Pipeline active · Indexing in progress', tone: 'active' as const };
+    if (page?.qualityStatus === 'failed') {
+      return { label: 'Quality analysis failed', tone: 'warning', remedy: 'requality' };
     }
-    if (verifiedDateStr) {
-      return { label: 'Verified and ready for AI search', tone: 'healthy' as const };
+    if (indexing === 'embedding') {
+      return {
+        label: page?.qualityStatus === 'analyzing'
+          ? 'Indexing and quality analysis in progress'
+          : 'Indexing in progress',
+        tone: 'active',
+        remedy: null,
+      };
     }
-    return { label: 'Indexed for AI search', tone: 'neutral' as const };
-  }, [page?.embeddingError, page?.embeddingStatus, page?.qualityStatus, verifiedDateStr]);
+    if (indexing === 'not_embedded') {
+      return { label: 'Not yet indexed for AI search', tone: 'warning', remedy: 'index' };
+    }
+    if (page?.qualityStatus === 'analyzing') {
+      return { label: 'Quality analysis in progress', tone: 'active', remedy: null };
+    }
+    const analyzedScore = page?.qualityStatus === 'analyzed' ? page.qualityScore ?? null : null;
+    if (analyzedScore != null && analyzedScore < 50) {
+      return { label: 'Quality attention needed · Low score', tone: 'warning', remedy: 'assistant' };
+    }
+    const indexed = indexing === 'embedded' ? 'Indexed for AI search' : 'Search indexing status unavailable';
+    return {
+      label: analyzedScore != null
+        ? `${indexed} · Quality ${analyzedScore} ${qualityBandWord(analyzedScore)}`
+        : indexed,
+      tone: 'neutral',
+      remedy: null,
+    };
+  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore]);
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -408,6 +502,8 @@ export function ArticleRightPane({
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
+  // Keep local note/reply drafts across tab switches; the page key resets them on navigation.
+  const [detailsMounted, setDetailsMounted] = useState(() => activeInspectorView === 'details');
 
   const scrollToNotesSection = useCallback(() => {
     setTimeout(() => {
@@ -419,6 +515,9 @@ export function ArticleRightPane({
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
       setAssistantMounted(true);
+    }
+    if (activeInspectorView === 'details') {
+      setDetailsMounted(true);
     }
   }, [activeInspectorView]);
 
@@ -845,15 +944,23 @@ export function ArticleRightPane({
     }
   }, [deleteMutation, id, navigate]);
 
-  // Re-sync this article from Confluence. Calls the /pages/bulk/sync endpoint
-  // with a singleton ID; the bulk route already does the right per-page
-  // validation (auth, ownership, queue gating).
+  // Pulling from Confluence overwrites the local title and body, so every
+  // entry point (Source block, rail overflow) opens the same confirm; the
+  // mutation runs only from its confirm button.
+  const openResyncConfirm = useCallback(() => {
+    if (!id) return;
+    setConfirmResyncOpen(true);
+  }, [id]);
+
+  // Calls the /pages/bulk/sync endpoint with a singleton ID; the bulk route
+  // already does the right per-page validation (auth, ownership, queue gating).
   //
   // The bulk endpoint can return `{succeeded: 0, failed: 0, errors: []}` when
   // the page silently no-ops (e.g. confluenceId became null between render
   // and click, or the user lost access mid-session). Treat that case as info,
   // not an error — there's nothing wrong, just nothing to do.
-  const handleResync = useCallback(() => {
+  const handleConfirmResync = useCallback(() => {
+    setConfirmResyncOpen(false);
     if (!id) return;
     resyncMutation.mutate(id, {
       onSuccess: (data) => {
@@ -869,6 +976,14 @@ export function ArticleRightPane({
         toast.error(err instanceof Error ? err.message : 'Re-sync failed.'),
     });
   }, [id, resyncMutation]);
+
+  // #1176: opening the assistant runs nothing and preselects nothing — this
+  // only switches the tab, in both the rail and sheet presentations.
+  const openAssistantTab = useCallback(() => {
+    inspectorViewTouchedRef.current = true;
+    setActiveInspectorView('assistant');
+    setAssistantMounted(true);
+  }, []);
 
   // Re-run quality analysis for this article. Bulk-endpoint passthrough; the
   // route resets quality_status to 'pending' and kicks the worker. The trigger
@@ -926,12 +1041,22 @@ export function ArticleRightPane({
 
   // Shared between the collapsed-rail and expanded returns — Radix portals
   // the dialog to <body>, so its position in the tree only matters for state.
+  //
+  // #1636: same copy module as PageViewPage, same server-side count —
+  // `descendantCount` is what the cascade will take — and the same split by
+  // source: a Confluence-sourced page's delete goes UP to Confluence and never
+  // reaches Trash, so it gets the irreversible copy rather than a 30-day
+  // restore it cannot be given. An unloaded `page` has an unknown source too,
+  // so it keeps the no-promise fallback.
+  const trashCopy = page
+    ? (page.source === 'standalone' ? trashConfirmCopy(page.descendantCount) : confluenceDeleteConfirmCopy())
+    : trashConfirmCopy(undefined);
   const confirmTrashDialog = (
     <ConfirmDialog
       open={confirmTrashOpen}
-      title="Move page to trash?"
-      description="It can be restored from Trash for 30 days, then it is permanently deleted."
-      confirmLabel="Move to trash"
+      title={trashCopy.title}
+      description={trashCopy.description}
+      confirmLabel={trashCopy.confirmLabel}
       destructive
       onConfirm={handleConfirmMoveToTrash}
       onCancel={() => setConfirmTrashOpen(false)}
@@ -946,11 +1071,21 @@ export function ArticleRightPane({
       onClose={() => setRelocateOpen(false)}
     />
   ) : null;
+  const confirmResyncDialog = (
+    <ConfirmDialog
+      open={confirmResyncOpen}
+      title="Pull the latest version from Confluence?"
+      description="The local title and content are replaced with the current Confluence version and the page is re-indexed for search. Labels and any unpublished draft are kept."
+      confirmLabel="Pull from Confluence"
+      onConfirm={handleConfirmResync}
+      onCancel={() => setConfirmResyncOpen(false)}
+    />
+  );
 
   // Collapsed rail — reading gutter + one overflow. Expand, Outline,
-  // Assistant and Pin stay first-class; everything that lives behind
-  // "More actions" on the expanded Details tab stays behind one More
-  // control here too. Delete is still absent: collapse must not promote it.
+  // Assistant and Pin stay first-class; the page and maintenance actions the
+  // expanded Details tab lists stay behind one More control here. Delete is
+  // still absent: collapse must not promote it.
   if (collapsed) {
     const railIconBtn =
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
@@ -1034,7 +1169,7 @@ export function ArticleRightPane({
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               Expand inspector · .
             </span>
@@ -1063,7 +1198,7 @@ export function ArticleRightPane({
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               AI Assistant · {assistantHint}
             </span>
@@ -1106,7 +1241,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   Outline · {headings.length} · same as the Outline tab
                 </span>
@@ -1143,7 +1278,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   Notes · {openNotesCount} open · Alt+N
                 </span>
@@ -1174,7 +1309,7 @@ export function ArticleRightPane({
               </button>
               <span
                 role="tooltip"
-                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 Page details
               </span>
@@ -1211,7 +1346,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   More page actions
                 </span>
@@ -1321,18 +1456,19 @@ export function ArticleRightPane({
                     )}
                     {page.confluenceId && (
                       <button
-                        onClick={handleResync}
+                        onClick={openResyncConfirm}
                         disabled={resyncMutation.isPending}
+                        aria-busy={resyncMutation.isPending}
                         className={railMenuItem}
-                        aria-label="Re-sync from Confluence"
-                        title="Re-sync from Confluence"
+                        aria-label="Pull latest from Confluence"
+                        title="Pull latest from Confluence"
                         data-testid="article-resync-rail-btn"
                       >
                         <RefreshCw
                           size={15}
                           className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
                         />
-                        <span className="truncate">Re-sync</span>
+                        <span className="truncate">Pull from Confluence…</span>
                       </button>
                     )}
                     <button
@@ -1431,10 +1567,33 @@ export function ArticleRightPane({
       </AnimatePresence>
       </div>
       {confirmTrashDialog}
+      {confirmResyncDialog}
       {relocateDialog}
       </>
     );
   }
+
+  // The Details tab's content edge and row recipe: 32px rows, 13px labels,
+  // 6px corners, one Steel focus ring. Destructive rows take
+  // `nm-action-destructive` (its own Steel outline) instead of the ring.
+  const isStandalone = page?.source === 'standalone';
+  const sourceTitle = isStandalone
+    ? (page?.spaceKey ? `Local space · ${page.spaceKey}` : 'Local space')
+    : (page?.spaceKey ? `Confluence · ${page.spaceKey}` : 'Confluence');
+  // One absolute stamp (day precision, with the year) is the visible date;
+  // time-of-day belongs in the `title` — the inspector's rule since #1673.
+  const lastSyncedStamp = page?.lastSynced ? formatDateStamp(page.lastSynced) : null;
+  const lastSyncedExact = page?.lastSynced ? new Date(page.lastSynced).toLocaleString() : null;
+  const actionRowShape = 'flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-medium';
+  const actionRowBase = cn(
+    actionRowShape,
+    'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+  );
+  const actionRowIdle = 'text-muted-foreground hover:bg-muted hover:text-foreground';
+  const actionRowClass = cn(actionRowBase, actionRowIdle);
+  const destructiveRowClass = cn('nm-action-destructive', actionRowShape);
+  const deleteHint = formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac());
+  const detailRowClass = 'flex items-center justify-between gap-3 py-1.5';
 
   return (
     <>
@@ -1468,19 +1627,17 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
+      <div className="panel-toolbar absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
-            and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
-            inset, one raised active segment. The track's own `border-border`
-            came off on 2026-08-31 with the rest of the panel's lines — the fill
-            is 1.161:1 on Pane in Paper and carries the boundary alone, which is
-            what the Notes filter track beside it was already doing. The active
-            chip's edge is now the only line in the control, and it moved to
-            --color-border-interactive so the selected state still clears
-            1.4.11 (see `panel-tab-active`). */}
+            and the search-mode toggle: `rounded-md` track, 2px inset, one raised
+            active segment. The track's own `border-border` came off on 2026-08-31
+            with the rest of the panel's lines. Paper paints `panel-tab-track`
+            (muted mixed halfway to Pane) so the trough is a light step under the
+            white chip rather than a grey well on the glass toolbar; Graphite
+            keeps muted. The active chip's elevation is `panel-tab-active`. */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md bg-muted p-0.5"
+          className="panel-tab-track grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
@@ -1573,18 +1730,21 @@ export function ArticleRightPane({
           <FileText size={13} />
           Details
           {openNotesCount > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+            <span className="tabular-nums text-xs text-muted-foreground">
+              {openNotesCount}<span className="sr-only"> open {openNotesCount === 1 ? 'note' : 'notes'}</span>
+            </span>
           )}
         </button>
         </div>
 
         <button
+          type="button"
           onClick={isSheet ? onRequestClose : handleCollapseSidebar}
-          className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="nm-icon-button shrink-0"
           aria-label={isSheet ? 'Close page inspector' : 'Collapse page sidebar'}
           title={isSheet ? 'Close inspector' : 'Collapse sidebar (.)'}
         >
-          <PanelRightClose size={14} />
+          {isSheet ? <X size={16} aria-hidden="true" /> : <PanelRightClose size={16} aria-hidden="true" />}
         </button>
       </div>
 
@@ -1613,131 +1773,262 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {activeInspectorView === 'details' && (
+      {(detailsMounted || activeInspectorView === 'details') && (
       <div
+        key={id ?? 'new'}
         id="page-context-panel-details"
         role="tabpanel"
-        aria-labelledby="page-context-tab-details"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
+        aria-label="Details"
+        hidden={activeInspectorView !== 'details'}
+        className={cn(
+          'min-h-0 flex-1 overflow-y-auto scroll-mask pt-12',
+          activeInspectorView !== 'details' && 'hidden',
+        )}
       >
       {isNewPage ? (
         <div className="px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
+          <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
           <p className="mt-2 text-xs text-muted-foreground">
             Configure space, title, and content, then click Create Page to publish.
           </p>
         </div>
       ) : page ? (
         <div className="px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
-          {/* Label/value pairs, no rules. The dividers here drew six lines in a
-              320px pane to separate rows that a 32px rhythm and the
-              muted-label/ink-value contrast already separate — and the sections
-              below ("Document health", "Labels") never had them. */}
-          <dl className="mt-2 text-xs">
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Space</dt>
-              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Source</dt>
-              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
-                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
-                {canRelocate && !editing && (
-                  <button
-                    type="button"
-                    onClick={() => setRelocateOpen(true)}
-                    data-testid="relocate-btn"
-                    title={
-                      page.source === 'standalone'
-                        ? 'Publish this article into a Confluence space'
-                        : 'Pull this page out of Confluence into a local space'
-                    }
-                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  >
-                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
-                  </button>
-                )}
-              </dd>
-            </div>
-            {page.source === 'standalone' && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Visibility</dt>
-                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                  {page.visibility === 'shared' ? (
-                    <><Globe size={13} className="text-muted-foreground" /> Shared</>
-                  ) : (
-                    <><Lock size={13} className="text-muted-foreground" /> Private</>
-                  )}
-                </dd>
-              </div>
-            )}
-            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Draft</dt>
-                <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                  <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
-                </dd>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Type</dt>
-              <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
-                {page.pageType === 'folder'
-                  ? <><FolderOpen size={13} className="text-muted-foreground" /> Folder</>
-                  : <><FileText size={13} className="text-muted-foreground" /> Article</>}
-              </dd>
-            </div>
-            {page.author && (
-              <div className="flex items-center justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">Author</dt>
-                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Version</dt>
-              <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
-            </div>
-          </dl>
-
-          <div className="mt-4">
-            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
-            <div className="mt-1.5 mb-2.5 flex items-center gap-2 text-xs font-medium text-foreground/85">
-              <span
-                className={cn(
-                  'size-2 rounded-full shrink-0',
-                  overallHealth.tone === 'warning' && 'bg-warning',
-                  overallHealth.tone === 'active' && 'bg-status-ai animate-pulse',
-                  overallHealth.tone === 'healthy' && 'bg-success',
-                  overallHealth.tone === 'neutral' && 'bg-muted-foreground/60',
-                )}
-                aria-hidden="true"
-              />
-              <span>{overallHealth.label}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
-              <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                data-testid="verification-chip"
-              >
-                <ShieldCheck size={11} aria-hidden="true" />
-                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
+          <section data-testid="details-source">
+            <h3 className="text-xs font-semibold text-foreground">Source</h3>
+            <div className="mt-3 flex min-w-0 items-center gap-2">
+              <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-md', neutralChipInk)}>
+                {isStandalone ? <FolderOpen size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}
               </span>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold text-foreground" title={sourceTitle}>
+                  {sourceTitle}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {isStandalone ? 'Stored in Compendiq only' : 'Synced from Confluence Data Center'}
+                </div>
+              </div>
+            </div>
+            {settings?.confluenceUrl && page.confluenceId && (
+              <a
+                href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-flex h-8 items-center gap-1.5 rounded text-xs text-primary-ink underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ExternalLink size={13} className="shrink-0" aria-hidden="true" />
+                <span>Open in Confluence</span>
+              </a>
+            )}
+
+            <dl className="mt-2 text-xs">
+              {isStandalone ? (
+                <>
+                  <div className={detailRowClass}>
+                    <dt className="text-muted-foreground">Visibility</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                      {page.visibility === 'shared' ? (
+                        <><Globe size={13} className="text-muted-foreground" aria-hidden="true" /> Shared</>
+                      ) : (
+                        <><Lock size={13} className="text-muted-foreground" aria-hidden="true" /> Private</>
+                      )}
+                    </dd>
+                  </div>
+                  <div className={detailRowClass}>
+                    <dt className="text-muted-foreground">Type</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                      {page.pageType === 'folder'
+                        ? <><FolderOpen size={13} className="text-muted-foreground" aria-hidden="true" /> Folder</>
+                        : <><FileText size={13} className="text-muted-foreground" aria-hidden="true" /> Article</>}
+                    </dd>
+                  </div>
+                  {page.author && (
+                    <div className={detailRowClass}>
+                      <dt className="text-muted-foreground">Author</dt>
+                      <dd className="min-w-0 break-words text-right font-medium text-foreground/85">{page.author}</dd>
+                    </div>
+                  )}
+                  <div className={detailRowClass}>
+                    <dt className="text-muted-foreground">Version</dt>
+                    <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
+                  </div>
+                  {page.hasDraft && (
+                    <div className={detailRowClass}>
+                      <dt className="text-muted-foreground">Draft</dt>
+                      <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                        <AlertCircle size={13} className="text-muted-foreground" aria-hidden="true" /> Unpublished draft
+                      </dd>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {page.lastSynced && (
+                    <div className="flex items-start justify-between gap-3 py-1.5">
+                      <dt className="text-muted-foreground">Last synced</dt>
+                      <dd className="min-w-0 text-right" title={lastSyncedExact ?? undefined}>
+                        <time dateTime={page.lastSynced} className="block font-medium text-foreground/85">
+                          {formatRelativeTime(page.lastSynced)}
+                        </time>
+                        <span className="block tabular-nums text-muted-foreground" data-testid="last-synced-exact">
+                          {lastSyncedStamp}
+                        </span>
+                      </dd>
+                    </div>
+                  )}
+                  <div className={detailRowClass}>
+                    <dt className="text-muted-foreground">Version</dt>
+                    <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
+                  </div>
+                  <div className={detailRowClass}>
+                    <dt className="text-muted-foreground">Type</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
+                      {page.pageType === 'folder'
+                        ? <><FolderOpen size={13} className="text-muted-foreground" aria-hidden="true" /> Folder</>
+                        : <><FileText size={13} className="text-muted-foreground" aria-hidden="true" /> Article</>}
+                    </dd>
+                  </div>
+                  {page.author && (
+                    <div className={detailRowClass}>
+                      <dt className="text-muted-foreground">Author</dt>
+                      <dd className="min-w-0 break-words text-right font-medium text-foreground/85">{page.author}</dd>
+                    </div>
+                  )}
+                </>
+              )}
+            </dl>
+
+            {!editing && !isStandalone && page.confluenceId && (
               <button
                 type="button"
-                onClick={() => { void handleVerify(); }}
-                disabled={verifyMutation.isPending}
-                data-testid="verify-btn"
-                aria-busy={verifyMutation.isPending}
-                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                onClick={openResyncConfirm}
+                disabled={resyncMutation.isPending}
+                aria-busy={resyncMutation.isPending}
+                data-testid="article-resync-btn"
+                className="nm-button-ghost mt-2 h-8 px-3 text-xs"
               >
-                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
+                <RefreshCw
+                  size={13}
+                  className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                  aria-hidden="true"
+                />
+                <span>{resyncMutation.isPending ? 'Pulling from Confluence…' : 'Pull latest from Confluence…'}</span>
               </button>
-              {verifyStatusMsg && (
-                <span className="sr-only" role="status" aria-live="polite">
-                  {verifyStatusMsg}
-                </span>
+            )}
+            {!editing && isStandalone && canRelocate && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setRelocateOpen(true)}
+                  data-testid="relocate-btn"
+                  aria-describedby="relocate-btn-note"
+                  className="nm-button-ghost h-8 px-3 text-xs"
+                >
+                  <ArrowRightLeft size={13} className="shrink-0 opacity-70" aria-hidden="true" />
+                  <span>Move to Confluence…</span>
+                </button>
+                <p id="relocate-btn-note" className="mt-1 text-xs text-muted-foreground">
+                  Confluence becomes the source of record.
+                </p>
+              </div>
+            )}
+          </section>
+
+          <section className="mt-5" data-testid="document-health">
+            <h3 className="text-xs font-semibold text-foreground">Document health</h3>
+            <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
+              {overallHealth.tone === 'active' ? (
+                <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
+              ) : overallHealth.tone === 'warning' ? (
+                <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+              ) : (
+                <Cpu size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
               )}
+              <span data-testid="document-health-summary">{overallHealth.label}</span>
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5" data-testid="document-health-actions">
+              {overallHealth.remedy === 'index' && (
+                <HealthAction
+                  onClick={handleReembed}
+                  pending={reembedMutation.isPending}
+                  icon={Cpu}
+                  label="Index now"
+                  pendingLabel="Queuing…"
+                  testId="health-remedy-index"
+                />
+              )}
+              {overallHealth.remedy === 'retry-index' && (
+                <HealthAction
+                  onClick={handleReembed}
+                  pending={reembedMutation.isPending}
+                  icon={RefreshCw}
+                  label="Retry indexing"
+                  pendingLabel="Queuing…"
+                  testId="health-remedy-retry-index"
+                />
+              )}
+              {overallHealth.remedy === 'requality' && (
+                <HealthAction
+                  onClick={handleRequality}
+                  pending={requalityMutation.isPending}
+                  icon={Gauge}
+                  label="Re-check quality"
+                  pendingLabel="Queuing…"
+                  testId="health-remedy-requality"
+                />
+              )}
+              {overallHealth.remedy === 'assistant' && (
+                <HealthAction
+                  onClick={openAssistantTab}
+                  icon={Sparkles}
+                  label="Open Assistant"
+                  testId="health-open-assistant"
+                />
+              )}
+              <HealthAction
+                onClick={() => { void handleVerify(); }}
+                pending={verifyMutation.isPending}
+                icon={CheckCircle2}
+                label="Record verification"
+                pendingLabel="Recording…"
+                testId="verify-btn"
+                title="Record that this article has been reviewed and verified for accuracy"
+              />
+              {overallHealth.remedy !== 'index' && overallHealth.remedy !== 'retry-index' && (
+                <HealthAction
+                  onClick={handleReembed}
+                  pending={reembedMutation.isPending}
+                  icon={Cpu}
+                  label="Re-index for search"
+                  pendingLabel="Queuing…"
+                  testId="article-reembed-btn"
+                />
+              )}
+              {overallHealth.remedy !== 'requality' && (
+                <HealthAction
+                  onClick={handleRequality}
+                  pending={requalityMutation.isPending}
+                  icon={Gauge}
+                  label="Re-check quality"
+                  pendingLabel="Queuing…"
+                  testId="article-requality-btn"
+                />
+              )}
+            </div>
+            {/* Mounted permanently: a live region inserted together with its
+                text is the case assistive tech is least reliable about. */}
+            <span className="sr-only" role="status" aria-live="polite" data-testid="verify-announcer">
+              {verifyStatusMsg}
+            </span>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
+              <span
+                className={statusChipClass}
+                data-testid="verification-chip"
+                title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
+              >
+                <ShieldCheck size={12} className="shrink-0" aria-hidden="true" />
+                <span>{verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}</span>
+              </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
               <EmbeddingStatusBadge
                 embeddingStatus={page.embeddingStatus}
@@ -1746,9 +2037,10 @@ export function ArticleRightPane({
                 embeddingError={page.embeddingError}
                 onRetry={handleReembed}
               />
-              {page.qualityScore !== undefined && page.qualityScore !== null && (
+              {(page.qualityScore !== undefined && page.qualityScore !== null || page.qualityStatus) && (
                 <QualityScoreBadge
-                  qualityScore={page.qualityScore}
+                  showDetails={activeInspectorView === 'details'}
+                  qualityScore={page.qualityScore ?? null}
                   qualityStatus={page.qualityStatus ?? null}
                   qualityCompleteness={page.qualityCompleteness}
                   qualityClarity={page.qualityClarity}
@@ -1761,233 +2053,180 @@ export function ArticleRightPane({
                 />
               )}
             </div>
-          </div>
+          </section>
 
-          {page.labels.length > 0 && (
-            <div className="mt-4">
-              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+          {id && (
+            <PageLifecycleSection pageId={id} page={page} />
+          )}
+
+          <section className="mt-5">
+            <h3 className="text-xs font-semibold text-foreground">Labels</h3>
+            {page.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
                 {page.labels.map((label) => (
                   <span
                     key={label}
-                    className="inline-flex items-center rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className={`inline-flex min-h-6 max-w-full items-center break-words rounded-md border border-border px-2 text-xs font-medium ${neutralChipInk}`}
                   >
                     {label}
                   </span>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="mt-1.5 text-xs text-muted-foreground">No labels assigned</p>
+            )}
+          </section>
         </div>
       ) : null}
-
-
-      {page && id && aiAutoTagAvailable && editing && (
-        <div className="px-2 pb-3 pt-5" data-testid="article-actions-edit">
-          <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
-            Page actions
-          </div>
-          <AutoTagger
-            pageId={id}
-            currentLabels={page?.labels ?? []}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-          />
-        </div>
-      )}
-
-      {!editing && page && (
-        <div className="space-y-0.5 px-2 pb-3 pt-5" data-testid="article-actions">
-          <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
-            Page actions
-          </div>
-
-          {id && (
-            <VersionHistory
-              pageId={id}
-              renderTrigger={(historyOpen) => (
-                <button
-                  type="button"
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-                    historyOpen
-                      ? 'nav-selection font-medium outline-none'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                  title="Version history"
-                >
-                  <History size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Version history</span>
-                </button>
-              )}
-            />
-          )}
-
-          <button
-            onClick={handlePinToggle}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-              isPinned
-                ? 'nav-selection font-medium outline-none'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-            title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
-          >
-            <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} />
-            <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
-          </button>
-
-          <details className="group mt-3">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <ChevronRight
-                size={13}
-                className="shrink-0 transition-transform group-open:rotate-90"
-                aria-hidden="true"
-              />
-              <span className="flex-1">More actions</span>
-            </summary>
-            <div className="mt-1 space-y-0.5">
-              <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-semibold text-muted-foreground">
-                Navigation &amp; Export
-              </div>
-              {id && (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                  title="Show this page in the graph"
-                  data-testid="show-in-graph-btn"
-                >
-                  <GitGraph size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Show in Graph</span>
-                </button>
-              )}
-
-              {settings?.confluenceUrl && page.confluenceId && (
-                <a
-                  href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                >
-                  <ExternalLink size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Open in Confluence</span>
-                </a>
-              )}
-
-              <button
-                onClick={handleExportPdf}
-                disabled={exportPdf.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-                title="Export as PDF"
-              >
-                {exportPdf.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <FileDown size={15} className="shrink-0 opacity-70" />
-                )}
-                <span className="truncate">Export PDF</span>
-              </button>
-
-              <div className="px-2 pt-2 pb-0.5 text-[11px] font-semibold text-muted-foreground">
-                Maintenance &amp; AI
-              </div>
-              {id && aiAutoTagAvailable && (
-                <AutoTagger
-                  pageId={id}
-                  currentLabels={page?.labels ?? []}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                />
-              )}
-
-              {/* Re-sync from Confluence — only for Confluence-sourced articles.
-                  Locally-authored pages have no upstream to pull from. */}
-              {page?.confluenceId && (
-                <button
-                  type="button"
-                  onClick={handleResync}
-                  disabled={resyncMutation.isPending}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-                  title="Re-sync from Confluence"
-                  data-testid="article-resync-btn"
-                >
-                  <RefreshCw
-                    size={15}
-                    className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                  />
-                  <span className="truncate">Re-sync</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={handleReembed}
-                disabled={reembedMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-                title="Re-embed for search"
-                data-testid="article-reembed-btn"
-              >
-                {reembedMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Cpu size={15} className="shrink-0 opacity-70" />
-                )}
-                <span className="truncate">Re-embed</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleRequality}
-                disabled={requalityMutation.isPending}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
-                title="Re-check quality"
-                data-testid="article-requality-btn"
-              >
-                {requalityMutation.isPending ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                ) : (
-                  <Gauge size={15} className="shrink-0 opacity-70" />
-                )}
-                <span className="truncate">Re-check Quality</span>
-              </button>
-            </div>
-          </details>
-
-          <details className="group mt-1">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <ChevronRight
-                size={13}
-                className="shrink-0 transition-transform group-open:rotate-90"
-                aria-hidden="true"
-              />
-              Danger zone
-            </summary>
-            <Button
-              variant="destructive-ghost"
-              size="sm"
-              onClick={handleDelete}
-              className="nm-action-destructive mt-0.5 w-full justify-start gap-2"
-              title={`Move to trash (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
-              leftIcon={<Trash2 size={15} className="shrink-0 opacity-70" />}
-            >
-              <span className="truncate">Move to trash</span>
-            </Button>
-          </details>
-        </div>
-      )}
       {id && page && (
-        <div id="details-notes-section" className="px-3 pb-5 pt-3" data-testid="details-notes-section">
+        <div id="details-notes-section" className="px-3 pb-4" data-testid="details-notes-section">
           <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
+            <h3 className="text-xs font-semibold text-foreground">Notes</h3>
             {openNotesCount > 0 && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
+              <span className="text-xs font-medium text-muted-foreground tabular-nums">
                 {openNotesCount} open
               </span>
             )}
           </div>
-          <div className="overflow-hidden rounded-lg border border-border bg-card">
-            <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
-          </div>
+          <NotesInspectorPanel pageId={id} className="max-h-[420px]" />
         </div>
+      )}
+
+
+      {page && id && aiAutoTagAvailable && editing && (
+        <div className="px-3 pb-4" data-testid="article-actions-edit">
+          <h3 className="mb-2 text-xs font-semibold text-foreground">
+            Page actions
+          </h3>
+          <AutoTagger
+            pageId={id}
+            currentLabels={page.labels}
+            className={actionRowClass}
+          />
+        </div>
+      )}
+
+      {!editing && page && activeInspectorView === 'details' && (
+        <section className="px-3 pb-5" data-testid="article-actions">
+          <h3 className="mb-2 text-xs font-semibold text-foreground">
+            Page actions
+          </h3>
+
+          <div className="space-y-0.5">
+            {id && (
+              <VersionHistory
+                pageId={id}
+                renderTrigger={(historyOpen) => (
+                  <button
+                    type="button"
+                    className={cn(actionRowBase, historyOpen ? 'nav-selection' : actionRowIdle)}
+                    title="Version history"
+                  >
+                    <History size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+                    <span className="truncate">Version history</span>
+                  </button>
+                )}
+              />
+
+            )}
+
+            <button
+              type="button"
+              onClick={handlePinToggle}
+              aria-pressed={isPinned}
+              className={cn(actionRowBase, isPinned ? 'nav-selection' : actionRowIdle)}
+              title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
+            >
+              <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} aria-hidden="true" />
+              <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
+            </button>
+
+            {id && (
+              <button
+                type="button"
+                onClick={() => navigate(`/graph?focus=${encodeURIComponent(id)}`)}
+                className={actionRowClass}
+                data-testid="show-in-graph-btn"
+              >
+                <GitGraph size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+                <span className="truncate">Show in graph</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={exportPdf.isPending}
+              aria-busy={exportPdf.isPending}
+              className={actionRowClass}
+            >
+              {exportPdf.isPending ? (
+                <Loader2 size={15} className="shrink-0 animate-spin opacity-70" aria-hidden="true" />
+              ) : (
+                <FileDown size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+              )}
+              <span className="truncate">Export PDF</span>
+            </button>
+
+            {id && aiAutoTagAvailable && (
+              <AutoTagger
+                pageId={id}
+                currentLabels={page.labels}
+                className={actionRowClass}
+              />
+            )}
+
+            {/* A local page's delete is a 30-day restorable trash, so it is an
+                ordinary row. A Confluence page's delete is irreversible and goes
+                upstream, so it sits behind the Danger zone below instead. */}
+            {isStandalone && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                className={destructiveRowClass}
+                title={`Move to trash (${deleteHint})`}
+              >
+                <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+                <span className="truncate">Move to trash</span>
+              </button>
+            )}
+          </div>
+
+          {!isStandalone && (
+            <details className="group mt-2" data-testid="danger-zone">
+              <summary className={cn(destructiveRowClass, 'cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden')}>
+                <ChevronRight
+                  size={13}
+                  className="shrink-0 transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
+                Danger zone
+              </summary>
+              <div className="mt-0.5 space-y-0.5">
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className={destructiveRowClass}
+                  title={`Delete in Confluence (${deleteHint})`}
+                >
+                  <Trash2 size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+                  <span className="truncate">Delete in Confluence…</span>
+                </button>
+                {canRelocate && (
+                  <button
+                    type="button"
+                    onClick={() => setRelocateOpen(true)}
+                    data-testid="relocate-local-btn"
+                    className={cn(destructiveRowClass, 'h-auto min-h-8 items-start py-1.5')}
+                  >
+                    <ArrowRightLeft size={15} className="mt-0.5 shrink-0 opacity-70" aria-hidden="true" />
+                    <span className="min-w-0">Move to a local space — deletes the Confluence page</span>
+                  </button>
+                )}
+              </div>
+            </details>
+          )}
+        </section>
       )}
       </div>
       )}
@@ -1995,9 +2234,10 @@ export function ArticleRightPane({
       {activeInspectorView === 'outline' && (
       <div
         id="page-context-panel-outline"
+        ref={expandedTreeRef}
         role="tabpanel"
         aria-labelledby="page-context-tab-outline"
-        className="min-h-0 flex flex-1 flex-col"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
@@ -2018,8 +2258,7 @@ export function ArticleRightPane({
 
         {/* Outline tree — with scroll mask */}
         <div
-          ref={expandedTreeRef}
-          className="mt-1 flex-1 overflow-y-auto p-2 scroll-mask"
+          className="mt-1 p-2"
           data-testid="article-outline-tree"
         >
         {headings.length === 0 ? (
@@ -2053,43 +2292,51 @@ export function ArticleRightPane({
       </div>
       )}
 
-    </m.aside>
-    {!isSheet && (
-      <div
-        role="separator"
-        aria-label="Resize page sidebar"
-        aria-orientation="vertical"
-        aria-valuemin={ARTICLE_SIDEBAR_MIN_WIDTH}
-        aria-valuemax={ARTICLE_SIDEBAR_MAX_WIDTH}
-        aria-valuenow={width}
-        tabIndex={0}
-        onMouseDown={handleResizeStart}
-        onDoubleClick={() => setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH)}
-        onKeyDown={handleResizeKeyDown}
-        className={cn(
-          'group absolute inset-y-0 left-0 z-10 cursor-col-resize outline-none',
-          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-        )}
-        style={{ width: 'var(--app-rail-gap)' }}
-        title="Drag to resize · Double-click to reset"
-      >
-        <span
-          data-testid="article-right-pane-resize-grip"
+      {/* Resize handle — on the left operable edge, matching the tree's resize affordance */}
+      {!isSheet && (
+        <div
+          role="separator"
+          aria-label="Resize page sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={ARTICLE_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={ARTICLE_SIDEBAR_MAX_WIDTH}
+          aria-valuenow={width}
+          aria-valuetext={`${width} pixels`}
+          tabIndex={0}
+          onMouseDown={handleResizeStart}
+          onDoubleClick={() => setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH)}
+          onKeyDown={handleResizeKeyDown}
           className={cn(
-            'pointer-events-none absolute top-1/2 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
-            'group-hover:opacity-100 group-focus-visible:opacity-100',
-            isResizing && 'opacity-100',
+            'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
+            'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           )}
-          style={{ left: 'calc((var(--app-rail-gap) - 2px) / 2)' }}
-          aria-hidden="true"
+          title="Drag to resize · Double-click to reset"
         >
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-          <span className="size-0.5 rounded-full bg-muted-foreground" />
-        </span>
-      </div>
-    )}
+          <span
+            className={cn(
+              'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+              isResizing && 'bg-action/70',
+            )}
+            aria-hidden="true"
+          />
+          <span
+            data-testid="article-right-pane-resize-grip"
+            className={cn(
+              'pointer-events-none absolute top-1/2 left-0.5 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
+              'group-hover:opacity-100 group-focus-visible:opacity-100',
+              isResizing && 'opacity-100',
+            )}
+            aria-hidden="true"
+          >
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+            <span className="size-0.5 rounded-full bg-muted-foreground" />
+          </span>
+        </div>
+      )}
+    </m.aside>
     {confirmTrashDialog}
+    {confirmResyncDialog}
     {relocateDialog}
     </>
   );

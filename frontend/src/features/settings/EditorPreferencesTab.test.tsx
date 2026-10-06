@@ -226,7 +226,7 @@ describe('EditorPreferencesTab on-device shells (#1418)', () => {
     expect(screen.queryByTestId('client-inference-clear-model')).not.toBeInTheDocument();
   });
 
-  it('renders "Downloaded & ready" badge and action buttons when model is cached', async () => {
+  it('renders the "Downloaded" badge, size, and action buttons when model is cached', async () => {
     const mgr = getClientInferenceManager();
     vi.spyOn(mgr, 'isModelDownloaded').mockResolvedValue(true);
     vi.spyOn(apiModule, 'apiFetch').mockImplementation(async (path: string) => {
@@ -255,7 +255,8 @@ describe('EditorPreferencesTab on-device shells (#1418)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('client-inference-status-downloaded')).toBeInTheDocument();
     });
-    expect(screen.getByText('Downloaded & ready')).toBeInTheDocument();
+    // Storage, not readiness: the badge must not claim the GPU model is ready.
+    expect(screen.getByTestId('client-inference-status-downloaded')).toHaveTextContent(/^Downloaded$/);
     expect(screen.getByRole('button', { name: 'Re-download on-device model' })).toBeInTheDocument();
     expect(screen.getByTestId('client-inference-clear-model')).toBeInTheDocument();
     expect(screen.getByText(/250 MB/)).toBeInTheDocument();

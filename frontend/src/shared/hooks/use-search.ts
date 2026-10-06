@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { PageIcon } from '@compendiq/contracts';
+import type { PageIcon, PageSource } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
 export interface SearchResultItem {
   id: string | number;
   confluenceId?: string | null;
+  source: PageSource;
   title: string;
   spaceKey: string | null;
   icon?: PageIcon | null;
@@ -29,12 +30,20 @@ export interface SearchResultItem {
    * percentage in [0,100] — `/pages` shows it only when positive.
    */
   similarity: number | null;
+  /**
+   * #277 freeze summary. Optional because a server that predates the fields
+   * sends none, and absent must read as "not known to be frozen" — never as
+   * frozen, which would put a lock on every row of an older deployment.
+   */
+  isFrozen?: boolean;
+  frozenVersion?: number | null;
 }
 
 interface SearchApiResponse {
   items: Array<{
     id: string | number;
     confluenceId?: string | null;
+    source: PageSource;
     title: string;
     spaceKey: string | null;
     snippet?: string;
@@ -42,6 +51,8 @@ interface SearchApiResponse {
     score?: number;
     similarity?: number | null;
     icon?: PageIcon | null;
+    isFrozen?: boolean;
+    frozenVersion?: number | null;
   }>;
   total: number;
   page: number;
@@ -63,6 +74,7 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
   return response.items.map((item) => ({
     id: item.id,
     confluenceId: item.confluenceId,
+    source: item.source,
     title: item.title,
     spaceKey: item.spaceKey,
     excerpt: item.snippet ?? '',
@@ -71,6 +83,8 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
     // 0 — a page nobody measured must render no figure, not "0%".
     similarity: item.similarity ?? null,
     icon: item.icon ?? null,
+    isFrozen: item.isFrozen,
+    frozenVersion: item.frozenVersion ?? null,
   }));
 }
 
@@ -98,6 +112,8 @@ interface UseSearchResult {
   enhancedResults: SearchResultItem[] | undefined;
   isLoadingImmediate: boolean;
   isLoadingEnhanced: boolean;
+  /** Active rows belong to the current input and filters, not retained placeholders. */
+  hasCurrentResults: boolean;
   /**
    * Whether the user has any page embeddings. Derived from the ENHANCED
    * response: the immediate query is always mode=keyword, where the backend
@@ -211,13 +227,15 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   const degradedReason = signalResponse?.degradedReason ?? null;
 
   // Use the active response for pagination metadata
-  const activeResponse = (mode !== 'keyword' && enhancedQuery.data) ? enhancedQuery.data : immediateQuery.data;
+  const activeQuery = (mode !== 'keyword' && enhancedQuery.data) ? enhancedQuery : immediateQuery;
+  const activeResponse = activeQuery.data;
 
   return {
     immediateResults: immediateQuery.data ? mapItems(immediateQuery.data) : [],
     enhancedResults: enhancedQuery.data ? mapItems(enhancedQuery.data) : undefined,
     isLoadingImmediate: immediateQuery.isLoading,
     isLoadingEnhanced: enhancedQuery.isLoading,
+    hasCurrentResults: query.trim() === trimmedQuery && !!activeResponse && !activeQuery.isPlaceholderData,
     hasEmbeddings,
     embeddingCoverage,
     degradedReason,

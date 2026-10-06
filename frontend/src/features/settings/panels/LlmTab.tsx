@@ -8,11 +8,11 @@ import type {
   UsecaseAssignments,
   UpdateUsecaseAssignmentsInput,
 } from '@compendiq/contracts';
-import { LlmUsecaseSchema } from '@compendiq/contracts';
-import { apiFetch } from '../../../shared/lib/api';
+import { LlmUsecaseSchema, IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT } from '@compendiq/contracts';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
+import { reanalysisDisclosure } from './image-analysis-copy';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
-import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
@@ -28,6 +28,19 @@ const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 const DEFAULT_CONCURRENT_STREAMS_CAP = 3;
 const MIN_CONCURRENT_STREAMS_CAP = 1;
 const MAX_CONCURRENT_STREAMS_CAP = 20;
+
+/**
+ * #1615 — headlines for the four reasons the image-analysis assignment PUT
+ * refuses with (ADR-027 D3). The server's `error` is the sentence with the
+ * remedy; this is the line above it. Deliberately distinguishes a NEGATIVE
+ * verdict (text-only) from an UNCONFIRMED one.
+ */
+const IMAGE_ANALYSIS_REFUSAL_HEADLINE: Record<string, string> = {
+  no_provider: 'Image analysis not saved — provider not found',
+  no_model: 'Image analysis not saved — no model resolves',
+  text_only: 'Image analysis not saved — the model refused the test image',
+  unconfirmed: 'Image analysis not saved — image support could not be confirmed',
+};
 
 export function LlmTab() {
   const qc = useQueryClient();
@@ -72,11 +85,13 @@ export function LlmTab() {
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
   const [shadowMigrationActive, setShadowMigrationActive] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
-  // #1115 — the image leg's MRL truncation width. Same one-shot hydration
+  // #1615 — the image-analysis output-token ceiling. Same one-shot hydration
   // guard as the two above, and dropped by the same post-save reset so the
   // field re-seeds from the value the server actually stored.
-  const [imageTargetDims, setImageTargetDims] = useState<number | null>(null);
-  const [imageTargetInitialized, setImageTargetInitialized] = useState(false);
+  const [imageAnalysisMaxTokens, setImageAnalysisMaxTokens] = useState<number>(
+    IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
+  );
+  const [imageAnalysisMaxTokensInitialized, setImageAnalysisMaxTokensInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
   // keeps the setState out of render (avoids an infinite update loop).
@@ -98,16 +113,19 @@ export function LlmTab() {
     }
   }, [adminSettings, capInitialized]);
 
-  // #1115 — mirror the stored truncation width once. `?? null` covers both an
-  // instance that never set one and a backend older than the field.
+  // #1615 — the image-analysis output-token ceiling. `?? default` covers a
+  // backend older than the field; the contract requires it on read otherwise.
   useEffect(() => {
-    if (adminSettings && !imageTargetInitialized) {
-      setImageTargetDims(adminSettings.imageEmbeddingTargetDimensions ?? null);
-      setImageTargetInitialized(true);
+    if (adminSettings && !imageAnalysisMaxTokensInitialized) {
+      setImageAnalysisMaxTokens(
+        adminSettings.imageAnalysisMaxOutputTokens ?? IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
+      );
+      setImageAnalysisMaxTokensInitialized(true);
     }
-  }, [adminSettings, imageTargetInitialized]);
+  }, [adminSettings, imageAnalysisMaxTokensInitialized]);
 
-  const savedImageTargetDims = adminSettings?.imageEmbeddingTargetDimensions ?? null;
+  const savedImageAnalysisMaxTokens =
+    adminSettings?.imageAnalysisMaxOutputTokens ?? IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT;
 
   const embeddingPending = useMemo(() => {
     if (!rawAssignments || !assignments) return null;
@@ -135,59 +153,55 @@ export function LlmTab() {
     if (!rawAssignments || !assignments) return false;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
     delete diff.embedding;
-    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
-    const imageTargetChanged =
-      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
-    return Object.keys(diff).length > 0 || imageTargetChanged;
+    const imageAnalysisMaxTokensChanged =
+      imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
+    return Object.keys(diff).length > 0 || imageAnalysisMaxTokensChanged;
   }, [
     rawAssignments,
     assignments,
-    imageTargetDims,
-    imageTargetInitialized,
-    savedImageTargetDims,
+    imageAnalysisMaxTokens,
+    imageAnalysisMaxTokensInitialized,
+    savedImageAnalysisMaxTokens,
   ]);
 
   const save = useMutation<
-    { ok: boolean; imageIndexWarning?: string },
+    { ok: boolean; reanalyzeRows?: number },
     Error,
     {
       diff: UpdateUsecaseAssignmentsInput;
-      imageTargetDimensions?: number | null;
+      imageAnalysisMaxOutputTokens?: number;
       keepEmbeddingDraft?: boolean;
     }
   >({
-    // #1115 — two requests, in this order and never the other. The truncation
-    // width is what the probe SENDS, so it has to be stored before the
-    // assignment PUT re-probes; a probe run against the old width would type
-    // the column for a request the leg no longer makes.
-    mutationFn: async ({ diff, imageTargetDimensions }) => {
-      if (imageTargetDimensions !== undefined) {
+    // Two requests, in this order and never the other: one Save writes the
+    // settings row before the assignment PUT, so an admin who changes both in
+    // one gesture cannot end up with half of it.
+    mutationFn: async ({ diff, imageAnalysisMaxOutputTokens }) => {
+      if (imageAnalysisMaxOutputTokens !== undefined) {
         await apiFetch('/admin/settings', {
           method: 'PUT',
-          body: JSON.stringify({ imageEmbeddingTargetDimensions: imageTargetDimensions }),
+          body: JSON.stringify({ imageAnalysisMaxOutputTokens }),
         });
       }
       if (Object.keys(diff).length === 0) return { ok: true };
       return apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) });
     },
-    // #1115 review round 3 — the settings document is re-read on EVERY
-    // outcome, not only success, because the two requests above are not
-    // atomic: a 422 from the assignment PUT (the designed answer when the
-    // probe refuses the pair) leaves the width already persisted by the
-    // request before it. Invalidating only on success left
-    // `savedImageTargetDims` naming the pre-save value while the server held
-    // the new one, so the runbook's own remedy — "clear the field, and save
-    // again" — compared the cleared field against a stale baseline, read as
-    // unchanged, and reported "No changes" over a width the server still had.
+    // The settings document is re-read on EVERY outcome, not only success,
+    // because the two requests above are not atomic: a 422 from the assignment
+    // PUT (the designed answer when the vision probe refuses the pair) leaves
+    // the ceiling already persisted by the request before it. Invalidating
+    // only on success left the saved baseline naming the pre-save value while
+    // the server held the new one, so a corrected re-save compared against a
+    // stale baseline, read as unchanged, and reported "No changes".
     //
-    // Both halves live here rather than in `onSuccess` because React Query
-    // runs `onSettled` LAST: dropping the hydration guard before the refetch
-    // lands re-seeds the field from the stale cache entry and then locks it
-    // there. And the guard is dropped on success ONLY — after a refusal the
-    // admin's typed value must survive so they can correct it in place.
+    // It lives here rather than in `onSuccess` because React Query runs
+    // `onSettled` LAST: dropping the hydration guard before the refetch lands
+    // re-seeds the field from the stale cache entry and then locks it there.
+    // And the guard is dropped on success ONLY — after a refusal the admin's
+    // typed value must survive so they can correct it in place.
     onSettled: async (_result, error) => {
       await qc.invalidateQueries({ queryKey: ['admin-settings'] });
-      if (!error) setImageTargetInitialized(false);
+      if (!error) setImageAnalysisMaxTokensInitialized(false);
     },
     onSuccess: async (result, variables) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
@@ -213,16 +227,29 @@ export function LlmTab() {
       // use-case-keyed entry so dropdowns refresh without a hard reload.
       qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
       qc.invalidateQueries({ queryKey: ['llm', 'models'] });
-      // #1115: the row saved but the image column's DDL did not. Amber, not
-      // green — the assignment landed and the leg is misconfigured behind it,
-      // and the server's sentence names the remedy (Re-check on that row).
-      if (result?.imageIndexWarning) {
-        toast.warning(result.imageIndexWarning);
+      // #1615 — ADR-027 D7: the assignment adopted a new model identity and
+      // the count is what that invalidated. Amber, because the next run will
+      // re-analyze those images (their stored descriptions are kept until
+      // then); a resume answers 0 and takes the ordinary success toast.
+      if (result?.reanalyzeRows !== undefined && result.reanalyzeRows > 0) {
+        toast.warning(reanalysisDisclosure(result.reanalyzeRows));
         return;
       }
       toast.success('Use-case assignments saved');
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      // #1615 — the four machine-readable refusals of the image-analysis PUT
+      // (ADR-027 D3). The server's sentence names the remedy; the reason picks
+      // the headline, so a toast reads as "what happened" before "what to do".
+      // Every other draft survives: the form re-hydrates only on success.
+      const reason = e instanceof ApiError ? e.reason : undefined;
+      const headline = reason ? IMAGE_ANALYSIS_REFUSAL_HEADLINE[reason] : undefined;
+      if (headline) {
+        toast.error(headline, { description: e.message });
+        return;
+      }
+      toast.error(e.message);
+    },
   });
 
   // Runtime-limits mutation is deliberately separate from the use-case save
@@ -269,6 +296,10 @@ export function LlmTab() {
   }
 
   function handleSave() {
+    // In-flight guard: the button stays natively enabled while the mutation
+    // runs (see its `aria-disabled` below), so a second Enter must be refused
+    // here rather than by the browser.
+    if (save.isPending) return;
     if (!assignments || !rawAssignments) return;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
     // An unsaved embedding assignment is started from the row's re-embed
@@ -281,27 +312,20 @@ export function LlmTab() {
     // the raw value would re-send the assignment and re-probe for a width the
     // server already holds. The field clamps on blur too — this is the backstop
     // for a save reached without one, and the clamp is idempotent.
-    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
-    const imageTargetChanged =
-      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
-    if (Object.keys(diff).length === 0 && !imageTargetChanged) {
+    // #1615 — the ceiling is a settings row, saved first for the one-Save
+    // reason, but it is NOT a change to the assignment: it re-sends nothing
+    // and re-probes nothing (ADR-027 D8 — it is outside the retained
+    // identity, and saving it must fire no probe).
+    const imageAnalysisMaxTokensChanged =
+      imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
+    if (Object.keys(diff).length === 0 && !imageAnalysisMaxTokensChanged) {
       toast.message('No changes');
       return;
-    }
-    // #1115 — a changed truncation width IS a change to the image leg, so it
-    // re-sends the saved assignment when the admin did not touch the
-    // dropdowns. Without this the width lands in `admin_settings` and nothing
-    // re-probes: the column keeps its old type while every later call asks for
-    // the new one, and the operator has to discover that Re-check is the
-    // second half of a save they thought they had finished.
-    const savedImageProvider = rawAssignments.image_embedding?.providerId ?? null;
-    if (imageTargetChanged && !diff.image_embedding && savedImageProvider) {
-      diff.image_embedding = { providerId: savedImageProvider };
     }
     save.mutate({
       diff,
       keepEmbeddingDraft: embeddingPending !== null,
-      ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
+      ...(imageAnalysisMaxTokensChanged ? { imageAnalysisMaxOutputTokens: imageAnalysisMaxTokens } : {}),
     });
   }
 
@@ -328,8 +352,8 @@ export function LlmTab() {
         savedAssignments={rawAssignments}
         providers={providers}
         onChange={setAssignments}
-        imageTargetDimensions={imageTargetDims}
-        onImageTargetDimensionsChange={setImageTargetDims}
+        imageAnalysisMaxOutputTokens={imageAnalysisMaxTokens}
+        onImageAnalysisMaxOutputTokensChange={setImageAnalysisMaxTokens}
         embeddingAction={
           <div className="space-y-2">
             <EmbeddingShadowMigrationCard
@@ -386,7 +410,16 @@ export function LlmTab() {
             className={
               embeddingPending && otherAssignmentsDirty ? 'nm-button-ghost' : 'nm-button-primary'
             }
-            disabled={save.isPending || (embeddingPending !== null && !otherAssignmentsDirty)}
+            // `save.isPending` is NOT a native `disabled`: disabling the
+            // focused element blurs it, and the browser moves focus to
+            // <body> — measured on the refusal paths of #1615's probe, where
+            // the admin who pressed Enter lost their place exactly when a
+            // 422 needed reading. `aria-disabled` plus the `handleSave`
+            // guard keeps the control focused and still refuses the second
+            // press. The embedding gate below is a standing "not allowed"
+            // state, not a transient one, so it stays natively disabled.
+            disabled={embeddingPending !== null && !otherAssignmentsDirty}
+            aria-disabled={save.isPending || undefined}
             onClick={handleSave}
             {...(embeddingPending
               ? { 'aria-describedby': 'usecase-save-embedding-hint' }

@@ -10,7 +10,7 @@ export const COLLAB_CARET_PALETTE = [
   '#8A5A3C', // terracotta
   '#7A6238', // bronze
   '#C45C26', // burnt orange
-  '#9A4A6B', // dusty rose
+  '#9C4D6E', // dusty rose
   '#7B5A8B', // muted purple
   '#3D7A80', // ocean
   '#6B6B2B', // olive

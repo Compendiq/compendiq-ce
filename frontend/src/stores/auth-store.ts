@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
+// Used only inside setAuth, so the import cycle (editor-drafts reads this
+// store) never touches an uninitialised binding.
+import { forgetDraftSignOut } from '../shared/lib/editor-drafts';
 
 // One-time migrations for localStorage key renames
 migrateStorageKey('kb-auth', 'compendiq-auth');
@@ -83,6 +86,13 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isAuthenticated: false,
       setAuth: (accessToken, user) => {
+        // A live session for this user lifts the draft refusal an explicit
+        // sign-out left behind — on sign-in and on token refresh alike. A
+        // refresh only succeeds while the server session is live (e.g. the
+        // sign-out's logout request never reached the server), and drafts are
+        // only ever written to this user's own scope. Tabs that adopt this
+        // token via the broadcast share the cleared marker.
+        forgetDraftSignOut(user.id);
         set({ accessToken, user, isAuthenticated: true });
         // Share the fresh token with other tabs in-memory (never via storage).
         postAuthMessage({ type: 'token', accessToken, user });

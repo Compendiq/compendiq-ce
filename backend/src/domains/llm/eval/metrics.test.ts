@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, mcnemarExactTwoSided, winLoss, type QueryRun } from './metrics.js';
+import {
+  recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, mcnemarExactTwoSided, winLoss,
+  clusterBootstrapCi, nonInferiorityVerdict, safetyVerdict, pilotDiscordance, mcnemarPower,
+  type QueryRun, type ClusteredDelta, type ClusterBootstrapCi,
+} from './metrics.js';
 
 // #1102 — the scoring half of the eval harness. Pure functions over recorded
 // runs, so these hold whatever the retrieval stack did. Every expectation is
@@ -264,5 +268,130 @@ describe('winLoss (#1102)', () => {
     // Aggregate recall is unchanged (2/3 → 2/3) while two queries moved: the
     // reason the issue asks for this table alongside the mean.
     expect(recallAtK(baseline, 1)).toBe(recallAtK(candidate, 1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1614 PR2 — ADR-027's statistics. Expectations are computed by hand or from
+// the ADR's own worked figures, never by re-running the implementation.
+// ---------------------------------------------------------------------------
+
+describe('clusterBootstrapCi (#1614 PR2, ADR-027 O3)', () => {
+  it('is pairedBootstrapCi exactly when every cluster holds one query', () => {
+    // Same PRNG, same draw order, same quantile — so a fixture with one label
+    // per page must produce the identical interval, or the two are different
+    // arithmetic for the same data.
+    const baseline = [run('q1', [9], [1]), run('q2', [2], [2]), run('q3', [9], [3]), run('q4', [4], [4]), run('q5', [9], [5])];
+    const candidate = [run('q1', [1], [1]), run('q2', [2], [2]), run('q3', [9], [3]), run('q4', [9], [4]), run('q5', [5], [5])];
+    const score = (r: QueryRun) => recallAtK([r], 1);
+    const plain = pairedBootstrapCi(baseline, candidate, score, { seed: 7, iterations: 500 });
+    const clustered = clusterBootstrapCi(
+      baseline.map((b, i) => ({ queryId: b.queryId, cluster: `page-${i}`, delta: score(candidate[i]!) - score(b) })),
+      { seed: 7, iterations: 500 },
+    );
+    expect(clustered.observedDelta).toBe(plain.observedDelta);
+    expect(clustered.lower).toBe(plain.lower);
+    expect(clustered.upper).toBe(plain.upper);
+    expect(clustered.clusters).toBe(5);
+  });
+
+  it('is deterministic under a seed and different under another', () => {
+    const deltas: ClusteredDelta[] = Array.from({ length: 20 }, (_, i) => ({
+      queryId: `q${i}`, cluster: `p${i % 6}`, delta: i % 3 === 0 ? 1 : i % 3 === 1 ? 0 : -1,
+    }));
+    const a = clusterBootstrapCi(deltas, { seed: 1, iterations: 300 });
+    const b = clusterBootstrapCi(deltas, { seed: 1, iterations: 300 });
+    const c = clusterBootstrapCi(deltas, { seed: 2, iterations: 300 });
+    expect(a).toEqual(b);
+    expect([a.lower, a.upper]).not.toEqual([c.lower, c.upper]);
+  });
+
+  it('collapses to a point interval on one page — a page-level effect is one observation, not five', () => {
+    // Five queries on ONE page: every resample draws that page, so every
+    // resampled mean is the observed mean and the interval has no width.
+    // Query-level resampling would print a confident interval around it.
+    const deltas: ClusteredDelta[] = [1, 0, 1, 1, 0].map((d, i) => ({ queryId: `q${i}`, cluster: 'only-page', delta: d }));
+    const ci = clusterBootstrapCi(deltas, { seed: 3, iterations: 200 });
+    expect(ci.observedDelta).toBeCloseTo(0.6, 10);
+    expect(ci.lower).toBeCloseTo(0.6, 10);
+    expect(ci.upper).toBeCloseTo(0.6, 10);
+    expect(ci.clusters).toBe(1);
+    expect(ci.queries).toBe(5);
+  });
+
+  it('refuses a query id that appears twice — a pair is one row per query', () => {
+    expect(() => clusterBootstrapCi(
+      [{ queryId: 'q', cluster: 'a', delta: 1 }, { queryId: 'q', cluster: 'b', delta: 0 }],
+      { seed: 1, iterations: 10 },
+    )).toThrow(/twice/);
+  });
+
+  it('reports the one-sided bounds off the same resample as the two-sided interval', () => {
+    const deltas: ClusteredDelta[] = Array.from({ length: 30 }, (_, i) => ({ queryId: `q${i}`, cluster: `p${i % 10}`, delta: i % 4 === 0 ? -1 : i % 4 === 1 ? 1 : 0 }));
+    const ci = clusterBootstrapCi(deltas, { seed: 5, iterations: 400, confidence: 0.95 });
+    // The 5% quantile sits at or above the 2.5% one, and the 95% at or below the 97.5%.
+    expect(ci.oneSidedLower).toBeGreaterThanOrEqual(ci.lower);
+    expect(ci.oneSidedUpper).toBeLessThanOrEqual(ci.upper);
+  });
+});
+
+function ciOf(over: Partial<ClusterBootstrapCi>): ClusterBootstrapCi {
+  return {
+    observedDelta: 0, lower: -0.1, upper: 0.1, excludesZero: false, iterations: 1, confidence: 0.95,
+    clusters: 1, queries: 1, oneSidedLower: -0.05, oneSidedUpper: 0.05, ...over,
+  };
+}
+
+describe('margin verdicts (#1614 PR2, ADR-027 O4–O7)', () => {
+  it('non-inferiority passes only when the one-sided lower bound clears −margin', () => {
+    // Margin 2 pp: a lower bound of −1.9 pp passes, −2.0 pp does not (the
+    // bound must be ABOVE the margin), and non-significance is not
+    // non-inferiority — an interval straddling the margin is inconclusive.
+    expect(nonInferiorityVerdict(ciOf({ oneSidedLower: -0.019 }), 0.02)).toBe('pass');
+    expect(nonInferiorityVerdict(ciOf({ oneSidedLower: -0.02, oneSidedUpper: 0.03 }), 0.02)).toBe('inconclusive');
+    expect(nonInferiorityVerdict(ciOf({ oneSidedLower: -0.08, oneSidedUpper: -0.03 }), 0.02)).toBe('fail');
+  });
+
+  it('safety passes only when the one-sided upper bound of the excess is at or under the margin', () => {
+    // O6: B's unsupported-claim rate may exceed A's by at most 3 pp.
+    expect(safetyVerdict(ciOf({ oneSidedUpper: 0.03 }), 0.03)).toBe('pass');
+    expect(safetyVerdict(ciOf({ oneSidedLower: -0.01, oneSidedUpper: 0.031 }), 0.03)).toBe('inconclusive');
+    expect(safetyVerdict(ciOf({ oneSidedLower: 0.04, oneSidedUpper: 0.09 }), 0.03)).toBe('fail');
+  });
+});
+
+describe('pilotDiscordance (#1614 PR2, ADR-027 "Sample size")', () => {
+  const pair = (b: 0 | 1, c: 0 | 1) => ({ baseline: b, candidate: c });
+
+  it('stops the run when the first 30 pairs are below the 0.20 discordance floor', () => {
+    // 5 discordant of 30 = 0.167 < 0.20 → stop; a 31st pair is not read.
+    const outcomes = [...Array.from({ length: 5 }, () => pair(0, 1)), ...Array.from({ length: 25 }, () => pair(1, 1)), pair(0, 1)];
+    const check = pilotDiscordance(outcomes, { pilotPairs: 30, floor: 0.2 });
+    expect(check).toEqual({ pairs: 30, discordant: 5, psi: 5 / 30, evaluated: true, stop: true });
+  });
+
+  it('does not stop at exactly the floor, and does not evaluate before the pilot is complete', () => {
+    const atFloor = [...Array.from({ length: 6 }, () => pair(1, 0)), ...Array.from({ length: 24 }, () => pair(0, 0))];
+    expect(pilotDiscordance(atFloor, { pilotPairs: 30, floor: 0.2 }).stop).toBe(false);
+    const short = pilotDiscordance(atFloor.slice(0, 10), { pilotPairs: 30, floor: 0.2 });
+    expect(short.evaluated).toBe(false);
+    expect(short.stop).toBe(false);
+  });
+});
+
+describe('mcnemarPower (#1614 PR2, ADR-027 "Sample size")', () => {
+  it('reproduces the ADR\'s worked figures', () => {
+    // Primary endpoint: ψ = 0.30, δ = 0.15, DE = 1.4, two-sided α = 0.05 → ≈ 0.90 at N = 190, ≈ 0.80 at N = 144.
+    expect(mcnemarPower({ n: 190, psi: 0.3, delta: 0.15, designEffect: 1.4, zAlpha: 1.96 })).toBeCloseTo(0.9, 1);
+    expect(mcnemarPower({ n: 144, psi: 0.3, delta: 0.15, designEffect: 1.4, zAlpha: 1.96 })).toBeCloseTo(0.8, 1);
+    // O5: image-evidence R@5, ψ ≈ 0.15, a 5-point margin, DE 1.4, one-sided → ≈ 0.44 at δ = 0.
+    expect(mcnemarPower({ n: 190, psi: 0.15, delta: 0.05, designEffect: 1.4, zAlpha: 1.645 })).toBeCloseTo(0.44, 1);
+    // …and a 1-point margin there is ≈ 0.09 — "undecidable at any plausible N".
+    expect(mcnemarPower({ n: 190, psi: 0.15, delta: 0.01, designEffect: 1.4, zAlpha: 1.645 })).toBeCloseTo(0.09, 1);
+  });
+
+  it('is 0 when the assumptions are degenerate rather than NaN', () => {
+    expect(mcnemarPower({ n: 0, psi: 0.3, delta: 0.15, designEffect: 1.4, zAlpha: 1.96 })).toBe(0);
+    expect(mcnemarPower({ n: 100, psi: 0.02, delta: 0.15, designEffect: 1, zAlpha: 1.96 })).toBe(0);
   });
 });

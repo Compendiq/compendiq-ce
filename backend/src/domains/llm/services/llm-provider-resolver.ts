@@ -87,6 +87,18 @@ function loadProviderFromRow(
 }
 
 /**
+ * `loadProviderConfig`'s "no such row" outcome, distinguishable from a DB or
+ * decryption failure so a caller mapping it to a user-facing refusal (the
+ * #1615 PUT's 422 `no_provider`) does not swallow a 500 under the same copy.
+ */
+export class ProviderNotFoundError extends Error {
+  constructor(providerId: string) {
+    super(`Provider ${providerId} not found.`);
+    this.name = 'ProviderNotFoundError';
+  }
+}
+
+/**
  * #1154: load a single provider's config by id, for callers that already
  * know the provider (the vision-capability store) rather than resolving a
  * use-case. Same column aliases as the override query below, routed through
@@ -111,7 +123,7 @@ export async function loadProviderConfig(
     [providerId],
   );
   const row = rows[0];
-  if (!row) throw new Error(`Provider ${providerId} not found.`);
+  if (!row) throw new ProviderNotFoundError(providerId);
   return loadProviderFromRow(row);
 }
 
@@ -133,22 +145,15 @@ export async function resolveRerankUsecase(): Promise<Resolved | null> {
 }
 
 /**
- * The same non-inheriting resolution for `image_embedding` (#1115, ADR-025 D3)
- * — the rerank rule, one rung stronger.
- *
- * Rerank's argument for refusing inheritance was that the default provider
- * handed `/v1/rerank` traffic ERRORS, which is loud and immediate. Here the
- * failure would be silent: the default text embedder answers the plain
- * `{model, input}` shape with a perfectly well-formed vector — bypassing the
- * chat template, pooling a different position — and an index built from those
- * is indistinguishable from bad retrieval. So an unassigned row means the image
- * leg is OFF, and there is no fallback anywhere in this function.
- *
- * The Enterprise usecase override does not apply, for the same reason it does
- * not apply to rerank: the org-policy override routes chat-shaped calls.
+ * #1615 (ADR-027 D3): image analysis is the third rung of the same rule, and
+ * the assignment IS the egress control. Unassigned means NO new inference,
+ * ever — never the default provider, never the chat provider, never a cloud
+ * fallback — because no page image may leave the host until an administrator
+ * has explicitly named the provider that receives it. The Enterprise override
+ * does not apply, for the reason it does not apply to the two above.
  */
-export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
-  return resolveExplicitOnlyUsecase('image_embedding');
+export async function resolveImageAnalysisUsecase(): Promise<Resolved | null> {
+  return resolveExplicitOnlyUsecase('image_analysis');
 }
 
 /**
@@ -168,15 +173,15 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
 
 /**
  * Shared body of the three ADR-021 use cases that NEVER inherit. One function
- * rather than three, so a future fourth cannot quietly gain a fallback that the
- * others refuse — the `usecase` is the only difference between them.
+ * rather than three, so a future fourth cannot quietly gain a fallback that
+ * the others refuse — the `usecase` is the only difference between them.
  *
  * A model must resolve too: an assignment without a model falls back to the
  * provider's `default_model`, and if neither exists the stage stays disabled
  * rather than posting an empty model name at a non-OpenAI-shaped endpoint.
  */
 async function resolveExplicitOnlyUsecase(
-  usecase: 'rerank' | 'image_embedding' | 'inline_completion',
+  usecase: 'rerank' | 'inline_completion' | 'image_analysis',
 ): Promise<Resolved | null> {
   const rows = await query<ResolveRow>(
     `SELECT
@@ -214,17 +219,16 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
       "resolveUsecase must not resolve 'rerank' — use resolveRerankUsecase (unassigned = stage disabled)",
     );
   }
-  // #1115: the same invariant for the image leg, and the failure it prevents is
-  // quieter — the default provider would ANSWER an image-embedding request, in
-  // the wrong shape, with a plausible vector.
-  if (usecase === 'image_embedding') {
-    throw new Error(
-      "resolveUsecase must not resolve 'image_embedding' — use resolveImageEmbeddingUsecase (unassigned = image leg disabled)",
-    );
-  }
   if (usecase === 'inline_completion') {
     throw new Error(
       "resolveUsecase must not resolve 'inline_completion' — use resolveInlineCompletionUsecase (unassigned = ghost text disabled)",
+    );
+  }
+  // #1615: and for image analysis, where the failure is a data-egress one —
+  // page images posted at a provider nobody chose for them.
+  if (usecase === 'image_analysis') {
+    throw new Error(
+      "resolveUsecase must not resolve 'image_analysis' — use resolveImageAnalysisUsecase (unassigned = no image analysis)",
     );
   }
   // Enterprise override: when org LLM policy is enabled, EE returns the

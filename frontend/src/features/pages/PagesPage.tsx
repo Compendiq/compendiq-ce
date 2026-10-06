@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, memo, type RefObject } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -32,6 +32,7 @@ import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
+import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
@@ -118,7 +119,7 @@ function SourceVisibilityBadges({
   showVisibility,
   className,
 }: {
-  pageItem: { id: string; source: 'confluence' | 'standalone'; visibility?: string };
+  pageItem: { id: string | number; source: PageSource; visibility?: string };
   showSource: boolean;
   showVisibility: boolean;
   className?: string;
@@ -201,6 +202,9 @@ interface PageListItemProps {
     source: 'confluence' | 'standalone';
     visibility?: string;
     icon?: PageIconValue | null;
+    /** #277 freeze summary; absent means "not known to be frozen". */
+    isFrozen?: boolean;
+    frozenVersion?: number | null;
   };
   index: number;
   onNavigate: (id: string) => void;
@@ -282,6 +286,12 @@ const PageListItem = memo(function PageListItem({
               <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                 {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
                 <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
+                {/* The tree's rule, on the list: one neutral lock, no extra
+                    tab stop, no second icon column, and nothing at all on a
+                    row that is not frozen. */}
+                {pageItem.isFrozen === true && (
+                  <FrozenBadge frozenVersion={pageItem.frozenVersion} compact className="shrink-0" />
+                )}
               </p>
               <SourceVisibilityBadges
                 pageItem={pageItem}
@@ -382,6 +392,10 @@ const PageListItem = memo(function PageListItem({
   if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
   if (prev.pageItem.qualityAnalyzedAt !== next.pageItem.qualityAnalyzedAt) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  // Freezing and thawing do not bump `version`, so the lock needs its own
+  // comparison or a frozen row keeps rendering as editable (#277).
+  if (prev.pageItem.isFrozen !== next.pageItem.isFrozen) return false;
+  if (prev.pageItem.frozenVersion !== next.pageItem.frozenVersion) return false;
   if (prev.pageItem.labels !== next.pageItem.labels && prev.pageItem.labels.join(',') !== next.pageItem.labels.join(',')) return false;
   if (prev.index !== next.index) return false;
   // Selection is row-local render state, not page data. Omitting it here made
@@ -590,7 +604,7 @@ export function PagesPage() {
     ? sort
     : (sort === 'relevance' ? 'modified' : sort);
 
-  const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
+  const { data: pagesData, isLoading, isFetching: isFetchingPages, isPlaceholderData: isPreviousPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: debouncedSearch || undefined,
     author: author || undefined,
@@ -622,6 +636,9 @@ export function PagesPage() {
         ? 'Improving'
         : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
   const searchResultsBusy = searchProgressLabel.length > 0;
+  const canFocusResults = useSemanticSearch
+    ? searchResults.hasCurrentResults
+    : searchInput === debouncedSearch && !!pagesData && !isPreviousPages;
 
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
@@ -698,7 +715,8 @@ export function PagesPage() {
   const activeFilterCount = activeFilters.length;
 
   /**
-   * Why the browse list is empty — four answers, not one (#1402 phase 3).
+   * Why the browse list is empty — five answers, not one (#1402 phase 3,
+   * #1623).
    *
    * A filter or a search term emptying the list is the user's own doing and
    * already says which. What was left undiagnosed is the unfiltered case: it
@@ -731,14 +749,27 @@ export function PagesPage() {
    * `settings !== undefined`, and reads `selectedSpaces` with the same optional
    * chain — `useSettings()` does no runtime validation, so a response missing
    * the field would otherwise throw during render and take the route down.
+   *
+   * #1623 adds the fifth answer, and it outranks both Confluence ones: the
+   * integration can be switched OFF, which is standalone mode, not a gap.
+   * Asking a standalone user for a token or a space selection would advertise
+   * the one feature they explicitly declined, so both prompts are suppressed
+   * and the generic copy below drops its "or connect a Confluence space"
+   * half. A filter or a search term still speaks first — that emptiness is
+   * the user's own doing in standalone mode too. The test is `=== false`, not
+   * falsy: a payload predating the column omits the key, and reading
+   * "unknown" as "off" would strip the setup prompts from the users who do
+   * still need them.
    */
   const unfilteredEmpty = activeFilterCount === 0 && !search;
   const settingsKnown = settings !== undefined;
+  const confluenceOff = settingsKnown && settings.confluenceEnabled === false;
   const promptConfluenceConnect =
-    unfilteredEmpty && settingsKnown && !settings.hasConfluencePat;
+    unfilteredEmpty && settingsKnown && !confluenceOff && !settings.hasConfluencePat;
   const promptSelectSpaces =
     unfilteredEmpty &&
     settingsKnown &&
+    !confluenceOff &&
     settings.hasConfluencePat === true &&
     (settings.selectedSpaces?.length ?? 0) === 0;
 
@@ -866,7 +897,7 @@ export function PagesPage() {
       return displaySearchItems.map((p) => ({
         id: String(p.id),
         confluenceId: p.confluenceId,
-        source: p.spaceKey === '__local__' ? 'standalone' : 'confluence',
+        source: p.source,
       }));
     }
     return pageItems.map((p) => ({
@@ -880,6 +911,27 @@ export function PagesPage() {
     () => (useSemanticSearch ? displaySearchItems.map((p) => String(p.id)) : pageItems.map((p) => p.id)),
     [useSemanticSearch, displaySearchItems, pageItems],
   );
+
+  const committedResultIds = useRef(currentIds);
+  useLayoutEffect(() => {
+    committedResultIds.current = currentIds;
+  }, [currentIds]);
+
+  const restoreSearchFocusOnRemoval = useCallback((element: HTMLDivElement | null) => {
+    if (!element) return;
+    return () => {
+      if (!element.contains(document.activeElement)) return;
+      // Read the committed result set after removal: virtualization can evict
+      // a focused DOM row without removing its page from the results.
+      queueMicrotask(() => {
+        if (!element.isConnected
+          && !committedResultIds.current.includes(element.dataset.resultId!)
+          && document.activeElement === document.body) {
+          searchInputRef.current?.focus();
+        }
+      });
+    };
+  }, []);
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
     setSelectedIds((prev) => {
@@ -1172,15 +1224,15 @@ export function PagesPage() {
           supporting scope and mode controls. */}
       <section
         aria-labelledby="kb-filters-heading"
-        className="space-y-3"
+        className="@container space-y-3"
         data-testid="library-filter-panel"
       >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         {/* Query, retrieval mode and scope are one command surface. The query
             leads; the supporting controls stay inside the same surface and
-            wrap beneath it on narrow screens without changing DOM order. */}
+            use the available pane width without changing DOM order. */}
         <div
-          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
+          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:p-2 @[44rem]:flex-row @[44rem]:items-center @[44rem]:gap-1"
           data-testid="page-search-field"
           role="search"
           aria-label="Library pages"
@@ -1214,11 +1266,12 @@ export function PagesPage() {
                   setSearchInput('');
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  if (!canFocusResults) return;
                   const firstRow = document.querySelector<HTMLButtonElement>(
                     '[data-search-row-index="0"] button[type="button"], [data-row-index="0"] button[type="button"]',
                   );
                   if (firstRow) {
-                    e.preventDefault();
                     firstRow.focus();
                   }
                 }
@@ -1261,12 +1314,12 @@ export function PagesPage() {
             )}
           </div>
 
-          <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
+          <span className="hidden h-5 w-px shrink-0 bg-border @[44rem]:block" aria-hidden="true" />
 
-          <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 @[44rem]:flex @[44rem]:w-auto @[44rem]:shrink-0">
             {/* Inline search strategy switcher */}
             <div
-              className="library-search-modes inline-flex items-center gap-0.5 rounded-md p-0.5 shrink-0"
+              className="library-search-modes col-span-2 inline-flex w-full shrink-0 items-center gap-0.5 rounded-md p-0.5 @[44rem]:w-auto"
               data-testid="search-mode-toggle"
               role="group"
               aria-label="Search strategy"
@@ -1289,7 +1342,7 @@ export function PagesPage() {
                   aria-pressed={searchMode === m}
                   title={SEARCH_MODE_DESCRIPTIONS[m]}
                   className={cn(
-                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:py-1 sm:text-xs',
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:text-xs @[44rem]:flex-none',
                     searchMode === m
                       ? 'library-search-mode-active font-semibold shadow-xs'
                       : 'text-muted-foreground hover:bg-accent hover:text-foreground',
@@ -1806,6 +1859,8 @@ export function PagesPage() {
                           data-search-row-index={i}
                         >
                             <div
+                              ref={restoreSearchFocusOnRemoval}
+                              data-result-id={itemId}
                               className={cn(
                                 'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
                                 isSelected
@@ -1841,6 +1896,9 @@ export function PagesPage() {
                                   <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground">
                                     {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
                                     <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
+                                    {item.isFrozen === true && (
+                                      <FrozenBadge frozenVersion={item.frozenVersion} compact className="shrink-0" />
+                                    )}
                                   </p>
                                   {item.excerpt && (
                                     <SanitizedHtml
@@ -1855,47 +1913,11 @@ export function PagesPage() {
                                       <span title={item.spaceKey}>{spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}</span>
                                     </div>
                                   )}
-                                  {item.spaceKey && (
-                                    item.spaceKey !== '__local__' ? (
-                                      <span
-                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
-                                        data-testid="badge-confluence"
-                                        data-source-badge={item.id}
-                                      >
-                                        Confluence
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
-                                        data-testid="badge-local"
-                                        data-source-badge={item.id}
-                                      >
-                                        Local
-                                      </span>
-                                    )
-                                  )}
+                                  <SourceVisibilityBadges pageItem={item} showSource showVisibility={false} className="mt-1 sm:hidden" />
                                 </div>
 
                                 <div className="hidden shrink-0 items-center gap-2 sm:flex">
-                                  {item.spaceKey && (
-                                    item.spaceKey !== '__local__' ? (
-                                      <span
-                                        className={cn('shrink-0', neutralChipClass)}
-                                        data-testid="badge-confluence"
-                                        data-source-badge={item.id}
-                                      >
-                                        Confluence
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className={cn('shrink-0', neutralChipClass)}
-                                        data-testid="badge-local"
-                                        data-source-badge={item.id}
-                                      >
-                                        Local
-                                      </span>
-                                    )
-                                  )}
+                                  <SourceVisibilityBadges pageItem={item} showSource showVisibility={false} />
                                 </div>
 
                                 {/* Similarity only — renderable cosine distance percentage */}
@@ -1992,7 +2014,11 @@ export function PagesPage() {
                       ? (search
                           ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
                           : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                      : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
+                      : (search
+                          ? 'Try a different search term'
+                          : confluenceOff
+                            ? 'Create a page to fill this list — nothing syncs in while this workspace is standalone.'
+                            : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 promptConfluenceConnect
@@ -2001,7 +2027,13 @@ export function PagesPage() {
                     ? { label: 'Choose spaces', onClick: () => navigate(SPACES_SETTINGS_PATH) }
                     : activeFilterCount > 0
                       ? { label: 'Clear filters', onClick: clearAllFilters }
-                      : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+                      /* Standalone mode: the settings root has nothing left to
+                         offer a user who has already made this choice, and
+                         `Create a Page` below is the only true next step — so
+                         this case carries no primary CTA at all. */
+                      : (!search && !confluenceOff
+                          ? { label: 'Go to Settings', onClick: () => navigate('/settings') }
+                          : undefined)
               }
               /* The checklist one block above asks for this same setup, and
                  the header's `New Page` is this route's own primary action. A
@@ -2094,7 +2126,7 @@ export function PagesPage() {
                           transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                         }}
                       >
-                        <div>
+                        <div ref={restoreSearchFocusOnRemoval} data-result-id={pageItem.id}>
                           <PageListItem
                             pageItem={pageItem}
                             index={virtualRow.index}

@@ -847,8 +847,8 @@ export function GraphPage() {
         {hoveredNode && (
           <div
             className={cn(
-              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border',
-              'nm-card-elevated px-3 py-2 text-xs',
+              'pointer-events-none fixed z-50 max-w-xs rounded-lg',
+              'nm-popover-glass px-3 py-2 text-xs',
               'max-h-64 overflow-y-auto',
             )}
             style={{
@@ -1312,7 +1312,7 @@ function SpaceMultiSelect({ spaceKeys, selected, onChange }: SpaceMultiSelectPro
         <div
           role="listbox"
           aria-multiselectable="true"
-          className="nm-card absolute right-0 top-full z-20 mt-1 max-h-64 w-44 overflow-y-auto p-2 text-xs"
+          className="nm-popover-glass absolute right-0 top-full z-20 mt-1 max-h-64 w-44 overflow-y-auto p-2 text-xs"
           data-testid="graph-space-filter-menu"
         >
           {selected.length > 0 && (

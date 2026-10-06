@@ -21,9 +21,16 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: (...args: unknown[]) => mockInvalidateRbacCache(...args),
 }));
 
+const mockGetClientForUser = vi.fn().mockResolvedValue(null);
+const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
+
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  getClientForUser: vi.fn(),
+  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
   unsyncSpace: (...args: unknown[]) => mockUnsyncSpace(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -80,6 +87,8 @@ describe('Spaces routes', () => {
     mockInvalidateRbacCache.mockResolvedValue(undefined);
     mockUnsyncSpace.mockResolvedValue({ pagesDeleted: 0 });
     mockLogAuditEvent.mockResolvedValue(undefined);
+    mockGetClientForUser.mockResolvedValue(null);
+    mockIsConfluenceEnabled.mockResolvedValue(true);
     // Re-arm Redis SCAN to terminate immediately for tests that don't
     // care about cache invalidation; tests that DO care override this.
     mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
@@ -96,7 +105,7 @@ describe('Spaces routes', () => {
           space_name: 'Development',
           homepage_id: 'home-1',
           homepage_numeric_id: 101,
-          custom_home_page_id: null,
+          custom_home_numeric_id: null,
           last_synced: '2026-03-18T10:00:00.000Z',
           source: 'confluence',
         }],
@@ -143,7 +152,7 @@ describe('Spaces routes', () => {
             space_name: 'Development',
             homepage_id: null,
             homepage_numeric_id: null,
-            custom_home_page_id: null,
+            custom_home_numeric_id: null,
             last_synced: '2026-03-18T10:00:00.000Z',
             source: 'confluence',
           },
@@ -152,7 +161,7 @@ describe('Spaces routes', () => {
             space_name: 'My Notes',
             homepage_id: null,
             homepage_numeric_id: null,
-            custom_home_page_id: null,
+            custom_home_numeric_id: null,
             last_synced: '2026-03-19T10:00:00.000Z',
             source: 'local',
           },
@@ -190,7 +199,7 @@ describe('Spaces routes', () => {
           space_name: 'Development',
           homepage_id: null,
           homepage_numeric_id: null,
-          custom_home_page_id: null,
+          custom_home_numeric_id: null,
           last_synced: '2026-03-18T10:00:00.000Z',
           source: 'confluence',
         }],
@@ -222,7 +231,7 @@ describe('Spaces routes', () => {
           space_name: 'Development',
           homepage_id: 'home-1',
           homepage_numeric_id: 101,
-          custom_home_page_id: 999,
+          custom_home_numeric_id: 999,
           last_synced: '2026-03-18T10:00:00.000Z',
           source: 'confluence',
         }],
@@ -392,5 +401,26 @@ describe('Spaces routes', () => {
 
     expect(response.statusCode).toBe(403);
     expect(mockUnsyncSpace).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/spaces/available does not ask an off user for credentials (#1623)', async () => {
+    mockIsConfluenceEnabled.mockResolvedValueOnce(false);
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces/available' });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toBe('Confluence integration is disabled');
+    // Credentials are retained while off — never consulted, never prompted for.
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/spaces/available still reports missing credentials for an enabled user (#1623)', async () => {
+    mockIsConfluenceEnabled.mockResolvedValueOnce(true);
+    mockGetClientForUser.mockResolvedValueOnce(null);
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces/available' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toBe('Confluence not configured');
   });
 });

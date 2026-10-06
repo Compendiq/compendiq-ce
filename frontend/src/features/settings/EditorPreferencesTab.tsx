@@ -212,7 +212,7 @@ export function EditorPreferencesTab({
   return (
     <div className="space-y-6">
       <PanelHeader
-        subtitle="Control when AI offers a short continuation ahead of your cursor. Suggestions stay hidden until an administrator assigns a dedicated inline-completion model."
+        subtitle="Control when AI offers a short continuation ahead of your cursor. Use an assigned server model or enable on-device suggestions below."
       />
 
       <section aria-labelledby="inline-completion-heading">
@@ -359,7 +359,7 @@ export function EditorPreferencesTab({
                 </span>
                 <p id="client-inference-predownload-help" className="mt-0.5 text-xs leading-5 text-muted-foreground">
                   {modelDownloaded
-                    ? `The on-device model${modelName ? ` (${modelName})` : ''} is downloaded and ready in this browser${manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB)` : ''}.`
+                    ? `The on-device model${modelName ? ` (${modelName})` : ''} is stored in this browser${manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB)` : ''}. It loads into the GPU when suggestions are requested.`
                     : `Downloads only in this browser${manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB)` : ''}. The on-device model is not shared with other browsers.`}
                 </p>
               </div>
@@ -376,10 +376,10 @@ export function EditorPreferencesTab({
                 ) : modelDownloaded === true ? (
                   <span
                     data-testid="client-inference-status-downloaded"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/60 px-2.5 py-1 text-xs font-medium text-foreground"
                   >
-                    <Check size={13} className="text-success" aria-hidden="true" />
-                    Downloaded &amp; ready
+                    <Check size={13} aria-hidden="true" />
+                    Downloaded
                   </span>
                 ) : modelDownloaded === false ? (
                   <span

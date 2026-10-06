@@ -5,6 +5,7 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
 import { apiFetch } from '../../lib/api';
+import { formatDateStamp } from '../../lib/format-relative-time';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -260,49 +261,44 @@ describe('ArticleRightPane', () => {
     expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Pin')).toBeInTheDocument();
-    expect(screen.getByText('Page details')).toBeInTheDocument();
-    expect(screen.getByText('Move to trash')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.getByText('Danger zone')).toBeInTheDocument();
   });
 
-  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', () => {
+  it('lists page actions flat and fences a Confluence page’s deletion behind the Danger zone', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Pin').closest('details')).toBeNull();
-    expect(screen.getByText('Version history').closest('details')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Open in Confluence' })).toBeVisible());
+    for (const label of ['Version history', 'Pin', 'Show in graph', 'Export PDF']) {
+      expect(screen.getByText(label).closest('details')).toBeNull();
+    }
+    expect(screen.queryByText('More actions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Move to trash')).not.toBeInTheDocument();
 
-    const moreActions = screen.getByText('More actions').closest('details');
-    const dangerZone = screen.getByText('Danger zone').closest('details');
-    expect(moreActions).not.toHaveAttribute('open');
+    const dangerZone = screen.getByTestId('danger-zone');
     expect(dangerZone).not.toHaveAttribute('open');
-
-    fireEvent.click(screen.getByText('More actions'));
-    expect(moreActions).toHaveAttribute('open');
-    expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
-    expect(screen.getByText('Open in Confluence').closest('details')).toBe(moreActions);
-    expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
+    expect(screen.getByRole('button', { name: 'Delete in Confluence…', hidden: true }).closest('details')).toBe(dangerZone);
+    expect(screen.getByTestId('relocate-local-btn').closest('details')).toBe(dangerZone);
+    expect(screen.getByTestId('relocate-local-btn')).toHaveTextContent('Move to a local space — deletes the Confluence page');
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
   });
-  it('renders a synthesized health summary and categorized groups inside More actions', () => {
+
+  it('gives a local page an ordinary Move to trash row and no Danger zone', () => {
+    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    // Synthesized health summary banner
-    expect(screen.getByText(/Indexed for AI search|Verified and ready/)).toBeInTheDocument();
-
-    // Open More actions and verify logical groups
-    const moreActions = screen.getByText('More actions').closest('details')!;
-    fireEvent.click(screen.getByText('More actions'));
-    expect(moreActions).toHaveAttribute('open');
-    expect(screen.getByText('Navigation & Export')).toBeInTheDocument();
-    expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
+    const trash = screen.getByRole('button', { name: 'Move to trash' });
+    expect(screen.getByTestId('article-actions')).toContainElement(trash);
+    expect(trash.closest('details')).toBeNull();
+    expect(screen.queryByTestId('danger-zone')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete in Confluence…')).not.toBeInTheDocument();
   });
 
-
-  it('lists page facts above page actions in Details', () => {
+  it('exposes Pin as a toggle', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    const facts = screen.getByText('Page details');
-    const actions = screen.getByText('Page actions');
-    expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    expect(screen.getByRole('button', { name: 'Pin' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -460,13 +456,13 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  it('preserves Page details and Document health in edit mode', () => {
+  it('preserves Source and Document health in edit mode', () => {
     useArticleViewStore.setState({ editing: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Page details')).toBeInTheDocument();
-    expect(screen.getByText('ENG')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.getByText('Confluence · ENG')).toBeInTheDocument();
     expect(screen.getByText('v7')).toBeInTheDocument();
     expect(screen.getByText('Document health')).toBeInTheDocument();
     expect(screen.getByTestId('embedding-status-badge')).toBeInTheDocument();
@@ -620,30 +616,148 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
-  it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {
+  it('offers Pull latest in the Source block and Re-index in Document health for a Confluence page', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByTestId('article-resync-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('details-source')).toContainElement(screen.getByTestId('article-resync-btn'));
+    expect(screen.getByTestId('article-resync-btn')).toHaveTextContent('Pull latest from Confluence…');
+    expect(screen.getByTestId('document-health')).toContainElement(screen.getByTestId('article-reembed-btn'));
   });
 
-  it('hides Re-sync for locally-authored articles (no confluenceId)', () => {
-    currentMockPage = { ...mockPage, confluenceId: null };
+  it('hides Pull latest for a local page', () => {
+    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-resync-btn')).not.toBeInTheDocument();
-    // Re-embed always available — local pages can still be RAG-indexed.
+    // Re-index always available — local pages can still be indexed for search.
     expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
   });
 
-  it('invokes resync mutation when Re-sync is clicked', () => {
+  it('pulls from Confluence only after the confirm, which opens on Cancel', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByTestId('article-resync-btn'));
 
+    const dialog = await screen.findByTestId('confirm-dialog');
+    expect(dialog).toHaveTextContent('Pull the latest version from Confluence?');
+    expect(mockResyncPage).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('confirm-dialog-cancel')).toHaveFocus());
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+    expect(mockResyncPage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('article-resync-btn'));
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
+
     expect(mockResyncPage).toHaveBeenCalledTimes(1);
     expect(mockResyncPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('routes the rail’s pull through the same confirm', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('article-actions-rail'));
+    fireEvent.click(screen.getByTestId('article-resync-rail-btn'));
+
+    expect(await screen.findByTestId('confirm-dialog')).toHaveTextContent('Pull the latest version from Confluence?');
+    expect(mockResyncPage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    expect(mockResyncPage).toHaveBeenCalledTimes(1);
+  });
+
+  describe('document health remedies', () => {
+    it('names quality with its band in the healthy sentence and offers no remedy', () => {
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('document-health-summary')).toHaveTextContent('Indexed for AI search · Quality 85 Good');
+      const actions = screen.getByTestId('document-health-actions');
+      expect(actions.querySelector('[data-testid^="health-"]')).toBeNull();
+      expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('article-requality-btn')).toBeInTheDocument();
+    });
+
+    it('offers Index now first for an unindexed page and drops the duplicate re-index', () => {
+      currentMockPage = { ...mockPage, embeddingStatus: 'not_embedded' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const remedy = screen.getByTestId('health-remedy-index');
+      expect(remedy).toHaveTextContent('Index now');
+      expect(screen.getByTestId('document-health-actions').firstElementChild).toBe(remedy);
+      expect(screen.queryByTestId('article-reembed-btn')).not.toBeInTheDocument();
+
+      fireEvent.click(remedy);
+      expect(mockReembedPage).toHaveBeenCalledTimes(1);
+      expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
+    });
+
+    it('offers Retry indexing when indexing failed', () => {
+      currentMockPage = { ...mockPage, embeddingStatus: 'failed' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry indexing' }));
+      expect(mockReembedPage).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('article-reembed-btn')).not.toBeInTheDocument();
+    });
+
+    it('offers Re-check quality as the remedy when analysis failed, without a duplicate', () => {
+      currentMockPage = { ...mockPage, qualityStatus: 'failed', qualityScore: null } as unknown as typeof currentMockPage;
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getAllByRole('button', { name: 'Re-check quality' })).toHaveLength(1);
+      expect(screen.queryByTestId('article-requality-btn')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('health-remedy-requality'));
+      expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+    });
+
+    // #1176: opening the assistant runs nothing and chooses nothing.
+    it('opens the Assistant tab for a low score and starts no work', () => {
+      currentMockPage = { ...mockPage, qualityScore: 40 };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('health-open-assistant'));
+
+      expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute('aria-selected', 'true');
+      expect(mockReembedPage).not.toHaveBeenCalled();
+      expect(mockRequalityPage).not.toHaveBeenCalled();
+      expect(mockResyncPage).not.toHaveBeenCalled();
+      expect(mockVerifyPage).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+  });
+
+  it('names the Details tabpanel exactly “Details” even with open notes counted on the tab', async () => {
+    mockNotes = [{ id: 'n1', parentId: null, resolved: false }];
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('page-context-tab-details')).toHaveTextContent('1'));
+    expect(screen.getByRole('tabpanel', { name: 'Details' })).toHaveAttribute('id', 'page-context-panel-details');
+  });
+
+  it('mounts the verification status region before anything is recorded', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const region = screen.getByTestId('verify-announcer');
+    expect(region).toHaveAttribute('role', 'status');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    expect(region).toBeEmptyDOMElement();
+  });
+
+  it('shows when a Confluence page last synced, with the date stamp visible', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const stamp = formatDateStamp(mockPage.lastSynced);
+    expect(screen.getByText('Last synced')).toBeInTheDocument();
+    expect(screen.getByTestId('last-synced-exact')).toHaveTextContent(stamp);
+    expect(screen.getByTestId('last-synced-exact').closest('dd')).toHaveAttribute(
+      'title',
+      new Date(mockPage.lastSynced).toLocaleString(),
+    );
+    // Rendered text, not a tooltip: the pane's entrance animation starts at
+    // opacity 0 in jsdom, so this asserts it is not screen-reader-only instead.
+    expect(screen.getByTestId('last-synced-exact')).not.toHaveClass('sr-only');
   });
 
   it('invokes requality mutation when Re-check Quality is clicked', () => {
@@ -944,6 +1058,7 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('article-resync-btn'));
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {
       expect(toastErrorSpy).not.toHaveBeenCalled();
@@ -1220,7 +1335,7 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText(/ENG/)).toBeInTheDocument();
   });
 
-  it('places a visible resize grip in the gutter beside the pane', () => {
+  it('places a visible resize grip on the pane edge matching the tree resize affordance', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     const pane = screen.getByTestId('article-right-pane');
@@ -1229,9 +1344,10 @@ describe('ArticleRightPane', () => {
     expect(handle).toHaveAttribute('aria-valuemin', '400');
     expect(handle).toHaveAttribute('aria-valuemax', '1200');
     expect(handle).toHaveAttribute('tabindex', '0');
-    expect(handle).toHaveStyle({ width: 'var(--app-rail-gap)' });
-    expect(pane).not.toContainElement(handle);
-    expect(screen.getByTestId('article-right-pane-resize-grip')).toBeVisible();
+    expect(handle.className).toContain('w-2');
+    expect(handle.className).toContain('cursor-col-resize');
+    expect(pane).toContainElement(handle);
+    expect(handle).toContainElement(screen.getByTestId('article-right-pane-resize-grip'));
   });
 
   it('supports keyboard resizing and double-click reset', () => {
@@ -1272,7 +1388,7 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 
-  it('lists source and draft facts in Details, not as header chrome', () => {
+  it('shows private visibility and an unpublished draft on local pages', () => {
     currentMockPage = {
       ...mockPage,
       source: 'standalone',
@@ -1282,8 +1398,6 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Source')).toBeInTheDocument();
-    expect(screen.getByText('Local')).toBeInTheDocument();
     expect(screen.getByText('Visibility')).toBeInTheDocument();
     expect(screen.getByText('Private')).toBeInTheDocument();
     expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
@@ -1291,7 +1405,6 @@ describe('ArticleRightPane', () => {
 
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('More actions'));
 
     const link = screen.getByText('Open in Confluence').closest('a');
     expect(link).toBeInTheDocument();
@@ -1328,6 +1441,10 @@ describe('ArticleRightPane', () => {
 
   // --- Delete via ConfirmDialog (replaces native confirm()) ---
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
+    // Standalone, because the soft-delete copy asserted below is the copy of
+    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
+    // deletes upstream with no Trash to restore from (#1636).
+    currentMockPage = { ...mockPage, source: 'standalone' };
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
@@ -1348,7 +1465,64 @@ describe('ArticleRightPane', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 
+  /**
+   * #1636 — the same copy module as PageViewPage's dialog, driven by the same
+   * server-side `descendantCount`. `mockPage` carries no count, so every other
+   * test here is exercising the unknown-count fallback.
+   */
+  it('names the sub-article count when the page has descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'standalone', descendantCount: 2 } as typeof currentMockPage;
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Move to trash'));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/^This page has 2 sub-articles\./)).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and 2 sub-articles to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * …and the count is quoted for a STANDALONE page only, because a
+   * Confluence-sourced page is not trashed at all: its delete propagates UP to
+   * Confluence, and afterwards `GET /pages/trash` filters
+   * `source = 'standalone'` while restore refuses anything else — the row never
+   * reaches Trash and can never be restored from it. The N=0 copy this used to
+   * render promised a 30-day restore that no later action could honour.
+   */
+  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Danger zone'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete in Confluence…' }));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
   it('cancelling the move-to-trash dialog does not delete', async () => {
+    currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null } as typeof currentMockPage;
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
@@ -1387,9 +1561,9 @@ describe('ArticleRightPane', () => {
     // labelled by its visible text; `aria-label="Delete page"` belonged to the
     // rail icon alone, which is why the check above can look for it.)
     fireEvent.click(screen.getByText('Danger zone'));
-    fireEvent.click(screen.getByText('Move to trash'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete in Confluence…' }));
 
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {
@@ -1398,13 +1572,6 @@ describe('ArticleRightPane', () => {
   });
 
   // --- PDF Export ---
-  it('renders the Export PDF button', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('More actions'));
-
-    expect(screen.getByText('Export PDF')).toBeInTheDocument();
-  });
-
   it('calls export mutation and triggers download on success', async () => {
     const fakeBlob = new Blob(['%PDF'], { type: 'application/pdf' });
     mockExportPdfAsync.mockResolvedValueOnce(fakeBlob);
@@ -1414,7 +1581,7 @@ describe('ArticleRightPane', () => {
     globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('More actions'));
+
     fireEvent.click(screen.getByText('Export PDF'));
 
     await waitFor(() => {
@@ -1428,7 +1595,6 @@ describe('ArticleRightPane', () => {
 
   it('shows this page in the graph from Details', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('More actions'));
 
     fireEvent.click(screen.getByTestId('show-in-graph-btn'));
     expect(mockNavigate).toHaveBeenCalledWith('/graph?focus=page-1');
@@ -1444,14 +1610,17 @@ describe('ArticleRightPane', () => {
       };
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent('Move to Confluence…');
+      expect(screen.getByTestId('details-source')).toContainElement(screen.getByTestId('relocate-btn'));
+      expect(screen.getByTestId('relocate-btn')).toHaveAccessibleDescription('Confluence becomes the source of record.');
     });
 
-    it('offers "Move to a local space" on a Confluence article', () => {
+    it('offers "Move to a local space" on a Confluence article only inside the Danger zone', () => {
       currentMockPage = { ...mockPage, source: 'confluence' };
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to a local space/i);
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+      expect(screen.getByTestId('relocate-local-btn').closest('details')).toBe(screen.getByTestId('danger-zone'));
     });
 
     // Hidden, not disabled: `pages:relocate` is seeded onto editor /
@@ -1511,11 +1680,15 @@ describe('ArticleRightPane', () => {
       });
     });
 
-    it('renders the last verification date on the chip', () => {
+    it('renders the last verification date on the chip, with the year', () => {
       currentMockPage = { ...mockPage, verifiedAt: '2026-03-01T12:00:00Z' };
       render(<ArticleRightPane />, { wrapper: createWrapper() });
 
+      // The one date stamp the inspector uses (formatDateStamp): day precision
+      // and always the year, so "Verified Mar 1" cannot sit beside an
+      // "Indexed 8/24/2026" and read as the newer of the two.
       const expected = new Date('2026-03-01T12:00:00Z').toLocaleDateString(undefined, {
+        year: 'numeric',
         month: 'short',
         day: 'numeric',
       });
@@ -1601,7 +1774,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
 
-    it('renders Page actions above the Notes section inline in the Details tab', async () => {
+    it('reports open notes and opens them with Alt+N', async () => {
       useArticleViewStore.setState({
         headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
       });
@@ -1622,21 +1795,12 @@ describe('ArticleRightPane', () => {
       fireEvent.click(detailsTab);
       expect(detailsTab).toHaveAttribute('aria-selected', 'true');
 
-      // Page actions section is present above notes
-      const pageActions = screen.getByTestId('article-actions');
-      expect(pageActions).toBeInTheDocument();
-
-      // Notes section is rendered inline inside Details below page actions
       const notesSection = screen.getByTestId('details-notes-section');
       expect(notesSection).toBeInTheDocument();
       expect(notesSection).toHaveTextContent('Notes');
       expect(notesSection).toHaveTextContent('2 open');
       expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
 
-      // Verify pageActions precedes notesSection in the DOM order
-      expect(
-        Boolean(pageActions.compareDocumentPosition(notesSection) & Node.DOCUMENT_POSITION_FOLLOWING),
-      ).toBe(true);
 
       // Alt+N hotkey switches to Details tab
       fireEvent.click(screen.getByTestId('page-context-tab-outline'));

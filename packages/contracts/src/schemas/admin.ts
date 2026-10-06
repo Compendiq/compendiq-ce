@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX,
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN,
+} from '../image-analysis.js';
 
 export const ReEmbedRequestSchema = z.object({
   model: z.string().optional(), // New embedding model (requires env var change + restart)
@@ -158,10 +162,10 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 /**
  * `rag_images_per_page_max` (#1115 P2) — how many of a page's images the
- * image-embedding worker takes. Default 20, [1, 200].
+ * image-analysis worker takes. Default 20, [1, 200].
  *
- * **0 is not a value.** The image leg is switched off by unassigning the
- * `image_embedding` use case (ADR-021's rule for the non-inheriting use
+ * **0 is not a value.** Image analysis is switched off by unassigning the
+ * `image_analysis` use case (ADR-021's rule for the non-inheriting use
  * cases); a cap of zero would be a second, quieter off switch whose effect —
  * a corpus that reconciles every row away on the next scan — reads as an
  * indexing bug rather than a setting.
@@ -174,18 +178,6 @@ const RagImagesPerPageMaxSchema = z.number().int().min(1).max(200);
  * deployments that would rather not embed third-party imagery at all.
  */
 const RagImageIndexExternalSchema = z.boolean();
-/**
- * `rag_image_leg_enabled` (#1115 P3) — whether retrieval fuses a third,
- * image-based RRF leg. Default ON.
- *
- * It is not a second off switch for the feature: with the `image_embedding`
- * use case unassigned or the index empty the leg does not run at all, whatever
- * this says. What it buys is the ability to stop paying the leg's one extra
- * embedding call per question WITHOUT unassigning the use case and thereby
- * stopping the index being filled — the two halves have different costs and an
- * operator has to be able to turn off the query-time one on its own.
- */
-const RagImageLegEnabledSchema = z.boolean();
 /**
  * `rag_answer_max_images` (#1115 P4) — how many of the images the leg matched
  * on the pages that ground an answer are attached to the question as image
@@ -225,23 +217,29 @@ const RagAnswerMaxImagesSchema = z.number().int().min(0).max(8);
 const RagEfSearchSchema = z.number().int().min(1).max(1000);
 
 /**
- * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
- * image leg REQUESTS. Declared once and used nullable on read, nullish on
- * update (null clears the row, i.e. "use the model's native width").
+ * #1615 (ADR-027 D8) — `image_analysis_max_output_tokens`, the `max_tokens`
+ * every image-analysis request sends and the ceiling the payload schema's
+ * bounds are derived from at one token per character. Default 8,192, range
+ * [4,096, 16,384]: 4,096 is the smallest ceiling at which every transcription
+ * bound keeps at least a third of its width (an edge still fits
+ * `A -> B: label`, a table cell still holds a number and its unit) — below
+ * it a smaller `max_tokens` would be an unconditional refusal to transcribe
+ * rather than a budget; 16,384 is twice the reference, and since nothing
+ * grows above the reference every token past 8,192 buys only headroom for
+ * scripts that tokenize below one character per token, while the whole
+ * ceiling is charged against the served context on every request.
  *
- * The bounds are pgvector's column limit at the top and a sanity floor at the
- * bottom. Deliberately NOT capped at 4000: that is the largest indexable
- * width, and the settings row already reports the unindexed tier — refusing
- * the number here would make an operator who *wants* a sequential-scan index
- * unable to say so.
+ * NOT part of the retained identity: a change invalidates no analyzed row
+ * (a stored payload was validated against the bounds in force when it was
+ * written); raising it re-opens only rows that failed `truncated` under a
+ * lower ceiling. The reader mirrors the three constants, which live beside
+ * the payload schema in `../image-analysis.ts`.
  */
-export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN = 64;
-export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX = 16_000;
-export const ImageEmbeddingTargetDimensionsSchema = z
+export const ImageAnalysisMaxOutputTokensSchema = z
   .number()
   .int()
-  .min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)
-  .max(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
+  .min(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN)
+  .max(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX);
 
 /**
  * #1114 — which model a confidence threshold was calibrated against, and
@@ -390,23 +388,6 @@ export const AdminSettingsSchema = z.object({
    * so the read schema must accept `null` rather than `undefined`.
    */
   drawioEmbedUrl: z.string().url().nullable(),
-  /**
-   * #1115 — MRL truncation width for the `image_embedding` leg, or `null` to
-   * take whatever width the served checkpoint answers with.
-   *
-   * It is a REQUEST parameter, not a serving flag: vLLM's `dimensions` is
-   * per-request and `--hf-overrides '{"is_matryoshka": true}'` only makes the
-   * server accept it. So the number has to live somewhere the client can read
-   * it — here — and the probe, P2's image embedder and P3's query embed all
-   * send the same value, or the column is typed to one width and filled from
-   * another.
-   *
-   * The floor is 64 because MRL truncation below that is not a width any of
-   * these checkpoints is trained to be useful at; the ceiling is pgvector's
-   * own column limit. 4000 is the largest *indexable* width — that is a tier
-   * boundary the settings row states, not a validation error.
-   */
-  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullable(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -435,6 +416,20 @@ export const AdminSettingsSchema = z.object({
   // Per-user concurrent SSE-stream cap (#268). Separate from rateLimitLlmStream:
   // that caps requests/minute; this caps concurrently-open streams.
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
+  /**
+   * Pages the quality / summary workers take per batch (one bounded batch
+   * per scheduled cycle and per Run Now). Rows `quality_batch_size` /
+   * `summary_batch_size`; default 5, [1, 100]. Replaces the removed
+   * `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` env vars.
+   */
+  qualityBatchSize: z.number().int().min(1).max(100),
+  summaryBatchSize: z.number().int().min(1).max(100),
+  /**
+   * ADR-027 D13 (#1616) — images the analysis worker takes per batch (one
+   * bounded batch per scheduled cycle and per Run Now). Row
+   * `image_analysis_batch_size`, seeded `'50'` by migration 116; [1, 500].
+   */
+  imageAnalysisBatchSize: z.number().int().min(1).max(500),
   /**
    * Issue #264 — retention (days) for `audit_log` rows where
    * action = 'ADMIN_ACCESS_DENIED'. Consumed by the targeted purge in
@@ -495,10 +490,14 @@ export const AdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema,
   ragImageIndexExternal: RagImageIndexExternalSchema,
-  /** #1115 P3 — the retrieval half of the image index. Default ON. */
-  ragImageLegEnabled: RagImageLegEnabledSchema,
   /** #1115 P4 — how many retrieved images the answer path shows the model. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema,
+  /**
+   * #1615 — the image-analysis output-token ceiling, required on read for the
+   * same reason: the GET resolves it through its own reader, so an absent or
+   * unparseable row answers with the default the worker is using.
+   */
+  imageAnalysisMaxOutputTokens: ImageAnalysisMaxOutputTokensSchema,
   /**
    * #1285 — the HNSW `ef_search` floor, required on read for the same reason
    * as every knob above: the GET resolves it through its own reader, so an
@@ -538,6 +537,21 @@ export const AdminSettingsSchema = z.object({
   clientInferenceEnabled: z.boolean(),
 });
 
+/**
+ * Deliberately NOT `.strict()`. An unknown key — including a retired one such
+ * as #1618's `ragImageLegEnabled` / `imageEmbeddingTargetDimensions` — is
+ * stripped, and the rest of the body still applies: `PUT /admin/settings`
+ * answers 200 and writes no `admin_settings` row for it. An out-of-range value
+ * on a LIVE key still 400s; "unknown" and "invalid" are different answers.
+ *
+ * A 400 for retired keys was considered and rejected: on the wire a retired
+ * name is indistinguishable from one an older backend has not learned yet, so
+ * refusing unknown keys would make a newer bundle (rolling deploy, cached SPA)
+ * lose the operator's whole save. Migration 118 deleted the retired rows, so
+ * resurrection would need a handler that forwards unknown keys — pinned
+ * against by `admin-retrieval-settings.test.ts` "ignores retired keys and
+ * still applies the rest of the body".
+ */
 export const UpdateAdminSettingsSchema = z.object({
   ftsLanguage: FtsLanguageEnum.optional(),
   embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
@@ -549,12 +563,6 @@ export const UpdateAdminSettingsSchema = z.object({
    *  - URL string    → set / replace value
    */
   drawioEmbedUrl: z.string().url().nullish(),
-  /**
-   * #1115 — same three-state update semantics as `drawioEmbedUrl`: omitted
-   * leaves the row alone, `null` deletes it (back to the model's native
-   * width), a number sets the truncation width every image-side call sends.
-   */
-  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullish(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -572,6 +580,10 @@ export const UpdateAdminSettingsSchema = z.object({
   reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
   // Per-user concurrent SSE-stream cap (#268).
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
+  /** Worker batch sizes — optional on update; omitted → leave unchanged. */
+  qualityBatchSize: z.number().int().min(1).max(100).optional(),
+  summaryBatchSize: z.number().int().min(1).max(100).optional(),
+  imageAnalysisBatchSize: z.number().int().min(1).max(500).optional(),
   /** Issue #264 — optional on update; omitted → leave unchanged. */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
   /**
@@ -612,10 +624,10 @@ export const UpdateAdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema.optional(),
   ragImageIndexExternal: RagImageIndexExternalSchema.optional(),
-  /** #1115 P3 — the Retrieval tab's `Image leg` toggle. */
-  ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
   /** #1115 P4 — the Retrieval tab's `Images shown to the model` cap. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
+  /** #1615 — the image-analysis card's `Max output tokens` row. Omit to leave unchanged. */
+  imageAnalysisMaxOutputTokens: ImageAnalysisMaxOutputTokensSchema.optional(),
   /** #1285 — the Retrieval tab's `Index search depth` floor, beside Fetch width. */
   ragEfSearch: RagEfSearchSchema.optional(),
   /** #1444 — opt-in collab gateway. Omitted → leave unchanged. */
@@ -808,9 +820,9 @@ export const AttachmentSweepDeletedSchema = z.object({
   directories: z.number().int().nonnegative(),
   files: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
-  /** `page_image_embeddings` rows removed for files the sweep deleted (safety net). */
-  imageEmbeddingRows: z.number().int().nonnegative(),
-  /** Pages marked `image_embedding_dirty` because their files were removed. */
+  /** `page_image_analyses` rows removed for files the sweep deleted (safety net). */
+  imageAnalysisRows: z.number().int().nonnegative(),
+  /** Pages marked `image_analysis_dirty` because their files were removed. */
   pagesMarkedDirty: z.number().int().nonnegative(),
 });
 export type AttachmentSweepDeleted = z.infer<typeof AttachmentSweepDeletedSchema>;

@@ -22,7 +22,7 @@ flowchart TB
     subgraph features["features/ (domain UI)"]
         direction LR
         fAuth["auth/<br/>OidcCallbackPage (EE route)"]
-        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)<br/>collab provider · caret colours · unified presence (#1447)"]
+        fPages["pages/<br/>list · view · new · trash · pinned<br/>bulk actions · 404 catch-all<br/>RelocateDialog (#1123) · VersionHistory (#1404)<br/>NotionImportDialog (#1466)<br/>collab provider · snapshot-bound Save<br/>inert-draft recovery controls · unified presence"]
         fSpaces["spaces/<br/>settings · new"]
         fAI["ai/<br/>AiAssistantPage (/ai and /ai/c/:id — no-document home)<br/>conversations/ AiConversationsSidebar · ConversationList · ConversationRow (#1361)<br/>ai-routes.ts (shared/lib) · assistant-actions.ts<br/>dock/ DockPanel · DockDiffCard (#1126)<br/>tab inside ArticleRightPane; mobile inspector sheet below md<br/>SourceCitations · CitationChips · SourceThumbnail (#1115 P3)<br/>image-source.ts · source-target.ts · source-confidence.ts"]
         fGraph["graph/"]
@@ -68,37 +68,43 @@ flowchart TB
 
 ## Authenticated inset shell
 
-`AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
-around a rounded **app shell**. The top app header and destination rail also
-paint the chassis, so the outer frame (header, left rail, bottom rail) is
-continuous on all sides; internal panel toolbars paint Chrome (`--app-header-bg`). The composition is:
+`AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on
+`md+`). The top app header — logo, then the Pages / AI / Graph tabs
+(`MainNavHeaderTabs`), then the session cluster — and the left navigation
+column (`MainNavChassisRail` hosting the route's sidebar) are transparent over
+it, so the frame is one colour on every side of a single rounded **workspace
+card**, which carries the light `--app-workspace-shadow` (ADR-010 v1.7). The
+composition is:
 ```mermaid
 flowchart TB
-    chassis["viewport chassis --app-chassis"]
-    shell["app shell --app-shell-*"]
-    header["top app header --app-chassis"]
-    workspace["primary workspace<br/>left nav + main"]
-    rail["context rail --app-rail-*<br/>Outline · Details · Assistant"]
+    chassis["viewport chassis --app-chassis (flat)"]
+    header["top app header<br/>logo · Pages / AI / Graph tabs · session"]
+    shell["app shell (no overflow clip)"]
+    left["left column MainNavChassisRail<br/>SidebarTreeView | AiConversationsSidebar | SettingsSidebar<br/>transparent, resizable"]
+    card["workspace card --app-shell-* + --app-workspace-shadow<br/>main [+ attached inspector on article routes]"]
 
     chassis --> header
     chassis --> shell
-    shell --> workspace
-    shell --> rail
+    shell --> left
+    shell --> card
 ```
 
-Mobile (`<md`) is edge-to-edge: inset, shell radius and rail gap are 0.
+Mobile (`<md`) is edge-to-edge: inset and shell radius are 0, the
+destinations and sidebar live in the navigation drawer, and the inspector is a
+sheet.
 
 ## Article route panels (#1126)
 
-On `/pages/:id` the shell renders the **workspace** (left nav + main) and a
-**detached context rail** as siblings in one flex row, so each region scrolls
-independently and the editor column shrinks around the rail rather than
-having anything float above it.
+On `/pages/:id` the workspace card holds `<main>` and the **attached
+inspector** side by side, split by the inspector's 1px left hairline; each
+region scrolls independently and the editor column shrinks around the
+inspector rather than having anything float above it. Both side panels resize
+from their inner edge.
 
 ```mermaid
 flowchart LR
-    workspace["workspace<br/>SidebarTreeView | main<br/>[data-scroll-container]<br/>PageViewPage · TipTap"]
-    rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
+    workspace["workspace card<br/>main [data-scroll-container]<br/>PageViewPage · TipTap"]
+    rail["ArticleRightPane (attached)<br/>400–1200px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
     workspace --- rail
     workspace --> connections["ArticleConnections (#1314)<br/>read-mode article footer<br/>linked · section · related"]
@@ -145,9 +151,93 @@ enters the viewport, not on ordinary re-renders or background refetches.
 - Below `md` there is no right side to dock into, so the same inspector
   (`ArticleRightPane` with `presentation="sheet"`) is a right-hand slide-over
   — Outline, Details and Assistant together, matching the left nav drawer.
-  Chassis **AI** is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
+  The header's **AI** tab is the full-page `/ai` chat (`aria-label="AI chat, full page"`);
   the inspector tab is **Assistant**. The laptop-width force-collapse of the
   page tree is gone: 768–1439 keeps the user's tree preference.
+- **Baseline lifecycle is a Details section, a badge and a tree glyph (#277).**
+  `PageLifecycleSection` sits below Document health, not in a banner above the
+  article: a frozen page already says so in its header and by having no Edit
+  control, and a dominant card would push the document down on every frozen
+  page. It keeps four claims apart, because collapsing them is how the
+  interface starts overstating its evidence — *frozen* (a fact about `pages`),
+  *frozen by* (who performed it), the *reason*, and *authenticated approval*,
+  which renders only for `provenance === 'authenticated_approval'` and is
+  never inferred from `isFrozen`. Governed proposal state renders only when
+  `useEnterprise().isEnterprise` is true; the same bundle ships in both
+  editions.
+- Capabilities come from the server. `canFreeze` / `canUnfreeze` are read off
+  the page, never derived, and an absent page — an in-flight or failed read —
+  is UNKNOWN, which offers no control at all. A refusal is rendered as prose
+  from the typed denial reason, because a native-disabled button takes no
+  focus and no touch, so its `title` would be unreachable for exactly the
+  users who need it. Read mode therefore replaces Edit with a
+  non-interactive status rather than a disabled control.
+- Freeze and thaw are **never optimistic**: the modals send the previewed
+  manifest identity (`expectedManifestDigest` + `expectedContentRevision`),
+  and the badge, the editor gate and the tree follow the re-read page. A
+  refusal keeps the operator's typed text so a stale preview or a busy room
+  is retried, not retyped. The dialogs restore focus to the control that
+  opened them **after** the portal unmounts — focusing in the same tick lands
+  on `body`, which a browser run caught and jsdom did not.
+- `FrozenBadge` is neutral ink plus a lock glyph in both forms. It is not a
+  status hue: amber, green and red stay reserved pipeline signals, and the
+  glyph is the channel that survives `forced-colors` and colour blindness.
+  Tree rows use the compact form — one glyph with an accessible name, no
+  extra tab stop and no second icon column, in `SidebarTreeView` and
+  `DndLocalSpaceTree` together.
+- **The governed Enterprise workflow is its own section** (`PageGovernanceSection`,
+  mounted inside `PageLifecycleSection`). It renders nothing at all unless the
+  server says `governanceEnabled` — an ungoverned space and a governed space
+  with no proposal both report status `none`, so the mode is a server fact and
+  not inferable from the status. Without the `document_sign_off_governance`
+  entitlement it renders one sentence and issues **no request**: new proposals,
+  votes and finalization stop, while the article stays frozen, its evidence
+  stays readable and an authorized thaw stays available. With it, the section
+  reads `GET /enterprise/page-governance/proposals/:id` (the identity comes
+  from the page's `governanceProposalId`, so discovering a proposal never
+  requires POSTing one) and renders one row per required role carrying the
+  authenticated approver and the date. **No field anywhere in it accepts a
+  name, a role or a signature**: the role is chosen from the proposal's own
+  `requiredRoles`, and the vote carries the digest and requirements revision
+  the browser was shown, so a stale tab cannot approve content it never saw.
+  A proposal whose `expectedContentRevision` no longer matches the page is
+  marked stale in amber and offers no vote; an `approved` proposal carrying a
+  `finalizeError` reports the named failure and the explicit retry the server
+  requires, because the freeze happens inside the final approval and nothing
+  reschedules it.
+- **Retained evidence is a disclosure, not a second list** (`PageBaselineHistory`).
+  It fetches only once opened, pages on the server's cursor, and keeps the
+  same three claims apart as the section above it: the server's immutable
+  actor snapshot (a deleted user keeps the recorded display name), the
+  provenance, and *reported signatories* — typed by the person who froze the
+  article and labelled as unverified. A reference id renders as text, never as
+  a link, and a failed read is a failure rather than an article that was never
+  frozen.
+- **Every protected-write entry point on the article route shares one refusal.**
+  Edit, the empty-article `Add content`, the shortcuts that reach them, the
+  draw.io overlay and the attachment write behind it all go through
+  `contentWriteRefusal`, which distinguishes *frozen* from *not yours to
+  change* because the next step differs. `DrawioEditor` has no read-only mode,
+  so a frozen article supplies **no** `onEditDiagram` callback and the viewer
+  injects no overlay; an already-open diagram is never unmounted — its saving
+  action is refused and the refusal names draw.io's own export as the way out.
+  AI `Apply` is a protected write too: the dock and the improve diff withdraw
+  the control and keep the generated text, and a **423** from
+  `/llm/improvements/apply` is reported as a refusal that changed nothing, not
+  as a re-runnable failure.
+- **Settings → Governance → Article baselines** (`ArticleBaselinesTab`) is the
+  admin surface: baseline creation activation with the deployment's readiness
+  blockers in prose, and per space the CE governance marker plus — under an
+  Enterprise licence — the required approval roles and their holders (picked
+  from the user directory, never typed). Its copy carries the rollout rule,
+  because activation is a one-way door: do not enable it in a mixed-version
+  cluster, and once baselines exist a non-enforcing build is not a rollback
+  path. The article inspector links admins here when a policy is refusing
+  their direct freeze (`BASELINE_SETTINGS_PATH`).
+- Library rows and search results carry the same compact lock as the trees,
+  fed by the freeze summary fields the contract puts on every page shape.
+  Freezing does not bump `pages.version`, so `PageListItem`'s memo comparator
+  compares `isFrozen` explicitly or a frozen row keeps rendering as editable.
 - `Apply` on a proposed change goes through **`POST /llm/improvements/apply`**,
   not a client-side write into the editor. That route runs `protectMedia` /
   `restoreMedia` (#723) and the column-layout realignment that returns **422**
@@ -192,41 +282,80 @@ enters the viewport, not on ordinary re-renders or background refetches.
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
-## Collaborative editing (#1447)
+## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →
-`collabEditingEnabled`). Flag off ≡ today's TipTap draft + #301 SSE presence.
-The gateway, BYTEA persist and nginx/Vite upgrade live in
+`collabEditingEnabled`). Flag off keeps the TipTap draft + #301 SSE presence
+path. The distributed gateway, durable admissions and BYTEA persistence live in
 [`12-realtime-collaboration.md`](./12-realtime-collaboration.md); this diagram
-is the editor wiring.
+shows the editor and recovery contract.
 
 ```mermaid
 flowchart TB
     page["PageViewPage"]
     cfg["GET /api/collab/config"]
-    hook["useCollabProvider<br/>y-websocket 3.1 protocols v1 plus JWT<br/>4401 closed connect · 4403/4404 destroy · disableBc"]
-    ed["Editor<br/>Collaboration plus CollaborationCaret<br/>StarterKit undoRedo false"]
+    hook["useCollabProvider<br/>joined lifecycle is immutable<br/>explicit writable_admission<br/>disableBc"]
+    ed["Editor<br/>Collaboration + CollaborationCaret<br/>StarterKit undoRedo false"]
+    save["Save start<br/>Y.snapshot clocks + delete-set<br/>base64 field ≤ 1,048,576 chars"]
+    api["POST /api/pages/:id/collab/commit<br/>expected lifecycle + document state"]
+    ack{"Server snapshot includes<br/>captured state?"}
+    stay["Keep editor open<br/>late local edits remain dirty"]
+    exit["Exit edit mode only if<br/>captured state + metadata still current"]
+    fence["Lifecycle / authority / document reset<br/>or connection loss"]
+    draft["Mounted inert or offline draft<br/>no automatic replay"]
+    recovery["Download draft<br/>or confirmed Open current version"]
     sse["usePresence SSE (issue 301)"]
     stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
 
     page --> cfg
     cfg -->|flag on and edit mode| hook --> ed
     cfg -->|flag off or read mode| sse
+    ed --> save --> api --> ack
+    ack -->|captured state changed meanwhile| stay
+    ack -->|unchanged| exit
+    hook --> fence --> draft --> recovery
     hook --> stack
     sse --> stack
 ```
 
 - **Provider mounts only in edit mode.** Read mode keeps the SSE heartbeat.
   `if (!token) return` — never `protocols: [compendiq.collab.v1, '']`.
-- **Save** goes to `POST /api/pages/:id/collab/commit` (title only) while
-  collab is live; the flag-off path still `PUT`s `bodyHtml` + `version`.
-- **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured ≥3:1 on
-  Graphite and Paper `--surface-card`. Steel and status hues are not a caret
-  palette. `@tiptap/extension-collaboration-caret` — not the v2
+- **Save is snapshot-bound, not socket-bound.** The request carries the
+  lifecycle revision captured at edit start and a canonical bounded Yjs
+  Snapshot, including clocks and deletions. A connected socket is not durable
+  acknowledgment. The server re-authorizes current actor/page/space access
+  under the current lifecycle and active request admission. Its fresh
+  correlated cross-process room snapshot must come from an unchanged owner set
+  and transport generation and contain the captured client state. If
+  title/labels or the Y.Doc change while the request is in flight, the
+  acknowledged capture is saved but the editor stays open with the later edits.
+- **Save is single-flight per editing session.** `PageViewPage` claims the
+  flight synchronously before draw.io draining (the first await), so the Save
+  button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
+  ordinary versioned PUT or the collaborative commit. The pending ref has
+  state-backed UI that survives the retained component's discard and
+  `/pages/:id` reset: read mode shows `Finishing save…` and cannot start a new
+  editing session until the older write settles. Navigation and destructive
+  actions retain their existing behavior; the save guard does not become a
+  page-wide mutation lock. Success and failure both release the flight for a
+  later intentional retry; collaborative acknowledgment remains bound to the
+  snapshot captured by the accepted Save, and later local edits still keep the
+  editor open.
+- **Recovery preserves the tab's document.** Lifecycle, permission and document
+  resets disconnect and make the mounted provider/Y.Doc inert rather than
+  silently joining or replaying into a new lifecycle. Dirty connected and
+  offline drafts guard Cancel, app navigation, Back/Forward and unload.
+  `Download draft` exports page ID, title, body, labels and lifecycle as JSON.
+  `Open current version` requires explicit confirmation, then refetches and
+  discards only after a successful refetch; failure leaves the draft in place.
+  These are editor recovery controls, not #277's baseline-management UI.
+- **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
+  ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
+  caret palette. `@tiptap/extension-collaboration-caret` — not the v2
   `collaboration-cursor` name.
 - **Presence** is one stack. Awareness editors (`isEditing` if in the collab
-  room) merge with SSE viewers. The admin toggle on Diagnostics → System
-  status is muted, not amber.
+  room) merge with SSE viewers. The admin toggle on Diagnostics → System status
+  is muted, not amber.
 
 ## Article-editor inline completion (#1417)
 
@@ -240,8 +369,18 @@ one undoable transaction; dismissing or receiving stale text changes nothing.
 When admin and user on-device flags are on, a dedicated WebGPU worker
 (`frontend/src/shared/lib/client-inference/`) may answer a warm ghost-text
 request without hitting Fastify. The plugin seam is still
-`requestCompletion`. Cold cache, no GPU, or flags off equals #1417.
+`requestCompletion`. Its eligibility gate must allow a cached, unloaded model
+to reach that seam; requiring readiness there deadlocks local-only startup.
+Cold requests warm the worker and use the assigned server, if any, meanwhile.
+Hidden-tab and idle unload await pipeline disposal so GPU/WASM sessions do not
+accumulate across reloads. Inline prompts use the installed tokenizer's chat
+template with thinking disabled and the existing bounded output budget.
 Hunspell EN/DE lint is a second worker (`shared/lib/spellcheck/`), not GPU.
+
+The worker passes `/api/models/client-assets/<local-id>` as a local model
+directory to Transformers, with remote model loading disabled. This avoids
+Hub ID validation of Compendiq's `org--name` IDs without changing the
+authenticated same-origin asset routes or OPFS cache identities (#1654).
 
 The extension sends roughly 800 tokens before and 200 after the cursor after a
 personal debounce. Its persisted default mode either requests and displays one
@@ -257,11 +396,23 @@ pointers, and outside code blocks when **Code blocks only** is enabled.
 sequenceDiagram
     participant U as User
     participant T as TipTap plugin
+    participant M as ClientInferenceManager
+    participant W as WebGPU worker
     participant API as /api/llm/inline-completion
     U->>T: pause or manual shortcut
     T->>T: clear ghost + abort stale request
-    T->>API: bounded editor context
-    API-->>T: 204 or short completion
+    T->>M: bounded editor context
+    alt local model ready
+        M->>W: templated continuation
+        W-->>M: visible one-line text
+    else cached but not loaded
+        M->>W: warm model from OPFS
+    end
+    alt no local result and server assigned
+        M->>API: bounded editor context
+        API-->>M: 204 or short completion
+    end
+    M-->>T: completion or no suggestion
     T-->>U: widget ghost text + shortcut hint
     alt accept
         U->>T: Tab / word shortcut
@@ -273,8 +424,9 @@ sequenceDiagram
 ```
 
 Personal controls live at **Settings → Personal → Editor**. The frontend also
-checks the authenticated use-case-default endpoint; an unassigned admin model
-therefore disables requests even when the user's preference remains enabled.
+checks the authenticated use-case-default endpoint. An unassigned model
+disables server requests, but still permits opted-in local-only suggestions.
+The settings cache badge reports downloaded bytes, never GPU readiness.
 
 ## Composer attachments (#1131 documents, #1154 images)
 
@@ -410,20 +562,81 @@ Four rules are load-bearing:
   defeats, while the viewport gate is exact.
   Lower the cap if the single-answer case stops holding.
 
-**In Settings → AI Models, the leg has three admin surfaces**, one per question
-an operator actually asks. *Can it run?* — the **Image embedding** row on **LLM
+**In Settings → AI Models, the leg had three admin surfaces**, one per question
+an operator asked. *Can it run?* — the **Image embedding** row on **LLM
 providers** (`UsecaseAssignmentsSection` + `ImageEmbeddingCapability`: the
 assignment, the MRL truncation field, the **Last probe** chip and **Re-check**).
-*Is it running?* — the **Image index** card on **Embeddings**
-(`ImageIndexCard`: status, counters, last run by skip reason, **Process now**,
-**Re-scan all**). *How should it behave?* — the **Image retrieval** group on
-**Retrieval** (`RetrievalTab`: **Image leg**, **Images per page**, **Index
-external images**, **Images shown to the model**). Splitting them that way is
-deliberate: a row count and a last run are the honest answer to "is it
-working?", which is why the probe row **points at** the Embeddings card instead
-of claiming an index it cannot see, and why the Retrieval group's unassigned
-notice **points back at** LLM providers while leaving its own controls enabled —
-they are settings, not actions.
+*Is it running?* — the **Image index** card on **Embeddings** (`ImageIndexCard`:
+status, counters, last run by skip reason, **Process now**, **Re-scan all**).
+*How should it behave?* — the **Image leg** toggle in the **Image retrieval**
+group on **Retrieval**. **#1618 stage 2 deleted all three** (ADR-027): the
+components are gone and no AI Models sub-tab mentions an image embedding, an
+image index, an MRL width or an image leg. What survives in that Retrieval group
+are the three settings that were never the leg's — **Images per page**, **Index
+external images** and **Images shown to the model** — which bound what the
+answer path sends to the chat model and still apply to the derived
+`image_analysis` provenance that replaced the leg. The *can it run? / is it
+running?* split those surfaces were built on is the one the replacement
+inherited, described next: a row count and a last run are the honest answer to
+"is it working?", which is why the capability strip on LLM providers **points
+at** the Embeddings card rather than claiming an index it cannot see.
+
+**The replacement's first surface arrived with #1615 (ADR-027): the Image
+analysis (vision) row** on **LLM providers** (`UsecaseAssignmentsSection` +
+`ImageAnalysisCard`).
+The row is the ordinary provider select and `ModelPicker` (manual model IDs
+accepted; the probe on Save validates them); the card beneath it is gated on the
+SAVED assignment, never the draft, for everything that describes the live leg:
+the egress sentence ("Page images are sent to *provider*" / "no page image leaves
+this host"), the `VisionBadge` tri-state with **Checked …** / **Never checked**
+and **Re-check** (`aria-busy`, label swap, focus kept), the `null`-is-not-a-verdict
+and text-only-is-a-pause sentences, the retained **Index identity** line
+(model · endpoint · short hash · adopted when) with an amber `role="status"`
+drift notice when the provider's endpoint moved, the escaped **Why this
+verdict?** disclosure, and — its own row below all of that, never inside the
+identity line — **Max output tokens** (`NumberRow`, extracted from `RetrievalTab`
+into `panels/NumberRow.tsx`, draft-on-keystroke, clamp-on-commit). `LlmTab`
+saves the ceiling through `PUT /admin/settings` BEFORE the assignments PUT and
+re-sends no assignment for it (it is outside the retained identity and fires no
+probe); a 422 from the assignment PUT keeps every other draft and toasts a
+headline chosen from `ApiError.reason` (`no_provider` / `no_model` / `text_only`
+/ `unconfirmed`) over the server's sentence; a save or re-check that adopted a
+new identity toasts the `reanalyzeRows` disclosure in amber, a resume the
+ordinary success.
+
+**Its second arrived with #1618 stage 1: the Image analysis card** on
+**Embeddings** (`ImageAnalysisProgressCard`), which answers *is it running?*
+for the replacement exactly as `ImageIndexCard` did for the legacy leg. Stage 1
+landed it BESIDE the legacy card, because while both designs were on `dev` the
+legacy leg was still the only image retrieval that served and an upgrading
+operator had to read both; **#1618 stage 2 deleted the legacy card and this one
+now holds that slot alone**. The Max output tokens row stays on LLM providers
+(ADR-027 `:4856-4860`): *can it run?* and *is it running?* are two surfaces, one
+job each.
+
+It copies the incumbent's argument rather than its markup. **Three fetch
+states, never one** — pending renders em-dashes, and a failed READ says the
+status could not be read, states that the assignment and the stored analyses
+are untouched, offers a `useNoticeRetry` retry (`aria-disabled` + label swap,
+focus rehomed to the state line) and **leaves the three actions live**, because
+they are the remedy. `running` is read off the server's worker lock and
+deliberately not off a payload a failed refetch left in cache. The counters
+keep `analyzed` and **`stale`** apart (analyzed on disk, invalid to every
+reader) and report the epic's two look-alike facts on separate lines: a
+PARTIALLY analyzed corpus still owes vision calls, while pages
+`embedding_dirty` behind valid analyses owe only a text re-embed and cost no
+call. `imageAnalysisCoverage()` restates `image-analysis-readiness.ts`'s
+vocabulary and first-match order over the corpus, `missing` counted as a gap
+rather than a verdict, so the card and the D14 diagnostic never describe one
+instance in two languages. Unassigned is rendered as the D7 PAUSE, neutral and
+at rest. ADR-010 colour: every count is a measurement and renders neutral; the
+four amber exceptions are failed images, unreconciled pages, an identity that
+does not match the assignment, and a provider-side stop (one sentence per D13
+reason, with its HTTP status). **Re-analyze all** goes through a `ConfirmDialog`
+seeded by `reanalyzeAllDisclosure()` — its own sentence, not
+`reanalysisDisclosure()`, because an identity change keeps the stored
+descriptions and this action destroys them. Polling is the incumbent's 5 s plus
+a 20 s post-kick warm-up, since the lease is taken after the POST has answered.
 
 **A text-only chat model is invisible here, on purpose** (ADR-025 D8). Nothing
 on an answer, in the sources or in the announcement says a picture was withheld;
@@ -469,8 +682,9 @@ sequenceDiagram
 
 ## Getting Started checklist (#1402)
 
-`features/onboarding/OnboardingChecklistCard` is a dismissible five-step
-checklist that `PagesPage` renders as a sibling block between the Library
+`features/onboarding/OnboardingChecklistCard` is a dismissible, **conditional**
+checklist — five steps with the Confluence integration on, three in standalone
+mode (#1623) — that `PagesPage` renders as a sibling block between the Library
 header and the search toolbar. It is **additive chrome**: it never wraps,
 gates or replaces the page tree's loading, failed, failed-with-cache or empty
 states, and it renders nothing at all — not a collapsed sliver — once
@@ -481,8 +695,8 @@ TanStack Query cache, read through `shared/hooks/use-onboarding.ts`:
 
 | Step | Source | Where it is recorded |
 |---|---|---|
-| Connect your Confluence account | computed `hasConfluencePat` | — |
-| Choose the spaces to sync | computed `selectedSpaces.length > 0` | — |
+| Connect your Confluence account | computed `hasConfluencePat` (Confluence on only) | — |
+| Choose the spaces to sync | computed `selectedSpaces.length > 0` (Confluence on only) | — |
 | Ask your first question | stored `firstAiQueryMade` | `AskMode` **and** `dock/use-dock-actions`, in `runStream`'s success-only `onComplete` |
 | Learn the keyboard shortcuts | stored `shortcutsModalViewed` | `KeyboardShortcutsModal`, on open |
 | Create or edit a page | stored `pageCreatedOrEdited` | `useCreatePage().onSuccess`, `useUpdatePage().onSettled` on the no-error path |
@@ -491,6 +705,21 @@ Two of the five are **computed, never persisted** — a stored `patConfigured`
 would drift the moment a user disconnected their PAT (phase 1's reasoning, in
 `packages/contracts/src/schemas/settings.ts`). The three stored flags are
 partial-patched one key at a time and merged server-side.
+
+**The first two rows are conditional (#1623).** When
+`settings.confluenceEnabled === false` the hook builds the remaining three only:
+the Confluence steps are omitted from the rendered list *entirely* — not greyed
+out, not marked complete — because a standalone user has no account to connect
+and the toggle's rule is that no surface solicits a URL or a PAT while it is
+off. `ONBOARDING_STEP_IDS` still holds all five ids (it types `STEP_COPY`); the
+rendered list is a subset of it. Everything counted downstream is therefore
+derived from the rendered list, never from a literal five: `allComplete` is
+`completedCount === steps.length`, the progress line reads
+`{completedCount} of {steps.length} done`, and the celebration says `All done`.
+Flipping the toggle completes nothing on its own — a standalone user with no
+activity reads `0 of 3 done`. The flag is read as `=== false` and never as
+falsy, since a response from a backend that predates the field omits the key and
+falsy would read *unknown* as *off*.
 
 There are **two independent `/llm/ask` send paths** and no shared send
 function, so both are wired; missing one would leave half of users without
@@ -522,12 +751,13 @@ Neither half of that is session-scoped by accident.
   its milestone while `NewPagePage` navigates away, so the caller is normally
   gone before the write settles.
 
-When all five are true, `useOnboarding({ trackCompletion: true })` — mounted by
+When every rendered step is true, `useOnboarding({ trackCompletion: true })` — mounted by
 the card and nowhere else — writes `completedAt` and `dismissed: true` once and
 never again. **The completion line is driven by that server fact, not by an
-in-mount transition**: three of the five CTAs navigate away from `/`, so the
+in-mount transition**: most CTAs navigate away from `/` (three of the five, two
+of the standalone three), so the
 last milestone normally lands on another route and the overview is re-entered
-already-complete. The card congratulates whichever client finds all five done
+already-complete. The card congratulates whichever client finds every rendered step done
 with `completedAt` still null — and only while the guide is **not** dismissed,
 so a flag flipping behind a closed guide records the graduation without
 resurfacing the panel. **User Menu → Getting Started Guide** brings the
@@ -535,8 +765,8 @@ finished list (not a second congratulation — `completedAt` is set by then) bac
 at any time by clearing `dismissed`.
 
 The congratulation is an **addition, not a replacement**: it renders above the
-five checked rows rather than instead of them. `shortcuts` is the one milestone
-completable in place, so when it is the fifth step the graduating render was the
+checked rows rather than instead of them. `shortcuts` is the one milestone
+completable in place, so when it is the last step the graduating render was the
 render that discarded the activated CTA below — Radix then restored focus on
 dialog close to a detached node and it fell to `<body>`. The `role="status"`
 region is mounted empty from the first paint and only its text changes: a live
@@ -596,15 +826,15 @@ the backend side.
   colours**: `--surface-backdrop`, `--surface-card` and
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
-  palette is designed out. Paper's panes — document, left navigation, context
-  rail — are pure white; its neutrals sit a hair off neutral toward warm, below
+  palette is designed out. Paper's panes — document and the attached
+  inspector — are pure white; its neutrals sit a hair off neutral toward warm, below
   the perceptual threshold, so do not describe it as a warm palette. Its frame
-  (gutter, left destination rail, top app header) is `#EBEAE8`: the darkest step
+  (gutter, left navigation column, top app header) is `#EBEAE8`: the darkest step
   and a real grey, deepened twice in v1.1 — once when the workspace and
   context-rail hairlines were removed and the value step became the only thing
   drawing the card, then again when the owner asked for "more gray" (1.202:1 on
   Pane, the same rung `--color-selected` occupies). It is the floor of the range:
-  the destination rail's 12px labels are `--color-muted-foreground` on it at
+  the navigation's 12px secondary labels are `--color-muted-foreground` on it at
   4.51:1, so a deeper frame needs the secondary ink darkened first, and
   `workspace-themes.test.ts` pins that pair. Hover, press and selection are three
   separate tokens rather than one shared fill — with a perceptual floor between
@@ -622,10 +852,10 @@ the backend side.
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
-- **The shell draws no lines.** The workspace card and the context rail carry no
-  border — inset, radius and the Pane-over-Canvas step draw both — and neither
-  does any pane's own first row: it inherits the pane rather than painting
-  Chrome, and the 48px chrome band across the top of every pane draws no
+- **The shell draws no frame lines.** The workspace card carries no border —
+  inset, radius, the Pane-over-Canvas step and its light resting shadow draw it
+  (ADR-010 v1.7) — and no pane's own first row paints Chrome, and the 48px
+  chrome band across the top of every pane draws no
   hairline either. That band is now held by HEIGHT alone: the sidebar's chrome
   row, the article context strip and the inspector's tab row all resolve to
   exactly 48px so the panes start their content on one y, and
@@ -635,7 +865,7 @@ the backend side.
   one line left in the control — is `--color-border-interactive` in both
   `panel-tab-active` and `nm-pill-active`, because a selected segment's STATE has
   to clear 1.4.11. The lines that remain are the ones nothing else
-  states: the left navigation's `border-r` (both sides are Pane), card borders
+  states: the attached inspector's left hairline (both sides are Pane), card borders
   (a card paints Pane on a Pane), `--color-border-interactive` on anything
   operable **except the one owner exception, `nm-composer`** (quiet hairline by
   explicit decision; focus-within restores a ≥3:1 border plus ring), and the two
@@ -645,8 +875,8 @@ the backend side.
   1.08:1 floor under the card's value step, since an unlined card fails
   silently (ADR-010 v1.1).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
-  the outer frame and top app header, Workspace paints navigation, Chrome
-  paints internal panel toolbars, and the content pane sits one value step up.
+  the outer frame, top app header and left navigation, Workspace fills the card,
+  Chrome paints internal panel toolbars, and the content pane sits one value step up.
   This is why the document is the brightest thing on screen and navigation recedes.
   Both themes are the same token-driven ladder — there are deliberately **no**
   `[data-theme-type="light"]` shell overrides, and a test fails if one returns.
@@ -668,11 +898,11 @@ the backend side.
   shadow exists** (`--shadow-overlay`, on `nm-card-elevated` and
   `nm-popover-glass`) for content
   that genuinely floats above the page: popovers, dialogs, the command palette.
-  Popovers take `nm-popover-glass`: interactive edge, 95% elevated-surface
-  fill and 10px blur. Theme tests require ≥4.5:1 text and ≥3:1 edge contrast
+  Popovers take `nm-popover-glass`: softened border (18% interactive edge),
+  12px blur, and elevated-surface fill (90% dark, 82% light so the frosted glass
+  effect is visible in bright mode). Theme tests require ≥4.5:1 text contrast
   after compositing over black and white images in both themes.
   `prefers-reduced-transparency` makes the fill opaque and removes blur;
-  dialogs stay opaque `nm-card-elevated`. Search rows in narrow popovers
   need `min-w-0` on flex inputs and `shrink-0` on icons so typing scrolls
   within the input rather than shifting and clipping the whole popup.
 - **Theme preference follows the OS by default** (`system | dark | light`). The

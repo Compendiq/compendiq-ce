@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QualityScoreBadge } from './QualityScoreBadge';
 
 /** How many of the meter's four segments are filled. */
@@ -10,27 +10,27 @@ function filledSegments(badge: HTMLElement): number {
 describe('QualityScoreBadge', () => {
   // ---- Null / pending state ----
 
-  it('renders "Not Scored" when score is null and status is null', () => {
+  it('renders "Not scored" when score is null and status is null', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus={null} />);
     const badge = screen.getByTestId('quality-score-badge');
-    expect(badge).toHaveTextContent('Not Scored');
+    expect(badge).toHaveTextContent('Not scored');
     expect(badge.className).toContain('text-status-inactive');
     expect(badge).toHaveAttribute('data-status', 'pending');
   });
 
-  it('renders "Not Scored" when status is pending', () => {
+  it('renders "Not scored" when status is pending', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="pending" />);
     const badge = screen.getByTestId('quality-score-badge');
-    expect(badge).toHaveTextContent('Not Scored');
+    expect(badge).toHaveTextContent('Not scored');
     expect(badge).toHaveAttribute('data-status', 'pending');
   });
 
   // ---- Analyzing state ----
 
-  it('renders "Analyzing..." with purple styling and pulse animation', () => {
+  it('renders "Analyzing…" with purple styling and pulse animation', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />);
     const badge = screen.getByTestId('quality-score-badge');
-    expect(badge).toHaveTextContent('Analyzing...');
+    expect(badge).toHaveTextContent('Analyzing…');
     expect(badge.className).toContain('text-status-ai');
     expect(badge.className).toContain('bg-status-ai/20');
     expect(badge.className).toContain('animate-pulse');
@@ -39,10 +39,10 @@ describe('QualityScoreBadge', () => {
 
   // ---- Failed state ----
 
-  it('renders "Analysis Failed" in amber, from tokens rather than hex literals', () => {
+  it('renders "Analysis failed" in amber, from tokens rather than hex literals', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
     const badge = screen.getByTestId('badge-failed');
-    expect(badge).toHaveTextContent('Analysis Failed');
+    expect(badge).toHaveTextContent('Analysis failed');
     // Failure is the one quality state that IS attention-worthy, so it is the
     // one that earns amber. Via --color-warning, so the palette tests can see
     // it — the previous hex literals were invisible to them.
@@ -94,10 +94,10 @@ describe('QualityScoreBadge', () => {
     expect(filledSegments(badge)).toBe(3);
   });
 
-  it('renders "Needs Work" for score 50-69 with two of four segments', () => {
+  it('renders "Needs work" for score 50-69 with two of four segments', () => {
     render(<QualityScoreBadge qualityScore={55} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
-    expect(badge).toHaveTextContent('55 Needs Work');
+    expect(badge).toHaveTextContent('55 Needs work');
     expect(filledSegments(badge)).toBe(2);
   });
 
@@ -113,7 +113,7 @@ describe('QualityScoreBadge', () => {
   it.each([
     [95, 'Excellent'],
     [78, 'Good'],
-    [55, 'Needs Work'],
+    [55, 'Needs work'],
     [30, 'Poor'],
   ])('score %i (%s) reaches for no status colour and no hex literal', (score) => {
     render(<QualityScoreBadge qualityScore={score} qualityStatus="analyzed" />);
@@ -135,6 +135,43 @@ describe('QualityScoreBadge', () => {
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('74 Good');
     expect(screen.getByTestId('quality-meter')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('draws empty segments in the ≥3:1 interactive-border token, distinct from filled ink', () => {
+    // WCAG 1.4.11: the meter is the scanning channel, so an empty segment must
+    // be visible. The `--color-border` separator measured 1.11:1 on the pane and
+    // made "35 Poor" read as a single tick; workspace-themes.test.ts measures
+    // the token against every ground the chip sits on.
+    render(<QualityScoreBadge qualityScore={35} qualityStatus="analyzed" showDetails />);
+    const meter = screen.getByTestId('quality-meter');
+    const [filled] = Array.from(meter.querySelectorAll<HTMLElement>('[data-filled="true"]'));
+    const empties = Array.from(meter.querySelectorAll<HTMLElement>('[data-filled="false"]'));
+    expect(empties).toHaveLength(3);
+    for (const empty of empties) {
+      const classes = empty.className.split(/\s+/);
+      expect(classes).toContain('bg-border-interactive');
+      expect(classes).not.toContain('bg-border');
+    }
+    const filledClasses = filled!.className.split(/\s+/);
+    expect(filledClasses).toContain('bg-foreground');
+    expect(filledClasses).not.toContain('bg-border-interactive');
+  });
+
+  it('keeps solid-versus-hollow segments under forced colours', () => {
+    // Forced colours repaint both fills to Canvas, which would erase the meter.
+    // Filled segments take CanvasText; empty ones an unfilled CanvasText outline.
+    render(<QualityScoreBadge qualityScore={55} qualityStatus="analyzed" />);
+    const meter = screen.getByTestId('quality-meter');
+    const filled = meter.querySelector<HTMLElement>('[data-filled="true"]')!;
+    const empty = meter.querySelector<HTMLElement>('[data-filled="false"]')!;
+    expect(filled.className.split(/\s+/)).toContain('forced-colors:bg-[CanvasText]');
+    expect(empty.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        'forced-colors:border',
+        'forced-colors:border-[CanvasText]',
+        'forced-colors:bg-transparent',
+      ]),
+    );
   });
 
   it('renders no meter for the non-score states', () => {
@@ -160,9 +197,9 @@ describe('QualityScoreBadge', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('70 Good');
   });
 
-  it('renders score 50 as "Needs Work" (boundary)', () => {
+  it('renders score 50 as "Needs work" (boundary)', () => {
     render(<QualityScoreBadge qualityScore={50} qualityStatus="analyzed" />);
-    expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('50 Needs Work');
+    expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('50 Needs work');
   });
 
   it('renders score 0 as "Poor" (boundary)', () => {
@@ -218,15 +255,6 @@ describe('QualityScoreBadge', () => {
     expect(screen.getByTestId('badge-failed').className).not.toContain('animate-pulse');
   });
 
-  // ---- Custom className ----
-
-  it('applies custom className', () => {
-    render(
-      <QualityScoreBadge qualityScore={80} qualityStatus="analyzed" className="my-custom-class" />,
-    );
-    expect(screen.getByTestId('quality-score-badge').className).toContain('my-custom-class');
-  });
-
   // ---- Tooltip for pending state ----
 
   it('shows appropriate tooltip for pending state', () => {
@@ -239,5 +267,56 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge.getAttribute('title')).toContain('in progress');
+  });
+
+  it('opens the complete analysis and consumes Escape without leaving the surrounding editor', async () => {
+    const summary = 'A detailed review. '.repeat(20);
+    render(
+      <QualityScoreBadge
+        showDetails
+        qualityScore={75}
+        qualityStatus="analyzed"
+        qualityCompleteness={0}
+        qualityClarity={70}
+        qualitySummary={summary}
+        qualityAnalyzedAt="2026-09-01T12:00:00Z"
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Quality analysis: 75 Good' });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'Quality analysis' });
+    expect(within(dialog).getByText('0/100')).toBeVisible();
+    expect(within(dialog).getByText('70/100')).toBeVisible();
+    expect(within(dialog).getByText(/A detailed review/)).toHaveTextContent(summary.trim());
+    expect(dialog.querySelector('time')).toHaveAttribute('datetime', '2026-09-01T12:00:00Z');
+    expect(within(dialog).queryByText('Accuracy')).not.toBeInTheDocument();
+
+    const editorEscape = vi.fn();
+    document.addEventListener('keydown', editorEscape);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    document.removeEventListener('keydown', editorEscape);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(editorEscape).not.toHaveBeenCalled();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('explains a failed re-analysis without presenting the previous score as current', async () => {
+    render(
+      <QualityScoreBadge
+        showDetails
+        qualityScore={85}
+        qualityStatus="failed"
+        qualityClarity={90}
+        qualityError="Provider temporarily unavailable"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Analysis failed/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Quality analysis' });
+    expect(dialog).toHaveTextContent('Provider temporarily unavailable');
+    expect(within(dialog).queryByText('85/100')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('90/100')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close quality details' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

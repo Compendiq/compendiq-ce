@@ -39,8 +39,11 @@ FROM node:24-alpine AS tools
 
 RUN apk add --no-cache dumb-init wget
 
-# Prepare the app directory with correct ownership for node (uid 1000)
-RUN mkdir -p /opt/app/data && chown -R 1000:1000 /opt/app
+# Prepare the app directory with correct ownership for node (uid 1000).
+# ATTACHMENTS_DIR is /app/data/attachments in compose; an empty /app/data
+# does not copy into a named volume, so uid 1000 then gets EACCES creating
+# the subdirectory at runtime.
+RUN mkdir -p /opt/app/data/attachments /opt/app/data/client-models && chown -R 1000:1000 /opt/app
 
 # Chromium stage — install Chromium into a standard Alpine base.
 ###########################################################

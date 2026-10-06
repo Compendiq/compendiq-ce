@@ -120,6 +120,22 @@ export function presetById(id: string): ProviderPreset | undefined {
   return PROVIDER_PRESETS.find((p) => p.id === id);
 }
 
+/**
+ * Best matching fill-preset for a stored or typed URL. Embeddings / chat
+ * resource paths still count as that host — presets are not stored, but the
+ * select must not snap to Custom just because the operator pasted
+ * `…/v1/embeddings`.
+ */
+export function matchPresetByUrl(raw: string | undefined | null): ProviderPresetId {
+  const url = raw?.trim().replace(/\/+$/, '') ?? '';
+  if (!url) return 'custom';
+  const ranked = PROVIDER_PRESETS.filter((p) => p.id !== 'custom' && p.baseUrl).sort(
+    (a, b) => b.baseUrl.length - a.baseUrl.length,
+  );
+  const hit = ranked.find((p) => url === p.baseUrl || url.startsWith(`${p.baseUrl}/`));
+  return hit?.id ?? 'custom';
+}
+
 function fieldDirty(current: string, lastFilled: string): boolean {
   return current.trim() !== '' && current !== lastFilled;
 }

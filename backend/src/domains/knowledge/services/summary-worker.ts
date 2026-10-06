@@ -6,7 +6,8 @@
  * and generates summaries using the LLM service.
  *
  * Design mirrors sync-service.ts: setInterval scheduling, in-memory lock,
- * configurable batch size and interval.
+ * configurable interval via env var; batch size from admin settings
+ * (`summary_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
  * NEVER writes summaries back to Confluence — local DB only.
  *
@@ -30,6 +31,8 @@
 
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
@@ -40,7 +43,8 @@ import {
 } from '../../llm/services/openai-compatible-client.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { logger } from '../../../core/utils/logger.js';
-import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
+import { acquireWorkerLock, releaseWorkerLock, refreshWorkerLock } from '../../../core/services/redis-cache.js';
+import { getWorkerBatchSize } from '../../../core/services/admin-settings-service.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -50,12 +54,10 @@ const SUMMARY_CHECK_INTERVAL_MINUTES = parseInt(
   process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60',
   10,
 );
-const SUMMARY_BATCH_SIZE = parseInt(
-  process.env.SUMMARY_BATCH_SIZE ?? '5',
-  10,
-);
 const MAX_RETRIES = 3;
 const MIN_BODY_LENGTH = 100;
+const LOCK_TTL_SECONDS = 600;
+const LOCK_REFRESH_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // State
@@ -101,7 +103,13 @@ async function resolveSummaryAssignment(): Promise<SummaryAssignment | null> {
   }
 }
 
-export async function getSummaryStatus(): Promise<SummaryStatus> {
+/**
+ * Summary worker status. The page counts cover only the pages `userId` may
+ * read (`visiblePagesPredicate`, the embedding-status scope), because any
+ * signed-in user reads them; the worker fields stay global.
+ */
+export async function getSummaryStatus(userId: string): Promise<SummaryStatus> {
+  const spaces = await getUserAccessibleSpaces(userId);
   const [result, assignment] = await Promise.all([
     query<{
       total: string;
@@ -118,9 +126,9 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
         COUNT(*) FILTER (WHERE summary_status = 'pending')       AS pending,
         COUNT(*) FILTER (WHERE summary_status = 'failed')        AS failed,
         COUNT(*) FILTER (WHERE summary_status = 'skipped')       AS skipped
-      FROM pages
-      WHERE deleted_at IS NULL
-    `),
+      FROM pages cp
+      WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}
+    `, [spaces, userId]),
     resolveSummaryAssignment(),
   ]);
 
@@ -383,6 +391,7 @@ async function summarizePage(
       { err, pageId: id, title, retryCount: newRetryCount },
       'Summary generation failed',
     );
+    throw err;
   }
 }
 
@@ -396,77 +405,117 @@ async function summarizePage(
 export async function runSummaryBatch(
   model?: string,
 ): Promise<{ processed: number; errors: number }> {
-  lastRunAt = new Date();
+  if (workerLock) return { processed: 0, errors: 0 };
+  // Claim locally before awaiting Redis, including on Redis-less installations.
+  workerLock = true;
+  let lockToken: string | null = null;
+  let guardTimer: NodeJS.Timeout | undefined;
+  let guardInFlight: Promise<void> | null = null;
+  let lockLost = false;
 
-  // Resolve the full assignment (config + model) via the use-case resolver.
-  const assignment = await resolveSummaryAssignment();
-  const effectiveModel = model || assignment?.model || '';
+  try {
+    lockToken = await acquireWorkerLock('summary-worker', LOCK_TTL_SECONDS, { failClosed: true });
+    if (!lockToken) return { processed: 0, errors: 0 };
+    const token = lockToken;
+    isProcessing = true;
+    lastRunAt = new Date();
 
-  if (!assignment || !effectiveModel) {
-    const flipped = await query(
-      // Clear summary_error so every no-model config-skip is consistently
-      // identifiable by `summary_error IS NULL` in rescanAllSummaries (#910).
-      // A page re-synced to 'pending' after a prior failure still carries its
-      // stale summary_error; without this reset it would be excluded from
-      // recovery and never re-summarized.
-      `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
-       WHERE summary_status = 'pending' AND deleted_at IS NULL`,
+    const renewLease = (): Promise<void> => {
+      if (guardInFlight) return guardInFlight;
+      if (lockLost) return Promise.resolve();
+      guardInFlight = refreshWorkerLock('summary-worker', token, LOCK_TTL_SECONDS)
+        .then((holder) => {
+          if (holder !== token) lockLost = true;
+        })
+        .catch((err: unknown) => {
+          lockLost = true;
+          logger.error({ err }, 'Summary worker lock renewal failed');
+        })
+        .finally(() => {
+          guardInFlight = null;
+        });
+      return guardInFlight;
+    };
+    const assertLease = async (): Promise<void> => {
+      if (guardInFlight) await guardInFlight;
+      if (lockLost) throw new Error('Summary worker lock lost; batch stopped');
+    };
+    // Renew even while a slow provider request is in flight; serialize renewals.
+    guardTimer = setInterval(() => void renewLease(), LOCK_REFRESH_MS);
+    guardTimer.unref();
+
+    // Resolve the full assignment (config + model) via the use-case resolver.
+    const assignment = await resolveSummaryAssignment();
+    const effectiveModel = model || assignment?.model || '';
+    await assertLease();
+
+    if (!assignment || !effectiveModel) {
+      const flipped = await query(
+        // Clear stale errors so config-skips remain recoverable by rescan.
+        `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
+         WHERE summary_status = 'pending' AND deleted_at IS NULL`,
+      );
+      logger.warn(
+        { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
+        'No summary provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
+      );
+      return { processed: 0, errors: 0 };
+    }
+
+    const effectiveAssignment: SummaryAssignment = {
+      config: assignment.config,
+      model: effectiveModel,
+    };
+
+    // Only the lease holder may recover a crashed run's orphaned pages.
+    await query(
+      `UPDATE pages
+       SET summary_status = 'pending'
+       WHERE summary_status = 'summarizing'
+         AND deleted_at IS NULL`,
     );
-    logger.warn(
-      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No summary provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
+
+    // Detect content changes without hashing every summarized page.
+    await query(
+      `UPDATE pages
+       SET summary_status = 'pending'
+       WHERE summary_status = 'summarized'
+         AND deleted_at IS NULL
+         AND summary_generated_at IS NOT NULL
+         AND last_modified_at IS NOT NULL
+         AND last_modified_at > summary_generated_at
+         AND body_text IS NOT NULL
+         AND length(body_text) >= $1`,
+      [MIN_BODY_LENGTH],
     );
-    return { processed: 0, errors: 0 };
-  }
 
-  const effectiveAssignment: SummaryAssignment = {
-    config: assignment.config,
-    model: effectiveModel,
-  };
+    const candidates = await findCandidates(await getWorkerBatchSize('summary_batch_size'));
+    let processed = 0;
+    let errors = 0;
 
-  // Phase 0: Re-queue pages orphaned in 'summarizing' by a crashed prior run (#911).
-  // Every batch runs under the redis + in-memory single-worker lock, so no other
-  // run can legitimately hold a row in 'summarizing' concurrently — any leftover
-  // is necessarily stale and would otherwise never be re-selected by findCandidates.
-  await query(
-    `UPDATE pages
-     SET summary_status = 'pending'
-     WHERE summary_status = 'summarizing'
-       AND deleted_at IS NULL`,
-  );
+    for (const candidate of candidates) {
+      await assertLease();
+      try {
+        await summarizePage(candidate, effectiveAssignment);
+        processed++;
+      } catch (err) {
+        errors++;
+        logger.error({ err, pageId: candidate.id }, 'Error in summary batch');
+      }
+    }
 
-  // Phase 1: Detect content changes via timestamp and mark as pending.
-  // Uses last_modified_at > summary_generated_at instead of recomputing
-  // SHA-256 hashes for every summarized page on every batch cycle.
-  await query(
-    `UPDATE pages
-     SET summary_status = 'pending'
-     WHERE summary_status = 'summarized'
-       AND deleted_at IS NULL
-       AND summary_generated_at IS NOT NULL
-       AND last_modified_at IS NOT NULL
-       AND last_modified_at > summary_generated_at
-       AND body_text IS NOT NULL
-       AND length(body_text) >= $1`,
-    [MIN_BODY_LENGTH],
-  );
-
-  // Phase 2: Find and process candidates
-  const candidates = await findCandidates(SUMMARY_BATCH_SIZE);
-  let processed = 0;
-  let errors = 0;
-
-  for (const candidate of candidates) {
+    await assertLease();
+    return { processed, errors };
+  } finally {
+    clearInterval(guardTimer);
     try {
-      await summarizePage(candidate, effectiveAssignment);
-      processed++;
-    } catch (err) {
-      errors++;
-      logger.error({ err, pageId: candidate.id }, 'Unexpected error in summary batch');
+      if (guardInFlight) await guardInFlight;
+      if (lockToken) await releaseWorkerLock('summary-worker', lockToken);
+    } finally {
+      isProcessing = false;
+      workerLock = false;
     }
   }
-
-  return { processed, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -479,12 +528,6 @@ export function startSummaryWorker(intervalMinutes?: number): void {
   const interval = (intervalMinutes ?? SUMMARY_CHECK_INTERVAL_MINUTES) * 60 * 1000;
 
   workerIntervalHandle = setInterval(async () => {
-    if (workerLock) return;
-    const lockToken = await acquireWorkerLock('summary-worker', 600);
-    if (!lockToken) return;
-    workerLock = true;
-    isProcessing = true;
-
     try {
       const { processed, errors } = await runSummaryBatch();
       if (processed > 0 || errors > 0) {
@@ -492,10 +535,6 @@ export function startSummaryWorker(intervalMinutes?: number): void {
       }
     } catch (err) {
       logger.error({ err }, 'Summary worker error');
-    } finally {
-      workerLock = false;
-      isProcessing = false;
-      await releaseWorkerLock('summary-worker', lockToken);
     }
   }, interval);
 
@@ -510,12 +549,6 @@ export function startSummaryWorker(intervalMinutes?: number): void {
  * Safe to call from startup timers — will no-op if the worker is already processing.
  */
 export async function triggerSummaryBatch(): Promise<void> {
-  if (workerLock) return;
-  const lockToken = await acquireWorkerLock('summary-worker', 600);
-  if (!lockToken) return;
-  workerLock = true;
-  isProcessing = true;
-
   try {
     const { processed, errors } = await runSummaryBatch();
     if (processed > 0 || errors > 0) {
@@ -523,10 +556,6 @@ export async function triggerSummaryBatch(): Promise<void> {
     }
   } catch (err) {
     logger.error({ err }, 'Initial summary batch error');
-  } finally {
-    workerLock = false;
-    isProcessing = false;
-    await releaseWorkerLock('summary-worker', lockToken);
   }
 }
 

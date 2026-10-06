@@ -65,6 +65,7 @@ export interface NotionImportDialogProps {
 type Visibility = 'private' | 'shared';
 
 const NOTION_ROOT_BATCH_SIZE = 50;
+const NOTION_DEVELOPER_CONNECTIONS_URL = 'https://app.notion.com/developers/connections';
 
 export function NotionImportPickFooter({
   importCount,
@@ -733,13 +734,14 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 />
                 <div className="space-y-1.5 text-xs text-muted-foreground">
                   <p id="notion-token-hint">
-                    Create an internal connection in Notion (workspace owners only) and paste the
-                    Installation access token from its Configuration tab. Not an OAuth app, not a
-                    personal access token.
+                    Create an internal connection in Notion under{' '}
+                    <span className="text-foreground">Developer tools → Connections</span>{' '}
+                    (workspace owners only) and paste the Installation access token from its
+                    Configuration tab. Not an OAuth app, not a personal access token.
                   </p>
                   <p>
                     <a
-                      href="https://www.notion.so/my-integrations"
+                      href={NOTION_DEVELOPER_CONNECTIONS_URL}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-1 font-medium text-action underline underline-offset-2"

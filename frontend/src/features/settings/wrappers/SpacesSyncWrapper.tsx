@@ -25,6 +25,13 @@ export function SpacesSyncWrapper({ settings, isLoading, onSaveSettingsAsync }: 
   const { isEnterprise, hasFeature } = useEnterprise();
   const showConflicts = isEnterprise && hasFeature('sync_conflict_resolution');
 
+  /**
+   * #1623: standalone mode. Explicitly `!== false`, never a falsy test —
+   * `settings` is undefined while the query is in flight and a pre-#1623
+   * payload omits the key entirely, and neither of those means "off".
+   */
+  const confluenceEnabled = settings?.confluenceEnabled !== false;
+
   const tabs: SubTabDef[] = [
     {
       id: 'spaces',
@@ -36,6 +43,7 @@ export function SpacesSyncWrapper({ settings, isLoading, onSaveSettingsAsync }: 
             <SpacesTab
               selectedSpaces={settings.selectedSpaces ?? []}
               showSpaceHomeContent={settings.showSpaceHomeContent ?? true}
+              confluenceEnabled={confluenceEnabled}
               onSave={onSaveSettingsAsync}
             />
           </Suspense>
@@ -45,11 +53,17 @@ export function SpacesSyncWrapper({ settings, isLoading, onSaveSettingsAsync }: 
     {
       id: 'sync',
       label: 'Sync schedule',
-      render: () => (
-        <Suspense fallback={<SkeletonFormFields />}>
-          <SyncTab />
-        </Suspense>
-      ),
+      render: () => {
+        // Same settings gate as the Spaces tab: SyncTab decides what to
+        // render from the flag, so handing it the default while the query is
+        // still in flight would flash Sync Now at a standalone user.
+        if (isLoading || !settings) return <SkeletonFormFields />;
+        return (
+          <Suspense fallback={<SkeletonFormFields />}>
+            <SyncTab confluenceEnabled={confluenceEnabled} />
+          </Suspense>
+        );
+      },
     },
     {
       id: 'conflict-policy',
@@ -78,7 +92,13 @@ export function SpacesSyncWrapper({ settings, isLoading, onSaveSettingsAsync }: 
   return (
     <>
       <PanelHeader
-        subtitle="Pick which Confluence spaces to mirror and how often Compendiq pulls updates."
+        subtitle={
+          confluenceEnabled
+            ? 'Pick which Confluence spaces to mirror and how often Compendiq pulls updates.'
+            : // #1623: nothing is mirrored and nothing is pulled in standalone
+              // mode, so the subtitle stops promising either.
+              'The spaces stored in Compendiq, and the jobs that maintain their pages.'
+        }
       />
       <SubTabs ariaLabel="Spaces & Sync sub-sections" tabs={tabs} testIdRoot="spaces-sync" />
     </>

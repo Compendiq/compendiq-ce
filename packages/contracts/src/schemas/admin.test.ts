@@ -24,13 +24,17 @@ const validReadPayload = {
   drawioEmbedUrl: null,
   // #1115 — required on read, null on every instance that has not asked the
   // image leg for MRL truncation.
-  imageEmbeddingTargetDimensions: null,
   reembedHistoryRetention: 150,
   adminAccessDeniedRetentionDays: 90,
   // Compendiq/compendiq-ee#113 Phase B-3 — required on read so a GET response
   // can never silently drop the cluster-wide LLM queue settings.
   llmConcurrency: 4,
   llmMaxQueueDepth: 50,
+  // Worker batch sizes — required on read; the Workers tab hydrates from them.
+  qualityBatchSize: 5,
+  summaryBatchSize: 5,
+  // #1616 — the image-analysis worker's batch size, seeded by migration 116.
+  imageAnalysisBatchSize: 50,
   // Issue #1051 — self-registration policy (required on read).
   registrationMode: 'closed',
   // #1118 — retrieval knobs, required on read. Values are the reader defaults.
@@ -49,9 +53,10 @@ const validReadPayload = {
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
   // #1115 P3 — the retrieval half, required on read for the same reason.
-  ragImageLegEnabled: true,
   // #1115 P4 — how many retrieved images the answer path may show the model.
   ragAnswerMaxImages: 2,
+  // #1615 — the image-analysis output-token ceiling, required on read.
+  imageAnalysisMaxOutputTokens: 8192,
   // #1285 — the HNSW ef_search floor, required on read like every knob above.
   ragEfSearch: 100,
   // #1285 review r1 — and where it came from, so the panel can tell an
@@ -501,10 +506,10 @@ describe('retrieval knobs (#1118)', () => {
       // #1115 P2 — the two image-intake knobs join the same contract.
       'ragImagesPerPageMax',
       'ragImageIndexExternal',
-      // #1115 P3 — and the retrieval half.
-      'ragImageLegEnabled',
       // #1115 P4 — and the answer-path cap.
       'ragAnswerMaxImages',
+      // #1615 — and the image-analysis ceiling.
+      'imageAnalysisMaxOutputTokens',
       // #1285 — and the ef_search floor.
       'ragEfSearch',
       // #1285 review r1 — and its provenance. Required for the same reason
@@ -547,20 +552,21 @@ describe('retrieval knobs (#1118)', () => {
     });
   });
 
-  describe('#1115 P3 — the image retrieval leg', () => {
-    it('rag_image_leg_enabled is a boolean on both schemas', () => {
-      expect(
-        UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: false }).ragImageLegEnabled,
-      ).toBe(false);
-      // Not a string, and not 0/1: the backend reader's OFF-list parses
-      // `'true'`/`'false'`, and anything it does not recognise leaves the
-      // default standing — so a value that reaches SQL in another shape would
-      // silently fail to turn the leg off.
-      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 'off' })).toThrow();
-      expect(() => UpdateAdminSettingsSchema.parse({ ragImageLegEnabled: 0 })).toThrow();
-      expect(() =>
-        AdminSettingsSchema.parse({ ...validReadPayload, ragImageLegEnabled: 'off' }),
-      ).toThrow();
+  describe('#1615 — the image-analysis output-token ceiling (ADR-027 D8)', () => {
+    it('accepts [4096, 16384] integers on both schemas', () => {
+      expect(UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 4096 }).imageAnalysisMaxOutputTokens).toBe(4096);
+      expect(UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 16384 }).imageAnalysisMaxOutputTokens).toBe(16384);
+      expect(AdminSettingsSchema.parse({ ...validReadPayload, imageAnalysisMaxOutputTokens: 6000 }).imageAnalysisMaxOutputTokens).toBe(6000);
+    });
+
+    it('rejects a ceiling below the floor, above twice the reference, or fractional', () => {
+      // Below 4,096 the structured blocks stop carrying what the epic's target
+      // classes need; above 16,384 nothing grows and the whole ceiling is
+      // charged against the served context on every request.
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 4095 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 16385 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 8192.5 })).toThrow();
+      expect(() => AdminSettingsSchema.parse({ ...validReadPayload, imageAnalysisMaxOutputTokens: 0 })).toThrow();
     });
   });
 
@@ -619,58 +625,6 @@ describe('retrieval knobs (#1118)', () => {
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 9 })).toThrow();
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 101 })).toThrow();
       expect(() => UpdateAdminSettingsSchema.parse({ ragRerankCandidates: 30.5 })).toThrow();
-    });
-  });
-
-  /**
-   * #1115 — the MRL truncation width the image leg sends. Three states, and
-   * the middle one is the reason this is `nullish` rather than `optional`:
-   * omitted leaves the stored width alone, `null` clears it back to the
-   * model's native width, and a number pins it.
-   */
-  describe('image_embedding_target_dimensions — [64, 16000] integer or null', () => {
-    it('accepts the bounds and an explicit null', () => {
-      expect(
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 64 })
-          .imageEmbeddingTargetDimensions,
-      ).toBe(64);
-      expect(
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 16_000 })
-          .imageEmbeddingTargetDimensions,
-      ).toBe(16_000);
-      expect(
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: null })
-          .imageEmbeddingTargetDimensions,
-      ).toBeNull();
-    });
-
-    it('rejects below 64, above pgvector’s ceiling, and non-integers', () => {
-      expect(() => UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 63 })).toThrow();
-      expect(() =>
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 16_001 }),
-      ).toThrow();
-      expect(() =>
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 2048.5 }),
-      ).toThrow();
-    });
-
-    /**
-     * 4000 is the largest INDEXABLE width, not the largest legal one. The
-     * settings row reports the unindexed tier; refusing the number here would
-     * leave an operator who deliberately wants a sequential scan unable to say
-     * so, and would contradict `columnTypeFor`, which accepts it.
-     */
-    it('accepts an unindexable-but-storable width', () => {
-      expect(
-        UpdateAdminSettingsSchema.parse({ imageEmbeddingTargetDimensions: 4096 })
-          .imageEmbeddingTargetDimensions,
-      ).toBe(4096);
-    });
-
-    it('leaves the stored width alone when the field is omitted', () => {
-      expect(UpdateAdminSettingsSchema.parse({})).not.toHaveProperty(
-        'imageEmbeddingTargetDimensions',
-      );
     });
   });
 

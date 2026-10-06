@@ -162,6 +162,30 @@ describe('SearchableSelect', () => {
     expect(screen.queryByTestId('model-option-qwen3:4b')).not.toBeInTheDocument();
   });
 
+  it('offers a typed id when allowCustom is set and nothing matches', () => {
+    const onChange = vi.fn();
+    render(
+      <SearchableSelect
+        value=""
+        options={sampleOptions}
+        onChange={onChange}
+        testId="model"
+        ariaLabel="Listed models"
+        allowCustom
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('model-control'));
+    fireEvent.change(screen.getByRole('searchbox'), {
+      target: { value: 'openai/text-embedding-3-small' },
+    });
+    expect(screen.getByTestId('model-option-openai/text-embedding-3-small')).toHaveTextContent(
+      'Use “openai/text-embedding-3-small”',
+    );
+    fireEvent.click(screen.getByTestId('model-option-openai/text-embedding-3-small'));
+    expect(onChange).toHaveBeenCalledWith('openai/text-embedding-3-small');
+  });
+
   it('closes on Escape and clears the search query', async () => {
     const onChange = vi.fn();
     render(

@@ -1,0 +1,6710 @@
+{
+  "axis": "arm",
+  "arm": "C",
+  "revisionSha": "a9f0fbb8544d12c1595360ef859743cd42964b3c",
+  "command": "scripts/run-retrieval-eval.ts --images --arm C --fts-language german --out /tmp/eval1619/arm-C.json",
+  "capturedAt": "2026-09-18T08:04:53.076Z",
+  "hardware": "rtx3090-host · NVIDIA RTX 3090 24 GB · LM Studio openai-compatible /v1 behind a local model-residency proxy (one model at a time) · embedder Qwen3-Embedding-4B GGUF Q8_0 · VL unassigned (arm C ablation)",
+  "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",
+  "querySetSha": "a8dce3e9eb8e409ccb3feba19819cb72a2518e9738a72bf7c09d565fe867157f",
+  "language": "de",
+  "ftsLanguage": "german",
+  "embedder": {
+    "identity": "eval-embedding:text-embedding-qwen3-embedding-4b@http://127.0.0.1:8791/v1",
+    "model": "text-embedding-qwen3-embedding-4b",
+    "endpoint": "http://127.0.0.1:8791/v1",
+    "dims": 2560
+  },
+  "rerank": "off",
+  "answerModel": {
+    "identity": "RTX3090:qwen3.8-27b@http://127.0.0.1:8791/v1",
+    "model": "qwen3.8-27b",
+    "endpoint": "http://127.0.0.1:8791/v1"
+  },
+  "visionModel": null,
+  "imageAnalysisMaxOutputTokens": null,
+  "imageAnalysisVersions": null,
+  "retrieval": {
+    "rag_ef_search": 100,
+    "rag_fetch_width": 10,
+    "rag_rerank_candidates": 30,
+    "rag_context_chars_per_page": 6000,
+    "rag_pin_identifiers": true,
+    "rag_confidence_threshold": 0,
+    "rag_confidence_threshold_rerank": 0,
+    "rag_ranking_prior_weight": 0,
+    "rag_mmr_enabled": false,
+    "rag_mmr_lambda": 0.7,
+    "rag_answer_max_images": 2,
+    "topK": 10,
+    "rerankRequested": false,
+    "assembleContext": true,
+    "pinIdentifiers": true,
+    "deepSearch": false,
+    "mmr": "off"
+  },
+  "queries": 309,
+  "vectorParticipatingQueries": 309,
+  "rerankParticipatingQueries": 0,
+  "assemblyParticipatingQueries": 309,
+  "pinParticipatingQueries": 0,
+  "imageEvidenceParticipatingQueries": 0,
+  "recallAtK": {
+    "@1": 0.9320388349514563,
+    "@3": 0.9870550161812298,
+    "@5": 0.9870550161812298,
+    "@10": 0.9967637540453075
+  },
+  "mrr": 0.9599321929419016,
+  "imageEvidenceRecallAt5": null,
+  "imageNegativeLeakAt1": 0,
+  "queryCostMs": {
+    "p50": 55.80866700000479,
+    "p95": 63.67191699999967
+  },
+  "runs": [
+    {
+      "queryId": "img-00-001",
+      "retrieved": [
+        456
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [
+        "airbus-a380__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 74.51766700000735
+    },
+    {
+      "queryId": "img-00-002",
+      "retrieved": [
+        456,
+        463
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [
+        "airbus-a380__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.01608400000259
+    },
+    {
+      "queryId": "img-00-003",
+      "retrieved": [
+        456,
+        463
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [
+        "airbus-a380__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.02874999999767
+    },
+    {
+      "queryId": "img-00-004",
+      "retrieved": [
+        456,
+        463
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [
+        "airbus-a380__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.00258299999405
+    },
+    {
+      "queryId": "img-00-005",
+      "retrieved": [
+        456,
+        463
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [
+        "airbus-a380__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.21095800001058
+    },
+    {
+      "queryId": "img-00-006",
+      "retrieved": [
+        477,
+        499,
+        461,
+        464,
+        501
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 66.03204099999857
+    },
+    {
+      "queryId": "img-00-007",
+      "retrieved": [
+        477,
+        464,
+        499,
+        482,
+        461
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.91804200000479
+    },
+    {
+      "queryId": "img-00-008",
+      "retrieved": [
+        477,
+        482,
+        479,
+        461,
+        464,
+        471,
+        499
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.64358299999731
+    },
+    {
+      "queryId": "img-00-009",
+      "retrieved": [
+        477,
+        479
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 51.31170900000143
+    },
+    {
+      "queryId": "img-00-010",
+      "retrieved": [
+        477,
+        482,
+        479
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.89274999999907
+    },
+    {
+      "queryId": "img-00-011",
+      "retrieved": [
+        477,
+        464,
+        479,
+        482,
+        501,
+        461
+      ],
+      "expected": [
+        477
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "frauenkirche-dresden.md",
+      "expectedImageKeys": [
+        "frauenkirche-dresden__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.44274999998743
+    },
+    {
+      "queryId": "img-00-012",
+      "retrieved": [
+        497,
+        488
+      ],
+      "expected": [
+        497
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "porsche-911.md",
+      "expectedImageKeys": [
+        "porsche-911__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.985416000010446
+    },
+    {
+      "queryId": "img-00-013",
+      "retrieved": [
+        497
+      ],
+      "expected": [
+        497
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "porsche-911.md",
+      "expectedImageKeys": [
+        "porsche-911__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.24308399998699
+    },
+    {
+      "queryId": "img-00-014",
+      "retrieved": [
+        497
+      ],
+      "expected": [
+        497
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "porsche-911.md",
+      "expectedImageKeys": [
+        "porsche-911__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.579375000001164
+    },
+    {
+      "queryId": "img-00-015",
+      "retrieved": [
+        497
+      ],
+      "expected": [
+        497
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "porsche-911.md",
+      "expectedImageKeys": [
+        "porsche-911__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.747583999997005
+    },
+    {
+      "queryId": "img-00-016",
+      "retrieved": [
+        497,
+        470,
+        478
+      ],
+      "expected": [
+        497
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "porsche-911.md",
+      "expectedImageKeys": [
+        "porsche-911__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.597458000003826
+    },
+    {
+      "queryId": "img-00-017",
+      "retrieved": [
+        467,
+        458,
+        498,
+        506,
+        503,
+        475,
+        502,
+        466,
+        470,
+        483
+      ],
+      "expected": [
+        467
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "demingkreis.md",
+      "expectedImageKeys": [
+        "demingkreis__1.png"
+      ],
+      "evidence": [],
+      "ms": 58.369000000006054
+    },
+    {
+      "queryId": "img-00-018",
+      "retrieved": [
+        467,
+        498,
+        475,
+        490,
+        458,
+        466,
+        503,
+        461,
+        493,
+        502
+      ],
+      "expected": [
+        467
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "demingkreis.md",
+      "expectedImageKeys": [
+        "demingkreis__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.179249999986496
+    },
+    {
+      "queryId": "img-00-019",
+      "retrieved": [
+        467,
+        498,
+        475,
+        458,
+        503,
+        490,
+        466,
+        483,
+        486,
+        473
+      ],
+      "expected": [
+        467
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "demingkreis.md",
+      "expectedImageKeys": [
+        "demingkreis__2.png"
+      ],
+      "evidence": [],
+      "ms": 53.340416999999434
+    },
+    {
+      "queryId": "img-00-020",
+      "retrieved": [
+        467,
+        503,
+        498,
+        458,
+        490,
+        513,
+        486,
+        502,
+        466,
+        475
+      ],
+      "expected": [
+        467
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "demingkreis.md",
+      "expectedImageKeys": [
+        "demingkreis__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.312917000002926
+    },
+    {
+      "queryId": "img-00-021",
+      "retrieved": [
+        493,
+        475,
+        466,
+        467,
+        498,
+        473,
+        486
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [
+        "petri-netz__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.87737500001094
+    },
+    {
+      "queryId": "img-00-022",
+      "retrieved": [
+        493,
+        467,
+        475,
+        466,
+        483,
+        494,
+        489,
+        498
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [
+        "petri-netz__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.25924999997369
+    },
+    {
+      "queryId": "img-00-023",
+      "retrieved": [
+        493,
+        475,
+        466,
+        498,
+        490,
+        486,
+        473,
+        512,
+        458,
+        467
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [
+        "petri-netz__2.png"
+      ],
+      "evidence": [],
+      "ms": 57.26629099997808
+    },
+    {
+      "queryId": "img-00-024",
+      "retrieved": [
+        493,
+        466,
+        475,
+        498,
+        490,
+        486
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [
+        "petri-netz__2.png"
+      ],
+      "evidence": [],
+      "ms": 61.74483300000429
+    },
+    {
+      "queryId": "img-00-025",
+      "retrieved": [
+        493,
+        475,
+        498,
+        466,
+        467,
+        491,
+        506,
+        473,
+        508
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [
+        "petri-netz__3.png"
+      ],
+      "evidence": [],
+      "ms": 58.64620799999102
+    },
+    {
+      "queryId": "img-00-026",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [
+        "u-bahn-muenchen__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.86662499999511
+    },
+    {
+      "queryId": "img-00-027",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [
+        "u-bahn-muenchen__1.png"
+      ],
+      "evidence": [],
+      "ms": 52.8464999999851
+    },
+    {
+      "queryId": "img-00-028",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [
+        "u-bahn-muenchen__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.81945800001267
+    },
+    {
+      "queryId": "img-00-029",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [
+        "u-bahn-muenchen__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.74166599998716
+    },
+    {
+      "queryId": "img-00-030",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [
+        "u-bahn-muenchen__3.png"
+      ],
+      "evidence": [],
+      "ms": 50.85537499998463
+    },
+    {
+      "queryId": "img-00-031",
+      "retrieved": [
+        474,
+        504,
+        483,
+        515,
+        463,
+        494,
+        496,
+        457,
+        461,
+        505
+      ],
+      "expected": [
+        474
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "erdatmosphaere.md",
+      "expectedImageKeys": [
+        "erdatmosphaere__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 49.419083999993745
+    },
+    {
+      "queryId": "img-00-032",
+      "retrieved": [
+        474,
+        504,
+        494,
+        483,
+        495,
+        461,
+        489,
+        470,
+        505,
+        457
+      ],
+      "expected": [
+        474
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "erdatmosphaere.md",
+      "expectedImageKeys": [
+        "erdatmosphaere__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.864208999992115
+    },
+    {
+      "queryId": "img-00-033",
+      "retrieved": [
+        474,
+        483,
+        509,
+        492,
+        491,
+        504,
+        461,
+        512,
+        520,
+        490
+      ],
+      "expected": [
+        474
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "erdatmosphaere.md",
+      "expectedImageKeys": [
+        "erdatmosphaere__2.png"
+      ],
+      "evidence": [],
+      "ms": 57.99833299999591
+    },
+    {
+      "queryId": "img-00-034",
+      "retrieved": [
+        474,
+        492,
+        483,
+        491,
+        490,
+        512,
+        461,
+        480,
+        486,
+        509
+      ],
+      "expected": [
+        474
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "erdatmosphaere.md",
+      "expectedImageKeys": [
+        "erdatmosphaere__2.png"
+      ],
+      "evidence": [],
+      "ms": 53.63433299999451
+    },
+    {
+      "queryId": "img-00-035",
+      "retrieved": [
+        474,
+        494,
+        483,
+        505,
+        496,
+        457,
+        480
+      ],
+      "expected": [
+        474
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "erdatmosphaere.md",
+      "expectedImageKeys": [
+        "erdatmosphaere__3.png"
+      ],
+      "evidence": [],
+      "ms": 60.76900000000023
+    },
+    {
+      "queryId": "img-00-036",
+      "retrieved": [
+        492
+      ],
+      "expected": [
+        492
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "periodensystem.md",
+      "expectedImageKeys": [
+        "periodensystem__1.png"
+      ],
+      "evidence": [],
+      "ms": 62.053249999997206
+    },
+    {
+      "queryId": "img-00-037",
+      "retrieved": [
+        492
+      ],
+      "expected": [
+        492
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "periodensystem.md",
+      "expectedImageKeys": [
+        "periodensystem__1.png"
+      ],
+      "evidence": [],
+      "ms": 66.43241599999601
+    },
+    {
+      "queryId": "img-00-038",
+      "retrieved": [
+        492
+      ],
+      "expected": [
+        492
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "periodensystem.md",
+      "expectedImageKeys": [
+        "periodensystem__2.png"
+      ],
+      "evidence": [],
+      "ms": 58.74045800001477
+    },
+    {
+      "queryId": "img-00-039",
+      "retrieved": [
+        492
+      ],
+      "expected": [
+        492
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "periodensystem.md",
+      "expectedImageKeys": [
+        "periodensystem__2.png"
+      ],
+      "evidence": [],
+      "ms": 60.2570419999829
+    },
+    {
+      "queryId": "img-00-040",
+      "retrieved": [
+        492,
+        490
+      ],
+      "expected": [
+        492
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "periodensystem.md",
+      "expectedImageKeys": [
+        "periodensystem__3.png"
+      ],
+      "evidence": [],
+      "ms": 58.5367499999993
+    },
+    {
+      "queryId": "img-00-041",
+      "retrieved": [
+        519,
+        485,
+        487,
+        490,
+        462,
+        468,
+        457,
+        473,
+        480
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [
+        "zellkern__1.png"
+      ],
+      "evidence": [],
+      "ms": 58.187082999997074
+    },
+    {
+      "queryId": "img-00-042",
+      "retrieved": [
+        519,
+        487,
+        485,
+        468,
+        490,
+        457,
+        492
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [
+        "zellkern__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.5013340000005
+    },
+    {
+      "queryId": "img-00-043",
+      "retrieved": [
+        519,
+        485,
+        468,
+        492,
+        487,
+        490
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [
+        "zellkern__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.91158300000825
+    },
+    {
+      "queryId": "img-00-044",
+      "retrieved": [
+        519,
+        468,
+        485,
+        490,
+        487,
+        512,
+        473
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [
+        "zellkern__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.69650000002002
+    },
+    {
+      "queryId": "img-00-045",
+      "retrieved": [
+        519,
+        487,
+        485,
+        462,
+        494,
+        490,
+        512
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [
+        "zellkern__3.png"
+      ],
+      "evidence": [],
+      "ms": 58.244249999988824
+    },
+    {
+      "queryId": "img-00-046",
+      "retrieved": [
+        484
+      ],
+      "expected": [
+        484
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "lichtwellenleiter.md",
+      "expectedImageKeys": [
+        "lichtwellenleiter__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.366625000024214
+    },
+    {
+      "queryId": "img-00-047",
+      "retrieved": [
+        484
+      ],
+      "expected": [
+        484
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "lichtwellenleiter.md",
+      "expectedImageKeys": [
+        "lichtwellenleiter__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.85970800000359
+    },
+    {
+      "queryId": "img-00-048",
+      "retrieved": [
+        484
+      ],
+      "expected": [
+        484
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "lichtwellenleiter.md",
+      "expectedImageKeys": [
+        "lichtwellenleiter__2.png"
+      ],
+      "evidence": [],
+      "ms": 53.325958000001265
+    },
+    {
+      "queryId": "img-00-049",
+      "retrieved": [
+        484
+      ],
+      "expected": [
+        484
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "lichtwellenleiter.md",
+      "expectedImageKeys": [
+        "lichtwellenleiter__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.970667000015965
+    },
+    {
+      "queryId": "img-00-050",
+      "retrieved": [
+        484
+      ],
+      "expected": [
+        484
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "lichtwellenleiter.md",
+      "expectedImageKeys": [
+        "lichtwellenleiter__3.png"
+      ],
+      "evidence": [],
+      "ms": 58.176708999992115
+    },
+    {
+      "queryId": "img-00-051",
+      "retrieved": [
+        509,
+        497
+      ],
+      "expected": [
+        509
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "turbolader.md",
+      "expectedImageKeys": [
+        "turbolader__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.25337500000023
+    },
+    {
+      "queryId": "img-00-052",
+      "retrieved": [
+        509,
+        497,
+        456
+      ],
+      "expected": [
+        509
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "turbolader.md",
+      "expectedImageKeys": [
+        "turbolader__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.349207999999635
+    },
+    {
+      "queryId": "img-00-053",
+      "retrieved": [
+        509,
+        514,
+        469,
+        456
+      ],
+      "expected": [
+        509
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "turbolader.md",
+      "expectedImageKeys": [
+        "turbolader__2.png"
+      ],
+      "evidence": [],
+      "ms": 57.29516599999624
+    },
+    {
+      "queryId": "img-00-054",
+      "retrieved": [
+        514,
+        509,
+        469,
+        456
+      ],
+      "expected": [
+        509
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "turbolader.md",
+      "expectedImageKeys": [
+        "turbolader__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.516124999994645
+    },
+    {
+      "queryId": "img-00-055",
+      "retrieved": [
+        511,
+        481,
+        469,
+        465,
+        460,
+        510,
+        509
+      ],
+      "expected": [
+        509
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "turbolader.md",
+      "expectedImageKeys": [
+        "turbolader__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.9380409999867
+    },
+    {
+      "queryId": "img-00-056",
+      "retrieved": [
+        511,
+        510
+      ],
+      "expected": [
+        511
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "u-bahn-muenchen.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 53.65649999998277
+    },
+    {
+      "queryId": "img-00-057",
+      "retrieved": [
+        463,
+        456
+      ],
+      "expected": [
+        456
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "airbus-a380.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 54.407500000001164
+    },
+    {
+      "queryId": "img-00-058",
+      "retrieved": [
+        493,
+        486,
+        473,
+        475,
+        491,
+        467,
+        466,
+        508,
+        498,
+        490
+      ],
+      "expected": [
+        493
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "petri-netz.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 51.88837499998044
+    },
+    {
+      "queryId": "img-01-001",
+      "retrieved": [
+        461,
+        470,
+        464,
+        510
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.782124999997905
+    },
+    {
+      "queryId": "img-01-002",
+      "retrieved": [
+        461,
+        470
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.36670800001593
+    },
+    {
+      "queryId": "img-01-003",
+      "retrieved": [
+        461,
+        470,
+        464,
+        499
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.05616700000246
+    },
+    {
+      "queryId": "img-01-004",
+      "retrieved": [
+        461,
+        470,
+        499,
+        510,
+        511
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.59262499999022
+    },
+    {
+      "queryId": "img-01-005",
+      "retrieved": [
+        461,
+        499,
+        464,
+        479,
+        510,
+        470,
+        482
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 51.0848330000008
+    },
+    {
+      "queryId": "img-01-006",
+      "retrieved": [
+        470,
+        499,
+        482,
+        477,
+        464,
+        461,
+        471,
+        479,
+        510,
+        511
+      ],
+      "expected": [
+        461
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "berliner-fernsehturm.md",
+      "expectedImageKeys": [
+        "berliner-fernsehturm__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.837375000002794
+    },
+    {
+      "queryId": "img-01-007",
+      "retrieved": [
+        478,
+        470,
+        461
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [
+        "golden-gate-bridge__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.43337499999325
+    },
+    {
+      "queryId": "img-01-008",
+      "retrieved": [
+        478,
+        470,
+        461,
+        464,
+        463
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [
+        "golden-gate-bridge__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 51.76545800000895
+    },
+    {
+      "queryId": "img-01-009",
+      "retrieved": [
+        478,
+        470,
+        520,
+        461,
+        464
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [
+        "golden-gate-bridge__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.14937500000815
+    },
+    {
+      "queryId": "img-01-010",
+      "retrieved": [
+        478,
+        464,
+        470,
+        501,
+        520,
+        511,
+        488,
+        510,
+        465,
+        471
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [
+        "golden-gate-bridge__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.91508299999987
+    },
+    {
+      "queryId": "img-01-011",
+      "retrieved": [
+        478,
+        488,
+        464,
+        511,
+        456,
+        470,
+        461,
+        463,
+        510,
+        460
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [
+        "golden-gate-bridge__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.1997080000001
+    },
+    {
+      "queryId": "img-01-012",
+      "retrieved": [
+        499,
+        479,
+        464
+      ],
+      "expected": [
+        499
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "reichstagsgebaeude.md",
+      "expectedImageKeys": [
+        "reichstagsgebaeude__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.939999999973224
+    },
+    {
+      "queryId": "img-01-013",
+      "retrieved": [
+        499,
+        464,
+        461,
+        510,
+        479,
+        501,
+        471,
+        511,
+        482,
+        470
+      ],
+      "expected": [
+        499
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "reichstagsgebaeude.md",
+      "expectedImageKeys": [
+        "reichstagsgebaeude__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.459291999985
+    },
+    {
+      "queryId": "img-01-014",
+      "retrieved": [
+        499,
+        479,
+        482,
+        464
+      ],
+      "expected": [
+        499
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "reichstagsgebaeude.md",
+      "expectedImageKeys": [
+        "reichstagsgebaeude__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 61.104166000004625
+    },
+    {
+      "queryId": "img-01-015",
+      "retrieved": [
+        499,
+        479,
+        482,
+        461,
+        464,
+        501
+      ],
+      "expected": [
+        499
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "reichstagsgebaeude.md",
+      "expectedImageKeys": [
+        "reichstagsgebaeude__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.378415999992285
+    },
+    {
+      "queryId": "img-01-016",
+      "retrieved": [
+        473,
+        512,
+        490,
+        475,
+        466,
+        486
+      ],
+      "expected": [
+        473
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "entity-relationship-modell.md",
+      "expectedImageKeys": [
+        "entity-relationship-modell__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.627542000001995
+    },
+    {
+      "queryId": "img-01-017",
+      "retrieved": [
+        473,
+        475,
+        491,
+        512,
+        490,
+        476,
+        466,
+        492,
+        502,
+        458
+      ],
+      "expected": [
+        473
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "entity-relationship-modell.md",
+      "expectedImageKeys": [
+        "entity-relationship-modell__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.270916999987094
+    },
+    {
+      "queryId": "img-01-018",
+      "retrieved": [
+        473,
+        486,
+        512,
+        490,
+        466,
+        475,
+        498,
+        493
+      ],
+      "expected": [
+        473
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "entity-relationship-modell.md",
+      "expectedImageKeys": [
+        "entity-relationship-modell__2.png"
+      ],
+      "evidence": [],
+      "ms": 58.81741600000532
+    },
+    {
+      "queryId": "img-01-019",
+      "retrieved": [
+        473,
+        512,
+        466,
+        486,
+        475,
+        490,
+        498
+      ],
+      "expected": [
+        473
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "entity-relationship-modell.md",
+      "expectedImageKeys": [
+        "entity-relationship-modell__2.png"
+      ],
+      "evidence": [],
+      "ms": 49.65191699998104
+    },
+    {
+      "queryId": "img-01-020",
+      "retrieved": [
+        498,
+        486,
+        475,
+        466,
+        467,
+        458,
+        512,
+        508,
+        490,
+        473
+      ],
+      "expected": [
+        498
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "programmablaufplan.md",
+      "expectedImageKeys": [
+        "programmablaufplan__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.85983400000259
+    },
+    {
+      "queryId": "img-01-021",
+      "retrieved": [
+        498,
+        486,
+        475,
+        466,
+        458,
+        467,
+        493,
+        490,
+        512,
+        514
+      ],
+      "expected": [
+        498
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "programmablaufplan.md",
+      "expectedImageKeys": [
+        "programmablaufplan__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.923500000004424
+    },
+    {
+      "queryId": "img-01-022",
+      "retrieved": [
+        498,
+        490,
+        486,
+        466,
+        467,
+        475,
+        512,
+        473,
+        492,
+        458
+      ],
+      "expected": [
+        498
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "programmablaufplan.md",
+      "expectedImageKeys": [
+        "programmablaufplan__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.96004199999152
+    },
+    {
+      "queryId": "img-01-023",
+      "retrieved": [
+        512,
+        466,
+        476,
+        473,
+        502,
+        491,
+        513,
+        493,
+        486,
+        475
+      ],
+      "expected": [
+        512
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "unified-modeling-language.md",
+      "expectedImageKeys": [
+        "unified-modeling-language__1.png"
+      ],
+      "evidence": [],
+      "ms": 65.52604200001224
+    },
+    {
+      "queryId": "img-01-024",
+      "retrieved": [
+        512,
+        466,
+        473,
+        476,
+        513,
+        511,
+        486,
+        491,
+        490
+      ],
+      "expected": [
+        512
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "unified-modeling-language.md",
+      "expectedImageKeys": [
+        "unified-modeling-language__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.5447920000006
+    },
+    {
+      "queryId": "img-01-025",
+      "retrieved": [
+        512,
+        473,
+        466,
+        490
+      ],
+      "expected": [
+        512
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "unified-modeling-language.md",
+      "expectedImageKeys": [
+        "unified-modeling-language__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.94966700000805
+    },
+    {
+      "queryId": "img-01-026",
+      "retrieved": [
+        512,
+        475,
+        493,
+        498,
+        458,
+        466,
+        486,
+        467
+      ],
+      "expected": [
+        512
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "unified-modeling-language.md",
+      "expectedImageKeys": [
+        "unified-modeling-language__3.png"
+      ],
+      "evidence": [],
+      "ms": 62.833582999999635
+    },
+    {
+      "queryId": "img-01-027",
+      "retrieved": [
+        512,
+        475,
+        466,
+        498,
+        458,
+        493,
+        486
+      ],
+      "expected": [
+        512
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "unified-modeling-language.md",
+      "expectedImageKeys": [
+        "unified-modeling-language__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.29274999999325
+    },
+    {
+      "queryId": "img-01-028",
+      "retrieved": [
+        480,
+        462
+      ],
+      "expected": [
+        480
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "herz.md",
+      "expectedImageKeys": [
+        "herz__1.png"
+      ],
+      "evidence": [],
+      "ms": 52.274792000011075
+    },
+    {
+      "queryId": "img-01-029",
+      "retrieved": [
+        480,
+        462,
+        490
+      ],
+      "expected": [
+        480
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "herz.md",
+      "expectedImageKeys": [
+        "herz__2.png"
+      ],
+      "evidence": [],
+      "ms": 53.88008400000399
+    },
+    {
+      "queryId": "img-01-030",
+      "retrieved": [
+        462,
+        480
+      ],
+      "expected": [
+        480
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "herz.md",
+      "expectedImageKeys": [
+        "herz__2.png"
+      ],
+      "evidence": [],
+      "ms": 51.614709000015864
+    },
+    {
+      "queryId": "img-01-031",
+      "retrieved": [
+        480,
+        462,
+        490
+      ],
+      "expected": [
+        480
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "herz.md",
+      "expectedImageKeys": [
+        "herz__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.47125000000233
+    },
+    {
+      "queryId": "img-01-032",
+      "retrieved": [
+        480,
+        462,
+        467,
+        514,
+        490,
+        517
+      ],
+      "expected": [
+        480
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "herz.md",
+      "expectedImageKeys": [
+        "herz__3.png"
+      ],
+      "evidence": [],
+      "ms": 55.18766600001254
+    },
+    {
+      "queryId": "img-01-033",
+      "retrieved": [
+        494,
+        483
+      ],
+      "expected": [
+        494
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photosynthese.md",
+      "expectedImageKeys": [
+        "photosynthese__1.png"
+      ],
+      "evidence": [],
+      "ms": 51.8425419999985
+    },
+    {
+      "queryId": "img-01-034",
+      "retrieved": [
+        494
+      ],
+      "expected": [
+        494
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photosynthese.md",
+      "expectedImageKeys": [
+        "photosynthese__1.png"
+      ],
+      "evidence": [],
+      "ms": 52.42804100000649
+    },
+    {
+      "queryId": "img-01-035",
+      "retrieved": [
+        494,
+        495,
+        457
+      ],
+      "expected": [
+        494
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photosynthese.md",
+      "expectedImageKeys": [
+        "photosynthese__2.png"
+      ],
+      "evidence": [],
+      "ms": 63.362833000021055
+    },
+    {
+      "queryId": "img-01-036",
+      "retrieved": [
+        494,
+        457
+      ],
+      "expected": [
+        494
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "photosynthese.md",
+      "expectedImageKeys": [
+        "photosynthese__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.05716600001324
+    },
+    {
+      "queryId": "img-01-037",
+      "retrieved": [
+        494
+      ],
+      "expected": [
+        494
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photosynthese.md",
+      "expectedImageKeys": [
+        "photosynthese__3.png"
+      ],
+      "evidence": [],
+      "ms": 55.630707999982405
+    },
+    {
+      "queryId": "img-01-038",
+      "retrieved": [
+        459,
+        484,
+        472,
+        492,
+        473,
+        490,
+        517,
+        494,
+        491
+      ],
+      "expected": [
+        459
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "antenne.md",
+      "expectedImageKeys": [
+        "antenne__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.85066600001301
+    },
+    {
+      "queryId": "img-01-039",
+      "retrieved": [
+        459,
+        484,
+        472,
+        457
+      ],
+      "expected": [
+        459
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "antenne.md",
+      "expectedImageKeys": [
+        "antenne__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.00133300002199
+    },
+    {
+      "queryId": "img-01-040",
+      "retrieved": [
+        459,
+        507,
+        461,
+        470
+      ],
+      "expected": [
+        459
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "antenne.md",
+      "expectedImageKeys": [
+        "antenne__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.23166600000695
+    },
+    {
+      "queryId": "img-01-041",
+      "retrieved": [
+        459
+      ],
+      "expected": [
+        459
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "antenne.md",
+      "expectedImageKeys": [
+        "antenne__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.608207999990555
+    },
+    {
+      "queryId": "img-01-042",
+      "retrieved": [
+        491,
+        500,
+        490,
+        512,
+        508,
+        486,
+        498,
+        473,
+        466
+      ],
+      "expected": [
+        491
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "osi-modell.md",
+      "expectedImageKeys": [
+        "osi-modell__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.39541699999245
+    },
+    {
+      "queryId": "img-01-043",
+      "retrieved": [
+        491,
+        490,
+        500,
+        512,
+        473,
+        493,
+        498,
+        466,
+        508,
+        486
+      ],
+      "expected": [
+        491
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "osi-modell.md",
+      "expectedImageKeys": [
+        "osi-modell__2.png"
+      ],
+      "evidence": [],
+      "ms": 59.89999999999418
+    },
+    {
+      "queryId": "img-01-044",
+      "retrieved": [
+        491,
+        500,
+        512,
+        490,
+        486,
+        473,
+        498,
+        508,
+        493,
+        513
+      ],
+      "expected": [
+        491
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "osi-modell.md",
+      "expectedImageKeys": [
+        "osi-modell__2.png"
+      ],
+      "evidence": [],
+      "ms": 49.80387500001234
+    },
+    {
+      "queryId": "img-01-045",
+      "retrieved": [
+        514,
+        469,
+        509,
+        467
+      ],
+      "expected": [
+        514
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "viertaktmotor.md",
+      "expectedImageKeys": [
+        "viertaktmotor__1.png"
+      ],
+      "evidence": [],
+      "ms": 49.44458400001167
+    },
+    {
+      "queryId": "img-01-046",
+      "retrieved": [
+        514,
+        509,
+        469,
+        456,
+        490,
+        466,
+        511
+      ],
+      "expected": [
+        514
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "viertaktmotor.md",
+      "expectedImageKeys": [
+        "viertaktmotor__2.png"
+      ],
+      "evidence": [],
+      "ms": 62.392416999995476
+    },
+    {
+      "queryId": "img-01-047",
+      "retrieved": [
+        514,
+        509,
+        469,
+        472,
+        488,
+        497,
+        516
+      ],
+      "expected": [
+        514
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "viertaktmotor.md",
+      "expectedImageKeys": [
+        "viertaktmotor__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.33320900000399
+    },
+    {
+      "queryId": "img-01-048",
+      "retrieved": [
+        514,
+        469,
+        509,
+        497,
+        456,
+        472,
+        488
+      ],
+      "expected": [
+        514
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "viertaktmotor.md",
+      "expectedImageKeys": [
+        "viertaktmotor__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.350333000009414
+    },
+    {
+      "queryId": "img-01-049",
+      "retrieved": [
+        499,
+        464,
+        477,
+        510,
+        479,
+        470,
+        501,
+        511,
+        461
+      ],
+      "expected": [
+        499
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "reichstagsgebaeude.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 51.92345800000476
+    },
+    {
+      "queryId": "img-01-050",
+      "retrieved": [
+        478,
+        470,
+        520,
+        461,
+        501,
+        511,
+        488,
+        464,
+        482
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 55.79691699999967
+    },
+    {
+      "queryId": "img-01-051",
+      "retrieved": [
+        473,
+        475,
+        512,
+        466,
+        490,
+        489,
+        458,
+        486,
+        498,
+        513
+      ],
+      "expected": [
+        473
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "entity-relationship-modell.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 53.628790999995545
+    },
+    {
+      "queryId": "img-02-001",
+      "retrieved": [
+        463
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 63.67191699999967
+    },
+    {
+      "queryId": "img-02-002",
+      "retrieved": [
+        463,
+        456,
+        509
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.218167000013636
+    },
+    {
+      "queryId": "img-02-003",
+      "retrieved": [
+        463
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.002624999993714
+    },
+    {
+      "queryId": "img-02-004",
+      "retrieved": [
+        463,
+        478
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.78095799998846
+    },
+    {
+      "queryId": "img-02-005",
+      "retrieved": [
+        463
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 60.38008400000399
+    },
+    {
+      "queryId": "img-02-006",
+      "retrieved": [
+        463,
+        456
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [
+        "boeing-747__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.281125000008615
+    },
+    {
+      "queryId": "img-02-007",
+      "retrieved": [
+        463,
+        456
+      ],
+      "expected": [
+        463
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "boeing-747.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 52.521000000007916
+    },
+    {
+      "queryId": "img-02-008",
+      "retrieved": [
+        479,
+        464,
+        471,
+        482,
+        477,
+        501
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [
+        "hamburger-rathaus__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.254667000001064
+    },
+    {
+      "queryId": "img-02-009",
+      "retrieved": [
+        479,
+        510,
+        471,
+        477,
+        464,
+        499,
+        482
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [
+        "hamburger-rathaus__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.16116700001294
+    },
+    {
+      "queryId": "img-02-010",
+      "retrieved": [
+        479,
+        470,
+        482,
+        471,
+        464,
+        499,
+        477
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [
+        "hamburger-rathaus__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.766124999994645
+    },
+    {
+      "queryId": "img-02-011",
+      "retrieved": [
+        479,
+        464,
+        470,
+        499,
+        482,
+        471,
+        477
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [
+        "hamburger-rathaus__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.084291999985
+    },
+    {
+      "queryId": "img-02-012",
+      "retrieved": [
+        479,
+        499,
+        471,
+        464,
+        477,
+        520,
+        501,
+        482,
+        470
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [
+        "hamburger-rathaus__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.376416000013705
+    },
+    {
+      "queryId": "img-02-013",
+      "retrieved": [
+        479,
+        464,
+        499,
+        471
+      ],
+      "expected": [
+        479
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "hamburger-rathaus.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 54.27283400000306
+    },
+    {
+      "queryId": "img-02-014",
+      "retrieved": [
+        501,
+        520,
+        482
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [
+        "schloss-neuschwanstein__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.40616600000067
+    },
+    {
+      "queryId": "img-02-015",
+      "retrieved": [
+        501,
+        520,
+        482,
+        470
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [
+        "schloss-neuschwanstein__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.946415999991586
+    },
+    {
+      "queryId": "img-02-016",
+      "retrieved": [
+        501,
+        470,
+        482,
+        464
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [
+        "schloss-neuschwanstein__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.199832999991486
+    },
+    {
+      "queryId": "img-02-017",
+      "retrieved": [
+        501,
+        482,
+        470
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [
+        "schloss-neuschwanstein__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.67616599999019
+    },
+    {
+      "queryId": "img-02-018",
+      "retrieved": [
+        501,
+        482,
+        511,
+        470
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [
+        "schloss-neuschwanstein__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 51.905500000022585
+    },
+    {
+      "queryId": "img-02-019",
+      "retrieved": [
+        475,
+        466,
+        493,
+        498,
+        512,
+        458,
+        473,
+        467,
+        486,
+        490
+      ],
+      "expected": [
+        475
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ereignisgesteuerte-prozesskette.md",
+      "expectedImageKeys": [
+        "ereignisgesteuerte-prozesskette__1.png"
+      ],
+      "evidence": [],
+      "ms": 60.27554199998849
+    },
+    {
+      "queryId": "img-02-020",
+      "retrieved": [
+        475,
+        466,
+        512,
+        493,
+        498,
+        502,
+        473,
+        491,
+        470,
+        511
+      ],
+      "expected": [
+        475
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ereignisgesteuerte-prozesskette.md",
+      "expectedImageKeys": [
+        "ereignisgesteuerte-prozesskette__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.619791999983136
+    },
+    {
+      "queryId": "img-02-021",
+      "retrieved": [
+        475,
+        473,
+        476,
+        466,
+        493,
+        513,
+        512,
+        491
+      ],
+      "expected": [
+        475
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ereignisgesteuerte-prozesskette.md",
+      "expectedImageKeys": [
+        "ereignisgesteuerte-prozesskette__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.22220799999195
+    },
+    {
+      "queryId": "img-02-022",
+      "retrieved": [
+        466,
+        475,
+        493,
+        473,
+        498,
+        458,
+        512,
+        467,
+        490,
+        476
+      ],
+      "expected": [
+        475
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "ereignisgesteuerte-prozesskette.md",
+      "expectedImageKeys": [
+        "ereignisgesteuerte-prozesskette__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.654541999974754
+    },
+    {
+      "queryId": "img-02-023",
+      "retrieved": [
+        502,
+        476,
+        467
+      ],
+      "expected": [
+        502
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "scrum.md",
+      "expectedImageKeys": [
+        "scrum__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.64741700000013
+    },
+    {
+      "queryId": "img-02-024",
+      "retrieved": [
+        502,
+        476,
+        475
+      ],
+      "expected": [
+        502
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "scrum.md",
+      "expectedImageKeys": [
+        "scrum__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.30070799999521
+    },
+    {
+      "queryId": "img-02-025",
+      "retrieved": [
+        502,
+        476,
+        467,
+        458,
+        466,
+        498
+      ],
+      "expected": [
+        502
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "scrum.md",
+      "expectedImageKeys": [
+        "scrum__2.png"
+      ],
+      "evidence": [],
+      "ms": 65.13349999999627
+    },
+    {
+      "queryId": "img-02-026",
+      "retrieved": [
+        502,
+        476,
+        467,
+        458,
+        466
+      ],
+      "expected": [
+        502
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "scrum.md",
+      "expectedImageKeys": [
+        "scrum__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.38624999998137
+    },
+    {
+      "queryId": "img-02-027",
+      "retrieved": [
+        502,
+        466,
+        476,
+        498,
+        490,
+        503,
+        512,
+        475
+      ],
+      "expected": [
+        502
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "scrum.md",
+      "expectedImageKeys": [
+        "scrum__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.46179099997971
+    },
+    {
+      "queryId": "img-02-028",
+      "retrieved": [
+        513,
+        512,
+        476,
+        503,
+        467,
+        486,
+        502,
+        498,
+        466,
+        490
+      ],
+      "expected": [
+        513
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "v-modell.md",
+      "expectedImageKeys": [
+        "v-modell__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.98787499999162
+    },
+    {
+      "queryId": "img-02-029",
+      "retrieved": [
+        513,
+        476,
+        467,
+        512,
+        473,
+        491,
+        466,
+        503,
+        493,
+        458
+      ],
+      "expected": [
+        513
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "v-modell.md",
+      "expectedImageKeys": [
+        "v-modell__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.476499999989755
+    },
+    {
+      "queryId": "img-02-030",
+      "retrieved": [
+        513,
+        466,
+        498,
+        512,
+        476,
+        493,
+        467,
+        473,
+        486,
+        490
+      ],
+      "expected": [
+        513
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "v-modell.md",
+      "expectedImageKeys": [
+        "v-modell__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.4680830000143
+    },
+    {
+      "queryId": "img-02-031",
+      "retrieved": [
+        513,
+        498,
+        512,
+        466,
+        490,
+        473,
+        491,
+        486,
+        467,
+        516
+      ],
+      "expected": [
+        513
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "v-modell.md",
+      "expectedImageKeys": [
+        "v-modell__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 60.206709000020055
+    },
+    {
+      "queryId": "img-02-032",
+      "retrieved": [
+        483,
+        494,
+        505,
+        489,
+        474
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 58.982875000016065
+    },
+    {
+      "queryId": "img-02-033",
+      "retrieved": [
+        483,
+        494,
+        489,
+        474,
+        505,
+        469
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.84799999999814
+    },
+    {
+      "queryId": "img-02-034",
+      "retrieved": [
+        493,
+        483,
+        458,
+        473,
+        489,
+        512,
+        490,
+        506,
+        466,
+        491
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.099749999993946
+    },
+    {
+      "queryId": "img-02-035",
+      "retrieved": [
+        498,
+        486,
+        458,
+        475,
+        466,
+        490,
+        483,
+        473,
+        512,
+        489
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.35258299999987
+    },
+    {
+      "queryId": "img-02-036",
+      "retrieved": [
+        483,
+        474,
+        494,
+        520,
+        495,
+        469
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.452707999997074
+    },
+    {
+      "queryId": "img-02-037",
+      "retrieved": [
+        483,
+        494,
+        474,
+        520,
+        504
+      ],
+      "expected": [
+        483
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "kohlenstoffkreislauf.md",
+      "expectedImageKeys": [
+        "kohlenstoffkreislauf__3.png"
+      ],
+      "evidence": [],
+      "ms": 57.69495800000732
+    },
+    {
+      "queryId": "img-02-038",
+      "retrieved": [
+        496,
+        515,
+        483,
+        494,
+        462,
+        489,
+        520,
+        492
+      ],
+      "expected": [
+        496
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "plattentektonik.md",
+      "expectedImageKeys": [
+        "plattentektonik__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.84170799999265
+    },
+    {
+      "queryId": "img-02-039",
+      "retrieved": [
+        496,
+        462,
+        515,
+        494,
+        483,
+        474,
+        520,
+        492,
+        457,
+        490
+      ],
+      "expected": [
+        496
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "plattentektonik.md",
+      "expectedImageKeys": [
+        "plattentektonik__1.png"
+      ],
+      "evidence": [],
+      "ms": 61.07870899999398
+    },
+    {
+      "queryId": "img-02-040",
+      "retrieved": [
+        496,
+        515,
+        490,
+        486,
+        519,
+        504,
+        492,
+        482,
+        512,
+        485
+      ],
+      "expected": [
+        496
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "plattentektonik.md",
+      "expectedImageKeys": [
+        "plattentektonik__2.png"
+      ],
+      "evidence": [],
+      "ms": 63.90662500000326
+    },
+    {
+      "queryId": "img-02-041",
+      "retrieved": [
+        496,
+        515,
+        486,
+        504,
+        519
+      ],
+      "expected": [
+        496
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "plattentektonik.md",
+      "expectedImageKeys": [
+        "plattentektonik__2.png"
+      ],
+      "evidence": [],
+      "ms": 73.79849999997532
+    },
+    {
+      "queryId": "img-02-042",
+      "retrieved": [
+        496,
+        520,
+        515,
+        483
+      ],
+      "expected": [
+        496
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "plattentektonik.md",
+      "expectedImageKeys": [
+        "plattentektonik__3.png"
+      ],
+      "evidence": [],
+      "ms": 73.62737500001094
+    },
+    {
+      "queryId": "img-02-043",
+      "retrieved": [
+        460,
+        471,
+        461,
+        511,
+        478,
+        510,
+        520,
+        470
+      ],
+      "expected": [
+        460
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "bahnstrom.md",
+      "expectedImageKeys": [
+        "bahnstrom__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 68.6610830000136
+    },
+    {
+      "queryId": "img-02-044",
+      "retrieved": [
+        460,
+        481,
+        510,
+        511
+      ],
+      "expected": [
+        460
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "bahnstrom.md",
+      "expectedImageKeys": [
+        "bahnstrom__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 79.05916599999182
+    },
+    {
+      "queryId": "img-02-045",
+      "retrieved": [
+        460,
+        510,
+        511,
+        481
+      ],
+      "expected": [
+        460
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "bahnstrom.md",
+      "expectedImageKeys": [
+        "bahnstrom__2.png"
+      ],
+      "evidence": [],
+      "ms": 250.38983400000143
+    },
+    {
+      "queryId": "img-02-046",
+      "retrieved": [
+        460,
+        510,
+        511,
+        481
+      ],
+      "expected": [
+        460
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "bahnstrom.md",
+      "expectedImageKeys": [
+        "bahnstrom__2.png"
+      ],
+      "evidence": [],
+      "ms": 47.039792000025045
+    },
+    {
+      "queryId": "img-02-047",
+      "retrieved": [
+        460,
+        510,
+        465,
+        495,
+        469
+      ],
+      "expected": [
+        460
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "bahnstrom.md",
+      "expectedImageKeys": [
+        "bahnstrom__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.48262500000419
+    },
+    {
+      "queryId": "img-02-048",
+      "retrieved": [
+        495,
+        492,
+        465,
+        491,
+        516,
+        494,
+        484,
+        507,
+        514
+      ],
+      "expected": [
+        495
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photovoltaik.md",
+      "expectedImageKeys": [
+        "photovoltaik__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.75166700000409
+    },
+    {
+      "queryId": "img-02-049",
+      "retrieved": [
+        495,
+        494,
+        465,
+        472
+      ],
+      "expected": [
+        495
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photovoltaik.md",
+      "expectedImageKeys": [
+        "photovoltaik__1.png"
+      ],
+      "evidence": [],
+      "ms": 51.371833000011975
+    },
+    {
+      "queryId": "img-02-050",
+      "retrieved": [
+        460,
+        495,
+        510,
+        465,
+        499,
+        517,
+        469
+      ],
+      "expected": [
+        495
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photovoltaik.md",
+      "expectedImageKeys": [
+        "photovoltaik__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.644916999997804
+    },
+    {
+      "queryId": "img-02-051",
+      "retrieved": [
+        495,
+        460,
+        465,
+        510,
+        499
+      ],
+      "expected": [
+        495
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "photovoltaik.md",
+      "expectedImageKeys": [
+        "photovoltaik__2.png"
+      ],
+      "evidence": [],
+      "ms": 49.662707999988925
+    },
+    {
+      "queryId": "img-02-052",
+      "retrieved": [
+        495,
+        465,
+        469,
+        460
+      ],
+      "expected": [
+        495
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "photovoltaik.md",
+      "expectedImageKeys": [
+        "photovoltaik__3.png"
+      ],
+      "evidence": [],
+      "ms": 51.639125000016065
+    },
+    {
+      "queryId": "img-02-053",
+      "retrieved": [
+        516,
+        461,
+        512,
+        518,
+        457
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [
+        "waelzlager__1.png"
+      ],
+      "evidence": [],
+      "ms": 61.53787500000908
+    },
+    {
+      "queryId": "img-02-054",
+      "retrieved": [
+        516,
+        461
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [
+        "waelzlager__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.70183300002827
+    },
+    {
+      "queryId": "img-02-055",
+      "retrieved": [
+        516,
+        461,
+        457
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [
+        "waelzlager__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.7867499999993
+    },
+    {
+      "queryId": "img-02-056",
+      "retrieved": [
+        516,
+        457,
+        461,
+        490,
+        512,
+        472
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [
+        "waelzlager__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.93604200001573
+    },
+    {
+      "queryId": "img-02-057",
+      "retrieved": [
+        516,
+        488
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [
+        "waelzlager__3.png"
+      ],
+      "evidence": [],
+      "ms": 57.017874999990454
+    },
+    {
+      "queryId": "img-02-058",
+      "retrieved": [
+        516,
+        518,
+        456,
+        504
+      ],
+      "expected": [
+        516
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "waelzlager.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 59.740583000006154
+    },
+    {
+      "queryId": "img-03-001",
+      "retrieved": [
+        464,
+        461,
+        499,
+        470,
+        482
+      ],
+      "expected": [
+        464
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brandenburger-tor.md",
+      "expectedImageKeys": [
+        "brandenburger-tor__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.97254100002465
+    },
+    {
+      "queryId": "img-03-002",
+      "retrieved": [
+        464,
+        461,
+        510,
+        499,
+        470,
+        477
+      ],
+      "expected": [
+        464
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brandenburger-tor.md",
+      "expectedImageKeys": [
+        "brandenburger-tor__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.59479099998134
+    },
+    {
+      "queryId": "img-03-003",
+      "retrieved": [
+        464,
+        461,
+        510,
+        479
+      ],
+      "expected": [
+        464
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brandenburger-tor.md",
+      "expectedImageKeys": [
+        "brandenburger-tor__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.49149999997462
+    },
+    {
+      "queryId": "img-03-004",
+      "retrieved": [
+        464,
+        461,
+        499,
+        478,
+        470,
+        482,
+        501
+      ],
+      "expected": [
+        464
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "brandenburger-tor.md",
+      "expectedImageKeys": [
+        "brandenburger-tor__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.75437499998952
+    },
+    {
+      "queryId": "img-03-005",
+      "retrieved": [
+        481,
+        510,
+        511
+      ],
+      "expected": [
+        481
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ice-4.md",
+      "expectedImageKeys": [
+        "ice-4__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.11525000000256
+    },
+    {
+      "queryId": "img-03-006",
+      "retrieved": [
+        481,
+        510,
+        463,
+        511,
+        471,
+        464
+      ],
+      "expected": [
+        481
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ice-4.md",
+      "expectedImageKeys": [
+        "ice-4__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 50.49712499999441
+    },
+    {
+      "queryId": "img-03-007",
+      "retrieved": [
+        481,
+        461,
+        470,
+        510,
+        456
+      ],
+      "expected": [
+        481
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "ice-4.md",
+      "expectedImageKeys": [
+        "ice-4__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.672292000002926
+    },
+    {
+      "queryId": "img-03-008",
+      "retrieved": [
+        520,
+        470,
+        497,
+        461,
+        509
+      ],
+      "expected": [
+        520
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zugspitze.md",
+      "expectedImageKeys": [
+        "zugspitze__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.74454099999275
+    },
+    {
+      "queryId": "img-03-009",
+      "retrieved": [
+        520
+      ],
+      "expected": [
+        520
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zugspitze.md",
+      "expectedImageKeys": [
+        "zugspitze__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.466290999989724
+    },
+    {
+      "queryId": "img-03-010",
+      "retrieved": [
+        520
+      ],
+      "expected": [
+        520
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zugspitze.md",
+      "expectedImageKeys": [
+        "zugspitze__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.25287500000559
+    },
+    {
+      "queryId": "img-03-011",
+      "retrieved": [
+        520
+      ],
+      "expected": [
+        520
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "zugspitze.md",
+      "expectedImageKeys": [
+        "zugspitze__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.65879099999438
+    },
+    {
+      "queryId": "img-03-012",
+      "retrieved": [
+        476,
+        467,
+        512,
+        498,
+        502,
+        513,
+        475,
+        490,
+        466
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [
+        "extreme-programming__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.78054199999315
+    },
+    {
+      "queryId": "img-03-013",
+      "retrieved": [
+        476,
+        513
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [
+        "extreme-programming__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.69824999998673
+    },
+    {
+      "queryId": "img-03-014",
+      "retrieved": [
+        476,
+        498,
+        467,
+        458,
+        475,
+        502,
+        486,
+        466,
+        513,
+        490
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [
+        "extreme-programming__3.png"
+      ],
+      "evidence": [],
+      "ms": 50.558791999996174
+    },
+    {
+      "queryId": "img-03-015",
+      "retrieved": [
+        476
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [
+        "extreme-programming__2.png"
+      ],
+      "evidence": [],
+      "ms": 53.095249999983935
+    },
+    {
+      "queryId": "img-03-016",
+      "retrieved": [
+        503,
+        467,
+        502,
+        458,
+        475,
+        513,
+        466,
+        486,
+        512,
+        490
+      ],
+      "expected": [
+        503
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "six-sigma.md",
+      "expectedImageKeys": [
+        "six-sigma__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.8355000000156
+    },
+    {
+      "queryId": "img-03-017",
+      "retrieved": [
+        503,
+        467,
+        512,
+        516,
+        460,
+        458,
+        475,
+        466,
+        498,
+        511
+      ],
+      "expected": [
+        503
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "six-sigma.md",
+      "expectedImageKeys": [
+        "six-sigma__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.9464169999992
+    },
+    {
+      "queryId": "img-03-018",
+      "retrieved": [
+        457,
+        510,
+        492,
+        490,
+        461,
+        456,
+        511,
+        498,
+        467,
+        516
+      ],
+      "expected": [
+        457
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "auge.md",
+      "expectedImageKeys": [
+        "auge__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.19550000000163
+    },
+    {
+      "queryId": "img-03-019",
+      "retrieved": [
+        494,
+        490,
+        457,
+        484,
+        512,
+        492,
+        486,
+        495,
+        461,
+        467
+      ],
+      "expected": [
+        457
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "auge.md",
+      "expectedImageKeys": [
+        "auge__2.png"
+      ],
+      "evidence": [],
+      "ms": 60.7800419999985
+    },
+    {
+      "queryId": "img-03-020",
+      "retrieved": [
+        457,
+        494,
+        490,
+        519,
+        487,
+        485,
+        462
+      ],
+      "expected": [
+        457
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "auge.md",
+      "expectedImageKeys": [
+        "auge__3.png"
+      ],
+      "evidence": [],
+      "ms": 57.69570800001384
+    },
+    {
+      "queryId": "img-03-021",
+      "retrieved": [
+        457,
+        490,
+        456,
+        486,
+        498,
+        477,
+        467,
+        473,
+        502,
+        466
+      ],
+      "expected": [
+        457
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "auge.md",
+      "expectedImageKeys": [
+        "auge__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.06141600001138
+    },
+    {
+      "queryId": "img-03-022",
+      "retrieved": [
+        485,
+        519,
+        512,
+        468,
+        490,
+        467,
+        473,
+        502,
+        492
+      ],
+      "expected": [
+        485
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "mitose.md",
+      "expectedImageKeys": [
+        "mitose__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.20254099997692
+    },
+    {
+      "queryId": "img-03-023",
+      "retrieved": [
+        485,
+        519,
+        468,
+        494
+      ],
+      "expected": [
+        485
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "mitose.md",
+      "expectedImageKeys": [
+        "mitose__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.86250000001746
+    },
+    {
+      "queryId": "img-03-024",
+      "retrieved": [
+        485,
+        519,
+        468
+      ],
+      "expected": [
+        485
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "mitose.md",
+      "expectedImageKeys": [
+        "mitose__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.79883300000802
+    },
+    {
+      "queryId": "img-03-025",
+      "retrieved": [
+        504,
+        496,
+        515,
+        512,
+        498,
+        490,
+        473,
+        486,
+        483,
+        492
+      ],
+      "expected": [
+        504
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "sonnensystem.md",
+      "expectedImageKeys": [
+        "sonnensystem__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.45570800002315
+    },
+    {
+      "queryId": "img-03-026",
+      "retrieved": [
+        504,
+        515,
+        492,
+        474,
+        490,
+        457,
+        483,
+        489,
+        473,
+        466
+      ],
+      "expected": [
+        504
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "sonnensystem.md",
+      "expectedImageKeys": [
+        "sonnensystem__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.34691700001713
+    },
+    {
+      "queryId": "img-03-027",
+      "retrieved": [
+        504,
+        457,
+        520,
+        490,
+        461,
+        462,
+        482,
+        514,
+        509,
+        492
+      ],
+      "expected": [
+        504
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "sonnensystem.md",
+      "expectedImageKeys": [
+        "sonnensystem__3.png"
+      ],
+      "evidence": [],
+      "ms": 54.944250000000466
+    },
+    {
+      "queryId": "img-03-028",
+      "retrieved": [
+        465,
+        456,
+        494,
+        495,
+        472,
+        507
+      ],
+      "expected": [
+        465
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brennstoffzelle.md",
+      "expectedImageKeys": [
+        "brennstoffzelle__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.64624999999069
+    },
+    {
+      "queryId": "img-03-029",
+      "retrieved": [
+        465,
+        487,
+        472,
+        494,
+        493,
+        495,
+        490
+      ],
+      "expected": [
+        465
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brennstoffzelle.md",
+      "expectedImageKeys": [
+        "brennstoffzelle__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.29183400000329
+    },
+    {
+      "queryId": "img-03-030",
+      "retrieved": [
+        465,
+        472,
+        495,
+        456,
+        494,
+        469,
+        492
+      ],
+      "expected": [
+        465
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "brennstoffzelle.md",
+      "expectedImageKeys": [
+        "brennstoffzelle__3.png"
+      ],
+      "evidence": [],
+      "ms": 54.46279200000572
+    },
+    {
+      "queryId": "img-03-031",
+      "retrieved": [
+        465,
+        494,
+        495,
+        517,
+        469,
+        492,
+        514,
+        472,
+        456
+      ],
+      "expected": [
+        465
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "brennstoffzelle.md",
+      "expectedImageKeys": [
+        "brennstoffzelle__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.80104200000642
+    },
+    {
+      "queryId": "img-03-032",
+      "retrieved": [
+        500,
+        475,
+        491,
+        507,
+        508,
+        493,
+        498,
+        466,
+        473
+      ],
+      "expected": [
+        500
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "router.md",
+      "expectedImageKeys": [
+        "router__1.png"
+      ],
+      "evidence": [],
+      "ms": 53.23720800000592
+    },
+    {
+      "queryId": "img-03-033",
+      "retrieved": [
+        500,
+        491,
+        484,
+        456,
+        466,
+        507,
+        516,
+        481,
+        510
+      ],
+      "expected": [
+        500
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "router.md",
+      "expectedImageKeys": [
+        "router__2.png"
+      ],
+      "evidence": [],
+      "ms": 66.55774999997811
+    },
+    {
+      "queryId": "img-03-034",
+      "retrieved": [
+        500,
+        484,
+        491,
+        490,
+        508,
+        510,
+        460,
+        519
+      ],
+      "expected": [
+        500
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "router.md",
+      "expectedImageKeys": [
+        "router__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.02466599998297
+    },
+    {
+      "queryId": "img-03-035",
+      "retrieved": [
+        500,
+        491,
+        484,
+        463,
+        493,
+        456
+      ],
+      "expected": [
+        500
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "router.md",
+      "expectedImageKeys": [
+        "router__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.382374999986496
+    },
+    {
+      "queryId": "img-03-036",
+      "retrieved": [
+        517,
+        499
+      ],
+      "expected": [
+        517
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waermepumpe.md",
+      "expectedImageKeys": [
+        "waermepumpe__1.png"
+      ],
+      "evidence": [],
+      "ms": 61.78629099999671
+    },
+    {
+      "queryId": "img-03-037",
+      "retrieved": [
+        517,
+        514,
+        509,
+        469,
+        467,
+        490,
+        486,
+        498,
+        502,
+        516
+      ],
+      "expected": [
+        517
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waermepumpe.md",
+      "expectedImageKeys": [
+        "waermepumpe__2.png"
+      ],
+      "evidence": [],
+      "ms": 63.35195900002145
+    },
+    {
+      "queryId": "img-03-038",
+      "retrieved": [
+        517,
+        495,
+        499
+      ],
+      "expected": [
+        517
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "waermepumpe.md",
+      "expectedImageKeys": [
+        "waermepumpe__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.811083999986295
+    },
+    {
+      "queryId": "img-03-039",
+      "retrieved": [
+        476,
+        502
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 56.36262500000885
+    },
+    {
+      "queryId": "img-03-040",
+      "retrieved": [
+        485,
+        519,
+        468
+      ],
+      "expected": [
+        485
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "mitose.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 55.79141599999275
+    },
+    {
+      "queryId": "img-03-041",
+      "retrieved": [
+        500,
+        510,
+        508,
+        491,
+        499,
+        481,
+        493,
+        484,
+        511,
+        495
+      ],
+      "expected": [
+        500
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "router.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 53.736249999987194
+    },
+    {
+      "queryId": "img-04-001",
+      "retrieved": [
+        470
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [
+        "eiffelturm__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.51712500001304
+    },
+    {
+      "queryId": "img-04-002",
+      "retrieved": [
+        470
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [
+        "eiffelturm__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.732208000001265
+    },
+    {
+      "queryId": "img-04-003",
+      "retrieved": [
+        482,
+        470,
+        461,
+        501,
+        499,
+        464
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [
+        "eiffelturm__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.65287499999977
+    },
+    {
+      "queryId": "img-04-004",
+      "retrieved": [
+        470
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [
+        "eiffelturm__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 60.37924999999814
+    },
+    {
+      "queryId": "img-04-005",
+      "retrieved": [
+        470
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [
+        "eiffelturm__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 51.62404100000276
+    },
+    {
+      "queryId": "img-04-006",
+      "retrieved": [
+        482
+      ],
+      "expected": [
+        482
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "koelner-dom.md",
+      "expectedImageKeys": [
+        "koelner-dom__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.78283400001237
+    },
+    {
+      "queryId": "img-04-007",
+      "retrieved": [
+        482
+      ],
+      "expected": [
+        482
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "koelner-dom.md",
+      "expectedImageKeys": [
+        "koelner-dom__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.5195830000157
+    },
+    {
+      "queryId": "img-04-008",
+      "retrieved": [
+        482
+      ],
+      "expected": [
+        482
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "koelner-dom.md",
+      "expectedImageKeys": [
+        "koelner-dom__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.02983299997868
+    },
+    {
+      "queryId": "img-04-009",
+      "retrieved": [
+        482,
+        477
+      ],
+      "expected": [
+        482
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "koelner-dom.md",
+      "expectedImageKeys": [
+        "koelner-dom__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.391542000026675
+    },
+    {
+      "queryId": "img-04-010",
+      "retrieved": [
+        458,
+        466,
+        475,
+        503,
+        467,
+        490,
+        506
+      ],
+      "expected": [
+        458
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "balanced-scorecard.md",
+      "expectedImageKeys": [
+        "balanced-scorecard__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.59329200000502
+    },
+    {
+      "queryId": "img-04-011",
+      "retrieved": [
+        458,
+        490,
+        466,
+        512,
+        467,
+        486,
+        503,
+        475,
+        506,
+        473
+      ],
+      "expected": [
+        458
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "balanced-scorecard.md",
+      "expectedImageKeys": [
+        "balanced-scorecard__2.png"
+      ],
+      "evidence": [],
+      "ms": 58.57170800000313
+    },
+    {
+      "queryId": "img-04-012",
+      "retrieved": [
+        458,
+        490,
+        467,
+        503,
+        466,
+        473,
+        502,
+        512,
+        486
+      ],
+      "expected": [
+        458
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "balanced-scorecard.md",
+      "expectedImageKeys": [
+        "balanced-scorecard__2.png"
+      ],
+      "evidence": [],
+      "ms": 70.39195799999288
+    },
+    {
+      "queryId": "img-04-013",
+      "retrieved": [
+        506,
+        458,
+        475,
+        502,
+        467,
+        466,
+        493,
+        473,
+        503,
+        465
+      ],
+      "expected": [
+        458
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "balanced-scorecard.md",
+      "expectedImageKeys": [
+        "balanced-scorecard__3.png"
+      ],
+      "evidence": [],
+      "ms": 55.00433300001896
+    },
+    {
+      "queryId": "img-04-014",
+      "retrieved": [
+        486,
+        498,
+        490,
+        458,
+        475,
+        512,
+        493,
+        466,
+        467,
+        492
+      ],
+      "expected": [
+        486
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nassi-shneiderman-diagramm.md",
+      "expectedImageKeys": [
+        "nassi-shneiderman-diagramm__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.8851250000007
+    },
+    {
+      "queryId": "img-04-015",
+      "retrieved": [
+        486,
+        498,
+        512,
+        475,
+        466,
+        490,
+        458,
+        473,
+        493,
+        467
+      ],
+      "expected": [
+        486
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nassi-shneiderman-diagramm.md",
+      "expectedImageKeys": [
+        "nassi-shneiderman-diagramm__2.png"
+      ],
+      "evidence": [],
+      "ms": 57.58924999998999
+    },
+    {
+      "queryId": "img-04-016",
+      "retrieved": [
+        486,
+        498,
+        490,
+        458,
+        512,
+        475,
+        466,
+        492,
+        493,
+        473
+      ],
+      "expected": [
+        486
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nassi-shneiderman-diagramm.md",
+      "expectedImageKeys": [
+        "nassi-shneiderman-diagramm__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.841709000000264
+    },
+    {
+      "queryId": "img-04-017",
+      "retrieved": [
+        486,
+        498,
+        490,
+        512,
+        475,
+        492,
+        458,
+        466,
+        493,
+        473
+      ],
+      "expected": [
+        486
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nassi-shneiderman-diagramm.md",
+      "expectedImageKeys": [
+        "nassi-shneiderman-diagramm__3.png"
+      ],
+      "evidence": [],
+      "ms": 57.35245800000848
+    },
+    {
+      "queryId": "img-04-018",
+      "retrieved": [
+        463,
+        456
+      ],
+      "expected": [
+        506
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "supply-chain-management.md",
+      "expectedImageKeys": [
+        "supply-chain-management__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.90700000000652
+    },
+    {
+      "queryId": "img-04-019",
+      "retrieved": [
+        506,
+        475,
+        490,
+        458,
+        493,
+        473,
+        466,
+        467,
+        489,
+        498
+      ],
+      "expected": [
+        506
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "supply-chain-management.md",
+      "expectedImageKeys": [
+        "supply-chain-management__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.89858400000958
+    },
+    {
+      "queryId": "img-04-020",
+      "retrieved": [
+        506,
+        475,
+        490,
+        458,
+        473,
+        493,
+        466,
+        498,
+        503,
+        467
+      ],
+      "expected": [
+        506
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "supply-chain-management.md",
+      "expectedImageKeys": [
+        "supply-chain-management__2.png"
+      ],
+      "evidence": [],
+      "ms": 54.379332999989856
+    },
+    {
+      "queryId": "img-04-021",
+      "retrieved": [
+        506,
+        464,
+        459,
+        509,
+        484,
+        482,
+        490,
+        514,
+        466,
+        470
+      ],
+      "expected": [
+        506
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "supply-chain-management.md",
+      "expectedImageKeys": [
+        "supply-chain-management__3.png"
+      ],
+      "evidence": [],
+      "ms": 53.47404100000858
+    },
+    {
+      "queryId": "img-04-022",
+      "retrieved": [
+        462,
+        480
+      ],
+      "expected": [
+        462
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "blutkreislauf.md",
+      "expectedImageKeys": [
+        "blutkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 61.12087500002235
+    },
+    {
+      "queryId": "img-04-023",
+      "retrieved": [
+        462,
+        480
+      ],
+      "expected": [
+        462
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "blutkreislauf.md",
+      "expectedImageKeys": [
+        "blutkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.758499999996275
+    },
+    {
+      "queryId": "img-04-024",
+      "retrieved": [
+        462,
+        480
+      ],
+      "expected": [
+        462
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "blutkreislauf.md",
+      "expectedImageKeys": [
+        "blutkreislauf__2.png"
+      ],
+      "evidence": [],
+      "ms": 57.0401669999992
+    },
+    {
+      "queryId": "img-04-025",
+      "retrieved": [
+        490,
+        462,
+        457,
+        480,
+        516,
+        492,
+        468
+      ],
+      "expected": [
+        462
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "blutkreislauf.md",
+      "expectedImageKeys": [
+        "blutkreislauf__3.png"
+      ],
+      "evidence": [],
+      "ms": 53.91699999998673
+    },
+    {
+      "queryId": "img-04-026",
+      "retrieved": [
+        487,
+        519,
+        485,
+        490,
+        493,
+        462,
+        457,
+        468,
+        473
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.428332999988925
+    },
+    {
+      "queryId": "img-04-027",
+      "retrieved": [
+        487,
+        519,
+        485,
+        490,
+        468,
+        480
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.62595800001873
+    },
+    {
+      "queryId": "img-04-028",
+      "retrieved": [
+        485,
+        462,
+        487,
+        519,
+        468,
+        492,
+        490,
+        512,
+        457
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.81424999999581
+    },
+    {
+      "queryId": "img-04-029",
+      "retrieved": [
+        487,
+        519,
+        494,
+        493,
+        485,
+        480,
+        507,
+        457
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__2.png"
+      ],
+      "evidence": [],
+      "ms": 63.401708000019426
+    },
+    {
+      "queryId": "img-04-030",
+      "retrieved": [
+        487,
+        490,
+        512,
+        480,
+        473,
+        514,
+        498,
+        467,
+        493,
+        494
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.094249999994645
+    },
+    {
+      "queryId": "img-04-031",
+      "retrieved": [
+        487,
+        512,
+        480,
+        493,
+        515,
+        508,
+        465,
+        490,
+        472,
+        468
+      ],
+      "expected": [
+        487
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "nervenzelle.md",
+      "expectedImageKeys": [
+        "nervenzelle__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.29354099999182
+    },
+    {
+      "queryId": "img-04-032",
+      "retrieved": [
+        505,
+        489,
+        483,
+        486,
+        474,
+        494,
+        517,
+        466,
+        473,
+        462
+      ],
+      "expected": [
+        505
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "stickstoffkreislauf.md",
+      "expectedImageKeys": [
+        "stickstoffkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.50450000001001
+    },
+    {
+      "queryId": "img-04-033",
+      "retrieved": [
+        505,
+        483,
+        489,
+        494,
+        462,
+        474,
+        467,
+        469
+      ],
+      "expected": [
+        505
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "stickstoffkreislauf.md",
+      "expectedImageKeys": [
+        "stickstoffkreislauf__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.34787500000675
+    },
+    {
+      "queryId": "img-04-034",
+      "retrieved": [
+        505,
+        489,
+        483,
+        474,
+        469,
+        515,
+        488,
+        520,
+        494,
+        473
+      ],
+      "expected": [
+        505
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "stickstoffkreislauf.md",
+      "expectedImageKeys": [
+        "stickstoffkreislauf__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.51100000002771
+    },
+    {
+      "queryId": "img-04-035",
+      "retrieved": [
+        469,
+        514,
+        467
+      ],
+      "expected": [
+        469
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "dieselmotor.md",
+      "expectedImageKeys": [
+        "dieselmotor__1.png"
+      ],
+      "evidence": [],
+      "ms": 52.25279099997715
+    },
+    {
+      "queryId": "img-04-036",
+      "retrieved": [
+        469,
+        514,
+        509
+      ],
+      "expected": [
+        469
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "dieselmotor.md",
+      "expectedImageKeys": [
+        "dieselmotor__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 52.21183399998699
+    },
+    {
+      "queryId": "img-04-037",
+      "retrieved": [
+        469,
+        514,
+        456
+      ],
+      "expected": [
+        469
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "dieselmotor.md",
+      "expectedImageKeys": [
+        "dieselmotor__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 50.166167000017595
+    },
+    {
+      "queryId": "img-04-038",
+      "retrieved": [
+        469,
+        460,
+        465,
+        481,
+        514,
+        490
+      ],
+      "expected": [
+        469
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "dieselmotor.md",
+      "expectedImageKeys": [
+        "dieselmotor__3.png"
+      ],
+      "evidence": [],
+      "ms": 59.609250000008615
+    },
+    {
+      "queryId": "img-04-039",
+      "retrieved": [
+        507,
+        493,
+        495,
+        486,
+        466,
+        490,
+        458,
+        475
+      ],
+      "expected": [
+        507
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transistor.md",
+      "expectedImageKeys": [
+        "transistor__1.png"
+      ],
+      "evidence": [],
+      "ms": 51.90604100000928
+    },
+    {
+      "queryId": "img-04-040",
+      "retrieved": [
+        507,
+        495,
+        486,
+        493,
+        466,
+        498,
+        494,
+        490,
+        492,
+        475
+      ],
+      "expected": [
+        507
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "transistor.md",
+      "expectedImageKeys": [
+        "transistor__1.png"
+      ],
+      "evidence": [],
+      "ms": 51.83908400000655
+    },
+    {
+      "queryId": "img-04-041",
+      "retrieved": [
+        507,
+        493,
+        486,
+        475,
+        498,
+        516,
+        473,
+        491,
+        466
+      ],
+      "expected": [
+        507
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transistor.md",
+      "expectedImageKeys": [
+        "transistor__2.png"
+      ],
+      "evidence": [],
+      "ms": 52.77941600000486
+    },
+    {
+      "queryId": "img-04-042",
+      "retrieved": [
+        507,
+        495,
+        490,
+        469,
+        509,
+        486,
+        485,
+        466
+      ],
+      "expected": [
+        507
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transistor.md",
+      "expectedImageKeys": [
+        "transistor__3.png"
+      ],
+      "evidence": [],
+      "ms": 51.49283399997512
+    },
+    {
+      "queryId": "img-04-043",
+      "retrieved": [
+        518,
+        516
+      ],
+      "expected": [
+        518
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zahnrad.md",
+      "expectedImageKeys": [
+        "zahnrad__1.png"
+      ],
+      "evidence": [],
+      "ms": 50.96450000000186
+    },
+    {
+      "queryId": "img-04-044",
+      "retrieved": [
+        518,
+        516,
+        481,
+        456,
+        463,
+        509,
+        497
+      ],
+      "expected": [
+        518
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zahnrad.md",
+      "expectedImageKeys": [
+        "zahnrad__2.png"
+      ],
+      "evidence": [],
+      "ms": 60.26175000000512
+    },
+    {
+      "queryId": "img-04-045",
+      "retrieved": [
+        518,
+        516,
+        490,
+        462,
+        477
+      ],
+      "expected": [
+        518
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "zahnrad.md",
+      "expectedImageKeys": [
+        "zahnrad__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.70512500000768
+    },
+    {
+      "queryId": "img-04-046",
+      "retrieved": [
+        518,
+        514,
+        516,
+        509,
+        484,
+        475,
+        481
+      ],
+      "expected": [
+        518
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "zahnrad.md",
+      "expectedImageKeys": [
+        "zahnrad__3.png"
+      ],
+      "evidence": [],
+      "ms": 57.88008300002548
+    },
+    {
+      "queryId": "img-04-047",
+      "retrieved": [
+        470,
+        461
+      ],
+      "expected": [
+        470
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "eiffelturm.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 61.60175000000163
+    },
+    {
+      "queryId": "img-04-048",
+      "retrieved": [
+        507,
+        484,
+        492,
+        495,
+        463,
+        508,
+        469,
+        472,
+        516,
+        459
+      ],
+      "expected": [
+        507
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "transistor.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 72.00516699999571
+    },
+    {
+      "queryId": "img-04-049",
+      "retrieved": [
+        518,
+        516,
+        472,
+        503,
+        484,
+        469,
+        467
+      ],
+      "expected": [
+        518
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "zahnrad.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 63.67454199999338
+    },
+    {
+      "queryId": "img-05-001",
+      "retrieved": [
+        471
+      ],
+      "expected": [
+        471
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elbphilharmonie.md",
+      "expectedImageKeys": [
+        "elbphilharmonie__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 56.39729100000113
+    },
+    {
+      "queryId": "img-05-002",
+      "retrieved": [
+        471,
+        461
+      ],
+      "expected": [
+        471
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elbphilharmonie.md",
+      "expectedImageKeys": [
+        "elbphilharmonie__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 55.966457999980776
+    },
+    {
+      "queryId": "img-05-003",
+      "retrieved": [
+        471,
+        479
+      ],
+      "expected": [
+        471
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elbphilharmonie.md",
+      "expectedImageKeys": [
+        "elbphilharmonie__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 60.74762499998906
+    },
+    {
+      "queryId": "img-05-004",
+      "retrieved": [
+        471,
+        479,
+        461
+      ],
+      "expected": [
+        471
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "elbphilharmonie.md",
+      "expectedImageKeys": [
+        "elbphilharmonie__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.39999999999418
+    },
+    {
+      "queryId": "img-05-005",
+      "retrieved": [
+        461,
+        471,
+        479,
+        470,
+        477,
+        499,
+        501,
+        482,
+        478,
+        484
+      ],
+      "expected": [
+        471
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elbphilharmonie.md",
+      "expectedImageKeys": [
+        "elbphilharmonie__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.20729200000642
+    },
+    {
+      "queryId": "img-05-006",
+      "retrieved": [
+        488,
+        497,
+        464
+      ],
+      "expected": [
+        488
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nuerburgring.md",
+      "expectedImageKeys": [
+        "nuerburgring__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 62.962375000002794
+    },
+    {
+      "queryId": "img-05-007",
+      "retrieved": [
+        488,
+        497,
+        520
+      ],
+      "expected": [
+        488
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "nuerburgring.md",
+      "expectedImageKeys": [
+        "nuerburgring__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.21858399998746
+    },
+    {
+      "queryId": "img-05-008",
+      "retrieved": [
+        488,
+        499,
+        471,
+        479,
+        477,
+        482,
+        464
+      ],
+      "expected": [
+        488
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nuerburgring.md",
+      "expectedImageKeys": [
+        "nuerburgring__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.86704199999804
+    },
+    {
+      "queryId": "img-05-009",
+      "retrieved": [
+        488,
+        497
+      ],
+      "expected": [
+        488
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "nuerburgring.md",
+      "expectedImageKeys": [
+        "nuerburgring__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 61.33962499999325
+    },
+    {
+      "queryId": "img-05-010",
+      "retrieved": [
+        466,
+        475,
+        473,
+        498,
+        512,
+        486,
+        490,
+        458,
+        467
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [
+        "business-process-model-and-notation__1.png"
+      ],
+      "evidence": [],
+      "ms": 51.12316699998337
+    },
+    {
+      "queryId": "img-05-011",
+      "retrieved": [
+        466,
+        498,
+        475,
+        458,
+        490,
+        467,
+        512,
+        486,
+        493,
+        473
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [
+        "business-process-model-and-notation__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.22591599999578
+    },
+    {
+      "queryId": "img-05-012",
+      "retrieved": [
+        466,
+        475,
+        502,
+        498,
+        512,
+        490,
+        486,
+        473,
+        458,
+        493
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [
+        "business-process-model-and-notation__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.32845800000359
+    },
+    {
+      "queryId": "img-05-013",
+      "retrieved": [
+        466,
+        475,
+        512,
+        493,
+        473,
+        498,
+        486,
+        458
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [
+        "business-process-model-and-notation__3.png"
+      ],
+      "evidence": [],
+      "ms": 60.00566700001946
+    },
+    {
+      "queryId": "img-05-014",
+      "retrieved": [
+        466,
+        475,
+        512,
+        493,
+        486,
+        458,
+        498,
+        473
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [
+        "business-process-model-and-notation__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.44808299999568
+    },
+    {
+      "queryId": "img-05-015",
+      "retrieved": [
+        466,
+        512,
+        475,
+        513,
+        498,
+        458,
+        493,
+        473,
+        476
+      ],
+      "expected": [
+        466
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "business-process-model-and-notation.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 55.80866700000479
+    },
+    {
+      "queryId": "img-05-016",
+      "retrieved": [
+        490,
+        475,
+        473,
+        486,
+        466,
+        498,
+        512,
+        467,
+        458,
+        503
+      ],
+      "expected": [
+        490
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "organigramm.md",
+      "expectedImageKeys": [
+        "organigramm__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.478624999988824
+    },
+    {
+      "queryId": "img-05-017",
+      "retrieved": [
+        490,
+        475,
+        458,
+        466,
+        476,
+        512,
+        491,
+        492,
+        486,
+        473
+      ],
+      "expected": [
+        490
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "organigramm.md",
+      "expectedImageKeys": [
+        "organigramm__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.913000000000466
+    },
+    {
+      "queryId": "img-05-018",
+      "retrieved": [
+        490,
+        475,
+        512,
+        458,
+        476,
+        491,
+        486,
+        466,
+        473,
+        498
+      ],
+      "expected": [
+        490
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "organigramm.md",
+      "expectedImageKeys": [
+        "organigramm__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.453667000023415
+    },
+    {
+      "queryId": "img-05-019",
+      "retrieved": [
+        510,
+        511
+      ],
+      "expected": [
+        510
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-berlin.md",
+      "expectedImageKeys": [
+        "u-bahn-berlin__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.583084000012605
+    },
+    {
+      "queryId": "img-05-020",
+      "retrieved": [
+        510,
+        511
+      ],
+      "expected": [
+        510
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-berlin.md",
+      "expectedImageKeys": [
+        "u-bahn-berlin__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.84662500000559
+    },
+    {
+      "queryId": "img-05-021",
+      "retrieved": [
+        510,
+        511
+      ],
+      "expected": [
+        510
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "u-bahn-berlin.md",
+      "expectedImageKeys": [
+        "u-bahn-berlin__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.8614579999994
+    },
+    {
+      "queryId": "img-05-022",
+      "retrieved": [
+        510,
+        511
+      ],
+      "expected": [
+        510
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "u-bahn-berlin.md",
+      "expectedImageKeys": [
+        "u-bahn-berlin__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 53.20145899997442
+    },
+    {
+      "queryId": "img-05-023",
+      "retrieved": [
+        468,
+        519
+      ],
+      "expected": [
+        468
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "desoxyribonukleinsaeure.md",
+      "expectedImageKeys": [
+        "desoxyribonukleinsaeure__1.png"
+      ],
+      "evidence": [],
+      "ms": 56.6433750000142
+    },
+    {
+      "queryId": "img-05-024",
+      "retrieved": [
+        468,
+        485,
+        519
+      ],
+      "expected": [
+        468
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "desoxyribonukleinsaeure.md",
+      "expectedImageKeys": [
+        "desoxyribonukleinsaeure__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.945999999996275
+    },
+    {
+      "queryId": "img-05-025",
+      "retrieved": [
+        468,
+        519,
+        490,
+        480,
+        485,
+        486,
+        473,
+        494
+      ],
+      "expected": [
+        468
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "desoxyribonukleinsaeure.md",
+      "expectedImageKeys": [
+        "desoxyribonukleinsaeure__2.png"
+      ],
+      "evidence": [],
+      "ms": 60.05520800000522
+    },
+    {
+      "queryId": "img-05-026",
+      "retrieved": [
+        468,
+        485,
+        519,
+        512,
+        490
+      ],
+      "expected": [
+        468
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "desoxyribonukleinsaeure.md",
+      "expectedImageKeys": [
+        "desoxyribonukleinsaeure__3.png"
+      ],
+      "evidence": [],
+      "ms": 58.17854199997964
+    },
+    {
+      "queryId": "img-05-027",
+      "retrieved": [
+        468,
+        485,
+        519
+      ],
+      "expected": [
+        468
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "desoxyribonukleinsaeure.md",
+      "expectedImageKeys": [
+        "desoxyribonukleinsaeure__3.png"
+      ],
+      "evidence": [],
+      "ms": 54.07962500001304
+    },
+    {
+      "queryId": "img-05-028",
+      "retrieved": [
+        489,
+        483,
+        482,
+        494,
+        457
+      ],
+      "expected": [
+        489
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "oekosystem.md",
+      "expectedImageKeys": [
+        "oekosystem__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 57.41683400000329
+    },
+    {
+      "queryId": "img-05-029",
+      "retrieved": [
+        489,
+        494,
+        483,
+        462,
+        457,
+        482,
+        480
+      ],
+      "expected": [
+        489
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "oekosystem.md",
+      "expectedImageKeys": [
+        "oekosystem__1.jpg"
+      ],
+      "evidence": [],
+      "ms": 54.37633299999288
+    },
+    {
+      "queryId": "img-05-030",
+      "retrieved": [
+        489,
+        505,
+        483,
+        467,
+        494,
+        490,
+        462,
+        506,
+        473,
+        475
+      ],
+      "expected": [
+        489
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "oekosystem.md",
+      "expectedImageKeys": [
+        "oekosystem__2.png"
+      ],
+      "evidence": [],
+      "ms": 59.205291000020225
+    },
+    {
+      "queryId": "img-05-031",
+      "retrieved": [
+        483,
+        489,
+        494
+      ],
+      "expected": [
+        489
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "oekosystem.md",
+      "expectedImageKeys": [
+        "oekosystem__3.png"
+      ],
+      "evidence": [],
+      "ms": 54.155916000017896
+    },
+    {
+      "queryId": "img-05-032",
+      "retrieved": [
+        489,
+        483,
+        476
+      ],
+      "expected": [
+        489
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "oekosystem.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 57.87937499998952
+    },
+    {
+      "queryId": "img-05-033",
+      "retrieved": [
+        496,
+        515
+      ],
+      "expected": [
+        515
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "vulkan.md",
+      "expectedImageKeys": [
+        "vulkan__1.png"
+      ],
+      "evidence": [],
+      "ms": 54.22970900000655
+    },
+    {
+      "queryId": "img-05-034",
+      "retrieved": [
+        496,
+        515,
+        504
+      ],
+      "expected": [
+        515
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "vulkan.md",
+      "expectedImageKeys": [
+        "vulkan__2.png"
+      ],
+      "evidence": [],
+      "ms": 51.72154200001387
+    },
+    {
+      "queryId": "img-05-035",
+      "retrieved": [
+        496,
+        515,
+        504
+      ],
+      "expected": [
+        515
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "vulkan.md",
+      "expectedImageKeys": [
+        "vulkan__2.png"
+      ],
+      "evidence": [],
+      "ms": 56.12133300001733
+    },
+    {
+      "queryId": "img-05-036",
+      "retrieved": [
+        515,
+        496,
+        483
+      ],
+      "expected": [
+        515
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "vulkan.md",
+      "expectedImageKeys": [
+        "vulkan__3.png"
+      ],
+      "evidence": [],
+      "ms": 52.40187500001048
+    },
+    {
+      "queryId": "img-05-037",
+      "retrieved": [
+        472,
+        460,
+        507,
+        514,
+        511,
+        510,
+        482,
+        481,
+        469,
+        490
+      ],
+      "expected": [
+        472
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elektromotor.md",
+      "expectedImageKeys": [
+        "elektromotor__1.png"
+      ],
+      "evidence": [],
+      "ms": 59.49862500000745
+    },
+    {
+      "queryId": "img-05-038",
+      "retrieved": [
+        472,
+        460,
+        510,
+        459,
+        511,
+        495,
+        514,
+        485,
+        487
+      ],
+      "expected": [
+        472
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elektromotor.md",
+      "expectedImageKeys": [
+        "elektromotor__1.png"
+      ],
+      "evidence": [],
+      "ms": 55.83100000000559
+    },
+    {
+      "queryId": "img-05-039",
+      "retrieved": [
+        472,
+        516,
+        461,
+        477,
+        490,
+        511,
+        514
+      ],
+      "expected": [
+        472
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elektromotor.md",
+      "expectedImageKeys": [
+        "elektromotor__2.jpg"
+      ],
+      "evidence": [],
+      "ms": 59.033416999998735
+    },
+    {
+      "queryId": "img-05-040",
+      "retrieved": [
+        472,
+        460,
+        511,
+        514,
+        461,
+        469,
+        481,
+        509,
+        470,
+        495
+      ],
+      "expected": [
+        472
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "elektromotor.md",
+      "expectedImageKeys": [
+        "elektromotor__3.jpg"
+      ],
+      "evidence": [],
+      "ms": 58.90999999997439
+    },
+    {
+      "queryId": "img-05-041",
+      "retrieved": [
+        508,
+        491,
+        512
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [
+        "transmission-control-protocol__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.88012499999604
+    },
+    {
+      "queryId": "img-05-042",
+      "retrieved": [
+        508,
+        491
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [
+        "transmission-control-protocol__1.png"
+      ],
+      "evidence": [],
+      "ms": 57.87825000000885
+    },
+    {
+      "queryId": "img-05-043",
+      "retrieved": [
+        508,
+        491
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [
+        "transmission-control-protocol__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.88408299998264
+    },
+    {
+      "queryId": "img-05-044",
+      "retrieved": [
+        508,
+        491,
+        512
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image",
+      "lang": "en",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [
+        "transmission-control-protocol__2.png"
+      ],
+      "evidence": [],
+      "ms": 55.27283400000306
+    },
+    {
+      "queryId": "img-05-045",
+      "retrieved": [
+        508,
+        491,
+        500
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image",
+      "lang": "de",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [
+        "transmission-control-protocol__3.png"
+      ],
+      "evidence": [],
+      "ms": 56.60745899999165
+    },
+    {
+      "queryId": "img-05-046",
+      "retrieved": [
+        508,
+        491,
+        509
+      ],
+      "expected": [
+        508
+      ],
+      "style": "image-negative",
+      "lang": "de",
+      "cluster": "transmission-control-protocol.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 56.223417000001064
+    },
+    {
+      "queryId": "img-07-003",
+      "retrieved": [
+        469,
+        514,
+        472,
+        509,
+        516
+      ],
+      "expected": [
+        469
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "dieselmotor.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 55.92966599998181
+    },
+    {
+      "queryId": "img-07-004",
+      "retrieved": [
+        476,
+        502,
+        512,
+        513
+      ],
+      "expected": [
+        476
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "extreme-programming.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 58.59579200000735
+    },
+    {
+      "queryId": "img-08-001",
+      "retrieved": [
+        478,
+        470,
+        461,
+        477,
+        456,
+        482,
+        464,
+        471
+      ],
+      "expected": [
+        478
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "golden-gate-bridge.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 57.74066699997638
+    },
+    {
+      "queryId": "img-08-004",
+      "retrieved": [
+        491,
+        493,
+        508,
+        512,
+        473,
+        466,
+        506,
+        513,
+        500,
+        456
+      ],
+      "expected": [
+        491
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "osi-modell.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 55.24762499998906
+    },
+    {
+      "queryId": "img-09-001",
+      "retrieved": [
+        501,
+        499,
+        482,
+        511,
+        520,
+        488,
+        471
+      ],
+      "expected": [
+        501
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "schloss-neuschwanstein.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 54.123958000011044
+    },
+    {
+      "queryId": "img-09-003",
+      "retrieved": [
+        468,
+        519,
+        485,
+        492,
+        494,
+        487,
+        465
+      ],
+      "expected": [
+        519
+      ],
+      "style": "image-negative",
+      "lang": "en",
+      "cluster": "zellkern.md",
+      "expectedImageKeys": [],
+      "evidence": [],
+      "ms": 57.39170800001011
+    }
+  ]
+}

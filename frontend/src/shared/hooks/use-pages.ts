@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
+import type { PageIcon, PageLifecycleState, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 import { useOnboardingActions } from './use-onboarding';
 
@@ -42,12 +42,31 @@ interface PageSummary {
   source: 'confluence' | 'standalone';
   visibility: 'private' | 'shared';
   icon?: PageIcon | null;
+  /**
+   * #277 freeze summary, carried on every page shape by the contract. Optional
+   * here for the same reason the tree's copy is: a server that predates the
+   * fields sends none, and absent means "not known to be frozen".
+   */
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
-interface PageDetail extends PageSummary {
+interface PageDetail extends PageSummary, Partial<PageLifecycleState> {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
+  /**
+   * The descendants a trash by the current user would move: live,
+   * `source = 'standalone'`, created by this user, the page itself excluded
+   * (#1636) — exactly the set `DELETE /pages/:id` cascades, guard for guard.
+   * `hasChildren` answers the different question of what the tree shows, and
+   * can be true with a count of 0 (a Confluence-sourced or another user's
+   * subtree). Optional because the API predates the field: absent means "not
+   * known", which the trash dialog must render as the no-sub-articles copy
+   * rather than as a guess.
+   */
+  descendantCount?: number;
   summaryHtml: string | null;
   summaryGeneratedAt: string | null;
   summaryModel: string | null;
@@ -56,6 +75,9 @@ interface PageDetail extends PageSummary {
   createdByUserId?: string | number | null;
   /** Last human verification stamp (`pages.verified_at`). */
   verifiedAt?: string | null;
+  /** An unpublished draft exists beside the published body (standalone pages). */
+  hasDraft?: boolean;
+  draftUpdatedAt?: string | null;
 }
 
 interface PaginatedPages {
@@ -156,6 +178,13 @@ export interface PageTreeItem {
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
   icon?: PageIcon | null;
+  // #277: the tree renders a frozen row's lock from the same summary fields
+  // the contract already puts on every page shape. Optional here because a
+  // server that predates the field sends none, and absent must read as
+  // "not known to be frozen" rather than as frozen.
+  isFrozen?: boolean;
+  baselineId?: string | null;
+  frozenVersion?: number | null;
 }
 
 interface PageTreeResponse {
@@ -354,15 +383,36 @@ export function useDeletePage() {
   return useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/pages/${id}`, { method: 'DELETE' }),
-    onMutate: async (id) => {
+    onSuccess: async (_data, id) => {
+      // A list request already in flight can contain the deleted row. Cancel it
+      // before applying the confirmed result so that stale response cannot put
+      // the row back while the settlement invalidation starts a fresh request.
       await queryClient.cancelQueries({ queryKey: ['pages'] });
-      // Remove from all paginated list caches optimistically
-      queryClient.setQueriesData<PaginatedPages>({ queryKey: ['pages'] }, (old) => {
-        if (!old?.items) return old;
-        return { ...old, items: old.items.filter((p) => p.id !== id), total: Math.max(0, old.total - 1) };
+      queryClient.setQueriesData<PaginatedPages>({
+        queryKey: ['pages'],
+        predicate: (query) => (
+          query.queryKey.length === 2
+          && typeof query.queryKey[1] === 'object'
+          && query.queryKey[1] !== null
+        ),
+      }, (old) => {
+        if (!old?.items?.some((page) => page.id === id)) return old;
+        const total = Math.max(0, old.total - 1);
+        return {
+          ...old,
+          items: old.items.filter((page) => page.id !== id),
+          total,
+          totalPages: total === 0 ? 0 : Math.ceil(total / old.limit),
+        };
       });
+      // Standalone deletes move the confirmed row into Trash. Confluence and
+      // permanent deletes leave it absent there; either way the server owns
+      // the resulting collection.
+      queryClient.invalidateQueries({ queryKey: ['trash'] });
     },
     onSettled: () => {
+      // Prefix invalidation reconciles active lists, trees, pins and details,
+      // while marking inactive entries stale for a fetch when next mounted.
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'], refetchType: 'none' });
     },

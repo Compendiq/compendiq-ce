@@ -64,10 +64,11 @@ async function writeFileAt(relative: string, data: Buffer | string): Promise<str
 }
 
 describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
-  it('reserves client-models so the orphan sweep cannot delete operator weights', () => {
+  it('reserves every independent store so key cleanup cannot delete it', () => {
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
     expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
+    expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-baselines')).toBe(true);
   });
 
   it('refuses to remove the client-models store by name', async () => {
@@ -78,6 +79,21 @@ describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
       'utf8',
     );
     expect(kept).toBe('weights');
+  });
+
+  it('refuses to remove retained baseline evidence by namespace', async () => {
+    const retained = await writeFileAt(
+      path.join(
+        'page-baselines',
+        '018f47a8-4a19-7cc2-a747-8f4ef65d9a22',
+        '018f47a8-4a19-7cc2-a747-8f4ef65d9a23',
+        'media',
+        'a'.repeat(64),
+      ),
+      'evidence',
+    );
+    await expect(store.removeCachedAttachmentDirectory('page-baselines')).rejects.toThrow(/reserved/i);
+    await expect(fsReal.readFile(retained, 'utf8')).resolves.toBe('evidence');
   });
 });
 
@@ -295,6 +311,31 @@ describe('resolveAttachmentBytes (#1115)', () => {
     expect(await store.resolveAttachmentBytes({
       pageId: 777, confluenceId: null, pageSource: 'standalone', source: 'local', key: 'absent.png',
     })).toBeNull();
+  });
+
+  // root reads through any mode bits, so the EACCES this needs cannot be
+  // produced there; the worker suite covers the same boundary with a fault
+  // injected above the store.
+  it.skipIf(process.getuid?.() === 0)('throws for a read failure that is not an absence, in both trees', async () => {
+    // The distinction the analysis worker rests on (#1626 review r2): an
+    // absent file is `null`, a file that is there but unreadable is an error
+    // the caller classifies — never the same `null`.
+    const confluence = await writeFileAt(path.join('44556677', 'locked.png'), pngBytes());
+    const local = await writeFileAt(path.join('local', '31', 'locked.png'), pngBytes());
+    await fsReal.chmod(confluence, 0o000);
+    await fsReal.chmod(local, 0o000);
+    try {
+      await expect(store.resolveAttachmentBytes({
+        pageId: 12, confluenceId: '44556677', pageSource: 'confluence', source: 'confluence', key: 'locked.png',
+      })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(store.resolveAttachmentBytes({
+        pageId: 31, confluenceId: null, pageSource: 'standalone', source: 'local', key: 'locked.png',
+      })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(store.readCachedAttachmentFile('44556677', 'locked.png')).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await fsReal.chmod(confluence, 0o644);
+      await fsReal.chmod(local, 0o644);
+    }
   });
 });
 

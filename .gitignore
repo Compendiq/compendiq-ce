@@ -59,8 +59,10 @@ research/
 *.jar
 *.ear
 
-# Claude Code
+# Claude Code & local agent tooling
 .claude/
+.grok/
+.pi/
 frontend/vendor/
 firebase-debug.log
 
@@ -73,10 +75,10 @@ firebase-debug.log
 perf/*.json
 perf/*.html
 
-# #1115: the VL embedding shim is a Python tool, so its virtualenv, bytecode
-# and pytest cache land inside the checkout rather than in node_modules. The
-# venv holds mlx/torch wheels measured in gigabytes.
-tools/vl-embedding-shim/.venv
+# #1115: `tools/eval-corpus-images/` is a Python tool, so its virtualenv,
+# bytecode and pytest cache land inside the checkout rather than in
+# node_modules. The venv holds Pillow and friends.
+tools/**/.venv/
 tools/**/__pycache__/
 tools/**/.pytest_cache/
 tools/**/*.egg-info/
@@ -100,7 +102,25 @@ backend/src/domains/llm/eval/corpus-*/.queries.json
 backend/retrieval-eval.json
 backend/query-latency.json
 
+# #1619: same rule, same cwd — `run-retrieval-eval.ts --images --arm B|C`
+# defaults its report to `retrieval-eval-arm-<arm>.json` so an arm run cannot
+# overwrite the text-gate baseline above. Anchored to `backend/` on purpose:
+# the arm reports kept as evidence live under
+# `backend/src/domains/llm/eval/artifacts/` and are COMMITTED.
+backend/retrieval-eval-arm-*.json
+
 # #1115: tools/eval-corpus-images/build.py stages the whole image corpus here
 # and swaps it over the real directory only when the run succeeds. A failed run
 # leaves it standing on purpose, for inspection — never to be committed.
 backend/src/domains/llm/eval/corpus-*.staging/
+
+# #1619: the O15 labelling packet. `build-label-packet.ts` regenerates it from
+# the fixture in a second, and the owner's filled copy is an INPUT to
+# `validate-label-packet.ts`, which records the two decisions in
+# `fixture-de-images.json` — that diff is the source, neither file is. Same
+# rule as the two report names above: default names relative to the cwd the
+# runbook uses (`cd backend`), plus the directory the runbook writes to.
+backend/label-packet.csv
+backend/label-packet.jsonl
+backend/label-packet.md
+backend/artifacts/1619/

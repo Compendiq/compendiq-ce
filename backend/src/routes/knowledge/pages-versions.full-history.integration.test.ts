@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
+import { createClient, type RedisClientType } from 'redis';
+import type * as Undici from 'undici';
 
 // #780: mock undici at the HTTP boundary ONLY — `request` is what the
 // ConfluenceClient uses for every REST call. Everything else (Agent for
 // tls-config, etc.) stays real, as does the entire DB path.
-vi.mock('undici', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('undici')>();
-  return { ...actual, request: vi.fn() };
-});
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof Undici>()),
+  request: vi.fn(),
+}));
 
 import { request } from 'undici';
 import {
@@ -17,8 +19,11 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { encryptPat } from '../../core/utils/crypto.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { flushPageWriteInvalidations } from '../../core/services/page-write-invalidation.js';
 import { pagesVersionRoutes } from './pages-versions.js';
 
 const mockRequest = vi.mocked(request);
@@ -39,7 +44,10 @@ const mockRequest = vi.mocked(request);
  * the history read all run against the real test Postgres.
  */
 
-const dbAvailable = await isDbAvailable();
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
 function jsonResponse(data: unknown, statusCode = 200) {
   return {
@@ -60,18 +68,27 @@ function versionEntries(from: number, count: number) {
   }));
 }
 
-describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from Confluence DC (#780, real DB)', () => {
+describe.skipIf(!dbAvailable || !redisAvailable)('page versions against Confluence DC with real PostgreSQL and Redis', () => {
   let app: FastifyInstance;
+  let redis: RedisClientType;
   let userId = '';
+  const ownedPageIds = new Set<number>();
+  const ownedRedisKeys = new Set<string>();
 
   beforeAll(async () => {
     await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false },
+    });
+    await redis.connect();
+    setRedisClient(redis);
     app = Fastify({ logger: false });
     await app.register(sensible);
     app.decorate('authenticate', async (request: { userId: string }) => {
       request.userId = userId;
     });
-    app.decorate('redis', {} as never);
+    app.decorate('redis', redis);
     app.decorateRequest('userId', '');
     await app.register(pagesVersionRoutes, { prefix: '/api' });
     await app.ready();
@@ -79,11 +96,15 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from
 
   afterAll(async () => {
     await app.close();
+    await redis.quit();
     await teardownTestDb();
   });
 
   beforeEach(async () => {
     await truncateAllTables();
+    mockRequest.mockReset();
+    ownedPageIds.clear();
+    ownedRedisKeys.clear();
     const u = await query<{ id: string }>(
       `INSERT INTO users (username, password_hash, role)
        VALUES ('versions_780_admin', 'fakehash', 'admin') RETURNING id`,
@@ -97,8 +118,16 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from
     );
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  afterEach(async () => {
+    await flushPageWriteInvalidations();
+    const keys = [
+      `rbac:admin:${userId}`,
+      `rbac:spaces:${userId}`,
+      `rbac:global:${userId}`,
+      ...ownedRedisKeys,
+      ...[...ownedPageIds].map((pageId) => `collab:active:${pageId}`),
+    ];
+    await redis.del(keys);
   });
 
   async function seedConfluencePage(confluenceId: string, version: number): Promise<number> {
@@ -108,6 +137,7 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from
        RETURNING id`,
       [confluenceId, version],
     );
+    ownedPageIds.add(res.rows[0]!.id);
     return res.rows[0]!.id;
   }
 
@@ -177,6 +207,280 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from
       [pageId],
     );
     expect(Number(db.rows[0]!.count)).toBe(total);
+  });
+
+  it('confirms a sparse restore response with exact provider readback before publishing', async () => {
+    const pageId = await seedConfluencePage('780restore', 5);
+    await query(
+      `UPDATE pages
+          SET title = 'Live before restore',
+              body_storage = '<p>live</p>',
+              body_html = '<p>live</p>',
+              body_text = 'live'
+        WHERE id = $1`,
+      [pageId],
+    );
+    await query(
+      `INSERT INTO page_versions
+         (page_id, version_number, title, body_html, body_text)
+       VALUES ($1, 2, 'Restored title', '<p>restored</p>', 'restored')`,
+      [pageId],
+    );
+    const pageCacheKey = `kb:${userId}:pages:versions-route`;
+    const searchCacheKey = `kb:${userId}:search:versions-route`;
+    const unrelatedCacheKey = `versions-route:${userId}:unrelated`;
+    ownedRedisKeys.add(pageCacheKey);
+    ownedRedisKeys.add(searchCacheKey);
+    ownedRedisKeys.add(unrelatedCacheKey);
+    await redis.mSet({
+      [pageCacheKey]: 'stale page cache',
+      [searchCacheKey]: 'stale search cache',
+      [unrelatedCacheKey]: 'keep',
+    });
+    let submittedStorage = '';
+    mockRequest.mockImplementation(async (rawUrl, options) => {
+      const url = new URL(String(rawUrl));
+      if (
+        url.pathname === '/rest/api/content/780restore'
+        && options?.method === 'PUT'
+      ) {
+        const sent = JSON.parse(String(options.body)) as {
+          title: string;
+          version: { number: number };
+          body: { storage: { value: string } };
+        };
+        submittedStorage = sent.body.storage.value;
+        expect(sent).toMatchObject({
+          title: 'Restored title',
+          version: { number: 6 },
+          body: {
+            storage: {
+              representation: 'storage',
+            },
+          },
+        });
+        expect(submittedStorage).toContain('restored');
+        // A compact acknowledgment proves the accepted command identity,
+        // not the body; publication must read the resulting provider state.
+        return jsonResponse({
+          id: '780restore',
+          title: sent.title,
+          version: sent.version,
+        });
+      }
+      if (url.pathname === '/rest/api/content/780restore' && options?.method === 'GET') {
+        return jsonResponse({
+          id: '780restore',
+          type: 'page',
+          status: 'current',
+          title: 'Restored title',
+          version: { number: 6 },
+          body: { storage: { value: submittedStorage, representation: 'storage' } },
+        });
+      }
+      throw new Error(`Unexpected Confluence request in restore test: ${String(rawUrl)}`);
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/2/restore`,
+      payload: { version: 5 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: pageId,
+      title: 'Restored title',
+      version: 6,
+      restoredFrom: 2,
+      pushedToConfluence: true,
+    });
+    expect(await redis.mGet([pageCacheKey, searchCacheKey, unrelatedCacheKey]))
+      .toEqual([null, null, 'keep']);
+    const page = await query<{
+      title: string;
+      body_storage: string;
+      body_html: string;
+      body_text: string;
+      version: number;
+      embedding_dirty: boolean;
+    }>(
+      `SELECT title, body_storage, body_html, body_text, version, embedding_dirty
+         FROM pages WHERE id = $1`,
+      [pageId],
+    );
+    expect(page.rows[0]).toEqual({
+      title: 'Restored title',
+      body_storage: submittedStorage,
+      body_html: '<p>restored</p>',
+      body_text: 'restored',
+      version: 6,
+      embedding_dirty: true,
+    });
+    const snapshot = await query<{
+      title: string;
+      body_html: string;
+      body_text: string;
+    }>(
+      `SELECT title, body_html, body_text
+         FROM page_versions
+        WHERE page_id = $1 AND version_number = 5`,
+      [pageId],
+    );
+    expect(snapshot.rows[0]).toEqual({
+      title: 'Live before restore',
+      body_html: '<p>live</p>',
+      body_text: 'live',
+    });
+    const intent = await query<{
+      status: string;
+      effect: Record<string, unknown>;
+      remote_effect_started_at: Date | null;
+      remote_effects_completed_at: Date | null;
+      cache_invalidation_pending: boolean;
+    }>(
+      `SELECT status, effect, remote_effect_started_at, remote_effects_completed_at,
+              cache_invalidation_pending
+         FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(intent.rows[0]).toEqual({
+      status: 'completed',
+      effect: {
+        effectClass: 'remote',
+        pageId,
+        confluenceId: '780restore',
+        expectedRemoteVersion: '5',
+        intendedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        targetVersion: 2,
+      },
+      remote_effect_started_at: expect.any(Date),
+      remote_effects_completed_at: expect.any(Date),
+      cache_invalidation_pending: false,
+    });
+    expect(JSON.stringify(intent.rows[0]!.effect)).not.toContain('Restored title');
+    expect(JSON.stringify(intent.rows[0]!.effect)).not.toContain('<p>restored</p>');
+    expect((await query(
+      `SELECT id FROM page_write_intents
+        WHERE status = 'pending' AND page_ids @> ARRAY[$1]::integer[]`,
+      [pageId],
+    )).rows).toEqual([]);
+  });
+
+  it('lazily fetches and persists a metadata-only historical body through the external HTTP boundary', async () => {
+    const pageId = await seedConfluencePage('780detail', 5);
+    await query(
+      `INSERT INTO page_versions
+         (page_id, version_number, title, body_html, body_text)
+       VALUES ($1, 2, 'Historical detail', NULL, NULL)`,
+      [pageId],
+    );
+    mockRequest.mockImplementation(async (rawUrl, options) => {
+      const url = new URL(String(rawUrl));
+      if (
+        url.pathname === '/rest/api/content/780detail'
+        && url.searchParams.get('status') === 'historical'
+        && url.searchParams.get('version') === '2'
+        && options?.method === 'GET'
+      ) {
+        return jsonResponse({
+          id: '780detail',
+          title: 'Historical detail',
+          version: { number: 2 },
+          body: { storage: { value: '<p>Historical <strong>body</strong></p>' } },
+        });
+      }
+      throw new Error(`Unexpected Confluence request in detail test: ${String(rawUrl)}`);
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/versions/2`,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      versionNumber: 2,
+      title: 'Historical detail',
+      bodyHtml: '<p>Historical <strong>body</strong></p>',
+      bodyText: 'Historical body',
+      isCurrent: false,
+    });
+    expect((await query(
+      `SELECT body_html, body_text FROM page_versions
+        WHERE page_id = $1 AND version_number = 2`,
+      [pageId],
+    )).rows).toEqual([{
+      body_html: '<p>Historical <strong>body</strong></p>',
+      body_text: 'Historical body',
+    }]);
+  });
+
+  it('retains an unresolved intent and unchanged local state when the remote restore fails', async () => {
+    const pageId = await seedConfluencePage('780unknown', 5);
+    await query(
+      `UPDATE pages
+          SET title = 'Live before failure',
+              body_storage = '<p>live before failure</p>',
+              body_html = '<p>live before failure</p>',
+              body_text = 'live before failure'
+        WHERE id = $1`,
+      [pageId],
+    );
+    await query(
+      `INSERT INTO page_versions
+         (page_id, version_number, title, body_html, body_text)
+       VALUES ($1, 2, 'Unpublished target', '<p>unpublished target</p>', 'unpublished target')`,
+      [pageId],
+    );
+    mockRequest.mockImplementation(async (rawUrl, options) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname === '/rest/api/content/780unknown' && options?.method === 'PUT') {
+        return jsonResponse({ message: 'provider failed after accepting the request' }, 500);
+      }
+      throw new Error(`Unexpected Confluence request in failed restore test: ${String(rawUrl)}`);
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/2/restore`,
+      payload: { version: 5 },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect((await query(
+      'SELECT title, body_storage, body_html, body_text, version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Live before failure',
+      body_storage: '<p>live before failure</p>',
+      body_html: '<p>live before failure</p>',
+      body_text: 'live before failure',
+      version: 5,
+    }]);
+    expect((await query<{
+      status: string;
+      remote_effect_started_at: Date | null;
+      remote_effects_completed_at: Date | null;
+      cache_invalidation_pending: boolean;
+    }>(
+      `SELECT status, remote_effect_started_at, remote_effects_completed_at,
+              cache_invalidation_pending
+         FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    )).rows).toEqual([{
+      status: 'pending',
+      remote_effect_started_at: expect.any(Date),
+      remote_effects_completed_at: null,
+      cache_invalidation_pending: false,
+    }]);
+    expect((await query(
+      `SELECT action FROM audit_log
+        WHERE action = 'PAGE_VERSION_RESTORED' AND resource_id = $1`,
+      [String(pageId)],
+    )).rows).toEqual([]);
   });
 
   it('surfaces a "failed" status with the underlying reason when no version endpoint exists at all', async () => {

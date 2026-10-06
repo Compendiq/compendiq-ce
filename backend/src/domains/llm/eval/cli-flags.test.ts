@@ -6,6 +6,18 @@ import {
   EVAL_KNOWN_FLAGS,
   EVAL_USAGE,
   EVAL_VALUELESS_FLAGS,
+  ARM_ANSWERS_KNOWN_FLAGS,
+  ARM_ANSWERS_USAGE,
+  ARM_ANSWERS_VALUELESS_FLAGS,
+  JUDGE_KNOWN_FLAGS,
+  JUDGE_USAGE,
+  JUDGE_VALUELESS_FLAGS,
+  LABEL_PACKET_KNOWN_FLAGS,
+  LABEL_PACKET_USAGE,
+  LABEL_PACKET_VALUELESS_FLAGS,
+  VALIDATE_LABEL_PACKET_KNOWN_FLAGS,
+  VALIDATE_LABEL_PACKET_USAGE,
+  VALIDATE_LABEL_PACKET_VALUELESS_FLAGS,
 } from './cli-flags.js';
 
 /**
@@ -145,5 +157,32 @@ describe('the retrieval eval CLI surface (#1114)', () => {
     // The one default a reader must not have to infer — deriving it from
     // --lang would silently re-measure every recorded baseline.
     expect(EVAL_USAGE).toMatch(/default: simple/);
+  });
+});
+
+describe('the #1614 PR2 and #1619 surfaces are held to the same discipline', () => {
+  it.each([
+    ['run-arm-answers.ts', ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, ARM_ANSWERS_USAGE],
+    ['judge-arms.ts', JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS, JUDGE_USAGE],
+    ['build-label-packet.ts', LABEL_PACKET_KNOWN_FLAGS, LABEL_PACKET_VALUELESS_FLAGS, LABEL_PACKET_USAGE],
+    ['validate-label-packet.ts', VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS, VALIDATE_LABEL_PACKET_USAGE],
+  ] as const)('%s: every switch is a flag, every flag is documented, and the = spelling is refused on switches', (_script, known, valueless, usage) => {
+    for (const flag of valueless) expect(known).toContain(flag);
+    for (const flag of known) expect(usage).toContain(`--${flag}`);
+    for (const flag of valueless) {
+      expect(() => assertKnownFlags([`--${flag}=true`], known, usage, valueless)).toThrow(/takes no value/i);
+    }
+    expect(() => assertKnownFlags(['--no-such-flag'], known, usage, valueless)).toThrow(/--no-such-flag/);
+  });
+
+  it('the eval surface documents the B/C arm axis and names arm A as retired', () => {
+    expect(EVAL_USAGE).toMatch(/--arm B\|C/);
+    expect(EVAL_USAGE).not.toMatch(/--arm A\|B\|C/);
+    // #1618 stage 2: the VL embedding environment is gone, so the reference
+    // must not still tell an operator to set it — and arm A's refusal has to
+    // be stated, not left to a parser error the usage text contradicts.
+    expect(EVAL_USAGE).not.toMatch(/EVAL_IMAGE_EMBEDDING_/);
+    expect(EVAL_USAGE).toMatch(/Arm A — the legacy image-embedding leg — is RETIRED/);
+    expect(EVAL_USAGE).toContain('retrieval-eval-arm-<B|C>.json');
   });
 });

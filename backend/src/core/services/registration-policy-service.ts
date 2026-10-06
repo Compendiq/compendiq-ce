@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -39,11 +40,15 @@ export const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
  * absent / unrecognised value) resolves to the fail-safe default `closed`.
  * Mirrors the never-throw style of `getAdminAccessDeniedRetentionDays`.
  */
-export async function getRegistrationMode(): Promise<RegistrationMode> {
+export async function getRegistrationMode(client?: Pick<PoolClient, 'query'>): Promise<RegistrationMode> {
   try {
-    const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'registration_mode'`,
-    );
+    const r = client
+      ? await client.query<{ setting_value: string }>(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = 'registration_mode'`,
+      )
+      : await query<{ setting_value: string }>(
+        `SELECT setting_value FROM admin_settings WHERE setting_key = 'registration_mode'`,
+      );
     return r.rows[0]?.setting_value === 'open' ? 'open' : 'closed';
   } catch (err) {
     logger.warn({ err }, 'Failed to read registration_mode; defaulting to closed');
@@ -56,6 +61,28 @@ export interface EffectiveRegistrationPolicy {
   mode: RegistrationMode;
   /** Whether `POST /api/auth/register` should currently accept a new sign-up. */
   allowRegistration: boolean;
+  /** Whether no real (non-sentinel) administrator exists yet. */
+  bootstrap: boolean;
+}
+
+/**
+ * Return whether a real operator administrator exists.
+ *
+ * The optional client lets bootstrap writers evaluate this predicate while
+ * holding their transaction's users-table lock. Public policy probes use the
+ * pool directly.
+ */
+export async function realAdminExists(client?: Pick<PoolClient, 'query'>): Promise<boolean> {
+  const r = client
+    ? await client.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND id != $1`,
+      [SYSTEM_USER_ID],
+    )
+    : await query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND id != $1`,
+      [SYSTEM_USER_ID],
+    );
+  return parseInt(r.rows[0]?.count ?? '0', 10) > 0;
 }
 
 /**
@@ -70,25 +97,23 @@ export interface EffectiveRegistrationPolicy {
  * for the admin-count probe, to treating the deployment as NON-bootstrap so we
  * fail closed rather than accidentally re-opening registration.
  */
-export async function getEffectiveRegistrationPolicy(): Promise<EffectiveRegistrationPolicy> {
-  const mode = await getRegistrationMode();
+export async function getEffectiveRegistrationPolicy(
+  client?: Pick<PoolClient, 'query'>,
+): Promise<EffectiveRegistrationPolicy> {
+  const mode = await getRegistrationMode(client);
 
-  let realAdminExists = true; // fail closed if the probe fails
+  let adminExists = true; // fail closed if the probe fails
   try {
-    const r = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND id != $1`,
-      [SYSTEM_USER_ID],
-    );
-    realAdminExists = parseInt(r.rows[0]?.count ?? '0', 10) > 0;
+    adminExists = await realAdminExists(client);
   } catch (err) {
     logger.warn({ err }, 'Failed to count admins for registration policy; treating as non-bootstrap');
-    realAdminExists = true;
+    adminExists = true;
   }
 
-  // Bootstrap: no real admin yet → always allow (first-account creation).
-  if (!realAdminExists) {
-    return { mode, allowRegistration: true };
-  }
-
-  return { mode, allowRegistration: mode === 'open' };
+  const bootstrap = !adminExists;
+  return {
+    mode,
+    bootstrap,
+    allowRegistration: bootstrap || mode === 'open',
+  };
 }

@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { LibraryFilterDropdown } from './LibraryFilterDropdown';
 
@@ -8,80 +9,92 @@ const sampleOptions = [
   { value: 'standalone', label: 'Local' },
 ];
 
+function SourceFilter({ searchable = false }: { searchable?: boolean }) {
+  const [value, setValue] = useState('');
+  return (
+    <>
+      <label htmlFor="source-filter">Source</label>
+      <LibraryFilterDropdown
+        id="source-filter"
+        label="Source"
+        ariaLabel="Filter by source"
+        value={value}
+        options={sampleOptions}
+        onChange={setValue}
+        searchable={searchable}
+      />
+    </>
+  );
+}
+
 describe('LibraryFilterDropdown', () => {
-  it('renders with placeholder / selected label', () => {
-    const onChange = vi.fn();
-    render(
-      <LibraryFilterDropdown
-        label="Source"
-        value=""
-        options={sampleOptions}
-        onChange={onChange}
-        placeholder="All sources"
-        testId="filter-source"
-      />,
-    );
-
-    expect(screen.getByTestId('filter-source-control')).toHaveTextContent('All sources');
-    expect(screen.getByTestId('filter-source')).toHaveValue('');
+  it('labels the only closed-state keyboard entry with its field and current selection', () => {
+    const { container } = render(<SourceFilter />);
+    const trigger = screen.getByRole('button', { name: 'Filter by source, current: All sources' });
+    expect(screen.getByLabelText('Source')).toBe(trigger);
+    const tabEntries = Array.from(container.querySelectorAll<HTMLElement>(
+      'button, input, select, textarea, a[href], [tabindex]',
+    )).filter((element) => element.tabIndex >= 0 && !element.hasAttribute('disabled'));
+    expect(tabEntries).toEqual([trigger]);
+    expect(trigger).toBeVisible();
   });
 
-  it('renders selected value label', () => {
-    const onChange = vi.fn();
-    render(
-      <LibraryFilterDropdown
-        label="Source"
-        value="confluence"
-        options={sampleOptions}
-        onChange={onChange}
-        placeholder="All sources"
-        testId="filter-source"
-      />,
-    );
-
-    expect(screen.getByTestId('filter-source-control')).toHaveTextContent('Confluence');
-    expect(screen.getByTestId('filter-source')).toHaveValue('confluence');
-  });
-
-  it('opens popup menu on click and selects option', () => {
-    const onChange = vi.fn();
-    render(
-      <LibraryFilterDropdown
-        label="Source"
-        value=""
-        options={sampleOptions}
-        onChange={onChange}
-        placeholder="All sources"
-        testId="filter-source"
-      />,
-    );
-
-    const trigger = screen.getByTestId('filter-source-control');
+  it('selects through the visible list and restores focus to the updated trigger', async () => {
+    render(<SourceFilter />);
+    const trigger = screen.getByRole('button', { name: /Filter by source/ });
     fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: 'Local' }));
 
-    expect(screen.getByTestId('filter-source-menu')).toBeInTheDocument();
-    const confluenceOption = screen.getByTestId('filter-source-option-confluence');
-    expect(confluenceOption).toBeInTheDocument();
-
-    fireEvent.click(confluenceOption);
-    expect(onChange).toHaveBeenCalledWith('confluence');
+    expect(trigger).toHaveAccessibleName('Filter by source, current: Local');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    fireEvent.click(trigger);
+    expect(screen.getByRole('option', { name: 'Local' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('syncs with backing select on change event', () => {
+  it('moves keyboard focus between options and cancels without changing the selection', async () => {
+    render(<SourceFilter searchable />);
+    const trigger = screen.getByRole('button', { name: /Filter by source/ });
+    fireEvent.click(trigger);
+    const all = screen.getByRole('option', { name: 'All sources' });
+    expect(all).toHaveFocus();
+
+    fireEvent.keyDown(all, { key: 'ArrowDown' });
+    const confluence = screen.getByRole('option', { name: 'Confluence' });
+    expect(confluence).toHaveFocus();
+    fireEvent.keyDown(confluence, { key: 'End' });
+    const local = screen.getByRole('option', { name: 'Local' });
+    expect(local).toHaveFocus();
+    fireEvent.keyDown(local, { key: 'Escape' });
+
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(trigger).toHaveAccessibleName('Filter by source, current: All sources');
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('selects a filtered option from the keyboard and returns focus to the trigger', async () => {
     const onChange = vi.fn();
     render(
       <LibraryFilterDropdown
-        label="Source"
+        label="Author"
         value=""
-        options={sampleOptions}
+        options={['All authors', 'Alice', 'Bob', 'Carol', 'Dan', 'Eve', 'Frank'].map((label, index) => ({
+          value: index === 0 ? '' : label,
+          label,
+        }))}
         onChange={onChange}
-        placeholder="All sources"
-        testId="filter-source"
+        searchable
       />,
     );
+    const trigger = screen.getByRole('button', { name: /Filter by Author/ });
+    fireEvent.click(trigger);
+    const search = screen.getByRole('searchbox', { name: 'Search Author' });
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: 'Frank' } });
+    fireEvent.keyDown(search, { key: 'Enter' });
 
-    const backingSelect = screen.getByTestId('filter-source');
-    fireEvent.change(backingSelect, { target: { value: 'standalone' } });
-    expect(onChange).toHaveBeenCalledWith('standalone');
+    expect(onChange).toHaveBeenCalledWith('Frank');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

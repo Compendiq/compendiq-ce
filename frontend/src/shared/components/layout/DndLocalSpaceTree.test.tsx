@@ -12,17 +12,36 @@ import type { TreeNode } from './sidebar-types';
 // correctly, since the real library's activator-instrumentation behavior
 // (the thing that regressed — see DndLocalSpaceTree.tsx) is exactly what this
 // mock replaces and therefore cannot exercise on its own.
-const { useSortableSpy } = vi.hoisted(() => ({
+const { useSortableSpy, useDroppableSpy, dragEndRef } = vi.hoisted(() => ({
   useSortableSpy: vi.fn((_input: unknown) => ({ ref: { current: null }, isDragging: false })),
+  useDroppableSpy: vi.fn((_input: unknown) => ({ ref: { current: null }, isDropTarget: false })),
+  dragEndRef: { current: undefined as ((event: unknown) => void) | undefined },
 }));
 
 vi.mock('@dnd-kit/react', () => ({
-  DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DragDropProvider: ({
+    children,
+    onDragEnd,
+  }: {
+    children: React.ReactNode;
+    onDragEnd?: (event: unknown) => void;
+  }) => {
+    dragEndRef.current = onDragEnd;
+    return <>{children}</>;
+  },
+  useDroppable: (input: unknown) => useDroppableSpy(input),
+  PointerSensor: { configure: (options: unknown) => options },
+  KeyboardSensor: {},
+}));
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('@dnd-kit/react/sortable', () => ({
   useSortable: (input: unknown) => useSortableSpy(input),
-  isSortable: () => false,
+  isSortable: (value: unknown) =>
+    Boolean(value && typeof value === 'object' && 'index' in (value as object)),
 }));
 
 const mockNavigate = vi.fn();
@@ -33,6 +52,13 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => mockNavigate,
   };
 });
+
+function stampParent(node: TreeNode, parentId: string): TreeNode {
+  return {
+    page: { ...node.page, parentId },
+    children: node.children.map((c) => stampParent(c, node.page.id)),
+  };
+}
 
 function makeNode(
   id: string,
@@ -50,7 +76,7 @@ function makeNode(
       lastModifiedAt: '2026-03-01T00:00:00Z',
       embeddingDirty: false,
     },
-    children,
+    children: children.map((c) => stampParent(c, id)),
   };
 }
 
@@ -64,6 +90,7 @@ function renderTree(overrides: Partial<DndLocalSpaceTreeProps> = {}) {
     toggleExpand: vi.fn(),
     activePageId: undefined,
     reorderPage: { mutate: vi.fn() },
+    movePage: { mutate: vi.fn() },
     // Roving-tabindex is computed by the parent SidebarTreeView in real usage
     // (sidebar-tree-keyboard.ts has its own test coverage); here it's just a
     // prop this component threads down to each row.
@@ -88,6 +115,8 @@ describe('DndLocalSpaceTree', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     useSortableSpy.mockClear();
+    useDroppableSpy.mockClear();
+    dragEndRef.current = undefined;
   });
 
   it('renders all root-level pages', () => {
@@ -118,7 +147,7 @@ describe('DndLocalSpaceTree', () => {
     expect(grips.length).toBeGreaterThanOrEqual(2);
     for (const grip of grips) {
       expect(grip).not.toHaveAttribute('aria-hidden');
-      expect(grip.getAttribute('aria-label')).toMatch(/^Reorder /);
+      expect(grip.getAttribute('aria-label')).toMatch(/^Move /);
     }
   });
 
@@ -141,6 +170,198 @@ describe('DndLocalSpaceTree', () => {
     expect(call.handle!.current).toBe(container.querySelector('.cursor-grab'));
   });
 
+  // Nested rows used to omit `group`, so they shared dnd-kit's default list
+  // with the roots. Indices collided (child 0 vs root 0) and a parent's
+  // droppable swallowed its children — only top-level reorder worked.
+  // One group per visual sibling list, type/accept pinned to that group.
+  it('isolates nested siblings into their own sortable group', () => {
+    renderTree({
+      expandedIds: new Set(['p2', 'p3']),
+      tree: [
+        makeNode('p1', 'Page One'),
+        makeNode('p2', 'Page Two', [
+          makeNode('p2-c1', 'Child A'),
+          makeNode('p2-c2', 'Child B'),
+        ]),
+        makeNode('p3', 'Page Three', [makeNode('p3-c1', 'Child of Three')]),
+      ],
+    });
+
+    const calls = useSortableSpy.mock.calls.map(
+      ([input]) => input as { id: string; index: number; group?: string; type?: string; accept?: string },
+    );
+    const call = (id: string) => calls.find((c) => c.id === id);
+
+    expect(call('p1')?.group).toBe('__root__');
+    expect(call('p2')?.group).toBe('__root__');
+    expect(call('p3')?.group).toBe('__root__');
+    expect(call('p1')?.index).toBe(0);
+    expect(call('p2')?.index).toBe(1);
+    expect(call('p3')?.index).toBe(2);
+
+    expect(call('p2-c1')?.group).toBe('p2');
+    expect(call('p2-c2')?.group).toBe('p2');
+    expect(call('p2-c1')?.index).toBe(0);
+    expect(call('p2-c2')?.index).toBe(1);
+
+    expect(call('p3-c1')?.group).toBe('p3');
+    expect(call('p3-c1')?.index).toBe(0);
+
+    for (const sortable of calls) {
+      expect(sortable.type).toBe(sortable.group);
+      expect(sortable.accept).toBe(sortable.group);
+    }
+  });
+
+  it('persists a nested sibling drop as that child\'s sortOrder', () => {
+    const mutate = vi.fn();
+    renderTree({
+      expandedIds: new Set(['p2']),
+      reorderPage: { mutate },
+      tree: [
+        makeNode('p1', 'Page One'),
+        makeNode('p2', 'Page Two', [
+          makeNode('p2-c1', 'Child A'),
+          makeNode('p2-c2', 'Child B'),
+        ]),
+      ],
+    });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p2-c2',
+          index: 0,
+          initialIndex: 1,
+          group: 'p2',
+          initialGroup: 'p2',
+        },
+      },
+    });
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith({ id: 'p2-c2', sortOrder: 0 });
+  });
+
+  it('does not persist a drop that changed sortable group (reparent)', () => {
+    const mutate = vi.fn();
+    renderTree({ reorderPage: { mutate } });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p2-c1',
+          index: 1,
+          initialIndex: 0,
+          group: '__root__',
+          initialGroup: 'p2',
+        },
+      },
+    });
+
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('registers a nest droppable on each row', () => {
+    renderTree();
+    const ids = useDroppableSpy.mock.calls.map(([input]) => {
+      if (input && typeof input === 'object' && 'id' in input) return String(input.id);
+      return undefined;
+    });
+    expect(ids).toContain('nest:p1');
+    expect(ids).toContain('nest:p2');
+  });
+  it('persists a nest drop onto another page as a move', () => {
+    const mutate = vi.fn();
+    const toggleExpand = vi.fn();
+    renderTree({ movePage: { mutate }, toggleExpand });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p1',
+          index: 0,
+          initialIndex: 0,
+          group: '__root__',
+          initialGroup: '__root__',
+        },
+        target: { id: 'nest:p2' },
+      },
+    });
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(
+      { id: 'p1', parentId: 'p2' },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    );
+    expect(toggleExpand).toHaveBeenCalledWith('p2');
+  });
+
+  it('does not nest a page under its own descendant', () => {
+    const mutate = vi.fn();
+    renderTree({
+      movePage: { mutate },
+      expandedIds: new Set(['p2']),
+    });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p2',
+          index: 1,
+          initialIndex: 1,
+          group: '__root__',
+          initialGroup: '__root__',
+        },
+        target: { id: 'nest:p2-c1' },
+      },
+    });
+
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('opens the move menu on grip click without navigating', () => {
+    renderTree();
+    fireEvent.click(screen.getByTestId('sidebar-page-grip-p1'));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sidebar-move-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-move-target-p2')).toBeInTheDocument();
+  });
+
+  it('nests via the grip menu', () => {
+    const mutate = vi.fn();
+    renderTree({ movePage: { mutate } });
+    fireEvent.click(screen.getByTestId('sidebar-page-grip-p1'));
+    fireEvent.click(screen.getByTestId('sidebar-move-target-p2'));
+    expect(mutate).toHaveBeenCalledWith(
+      { id: 'p1', parentId: 'p2' },
+      expect.any(Object),
+    );
+  });
+
+  it('opens the move menu from the grip context menu and Shift+F10', () => {
+    const { unmount } = renderTree();
+    fireEvent.contextMenu(screen.getByTestId('sidebar-page-grip-p1'));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sidebar-move-menu')).toBeInTheDocument();
+    unmount();
+
+    renderTree();
+    fireEvent.keyDown(screen.getByTestId('sidebar-page-grip-p1'), { key: 'F10', shiftKey: true });
+    expect(screen.getByTestId('sidebar-move-menu')).toBeInTheDocument();
+  });
+
+  it('does not offer the current parent in the grip menu', () => {
+    renderTree({ expandedIds: new Set(['p2']) });
+    fireEvent.click(screen.getByTestId('sidebar-page-grip-p2-c1'));
+    expect(screen.queryByTestId('sidebar-move-target-p2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-move-target-p1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-move-to-root')).toBeInTheDocument();
+  });
   it('navigates to page on click', () => {
     renderTree();
     fireEvent.click(screen.getByText('Page One'));
@@ -403,6 +624,7 @@ describe('DndLocalSpaceTree', () => {
             toggleExpand={vi.fn()}
             activePageId={undefined}
             reorderPage={{ mutate: vi.fn() }}
+            movePage={{ mutate: vi.fn() }}
             rovingId="p2"
             onRowFocus={vi.fn()}
             onRowKeyDown={vi.fn()}
@@ -472,6 +694,7 @@ describe('DndLocalSpaceTree', () => {
           toggleExpand={vi.fn()}
           activePageId={undefined}
           reorderPage={{ mutate: vi.fn() }}
+          movePage={{ mutate: vi.fn() }}
           rovingId="p1"
           onRowFocus={vi.fn()}
           onRowKeyDown={vi.fn()}

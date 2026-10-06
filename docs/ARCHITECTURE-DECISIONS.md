@@ -802,13 +802,13 @@ no shadow left to fall back on.
   resolve onto `--color-*` and must not be revived as in-page chrome.
   `backdrop-blur` on a Tailwind class survives **only** on modal scrims,
   where it is a specific effect rather than decoration standing in for
-  hierarchy. Floating popovers and dropdowns use `nm-popover-glass`: the same
-  `--color-border-interactive` overlay edge and `--shadow-overlay` as
-  `nm-card-elevated` (Paper Raised shares Pane, so the edge is WCAG 1.4.11),
-  plus a 95% elevated-surface fill and 10px blur.
+  hierarchy. Floating popovers and dropdowns use `nm-popover-glass`: a softened
+  border with reduced contrast (18% of the interactive edge), `--shadow-overlay`,
+  and frosted glass with 12px blur across both dark (90% fill) and bright (82% fill)
+  modes so the glass effect is visible in light mode.
   `prefers-reduced-transparency` makes the fill opaque and removes blur.
   Theme tests composite the fill over black and white document images,
-  requiring ≥4.5:1 text and ≥3:1 edge contrast in both themes; measuring
+  requiring ≥4.5:1 text contrast in both themes; measuring
   the opaque token alone misses translucent-overlay failures.
   Dialogs stay opaque `nm-card-elevated`. Blur is not a substitute for
   measured contrast. 307 fractional `border-border/NN` opacities collapse
@@ -1582,8 +1582,138 @@ Light mode only; Graphite is untouched. The framing chassis around the central w
 - The left navigation sidebar (`app-sidebar`) and the right context rail (`app-context-rail`) paint pure white (`#FFFFFF`, `var(--color-card)` / `var(--app-rail-bg)`), unified with the central document canvas (`app-content-pane`).
 - The outer chassis frame — top app header (`app-header`), left destination rail (`MainNavChassisRail`), and bottom rail (chassis bottom padding) — paints the light gray frame tone (`#E8E8E8`, `var(--app-chassis)`).
 - `--color-muted-foreground` is fitted to `#686866` to maintain WCAG AA contrast (4.56:1) against the `#E8E8E8` chassis while preserving warmth (`r > b`).
----
 
+### v1.4 — the light frame stops reading as a border (2026-09-11)
+
+**Owner decision.** *"Make the grey of the app-shell — the top, left, bottom and right border — lighter, still visible."*
+
+Light mode only; Graphite is untouched. `--app-chassis` goes from `#E8E8E8` to
+`#F0EFED`: eight 8-bit steps lighter, 1.149:1 against the white Pane (it was
+1.23:1). Nothing else in the ramp moves — a lighter frame only adds contrast to
+the inks and edges fitted against it.
+
+- The frame is still a step you can see. The workspace card and the context rail have carried no hairline since v1.1, so the Canvas→Pane value step is the entire boundary; `app-shell-layout.test.ts` holds a 1.08:1 floor under it, and `workspace-themes.test.ts` pins the owner's exact value.
+- Rail labels gain headroom: 12px `--color-muted-foreground` (`#686866`) on the frame measures 4.86:1, up from 4.56:1 against 1.4.3's 4.5:1. `--color-border-interactive` on the frame is 3.34:1, up from 3.13:1 against 1.4.11's 3:1. The secondary ink is therefore a floor under how GREY the frame may go, never a ceiling on how light.
+- A frame light enough to stop reading as a border necessarily lands inside the state-fill band (hover 1.081:1 → selected 1.193:1). That costs nothing: state fills paint rows inside the panes, the frame paints the gutter outside them, and no surface carries both.
+- `--app-login-ground` (`#FAFAF9`) keeps its split from Canvas. It is the ground the login halo was measured against and is owned by `login-halo-surface.test.ts`; the frame having moved past it again does not re-merge the two tokens.
+
+### v1.5 — owner pin: Paper chassis `#EDEDED` (2026-09-12)
+
+**Owner decision.** *"Set --app-chassis color to #ededed also make the background of the tabs in the right panel a bit brighter."*
+
+Light mode only; Graphite is untouched. `--app-chassis` goes from `#F0EFED` to
+`#EDEDED`: a few 8-bit steps deeper and cooler, 1.171:1 against the white Pane
+(it was 1.149:1). Nothing else in the ramp moves. The inspector Assistant /
+Outline / Details track (`panel-tab-track`) mixes muted halfway to Pane in
+Paper so the trough is a light step under the white active chip.
+
+`workspace-themes.test.ts` pins the exact chassis value. Rail-label 4.5:1 on
+Canvas still holds.
+
+### v1.6 — restrained multi-grey chassis (2026-09-12)
+
+**Owner decision.** Give the app chassis a slight gradient effect using more than one grey.
+
+The outer frame gains a static four-stop wash through three close grey values,
+returning to the base at the final stop. Paper keeps its `#EDEDED` base between
+`#F3F3F3` and `#E8E8E8`; Graphite keeps `#09090A` between `#0C0C0D` and
+`#070708`. The shared `--app-chassis-tones` image is painted by `.app-chassis`
+and the first-paint boot shell once theme CSS is available. The top header is
+transparent so the wash continues into the rails without a seam.
+
+This is a narrow exception to v0.6, not a return to gradient cards: panes,
+controls, login ground, layout and interactions are unchanged. Body overscroll
+keeps the flat base. `app-shell-layout.test.ts` measures every stop for ≥4.5:1
+rail-label contrast, ≥3:1 focus-indicator contrast and ≥1.08:1 separation from
+the unlined document pane.
+
+**Dark-mode follow-up (same day).** The owner asks for the same chassis effect
+in dark mode and slightly brighter, identically coloured main, left and right
+panes. Graphite's highlight lifts to `#101011` to make the wash more apparent;
+the shared `--color-card` lifts from `#161617` to `#19191A`. Hover lifts from
+`#1C1D1D` to `#1D1E1E` to retain ≥1.05:1 contrast against the brighter pane;
+pressed and selected remain distinct at their existing values. The theme
+picker preview follows the pane token. Paper, login, layout and typography
+are unchanged.
+
+**Dependent palette fixes (#1613).** The brand tile follows `--color-card`
+across `Logo.tsx`, all four SVG mirrors and the PNG/ICO icon variants.
+The dusty-rose collaboration caret moves to `#9C4D6E`: the old swatch measured
+2.98:1 on the brighter pane; the replacement measures 3.10:1 on Graphite and
+5.68:1 on Paper. The existing logo-parity and caret-contrast guards remain
+unchanged.
+
+### v1.7 — header destinations, tree on the chassis, one lifted card (2026-09-28)
+
+**Owner decisions**, chosen from four mockups (the "Notion flat tabs" option)
+and then refined: *"Move the 3 menu buttons in the side rail to the top bar.
+Then move the left side panel into the left side rail … make the width of the
+left side rail wider."* The tree should live on the chassis like the old
+rail; the rail and the frame share one colour; the right panel is attached to
+the main area and resizable like the left; a light shadow goes around the
+main area; the frame's colour must match at the card's left corner.
+
+- **Destinations are header tabs.** Pages / AI / Graph move from the 74px
+  chassis rail to flat tabs beside the logo (`MainNavHeaderTabs`: icon + label,
+  Steel icon and 2px underline on the current tab, `aria-current="page"`). The
+  `g p` / `g a` / `g g` shortcuts are unchanged. Below `md` the mobile drawer
+  still carries the strip through `embedMainNav`.
+- **The route's sidebar sits on the chassis.** `MainNavChassisRail` is now only
+  the desktop host for the tree / conversations / settings sidebar, outside the
+  workspace card. `.app-sidebar` is transparent with no `border-r`, so the
+  column reads as the frame; the space selector carries Pane plus a hairline
+  so the one control in its row stays visible. Default and reset width stay
+  282px (`--app-nav-rail-width` reserves it in the boot skeleton). An 8px gap
+  (`ml-2`) and 4px top inset hold the card off the column.
+- **The inspector is attached inside the card.** `ArticleRightPane` mounts in
+  `.app-workspace` beside `<main>`, split from it by a 1px left hairline
+  (`.app-context-rail`); the card's radius clips both. Its resize handle
+  moved from the retired gutter onto the pane's own left edge and matches the
+  tree's (8px hit area, hover line, three-dot grip, 400–1200px, double-click
+  and Home reset, arrow keys). `app-body-with-rail`, `app-rail-beside`,
+  `--app-rail-gap` and `--app-rail-radius` are deleted.
+
+The chassis and shadow half came from a follow-up: *"Add a light shadow
+around the main area. Fix the corner on the left where the background colour
+is not the same as the rest of the area around."*
+
+The v1.6 wash is retired. Once the left tree moved onto the chassis with a
+transparent ground, the diagonal image showed through the tree column and the
+gap beside the card: lighter at the top left, darkest at the card's bottom-left
+corner, so the frame no longer read as one surface. `.app-chassis` now paints
+the flat `--app-chassis` base in both themes; `--app-chassis-tones`,
+`--app-chassis-highlight` and `--app-chassis-shade` are deleted, and the
+first-paint boot shell drops its image with them.
+
+The workspace card (`.app-workspace`) carries `--app-workspace-shadow`, a
+narrow exception to v0.6's overlay-only shadow: a 1px rim that traces the
+radius plus a soft contact and ambient shadow (5% white rim in Graphite, 4%
+black in Paper). It is the one in-flow surface allowed a shadow, and it never
+grows on hover. `app-shell` and `panel-wrapper` carry no overflow clip so the
+shadow reaches the chassis margin; the card clips its own content, and
+`app-chassis` (`h-screen`, `overflow-hidden`) still stops page scroll.
+`workspace-themes.test.ts` admits that one token; `AppLayout.test.tsx` fails
+if either ancestor clips again.
+
+### v1.8 — owner pin: Paper chassis `#F5F5F5` (2026-09-28)
+
+**Owner decision.** *"Change the color of --app-chassis to F5F5F5 (Bright mode
+only)."*
+
+Paper only; Graphite is untouched. `--app-chassis` goes from `#E8ECF0` to
+`#F5F5F5`, a light neutral grey for the flat frame. Measured from the tokens:
+the white card's edge is 1.090:1 (the 1.08:1 floor in `app-shell-layout.test.ts`
+still holds, with less headroom than 1.187:1 had), secondary ink on the frame
+rises to 5.12:1, Steel to 5.87:1 and the interactive edge to 3.50:1.
+
+The frame is now lighter than Chrome (`#F0F3F6`) and level with Workspace
+(`#F4F6F8`), so it is no longer the deepest Paper step. Neither touches it —
+Chrome paints only the Library results header bands and Workspace only the
+card's fill under its white panes — so `workspace-themes.test.ts` now orders
+the in-card surfaces (Chrome → Workspace → Pane) and requires only that the
+frame sit below Pane. It still pins the exact owner value.
+
+---
 ## ADR-011: Docker Deployment Architecture
 
 ### Decision: 4-service stack (frontend + backend + PostgreSQL with pgvector + Redis)
@@ -2032,6 +2162,18 @@ query-side prefix paragraph above.
 
 ### #1115 (2026-08-17) — a third retrieval leg, over a separate image index
 
+> **RETIRED by #1618 stage 2 (2026-09-17), migration 118.** The fusion is back
+> to TWO legs. `page_image_embeddings`, `image-leg-search.ts`, the
+> `rag_image_leg_enabled` toggle, `SearchResult.imageOnly` /
+> `imageTextSynthesized`, `degraded_reason = 'image_leg_unavailable'` and the
+> `image_only_context` refusal are all gone; historical `search_analytics`
+> rows still carry the old reason text. A picture now reaches retrieval as
+> ADR-027's derived `image_analysis` chunk inside the ordinary vector and
+> keyword legs, so none of the cross-modal rules below apply to anything
+> shipped. The basis was **"Remove it, nobody was using it in production."** —
+> unused in production plus maintenance burden, explicitly not a measurement
+> (ADR-027 A-5). The paragraphs below are kept as the record of what P3 ran.
+
 ADR-025 adds a **third leg** to the fusion described above (**shipped in P3**):
 alongside the vector leg over `page_embeddings` and the keyword leg over
 `pages.tsv`, an image leg does kNN over `page_image_embeddings` — a separate
@@ -2269,8 +2411,8 @@ That argument no longer holds as of issue #256 (multi-LLM-provider) and #257 (ad
 | Sync | `SYNC_INTERVAL_MINUTES` (15) | All changed pages | N/A | N/A |
 | Embedding | After sync | All dirty pages | `EMBEDDING_MODEL` | N/A |
 | Re-embed-all (#257) | On-demand via `POST /api/admin/embedding/reembed` | All non-folder pages | `EMBEDDING_MODEL` | No automatic retry (fixed `jobId='reembed-all'` collapses concurrent POSTs; admin can re-trigger after completion) |
-| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
-| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
+| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `admin_settings.quality_batch_size` (5, Settings → AI Models → Workers) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
+| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `admin_settings.summary_batch_size` (5, Settings → AI Models → Workers) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
 
 #### Legacy worker lifecycle (USE_BULLMQ=false fallback)
 
@@ -2278,7 +2420,7 @@ Describes the `setInterval` path only; the primary BullMQ path is driven by the 
 
 1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
 2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
-3. **Interval batches**: Every N minutes, processes up to BATCH_SIZE pages
+3. **Interval batches**: Every N minutes, processes up to the worker's admin-configured batch size (read from `admin_settings` at the start of each batch)
 4. **Priority**: Pending pages first, then stale/changed content, then failed (with retries remaining)
 5. **Shutdown**: `stopXxxWorker()` called on SIGTERM/SIGINT, clears interval
 
@@ -2457,8 +2599,9 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 **Per-use-case assignments**: The new `llm_usecase_assignments` table maps each of `chat | summary | quality | auto_tag | embedding` to a `(provider_id, model)` pair. Either field can be `NULL` to inherit from the provider's default or the globally-default provider. The resolver (`llm-provider-resolver.ts`) combines both inheritance paths in a single cached lookup.
 
 That five-item list records the original migration. Later amendments add
-`rerank`, `image_embedding`, and `inline_completion`; all three are explicitly
-assigned and never inherit the globally-default provider.
+`rerank`, `image_embedding` (retired by #1618 stage 2, migration 118),
+`inline_completion` and `image_analysis`; all of them are explicitly assigned
+and never inherit the globally-default provider.
 
 **Unified client**: `openai-compatible-client.ts` replaces both `ollama-service.ts` and `openai-service.ts`. It queues requests (`LLM_CONCURRENCY`) and wraps calls in per-provider circuit breakers. Rate-limit and retry behavior is per-provider, not per-call-site.
 
@@ -2567,6 +2710,13 @@ ids — the two legitimately cache as separate entries. `search_analytics.rerank
 writer; `max_score` keeps the fusion unit.
 
 ### #1115 — the `image_embedding` use case (Phase 2)
+
+> **RETIRED by #1618 stage 2 (2026-09-17), migration 118.** `image_embedding`
+> is no longer a use case: migration 118 deletes its assignment row and drops
+> it from the `llm_usecase_assignments` CHECK, leaving the eight of
+> `LlmUsecaseSchema`. The non-inheriting rule it established lives on in
+> `image_analysis` (ADR-027 D3), where the assignment is additionally the
+> egress control. The paragraph below is kept as the record of what P1–P3 ran.
 
 ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the
@@ -2760,6 +2910,29 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > query. Fusion note: when the stage limit exceeds the configured width,
 > ranking uses a stable head (`fuseWithStableHead`) — the pool floors widen
 > what the filter sees, never the head ordering.
+>
+> **Amended (page restrictions outside RAG, 2026-09-28):** this ADR's
+> "zero behaviour change" for CE and EE-without-the-flag now covers **RAG
+> retrieval only**. Every non-RAG read (lists, trees, hierarchy, search rows
+> and facets, graphs, counts, pins, sub-page LLM context, versions, exports,
+> attachments, LLM page references) applies page restrictions in both
+> editions through `visiblePagesPredicate`: a Confluence page with
+> `inherit_perms = FALSE` needs a user or group page ACE for the caller, on top
+> of the space-level list definition; system administrators are exempt from
+> that arm only, so their listings are unchanged. A restriction created
+> through the CE admin routes, the EE bulk route or sync therefore hides the
+> page everywhere the detail route already refused it. Retrieval SQL keeps a
+> separately named `ragRetrievalPagesPredicate` (space-level) and this ADR's
+> flag-gated `filterAccessiblePages` post-filter, because CE retrieval is
+> space-level by design (ADR-022) and the per-page RAG gate is the Enterprise
+> feature. `/api/search` semantic/hybrid modes reuse retrieval over a
+> page-search pool of `max(rag_fetch_width, 2 × limit)` pages, authorize the
+> whole pool with the non-RAG predicate, then slice to the caller's `limit`;
+> results fall short only when more than `pool − limit` unreadable pages (or
+> too few readable matches) rank in the pool. ACE and group-membership
+> writes queue page-cache invalidation in the database (migration 129), so
+> every writer — including sync's sweep, relocation and the EE bulk route —
+> fences the `pages` cache generation without its own cache calls.
 
 **Rationale:**
 - **Ancestor inheritance is resolved at sync time, not query time.** The RAG post-filter calls `userCanAccessPage` N times per query (N ≤ topK×1.5, typically ≤15 in observed deployments). Each call is 1-3 pooled SQL queries. Resolving inheritance at query time would require either walking the ancestor chain per candidate (unbounded fan-out on hot paths) or duplicating the ancestor-walk logic into `userCanAccessPage` (tight coupling). Putting the walk in the sync path keeps the query path O(topK) and lets us reuse the existing `userCanAccessPage` as-is.
@@ -2890,10 +3063,44 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 ## ADR-025: Multimodal image retrieval — dual space
 
+> **SUPERSEDED IN FULL by ADR-027** (#1611). ADR-027 replaced the image
+> *embedding* space with ingestion-time image *analysis* whose text is indexed
+> by the ordinary text embedder, and **#1618 stage 2 (2026-09-17) retired the
+> design below**: migration `118` dropped `page_image_embeddings` and
+> `pages.image_embedding_dirty`, removed the `image_embedding` use case and its
+> six `admin_settings` rows, and the same release deleted the intake, the third
+> RRF leg, `vl-embedding-client.ts`, the MRL truncation width, the
+> `rag_image_leg_enabled` toggle, the `image_only_context` refusal, the
+> `image_leg_unavailable` degraded reason and the Settings surfaces. **Nothing
+> below describes a running deployment.**
+>
+> **Three things survive, and only these three.** (1) **D8/D8a/D8b's optional
+> chat attachment** — `rag_answer_max_images`, the vision gate in the caller,
+> the round-robin pick and the derived byte budget — re-sourced from ADR-027
+> D11's derived provenance and carried in ADR-027 D11/D12. (2)
+> `rag_images_per_page_max` and `rag_image_index_external`, which now bound the
+> **analysis** intake. (3) The **Measured** sections, which are historical
+> evidence about THIS design and are never re-labelled as evidence for
+> ADR-027's or for the retirement (ADR-027 A-5).
+>
+> **The retirement's basis, verbatim: "Remove it, nobody was using it in
+> production."** — the path was unused in production and carried maintenance
+> cost. That is an owner authorisation, **not a measurement**: no measured
+> comparison against this leg exists or can exist (ADR-027 A-5). Read on for
+> what the retired design was and why, never for what runs.
+>
+> D1 was already superseded on scope before the retirement (its MMTEB evidence
+> concerned embedding *text* through a VL embedder, which the replacement never
+> does) and D6 was reversed (derived chunks live in `page_embeddings`, every
+> hazard D6 listed answered in ADR-027 D2). Nothing here is rewritten; read it
+> as the historical record of a retired design.
+
 **Date:** 2026-08-17
-**Status:** Accepted (owner interview, 2026-08-17). **Shipped, P0 through
-P5b** — the feature is complete and measured on a local shim; the production
-run is what settles the checkpoint (see **Measured**, below, and D11).
+**Status:** **Superseded in full by ADR-027; retired by #1618 stage 2
+(2026-09-17, migration `118`).** Was: Accepted (owner interview, 2026-08-17),
+shipped P0 through P5b and measured on a local shim. D8/D8a/D8b and the two
+intake knobs survive under ADR-027 D11; the **Measured** sections stand as
+historical evidence and are never re-labelled (ADR-027 A-5).
 
 | PR | Landed | What |
 |---|---|---|
@@ -3228,7 +3435,9 @@ on another is silently degraded. D7 makes honouring this cheap — but only
 *partly automatic*: a move to a different endpoint changes the recorded
 identity and rebuilds at the next probe, while an in-place upgrade behind the
 same base URL is invisible to every signal this code has, and stays an operator
-step (`docs/runbooks/image-index.md` §2).
+step (the runbook this named, `docs/runbooks/image-index.md` §2, was deleted
+with the leg in #1618 stage 2; the successor section for the replacement is
+`docs/runbooks/image-analysis.md` §7).
 
 ### Intake, in one paragraph (P2, shipped)
 
@@ -3303,7 +3512,7 @@ own 2s `SET LOCAL statement_timeout` — a second budget, not a restatement of
 the first: the gate has no `indexed` condition, and above 4000 dimensions no
 HNSW index is built, so the leg legitimately scans sequentially while the
 answer path waits (review r3) — kNN-searches
-`page_image_embeddings` under the same `visiblePagesPredicate` the vector leg
+`page_image_embeddings` under the same `ragRetrievalPagesPredicate` (then named `visiblePagesPredicate`) the vector leg
 uses — the shared fragment, never a copy, since an image row carries no ACL of
 its own — and fuses as a **third RRF leg**, page-denominated like #1106 (a
 page's best image ranks it once, so image COUNT cannot beat image QUALITY).
@@ -3361,7 +3570,10 @@ its wire shape unchanged; `mode=semantic` never reaches `hybridSearch` at all.
 On `/llm/ask` the wire gains `kind: 'image'` source entries carrying
 `attachmentUrl` (built by the inverse of the `<img src>` enumerator) and
 `similarity: null`, capped at four per answer. The page and web source shapes
-are untouched. Operations: `docs/runbooks/image-index.md` §6.
+are untouched. Operations: the runbook this named,
+`docs/runbooks/image-index.md` §6, was deleted with the leg in #1618 stage 2;
+the successor section for the replacement is
+`docs/runbooks/image-analysis.md` §6.
 
 ### v1 scope fence
 
@@ -3615,8 +3827,9 @@ nobody reads the numbers above as if they were ours:
 | 022 | RAG retrieval honours per-user space permissions | Post-filter RRF merge by readable space set | Cheap, correct for space-level RBAC; pairs with ADR-023 for per-page |
 | 023 | Per-page ACL enforcement for RAG retrieval (Enterprise) | Mirror Confluence per-page view restrictions; resolve ancestor inheritance at sync time | Keeps query path O(topK); regulated-buyer RAG never leaks restricted-page chunks |
 | 024 | Multi-instance readiness | Generic Redis pub/sub cache-bus + BullMQ `upsertJobScheduler` + p-limit in-place hot-swap + bounded graceful shutdown + soft-fail per-pod fallbacks | Multi-replica `backend` without an extra coordinator service; advisory-only pub/sub keeps the operator footprint small |
-| 025 | Multimodal image retrieval | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape |
+| 025 | Multimodal image retrieval (**superseded in full by ADR-027; retired by #1618 stage 2**) | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape. Retired 2026-09-17 on the owner's authorisation — unused in production plus maintenance cost, NOT a measurement (A-5); D8/D8a/D8b's chat attachment survives under ADR-027 D11 |
 | 026 | Client-side WebGPU editor inference | Optional same-origin SLM + Hunspell EN/DE; fall through to #1417/#708; no new ADR-021 use case | Keystroke traffic should not consume the shared LLM queue; Hub CDN is forbidden by `connect-src 'self'` |
+| 027 | Image analysis in the text index | A generative vision model describes page images at ingestion; the text embedder indexes the description as provenance-marked `page_embeddings` rows beside the authored chunks; no second vector space, no third RRF leg | Supersedes ADR-025 D1 on scope, reverses D6, and since #1618 stage 2 (2026-09-17) is the ONLY image design: one index, one query embed, text-only chat models can answer from image facts. The pre-registered A/B/C gate was re-registered B vs C (A-1) and never judged (A-5) — the retirement rests on the owner's authorisation, not on it |
 
 ---
 
@@ -3635,4 +3848,2083 @@ Missing WebGPU, a cold cache, or a failed load falls through to the existing
 server paths. Dual opt-in (admin + user) defaults off. No Hugging Face Hub,
 no new ADR-021 use case, no COEP.
 
+The local-only editor gate admits eligible requests before the worker is ready,
+allowing the request path to warm OPFS after reload/unload without a server
+assignment. The worker uses the installed tokenizer's chat template with
+thinking disabled for inline completion and disposes the pipeline on unload.
+Transformers v4's matching ORT runtime is the asyncify pair; nginx serves its
+`.mjs` as JavaScript. `useWasmCache` is off to avoid executable blob imports
+without weakening CSP; model weights remain in OPFS.
+
 See `docs/runbooks/client-inference.md`.
+
+---
+
+## ADR-027: Image analysis in the text index — supersedes ADR-025 D1 on scope, reverses D6
+
+**Date:** 2026-09-15
+**Status:** Accepted as the **binding contract** for #1615–#1619. The
+architecture below is decided, and the evaluation numbers under "Owner
+decisions" were **confirmed by the owner on 2026-09-15** (each O-item is
+marked). Nothing in this ADR claims a measured result: better RAG is the
+hypothesis #1619 tests.
+**GitHub:** #1611 (epic) · #1614 (this package) · consumed by #1615 (analysis
+and assignment), #1616 (ingestion and indexing), #1617 (evidence and
+citations), #1618 (migration and retirement), #1619 (quality gate).
+**Supersedes:** ADR-025 **D1 on scope** and **D6 reversed**; every other
+ADR-025 decision stays live until #1618 retires it after the #1619 gate (see
+"Supersession of ADR-025" at the end).
+
+### Context
+
+ADR-025 made pictures retrievable by embedding them with a vision-language
+*embedding* model into a second vector space (`page_image_embeddings`), fused
+as a third, page-denominated RRF leg, with the question embedded a second time
+per request. It works, it is measured on a local shim (ADR-025 **Measured**,
+historical), and it has three structural costs this ADR removes: a second
+model family that only vLLM serves (ADR-025 D4/D11), a second query-time
+embedding call plus a kNN on every hybrid search, and — the one that matters
+for answers — the matched picture reaches the chat model only when that model
+has separately probed vision-capable; a text-only chat model gets a title.
+
+The epic (#1611) replaces the image *embedding* with image *analysis*: a
+generative vision model reads each referenced raster image once, at ingestion,
+and produces bounded, versioned text (description, faithful visible text,
+structured relationships, limitations). That text is derived data. The
+ordinary text embedder embeds it as extra `page_embeddings` rows for the page,
+the lexical leg indexes it, rerank and context assembly carry it, and a
+text-only chat model can cite it. There is one index, one query embedding,
+and one retrieval pipeline.
+
+This ADR is the contract #1615–#1619 implement against. It resolves the six
+design questions the epic left open (the derived FTS shape, the analysis
+store and backlog carrier, the closed list of analysis-affecting settings, the
+revision token, the citation shape, the paused-assignment identity), records
+the rules the epic already fixed so nobody re-derives them, and pre-registers
+the measurement that decides the cutover.
+
+### Decision
+
+Sixteen decisions. D1–D3 are the architecture; D4–D7 answer the open design
+questions on storage and identity; D8–D12 fix the ingestion and retrieval
+contracts; D13–D14 fix operations and security; D15–D16 fix measurement and
+retirement. Rules the epic (#1611) already decided are marked *(epic)*.
+
+**D1 — Analysis, not embedding. ADR-025 D1 is superseded on scope, not
+contradicted.** D1's evidence (MMTEB: VL *text* embedding loses to the text
+embedder) argued against embedding text through a VL embedder. This design
+never does that: the text embedder stays exactly what ADR-012's #1114 amendment
+recommends, and the vision model produces *text*, never a vector. D1's
+conclusion — text keeps its own embedder — therefore still holds; its
+premise (that images need a second vector space) no longer applies, because
+the picture's content is now text like any other. Retrieval makes **no
+image-space embedding call and no image kNN query** *(epic)*; deep search
+keeps its per-question semantics and never analyzes per paraphrase; `/api/search`
+never expands.
+
+**D2 — Derived chunks are rows in `page_embeddings`. ADR-025 D6 is
+reversed, and every hazard D6 listed is answered explicitly, not by a
+`WHERE` everyone must remember.** D6 rejected a `kind` discriminator on the
+text table because seven text paths would become conditional. They become
+conditional now, by design, and each has one owner:
+
+| D6 hazard | Where it lives | Resolution |
+|---|---|---|
+| Unscoped `DELETE FROM page_embeddings WHERE page_id = $1` (`embedding-service.ts:731`) | `embedPage` | **Correct as-is.** `embedPage` is the sole writer of a page's chunks *(epic)*; it composes authored **and** derived rows in one transaction, so replacing all of them is the intended atomic swap (D9). Nothing else inserts into `page_embeddings`. |
+| `AVG(embedding)` → `pages.page_avg_embedding` (`:796`) | `embedPage` | `… WHERE page_id = $1 AND (metadata->>'source') IS DISTINCT FROM 'image_analysis'`. Averages measure authored prose only *(epic)*; a page of screenshots must not drift toward every other screenshot page in `computePageRelationships` and the duplicate detector. |
+| `page_avg_embedding_next` (`:805`) | `embedPage` | Same predicate. The `COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0` guard keeps counting derived rows — a derived row whose shadow embed failed still blocks the average, exactly as an authored one does. |
+| `UNIQUE (page_id, chunk_index)` (migration 079) | `embedPage` | Derived rows take `chunk_index = authoredCount + i`, allocated after the last authored index in one composition (D9). No independent writer can collide. |
+| #1116 shadow columns | `embedPage` | Derived rows are dual-written like every row, take part in the epoch recheck, and leave `embedding_next` NULL on a shadow failure exactly as an authored row does *(epic)*. |
+| MMR, rerank | `rag-service.ts` | Score the derived `chunk_text` as-is *(epic)*, through the same `RERANK_DOC_MAX_CHARS` window as every chunk (D11 states why the serialization order fits it). It is real text about the page; a title-synthesised stand-in (ADR-025 P3) is what needed a branch, and it is retired by #1618. |
+| Sibling assembly by `chunk_index` adjacency (`rag-service.ts:2260-2267`) | `rag-service.ts` | The window query gains `AND (pe.metadata->>'source') IS DISTINCT FROM 'image_analysis'` **and** a derived anchor is not expanded at all: a derived anchor returns only itself; an authored anchor never crosses into derived rows *(epic)*. Provenance is `metadata`, never position or text shape. |
+
+**D3 — A new non-inheriting ADR-021 use case, `image_analysis`, gated by
+the existing tri-state vision probe, probed BEFORE the assignment row is
+written.** Same rule as `rerank` and `image_embedding`: `resolveUsecase('image_analysis')`
+throws; `resolveImageAnalysisUsecase()` returns `null` when unassigned, and
+unassigned means **no new inference, ever** — never the default provider,
+never the chat provider, never a cloud fallback *(epic)*. The probe is
+`vision-probe.ts`'s known-content probe through
+`refreshVisionCapability(providerId, model)` (per-pair verdict persisted in
+`llm_model_capabilities`, migration 087), run **synchronously in the
+assignment PUT** following `image_embedding`'s pre-write pattern in
+`routes/llm/llm-usecases.ts` — not the chat path's fire-and-forget post-save
+probe. Only `true` writes the row. `false` and `null` are both 422s that leave
+the previous assignment untouched, with different machine-readable reasons
+(D-settings below). The **assignment is the egress control** *(epic)*: no
+provider-level egress or residency flag exists and this ADR adds none; no
+image byte leaves the host until an administrator has explicitly assigned a
+provider for this purpose, and the selector's copy names that provider.
+
+**D4 (Q2) — The analysis store is one table, `page_image_analyses`, one row
+per referenced image per page, and the backlog has two carriers: the row's
+own `status`, and a page-level `pages.image_analysis_dirty` flag that means
+"re-enumerate this page's images".** The two carry different facts. The
+page flag is raised by every writer that can move an image reference or its
+bytes — the exact writer list ADR-025 P2 wired for `image_embedding_dirty`
+(the attachment writers through the `core/services` helper; the `body_html`
+writers inline in the UPDATE they own; the sweep; the lazy re-fetch) — and it
+is consumed by a **reconcile** step that enumerates the page's current
+references and upserts rows. The row status is the per-image work queue the
+**analyze** step drains. Skipped and failed rows live in the same table as
+analyzed ones (they are what the operator's card counts, and a policy change
+flips them in place). `pages.image_embedding_dirty` and this flag coexist
+until #1618 removes the legacy one; #1616 raises both from every writer.
+
+**D5 (Q3) — The inference identity is the provider three-tuple, retained in
+settings; the prompt and schema versions are code constants stored per row
+and compared at read time; page context never enters inference, so there is
+no context hash; and the closed list of analysis-affecting `admin_settings`
+is EMPTY.** Identity = (`provider_id`, resolved `model`, provider `base_url`),
+hashed to `identity_hash` in canonical form (`sha256(providerId + '\n' +
+model + '\n' + baseUrl)`). The base URL is in it for ADR-025 D7's reason: a
+provider row's endpoint can move without its id changing — and because it
+can move without an assignment PUT, the worker never derives a row's hash
+from the live provider row: rows carry the **retained** identity (D7), and
+the worker compares the identity the assignment resolves to against it
+before every batch and refuses to call on a mismatch (D13, `identity_drift`).
+`IMAGE_ANALYSIS_PROMPT_VERSION` and `IMAGE_ANALYSIS_SCHEMA_VERSION` are
+**not** in the hash: they are constants of the running code, and a hash that
+snapshotted them at assignment time would either ignore a deploy that bumps
+them or disagree forever with a worker analyzing under the new constants.
+Every attempt — success or failure — records the `identity_hash`,
+`prompt_version` and `schema_version` it ran under, and the one **validity
+predicate** every reader uses (composition, coverage, readiness, the D13
+sweep) is
+
+```sql
+status = 'analyzed' AND identity_hash = $retained
+  AND prompt_version = $IMAGE_ANALYSIS_PROMPT_VERSION
+  AND schema_version = $IMAGE_ANALYSIS_SCHEMA_VERSION
+```
+
+with the two constants bound from the running code on every query, never
+stored in settings. **Cache key = (`content_hash`, `identity_hash`,
+`prompt_version`, `schema_version`)**: a row is reused, at no request, only
+when all four match. A deploy that bumps a constant makes every analyzed row
+fail the predicate at once; the next batch's invalidation sweep (D13)
+re-pends them and drops their chunks, and the worker re-analyzes them under
+the new constants — the rows it writes satisfy the predicate and are not
+selected again, so a bump is one corpus-wide pass, never a loop. Page
+context — title, caption, nearest heading — is **never sent to the vision
+model** (D8): `embedPage` composes it into the derived chunk from the page's
+*current* state (D9), so a title or caption edit is a recompose with no
+vision call and nothing about it is hashed or stored on the row. **Which
+settings enter the key: none.** Everything that changes what the request
+asks of the model for *every* image — the prompt text, the output schema,
+temperature, the image-detail hint — is a constant folded into
+`IMAGE_ANALYSIS_PROMPT_VERSION`; bumping it is the documented way to force
+corpus-wide re-analysis from code. The settings that do exist and
+deliberately do **not** enter the key, with the reason each is excluded:
+`rag_images_per_page_max` and `rag_image_index_external` decide *which*
+images have rows, not what an analysis says (a change flips rows to
+`skipped` or back to `pending` in the reconcile); `MAX_IMAGE_BYTES` /
+`MAX_IMAGE_DIMENSION` are intake bounds with the same property;
+`fts_language` re-indexes derived text without touching the analysis; the
+text `embedding` assignment re-embeds cached descriptions *(epic)*;
+`rag_answer_max_images` is answer-time; and
+**`image_analysis_max_output_tokens`** (the output-token ceiling, an admin
+setting since the owner's 2026-09-15 decision — D8) bounds how *much* a
+reply may say, never what the image shows or which model read it: an
+analysis written under a smaller ceiling is a shorter valid analysis of the
+same bytes, so the ceiling is not in the identity, not in the hash, and a
+change to it invalidates **no** analyzed row (a stored `payload` is
+validated against the bounds in force at write time and is never
+re-validated on read — D8). Its one effect on existing rows is targeted and
+forward-only: raising it re-opens rows that failed **`truncated`** under a
+lower ceiling (D13's sweep). #1615's "every identity dimension" test
+therefore has exactly six dimensions to exercise: the three identity
+fields, the two version constants, and `content_hash` for the bytes — and a
+seventh negative case, the ceiling, which must change nothing.
+
+**D6 (Q4) — The revision token is the content hash per row, a
+claim-before-work on the page flag, a per-page `image_analysis_revision`
+counter for `embedPage`, and the lease epoch.** `pages.version` is not it:
+an attachment can change under an unchanged page version (sync's
+version-unchanged branch, ADR-025 P2). Four rules:
+
+1. **Row commit predicate.** An analysis result is written with
+   `UPDATE page_image_analyses SET … WHERE id = $1 AND content_hash = $2 AND NOT (status = 'analyzed' AND identity_hash = $3 AND prompt_version = $4 AND schema_version = $5)`,
+   where `$2` is the hash of the bytes the worker actually sent, `$3` the
+   **retained** identity hash the batch read at its start (D13 refuses to
+   call at all unless the assignment resolves to that same identity, so it
+   is also the identity the bytes went to) and `$4`–`$5` the constants the
+   result was produced under (so a row a concurrent pass already analyzed
+   under exactly those is not overwritten). Every write — success or
+   failure — stamps the same retained triple and constants. Zero rows
+   updated means the reference moved under the worker (reconcile replaced
+   the hash, or the row was deleted): the result is discarded, never
+   published, and the row's new state stands.
+2. **Page claim.** The reconcile clears `image_analysis_dirty` **before**
+   enumerating (`UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1 AND image_analysis_dirty RETURNING id`),
+   so a writer that raises it during the reconcile raises it *after* the
+   claim and the next pass re-enumerates. A reconcile that throws re-raises
+   the flag — and so does one that completed only in PART: a reference whose
+   bytes are there but unreadable leaves the desired set incomplete, so its
+   readable siblings are written (D8's unreadable row in D13's table), the
+   page is re-dirtied and it counts in the batch's `pagesFailed`. Discarding
+   the whole desired set instead left a page's readable images with no rows
+   at all for as long as one locked file lasted. This inverts ADR-025 P2's
+   clear-at-the-end, which lost a raise that landed mid-scan.
+3. **`pages.image_analysis_revision`** is bumped (`+1`) in the same statement
+   that raises `embedding_dirty` whenever a page's **valid** derived set
+   changes (row added, deleted, hash replaced, status moved to or from
+   `analyzed`, or an analyzed row re-pended by the D13 invalidation sweep).
+   `embedPage` snapshots it before generating vectors and, in its write
+   transaction, clears `embedding_dirty` **only if the revision still
+   matches**; otherwise the chunks are written (they are current for the
+   authored text) and the page stays dirty for a recompose on the next pass —
+   which spends no vision call. Neither worker can lose the other's update.
+4. **Lease epoch.** Every DB write of the analysis worker is preceded by the
+   #1612 `assertLockHeld()` check on `worker:lock:image-analysis`; a lost
+   lease stops the batch before its next write. No transaction spans
+   inference.
+
+**D7 (Q6) — The last explicit vision identity survives a pause in
+`admin_settings.image_analysis_identity`.** Written as JSON `{ providerId,
+model, baseUrl, identityHash, assignedAt }` (the same role
+`image_embedding_index_model` plays for ADR-025 D7; no version constants —
+D5) by exactly two routes, each only after a `true` probe of the pair the
+assignment resolves to: the assignment PUT and the capability re-check
+(D-settings below); **never cleared by an unassign**, and never written by
+the worker, which reads it and stamps it on every row (D13). Composition
+(D9), coverage and the readiness counts define "still-valid" by D5's
+validity predicate. On re-assign or re-check, the route compares the newly
+resolved identity with the retained one: equal → resume (rows stay valid,
+backlog drains); different → the retained identity is replaced, every
+analyzed row fails the predicate, and the route answers with the count of
+rows it invalidated (`reanalyzeRows`). The disclosure **before** the
+operator confirms is the scope-preview route's job: it computes the same
+count for a candidate pair without probing or writing, so #1618's confirm
+dialog shows the scope first and the PUT reports what it actually did. Those
+rows leave composition at the next batch's invalidation sweep (D13), which
+runs whether or not anything is assigned; their payloads are kept, so an
+operator who comes back to the previous identity gets them back without a
+call — the sweep's inverse flips them (`reused`, D13). A pause is therefore
+**pause, not purge** *(epic)*: unassigned means no new inference — the sweep
+and the reconcile still run, so a replaced image is re-pended, a removed one
+loses its row, still-valid descriptions remain searchable, and a stale
+description is never composed even when nothing newer exists yet. An
+endpoint that moved under the retained identity (a provider `base_url` edit)
+is the same pause with a different reason (`identity_drift`, D13), ended
+by the re-check.
+
+**D8 — The analysis contract: schema v1 with bounds sized to the output
+budget, a deterministic serialization composed with page context at embed
+time, and six failure classes.** The wire is the existing OpenAI-compatible
+chat completion through `openai-compatible-client.ts`, `ChatMessage` content
+parts of type `text` and `image_url` (the shape `prompts.ts` already
+declares), the image as a `data:` URL of the validated bytes — never a
+private attachment URL a provider cannot authenticate *(epic)*. The prompt
+is the fixed instruction and the image, **nothing from the page**: no title,
+caption or heading, so the model reports only what it sees, an author's
+caption cannot be echoed back as an observation, and the analysis is
+reusable across every edit of the text around it (D5). `tools` omitted,
+`temperature: 0`, `max_tokens` = **`admin_settings.image_analysis_max_output_tokens`**
+(the output-token ceiling — an admin setting by the owner's 2026-09-15
+decision, default **8,192**, allowed range **[4,096, 16,384]**, read once
+per batch — "Settings and capability semantics" below; the schema's bounds
+are derived from it at one token per character — see the budget
+invariant). No `response_format`: JSON is requested in the prompt and the
+first JSON object in the reply is parsed after stripping code fences, so
+providers without structured-output features go through the same validated
+contract *(epic)*. Zod schema in
+`@compendiq/contracts` (`ImageAnalysisPayloadV1Schema`; #1615 owns it):
+
+```ts
+{
+  schemaVersion: 1,
+  kind: 'screenshot' | 'diagram' | 'chart' | 'table' | 'photo' | 'other',
+  language: string,          // ≤ 16 chars: BCP-47 tag of the visible text ('de', 'de-CH', 'zh-Hant'), or 'none'
+  description: string,       // ≤ 1200 chars, retrieval-oriented, only what is visible — FIXED, never scaled (D11's rerank window)
+  visibleText: string,       // ≤ 2500 × s chars, verbatim transcription in reading order, '' when none
+  structured?: {             // at most ONE block, and only the one matching `kind`
+    tableRows?: string[],    // kind 'table': ≤ 30 rows × ≤ 100 × s chars, cells joined by ' | ', header row first
+    chart?: { xAxis?: string; yAxis?: string; trend?: string; series?: string[] },
+                             // kind 'chart': ≤ 120 × s chars each, series ≤ 10 × ≤ 60 × s chars
+    diagram?: { nodes?: string[]; edges?: string[] },
+                             // kind 'diagram': nodes ≤ 25 × ≤ 50 × s, edges ≤ 30 × ≤ 70 × s chars, 'A -> B: label', direction only when drawn
+  },
+  limitations: string[],     // ≤ 6 × ≤ 120 × s chars: unreadable regions, cut-off text, ambiguity
+}
+```
+
+`s` is the **ceiling scale** — `1` at the default ceiling, below `1` under a
+smaller one, never above `1` — defined in the budget invariant below;
+`× s` bounds are `floor(base × s)`. The **counts** (30 rows, 10 series, 25
+nodes, 30 edges, 6 limitations), `description`, `language` and `kind` never
+scale: a smaller ceiling shortens what each row, node or limitation may
+say, not how many there are, and the description keeps the width D11's
+rerank window is sized to.
+
+Every string bound above is on the **emitted** length — the JSON-encoded
+string without its quotes, `JSON.stringify(s).length - 2` — so a line break
+or a quote inside `visibleText` costs the two characters the model actually
+writes (`\n`, `\"`), not one. The Zod schema refines each bound that way (a
+`max` on the raw length would admit a 2,500-character transcription that
+encodes to 5,000), which is what makes the budget below exact rather than
+"plus escapes".
+
+**Output budget invariant.** The bounds are sized against the token
+ceiling, not the other way round, and the rate they are sized at is the
+floor, not an average. The ceiling `T` is the admin setting
+`image_analysis_max_output_tokens`, and the bounds follow it through one
+formula, with three code constants beside the schema in
+`@compendiq/contracts` (#1615 owns them): the **reference** ceiling
+`IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE = 8192` at which the base bounds
+above are sized (a part of schema v1's definition — moving it is a
+`schema_version` bump); the **fixed characters**
+`IMAGE_ANALYSIS_FIXED_CHARS = 1622`, which is the largest per-kind sum of
+everything that does not scale — `description` at 1,200, `language` at 16,
+`kind`, `schemaVersion`, every key, quote, comma and bracket of the
+encoding (1,546 for the diagram kind, the largest) — plus the 76-character
+headroom; and the scale
+
+```
+s(T) = min(1, (T − 1622) / (8192 − 1622))
+```
+
+where `8192 − 1622 = 6,570` is exactly the diagram kind's scaled string
+budget at the reference. Every `× s` bound in the schema is
+`floor(base × s(T))`, computed by the schema module from the ceiling it is
+given; the Zod schema is built per ceiling (`imageAnalysisPayloadSchema(T)`),
+and the worker builds it once per batch from the same read that sets
+`max_tokens`. The largest conforming JSON of any kind — every string at its
+emitted bound, `language` at 16, the keys and punctuation of the encoding
+counted — is exact, not estimated. At the reference, and at every ceiling
+above it (`s = 1`): **table 7,671**, **diagram 8,116**, **chart 5,611**,
+and 4,557 for the kinds that carry no block, so the largest, 8,116, at
+**one token per character** is under 8,192 by 76 characters, and every
+token above the reference is pure headroom. At the floor of the range,
+4,096 (`s ≈ 0.377`: `visibleText` ≤ 941, table cells ≤ 37, chart fields
+≤ 45, series ≤ 22, nodes ≤ 18, edges ≤ 26, limitations ≤ 45 characters
+each): table 3,772, diagram 3,987, chart 2,997, no-block 2,548. The
+invariant holds at every integer ceiling in `[4,096, 16,384]` — **the
+largest conforming payload of every kind is at most `T − 76`** — and it
+holds by construction, not by check: for `s ≤ 1` the diagram kind's
+maximum is `s × 6,570 + 1,546 = T − 76` exactly, every other kind has
+fewer fixed and fewer scaled characters, and above the reference nothing
+grows. Because the bounds are on emitted length there is no escape
+residual outside those figures. The range's two ends are chosen, not
+derived: **4,096** is the smallest ceiling at which every transcription
+bound keeps at least a third of its width (an edge still fits
+`A -> B: label`; a table cell still holds a number and its unit) — below it
+the structured blocks stop carrying what the epic's target classes need,
+and a smaller `max_tokens` would be an unconditional refusal to transcribe
+rather than a budget; **16,384** is twice the reference, and since nothing
+grows above the reference every token past 8,192 buys only headroom for
+the residual scripts named below, while the whole ceiling is charged
+against the served context on every request (`max_model_len` must admit
+visual tokens + prompt + `T`; a server that cannot answers 400 on every
+image — below). One per character is the honest floor for the classes the
+epic targets: byte-level BPE pre-tokenizers of the Qwen family
+(`tokenizer.json`, a bare `\p{N}` alternative in the split regex) emit one
+token per **digit**, and the repo's own `CHARS_PER_TOKEN` comment
+(`embedding-service.ts:56`) records that code and tables run at 1
+char/token — a digit-dense table or chart near the bounds is the payload
+this design exists for, and it is exactly the one a 2-chars/token estimate
+undercounts by half. The one residual above that floor is a payload
+dominated by characters a byte-level vocabulary carries only as byte
+fragments (emoji, combining sequences, scripts outside its merges — not
+Latin, German or the digits and punctuation of a table); it is handled as
+`truncated` below, not assumed away, and a raised ceiling is the
+operator's remedy for it (D13 re-opens exactly those rows). #1615's schema
+test builds the maximal payload of each kind with every string at its
+emitted bound and filled from the one-token-per-character alphabet (digits
+and separators, which encode to themselves) and asserts
+`JSON.stringify(payload).length ≤ T − 76` for **three ceilings**: the
+minimum 4,096 (where the four figures are the floor ones above), the
+reference 8,192 (where they are 7,671 / 8,116 / 5,611 / 4,557 exactly) and
+the maximum 16,384 (where they are unchanged and the headroom is
+8,268) — a token bound at the floor rate, where the setting and the
+payload compare directly; a base bound or a fixed-character constant that
+moves moves those figures, and the test names them. It deliberately uses
+**no model tokenizer** (the contract is provider-agnostic) and neither of
+the repo's estimators: `CHARS_PER_TOKEN` (3) sizes chunks and
+`estimateTokens` (4 chars/token, `llm-audit-hook.ts`) prices audits; both
+are averages, and an average is the wrong side of this inequality. A
+`finish_reason = 'length'` is therefore never a conforming answer cut off
+by the ceiling for any payload the floor covers; it is a reply that ignored
+the bounds — and at `temperature: 0` the same request produces the same
+cut, which is why `truncated` is a deterministic failure class below (the
+retry is the same reply, the cap stops paying for it), not a transient
+one; the ceiling the reply overran is recorded with the class
+(`truncated:8192`), which is what lets a later, higher ceiling re-open
+the row (D13). **Validation is at write time only.** A stored `payload`
+was validated against the bounds of the ceiling in force when it was
+written and is never re-validated on read: composition (D9), coverage and
+readiness take the row as it is, so lowering the ceiling never orphans a
+row written under a higher one, and the ceiling stays out of the cache key
+(D5). The served model must admit the ceiling: `max_model_len` ≥ visual
+tokens + prompt + `T` (≈ 10k at the default; the assigned model's context
+is the operator's to check — O8 no longer mandates a checkpoint). A server
+that refuses it answers 400 on every image — a server fact arriving as a
+per-request status, which is why D13's uniform-rejection stop ends the
+batch after three identical `rejected` answers, names the status on the
+card, and the runbook names the two remedies: serve a larger context, or
+lower the ceiling in Settings. A typical payload is a few hundred tokens;
+the ceiling is a bound, not the norm, and O11 reports tokens per image as
+a corpus mean for that reason.
+
+Serialization (`serializeImageAnalysis(payload, context)`, deterministic,
+pure) is the chunk text, built by `embedPage` at composition time (D9) from
+the stored `payload` and the page's **current** context, in this fixed order
+with these fixed labels:
+
+```
+[Image: <attachment_key> — <kind>]
+Page: <title>                                     (context, bounded ≤ 200 chars)
+Caption (author-supplied): <alt/figcaption>       (context, bounded ≤ 300 chars; line omitted when none)
+Section: <nearest preceding heading>              (context, bounded ≤ 200 chars; line omitted when none)
+Description: <description>
+Visible text:
+<visibleText>
+Table:                                             (structured.* blocks, each omitted when absent)
+<row> …
+Chart: x: …; y: …; series: …; trend: …
+Diagram: <node>, … / <edge> …
+Limitations: <l1>; <l2>; …
+```
+
+Author-supplied context is labelled as such so it is never conflated with
+model-observed facts *(epic)*; it is compose-time text, never prompt input
+(D5), so `page_image_analyses` stores the validated `payload` and no
+serialization — the chunk text is derived from `payload` plus the page
+whenever the page is embedded. One derived chunk per image; if the
+serialization exceeds `CHUNK_HARD_LIMIT` (6000) it splits on the block
+boundaries above into at most **3** parts, each carrying the full provenance
+plus `part`/`parts`. A **substantive** analysis — the one that makes an
+image-only page embeddable *(epic)* — has
+`description.length + visibleText.length ≥ MIN_EMBEDDABLE_TEXT_CHARS` (20)
+after trimming; URLs alone never count, and context lines are not in the
+sum. Six outcomes are failures, not analyses, and set `status = 'failed'`
+with the class in `error`. Five are **deterministic** — the same request
+produces the same outcome at `temperature: 0`, so a retry is the same
+reply again: **malformed** (no JSON object, or Zod rejects), **empty** (not
+substantive), **refused** (the reply matches the provider refusal patterns
+`sanitize-llm-input.ts` already knows — *erratum, #1615: that module carries
+prompt-injection patterns only; `REFUSAL_PATTERNS` live in
+`image-analysis-client.ts`, beside the prompt they are matched against.
+Second erratum, #1615 review r2: "the reply" is the whole reply only when no
+JSON object parsed; inside a conforming payload the patterns run on
+`description` alone — never on `visibleText`, which transcribes the image —
+and a match there is `refused` only when nothing outside the description
+observed the image (no transcription clearing the floor, no `structured`
+block with content). A description OF a refusal or error screenshot, the
+image class a software knowledge base is full of, is otherwise a
+`failed_terminal` row whose page never contributes its
+text*), **truncated** (`finish_reason =
+'length'`: a reply that ignored the bounds, or in the residual case above
+spent more than a token per character — either way the same request cuts
+at the same place), **rejected** (a 4xx the provider attributes to *this
+request body*: **exactly** 400, 413, 415, 422 — payload too large,
+unsupported image, an invalid content part, a ceiling the served context
+refuses). The sixth, **transient** class (`unavailable`) is everything
+else that is not a reply: a transport error, timeout, open breaker, 408,
+429, any 5xx, **and every other 4xx** — 401, 402, 403, 404 (unknown model
+or path) by name, and 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431,
+451 or any status this ADR does not list by the **default arm**. The
+classing is total: the implementer's `switch` has one `case` list for
+`rejected`, one for the statuses that keep the batch running (408, 429,
+5xx, non-HTTP failures), and a `default` that is the **provider-level**
+treatment — `unavailable` for the row, and the batch **ends** before its
+next call and re-runs the capability probe (D13). The default goes to the
+side that stops spending: a status this ADR did not foresee is a fact
+about the endpoint until an operator has looked, costs one call per batch
+at most, never goes terminal, and `error` carries the status
+(`unavailable:405`) so the card can show it. All six leave the row
+`failed`, in D13's backoff, re-selected as work when due; a deterministic
+class at the attempt cap moves the row to `failed_terminal` (D13); none is
+ever composed. One more stop is batch-level, not per row: when the first
+**three** calls of a batch all fail `rejected` with the **same** status,
+the fact is about the server, not three images (D13's uniform-rejection
+stop).
+
+**D9 — `embedPage` composes authored and derived chunks in one pass, and
+these are the composition rules.** In order:
+
+1. Authored chunks exactly as today (`htmlToEmbeddingText` → `chunkText`).
+2. Derived rows: `SELECT … FROM page_image_analyses WHERE page_id = $1 AND <D5 validity predicate> ORDER BY source, attachment_key`
+   — the retained identity from D7 and the two constants from the running
+   code; when no identity is retained (never assigned), the set is empty. The
+   order is by key, not body order, because it must be stable across
+   re-embeds and reconciles; retrieval does not depend on it. Each row's
+   chunk text is `serializeImageAnalysis(row.payload, context)` where
+   `context` is the page's current title plus the caption and nearest
+   preceding heading of that reference, read from the same `body_html` pass
+   that produced the authored chunks (`extractImageReferencesFromHtml`
+   returns them beside store and key).
+3. `chunk_index` for derived rows = `authoredCount + i`, in that order.
+4. `metadata` for a derived row = the authored `ChunkMetadata` fields
+   (`page_title`, `section_title` = the `[Image: …]` label, `space_key`,
+   `confluence_id`) **plus** `{ source: 'image_analysis', attachment_source:
+   'confluence' | 'local', attachment_key, content_hash, analysis_id,
+   analysis_version, part, parts }`. Nothing downstream may infer provenance
+   from anything but `metadata.source` *(epic)*.
+5. **Embeddability.** The 20-character floor applies to `authoredText.length + Σ derivedText.length`:
+   an image-only page with one substantive analysis is embedded, its
+   `embedding_status` becomes `embedded`, and the coverage query in
+   `rag-service.ts` (`char_length(cp.body_text) >= 20`) gains
+   `OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = cp.id AND <D5 validity predicate>)`.
+6. **Partial pages** *(epic)*: only the currently valid rows are composed; a
+   page with three of five images analyzed is embedded with three derived
+   chunks, its readiness reads `partial`, the two stay `pending`, and their
+   completion bumps `image_analysis_revision` + raises `embedding_dirty` so
+   the ordinary path recomposes with no further vision call.
+7. Averages exclude derived rows; the shadow dual-write includes them (D2).
+8. `embedPage` never calls the vision model. A text-model change re-embeds
+   cached descriptions with zero vision calls *(epic)*.
+9. A title, caption or heading edit is an `embedding_dirty` raise like any
+   page edit; the recompose rebuilds the context lines from the current page
+   and touches no `page_image_analyses` row.
+
+**D10 (Q1) — Derived text enters the lexical leg through a per-chunk
+`tsvector` on `page_embeddings`, combined with `pages.tsv` at query time,
+and a lexical page hit resolves to the best-ranked chunk of that page.**
+Two alternatives were on the table: fold derived text into `pages.tsv` by
+trigger, or keep a page-level derived document and select a chunk by
+`ts_rank` afterwards. Both were rejected for the same reason: `pages.tsv` is a
+page-level document over `title || body_text` (migration 049) and #1617 must
+return the *matching chunk* as `chunkText` for authored hits too, which
+neither alternative can do without a second per-chunk structure anyway. So:
+
+- Migration 116 (#1616) adds `page_embeddings.chunk_tsv tsvector NOT NULL`,
+  maintained by a `BEFORE INSERT OR UPDATE OF chunk_text` trigger that reads
+  `admin_settings.fts_language` exactly as `pages_tsv_update()` does, with a
+  GIN index. It is populated for **every** chunk, authored and derived — the
+  authored ones are what chunk resolution needs.
+- The admin FTS-language change (`routes/foundation/admin.ts`, the
+  `UPDATE pages SET tsv = to_tsvector($1::regconfig, …)` inside one
+  transaction) gains `UPDATE page_embeddings SET chunk_tsv = to_tsvector($1::regconfig, chunk_text)`
+  in the **same transaction**, or a language switch leaves derived text
+  indexed under the previous configuration.
+- `pages.tsv` is **not** changed. Authored page ranking in the lexical leg is
+  bit-identical to today's, which is what lets arm C's lexical numbers stand
+  beside the historical ones.
+- Query-time combination (the keyword leg and the exact-identifier pin share
+  it): the page candidate set is the union of pages whose `tsv` matches and
+  pages with a **derived** chunk whose `chunk_tsv` matches; a page's lexical
+  rank is `GREATEST(ts_rank(pages.tsv, q), MAX(ts_rank(derived.chunk_tsv, q)))`.
+  Authored chunks do **not** contribute to the page's rank (that would
+  double-count `pages.tsv`); they only take part in chunk resolution.
+- **Chunk resolution**, per matched page, one `LATERAL` over that page's
+  chunks: `ORDER BY (chunk_tsv @@ q) DESC, ts_rank(chunk_tsv, q) DESC, chunk_index ASC LIMIT 1`.
+  A title-only match therefore yields chunk 0; a page with **no** chunks at
+  all (not yet embedded) falls back to `substring(body_text, 1, 500)` — the
+  only place that prefix survives. `chunkIndex` is returned so sibling
+  assembly gets an anchor.
+- Page-level best-hit fusion, `/api/search` pagination and `#1107` exact-identifier
+  behaviour are unchanged; a page with five matching images is still one
+  vote. **No third RRF leg** *(epic)*.
+- *Erratum, #1617 (owner decision, 2026-09-16 — open question Q1):* the
+  exact-identifier pin adopts the resolved chunk **only when a chunk really
+  matches** (`chunk_tsv @@ q`); with no match it keeps its
+  `rag_context_chars_per_page`-sized lede and reports no `chunkIndex`. Applied
+  literally, the chunk-0 rule above would replace that lede with one ~1–2 k
+  chunk on every "find the page called X" pin — and the pin is the one row
+  sibling assembly cannot reach (it runs after that stage, #1273 F9), so the
+  row can never grow the window back. The narrowing is what fixes the OCR-only
+  `issueKey` case #1617's acceptance names, and nothing else.
+- *Erratum, #1617 (owner decision, 2026-09-16 — open question Q2):*
+  `/api/search?mode=keyword` keeps its own authored-text SQL and is **out of
+  scope**. That path never calls `keywordSearch`: it has its own `ts_rank`,
+  `ts_headline` snippet, facets, `COUNT(*) OVER()` pagination and a pg_trgm
+  title arm, so unioning derived chunks there means a second union plus a
+  `ts_headline` over `chunk_text` and it MOVES `total_count` — a
+  pagination-visible change the "existing search pagination" clause above did
+  not price. The consequence is a recorded asymmetry, not an oversight: an
+  image-only page is findable by `mode=hybrid` and by `/llm/ask` and is
+  invisible in the default keyword search box. It is stated in
+  `docs/runbooks/retrieval-eval.md` beside what #1619 measures, and no
+  follow-up issue is opened.
+
+**D11 — Retrieval and answer rules for derived chunks (#1617).** A derived
+chunk is an ordinary `SearchResult` with `chunkIndex` set and a `derived`
+provenance object read from `metadata`. MMR and rerank score it as-is (D2),
+which for rerank means through the same `RERANK_DOC_MAX_CHARS` (2,000)
+window every authored chunk gets — no derived exception, no second window.
+The serialization order (D8) is chosen for that window: the label, the
+bounded context lines (≤ 700 chars together) and the ≤ 1,200-char
+description come first, so the cross-encoder always sees the provenance,
+the page context and the retrieval-oriented summary, and only the tail of a
+long `visibleText` falls outside it. That is deliberate — the legs that
+*found* the chunk (vector, `chunk_tsv`) scored its full text, and the
+reranker re-scores the head the description is written to carry; #1617 must
+not widen the window for derived rows, and #1619's eval measures the
+consequence rather than discovering it. That is also why the description
+bound is the one bound the output-token ceiling never scales (D8): at any
+allowed ceiling the head the reranker sees is the same width.
+Sibling assembly obeys the boundary in D2. Bounded page context keeps the
+matched derived chunk even when the image sits at the end of a long page —
+the anchor is never dropped for budget. `computeRetrievalConfidence` treats
+the row as measured text (it carries a real `vectorScore`/`rerankScore`); the
+`imageTextSynthesized` exclusion and the `image_only_context` refusal apply
+only to ADR-025's title-synthesised rows and are retired with them in #1618
+once the replacement is exercised. No operator threshold moves.
+*Erratum, #1617:* rewiring the byte pick off `image-leg-search.ts` would make
+the `image_only_context` refusal UNCONDITIONAL for the set it still reaches. A
+row is `imageTextSynthesized` exactly when its page has no `page_embeddings`
+row at all, and a derived chunk IS such a row (for an image-only page, chunk
+0) — so a page with a valid analysis is embedded (D9.5), reached by the text
+legs and never synthesised, while a page without one has no provenance and
+therefore, on derived provenance alone, no attachable picture. The rule's
+`retrievedImages.parts.length === 0` conjunct would be always true where the
+rule fires, and `REFUSAL_SOURCES_NOTE`'s "They are attached below as the
+closest matches" would promise attachments the turn cannot produce.
+*Erratum, #1617 review r1 (the decision taken):* **both consumers are
+derived-FIRST with ADR-025's `imageHits` as a whole-set fallback**, for the
+window in which D3's `image_embedding` leg is still live (that is, until
+#1618). `buildDerivedImageSources` and `pickRetrievedImages` prefer
+provenance; when NO row in the set carries any, the citation append and the
+byte pick read the leg's hits exactly as they did before #1617. The
+alternative — rewording the refusal so it stops promising attachments — was
+rejected because it leaves an instance that has `image_embedding` assigned
+and no analyses yet (the only instance the refusal can fire on) strictly
+worse off than before #1617: no image chips, no answer-time pictures, from a
+release that adds a retrieval path it cannot yet use. The fallback is
+WHOLE-SET rather than per-page so the two ordering quantities (a fused rank;
+a cross-modal cosine) never interleave inside one round and no attachment is
+ever cited twice, and a legacy citation carries none of D12's four provenance
+fields — which is what those fields being optional on `SourceSchema` is for.
+With it, the rule keeps its three discriminating arms (no vision, cap 0,
+every candidate skipped) and the sentence is true wherever it fires: every
+row the predicate can match carries `imageHits` by construction
+(`buildImageLegResults`). **#1618 deletes the fallback with the leg, the
+flag and the rule** — the #1615-era tests that discriminated between the
+vision gate, the cap and a missing file are restored as part of this
+decision rather than deleted, because the path they assert exists again.
+The optional
+retrieved-image attachment for a separately confirmed vision-capable **chat**
+model is kept *(epic)*, rewired from `image-leg-search.ts` to the derived
+provenance of the answer's top-K rows, under the existing count, byte,
+format and ACL limits; the vision gate stays in the caller (`llm-ask.ts`), as
+ADR-025 D8 placed it. Derived text is untrusted content: it goes through the
+same sanitization and prompt separation as authored chunk text, tools are
+disabled for analysis, and nothing here can prove pixels free of prompt
+injection.
+
+**D12 (Q5) — The citation shape keeps ADR-025's `kind: 'image'` source
+entry and adds provenance to it.** On `/llm/ask` a page whose best hit is a
+derived chunk is cited as a page source exactly as today (its `chunkText` is
+the evidence the model saw). Additionally, for each distinct
+`(pageId, attachment_source, attachment_key)` among the answer's top-K
+derived rows — best fused rank first, capped at `MAX_IMAGE_SOURCES` (4) —
+one `kind: 'image'` entry is appended after the page and web entries, with
+`similarity: null` (there is no cross-modal score to fabricate *(epic)*),
+`attachmentUrl` from `buildPageImageUrl` (so `SourceThumbnail`, the
+`ATTACHMENT_URL_PATTERN` guard and the attachment sweep's persisted-URL walk
+all keep working), and four new optional fields: `attachmentStore`
+(`'confluence' | 'local'`), `attachmentKey`, `contentHash`, `analysisVersion`.
+`SourceSchema` and `toPersistedSources` (`persisted-source.ts`) copy the four
+together with `kind`/`attachmentUrl`, never singly; conversation replay
+re-applies visibility so a revoked page's entry is dropped, hash or no hash.
+A shared `contentHash` is provenance, never an authorization shortcut
+*(epic)*.
+
+**D13 — The analysis worker adopts the #1612 batch pattern, one queue, one
+lease, a three-step batch of which only the last needs a model, and a
+bounded backoff with a terminal state.** `worker:lock:image-analysis` (lease
+600 s, renewed every 60 s from a timer armed for the run's lifetime,
+`assertLockHeld` before every write, stop after loss), BullMQ queue
+`image-analysis` with concurrency 1, scheduled beside `processDirtyPages` on
+the sync cadence plus the admin routes. **Run Now is one bounded batch**,
+`admin_settings.image_analysis_batch_size` (default 50 images, `[1, 500]`,
+Settings → AI Models → Workers, read through `getWorkerBatchSize`). A batch
+is three steps, in order:
+
+1. **Invalidation sweep, and its inverse.** Every `analyzed` row that fails
+   D5's validity predicate — identity replaced by a D7 re-assign or re-check,
+   or a constant bumped by a deploy — becomes `pending` with its `payload`
+   kept, and each affected page gets `image_analysis_revision + 1` and
+   `embedding_dirty = TRUE` in the same statement (D6.3), so the next
+   `embedPage` drops the obsolete chunks before any new analysis exists.
+   The inverse runs in the same step: every `pending` row whose `payload`
+   is non-NULL and whose identity columns **pass** the predicate (the sweep
+   re-pended it and the operator has since returned to that identity, or a
+   deploy was rolled back) flips back to `analyzed` with no call, bumps its
+   page the same way, and is counted as **`reused`**, the word the card
+   shows — the flip needs no model, so it is never behind the step-3 gate,
+   and a bump-then-rollback during a pause leaves nothing valid out of
+   composition. Also in this step, every `failed` **or** `failed_terminal`
+   row whose recorded identity or versions differ from the current ones
+   becomes `failed` with `attempts = 0, next_attempt_at = NOW()` — due at
+   once, with a fresh attempt budget: what failed under the old model or
+   prompt is no evidence about the new one, and a stale `failed` row would
+   otherwise carry its old count (one attempt from terminal) and its old
+   backoff (up to 24 h) into an identity it has never been tried under,
+   behind the terminal rows the sweep made due at once. The `UPDATE`'s
+   `WHERE` excludes a row already in that state (`failed`, `attempts = 0`,
+   due), so a gate-shut instance does not rewrite it every batch. A
+   **fourth** `UPDATE` in this step answers the one setting that can
+   change a row's prospects without changing its identity: every `failed`
+   **or** `failed_terminal` row whose `error` is `truncated:<ceiling>` with
+   a recorded ceiling **below** the current
+   `image_analysis_max_output_tokens` gets the same write — `failed`,
+   `attempts = 0`, `next_attempt_at = NOW()` — with the same
+   already-in-that-state exclusion; the row's `error` keeps naming the
+   ceiling it overran until the next attempt overwrites it. A reply that
+   ignored the bounds at 8,192 may or may not fit at 16,384, and the raised
+   ceiling is exactly the operator's remedy for the byte-fragment residual
+   D8 names, so the rows it can help are tried once more under it, at a
+   fresh budget, without a **Retry failed** over every unrelated failure.
+   Lowering the ceiling re-opens nothing (a reply that overran 16,384
+   overruns 8,192) and, per D5, invalidates nothing. All four are one
+   `UPDATE … RETURNING page_id` each, idempotent, and no-ops when
+   nothing changed — the mechanism that makes "an obsolete description is
+   never composed" true without a settings rewrite on deploy.
+2. **Reconcile** every dirty page (D6.2; cheap: hashes and rows).
+3. **Analyze** up to the batch size of work rows.
+
+Steps 1 and 2 run on every batch, assigned or not; step 3 alone is gated,
+and its gate has three terms read **once per batch** before the first call:
+the use case is assigned, the stored verdict for the assigned pair is
+`true`, and the identity the assignment **resolves to** now —
+`(provider_id, assignment model, provider base_url)` hashed exactly as D5
+hashes it — equals the **retained** identity of D7. The same once-per-batch
+read takes `image_analysis_max_output_tokens` (D8), which sets
+`max_tokens` and builds the batch's payload schema; a change to the
+setting mid-batch applies from the next batch, and since the ceiling is
+not in the identity that is a bound changing, not a row invalidated.
+When the gate is shut
+the batch returns
+`{ processed: 0, reused, skipped, failed: 0, terminal: 0, reason: 'unassigned' | 'capability' | 'identity_drift' }`
+carrying the sweep's and reconcile's counts — the result shape is the same
+on every path (the #1612 review's open warning is closed here rather than
+inherited). A batch that opened the gate and then **stopped early** (the
+two stops below) returns the same shape with its real counts and
+`reason: 'provider_status' | 'uniform_rejection'` plus `httpStatus`; a
+batch that ran to its size carries no `reason`. The third term is what
+pins the row's identity source: **every
+row the worker writes carries the retained identity** — the D7 snapshot,
+the hash composition compares against — and the equality check is what
+makes that also the identity the bytes went to. A provider `base_url` edit
+in Settings (the one identity dimension no assignment PUT touches) therefore
+cannot start a loop: the worker writes nothing under it, so no row ever
+carries a hash the next sweep disagrees with, every valid row stays
+composed, and the state ends only when an operator's re-check or re-save
+adopts the resolved identity through D7 (one sweep pass, then rows carry
+the new retained hash and pass) or the URL is reverted (resolved equals
+retained again; resume, no call). That is what makes D7's pause a pause and
+not a hole: while nothing is assigned, or the endpoint has moved, a
+replaced image is still re-pended and its old text dropped, a removed
+reference still loses its row, a stale row still leaves composition, a
+returned identity still gets its payloads back; only the vision call waits.
+
+**Work predicate** — the one definition of "due" (the worker's selection,
+the partial index; the readiness section below deliberately does not read
+it): a row is **work** when
+`status = 'pending'`, or `status = 'failed' AND next_attempt_at <= NOW()`.
+Step 3 selects work rows pending first, then oldest `next_attempt_at`,
+`LIMIT` batch size (the partial work index below serves exactly this). A
+`failed` row always has a `next_attempt_at` (migration 115's CHECK): the
+backoff, or `NOW()` when **Retry failed** or the sweep returned it — so
+there is no `failed` row the predicate cannot reach. The row invariant
+behind reuse: the identity columns
+describe the **last attempt**, and `payload` is non-NULL only when it was
+produced under exactly those columns — a success writes both, a failure
+writes the identity columns and NULLs `payload`, the reconcile NULLs
+`payload` (and resets the attempt budget) when the bytes change, and the
+sweep changes neither. Because step 1 already flipped every pending row
+with a valid kept payload, every work row step 3 selects goes to the model.
+
+**Backoff and the terminal state.** A failure sets `attempts = attempts + 1`,
+`next_attempt_at = NOW() + LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
+EXPONENT is clamped, not only the result, because the multiplication is
+evaluated before the `LEAST` and `15 min × 2^34` raises `interval out of
+range`, while nothing caps `attempts` for a class that never goes terminal
+(one attempt per due batch, about 28 days of a persistent `unavailable`); 2^7
+already exceeds the ceiling, so no schedule a row can reach changes — and the
+class in `error` — with the number that class needs read back later beside it:
+the HTTP status for `rejected` and `unavailable` (`rejected:413`), and the
+ceiling the reply overran for `truncated` (`truncated:8192`, the batch's
+`image_analysis_max_output_tokens`), which is what the sweep's re-open
+compares against. When the class is deterministic (malformed, empty, refused,
+truncated, rejected — D8) and `attempts` has reached
+`IMAGE_ANALYSIS_MAX_ATTEMPTS` (**5**; the quality worker's `MAX_RETRIES`
+shape at 3, two attempts wider because a lease loss or a timeout mid-reply
+looks like a failure too), the row becomes `status = 'failed_terminal'` with
+`next_attempt_at = NULL`: at `temperature: 0` the fifth identical reply is
+not evidence that a sixth will differ, and the alternative was one vision
+call per such image per day, forever. `unavailable` never goes terminal (it
+is a fact about the provider, not the image), but it does count in
+`attempts`, so an outage shortens a row's deterministic budget — the
+direction that stops spending, and **Retry failed** restores it. The same
+class carries the one failure that is not about the provider at all: a work
+row whose file is there but cannot be READ (`EACCES`, `EIO`, `ESTALE`) is
+written `error = 'unavailable:bytes'` — the only non-numeric suffix — with
+no call spent, an attempt charged, backoff and no terminal state, because
+the disk being unreadable now is no evidence about the image either (D13's
+failure table). Every 4xx
+**outside** D8's `rejected` list — 401, 402, 403, 404 by name and every
+other 4xx by D8's default arm — is **provider-level**: `unavailable` for the
+row it hit, `error = 'unavailable:<status>'`, and additionally **ends the
+batch** before the next call (`reason: 'provider_status'`) and re-runs
+`refreshVisionCapability` for the pair: rows not yet attempted are not
+charged, and a verdict other than `true` shuts the gate (`capability`) until
+the operator's re-check restores it — a bad key or a renamed model costs one
+call, not five per image corpus-wide. The **uniform-rejection stop** is the
+same treatment for a server fact that arrives as a per-request `rejected`
+status: when the first `IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT` (**3**) calls of
+a batch all fail `rejected` with one HTTP status and nothing in the batch
+has succeeded, the batch ends before its next call and those three rows are
+rewritten `status = 'failed', error = 'unavailable:<status>',
+next_attempt_at = NOW() + LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — one
+unconditional write per row, `attempts` unchanged (the per-row write above
+already counted it), and never terminal: a row whose rejection was its
+fifth attempt has just been written `failed_terminal` with
+`next_attempt_at = NULL` by the per-row rule, and for these three rows the
+stop's rewrite **takes precedence over the cap**, so the row is `failed`
+again with a due time and both of migration 115's CHECKs hold. The rewrite
+is unconditional because a fact about the server is not evidence about the
+images. The probe re-runs exactly as above, and the result
+carries `reason: 'uniform_rejection', httpStatus`. Three, because one
+rejection is any image, two can be two bad images in a row, and three
+identical statuses before any success is the shape of `max_model_len`
+refusing the ceiling (400 on every image, D8) or a text model swapped in
+behind the vision model's name (415 on every image — the probe's own
+unconditional "not vision" status, `vision-probe.ts`, so that re-probe shuts
+the gate); a false trip costs one batch delayed to the next cadence, a
+missed one at most two more cheap calls. Without it a server fact cost five
+calls per image corpus-wide, `failed_terminal` everywhere, and a manual
+**Retry failed** after the fix. The operator surface is the card's last-run
+line, from the batch result: *"Stopped after 3 images: the provider
+rejected each with HTTP 400. This is a server-side limit, not the images —
+serve the model with a larger context, or lower Max output tokens below,
+then Run Now; Retry failed makes the three rows due at once."* Success
+resets `attempts = 0`.
+Terminal rows are counted apart from `failed` on the card and in the batch
+result (`failed` is the batch's failures, `terminal` the rows that hit the
+cap in it), and leave `failed_terminal` only three ways, each of which makes
+the row selectable at once: the sweep (identity or version changed, **or**
+`truncated` under a ceiling lower than the current one:
+`failed, attempts = 0, next_attempt_at = NOW()` — the same write it gives a
+stale non-terminal `failed` row, step 1), **Retry failed**
+(`status = 'failed', attempts = 0, next_attempt_at = NOW()` for every
+`failed` and `failed_terminal` row in scope — the `error` class stays
+readable on the inspection route until the next attempt overwrites it), or
+a reconcile that sees new bytes (`pending`, budget reset). The attempt
+budget therefore has exactly five resetters — success, Retry failed, new
+bytes, the sweep's return of a row whose identity or versions changed, and
+the sweep's re-open of a `truncated` row under a raised ceiling — and the
+`attempts` column comment lists the same five. Per-image
+failures are counted apart from processed and skipped, and a batch with
+errors fails the BullMQ job with its partial counts and **no provider
+bodies**. Inference goes through the shared LLM queue and the per-provider
+breaker; no DB transaction spans a call. Bulk operations — **Re-analyze
+all**, text **Re-embed all**, the #1116 shadow backfill and the production
+benchmark — share the existing one-active-run rule and 409 each other
+*(epic)*. **Re-analyze all** re-pends every `analyzed`, `failed` and
+`failed_terminal` row with `payload = NULL, attempts = 0, next_attempt_at = NULL`
+and bumps the affected pages exactly as the sweep does; nulling the payload
+is what makes it different from the sweep — nothing is `reused`, which is
+the point of the one documented action for an in-place server upgrade
+behind an unchanged identity (ADR-025 D12's counterpart).
+
+**D14 — Security is the existing rules applied to a new payload.** Raw
+images, base64, descriptions and provider error bodies never enter general
+logs or audit events; `page_image_analyses.error` and the analysis inspection
+route are `requireAdmin`. Retrieval, snippets, thumbnails, byte access and
+conversation replay apply the retrieval visibility predicate (`ragRetrievalPagesPredicate`; replay annotation uses `visiblePagesPredicate`) and the EE per-page filter
+before any derived text or byte is read. Derived text never touches
+`body_storage`, `body_html`, `body_text`, editor content or any upstream
+round trip *(epic)*.
+
+**D15 — The quality gate is pre-registered here, and it decides the cutover
+on quality alone.** The arms, revisions, endpoints, statistics, sample
+size, judging protocol and the cost measurements are in "Measurement plan"
+below; cost is measured and reported there but is **not a gate** (owner
+decision, 2026-09-15 — O11). The harness changes that execute it (the
+`--arm` axis, the per-arm answer generation, the blind judgment sheet and
+fresh A and C baselines) are #1614's deliverable but **not this PR**: they
+are **PR2 on #1614** (owner decision, 2026-09-15), a second PR that runs
+**in parallel with #1615 and #1616** — it touches only the eval harness
+and its artifacts, so it needs nothing from either package — and lands
+before #1619 runs it. No result in this ADR is measured; ADR-025
+**Measured** is historical evidence about the legacy design and is never
+re-labelled as evidence for this one.
+
+**D16 — Retirement happens in two halves, and the destructive half is gated
+on #1619's verdict.** #1618 stage 1 prepares the candidate UI, forward
+migrations and recovery procedure on an isolated candidate after #1617; stage
+2 merges the destructive removal only after a passing pre-registered verdict.
+Rollback is a tested restore procedure, never a shipped second image mode
+*(epic)*. Details under "Retirement plan".
+
+### Data model
+
+Two forward migrations, numbered from the next free slot after
+`114_page_icon_filled.sql`. **115 belongs to #1615, 116 to #1616.** They are
+independent (116 does not reference 115's table), so the two packages can
+merge in either order; #1618's retirement migration takes the next free number
+at its merge time.
+
+**Migration 115 — `115_page_image_analyses.sql` (#1615):**
+
+```sql
+CREATE TABLE IF NOT EXISTS page_image_analyses (
+  id               BIGSERIAL    PRIMARY KEY,
+  page_id          INTEGER      NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  -- Which attachment store `attachment_key` resolves in; follows the URL
+  -- PREFIX in body_html, never `confluence_id IS NULL` (migration 093's note).
+  source           TEXT         NOT NULL CHECK (source IN ('confluence', 'local')),
+  -- URL-DECODED basename inside that store (the on-disk name).
+  attachment_key   TEXT         NOT NULL,
+  -- sha256 of the bytes this row describes: the reference revision (D6).
+  content_hash     TEXT         NOT NULL,
+  format           TEXT         NOT NULL,          -- sniffed: png | jpeg | webp | gif
+  width            INTEGER,
+  height           INTEGER,
+  -- failed_terminal: a deterministic failure class at IMAGE_ANALYSIS_MAX_ATTEMPTS (D13);
+  -- left only by the sweep, Retry failed, or new bytes.
+  status           TEXT         NOT NULL CHECK (status IN ('pending', 'analyzed', 'failed', 'failed_terminal', 'skipped')),
+  skip_reason      TEXT         CHECK (skip_reason IN ('missing', 'unsupported', 'oversized', 'too_large', 'external', 'capped')),
+  -- Identity (D5) and constants of the LAST attempt, success or failure; NULL until the first attempt.
+  -- The identity columns are the RETAINED identity the batch read (D13 refuses to call when the
+  -- resolved pair differs from it), compared — never snapshotted — by the validity predicate.
+  provider_id      UUID         REFERENCES llm_providers(id) ON DELETE SET NULL,
+  model            TEXT,
+  base_url         TEXT,
+  identity_hash    TEXT,                           -- sha256(provider_id, model, base_url)
+  prompt_version   INTEGER,                        -- IMAGE_ANALYSIS_PROMPT_VERSION at the attempt
+  schema_version   INTEGER,                        -- IMAGE_ANALYSIS_SCHEMA_VERSION at the attempt
+  -- Non-NULL only when produced under the identity columns beside it (D13): NULLed by a failure
+  -- write and by the reconcile when the bytes change; kept across a sweep re-pend so a return to
+  -- the same identity is `reused`, not re-analyzed. The chunk text is derived from it at embed time (D8/D9).
+  -- ImageAnalysisPayloadV1, validated before write against the bounds of the ceiling
+  -- (image_analysis_max_output_tokens) in force at that write; never re-validated on read (D8).
+  payload          JSONB,
+  analysis_version INTEGER      NOT NULL DEFAULT 0, -- +1 on every successful payload write; a sweep-inverse flip (reused) does not bump it
+  -- Failures since the last reset. Five resetters (D13): success, Retry failed, new bytes, the
+  -- sweep returning a failed / failed_terminal row whose identity or versions changed, and the
+  -- sweep re-opening a 'truncated:<ceiling>' row once the ceiling setting is above <ceiling>.
+  attempts         INTEGER      NOT NULL DEFAULT 0,
+  -- Due time while failed: the backoff, or NOW() when Retry failed / the sweep return a row (due at
+  -- once). NULL for every other status; the CHECK below makes "failed but never due" unrepresentable.
+  next_attempt_at  TIMESTAMPTZ,
+  -- Failure class (D8), with the number the class needs read back: the HTTP status when one was
+  -- received ('rejected:413', 'unavailable:404'), the overrun ceiling for 'truncated:8192', bare
+  -- otherwise ('malformed'). One non-numeric suffix: 'unavailable:bytes' for a work row whose file
+  -- was there but could not be read (EACCES, EIO). Admin-only; never the provider body.
+  error            TEXT,
+  analyzed_at      TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  UNIQUE (page_id, source, attachment_key),
+  CHECK (status <> 'analyzed'
+         OR (payload IS NOT NULL AND identity_hash IS NOT NULL AND prompt_version IS NOT NULL AND schema_version IS NOT NULL)),
+  CHECK (status <> 'failed' OR next_attempt_at IS NOT NULL),
+  CHECK (status <> 'failed_terminal' OR next_attempt_at IS NULL),
+  CHECK (status <> 'skipped' OR skip_reason IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS page_image_analyses_page_id_idx ON page_image_analyses (page_id);
+-- The worker's question, D13's work predicate: "what is pending, or failed and due?"
+CREATE INDEX IF NOT EXISTS page_image_analyses_work_idx
+  ON page_image_analyses (next_attempt_at) WHERE status IN ('pending', 'failed');
+
+-- Widen the use-case CHECK, dropping and re-adding with the FULL list, as
+-- 097_inline_completion.sql does.
+ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS llm_usecase_assignments_usecase_check;
+ALTER TABLE llm_usecase_assignments ADD CONSTRAINT llm_usecase_assignments_usecase_check
+  CHECK (usecase IN ('chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank',
+                     'image_embedding', 'inline_completion', 'image_analysis'));
+INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+VALUES ('image_analysis', NULL, NULL) ON CONFLICT (usecase) DO NOTHING;
+
+-- The output-token ceiling (D8): an admin setting, default 8192, [4096, 16384]. NOT part of the
+-- retained identity and NOT in any row's cache key; the reader owns the same default for a missing row.
+INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+VALUES ('image_analysis_max_output_tokens', '8192', NOW()) ON CONFLICT (setting_key) DO NOTHING;
+```
+
+**Migration 116 — `116_image_analysis_index.sql` (#1616):**
+
+```sql
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS image_analysis_dirty    BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS image_analysis_revision BIGINT  NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS pages_image_analysis_dirty_idx ON pages (id) WHERE image_analysis_dirty;
+
+-- Per-chunk lexical document (D10), maintained like pages.tsv (049).
+ALTER TABLE page_embeddings ADD COLUMN IF NOT EXISTS chunk_tsv tsvector;
+CREATE OR REPLACE FUNCTION page_embeddings_tsv_update() RETURNS trigger AS $$
+DECLARE lang regconfig;
+BEGIN
+  SELECT COALESCE((SELECT setting_value::regconfig FROM admin_settings WHERE setting_key = 'fts_language'),
+                  'simple'::regconfig) INTO lang;
+  NEW.chunk_tsv := to_tsvector(lang, coalesce(NEW.chunk_text, ''));
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_page_embeddings_tsv
+  BEFORE INSERT OR UPDATE OF chunk_text ON page_embeddings
+  FOR EACH ROW EXECUTE FUNCTION page_embeddings_tsv_update();
+UPDATE page_embeddings SET chunk_tsv = to_tsvector(
+  COALESCE((SELECT setting_value::regconfig FROM admin_settings WHERE setting_key = 'fts_language'), 'simple'::regconfig),
+  coalesce(chunk_text, ''));
+ALTER TABLE page_embeddings ALTER COLUMN chunk_tsv SET NOT NULL;
+CREATE INDEX IF NOT EXISTS page_embeddings_chunk_tsv_idx ON page_embeddings USING gin (chunk_tsv);
+-- The derived-candidate half of the lexical union and the composition read.
+CREATE INDEX IF NOT EXISTS page_embeddings_derived_idx
+  ON page_embeddings (page_id) WHERE (metadata->>'source') = 'image_analysis';
+
+-- Initial backlog: every non-folder page that references an attachment image.
+UPDATE pages SET image_analysis_dirty = TRUE
+ WHERE deleted_at IS NULL AND COALESCE(page_type, 'page') <> 'folder'
+   AND body_html ~ '/api/(local-)?attachments/';
+
+INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+VALUES ('image_analysis_batch_size', '50', NOW()) ON CONFLICT (setting_key) DO NOTHING;
+```
+
+The `UPDATE page_embeddings` backfill runs under `statement_timeout = 0`
+like migration 049's page rebuild; it is one pass over the chunk table and
+is the price of authored chunk resolution on day one. **No runtime DDL** is
+involved anywhere in this design — the derived rows use the live text column
+and its tier, so `ensureImageEmbeddingColumn`'s probe-time retype has no
+counterpart.
+
+Settings rows: `image_analysis_identity` (JSON, D7; written by the assignment
+route, read by composition and readiness; **not** seeded), `image_analysis_batch_size`
+(above), `image_analysis_max_output_tokens` (migration 115, D8; the
+ceiling — not part of the identity). Retained and relabelled in #1618:
+`rag_images_per_page_max`, `rag_image_index_external`,
+`rag_answer_max_images`. Everything under `image_embedding_*` and
+`rag_image_leg_enabled` is legacy and retired by #1618.
+
+### Ingestion flow (#1616)
+
+```mermaid
+flowchart LR
+  W[image reference or byte writer<br/>sync, import, edit, upload, restore, sweep, lazy re-fetch] -->|raise| F[pages.image_analysis_dirty]
+  SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused;<br/>failed or failed_terminal rows under an old identity or version,<br/>or truncated under a ceiling below the current setting: failed, attempts 0, due now] -->|re-pend| P[status pending]
+  SW --> B[pages.image_analysis_revision+1<br/>pages.embedding_dirty = TRUE]
+  SW -->|stale failed or terminal row, or truncated under a lower ceiling| SR[status failed, attempts 0, due now]
+  F --> R[reconcile, second step, runs assigned or not:<br/>claim flag, enumerate body_html refs, sha256 bytes, upsert rows]
+  R -->|new or changed hash| P
+  R -->|policy or format| S[status skipped + reason]
+  R -->|ref gone| X[row deleted]
+  P -->|sweep inverse: kept payload passes the predicate, no call, status only| RU[status analyzed again = reused<br/>payload, identity, versions, analysis_version unchanged]
+  P -->|assigned, verdict true, resolved identity = retained| A[analyze, third step: chat completion with data-URL image,<br/>validate, commit WHERE content_hash matches]
+  A -->|ok| OK[status analyzed, identity + versions stamped, analysis_version+1]
+  A -->|unavailable, or a deterministic class below the cap| FL[status failed, attempts+1, backoff due]
+  A -->|deterministic class at attempts = 5| FT[status failed_terminal<br/>until the sweep, Retry failed or new bytes make it due]
+  A -->|4xx outside the rejected list, or 3 identical rejected statuses first| ST[batch ends before the next call, re-probe;<br/>reason provider_status or uniform_rejection + httpStatus]
+  ST --> FL
+  RU --> B
+  OK --> B
+  X --> B
+  S -->|was analyzed| B
+  B --> E[embedPage: authored chunks + valid derived chunks<br/>context lines from the current page, same text embedder, one DELETE + INSERT]
+  E --> V[(page_embeddings<br/>embedding, chunk_tsv, metadata.source)]
+```
+
+Reconcile detail, per claimed page: references come from
+`extractImageReferencesFromHtml(body_html)` (store from the URL prefix; key
+URL-decoded), deduped by `(source, key)`, external keys dropped to `skipped
+(external)` when `rag_image_index_external` is off, the first
+`rag_images_per_page_max` kept and the rest `skipped (capped)`; for each
+survivor the bytes are read through `resolveAttachmentBytes`, sniffed
+(`sniffImageFormat`) and bounded (`MAX_IMAGE_BYTES`, `MAX_IMAGE_DIMENSION`)
+exactly as `image-embedding-service.ts` does today — that intake logic moves
+under #1616's ownership before #1618 deletes the old module *(epic)*. An
+**unreadable** file is not a deletion: an existing row is left untouched
+(a `missing` skip is recorded only for a reference that has never had a row),
+and the lazy re-fetch writer re-raises the page flag when the bytes arrive. A
+reference that is **gone** from `body_html` deletes its row. A row whose
+hash changed becomes `pending` with `payload = NULL, attempts = 0,
+next_attempt_at = NULL, error = NULL` — new bytes are a new image with a
+fresh attempt budget, whatever the old bytes did (a `failed_terminal` row
+leaves the terminal state here), and the old text is not eligible while the
+new bytes wait *(epic)*. The reconcile compares
+bytes and policy only, never page text: a caption, heading or title edit
+changes no row, because those lines are composed from the current page at
+embed time (D8/D9). A row change that moves the page's **valid** derived set
+(D6.3 — an `analyzed` row deleted, re-pended under new bytes, or moved to
+`skipped`) bumps `image_analysis_revision` and raises `embedding_dirty` in
+one statement, so `embedPage` drops stale derived chunks on its next pass
+even if no analysis has yet succeeded; a new `pending` or `skipped` row, or
+a `pending`/`failed` row re-pended, composes nothing before or after and
+bumps nothing (the first batch after 115 lands drains 116's backlog seed
+into `pending` rows without a corpus-wide re-embed) — and the reconcile runs
+whether or not a vision model is assigned (D13), so a pause never composes a
+description of bytes that are gone.
+
+Readiness (#1616 computes it, #1618 renders it): per page, from the rows'
+`status`, the retained identity and the version constants (D5's predicate
+decides **valid**) — and from nothing else: readiness is a pure function
+of (row status, retained identity, current constants). It never reads the
+clock, so a `failed` row whose backoff has elapsed is still `failed` here
+until the worker selects it under D13's work predicate and rewrites it;
+it does change without a row write when the retained identity or a
+constant changes: an `analyzed` row that then fails the predicate (stale
+between an identity change and the next sweep) counts as `pending` here,
+which the sweep then makes literal.
+The states are disjoint by construction, evaluated in this order, first
+match wins: `none` (no rows); `complete` (≥1 valid row, every other row a
+policy or format skip); `partial` (≥1 valid row, and ≥1 row `pending`,
+`failed`, `failed_terminal` or `skipped (missing)` — a missing file is a
+gap in the page's evidence, not a verdict on it, so the issue's "report
+partial" holds for it); `pending` (no valid row, ≥1 `pending` row); `failed`
+(no valid row, no `pending` row, ≥1 `failed` or `failed_terminal` row);
+`skipped` (only `skipped` rows, `missing` included — nothing is in the work
+window for them). Orthogonally, **embedding readiness** =
+`NOT pages.embedding_dirty`; "analysis complete, text embedding pending" is
+`complete AND embedding_dirty` *(epic)*. The card counts rows by status
+(terminal apart from failed) and skip reason, the last run, the retained
+identity and the batch result (including a stop's `reason` and
+`httpStatus`, D13).
+
+### Retrieval flow (#1617)
+
+```mermaid
+flowchart LR
+  Q[question] --> VEC[vector leg: text embedder, kNN over page_embeddings<br/>authored + derived rows alike]
+  Q --> LEX[lexical leg: pages.tsv UNION derived chunk_tsv<br/>page rank = GREATEST, best-hit per page]
+  Q --> PIN[exact-identifier pin: same chunk resolution]
+  VEC --> RRF[RRF, page-denominated, two text legs — no third leg]
+  LEX --> RRF
+  PIN --> RRF
+  RRF --> RR[rerank and MMR score chunkText as-is]
+  RR --> SIB[sibling assembly: derived anchor alone,<br/>authored anchor never crosses the boundary]
+  SIB --> ANS[text-only chat model answers from the derived text;<br/>page source + kind image source with provenance]
+```
+
+What is gone from the query path relative to ADR-025 P3: the second query
+embed, the kNN over `page_image_embeddings`, the `EXISTS` gate, the second
+vector-pool connection, and `degraded_reason = 'image_leg_unavailable'`.
+What is unchanged: the retrieval visibility predicate (now `ragRetrievalPagesPredicate`) and the EE per-page filter run
+before any chunk is read; `rag_ef_search` sizing; `/api/search` pagination;
+deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
+
+### Settings and capability semantics (#1615)
+
+- **Contracts.** `LlmUsecaseSchema` gains `'image_analysis'`;
+  `UsecaseAssignmentsSchema` / `UpdateUsecaseAssignmentsInputSchema` gain the
+  key with the same non-inheriting comment as `rerank`/`image_embedding`.
+  `ImageAnalysisPayloadV1Schema` (D8) is exported as the factory
+  `imageAnalysisPayloadSchema(maxOutputTokens)` beside the three constants
+  (`IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE`, `IMAGE_ANALYSIS_FIXED_CHARS`,
+  and the bounds table) so the backend validates and the schema test
+  computes from one definition. `SourceSchema` gains the four provenance
+  fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`
+  (*erratum, #1616:* the setting, its `WorkerBatchSizeKey` member, the
+  `imageAnalysisBatchSize` contract field and the Workers-tab row ship with
+  #1616, whose migration 116 seeds the row and whose worker reads it — not
+  with #1615 as this bullet's placement implies).
+  The scope preview below has both halves in `@compendiq/contracts`:
+  `ImageAnalysisReanalysisScopeQuerySchema` (`{ providerId: uuid, model?:
+  non-empty string }`) on the way in and `ImageAnalysisReanalysisScopeSchema`
+  (`{ identityHash: string, changed: boolean, reanalyzeRows: int ≥ 0 }`) on
+  the way out — every boundary here is a named Zod schema, like
+  `VisionCapabilityDetailSchema` and `ImageEmbeddingProbeSchema` beside it.
+- **The output-token ceiling** (owner decision, 2026-09-15: *"Make it
+  configurable in the settings"*). Row `admin_settings.image_analysis_max_output_tokens`
+  (seeded `'8192'` by migration 115). Contract: `AdminSettingsSchema` /
+  `UpdateAdminSettingsSchema` gain `imageAnalysisMaxOutputTokens:
+  z.number().int().min(4096).max(16384)` (optional on update, like
+  `ragImagesPerPageMax` beside it), with a doc comment carrying D8's range
+  reasoning. Reader: `getImageAnalysisMaxOutputTokens()` in
+  `core/services/admin-settings-service.ts` with
+  `IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT = 8192`, `_MIN = 4096`,
+  `_MAX = 16384` (the contract mirrors these, as `RAG_IMAGES_PER_PAGE_MAX_*`
+  does), cached and invalidated through the admin PUT's key table
+  (`'image_analysis_max_output_tokens'` → `invalidateImageAnalysisMaxOutputTokensCache`,
+  the `rag_images_per_page_max` → `invalidateRagImageIntakeCache` row's
+  shape); an unparseable or out-of-range row reads as the default, never as
+  a refusal. The worker reads it once per batch (D13). **UI:** a `NumberRow`
+  **"Max output tokens"** (unit *tokens*, min 4,096, max 16,384, default
+  8,192) on the #1615 **image-analysis card** in Settings → AI Models —
+  the card that carries the `image_analysis` selector, its capability chip
+  and the re-check, the counterpart of `ImageIndexCard.tsx` — saved through
+  `PUT /admin/settings` exactly as the Retrieval tab's image knobs are.
+  Copy beside it: *"The most tokens one image analysis may return. Lower it
+  if the vision model's context refuses the default; raise it for scripts
+  that tokenize below one character per token. Changing it never
+  re-analyzes an image: analyses already stored stay valid, and only images
+  that failed because their reply was cut off are tried again under a
+  higher value."* It is **not** part of the retained identity, the
+  selector's disclosure and the scope preview ignore it, and the card must
+  not render it inside the identity row (provider, model, endpoint, hash):
+  it is its own row below the selector and the capability chip, with the
+  copy above, and #1618's progress card (which the #1615 card grows into)
+  keeps it there. Saving it triggers no probe, no re-check and no
+  `reanalyzeRows` disclosure.
+- **Resolver.** `resolveImageAnalysisUsecase()` beside
+  `resolveImageEmbeddingUsecase()` in `llm-provider-resolver.ts`, through
+  `resolveExplicitOnlyUsecase('image_analysis')`; `resolveNonInheriting` in
+  `routes/llm/llm-usecases.ts` dispatches it.
+- **Assignment PUT** (`PUT /admin/llm-usecases`, `image_analysis: { providerId, model? }`):
+  resolve the pair the row *would* produce (a `providerId` no provider row
+  carries → 422 `{ reason: 'no_provider' }`, the image-embedding PUT's "that
+  provider no longer exists" answer in `llm-usecases.ts`; assignment model,
+  else `provider.default_model`, else 422 `{ reason: 'no_model' }`); run
+  `refreshVisionCapability(providerId, model)` synchronously with the same
+  bounded timeout the image-embedding probe uses; `true` → write the row with
+  the **resolved** model pinned (ADR-025 D7's reason) and, when the resolved
+  identity differs from the retained one, replace `image_analysis_identity`
+  (D7) and answer `{ reanalyzeRows }` — the count of analyzed rows the
+  replacement invalidated, the after-the-fact figure; `false` → 422
+  `{ reason: 'text_only' }`; `null` → 422 `{ reason: 'unconfirmed' }`
+  (transport, auth, 429 and breaker-open all land here — none is a negative
+  vision verdict *(epic)*). All four refusals leave the previous assignment
+  and the retained identity untouched. Clearing the assignment
+  (`providerId: null`) writes the NULL row and nothing else.
+- **Scope preview** (`GET /admin/llm-usecases/image_analysis/reanalysis-scope`,
+  query `ImageAnalysisReanalysisScopeQuerySchema`, response
+  `ImageAnalysisReanalysisScopeSchema`, `requireAdmin` like every other
+  admin route in `routes/llm/llm-usecases.ts`, where the handler lives beside
+  the capability routes; the resolution, the hash and the count are one
+  `domains/llm` service, `image-analysis-identity.ts`, the same module that
+  hashes for the PUT, the re-check and the worker — #1615 owns it):
+  resolves the pair by the PUT's rule, computes its `identity_hash`, and
+  answers `{ identityHash, changed, reanalyzeRows }` — `changed` is
+  "differs from the retained identity", `reanalyzeRows` the count of
+  analyzed rows that would fail D5's predicate under it. Its refusals are
+  the PUT's resolution refusals with the PUT's reasons — 422
+  `{ reason: 'no_provider' }` for an unknown `providerId`, 422
+  `{ reason: 'no_model' }` when nothing resolves — and never the probe's
+  (`text_only`, `unconfirmed`), because it does not probe; an unparseable
+  query is the boundary's ordinary 400, and 404 is not an answer here (the
+  route exists; the provider is a parameter). No probe, no write, no call:
+  it is what #1618's confirm dialog shows **before** the operator commits a
+  PUT or a re-check, and the PUT's own `reanalyzeRows` is the same count
+  after the write, so the two can be compared. With no identity retained it
+  answers `changed: true, reanalyzeRows: 0`.
+- **Capability routes.** `GET /admin/llm-usecases/image_analysis/capability`
+  → `VisionCapabilityDetailSchema` for the assigned pair (admin-only, the
+  provider's error body stays here as #1184 requires);
+  `POST /admin/llm-usecases/image_analysis/recheck` → refresh and return the
+  detail. A re-check that comes back `false`/`null` does **not** unassign and
+  does not touch the retained identity; the worker gate (D13) is "assigned
+  **and** stored verdict `true` **and** resolved identity = retained", so
+  inference pauses until a re-check restores it. A re-check that comes back
+  `true` while the resolved identity differs from the retained one (a
+  provider `base_url` edit — the one identity dimension no assignment PUT
+  touches) adopts the resolved identity exactly as the PUT does (D7,
+  `{ reanalyzeRows }` in the detail); it is the documented way out of
+  `identity_drift`, and the card's copy sends the operator through the
+  scope preview first. The retained identity therefore has exactly two
+  writers, both after a `true` probe of the resolved pair: this route and
+  the assignment PUT. `UsecaseDefaultSchema` never gains the error body.
+- **Selector copy** beside the row states: which provider will receive page
+  images; that this is the ingestion model, distinct from the chat model;
+  that unassigning pauses new analysis and keeps still-valid descriptions
+  searchable. Manual model IDs are accepted where discovery is incomplete;
+  the probe is what validates them.
+- **Analysis inspection** (`GET /admin/pages/:id/image-analyses`, admin-only,
+  page-visibility checked) returns rows without `payload` bodies by default
+  and with them on `?payload=1`; it is a diagnostic, not a wire for readers.
+
+### Failure and concurrency
+
+Enumerated so #1616 and #1619 can exercise each:
+
+| Event | Effect |
+|---|---|
+| Page body edited mid-analysis | Writer raises `image_analysis_dirty` (and `embedding_dirty`) after the claim; the in-flight row commit still passes (bytes unchanged) or fails the `content_hash` predicate (bytes replaced) — the next reconcile settles the rows. A title, caption or heading edit changes no row: the recompose rebuilds the context lines from the current page (D9.9). |
+| Attachment bytes replaced mid-analysis | Reconcile rewrote `content_hash` and nulled the payload; the worker's commit updates 0 rows and is discarded. |
+| Work row's bytes ABSENT at call time (`ENOENT`: attachment cleaned while its reference stayed in `body_html`, cache evicted) | The analyze step writes the row `skipped (missing)` — or the intake's other reason when the bytes read but are no longer a raster — under the `content_hash` commit predicate: out of the work window, no attempt charged, no call spent, no page bump (a `pending`/`failed` row composes nothing). The reconcile keeps such a row (an absent file is not a deletion) and, when a writer raises the page flag with the bytes back, re-pends it as it does any `skipped` row whose bytes read. Bytes that read but hash differently from the row re-raise the page flag instead, and the reconcile re-pends under the new hash. Without this, ≥ `image_analysis_batch_size` such rows filled every batch's window forever (#1626 review r1). |
+| Work row's bytes UNREADABLE at call time for any other reason (`EACCES` after a restore, `EIO`, `ESTALE`, a network volume blinking) | A fact about the disk, not the image, so it is D8's `unavailable` class: the row → `failed (unavailable:bytes)`, `attempts + 1`, backoff, never terminal, no call spent; the worker re-reads it when due and the sweep, **Retry failed** and new bytes reach it like any failed row. Never `skipped (missing)` — that state has no re-read short of a page writer, and a batch's worth of recoverable rows per cycle would park behind it. At reconcile time the same read failure writes no row for THAT reference — there is no hash to pend under — while the page's other references are reconciled as usual, so a partial failure still indexes the evidence that is available: the reference is counted `unreadable`, an existing row for it is kept, the page is left dirty (D6.2) for the next cycle and counts in the batch's `pagesFailed`, which is what puts the condition on the card. A transient never writes a `missing` row for a file that is there. The store's reader answers `null` for `ENOENT` alone and throws for the rest; the answer path (`retrieved-images.ts`) catches and fails open (#1626 review r2). |
+| Assignment changed mid-batch | The retained identity and the resolved pair are read once per batch (D13); rows committed in that batch carry the identity read at its start, fail D5's validity predicate under the new retained one, and the next batch's sweep re-pends them (payloads kept) and drops their chunks; the worker re-analyzes them under the new identity. One extra pass bounded by the batch size; nothing stale is composed. |
+| Provider `base_url` edited (no assignment PUT) | The resolved identity no longer equals the retained one: the sweep and reconcile run, the analyze step is skipped with `reason: 'identity_drift'`, no row is written, and every valid row stays composed — a pause, not a purge. The card names the drift; the operator's **Re-check** (or a re-save of the assignment) re-probes the moved endpoint and, on `true`, adopts the new identity through D7 with the scope disclosed by the preview route first. Reverting the URL resumes without a call. There is no batch on which a row is written under a hash the next sweep disagrees with (D13). |
+| Prompt/schema version bumped by a deploy, or the identity replaced | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. In the same step every `failed` and `failed_terminal` row recorded under the old identity or versions becomes `failed, attempts = 0, next_attempt_at = NOW()`: a fresh budget, due at once, terminal or not. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |
+| Operator returns to a previous identity, or a deploy is rolled back | The sweep had re-pended those rows with payloads kept; the next sweep (step 1, assigned or not) flips each back to `analyzed` without a call (`reused`) and the page recomposes. |
+| Lease lost | `assertLockHeld` fails before the next write; the batch stops; rows already committed stand; the BullMQ job fails with partial counts. |
+| Worker restart | No transaction spanned inference; pending rows are re-selected; a row is never analyzed twice for the same `(content_hash, identity_hash, prompt_version, schema_version)`. |
+| `embedPage` and analysis completion race | D6 rule 3: `embedding_dirty` is cleared only if `image_analysis_revision` is unchanged since the snapshot. |
+| Provider down / breaker open / 5xx / timeout / 408 / 429 | Rows → `failed (unavailable)`, backoff, never terminal, batch continues through the breaker; authored indexing continues; card shows failed count; text RAG unaffected. |
+| Any 4xx outside the `rejected` list — 401, 402, 403, 404 by name; 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431, 451 and anything unlisted by D8's default arm | The row → `failed (unavailable:<status>)`; the batch stops before its next call (rows not yet attempted are not charged an attempt), returns `reason: 'provider_status', httpStatus`, and `refreshVisionCapability` re-runs for the pair; a verdict other than `true` shuts the D13 gate (`reason: 'capability'`) until the operator's re-check restores it. One bad key, or a status this ADR did not foresee, costs one call per batch, not five per image. |
+| Malformed / empty / refused / truncated / rejected (400, 413, 415, 422) reply | Rows → `failed (<class>)`, backoff; never composed; `truncated` records the ceiling it overran (`truncated:8192`). At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed, or `truncated` under a ceiling below the current setting), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
+| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` with `next_attempt_at = NOW() + backoff(attempts)` set unconditionally and `attempts` unchanged — never terminal: for a row the rejection had just taken to `failed_terminal`, the rewrite takes precedence over the cap (the fact is about the server) — `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the two remedies (serve a larger context or lower **Max output tokens**, then Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
+| `image_analysis_max_output_tokens` raised | No row is invalidated (D5: the ceiling is not in the identity or the cache key; stored payloads are never re-validated). The next batch's sweep (step 1, assigned or not) returns every `failed` / `failed_terminal` row whose `error` is `truncated:<ceiling>` with `<ceiling>` below the new value to `failed, attempts = 0, next_attempt_at = NOW()`; the next batch under an open gate sends them with the higher `max_tokens` (and, when the old ceiling was below the reference, the wider scaled bounds — above it the bounds do not move and the extra is headroom). Nothing else is touched; no page is re-embedded. |
+| `image_analysis_max_output_tokens` lowered | No row is invalidated and none is re-opened (a reply that overran a higher ceiling overruns a lower one). From the next batch `max_tokens` and the scaled bounds are the lower ones; rows already `analyzed` under the higher ceiling stay valid and composed. This is the in-product remedy for a server whose context refuses the default (the 400 uniform stop above). |
+| Unassigned, capability not `true`, or identity drift | The sweep and the reconcile still run (a replaced image is re-pended and its old text dropped, a removed reference loses its row, a stale row leaves composition, a valid kept payload is `reused`); only the analyze step is skipped, and the batch returns the skipped result shape with the reconcile's counts. Still-valid rows remain composed. |
+| Bulk conflict (re-analyze all vs shadow backfill vs re-embed all) | 409 under the one-active-run rule; the holder is named per the #1260 wording rule. |
+| Attachment orphan sweep deletes a file | Sweep prunes the `page_image_analyses` row (#1618 re-points the prune and the `RETENTION_PRUNED` `table`) and raises the page flag. |
+| Page deleted / trashed | `ON DELETE CASCADE`; replay drops the source under visibility. |
+
+### Measurement plan (executed by #1619; tooling per D15)
+
+**Arms and revisions** *(epic; issue #1614)*:
+
+| Arm | What | Code revision | Index state |
+|---|---|---|---|
+| **A** | legacy: text + `page_image_embeddings` leg | the last `dev` commit before #1618 stage 2 merges (pre-registered SHA recorded in the baseline artifact) | `image_embedding` assigned to the real VL endpoint (production vLLM, not the shim), legacy index filled |
+| **B** | candidate: vision-analysis chunks, no image leg | the candidate revision (post-#1617) | `image_analysis` assigned, backfill complete on the corpus |
+| **C** | ablation: authored text only | the **same** candidate revision as B | `image_analysis` **unassigned**, no derived chunks, `page_image_embeddings` empty |
+
+B − C isolates vision enrichment; B − A measures the whole product change
+including #1617's chunk resolution and sibling changes. A legacy-revision C
+(if captured) is a regression control for #1617's authored-hit change,
+labelled as such, never substituted for C. Historical 307/22 and shim numbers
+are unpairable and stay labelled historical.
+
+**Held fixed across arms**: text embedder (Qwen3-Embedding-4B @ 2560 `halfvec`,
+per ADR-012's #1114 recommendation) and its instruction prefix; `fts_language`
+(`german` for the image corpus, `simple` for the EN control, `german` for the
+DE control — recorded per block); rerank stage (the production `rerank`
+assignment at freeze time, identical in all arms, `provider:model` recorded;
+off if none is assigned); `rag_ef_search` 100; `rag_fetch_width`,
+`rag_rerank_candidates`, `rag_context_chars_per_page`, `rag_pin_identifiers`,
+the confidence thresholds — all production defaults, recorded; the answer
+model (below) with `rag_answer_max_images = 0` in **every** arm so no image
+byte ever reaches the chat model and the endpoint measures text-only
+grounding; corpus and query-set hashes; prompts; and, for arm B,
+`image_analysis_max_output_tokens` at the value the backfill ran under
+(recorded, not prescribed). The report refuses a pair whose arm, revision,
+corpus hash, query-set hash, embedder, FTS language, rerank assignment or
+answer model differ.
+
+**Corpus and labels.** Start from `eval/corpus-de-images/` (65 pages / 187
+images, CC BY-SA and friends) and `fixture-de-images.json` (309 labels, 285
+with `expectedImages`, 24 `image-negative`; 249 de / 60 en; 2–7 labels per
+page, mean 4.75). An independent labelling pass (a labeller who has seen
+neither the candidate's descriptions nor the retrieval code) classifies each
+existing label as **image-dependent** (the fact is absent from the surrounding
+prose) or not, and adds EN/DE image-dependent items across the classes the
+epic names — screenshots/error codes, charts/units, tables, directional and
+nearly identical diagrams, unreadable text, decorative images — plus new
+image-negative questions, until the counts under "Owner decisions" (O2, confirmed) are met.
+Labels are written from the source image, never from any model description,
+and never appear in any prompt.
+
+**Endpoints**:
+
+| # | Endpoint | Unit | Arms | Test |
+|---|---|---|---|---|
+| Primary | image-dependent **answer correctness** (human-judged, binary: *correct* vs *partially correct / incorrect / refused*) | per query, paired | B vs A | McNemar exact on discordant pairs; paired difference with a 95% **cluster** bootstrap CI (resampling pages, 10,000 draws) |
+| Secondary | answer correctness | paired | B vs C, C vs A | same |
+| Secondary | citation faithfulness (cited page+image contains the fact: yes/no/n.a.) | paired | B vs A | McNemar exact |
+| Safety | **unsupported-claim rate** (any claim not supported by the source page or image) and refusal rate | paired | B vs A | McNemar exact, one-sided against the margin |
+| Safety | image-negative **leakage@1** (a negative question answered from an image chunk) | paired | B vs A | McNemar exact against the margin |
+| Retrieval | page Recall@1/5/10, MRR; image-evidence Recall@5 (A: leg hit keyed on `page_image_embeddings.attachment_key`; B: any top-5 chunk whose `metadata.attachment_key` is an expected image; C: reported as none) | paired | all pairs | McNemar exact (recall), paired bootstrap (MRR) |
+| Control | standard EN and DE text suites (197 queries each): R@1/5/10, MRR | paired | B vs C, C vs A | non-inferiority per the margin. **Erratum (PR2, 2026-09-16):** of the two pairs, only **C vs A** can detect a text regression. The text corpora carry no attachments, so on them nothing can be analysed and no derived chunk can exist: B's and C's index states differ only where images do, which makes the **B vs C** control δ ≡ 0 by construction and that condition unfailable. It is still captured and still scored — a report is the arm's configuration, and an unexpected non-zero δ there would mean the states differ where the recipe says they cannot — but the pair that carries #1617's lexical chunk resolution, and therefore the pair the gate's text guarantee rests on, is C vs A |
+
+Non-significance is not non-inferiority; an endpoint whose CI does not
+exclude the margin is **inconclusive**, and any inconclusive gate endpoint
+blocks cutover *(epic)*. Multiple questions per page are handled by the
+page-cluster bootstrap and by the design effect in the sample size.
+
+**Decision rule (pass requires all three; quality only, owner decision
+2026-09-15):** (1) primary point estimate ≥ the margin **and** its
+cluster-bootstrap 95% CI excludes 0; (2) every non-inferiority endpoint's
+one-sided 95% lower bound is above its margin — for image-evidence R@5 the
+margin is a deliberately underpowered guardrail (O5) and its CI is reported
+beside the verdict; (3) neither safety endpoint worsens beyond its margin
+at the one-sided 95% level. **There is no cost gate**: throughput, tokens
+per image, backfill wall-clock and query p50/p95 are measured under the
+protocol below and **reported** in the same document as the verdict, and
+none of them can fail the gate — the retirement decision is on quality
+alone, and cost goes to the owner as information beside it. Otherwise:
+fail, or inconclusive where an interval straddles — both block automatic
+cutover and the "improved RAG" claim, and go back to the owner as a
+measured tradeoff.
+
+**Sample size (primary endpoint).** For McNemar's test on paired binary
+outcomes with discordant proportion ψ = p₁₀ + p₀₁ and true difference
+δ = p₁₀ − p₀₁ (Connor 1987):
+
+$$N = \frac{\left(z_{1-\alpha/2}\sqrt{\psi} + z_{1-\beta}\sqrt{\psi-\delta^2}\right)^2}{\delta^2}, \qquad N_{\text{clustered}} = N \times \bigl(1 + (m-1)\rho\bigr), \qquad \text{power}(N) = \Phi\!\left(\frac{\delta\sqrt{N/\mathrm{DE}} - z_{1-\alpha/2}\sqrt{\psi}}{\sqrt{\psi-\delta^2}}\right)$$
+
+Assumptions, all pre-registered and all to be checked against the pilot
+(the first 30 judged pairs) before the full run: two-sided α = 0.05, power
+1 − β = 0.80; **ψ = 0.30** (30% of image-dependent questions change verdict
+between A and B — plausible when A's text-only answer model has no image
+evidence at all and B's has a description); **δ = 0.15** (B is right on 22.5%
+of questions A misses and wrong on 7.5% A gets); m = 5 labels per page —
+O2's per-page cap for the image-dependent set, not a fixture fact (the
+existing fixture carries 2–7 per page, mean 4.75, so the cap binds) —
+intra-page correlation **ρ = 0.10**, design effect DE = 1 + 4 × 0.10 =
+**1.4**, applied to every figure below as N_eff = N / 1.4. Then N = 103
+unclustered, **N = 144** image-dependent queries, power 0.80 there by
+construction. The decision rule's point-estimate condition (δ̂ ≥ 0.05) adds
+nothing to the power: McNemar rejects only when δ̂ exceeds
+z₀.₉₇₅ √(ψ / N_eff) ≈ 0.09–0.11 at these N, already above 0.05, so the joint
+power is the test's power. With the design effect throughout: ≈ 0.80 at
+N = 144, ≈ 0.82 at N = 150, **≈ 0.90 at N = 190** (N_eff ≈ 136, rejection
+threshold ≈ 0.092, SE(δ̂) ≈ 0.045). A more pessimistic pilot (ψ = 0.25,
+δ = 0.12) needs 134 × 1.4 = **188**, and N = 190 gives ≈ 0.80 there;
+ψ = 0.25, δ = 0.10 needs 272 and is declared out of budget. **N = 190**
+(O2, confirmed by the owner 2026-09-15) so the second scenario is also
+powered; if the pilot's discordant rate is below 0.20, stop and report the
+run as inconclusive by design rather than judge more.
+
+**The floor is a DECIDING mode, not a label (erratum, PR2 2026-09-16).** The
+two sizes above are two modes of the same rule, and the harness applies them
+as such (`auditSample`, `judgments.ts`):
+
+- **≥ 190** image-dependent labels — the pre-registered sample; the verdict
+  decides at power ≈ 0.90.
+- **144–189** — at or above the hard floor and below the target: the verdict
+  **decides**, the document prints the achieved power beside ≈ 0.90 and every
+  figure is labelled **REDUCED POWER**. No flag is needed and nothing about
+  the decision rule changes; what changes is that an inconclusive endpoint is
+  likelier than it was at N = 190, which the label says.
+- **< 144** — refused. `--allow-underpowered` still scores such a sheet, and
+  that document is labelled TOOLING VERIFICATION ONLY and decides nothing.
+
+The first version of the harness thresholded on 190 alone and only PRINTED
+the floor, so a floor-sized labelling pass could produce no deciding
+document at all and the hard floor pre-registered here had no effect. The
+other O2/O3 counts are NOT power-continuous and stay hard at any N: 48
+image-negative labels (O7's margin is literally 2 of 48), ≥ 45 pages and ≤ 5
+image-dependent labels per page (the m and ρ the design effect is computed
+under), and 197 control queries per language (O4's pooled n = 394).
+
+**Non-inferiority arithmetic, stated so the margin is chosen with eyes open.**
+The controls are clustered by page too (O3, cluster bootstrap for every
+CI), but their design effect is negligible: the EN and DE suites put 197
+labels on 162 pages each (mean 1.22 per page), DE = 1 + 0.22 × 0.10 ≈ 1.02.
+On them the discordant rate between B and C is small (derived chunks rarely
+outrank authored text on text questions): at ψ = 0.02 and n = 394 (EN + DE
+pooled), SE(δ̂) ≈ 0.0072. A **1-point** margin has one-sided power ≈ 0.40 at
+a true δ = 0 (≈ 0.25 per language at n = 197); a **2-point** margin has
+power ≈ 0.87 pooled. Image-evidence R@5 runs on the primary set and carries
+its DE = 1.4: at n = 190 (N_eff ≈ 136), ψ ≈ 0.15, SE ≈ 0.033, a 1-point
+margin has power ≈ 0.09 and cannot be decided at any plausible N; a
+**5-point** margin has power ≈ 0.44 at δ = 0 — a guard against collapse,
+not a fine comparison. The owner confirmed both on 2026-09-15 (O4, O5):
+2 points on the pooled text controls, where it is decidable, and 5 points
+on image-evidence R@5 **explicitly as an underpowered guardrail** — the
+report states its power (≈ 0.44) and prints the endpoint's one-sided CI
+beside the verdict, so a pass on it is read as "no collapse", never as
+parity.
+
+**Judging protocol (single judge, owner decision 2026-09-15).** The judge
+is the repository owner (Simon), blind to arm, judging against the source
+image and page; there is **no second rater and no adjudicator**, and the
+report is labelled **single-judge** wherever a correctness figure appears.
+The per-arm answer generation runs the real ask path per label with
+the fixed answer model and budgets, and writes one artifact per run:
+`answers-<runId>.jsonl` with `{ itemId, question, answer, refused, sources: [{ pageTitle, attachmentUrl? }], evidenceImages: [paths] }`
+where `itemId` is a random UUID and **no arm, query id, run config or chunk
+provenance appears**; the mapping `itemId → { arm, queryId }` is written to a
+separate `mapping-<runId>.json` whose sha256 is recorded in the report before
+judging starts. The judgment sheet (`judgments-<runId>.jsonl`, one row per
+item) carries `{ itemId, judge, correctness: 'correct' | 'partial' | 'incorrect' | 'refused', citationFaithful: 'yes' | 'no' | 'na', unsupportedClaim: boolean, notes, judgedAt }`;
+`judge` is kept on the row so the sheet's shape does not change if a second
+rater is ever added, and there is no `adjudicates` field. **No
+inter-rater statistic is reported** — Cohen's κ needs two raters and none is
+computed or substituted; the report says so in one sentence beside the
+primary result, as the protocol's stated limitation. An LLM judge may run
+first to **flag** items for extra scrutiny and to pre-screen obvious
+refusals — a pre-screen only: it contributes no published number and
+never fills a judgment row, because the candidate's own descriptions sit
+in the context it would be judging *(epic)*. Un-blinding (`--unblind`)
+refuses until every item has exactly one judgment; paired scoring runs only
+after un-blinding. Raw anonymised judgments and the mapping are preserved
+with the report. **Erratum (PR2, 2026-09-15):** the artifacts' home is
+`backend/src/domains/llm/eval/artifacts/1611/` (its README states the
+provenance rule); the tooling is `run-retrieval-eval.ts --images --arm`,
+`run-arm-answers.ts` and `judge-arms.ts` (`--merge` / `--check` /
+`--unblind`), recipe in `docs/runbooks/retrieval-eval.md` "Arm protocol".
+**Erratum (PR2, 2026-09-16), three points of this protocol as implemented:**
+(a) `sources[].attachmentUrl` above is present only where an arm surfaced an
+image source (A's leg hit, B's D11 citation) and never on C, so the row
+shape this ADR fixes carries one per-row **arm tell** by design — the judge
+is told in the runbook to read it as a citation and never as evidence or as
+a reason to guess the arm; every other arm-revealing key is refused outright
+by the blinding walk. The asymmetry that follows, stated rather than left
+implicit: for the PRIMARY B-vs-A pair the blinding holds (both arms carry
+the field wherever an image source surfaced), but the field is absent from
+EVERY arm C row by construction, so **C is the separable arm** and its
+correctness — a secondary endpoint — is the one a judge reading the field as
+a tell could separate out. (b) The route's `refusalReason` is counted in the
+run's provenance file and never written to the judge's file, and an
+INFRASTRUCTURE refusal (`semantic_index_unavailable` — the embedder or the
+semantic index failed) **aborts the arm** instead of being scored: an outage
+scored as refusals would enter the primary and refusal endpoints as that
+arm's quality. (c) The pilot stop of "Sample size" is a STEP, not a label:
+`judge-arms.ts --check --mapping` prints one aggregate ψ over the first 30
+image-dependent A/B pairs **in `judgedAt` order** and exits non-zero below
+the floor, so the judge can stop there rather than after all ≈ 714 rows.
+That readout needs O15's `imageDependent` labels: the shipped fixture
+carries none, so until that pass lands the CLI can only report `pilot: 0/30`
+and the exit-3 stop is **unreachable from the command line** — the rule
+itself (`pilotCheck`, `pilotDiscordance`) is unit-tested directly.
+
+**Cost and operational qualification — measured and reported, never a
+gate** (owner decision 2026-09-15; on the hardware that serves the assigned
+model, O9, with concurrent ingestion): cold and cached analysis throughput
+(img/s), total backfill wall-clock for the corpus and extrapolated per 10k
+images, vision tokens per image (prompt + completion, from `usage`, as a
+corpus mean beside the ceiling in force), failure/skip rates,
+`page_embeddings` row and byte growth, `chunk_tsv` GIN size, query p50/p95
+for B and C against A through `benchmark-query-latency.ts` — fewer calls is
+not a latency claim; the extra chunks and the shared queue are in the
+number. The protocol is kept exactly so the figures are comparable across
+runs; none of them enters the decision rule.
+
+**Report provenance** (refused if absent): commit SHAs per arm; corpus
+manifest sha; query-set sha; per-arm provider/model/endpoint for embedder,
+reranker, answer model, vision model; `image_analysis_max_output_tokens`
+in force for arm B's backfill; embedder width; `fts_language`; every
+retrieval knob; prompts and their versions; hardware; the judge's identity
+and the single-judge statement; mapping-file sha; per-query paired outcomes;
+and **the command line that produced each file** (`command`, carried by the
+arm report, the answer provenance, the sheet and the verdict — added PR2,
+2026-09-16, so "commands" is a field and not only a sentence). Everything
+the "Held fixed" list names is refused when it DIFFERS between two arms,
+key by key over the recorded retrieval knobs, and everything one arm must
+carry and another must not (A's VL endpoint, B's vision model and ceiling)
+is refused per arm.
+
+**Two errata on that sentence, both PR2 2026-09-16.**
+
+*The knob comparison is over a NAMED set.* `retrieval` used to be an
+unkeyed record, so "key by key over the recorded retrieval knobs" was only
+as strong as what two files happened to record: two reports that both
+omitted a knob compared nothing. The knobs the "Held fixed" list names
+(`HELD_FIXED_KNOBS`, the eleven `readHeldFixedProvenance` reads) are now
+REQUIRED of the arm report and of the answer-run provenance alike, and the
+answer side's check is symmetric over that set rather than one-directional.
+Two further kinds of key ride along and are not held fixed: the retrieval
+run's own flags (`topK`, `rerankRequested`, `mmr`, …), which the ask path has
+no counterpart for, and a knob that exists on ONE REVISION only. The second
+is the arm-A case: A runs on the legacy revision by design, so a
+candidate-only knob can never be made to agree and no re-run would fix it —
+it is RECORDED on the comparison (`revisionSpecificKnobs`) instead of
+refusing the pair. Within one revision (B vs C) a one-sided knob is still a
+drift and still refused. **That escape hatch is keyed on ABSENCE, so the
+RECORD is what covers it, not a refusal**: a non-named knob present on one
+side only is accepted whenever the two arms sit on different revisions, so
+deleting such a key from one report file in an A-containing pair hides a
+value drift instead of raising one. What bounds it is that the eleven named
+knobs are schema-required of both files and can never be skipped, and that
+every key taken this way is listed as `revisionSpecificKnobs` on the
+comparison in the verdict document — the audit trail a reader checks when an
+A-containing pair is questioned (review r3 finding 5).
+
+*The judge's file is verified, not merely recorded.* `sheet-<id>.json`
+records the sha256 of `answers-<id>.jsonl` and `mapping-<id>.json` before
+judging starts, and `--unblind` re-reads BOTH — plus every answer run's
+`provenance-<runId>.json`. The sheet is not its own witness: `--unblind`
+also RE-DERIVES the sheet's rows from the per-arm answers files it names
+(each held to the hash the sheet and that run's own provenance recorded) and
+refuses on any differing row, so rewriting the judge's file and its recorded
+hash together is not enough. `--check` performs the same verification
+whenever the operator's sheet file is at hand — over the file it was handed
+as `--answers`, which is the file whose judgments it just read, never the
+out-dir copy of that name — so a rewritten row surfaces
+while judging is still under way. Consequence for the operator: every run's
+three files stay in the artifacts directory under the run id they were
+written with.
+
+### Owner decisions — confirmed by the owner on 2026-09-15
+
+Every item below was confirmed by the repository owner on 2026-09-15 and is
+binding as written; the same numbers are copied into
+`docs/runbooks/retrieval-eval.md` "Arm protocol", which must say the same
+thing. Two items changed from the proposal in the confirmation and the
+body of this ADR follows the confirmed form: **O11** (cost is measured and
+reported, never gated) and **O12/O13** (a single judge). O8 names no
+checkpoint: the candidate is whatever vision model is assigned on the
+instance under test, and the output-token ceiling that used to be a
+constant in D8 is an admin setting by the same decision.
+
+| # | Decision | Confirmed value | Why this number | Status |
+|---|---|---|---|---|
+| O1 | Primary-endpoint margin | **+5 absolute points**, B vs A, paired image-dependent answer correctness, point estimate ≥ 0.05 and cluster-bootstrap 95% CI excluding 0 | The epic's proposal; the power calculation shows it is decidable at N = 190 under the stated assumptions | Confirmed by owner 2026-09-15 |
+| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ. **Erratum (PR2, 2026-09-16):** the hard floor is a **deciding mode**, and the harness implements it as one — ≥ 190 decides at full power, **144–189 decides at reduced power** with the achieved power printed and the document labelled REDUCED POWER, and only **< 144** is refused (`--allow-underpowered` then labels the output TOOLING VERIFICATION ONLY, and such a document reports NO achieved power: a power figure describes a decision, and a document that decides nothing has none to describe). The first harness thresholded on 190 alone and merely printed the floor, which left this floor with no effect. The other counts here (48 negatives, ≥ 45 pages, ≤ 5 per page, 197 × 2 controls) are not power-continuous and stay hard at any N — see "Sample size" | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
+| O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses | Confirmed by owner 2026-09-15 |
+| O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87 | Confirmed by owner 2026-09-15 |
+| O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set — **explicitly an underpowered guardrail**: the report states power ≈ 0.44 at δ = 0 and prints the one-sided CI beside the verdict; a pass reads "no collapse", never parity | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); the primary endpoint is where the answer quality is decided | Confirmed by owner 2026-09-15 |
+| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, applied as the one-sided 95% upper bound of the difference ≤ **3 absolute points**. **Erratum (PR2, 2026-09-16):** the confirmation wrote this margin twice — once as "3 absolute points" and once as "upper bound ≤ 0.05" — and they are not the same condition. The confirmed margin is **3 pp**, and the gate applies it to the one-sided bound: `ARM_MARGINS.unsupportedClaimPoints = 0.03` is the only constant the verdict reads, there is no 5 pp anywhere in the code, and the runbook says the same | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 (erratum 2026-09-16) |
+| O7 | Image-negative leakage margin | leakage@1 may exceed A's by at most **2 queries of 48** (≈ 4 points) | ADR-025 measured 2/22 losses on this class for the legacy leg; the candidate must not do worse than that shape | Confirmed by owner 2026-09-15 |
+| O8 | Vision candidate | **The vision model assigned to `image_analysis` in Settings → AI Models on the instance under test** — no mandated checkpoint, no fallback list; the report records `provider:model@endpoint` and the ceiling in force. **On the local instance at ADR time (read 2026-09-15): UNASSIGNED** — the one configured provider is `RTX3090` (`openai-compatible`, no auth, `http://192.168.178.47:1234/v1` — an LM Studio-style host), no vision-capable use case is assigned (`image_embedding` has no row) and the only two probed pairs (`google/gemma-4-26b-a4b-qat`, `qwen/qwen3.8-27b`) carry a `null` vision verdict (`fetch failed` / model failed to load). **The owner must assign a vision-capable model before the #1615 smoke test and before #1619.** | The candidate is the operator's choice, and the ADR's contract (D3's probe, D8's ceiling setting, D13's stops) is what makes any assigned model safe to run; a model-card claim is not a measurement | Confirmed by owner 2026-09-15 |
+| O9 | Hardware | the host that serves the assigned vision model (O8), recorded in the report by name, GPU and server software; text embedder, Postgres and Redis wherever production runs them, recorded the same way. The ADR-025 96 GB card is no longer mandated | Cost is reported, not gated (O11), so the hardware is provenance, not a pass condition; "representative" means "the one the report names" | Confirmed by owner 2026-09-15 (follows from O8/O11) |
+| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; temperature: **provider default, recorded in provenance** (erratum, PR2 2026-09-15 — the ask path exposes no temperature option, so `temperature 0` is unimplementable through the route; the owner may pin it server-side on the provider before the run, and the run's provenance file records `temperature: provider default` — **erratum, PR2 2026-09-16:** that literal lives in `provenance-<runId>.json` (`AnswerRunProvenanceSchema`), NOT in the answers file, which is `.strict()` with no configuration key by design so nothing in it can tell the judge which arm produced a row); `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
+| O11 | Ingestion cost — **measured and reported, no gate** | Measured under the "Cost and operational qualification" protocol on O9: cold and cached throughput (img/s), tokens per image (prompt + completion from `usage`, corpus mean beside the ceiling in force — the per-request ceiling is ≈ 1.3k visual + prompt + `image_analysis_max_output_tokens`, default 8,192, so the served context must admit ≈ 10k at the default — D8), corpus backfill wall-clock (187 images) and the per-10k extrapolation, failure and skip rates, `page_embeddings` rows per image, query p50/p95 for B and C against A. **None of these can fail the gate**; the retirement decision is on quality alone (decision rule) and the figures go to the owner beside the verdict | The owner's call: a slow but better candidate is a scheduling problem, not a quality verdict; the measurement protocol is kept exactly so runs stay comparable | Confirmed by owner 2026-09-15 |
+| O12 | Judges | **one judge: the repository owner (Simon)**, blind to arm; no second rater, no adjudicator; the report is labelled single-judge and states that no inter-rater statistic exists. An LLM may pre-screen and flag only | Blind human judging is the epic's rule; the owner is the one person who will act on the verdict, and a single named judge with the limitation stated is more honest than a second rater recruited for the statistic | Confirmed by owner 2026-09-15 |
+| O13 | Judging burden | all three arms single-judged: ≈ 3 × 238 items ≈ **714 judgments** at ~2 min each ≈ **24 judge-hours**; C may be judged last, since its correctness is secondary | The primary endpoint is B vs A; C's correctness is secondary | Confirmed by owner 2026-09-15 |
+| O14 | Gate granularity | #1618 split into stage-1 (blocked by #1617) and stage-2 (blocked by #1619) sub-issues so the native graph matches the two halves | The issue text already authorises the split; making it native removes the "blocked but allowed" reading | Confirmed by owner 2026-09-15 |
+| O15 | Labelling additions | independent labeller who has seen no candidate output; ≥ 10 items per class in the epic's list; licence of every added image recorded per the corpus's existing attribution file | The labels must not leak from or into the candidate | Confirmed by owner 2026-09-15 |
+
+Also confirmed on the same date, as designed in the body: no page context
+in vision inference (D5/D8); `failed_terminal` after 5 attempts and the
+uniform-rejection stop after 3 (D13); the three-step sweep → reconcile →
+analyze batch (D13); PR2's placement (D15); and the output-token ceiling
+as an admin setting (D8, "Settings and capability semantics").
+
+### Retirement plan (#1618, two halves)
+
+**Stage 1 — prepare (after #1617, on an isolated candidate):** the Image
+analysis progress card (analyzed / reused / pending / failed / terminal /
+skipped by reason, last run with a stop's reason and HTTP status (D13),
+retained identity, the Max output tokens row carried over from #1615,
+Retry failed / Process now /
+Re-analyze all with the D7 scope disclosure); the selector relabel and the removal of
+MRL width, image-embedding probe chip and the Image leg toggle from the UI;
+the forward migration (below) written but not merged; the backup/restore
+procedure written and exercised on disposable data; coverage/health counts
+updated (D9.5).
+
+**Erratum (#1618 stage 1, 2026-09-16) — the three UI removals move to stage 2.**
+Stage 1 above and stage 2 below cannot both be true on a merged `dev`:
+`rag_image_leg_enabled` still gates live code (`image-leg-search.ts:308`,
+`admin-settings-service.ts:641`, default `true`) and
+`image_embedding_target_dimensions` still shapes live vectors
+(`image-leg-search.ts:77`, `image-embedding-service.ts:66`), so merging the
+MRL-width row, the image-embedding probe chip and the **Image leg** toggle out
+of the UI in stage 1 leaves an upgrading operator with a serving image leg, no
+off switch and no width control — which #1611's "keep the current release
+serving during candidate evaluation" forbids. All three removals, and the
+selector relabel that names the retired use case, belong to stage 2 with the
+code and the settings keys they control. **Stage 1 is purely additive.**
+
+**Erratum (#1618 stage 1, 2026-09-16) — `image_index_last_run`.** Stage 2's
+enumeration below names `admin_settings.image_embedding_*` and
+`rag_image_leg_enabled`; `image_index_last_run`
+(`image-embedding-service.ts:138`) is neither prefix and was therefore unnamed.
+It is deleted with them: it is the last legacy scan's audit trail and it
+describes a worker stage 2 removes. It is also the one row whose deletion loses
+operator-visible history, which is why the recovery dump set is the whole
+`admin_settings` table
+(`docs/runbooks/image-embedding-retirement.md`).
+
+**Stage 2 — retire. DONE, 2026-09-17 (#1618).** Migration `118`
+(`backend/src/core/db/migrations/118_retire_image_embedding_space.sql`, with
+its own migration test) drops `page_image_embeddings` and
+`pages.image_embedding_dirty`, removes `'image_embedding'` from the use-case
+CHECK (drop/re-add with the full list — the first NARROWING of that list),
+deletes the `image_embedding` assignment row and six `admin_settings` rows
+(`image_embedding_probe`, `image_embedding_dimensions`,
+`image_embedding_index_model`, `image_embedding_target_dimensions`,
+`rag_image_leg_enabled`, `image_index_last_run`). Code removed in the SAME
+release: `vl-embedding-client.ts`, `image-embedding-probe.ts`,
+`image-embedding-index.ts`, `image-embedding-service.ts`,
+`image-leg-search.ts`, `core/services/image-embedding-dirty.ts` (RENAMED to
+`image-analysis-dirty.ts`, the replacement's queue writer, D4),
+`image-embedding-target-dimensions.ts`, `eval/images-metrics.ts`,
+`eval/vl-stub-server.ts`, the `vl` exclusion in the text-side instruction
+matcher, `degraded_reason = 'image_leg_unavailable'` (removed from the TS union
+with a comment that historical `search_analytics` rows still carry the text —
+no DB CHECK on that column, so no migration), the `imageOnly` /
+`imageTextSynthesized` flags and the `image_only_context` refusal,
+`ImageEmbeddingCapability.tsx`, `ImageIndexCard.tsx`, the Retrieval-tab Image
+leg group, `tools/vl-embedding-shim/` with its `vl` change flag and pytest job
+in `pr-check.yml`, and `docs/runbooks/vl-embedding-dev.md`. The eval
+`--images` axis lost its paired leg-off/leg-on form and is now a corpus
+selector that REFUSES a run without `--arm B|C`; `parseArmFlag` refuses arm A.
+`docs/runbooks/image-index.md` became `docs/runbooks/image-analysis.md`. The
+attachment sweep prunes `page_image_analyses` instead, `RETENTION_PRUNED`
+carries `table: 'page_image_analyses'`, and `deleted.imageEmbeddingRows` became
+`deleted.imageAnalysisRows` in the contract and in `AttachmentStorageCard`. EE
+type/policy consumers migrated the same way. Historical migrations (093, 097,
+115, 116, 117) and labelled historical benchmark artifacts stay.
+
+**The basis for stage 2, recorded verbatim.** The owner's authorisation was:
+
+> Remove it, nobody was using it in production.
+
+That is **unused in production plus maintenance burden**, and it is
+**explicitly NOT a measurement.** The pre-registered primary endpoint (B vs A)
+was never measured, because arm A needs a VL *embedding* endpoint the owner
+declined to stand up (A-1); **no human answer-correctness judgement was taken**
+at all (A-5); arm B's retrieval run stands at **100/187** analyses and may be
+completed later; and arm C plus the `legacy-revision-C` control are captured
+and show #1617's lexical chunk-resolution change is a **measured no-op** on
+that corpus. AC-4's "a passing #1619 verdict" route is therefore superseded in
+writing by **A-5 plus the owner's explicit go** — #1619's value is regression
+evidence, not permission. Nothing in this ADR, the CHANGELOG, CLAUDE.md or the
+runbooks may imply the gate justified the retirement.
+
+**Recovery boundary.** Before stage 2: `pg_dump` of `page_image_embeddings`,
+`llm_usecase_assignments`, `admin_settings` and the schema-migrations table,
+plus the attachment directories (bytes are never removed by this migration).
+Rollback = restore that dump into a deployment of the pre-stage-2 release; the
+procedure was exercised on disposable data by stage 1 and re-exercised, two
+arms, on the applied migration by stage 2.
+There is no in-product rollback mode.
+
+**The procedure is `docs/runbooks/image-embedding-retirement.md`.** The
+migration is now `backend/src/core/db/migrations/118_retire_image_embedding_space.sql`;
+it was held in `docs/held-migrations/` — outside the runner's directory,
+because `postgres.ts` applies every `*.sql` in it on boot — until stage 2 moved
+it in, and that directory is deleted. Stage 1 exercised the whole cycle on
+disposable databases and recorded it there (§5.1); stage 2 re-drove it against
+the APPLIED migration, two arms off one dump artifact, and recorded that as §5.
+Three findings of the stage-1 rehearsal
+amend the dump set above rather than merely restating it:
+`pages.image_embedding_dirty` is NOT in it (dumping `pages` means dumping the
+corpus), so a restore re-adds the column at its default and the corpus must be
+re-marked; the dump needs `--clean --if-exists`, because three of its four
+tables survive the migration and a restore without it fails on its first
+`CREATE TABLE`; and — **erratum, #1618 stage 1 review round 1, 2026-09-16** —
+that third finding has a consequence for the REPLACEMENT which the first
+rehearsal could not see, because it restored an `admin_settings` table nothing
+had touched since the dump. `admin_settings` and `llm_usecase_assignments` are
+restored WHOLESALE, so a rollback of the legacy leg also rewinds
+`admin_settings.image_analysis_identity`, the `image_analysis` assignment row,
+the output-token ceiling, the batch size and (by deletion, if it was written
+after the dump) `image_analysis_last_run`. Re-rehearsed with the
+replacement re-assigned between the dump and the rollback: without a targeted
+capture the retained identity and the assignment both returned to their
+dump-time pair, leaving the gate OPEN against the superseded model and every
+description written under the newer one failing D5's validity predicate — a
+corpus-wide re-analysis, not merely the paused index of D13's
+`identity_drift`. The runbook's restore therefore has two extra steps that are
+part of the procedure, not a note: capture exactly those rows before the
+restore (§4 step 3) and replay them after it (§4 step 5), with §4.1 verifying
+them rather than asserting they were never at risk. `page_image_analyses`
+itself is genuinely outside the dump set, and so is the capability verdict in
+`llm_model_capabilities`.
+
+### Supersession of ADR-025 — complete since #1618 stage 2 (2026-09-17)
+
+| ADR-025 | Status under ADR-027 |
+|---|---|
+| D1 dual space | **Superseded on scope** (D1 here). Its MMTEB evidence stands and is not contradicted. |
+| D2 Phase 1 / Phase 2 as increments | Unaffected; the text embedder still moves on its own schedule. |
+| D3 `image_embedding` use case | **Retired** (migration 118); `image_analysis` (D3 here) is the replacement, same non-inheriting rule. |
+| D4 chat-embeddings request shape | **Retired** with `vl-embedding-client.ts`; no counterpart — this design uses plain chat completions. |
+| D5 VL-2B default, MRL | **Retired** with the space, including `image_embedding_target_dimensions`. |
+| D6 separate table | **Reversed** (D2 here), every hazard answered. |
+| D7 truncate-and-rescan on model change | **Retired**; the counterpart is D7 here (identity replacement re-pends rows, payloads kept, no DDL). |
+| D8 / D8a / D8b answer-path gate, refusal, byte budget | **D8's vision gate and D8b's byte budget SURVIVE** for the optional chat attachment (D11/D12 here), re-sourced from derived provenance. **D8a's `image_only_context` refusal is retired** with the synthesised rows it keyed on. |
+| D9 bytes from disk, no ACL in the reader | Unchanged and reused. |
+| D10 no server-side pixel processing | Unchanged and reused as the intake bound. |
+| D11 local shim | **Retired** with `tools/vl-embedding-shim/` and `docs/runbooks/vl-embedding-dev.md`. |
+| D12 vLLM pin as a re-index event | **Retired**; the counterpart is `IMAGE_ANALYSIS_PROMPT_VERSION` plus the operator's explicit **Re-analyze all** for an in-place server upgrade. |
+| **Measured** | Historical evidence about the legacy design; quoted verbatim, never re-labelled. |
+
+### Consequences
+
+- **One index, one query embed, one pipeline.** Since #1618 stage 2 every
+  hybrid search has lost the image leg's second embedding call, its kNN and its
+  second vector-pool connection — including the shut gate's standing cost,
+  which ADR-025's Consequences priced and which no longer exists.
+- **Text-only chat models can answer image questions — if the gate says so.**
+  That is the hypothesis, and it is only ever claimed with the #1619 report
+  beside it.
+- **`page_embeddings` is no longer text-only by construction.** Seven paths
+  carry an explicit provenance predicate (D2). A new consumer of
+  `page_embeddings` must decide what it does with `metadata.source = 'image_analysis'`
+  rows and say so; the averages test on a page that gains derived chunks is
+  what keeps the two averaging sites honest.
+- **A model or prompt-version change empties image evidence until the
+  backfill refills it.** D5's validity predicate fails every analyzed row at
+  once, and D13's invalidation sweep drops their chunks at the next batch;
+  the disclosure before Re-analyze all and the readiness card are how the
+  operator sees it. This is the epic's rule (no obsolete description is ever
+  composed) made visible, not a defect — and payloads are kept, so a return
+  to the previous identity costs no call.
+- **Ingestion cost moved from cheap embeddings to generative inference.**
+  A ~1.3k-visual-token image plus a few hundred output tokens (ceiling
+  `image_analysis_max_output_tokens`, default 8,192, an admin setting whose
+  value sizes the schema's transcription bounds at one token per character)
+  per image is the shape; O11 measures and reports the mean but **no cost
+  figure gates the cutover** (owner decision 2026-09-15), the backfill is
+  resumable and bounded per batch, the cache key makes unchanged
+  reprocessing free, and the attempt cap (D13) makes an image the model
+  cannot describe a fixed cost rather than a daily one.
+- **One setting can change a request without invalidating a row.** The
+  output-token ceiling is deliberately outside the identity and the cache
+  key (D5): lowering it shortens what new analyses may say and orphans
+  nothing; raising it re-opens only the rows that failed `truncated` under
+  the lower value (D13). An operator who wants every image re-read under a
+  new ceiling has Re-analyze all, the same action as for an in-place server
+  upgrade.
+- **The gate is single-judge and says so.** The primary endpoint is judged
+  by one named person (O12); the report carries that as a stated limitation
+  beside the result rather than a κ it cannot compute.
+- **The lexical leg gains a per-chunk index.** `chunk_tsv` plus its GIN index
+  is the price of returning the matching chunk; `pages.tsv` and every
+  authored ranking stay as they were.
+- **Prompt injection rendered as pixels is now text in the index.** It was
+  unmitigated before (ADR-025 Consequences); it is now reachable through
+  every retrieval path, bounded by the same sanitization and prompt
+  separation authored content gets, with tools disabled at analysis time. The
+  limitation is stated in the settings copy and here.
+- **Two dirty flags and two image tables coexist until #1618.** That is the
+  cost of keeping the current release serving during qualification; #1616
+  raises both flags from every writer, and #1618 drops the old ones.
+
+### Amendment (2026-09-16, #1619): the gate is re-registered B vs C, and no human judgement was taken
+
+The measurement plan above pre-registers a three-arm comparison whose primary
+endpoint is **B vs A**. Arm A requires an `image_embedding` assignment against
+a real vision-language *embedding* endpoint. The only configured provider
+serves text embedders, a reranker and a generative VL model; the owner has
+declined to stand a VL embedding endpoint up, the stated goal being to remove
+VL embedding from the product entirely. **Arm A is therefore unobtainable
+permanently, not merely un-run**, and every endpoint that named it is
+re-registered or retired here, in writing, before anything was measured.
+Nothing below was applied silently: the diff that implements it is
+A-6, and `decideGate` prints every condition, including the retired one.
+
+**A-1 — the PRIMARY endpoint is re-registered as B vs C.** Image-dependent
+answer correctness, **B vs C**, paired per query, single judge, blind to arm;
+margin +5 pp (O1 unchanged) with a cluster-bootstrap 95 % CI excluding 0. The
+primary now measures **vision enrichment alone on one revision**, not the
+whole product change: B − A, the whole-product comparison, is abandoned. Power
+carries over unchanged (ψ = 0.30, δ = 0.15, ρ = 0.10, design effect 1.4,
+N = 190, hard floor 144) **with the mechanism argument written out**: arm C,
+like arm A's text-only answer model, has no image evidence at all, and
+strictly less than arm A (which at least ranks the image's page), so the
+discordant share cannot plausibly be smaller than the A-vs-B assumption. The
+30-pair pilot and the ψ < 0.20 stop still apply, over C/B pairs. Secondary
+endpoints become citation faithfulness B vs C and refusal rate B vs C; "B vs
+A" and "C vs A" leave the endpoint table.
+
+**A-2 — O5 (image-evidence R@5) is RETIRED, not re-registered.** The endpoint
+was a paired non-inferiority test of B against arm A's embedding leg. Under
+B vs C it has no comparator: arm C reports no image evidence by rule, so
+`compareArmRetrieval` sets the paired endpoint to `null` by construction. The
+owner retired the guardrail outright rather than converting it to an absolute
+floor on B. **The gate therefore carries no image-evidence guardrail.** The
+code must make that absence explicit, and does: the condition is printed with
+verdict `retired`, names what was retired and the power it had, and is
+excluded from the aggregation. Arm B's own `imageEvidenceRecallAt5` stays on
+its run report as a descriptive number that no condition reads.
+
+*Erratum to A-2 (2026-09-16, #1619 review r1).* "Never a missing row" did not
+hold on one path: the pilot stop (ψ < 0.20) returned its own condition and
+nothing else, so a stopped run printed neither the retired row nor a MEASURED
+O7 safety failure — and O7's cap is absolute, in queries, read off the
+candidate arm's own retrieval report, which no judging-power argument makes
+conditional. The pilot pre-emption is therefore scoped to the DECISION: the
+aggregate verdict remains `inconclusive-by-design` (the pre-registration says
+the pilot pre-empts all three parts, and letting a condition fail the gate
+under it would be a post-hoc change to the rule), while every condition is
+printed with the verdict its own measurement earns — the primary row
+`inconclusive` and labelled reported-not-decided, since its interval was
+sized under the design the pilot says does not hold.
+
+**A-3 — the text non-inferiority control.** `B vs C` is δ ≡ 0 by construction
+(the two arms differ only in `image_analysis`, which the text gate never
+consults) and cannot fail; it is kept because O4 pre-registers it and a
+condition that cannot fail must still be stated as such. The real
+text-regression detector is re-registered as **C (candidate revision) vs C
+(legacy revision)** — the `legacy-revision-C` control this ADR already names —
+because that is the pair that carries #1617's lexical chunk-resolution change
+and needs nothing but the text embedder. The harness labelled that pair
+"C vs A" when it was supplied through `--control-a` and checked no revision at
+all; the flag is renamed `--control-legacy-c`, text-gate reports now record
+`revisionSha`, and the scorer refuses a side without one or two sides sharing
+a revision.
+
+**A-4 — safety endpoints.** O6 (unsupported claims, ≤ +3 pp, one-sided upper
+bound) re-registers cleanly as B vs C. O7 (leakage@1, ≤ 2 of 48) becomes an
+**absolute cap on arm B**, because arm C's image-negative leakage is
+identically 0 for every negative: the margin is read as "B leaks at most 2 of
+the 48 image-negative labels", never as "no worse than the legacy leg". A
+negative slice smaller than O2's 48 reads `inconclusive` rather than passing.
+
+**A-5 — what retirement may and may not conclude.**
+*Retirement of `page_image_embeddings` (#1618 stage 2) proceeds on the ground
+that the path was **unused in production** and carries maintenance cost —
+NOT because a measurement justified it.* No measured comparison against the
+legacy leg exists or can exist. #1619's value is regression evidence, not
+permission.
+*Also, and decisively for how the figures on record must be read:* **no human
+answer-correctness judgement was taken.** After arm A became unobtainable the
+owner declined the judging burden (≈ 1,000 items across arms, ~30 judge-hours
+at O13's rate), so the primary endpoint above was **not** measured: no judging
+sheet was produced, no `judgments-*.jsonl` exists, and no verdict document was
+un-blinded. What is on record for #1619 is **retrieval metrics only** —
+R@1/3/5/10, MRR, image-evidence recall, image-negative leakage and latency,
+per arm, with provenance — and this ADR must not be read as reporting the
+pre-registered primary endpoint. O15's labelling packet and its validator
+exist and are shipped, unused, for whoever later wants that number: the
+labelling pass plus the judging pass are all that stand between this record
+and a decided primary.
+*May be concluded from the retrieval numbers:* whether ingestion-time image
+analysis indexed as text changes ordinary retrieval on the image corpus, and
+whether arm B's derived chunks reach the top-K and leak into the image-negative
+slice. *May NOT be concluded:* anything at all about the legacy ADR-025 image
+leg, and any claim about answer quality. ADR-025's "Measured" section stays
+historical evidence about the legacy design and is never re-labelled; an
+"improved RAG" claim, if made, is scoped to "better than no image analysis",
+never "better than image embeddings".
+
+**A-6 — the code changes this amendment authorises.** `--unblind`'s required
+set is `{B, C}` and it refuses a primary with no registered comparator (arm A
+is refused like any unknown arm: `EVAL_ARMS` is `['B', 'C']` since #1618 stage
+2 narrowed it, and `ArmRunReportSchema.arm` is `z.enum(EVAL_ARMS)`, so an arm
+A report does not parse. *Erratum, 2026-09-18:* this paragraph and the
+CHANGELOG entry beside it said arm A "stays accepted, optional, and scored as
+a secondary pairing", which #1634 falsified when it removed the arm; no
+`secondary` scoring path exists in `judgments.ts` or `arms.ts`);
+`assertComparableArms(c, b, …)` is the load-bearing pair; `scoreJudgedPair`
+and `compareArmRetrieval` run C/B; `decideGate` takes an absolute leakage cap
+and emits the retired O5 condition explicitly; `pilotCheck` defaults to C/B;
+condition names carry the arms they scored; `--control-a` becomes
+`--control-legacy-c` with a revision check; `sources[].attachmentUrl` is
+stripped from the judging sheet and added to the blinding guard's forbidden
+keys, because it is present only on an arm with an image leg and therefore
+separates exactly the two arms the amended primary compares — the runbook's
+"for the primary B-vs-A pair the blinding holds … C is the separable arm" is
+falsified by A-1 and has been corrected.
+
+**Recorded beside the amendment: the output-token ceiling is a property of the
+deployment, not of the ADR.** Measured 2026-09-16 on `gemma-4-26b-a4b-it`
+(RTX 3090, LM Studio) over five corpus images at both candidate ceilings: the
+model reasons before every reply (**82.0–93.3 %** of its output tokens at
+8,192, **82.0–99.96 %** over all ten rows of the pre-check — the reasoning
+share of the raw `usage` of each request, 401/489 … 3,494/3,746 at 8,192 and
+7,578/7,581 at 16,384, that last one a generation cut at the context wall; the
+ten rows and the cut are below), five of five images produced a valid payload
+through the client at 8,192 and four of five at 16,384, and the
+worst image took 114.4 s of the 120 s per-image budget
+(`ANALYSIS_TIMEOUT_MS`). The binding constraint is neither the ceiling nor the
+budget but the provider's **loaded context window of 8,192 tokens**
+(`max_context_length` 262,144): prompt plus completion cannot exceed it, so a
+ceiling above 8,192 cannot be reached and merely lets a reply run past the
+context and come back cut — classed `malformed` rather than `truncated`, which
+D8/D13 do not re-open by raising the ceiling. The ceiling was therefore fixed
+at the shipped default **8,192**, and the remedy for an image that overruns is
+a larger loaded context on the inference host, not a higher ADR ceiling and
+not a longer timeout.
+
+The ten rows the two ranges above are computed over. **The pre-check made two
+requests per image per ceiling, not one**, and each column below says which of
+the two it came from: **(a)** the real `analyzeImage` call through the
+product's own client — the source of `wall`, `result` and `completion` — and
+**(b)** one raw `POST /v1/chat/completions` of the same body at the same
+ceiling, which is the only way to see the reasoning split because the client
+drops it — the source of `completion (raw)`, `reasoning` and `share`. (a) and
+(b) are two separate generations of the same prompt, so no row may be read as
+one request: the validated payload is (a)'s and the share is (b)'s. Recorded
+here because a shipped percentage must be checkable against the measurement it
+came from:
+
+| ceiling | image | wall (a) | result (a) | completion (a) | completion raw (b) | reasoning (b) | share (b) |
+|---|---|---:|---|---:|---:|---:|---:|
+| 8,192 | periodensystem__1.png | 63.0 s | valid | 4,397 | 6,314 | 5,588 | 88.5 % |
+| 8,192 | osi-modell__2.png | 114.4 s | valid | 7,554 | 4,543 | 4,061 | 89.4 % |
+| 8,192 | balanced-scorecard__2.png | 83.8 s | valid | 5,675 | 3,746 | 3,494 | **93.3 %** |
+| 8,192 | programmablaufplan__1.png | 43.1 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 8,192 | brandenburger-tor__1.jpg | 7.2 s | valid | 483 | 489 | 401 | **82.0 %** |
+| 16,384 | periodensystem__1.png | 95.1 s | `malformed` | — | 4,138 | 3,817 | 92.2 % |
+| 16,384 | osi-modell__2.png | 51.7 s | valid | 3,553 | 7,581 † | 7,578 † | **99.96 %** † |
+| 16,384 | balanced-scorecard__2.png | 84.6 s | valid | 5,675 | 3,746 | 3,494 | 93.3 % |
+| 16,384 | programmablaufplan__1.png | 43.7 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 16,384 | brandenburger-tor__1.jpg | 6.8 s | valid | 489 | 489 | 401 | 82.0 % |
+
+† **That (b) generation was cut at the context wall, and it is the sole source
+of the 99.96 % upper bound.** Its prompt is 611 tokens and 611 + 7,581 = 8,192
+exactly — the host's `loaded_context_length` at pre-check time — and it emitted
+**three** non-reasoning tokens, so it was still reasoning when the context ran
+out. That is the case classed `malformed` above, not a completed reply. The
+`valid` beside it is (a), the client call on the same image and ceiling, which
+returned a payload in 51.7 s.
+
+So **82.0–93.3 % is the range at the shipped 8,192 ceiling, where no (b)
+generation reached either bound** — the largest is 618 + 6,314 = 6,932 against
+an 8,192-token ceiling and an 8,192-token loaded context — and that is the
+figure to quote about this model's behaviour; **82.0–99.96 % is the range over
+all ten (b) generations, with its upper bound produced by the cut above** and
+quotable only with that said. The highest share on an uncut generation is
+93.3 %. No figure in this ADR, the runbook or the code comments may quote a
+range wider than these two.
+
+Three of the five images — `balanced-scorecard__2.png`,
+`programmablaufplan__1.png`, `brandenburger-tor__1.jpg` — report identical (b)
+figures at both ceilings: those replies never approached either ceiling, and
+the body is sent at `temperature: 0`, so raising the ceiling changed
+nothing about them. The (b) column is therefore ten requests but **seven
+distinct generations**, and the repetition is the measurement rather than a
+transcription (the two ceilings were separate runs: `brandenburger-tor__1.jpg`
+differs by six tokens in (a), 483 against 489).
+
+### Measured (2026-09-18, #1619): the B-vs-C retrieval pair
+
+The first captured pair of the amended gate. **Retrieval only** — the
+pre-registered primary (answer correctness) was not measured, for A-5's
+reason, so nothing here decides the gate.
+
+Both arms on revision `a9f0fbb8`, DE image fixture (309 queries, 65 pages,
+187 images), text embedder Qwen3-Embedding-4B GGUF Q8_0 at 2560 dims, rerank
+off, FTS `german`, answer model `qwen3.8-27b`, `rag_answer_max_images` 2,
+RTX 3090 under LM Studio behind a local model-residency proxy. Arm B:
+`image_analysis` = `qwen3.8-27b`, **187/187** images analysed under one
+identity and one (prompt v1, schema v1) pair, 187 derived chunks, backfill
+67.3 min. Arm C: `image_analysis` unassigned, no derived rows.
+
+| endpoint | C | B | δ | discordant | McNemar p | 95 % CI (65 clusters) |
+|---|---|---|---|---|---|---|
+| page R@1 | .9320 | .9806 | **+4.85 pp** | 16 W / 1 L | **0.000275** | [+2.34, +7.72] pp |
+| page R@5 | .9871 | 1.0000 | +1.29 pp | 4 W / 0 L | 0.125 | [+0.32, +2.60] pp |
+| page R@10 | .9968 | 1.0000 | +0.32 pp | 1 W / 0 L | 1.0 | — |
+| MRR | .9599 | .9903 | +3.04 pp | — | — | [+1.47, +4.84] pp |
+| image-negative leakage@1 (O7) | 0 / 24 | **0 / 24** | 0 | 0 | 1.0 | [0, 0] |
+| query cost p50 / p95 | 55.8 / 63.7 ms | 56.7 / 65.5 ms | — | — | — | reported, never gated (O11) |
+
+Arm B's own `imageEvidenceRecallAt5` is **.6316** over the 248 of 309 queries
+whose top-5 carried derived provenance; A-2 retired the paired guardrail, so
+no condition reads it.
+
+*Concluded:* on this corpus and fixture, indexing ingestion-time image
+analysis as text retrieves the expected page **better than no image
+analysis**, significant at R@1, saturating R@5/R@10, with no added
+image-negative leakage and no material latency change. *Not concluded:*
+anything about answer quality (A-5) and anything about the retired ADR-025
+leg (A-5). O7's cap is met but its slice is 24 negatives, not O2's 48, so it
+reads `inconclusive` under A-4 rather than passing.
+
+**Three deployment facts this run establishes, none of them about the
+design.** (1) The candidate model matters more than the ceiling: `gemma-4-26b-a4b-it`
+is unusable here at either ceiling — `truncated:8192` at 8,192, and at 16,384
+the verbose images exceed the 120 s budget — while `qwen3.8-27b`, which
+honours `enable_thinking: false`, analysed the same images in 21–46 s. O8
+names the instance's assignment, and this instance assigned the latter.
+(2) A host that serves one model at a time needs the embedder and the VL model
+swapped around the backfill; the run drove that through LM Studio's SDK
+control plane, forwarding every inference request unchanged.
+(3) **The payload bounds were rejecting good analyses.** Nine of 187 images
+violated a bound only inside the optional `structured` block while their
+description and transcription were in bounds, and the client discarded the
+whole analysis — 4.8 % of the corpus permanently unanalyzable, its pages
+*partial* forever, with no lever available (the bounds are already maximal at
+16,384, and stating every cap in the prompt still left 2 of 4 re-probed
+images violating one). `a9f0fbb8` drops the offending optional block and
+keeps the analysis; nothing outside `structured` is relaxed. Both arms run on
+that revision. Full provenance and the file-level errata:
+`backend/src/domains/llm/eval/artifacts/1611/README.md`.
+
+### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
+
+**The analysis call sends the non-thinking hints** (`think: false`,
+`chat_template_kwargs: { enable_thinking: false }`, i.e. the shipped
+`nonThinkingExtras`), on the ANALYSIS request only — never on a chat or
+answer call, so no arm's answer behaviour changes.
+
+*Why.* Reasoning tokens come out of the same `max_tokens` budget the payload
+needs, and they contribute nothing to it. Measured 2026-09-16 on
+`gemma-4-26b-a4b-it` (RTX 3090, LM Studio): the reasoning share of the reply
+is **82.0–93.3 %** of its output tokens at the shipped 8,192 ceiling and
+**82.0–99.96 %** across both candidate ceilings (that upper bound off a
+generation cut at the context wall) — both computed from the raw `usage` of
+the ten-row vision pre-check recorded above, which is the source of those two
+ranges and of the decode rate below, and of nothing else in this paragraph —
+and on the 187-image corpus
+**14 images failed deterministically at the shipped 8,192 ceiling** — eight
+`truncated:8192` (the reply hit `max_tokens`), five `malformed` and one
+`rejected:400` — every one of which D8 classes deterministic, so five
+attempts take the row to `failed_terminal` and the arm cannot complete.
+**What was re-probed with the hints is ONE of those fourteen images:**
+`waermepumpe__3.png`, which answers HTTP 400 after 73.2 s of generation as
+the product sent it and **200 with a valid payload in 62.8 s** (3,068
+completion tokens) with the hints in place. The other thirteen — including
+all eight `truncated:8192` — were **not** re-probed: #1618's Retry-failed
+path re-opened all 14 rows for real, but the provider host stopped answering
+before the backfill completed, so no post-erratum result exists for them.
+Raising the ceiling is not the remedy: the nine pre-check rows whose client
+call returned a completion decode at **66.0–71.9 tok/s** — column (a)'s
+completion over its wall in the table above, slowest 7,554 ÷ 114.4 s, fastest
+489 ÷ 6.8 s — so a 16,384-token reply is **228–248 s** against
+`ANALYSIS_TIMEOUT_MS` = 120 s, and a higher ceiling trades a deterministic
+refusal for a transient one that never terminates.
+
+*What was deliberately NOT changed:* `image_analysis_max_output_tokens` stays
+at the shipped default 8,192, `ANALYSIS_TIMEOUT_MS` stays at 120 s, and the
+payload bounds stay as shipped. The owner chose the root-cause fix over
+moving either budget.
+
+*The hints are ADVISORY.* `nonThinkingExtras` sends nothing to a strict
+OpenAI-compatible host, and a provider that ignores the fields is **not
+broken** — it simply keeps reasoning, and the operator sees the same
+`truncated`/`malformed` rows the erratum exists to prevent, with the runbook's
+loaded-context and reasoning notes as the diagnosis. Suppression is not part
+of D5's identity or cache key: it changes what a NEW analysis may say, not
+what an existing row means, exactly like the ceiling (D8).

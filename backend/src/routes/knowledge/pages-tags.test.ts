@@ -21,13 +21,19 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   }),
 }));
 
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
+}));
+
 // --- Mock: auto-tagger ---
 const mockAutoTagPage = vi.fn();
 const mockApplyTags = vi.fn();
+const mockApplyLabelChanges = vi.fn();
 
 vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
   autoTagPage: (...args: unknown[]) => mockAutoTagPage(...args),
   applyTags: (...args: unknown[]) => mockApplyTags(...args),
+  applyLabelChanges: (...args: unknown[]) => mockApplyLabelChanges(...args),
   autoTagAllPages: vi.fn().mockResolvedValue(undefined),
   ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
 }));
@@ -264,10 +270,8 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
   });
 
   it('should add a tag to a page', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, confluence_id: null, labels: ['existing'] }],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
+    mockApplyLabelChanges.mockResolvedValueOnce(['existing', 'new-tag']);
 
     const response = await app.inject({
       method: 'PUT',
@@ -279,13 +283,15 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
     const body = JSON.parse(response.body);
     expect(body.labels).toContain('existing');
     expect(body.labels).toContain('new-tag');
+    expect(mockApplyLabelChanges).toHaveBeenCalledWith('test-user-id', '10', {
+      add: ['new-tag'],
+      remove: [],
+    });
   });
 
   it('should remove a tag from a page', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, confluence_id: null, labels: ['tag-a', 'tag-b'] }],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
+    mockApplyLabelChanges.mockResolvedValueOnce(['tag-b']);
 
     const response = await app.inject({
       method: 'PUT',
@@ -296,6 +302,10 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.labels).toEqual(['tag-b']);
+    expect(mockApplyLabelChanges).toHaveBeenCalledWith('test-user-id', '10', {
+      add: [],
+      remove: ['tag-a'],
+    });
   });
 
   it('should return 404 when page is not found', async () => {
@@ -308,6 +318,7 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
     });
 
     expect(response.statusCode).toBe(404);
+    expect(mockApplyLabelChanges).not.toHaveBeenCalled();
   });
 
   it('should return 400 when neither addLabels nor removeLabels provided', async () => {
@@ -321,10 +332,8 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
   });
 
   it('should deduplicate when adding an existing label', async () => {
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 10, confluence_id: null, labels: ['existing'] }],
-    });
-    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
+    mockApplyLabelChanges.mockResolvedValueOnce(['existing', 'new']);
 
     const response = await app.inject({
       method: 'PUT',
@@ -539,6 +548,7 @@ describe('pages-tags routes — RBAC access checks (#733)', () => {
       (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
     );
     expect(updateCall).toBeUndefined();
+    expect(mockApplyLabelChanges).not.toHaveBeenCalled();
   });
 
   it('resolves confluence_id-style ids before the access check (apply-tags)', async () => {

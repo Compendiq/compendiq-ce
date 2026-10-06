@@ -35,15 +35,20 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   getAdminChunkSettings: vi.fn(async () => ({ chunkSize: 500, chunkOverlap: 50 })),
 }));
 
+const mockIsConfluenceEnabled = vi.fn();
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 vi.mock('../../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = vi.fn().mockResolvedValue(null);
     setCachedResponse = vi.fn();
-    acquireLock = vi.fn().mockResolvedValue(true);
+    acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
     releaseLock = vi.fn().mockResolvedValue(undefined);
     waitForCachedResponse = vi.fn().mockResolvedValue(null);
     clearAll = vi.fn();
@@ -95,6 +100,8 @@ describe('POST /api/embeddings/force-embed-tree', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [] });
+    // Default: the integration is on, which is what every case below assumes.
+    mockIsConfluenceEnabled.mockResolvedValue(true);
   });
 
   it('should return 400 when Confluence credentials are not configured', async () => {
@@ -109,6 +116,25 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     expect(response.statusCode).toBe(400);
     const body = JSON.parse(response.body);
     expect(body.message).toContain('Confluence credentials not configured');
+  });
+
+  // #1623 — the route walks the REMOTE tree, so with the integration off it
+  // refuses by naming the integration rather than asking for credentials that
+  // are still stored.
+  it('should return 400 naming the disabled integration when Confluence is off', async () => {
+    mockIsConfluenceEnabled.mockResolvedValue(false);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/embeddings/force-embed-tree',
+      payload: { pageId: 'page-123' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.message).toBe('Confluence integration is disabled');
+    expect(body.message).not.toContain('credentials');
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
   });
 
   it('should reject request when pageId is missing', async () => {

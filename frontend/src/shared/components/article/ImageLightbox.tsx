@@ -303,7 +303,7 @@ export function ImageLightbox({
 
       {/* Floating HUD Toolbar */}
       <div
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 nm-card-elevated flex items-center gap-1 sm:gap-1.5 rounded-2xl px-2 py-1.5 sm:px-3 sm:py-2 text-foreground select-none"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 nm-popover-glass flex items-center gap-1 sm:gap-1.5 rounded-2xl px-2 py-1.5 sm:px-3 sm:py-2 text-foreground select-none"
         onClick={(e) => e.stopPropagation()}
         role="toolbar"
         aria-label="Image zoom controls"

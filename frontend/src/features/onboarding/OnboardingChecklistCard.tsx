@@ -70,8 +70,8 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
   /**
    * Is THIS client the one graduating the user?
    *
-   * Not "did this mount watch the last step land". Three of the five CTAs
-   * navigate away from `/` (`/settings/…`, `/ai`, `/pages/new`), so the fifth
+   * Not "did this mount watch the last step land". Most of the CTAs navigate
+   * away from `/` (`/settings/…`, `/ai`, `/pages/new`), so the last
    * milestone is normally recorded on another route and the overview is
    * re-entered already-complete — an in-mount transition latch never fires for
    * that user, and because graduation persists `dismissed: true` they instead
@@ -79,7 +79,7 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
    * reading the line that tells them where the guide went.
    *
    * The server fact is the right test: `completedAt` is null exactly until
-   * someone congratulates them, so the client that finds all five done with it
+   * someone congratulates them, so the client that finds every step done with it
    * still null is the one doing it, wherever the last step landed.
    *
    * `!dismissed` is the other half. A user who dismissed the guide asked for it
@@ -220,7 +220,7 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
           >
             Getting started
           </h2>
-          {/* Progress in words. The five rows already carry the length channel;
+          {/* Progress in words. The rows already carry the length channel;
               a second meter beside them would be decoration. */}
           <span
             data-testid="onboarding-progress"
@@ -253,7 +253,10 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
       >
         {celebrating ? (
           <span data-testid="onboarding-complete">
-            All five done — Compendiq is set up. You can reopen this guide from your
+            {/* Not "all five": a standalone user's list is three steps long
+                (#1623), and a congratulation that miscounts the work it is
+                congratulating reads as someone else's message. */}
+            All done — Compendiq is set up. You can reopen this guide from your
             account menu.
           </span>
         ) : null}
@@ -262,10 +265,10 @@ export function OnboardingChecklistCard({ onDismissed }: OnboardingChecklistCard
       {/* The list stays through the graduation. Replacing it with the
           completion note removed an activated CTA out from under the modal it
           had opened: `shortcuts` is the one milestone completable in place, so
-          when it is the fifth step its own button vanished on exactly the
+          when it is the last step its own button vanished on exactly the
           render that graduates, and Radix had nothing to restore focus to on
-          close — the failure `activated` exists to prevent. The five checked
-          rows are the evidence for the congratulation above them anyway. */}
+          close — the failure `activated` exists to prevent. The checked rows
+          are the evidence for the congratulation above them anyway. */}
       <ul className="mt-3 space-y-0.5">
         {steps.map((step) => {
           const copy = STEP_COPY[step.id];

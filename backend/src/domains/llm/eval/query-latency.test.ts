@@ -273,10 +273,14 @@ describe('sampleQueries', () => {
 
 describe('embeddingsUrl', () => {
   it('mirrors the product: a base URL already ending in /v1 gets /embeddings', () => {
-    // generateEmbedding posts to `${cfg.baseUrl}/embeddings`, and
-    // EVAL_EMBEDDING_BASE_URL is written with the /v1 on it in every recipe.
     expect(embeddingsUrl('http://localhost:1234/v1')).toBe('http://localhost:1234/v1/embeddings');
     expect(embeddingsUrl('http://localhost:1234/v1/')).toBe('http://localhost:1234/v1/embeddings');
+  });
+
+  it('does not append /embeddings onto a stored embeddings endpoint', () => {
+    expect(embeddingsUrl('https://openrouter.ai/api/v1/embeddings')).toBe(
+      'https://openrouter.ai/api/v1/embeddings',
+    );
   });
 
   it('never guesses a /v1 the product would not add', () => {

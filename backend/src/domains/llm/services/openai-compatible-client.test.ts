@@ -43,6 +43,99 @@ describe('openai-compatible-client', () => {
   });
 });
 
+describe('openai-compatible-client — nested embeddings/models catalog', () => {
+  let nestSrv: Server;
+  let nestBase: string;
+  beforeAll(async () => {
+    nestSrv = createServer((req, res) => {
+      const raw = req.url ?? '';
+      const path = raw.split('?')[0];
+      const modality = new URL(raw, 'http://local').searchParams.get('output_modalities');
+      if (path === '/v1/embeddings/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'openai/text-embedding-3-small' }] }));
+        return;
+      }
+      if (path === '/v1/models' && modality === 'rerank') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'cohere/rerank-v3.5' }] }));
+        return;
+      }
+      if (path === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'openai/gpt-4o-mini' },
+            { id: 'cohere/rerank-v3.5' },
+            { id: 'openai/text-embedding-3-small' },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => nestSrv.listen(0, r));
+    const { port } = nestSrv.address() as AddressInfo;
+    nestBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => nestSrv.close(() => r())));
+
+  it('lists embedding models from …/embeddings/models, not the chat catalog', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'nested-emb',
+      baseUrl: `${nestBase}/embeddings`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['openai/text-embedding-3-small']);
+  });
+
+  it('lists only rerank models for a stored …/rerank URL, not the  chat catalog', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'nested-rerank',
+      baseUrl: `${nestBase}/rerank`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['cohere/rerank-v3.5']);
+  });
+});
+
+describe('openai-compatible-client — rerank URL filters the chat catalog by name', () => {
+  let srvMix: Server;
+  let mixBase: string;
+  beforeAll(async () => {
+    srvMix = createServer((req, res) => {
+      const path = (req.url ?? '').split('?')[0];
+      if (path === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'openai/gpt-4o-mini' },
+            { id: 'qwen/qwen3-reranker-8b' },
+            { id: 'openai/text-embedding-3-small' },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => srvMix.listen(0, r));
+    const { port } = srvMix.address() as AddressInfo;
+    mixBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => srvMix.close(() => r())));
+
+  it('does not return the chat catalog for a stored /rerank URL', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'rerank-name-filter',
+      baseUrl: `${mixBase}/rerank`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['qwen/qwen3-reranker-8b']);
+  });
+});
+
 // ─── #1185: listModels finishes the LlmHttpError conversion started by #1181 ─
 describe('openai-compatible-client — listModels surfaces HTTP error as LlmHttpError (#1185)', () => {
   let errSrv: Server;
@@ -444,6 +537,7 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
   const {
     thinkingExtras,
     nonThinkingExtras,
+    reasoningOffExtras,
     isStrictOpenAiCompatibleHost,
     isOpenAiReasoningModel,
   } = __test_only__;
@@ -454,13 +548,24 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
   });
 
-  it('explicitly disables Qwen-style thinking for tolerant providers only', () => {
+  it('disables reasoning for tolerant providers with ignored fields only; strict hosts get nothing', () => {
     expect(nonThinkingExtras('http://localhost:1234/v1')).toEqual({
       think: false,
       chat_template_kwargs: { enable_thinking: false },
     });
+    // reasoning_effort is parsed and validated by tolerant hosts (vLLM <= 0.12
+    // 400s on "none"), so it is the retry-only hint, never on the first request.
+    expect(nonThinkingExtras('http://localhost:1234/v1')).not.toHaveProperty('reasoning_effort');
     expect(nonThinkingExtras('https://api.openai.com/v1')).toEqual({});
     expect(nonThinkingExtras('https://api.deepseek.com/v1')).toEqual({});
+    expect(nonThinkingExtras('https://example.openai.azure.com/v1')).toEqual({});
+  });
+
+  it('offers reasoning_effort: none as the retry hint for tolerant providers only', () => {
+    expect(reasoningOffExtras('http://localhost:1234/v1')).toEqual({ reasoning_effort: 'none' });
+    expect(reasoningOffExtras('https://api.openai.com/v1')).toEqual({});
+    expect(reasoningOffExtras('https://api.deepseek.com/v1')).toEqual({});
+    expect(reasoningOffExtras('https://example.openai.azure.com/v1')).toEqual({});
   });
 
   describe('Strict providers (OpenAI, Azure OpenAI, DeepSeek)', () => {
@@ -817,6 +922,15 @@ describe('openai-compatible-client — embeddings', () => {
   it('wraps string input as single-element array', async () => {
     const r = await generateEmbedding({ ...cfg, baseUrl: embBase }, 'bge-m3', 'a');
     expect(r).toHaveLength(2);  // fake server returns both rows regardless
+  });
+
+  it('posts to a stored …/embeddings URL without appending /embeddings again', async () => {
+    const r = await generateEmbedding(
+      { ...cfg, baseUrl: `${embBase}/embeddings` },
+      'bge-m3',
+      ['a'],
+    );
+    expect(r).toEqual([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
   });
 });
 

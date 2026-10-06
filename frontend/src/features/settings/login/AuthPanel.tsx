@@ -95,7 +95,10 @@ export function AuthPanel({
   const notice = ssoNoticeCopy(serverUnreachable);
 
   return (
-    <section className="nm-card-elevated w-full max-w-md p-6 sm:p-8" aria-labelledby="auth-panel-title">
+    // The sign-in card floats over the login halo, so it wears the overlay
+    // glass surface — not an opaque elevated card. Reduced-transparency
+    // falls back to opaque fill on the utility itself.
+    <section className="nm-popover-glass w-full max-w-md p-6 sm:p-8" aria-labelledby="auth-panel-title">
       <div className="mb-7">
         <p className="mb-2 text-sm font-semibold text-primary-ink">
           {isRegister ? 'New workspace account' : 'Welcome back'}

@@ -157,6 +157,35 @@ curl http://localhost:8081/api/health
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
+### Immutable page baseline storage (foundation)
+
+Issue #275 installs the inactive Community Edition foundation for immutable
+article baselines. It has no published admin or end-user UI, and baseline
+creation remains disabled until #276 completes collaboration, sync, purge,
+cascade, and cross-process writer enforcement. In a foundation-only deployment,
+`GET /api/admin/page-baselines/activation` reports
+`creationEnabled: false`, `deploymentReady: false`, and blocker
+`protected_writer_enforcement_not_registered`. Do not bypass that gate or
+describe the current release as covering every writer.
+
+Retained media lives under `ATTACHMENTS_DIR/page-baselines/` and is excluded
+from ordinary attachment sweeps and page-delete cleanup. Size limits are
+positive safe-integer environment values:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAGE_BASELINE_MAX_ATTACHMENTS` | `512` | Maximum referenced media objects in one baseline |
+| `PAGE_BASELINE_MAX_BYTES` | `1073741824` (1 GiB) | Maximum retained media bytes in one baseline |
+| `PAGE_BASELINE_MAX_RETAINED_BYTES` | `53687091200` (50 GiB) | Logical cap across published evidence and active reservations |
+| `PAGE_BASELINE_MIN_FREE_BYTES` | `67108864` (64 MiB) | Filesystem free-space reserve left after an admitted copy |
+
+Capacity exhaustion refuses new preparation and never evicts published
+evidence. Lowering a limit does not prune existing baselines. For the exact
+manifest, media coverage, rollout gate, authority model, retention/backup rules,
+and conservative writer recovery procedure, see
+[`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
+
+
 ### Client inference (on-device editor model)
 
 Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
@@ -224,7 +253,7 @@ Hosted DeepSeek is a **strict thinking host**: Think never sends `think` or
 Reasoning models that stream `reasoning_content` still return the visible
 answer on `content`; with Think off the reasoning channel is dropped.
 
-#### Chat-only hosts must not cover embedding / rerank / image embedding
+#### Chat-only hosts must not cover embedding / rerank / image analysis
 
 A hosted **chat** provider must **not** be assigned to:
 
@@ -234,13 +263,14 @@ A hosted **chat** provider must **not** be assigned to:
 - **Rerank** — never inherits (ADR-021). Unassigned means the rerank stage is
   off. It needs a Cohere/Jina-style `/v1/rerank` endpoint the chat host does
   not serve.
-- **Image embedding** — never inherits. Unassigned means the image leg is
-  off. A text chat model answering the plain embeddings shape would write
-  plausible but wrong vectors.
+- **Image analysis** — never inherits, and the assignment is the egress
+  control (ADR-027 D3): unassigned means no image byte leaves the host. It
+  needs a model that accepts an image part on `/chat/completions`, which a
+  text-only chat host does not.
 
 Chat / Summary / Quality / Auto-tag may inherit the default provider. Keep a
 separate local (or dedicated hosted) embedder for **Embedding**, and leave
-**Rerank** / **Image embedding** disabled unless you have a real endpoint for
+**Rerank** / **Image analysis** disabled unless you have a real endpoint for
 each.
 
 #### Runtime knobs that stay as env vars
@@ -287,12 +317,45 @@ provider rows:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QUALITY_CHECK_INTERVAL_MINUTES` | `60` | How often the quality analysis worker runs |
-| `QUALITY_BATCH_SIZE` | `5` | Pages analyzed per quality worker cycle |
 | `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | **Bootstrap-only** — prefer the Quality use-case assignment under Settings → AI Models |
 | `SUMMARY_CHECK_INTERVAL_MINUTES` | `60` | How often the summary worker scans for pages |
-| `SUMMARY_BATCH_SIZE` | `5` | Max pages to summarize per worker cycle |
 | `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | **Bootstrap-only** — prefer the Summary use-case assignment. Empty = disabled when no assignment exists. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
+
+Pages per batch for the quality and summary workers is **not** an environment
+variable: set it per worker under **Settings → AI Models → Workers** (default 5, range
+1–100; `admin_settings.quality_batch_size` / `summary_batch_size`). Each
+scheduled run and each **Run Now** processes at most that many pages; the rest
+wait for the next run. The former `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE`
+variables are ignored.
+
+Save applies to the next batch; edits made while saving remain unsaved until
+you save again. If settings cannot be read, the fields stay blank rather than
+claiming the default. **Retry** reloads settings without leaving the page.
+A failed refresh keeps the last loaded settings and any unsaved edits visible
+with a warning.
+
+**Run Now runs one batch, not the entire backlog.** Quality and Summary each
+select up to their **Pages per batch** setting (five by default) and process
+them sequentially. More eligible pages wait for the next scheduled cycle
+(60 minutes by default) or another Run Now. Short-content skips can make a
+batch finish quickly.
+
+Both scheduled and manual entrypoints share one lock per worker, renewed
+while inference runs; overlapping triggers do not process the same batch
+again. A failed article is counted as an error, not as processed. BullMQ
+records a batch containing errors as **failed**, including partial progress;
+successful processing counts may include deliberate skips, not just generated
+results. Per-page retries remain capped at three.
+
+If a batch immediately fails, check the backend log and the Quality/Summary
+assignments under **Settings → AI Models**. Use the exact model identifier
+served by the provider's `/v1/models` endpoint, and confirm that a completion
+request succeeds from the backend's network. A responding server or a listed
+model alone does not prove inference works. In particular, LM Studio can
+answer HTTP 400 “No models loaded” for a stale model identifier. Correct the
+assignment/load the model before triggering another batch; retry-exhausted
+pages require a rescan, which also resets previously completed pages.
 
 ### Background Job Queue (BullMQ)
 
@@ -523,29 +586,27 @@ panel writes the same `admin_settings` rows.
 | MMR diversity narrow | `rag_mmr_enabled` | off | on / off |
 | MMR λ | `rag_mmr_lambda` | 0.7 | 0–1 |
 | Ranking prior weight | `rag_ranking_prior_weight` | 0 (off) | 0–0.05 |
-| Image leg (#1115 P3) | `rag_image_leg_enabled` | on | on / off |
 | Images per page (#1115 P2) | `rag_images_per_page_max` | 20 | 1–200 |
 | Index external images (#1115 P2) | `rag_image_index_external` | on | on / off |
 | Images shown to the model (#1115 P4) | `rag_answer_max_images` | 2 | 0–8 |
 
-The four image knobs are three parts of one feature.
+The three image knobs are two parts of one feature.
 `rag_images_per_page_max` and `rag_image_index_external` bound what the intake
-worker takes off a page. `rag_image_leg_enabled` is the QUERY side: it decides
-whether retrieval fuses a third, image-based leg, which costs **one extra
-embedding call per question**. `rag_answer_max_images` is the ANSWER side: how
-many of the matched pictures are attached to the chat request. Turning the leg
-off leaves the index being built; unassigning the `image_embedding` use case
-(Settings → AI Models → LLM providers) turns off both retrieval halves. None of
-them makes the leg run when no vision-language model is assigned or the index
-is empty. **The whole feature — assigning the model, watching the index fill,
-what a text-only chat model does — is "Image retrieval" below**; operations are
-`docs/runbooks/image-index.md`.
+worker takes off a page and hands to image analysis. `rag_answer_max_images` is
+the ANSWER side: how many of the matched pictures are attached to the chat
+request. There is no query-side image switch any more — #1618 stage 2 retired
+ADR-025's separate image leg, and a picture's derived description is retrieved
+by the ordinary semantic and keyword legs. Unassigning the `image_analysis` use
+case (Settings → AI Models → LLM providers) stops all new analysis. **The whole
+feature — assigning the model, watching the queue drain, what a text-only chat
+model does — is "Image retrieval" below**; operations are
+`docs/runbooks/image-analysis.md`.
 
 Two things about the answer knob specifically. **0 is a legal value here** —
 unlike `rag_images_per_page_max`, whose floor is 1 because a zero intake cap
-would reconcile the index away — and it is the honest off switch: the index
-still fills, the leg still ranks pages, and the pictures still appear as
-sources with their thumbnails. And **a chat model that has not probed
+would reconcile the derived chunks away — and it is the honest off switch:
+analysis still runs, the derived text still ranks pages, and the pictures still
+appear as sources with their thumbnails. And **a chat model that has not probed
 vision-capable never receives images whatever this says**; the answer is then
 text-only with nothing on it saying so, which is why the panel states that
 beside the control. Fix a wrong verdict with **Re-check** on the chat row in
@@ -555,8 +616,8 @@ Settings → AI Models, not with this number.
 alone.** It is pgvector's `hnsw.ef_search`: how many candidates the HNSW graph
 walk visits before returning. Every probe runs at this value or at twice the
 rows it asks for, whichever is larger, capped at pgvector's own limit of 1000,
-and all four kNN probes in the product (retrieval's vector leg, the image leg,
-page relationships and duplicate detection) read the same number. That second
+and all three kNN probes in the product (retrieval's vector leg, page
+relationships and duplicate detection) read the same number. That second
 half is why it sits beside Fetch width **as context, not as a companion knob**:
 each probe already raises its own depth to twice the rows it fetches, so this
 floor only ever binds the probes that are narrower than half of it, and
@@ -993,113 +1054,93 @@ limited to aggregate request and token counters in Redis under
 ### Image retrieval (`Settings → AI Models`)
 
 Pictures in your pages — architecture diagrams, screenshots, flowcharts — are
-embedded by a **separate, vision-language model** into a **separate index**
-(`page_image_embeddings`), and searched as a third retrieval leg beside the
-semantic and keyword ones. Text retrieval is untouched by all of it: two
-indexes, two models, two failure modes (ADR-025).
+**described by a generative vision model at ingestion** into bounded, versioned
+text, and that text is embedded by the ordinary text embedder as
+provenance-marked chunks of the page it came from. There is **one** index, one
+query embed and no third retrieval leg: the semantic and keyword legs you
+already run retrieve a picture's description like any other chunk, and a
+**text-only** chat model can cite the picture (ADR-027).
+
+> **The legacy image-embedding leg is retired** (#1618 stage 2, migration 118).
+> ADR-025's separate `page_image_embeddings` index, its `image_embedding` use
+> case, the MRL truncation width, the **Image leg** toggle
+> (`rag_image_leg_enabled`) and the image-only refusal are gone. If you are
+> upgrading from an instance that had them, read
+> `docs/runbooks/image-embedding-retirement.md` — it covers what the migration
+> drops and how to roll it back.
 
 **Everything here is off until you assign the model.** An instance that never
-does gets exactly today's behaviour. The gate itself is not free — every
-hybrid search pays one cached boolean plus one indexed read of the assignment,
-which on an unassigned instance answers first and stops there — but that is a
-round-trip, not a model call. Operations — serving, probing, re-scanning,
-changing the model — are `docs/runbooks/image-index.md`.
+assigns `image_analysis` gets exactly today's behaviour and sends no image byte
+anywhere: the assignment IS the egress control (ADR-027 D3). Operations —
+assigning, probing, running the worker, re-analyzing, changing the model — are
+`docs/runbooks/image-analysis.md`.
 
 The feature spans three sub-tabs, one per question you would actually ask.
 
-#### 1. Can it run? — `LLM providers` → the **Image embedding** row
+#### 1. Can it run? — `LLM providers` → the **Image analysis** row
 
-`image_embedding` is a use case like `chat` or `embedding`, with one
+`image_analysis` is a use case like `chat` or `embedding`, with one
 difference: **it never inherits the default provider** (the `rerank` rule,
 ADR-021). Leaving it unassigned is how you turn the whole feature off.
 
-- **Assign** a provider + model and press **Save use-case assignments**. The
-  save **probes first and refuses on failure** — it embeds a known image *and*
-  a text and requires the two to come back at the same width. A wrong model
-  here would fill an index with well-formed, meaningless vectors, which is
-  worse than a refusal.
-- **Truncate to N dimensions (MRL)** — sent as the `dimensions` parameter on
-  every image-embedding request. Leave it empty for the model's native width.
-  The 8B needs **4000 or fewer** to stay indexable, and the server must accept
-  the parameter (vLLM: `--hf-overrides '{"is_matryoshka": true}'`). A server
-  that ignores it is refused rather than silently recorded at the wrong width.
-- **Last probe** shows what the model answered: `2048-dim · halfvec HNSW`,
-  `vector HNSW`, `no index (sequential scan)`, or **Not established**. Above
-  4000 dimensions pgvector cannot build an HNSW index at all, and the row says
-  so with the remedy beside it.
-- **Re-check** re-runs the probe. It is **not merely diagnostic**: on a width or
-  endpoint change it empties the index and re-queues every page, and the toast
-  says so. Use it after upgrading a model server *in place* behind the same URL
-  — that is the one change no signal in the app can see.
+- **Assign** a provider + model and press **Save use-case assignments**. It
+  needs a *generative* vision model on an ordinary
+  `POST {baseUrl}/chat/completions` that accepts an `image_url` part — not an
+  embeddings endpoint, and not a text-only chat host.
+- **Analysis output ceiling** (`image_analysis_max_output_tokens`, Settings →
+  AI Models → Workers) bounds the description each image may produce, so one
+  pathological picture cannot write an unbounded chunk into a page.
+- The chat row's **vision** verdict is a different question and is probed
+  separately — it decides whether the *answering* model is shown the picture
+  itself. Analysis runs without it.
 
-#### 2. Is it running? — `Embeddings` → the **Image index** card
+#### 2. Is it running? — `Embeddings` → the **Image analysis** card
 
-- **Status line** — the live index's width, tier and model, or
-  `Not assigned — assign Image embedding under Settings → AI Models → LLM
-  providers`.
-- **Images embedded** and **Pages pending** (`dirty/total`).
-- **Last run** — pages, `embedded`, `reused`, `removed`, plus **Skipped:** by
-  reason (`missing`, `unsupported`, `oversized`, `too large`, `capped`,
-  `external`). This is where a row count lower than your picture count gets
-  explained: images are **skipped and counted, never resized**, and SVG and
-  draw.io files are never embedded at all.
-- **Process now** drains the current backlog. **Re-scan all** marks every page
-  and re-reads its images; already-embedded images are **reused by content
-  hash**, so a re-scan is far cheaper than it sounds.
-- Three states are amber because you have to act on them: a run with **failed
-  images** (those pages stay queued and retry), pages that **could not be
-  written**, and an index built for a **different model or endpoint** than the
-  one now assigned — that last one names **Re-check** as the fix.
-- **Changing the image model empties and rebuilds this index; text search is
-  unaffected.** There is no shadow-swap path here and deliberately so: the leg
-  simply goes dark while the index refills.
+- **Status line** — the assigned pair, or `Not assigned — assign Image
+  analysis under Settings → AI Models → LLM providers`.
+- **Images analyzed** and **Pages pending** (`dirty/total`,
+  `pages.image_analysis_dirty` is the queue).
+- **Last run** — pages, analyzed, reused, removed, plus **Skipped:** by reason.
+  Images are **skipped and counted, never resized**, and SVG and draw.io files
+  are never analyzed at all.
+- **Process now** drains the current backlog. **Re-analyze all** marks every
+  page and re-reads its images; an unchanged image under an unchanged
+  model/prompt identity is **reused**, so a re-analysis is far cheaper than it
+  sounds.
+- Changing the model or the prompt revision changes the recorded identity and
+  re-queues the corpus; the derived chunks for a page are replaced only when
+  its new description is valid, so text search never goes dark in between.
 
 #### 3. How should it behave? — `Retrieval` → the **Image retrieval** group
 
 | Control | Key | Default | What it does |
 | --- | --- | --- | --- |
-| **Image leg** | `rag_image_leg_enabled` | on | Fuses the image index into page ranking. Costs **one extra embedding call per question**. Off leaves the index still being built. |
-| **Images per page** | `rag_images_per_page_max` | 20 | How many of a page's images are indexed. A cost bound: each one past it is a request. |
-| **Index external images** | `rag_image_index_external` | on | Whether pictures Confluence pulled from an external URL are indexed. |
+| **Images per page** | `rag_images_per_page_max` | 20 | How many of a page's images are analyzed. A cost bound: each one past it is a request. |
+| **Index external images** | `rag_image_index_external` | on | Whether pictures Confluence pulled from an external URL are analyzed. |
 | **Images shown to the model** | `rag_answer_max_images` | 2 | How many matched pictures are attached to the chat request. **0 is legal** and is the honest off switch. |
 
-When `image_embedding` is unassigned the group shows a muted note and **keeps
-its controls enabled** — they are settings, not actions, and configuring the leg
-before assigning the model is a reasonable order to work in.
+When `image_analysis` is unassigned the group shows a muted note and **keeps
+its controls enabled** — they are settings, not actions, and configuring the
+intake before assigning the model is a reasonable order to work in.
 
 #### What a text-only chat model does
 
 **A chat model that has not probed vision-capable never receives images,
 whatever *Images shown to the model* says.** The answer is then produced from
-text alone and is **unqualified**: nothing on the answer, in the sources or in
-the screen-reader announcement says a picture was withheld. That is deliberate
-(ADR-025 D8) — on such a deployment the notice would appear on *every* answer,
-which is how a notice stops being read — and the fact is stated exactly once,
-under that control.
+text alone — but it is no longer produced from titles alone: the picture's
+derived description is an ordinary retrieved chunk, so the assistant can answer
+*about* the diagram and cite it. The answer is **unqualified**: nothing on it,
+in the sources or in the screen-reader announcement says the picture itself was
+withheld. That is deliberate (ADR-025 D8) — on such a deployment the notice
+would appear on *every* answer, which is how a notice stops being read — and
+the fact is stated exactly once, under that control.
 
-The matched pictures still appear as sources with their thumbnails, and the
-citation opens the page the picture is on — the thumbnail itself is decorative,
-not a link to the file. To find out whether your model can see images, look at
-the chat row under **Settings → AI Models → LLM providers**: it shows the
-verdict, and **Re-check** there is how a wrong one is corrected.
+The matched pictures appear as sources with their thumbnails, and the citation
+opens the page the picture is on — the thumbnail itself is decorative, not a
+link to the file. To find out whether your model can see images, look at the
+chat row under **Settings → AI Models → LLM providers**: it shows the verdict,
+and **Re-check** there is how a wrong one is corrected.
 
-#### What the refusal looks like to a user
-
-There is one refusal specific to this feature. When **every** page retrieved is
-an image-only page — one whose text is too thin to index, so its only context is
-a synthesised title — **and** not one of its pictures could be shown to the
-model, the request runs no completion. The prompt would otherwise be a list of
-titles and a question.
-
-The user sees an ordinary assistant turn saying the question was not answered,
-carrying a `Not answered` chip and the pictures beneath it under *Closest
-matches — not used*. It is neutral, not red and not amber: the request did not
-fail, and the matches may well be the right ones. One real text row anywhere in
-the results is enough to stand it down, so this does not fire on ordinary
-answers whose fifth source happens to be a picture.
-
-If you see it often, the remedy is a vision-capable chat model — or turn the
-image leg off, if the pages it is reaching are not ones you want answered from.
 
 ### Sync conflict resolution (Enterprise, v0.4+)
 
@@ -1422,6 +1463,54 @@ Pick one of the following when upgrading an existing install:
 
 2. Restart the services. Migrations run automatically.
 
+## Immutable Page Baseline Foundation
+
+The #275 foundation stores a canonical manifest, independent retained copies of
+referenced media, and append-only freeze/thaw evidence. CE provenance is a
+`manual_assertion`: optional reported signatories and references are
+caller-supplied assertions, not authenticated approval or a cryptographic
+signature. Signed governance, independently trusted keys, and evidence reports
+belong to #278; the shared UI belongs to #277. The #276 enforcement dependency
+must land first, so creation is deliberately off in this release.
+
+Published evidence has no product TTL, ordinary-retention deletion, capacity
+eviction, or delete API. Thaw unlocks the live page but retains its old
+baseline. Evidence also survives page and actor deletion: live foreign keys may
+become null while original page identity and actor display snapshots remain.
+Old page history and media URLs do not become an evidence back door after
+deletion; they return not found. Deleted-source evidence is available only to an
+active system administrator through the baseline-ID admin routes.
+
+Freeze preview/manual freeze requires current page access plus system-admin,
+space `manage`, or standalone-page ownership. Thaw is narrower: current page
+access plus system-admin or space `manage`; owner-only thaw is not allowed.
+Ordinary page history redacts reported signatory emails, while the system-admin
+evidence response may contain the stored caller-reported email. A UUID or digest
+never grants access.
+
+Interrupted writers never expire by heartbeat or TTL. Recovery is active
+system-administrator work through `/api/admin/page-write-recovery`: quiescence
+must reach the process that owns the runtime ID, fencing accepts only an exact
+owner acknowledgment, server-proven no-start state, or independently verified
+local process termination, and outcome reconciliation uses trusted
+kind-specific server code. There is no caller-supplied proof or force-clear
+route. An unversioned remote write with an unknown result stays unresolved.
+Quiescence waits across successful multi-stage writer gaps through final
+settlement; it is not a timeout-based cancellation. Conditional Confluence
+recovery reads exact provider history and atomically publishes the matching
+local content and completion metadata before clearing the intent. It never
+reissues an unknown remote mutation.
+Recovery itself belongs to the process performing it: quiescence waits for its
+verification, repair and settlement. If that process dies, fence its new runtime
+ID before retrying. A failed provider read after an acknowledged page PUT keeps
+the acknowledgment and retries only observation/local publication, never PUT.
+Committed local changes and hard deletes also retain cache-publication work
+through Redis outages; the worker retries it after Redis returns.
+
+The complete activation, storage, canonical digest, capacity, API, recovery,
+and backup procedure is
+[`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
+
 ## Attachment Storage & Orphan Sweep
 
 `ATTACHMENTS_DIR` (default `data/attachments`) holds two stores that grow with
@@ -1528,8 +1617,8 @@ uploaded images are a different matter and are protected by their
 
 `local_attachments` rows whose file is missing on disk are
 **counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
-metadata. Files the sweep deletes take their `page_image_embeddings` rows with
-them and the owning pages are re-queued for image indexing.
+metadata. Files the sweep deletes take their `page_image_analyses` rows with
+them and the owning pages are re-queued for image analysis.
 
 A directory whose name is not a usable attachment key — `tmp.12345/`,
 `12345 (copy)/`, anything a person or another tool left under
@@ -1566,7 +1655,7 @@ run — dry runs included — emits a `RETENTION_PRUNED` audit event on
 `attachments_orphan_sweep` with counts by reason class, so the Data Retention
 Attestation report (Report 7) covers it. That report's *table* and *rows
 pruned* columns read the event's `table` / `rows_pruned` keys, which name the
-one **table** this sweep prunes rows from — `page_image_embeddings` — and the
+one **table** this sweep prunes rows from — `page_image_analyses` — and the
 row count it removed there. Files are not rows: what was deleted on disk is in
 the same event's `files_pruned` / `directories_pruned` / `bytes_pruned`, beside
 `dry_run`, which is what tells a heartbeat from a real prune. No retention
@@ -1587,6 +1676,14 @@ transaction open until `pg_dump` has exited, then closes and returns the pooled
 connection. Backup generation remains constant-memory: the backend does not
 buffer a complete dump, attachment, or archive, and it does not report success
 until `pg_dump` closes with exit code `0`.
+
+Immutable page baselines require the database records and
+`ATTACHMENTS_DIR/page-baselines/` bytes as one recovery set. The in-app backup
+includes both because it walks the complete attachment root. A manual
+database-only dump or attachment-volume-only copy is not complete baseline
+evidence; stop application writers and capture both together. See the
+[immutable baseline runbook](runbooks/immutable-page-baselines.md#backup-and-restore)
+for restore verification.
 
 - **Download:** the authenticated admin request creates a 256-bit Redis ticket
   with a 30-second TTL, then the browser performs native navigation to the
@@ -2139,7 +2236,7 @@ Migrations run automatically on startup. If a migration fails:
   That means Redis running out of memory stops job enqueue (sync, re-embed,
   summary, quality), not just caching. Watch `used_memory` against `maxmemory`
   in `redis-cli INFO memory`.
-- Reduce `QUALITY_BATCH_SIZE` and `SUMMARY_BATCH_SIZE` to lower worker memory usage.
+- Lower **Pages per batch** for the quality and summary workers under Settings → AI Models → Workers to lower worker memory usage.
 - Consider increasing Docker container memory limits for the backend if processing large articles.
 
 **Users report "Image staging is temporarily unavailable … near its memory
@@ -2151,3 +2248,78 @@ feature degrades so that background processing keeps working. It clears on its
 own as staged entries expire. If it recurs, raise Redis `--maxmemory` in
 `docker/docker-compose.yml` (and `REDIS_MEM_LIMIT` above it) rather than raising
 the percentage — the remaining fifth is the headroom the queues write into.
+
+### Image analysis (vision) — #1615, ADR-027
+
+The candidate that replaces the image-embedding leg. Settings → AI Models →
+LLM providers → **Image analysis (vision)**.
+
+- **The assignment is the egress control.** No page image leaves the host
+  until you save a provider here; the card names the saved provider that
+  receives them. It never inherits the default or the chat provider.
+- **Save is probe-gated.** Saving runs the known-content vision probe on the
+  pair the row would resolve to (your model, else the provider's default) and
+  writes the row only on a `true` verdict. Four refusals, each leaving the
+  previous assignment untouched: **provider not found**, **no model
+  resolves**, **the model refused the test image** (text-only — pick a
+  vision-capable model) and **image support could not be confirmed**
+  (unreachable, auth, 429, open breaker — not a verdict about the model; fix
+  the endpoint and save again, or **Re-check**).
+- **Pause, not purge.** Unassigning stops new analysis; descriptions already
+  indexed and still valid stay searchable. The **Index identity** line shows
+  the model identity the index was built under; if the provider's endpoint
+  moved, an amber notice says analysis is paused and **Re-check** re-probes
+  the new endpoint and, on `true`, adopts it — which re-analyzes every image
+  (the toast states the count). `GET /api/admin/llm-usecases/image_analysis/reanalysis-scope?providerId=…&model=…`
+  discloses that count before you commit.
+- **Max output tokens** (default 8,192, range 4,096–16,384) is the vision
+  reply's ceiling. Lower it if the model's context refuses the default; raise
+  it for scripts that tokenize below one character per token. Saving it fires
+  no probe and re-analyzes nothing.
+- **Inspection:** `GET /api/admin/pages/:id/image-analyses[?payload=1]`
+  (admin, page-visibility checked) lists a page's analysis rows with their
+  failure class and validity.
+
+#### Is it running? — the Image analysis card (#1618)
+
+Settings → AI Models → **Embeddings** carries the processing half. The row
+above is *can it run?*; this card is *is it running?* — it sits beside the
+legacy **Image index** card for as long as both designs ship.
+
+- **Counters.** *Analyzed* is the images with a description the index can
+  actually use. **Stale** is separate on purpose: analyzed on disk, but written
+  under a model identity or a prompt/schema version that is no longer current,
+  so no reader accepts it until the next run re-analyzes it. *Pending*,
+  *Failed*, *Given up* (the attempt cap — only **Retry failed** moves those)
+  and *Skipped* complete the work window.
+- **Two backlogs that are not the same thing.** "*N* pages analyzed, text
+  embedding still pending" costs no vision call — the descriptions exist and
+  the page is waiting for the ordinary text embedder. A *partially analyzed*
+  corpus still owes vision calls. "*N* pages queued for an image re-read" is
+  the third: those pages changed and their images have not been looked at yet.
+- **Skip reasons are named.** `missing from the store` is the one that is a
+  gap rather than a decision — the page references an image the store does not
+  hold, which is a broken sync, and it is what keeps an otherwise complete
+  corpus reading *partial*. The rest (unsupported format, above the pixel
+  bound, too large, external URL, past the per-page cap) are policy working as
+  configured.
+- **Last run** reports the three steps and, when a batch stopped early, the
+  reason and the endpoint's HTTP status. "Paused: no vision model is assigned"
+  is not an error — the sweep and the reconcile still ran.
+- **The three actions.** **Process now** kicks one bounded batch (it reports
+  *already running* rather than claiming a second one started). **Retry
+  failed** gives every failed and given-up image a fresh attempt budget, due at
+  once. **Re-analyze all** discards every stored description first and spends
+  one vision call per image; it shows the exact count before it runs, and it is
+  refused with a 409 while a corpus text re-embed or a #1116 shadow backfill
+  holds the one-active-run slot.
+- **A failed status read is not an unassigned leg.** If the card says the
+  status could not be read, the assignment and the stored analyses are
+  untouched and all three actions stay available — retry the read, or check
+  the backend logs.
+- **Routes:** `GET /api/admin/embedding/image-analysis`, and
+  `POST /api/admin/embedding/image-analysis/{process,retry-failed,reanalyze-all}`
+  (admin only).
+- **Retiring the old leg:** `docs/runbooks/image-embedding-retirement.md` has
+  the destructive boundary, the backup set and the restore procedure. Nothing
+  in it removes page content or attachment bytes.

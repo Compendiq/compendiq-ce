@@ -40,6 +40,7 @@ function settingsFixture(
     theme: 'graphite',
     syncIntervalMin: 15,
     confluenceConnected: false,
+    confluenceEnabled: true,
     showSpaceHomeContent: true,
     customPrompts: {},
     inlineCompletionEnabled: false,
@@ -175,6 +176,24 @@ describe('OnboardingChecklistCard — steps', () => {
   it('states progress in words, not colour alone', () => {
     renderCard(settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }));
     expect(screen.getByTestId('onboarding-progress')).toHaveTextContent('2 of 5 done');
+  });
+
+  /**
+   * Standalone mode (#1623). The two Confluence rows are gone rather than
+   * checked off: nothing on this card may send a user who switched the
+   * integration off to connect an account or pick spaces, and a pre-ticked row
+   * would credit them with work they never did.
+   */
+  it('renders three milestones, and no Confluence rows, when the integration is off', () => {
+    renderCard(settingsFixture({ confluenceEnabled: false }));
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
+    expect(screen.queryByTestId('onboarding-step-connect-confluence')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-step-select-spaces')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-cta-connect-confluence')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-cta-select-spaces')).not.toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-step-ask-ai')).toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-progress')).toHaveTextContent('0 of 3 done');
   });
 
   it('names the state of each step for a screen reader, not only with a glyph', () => {
@@ -621,6 +640,36 @@ describe('OnboardingChecklistCard — graduation', () => {
     // Dismiss control is the way back out.
     expect(screen.getAllByRole('listitem')).toHaveLength(5);
     fireEvent.click(screen.getByTestId('onboarding-dismiss'));
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+  });
+
+  /**
+   * A standalone user reaches the end of their own list (#1623). The
+   * congratulation counts no further than `steps.length`, so the three stored
+   * milestones finish the guide and the write that retires it still lands.
+   */
+  it('congratulates a standalone user once their three steps are done', async () => {
+    const almostStandalone = settingsFixture({ confluenceEnabled: false }, {
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+    });
+    const doneStandalone = settingsFixture({ confluenceEnabled: false }, {
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+      pageCreatedOrEdited: true,
+    });
+    const serve = serveSettings(almostStandalone);
+    const { queryClient } = renderCard(almostStandalone);
+    expect(screen.getByTestId('onboarding-progress')).toHaveTextContent('2 of 3 done');
+    expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
+
+    act(() => {
+      serve(doneStandalone);
+      queryClient.setQueryData(['settings'], doneStandalone);
+    });
+
+    await screen.findByTestId('onboarding-complete');
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
     await waitFor(() => expect(settingsPuts()).toHaveLength(1));
   });
 });

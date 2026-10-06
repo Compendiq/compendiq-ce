@@ -188,6 +188,10 @@ curl "http://localhost:3051/api/search?q=deployment&mode=hybrid" \
   -H "Authorization: Bearer <access-token>"
 ```
 
+Every search item includes `source: "standalone" | "confluence"`, taken from
+the current page record in every search mode and fallback path. A named
+`spaceKey` or historical `confluenceId` does not determine provenance.
+
 ### Readiness Probe (for Kubernetes / Docker)
 
 ```bash

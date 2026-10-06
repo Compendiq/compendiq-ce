@@ -22,7 +22,7 @@ import { AiProvider } from '../../../features/ai/AiContext';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { Logo } from '../Logo';
 import { HeaderSessionCluster } from './HeaderSessionCluster';
-import { MainNavChassisRail } from './MainNavStrip';
+import { MainNavChassisRail, MainNavHeaderTabs } from './MainNavStrip';
 import { PageTransition } from './PageTransition';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
@@ -489,6 +489,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
           >
             <Logo className="h-6 w-auto text-foreground" title="Compendiq" />
           </Link>
+
+          {/* 3 Main Nav destination buttons as Notion flat tabs */}
+          <MainNavHeaderTabs />
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1">
           {isArticleRoute && isMobileLayout && (
@@ -513,33 +516,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <TrialBanner />
       </div>
 
-      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1 overflow-hidden">
-      <MainNavChassisRail />
+      {/* No overflow clip here or on panel-wrapper: the workspace card clips
+          its own content, and its box-shadow must reach the chassis margin.
+          app-chassis (h-screen, overflow-hidden) still stops page scroll. */}
+      <div data-testid="app-shell" className="app-shell flex min-h-0 flex-1">
+      <MainNavChassisRail>
+        {/* The tree / left side panel lives in the chassis rail, outside the workspace card */}
+        {isAiRoute
+          ? <AiConversationsSidebar embedMainNav={false} />
+          : isSettingsRoute
+            ? <SettingsSidebar embedMainNav={false} />
+            : <SidebarTreeView embedMainNav={false} />}
+      </MainNavChassisRail>
       <div
         data-testid="panel-wrapper"
-        className={cn(
-          'flex min-h-0 min-w-0 flex-1 overflow-hidden',
-          isArticleRoute && 'app-body-with-rail',
-        )}
+        className="ml-2 flex min-h-0 min-w-0 flex-1"
       >
         <div data-testid="app-workspace" className="app-workspace flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {/* Left sidebar — desktop only (mobile uses the slide-over above).
-            On /settings* we swap to SettingsSidebar so the main nav strip
-            stays visible alongside the Settings section nav. */}
-        <div className="hidden md:flex">
-          {/* Third arm on AI routes (#1361). None of these three take a
-              collapse-forcing prop from a layout preset any more — those
-              presets were deleted, and app-shell-layout.test.ts guards
-              against either name reappearing here. The pane reads the
-              shared treeSidebarCollapsed itself, exactly as the two trees
-              do. */}
-          {isAiRoute
-            ? <AiConversationsSidebar embedMainNav={false} />
-            : isSettingsRoute
-              ? <SettingsSidebar embedMainNav={false} />
-              : <SidebarTreeView embedMainNav={false} />}
-        </div>
-
           {/* Left navigation and <main> share --color-card. They remain one
               clipped workspace composition, split by the sidebar hairline
               rather than nested cards or a second value step. */}
@@ -619,17 +612,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
               </PageTransition>
             </div>
           </main>
-        </div>
 
-          {/* Detached context rail. Sits on the chassis beside the brighter
-              workspace card, below the header. Mounted only at md+ so the
-              mobile sheet below is the single inspector instance — two
-              panes would duplicate tab ids and DockPanel state. */}
+          {/* Attached right panel. Lives inside the workspace card,
+              attached to the main area, separated by a 1px border. */}
           {isArticleRoute && !isMobileLayout && (
-            <div className="app-rail-beside min-h-0">
-              <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
-            </div>
+            <ArticleRightPane inspectorViewRequest={inspectorViewRequest} />
           )}
+        </div>
       </div>
       </div>
 
@@ -641,7 +630,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 nm-card-elevated px-3 py-1.5"
+            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 nm-popover-glass px-3 py-1.5"
             role="status"
             aria-live="polite"
           >

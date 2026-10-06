@@ -1,21 +1,21 @@
+import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { BookOpen, Bot, Share2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 
 /**
- * The "Pages / AI / Graph" strip. It renders in two places: the chassis-level
- * `MainNavChassisRail`, which owns it at desktop widths, and — when a sidebar
- * is passed `embedMainNav` — the top of that sidebar, which is how the mobile
- * drawer gets it. The sidebars are `SidebarTreeView` on `/` and `/pages/*`,
- * `AiConversationsSidebar` on `/ai` and `/ai/c/:id` (#1361), and
- * `SettingsSidebar` on `/settings/*`. Extracted into one component so the
- * three sidebars can't drift in order or in styling. The visual order here
- * is the source of truth.
+ * The "Pages / AI / Graph" destinations. At desktop widths they are flat tabs
+ * in the top app header (`MainNavHeaderTabs`); below `md` they head the
+ * mobile drawer through a sidebar's `embedMainNav` (`MainNavStripExpanded`,
+ * or `MainNavStripCollapsed` for a collapsed tree). The sidebars are
+ * `SidebarTreeView` on `/` and `/pages/*`, `AiConversationsSidebar` on `/ai`
+ * and `/ai/c/:id` (#1361), and `SettingsSidebar` on `/settings/*`. One item
+ * list so the surfaces can't drift in order or in styling; the visual order
+ * here is the source of truth.
  *
- * `isActive` is plain `startsWith` for the AI pill, so `/ai` and
- * `/ai/c/<id>` both light it: a reopened conversation is still the AI tab,
- * and no code change was needed for the per-conversation route.
+ * `isActive` is plain `startsWith` for the AI item, so `/ai` and
+ * `/ai/c/<id>` both light it: a reopened conversation is still the AI tab.
  *
  * Keyboard shortcuts (g p / g a / g g) are owned by `AppLayout` and stay
  * tied to the mnemonic letter, not to the display order — so reordering
@@ -104,19 +104,16 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
 }
 
 /**
- * App destinations on the grey chassis, left of the workspace card.
- * Column width is `--app-nav-rail-width` (header height + 30px), flush with
- * the workspace — no gutter between this rail and the article. Labels stay
- * visible so this is not an icon-only rail (WCAG 2.5.3). Keyboard shortcuts
- * (g p / g a / g g) remain on AppLayout.
+ * App destinations as Notion flat tabs in the top bar (app-header).
+ * Sits next to the brand logo on desktop (md+).
  */
-export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
+export function MainNavHeaderTabs({ onNavigate }: MainNavStripProps) {
   const location = useLocation();
   return (
     <nav
-      data-testid="main-nav-chassis"
+      data-testid="main-nav-header"
       aria-label="Main navigation"
-      className="hidden box-border w-[var(--app-nav-rail-width)] shrink-0 flex-col items-center gap-1 self-stretch px-1 pt-0 md:flex"
+      className="hidden md:flex h-full items-center gap-1 ml-2"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {
         const active = isActive(location.pathname, path);
@@ -129,28 +126,14 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
             aria-label={ariaLabel}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              // Strip is `--app-nav-rail-width` (74px). px-1 on the nav is 4px
-              // on both sides; each 40px control remains centred with 13px of
-              // breathing room on either side. No button background on select/hover;
-              // marked by the left indicator line at the chassis margin (-left-2).
-              'group relative box-border flex h-10 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-1 text-center text-xs font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'group relative flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
+                : 'text-muted-foreground hover:text-foreground hover:bg-[var(--glass-pill-hover)]',
             )}
           >
-            <span
-              data-testid="nav-marker"
-              aria-hidden="true"
-              className={cn(
-                'absolute -left-2 top-1/2 -translate-y-1/2 w-1 rounded-full transition-all duration-150',
-                active
-                  ? 'h-5 bg-primary-ink'
-                  : 'h-0 bg-foreground/70 group-hover:h-3',
-              )}
-            />
             <Icon
-              size={16}
+              size={14}
               className={cn(
                 'transition-colors',
                 active
@@ -159,11 +142,35 @@ export function MainNavChassisRail({ onNavigate }: MainNavStripProps) {
               )}
               aria-hidden="true"
             />
-            {label}
+            <span>{label}</span>
+            {active && (
+              <span
+                data-testid="nav-tab-active-indicator"
+                aria-hidden="true"
+                className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary-ink"
+              />
+            )}
           </Link>
         );
       })}
     </nav>
+  );
+}
+
+/**
+ * Desktop left column on the chassis, left of the workspace card. It hosts
+ * the route's sidebar (tree, conversations or settings) directly on the
+ * chassis; the destinations themselves live in the header.
+ */
+export function MainNavChassisRail({ children }: { children: ReactNode }) {
+  return (
+    <aside
+      data-testid="main-nav-chassis"
+      aria-label="Navigation sidebar"
+      className="hidden md:flex shrink-0 self-stretch"
+    >
+      {children}
+    </aside>
   );
 }
 

@@ -10,13 +10,61 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 
 1. **Open Compendiq** in your browser (default: `http://localhost:5273` for development, or the URL provided by your administrator).
 2. **Register an account.** The first user automatically receives the admin role.
-3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
+3. **Decide whether you are using Confluence.** Compendiq can run either as a
+   front end over Confluence Data Center or entirely on its own. To connect,
+   go to **Settings → Confluence** and enter your Confluence Data Center URL
+   and Personal Access Token (PAT). To work without Confluence, choose
+   **Use Standalone Mode** on the setup wizard's Confluence step, or turn the
+   **Sync with Confluence** switch in **Settings → Confluence** off — see
+   [Standalone mode](#standalone-mode-working-without-confluence) below.
+   Either direction can be changed later.
+
+### Standalone mode: working without Confluence
+
+The **Sync with Confluence** switch sits at the top of **Settings → Confluence**
+and is **on** by default, so an existing installation keeps behaving exactly as
+it did. It saves the moment you flip it — the panel's **Save** button only ever
+submits credentials. Turn the switch off and Compendiq runs standalone:
+
+- **Everything keeps working.** Pages, the editor, search, the AI assistant,
+  Q&A, quality analysis, tags, notes, versions and the knowledge graph all run
+  against the pages you already have.
+- **Nothing syncs, in either direction.** Scheduled and manual syncs stay idle,
+  and saving, moving or deleting a page no longer pushes that change upstream.
+  Your edits never leave Compendiq.
+- **Pages you synced earlier stay usable.** They remain readable, editable,
+  movable and deletable, and the AI keeps using them. Those edits are local and
+  are not sent to Confluence. Page permissions still apply: you can change a
+  synced page only if you could change it with the switch on (a role on its
+  space and, for a restricted page, explicit access to that page as well).
+- **Your credentials are kept.** Switching the integration off does not erase
+  your Confluence URL or PAT, so switching back on takes one click and no
+  re-entry.
+- **Nothing asks you to set Confluence up.** While the switch is off the URL
+  and PAT fields are not shown at all, no screen prompts you for either, and
+  the Confluence-specific onboarding steps and empty-state prompts stop
+  appearing.
+
+The only things standalone mode takes away are the actions that exist purely to
+talk to Confluence: you cannot create a page **in** a Confluence space, run a
+bulk sync, or move a page across the Confluence boundary while the switch is
+off. Compendiq says so plainly when you try, and it never asks you for
+credentials to do it.
+
+Turning the switch back on restores the credential form with your saved values
+and resumes sync with the space selection you already had; edits you made while
+standalone are reconciled by the normal sync conflict handling, exactly as a
+local edit between two syncs always was. Entering credentials in the setup
+wizard turns the integration back on for you.
 
 ### The Getting Started checklist
 
 The Pages overview carries a short **Getting started** checklist for as long as
-you have steps outstanding. It tracks five milestones and ticks each one off by
-itself as you do it — there is nothing to mark complete by hand:
+you have steps outstanding. It ticks each milestone off by itself as you do it —
+there is nothing to mark complete by hand. **Which steps it shows depends on
+whether the Confluence integration is on.**
+
+With Confluence on, there are five:
 
 1. Connect your Confluence account
 2. Choose the spaces to sync
@@ -24,15 +72,27 @@ itself as you do it — there is nothing to mark complete by hand:
 4. Learn the keyboard shortcuts
 5. Create or edit a page
 
+In standalone mode the two Confluence steps are not shown at all — neither as
+outstanding work nor as greyed-out rows — so the checklist is three steps, the
+progress line counts out of three, and it completes when you have done them:
+
+1. Ask your first question
+2. Learn the keyboard shortcuts
+3. Create or edit a page
+
 Each outstanding step carries a button that takes you straight to it. The
 checklist never blocks the page list, and **Dismiss guide** hides it for good —
 once hidden it stays hidden, even when a later step completes behind it.
 
-When the last step lands, a short note appears above the five checked
-milestones, saying so and telling you where to find the guide afterwards. The
-note and completed checklist stay until you leave the overview or dismiss them.
+When the last step lands, a short note appears above the checked milestones,
+saying so and telling you where to find the guide afterwards. The note and
+completed checklist stay until you leave the overview or dismiss them.
 They appear when you return to the overview even if the final step was completed
 somewhere else — you do not have to be looking at the checklist at the time.
+
+Switching **Sync with Confluence** off never ticks anything for you: a
+standalone user who has done nothing yet reads `0 of 3 done` and still has to
+ask a question, look at the shortcuts and create or edit a page.
 
 To bring it back at any time — finished or dismissed — open the account menu in
 the top right and choose **Getting Started Guide**.
@@ -46,7 +106,12 @@ To connect Compendiq to your Confluence Data Center instance:
 3. Click **Create token**.
 4. Give it a name (e.g., "Compendiq") and set an expiry.
 5. Copy the generated token.
-6. In Compendiq, go to **Settings**, paste the token in the PAT field, and enter your Confluence base URL.
+6. In Compendiq, go to **Settings → Confluence**, paste the token in the PAT field, and enter your Confluence base URL.
+
+Those two fields are only shown while **Sync with Confluence** is on. If the
+panel shows the switch and nothing else, you are in standalone mode — turn the
+switch on to reveal the form, with any credentials you saved earlier still in
+place.
 
 Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the browser after saving.
 
@@ -60,7 +125,7 @@ After configuring your Confluence connection:
 4. Select the spaces you want to sync to Compendiq.
 5. Click **Sync** to start the initial synchronization.
 
-Synced spaces are periodically updated in the background (default: every 15 minutes).
+Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
 
 ## Working with Pages
 
@@ -95,7 +160,9 @@ an access denial discards them until a successful authorized read.
 ### Creating a Page
 
 1. Click **New Page** (or press `Alt+N`).
-2. Choose a space (Confluence or local).
+2. Choose a space (Confluence or local). In standalone mode only local spaces
+   are available — a page cannot be created in a Confluence space while
+   **Sync with Confluence** is off.
 3. Enter a title and start writing in the TipTap editor.
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
@@ -117,7 +184,7 @@ Cornell Notes is a built-in shared template: a two-column **Cues | Notes** table
 
 This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
 
-1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
+1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one under **Developer tools → Connections** at [app.notion.com/developers/connections](https://app.notion.com/developers/connections) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
 2. Pick what to import in the grouped workspace tree. Selecting a parent selects the importable group below it. Importing a page also discovers its actual embedded child pages and database contents, even if those children were not individually selected. Ordinary links do not import the linked pages. To import only part of a page's contents, select the desired children without their parent; set unwanted databases to **Skip**. Databases offer **Table | Pages | Skip**:
    - **Table** — property-only rows become table columns and rows, not separate articles. An embedded database's table belongs on its parent article; a standalone database owns its own table article.
    - **Pages** — rows with real content stay articles. Choosing *Pages* keeps the database's own article, with its rows beneath it, even when that database sits inside another page you are importing. Wikis retain their root article and body, with rows beneath it, and offer only *Pages* or *Skip*. A database you never select — an inline table, or one found inside a page you did select — has no shape of its own: property-only rows become the parent's table, rows with content become the parent's children, and no empty container article is created.
@@ -132,6 +199,8 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 - Data sources — they point at content the pinned Notion API cannot resolve. A linked view of a database Search already returned as the source database is not listed twice.
 - Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
 - **Board** databases — Compendiq is not a Kanban board. The picker marks the Board (and a page that only hosts an inline Board) with *Board view is not compatible — import cards as articles*. Tick the Board row to select its cards; each card imports as an article under a parent article named after the Notion page that contains the database.
+
+**Blocks inside a page.** Web bookmarks import as a plain link, labelled with the bookmark's caption or with the URL itself — Notion's preview card is not recreated. Images import as local attachments. Embeds, link previews, videos, audio and file attachments are left behind.
 
 **Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.
 
@@ -158,14 +227,30 @@ Skipped and unselected Notion items keep their Notion URLs in imported page bodi
 
 Changes to Confluence-synced pages can be pushed back to Confluence.
 
+### Page Details
+
+Open **Details** in the right-hand page inspector (`Alt+D`). The panel groups
+the page's source and metadata, document health, labels, notes, and page actions.
+**Open in Confluence** sits with the source information. **Pin** and
+**Version history** remain directly available under **Page actions**; relocation,
+re-sync, and AI maintenance are under **More actions**.
+
+Document health distinguishes search indexing from quality analysis. A human
+verification records a review; it does not certify that AI indexing succeeded.
+
 ### Page Versions
 
 Compendiq tracks version history for all pages:
 
 1. Open a page.
-2. Click the **Versions** tab in the right panel.
+2. Open **Details → Page actions → Version history** in the right panel.
 3. View diffs between versions.
 4. Restore a previous version if needed.
+
+For a page that came from Confluence, opening the history also imports that
+page's older Confluence versions the first time you look. In standalone mode
+that import is not attempted — you see the versions Compendiq recorded itself,
+and the panel says so instead of asking you to connect Confluence.
 
 ### Tagging Pages
 
@@ -179,11 +264,19 @@ Compendiq can automatically suggest tags based on page content using LLM classif
 
 ### Page Comments
 
-Add comments to pages for discussions and feedback:
+Add page notes and replies for discussions and feedback:
 
-1. Open a page.
-2. Scroll to the **Comments** section.
-3. Write your comment and submit.
+1. Open **Details → Notes**, or press `Alt+N`.
+2. Choose **New note** to start a thread, or **Reply** on an existing note.
+3. Write your note and submit. Use **Open** and **Resolved** to filter threads.
+
+The Notes area grows with its content; longer thread lists scroll within it.
+Tab into the thread list to scroll with the keyboard. When starting a note in an
+empty list, the composer replaces the introductory guidance until you cancel.
+
+Unsent notes and replies survive inspector tab switches on the same page.
+**Cancel** discards the draft. Drafts are not stored persistently: submit them
+before closing the inspector or leaving the page.
 
 ### Page Verification
 
@@ -191,7 +284,7 @@ The verification workflow helps maintain knowledge base quality:
 
 1. Admins or reviewers can mark pages for review.
 2. Reviewers verify the content is accurate and up-to-date.
-3. Verified pages display a verification badge with the reviewer and date.
+3. **Details → Document health** displays the verification date separately from AI processing status.
 
 ## Using AI Features
 
@@ -267,9 +360,14 @@ Ask questions across your entire knowledge base:
 
 Compendiq automatically analyzes page quality in the background:
 
-- Pages receive a quality score based on structure, completeness, and readability.
+- Pages receive a quality score based on completeness, clarity, structure, accuracy, and readability.
 - Low-quality pages are highlighted for improvement.
 - View quality scores in the page list or on individual pages.
+- In **Details → Document health**, activate the quality score to see available
+  dimension scores, the analysis timestamp, and the full summary. The disclosure
+  supports keyboard and touch; `Escape` closes it and returns focus to the score.
+  If analysis is pending or failed, it explains that state rather than presenting
+  a previous score as the current result.
 
 ## AI Output Review (Enterprise)
 
@@ -339,9 +437,21 @@ Uses vector embeddings to find conceptually similar content. This finds results 
 
 ### Hybrid Search
 
-Combines keyword and semantic search with Reciprocal Rank Fusion (RRF) for the best results. The default mode is keyword; pass `mode=hybrid` to the search API for RRF results.
+Combines keyword and semantic search with Reciprocal Rank Fusion (RRF). The search API defaults to keyword; pass `mode=hybrid` for RRF results.
 
 Access search via the search box in the top bar or the **Command Palette** (`Ctrl+K`).
+
+In Library, the **Local** and **Confluence** badges identify a page's origin,
+independently of its space and the selected search mode. On narrow screens,
+the query, mode choices, and scope controls use separate rows.
+
+Press `/` to focus Library search. `Enter` or `ArrowDown` moves from the query
+to the first result only when the displayed results match the current query.
+While older results remain visible during an update, focus stays in the query.
+If an update removes a focused result, focus returns to the query field.
+Scrolling a result out of view does not return focus or scroll to the query.
+Each filter has one visible Tab stop; `Escape` closes its menu and returns
+focus to the trigger.
 
 ## Knowledge Graph
 

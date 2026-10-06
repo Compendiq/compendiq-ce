@@ -23,6 +23,33 @@ describe('PageIcon', () => {
     expect(container.querySelector('svg')).toBeTruthy();
   });
 
+  it('applies a text-palette colour to a lucide glyph', () => {
+    const { container } = render(
+      <PageIcon icon={{ kind: 'lucide', value: 'rocket', color: '#6366f1' }} pageId="1" />,
+    );
+    expect(container.firstElementChild).toHaveStyle({ color: '#6366f1' });
+  });
+
+  it('renders a filled lucide glyph with fill="currentColor" and page-icon-filled class', () => {
+    const { container } = render(
+      <PageIcon icon={{ kind: 'lucide', value: 'camera', filled: true }} pageId="1" />,
+    );
+    const svg = container.querySelector('svg');
+    expect(svg).toBeTruthy();
+    expect(svg).toHaveAttribute('fill', 'currentColor');
+    expect(svg).toHaveClass('page-icon-filled');
+  });
+
+  it('renders an outline lucide glyph with fill="none" by default', () => {
+    const { container } = render(
+      <PageIcon icon={{ kind: 'lucide', value: 'camera' }} pageId="1" />,
+    );
+    const svg = container.querySelector('svg');
+    expect(svg).toBeTruthy();
+    expect(svg).toHaveAttribute('fill', 'none');
+    expect(svg).not.toHaveClass('page-icon-filled');
+  });
+
   it('renders a brand logo for a catalogue slug', () => {
     for (const slug of ['docker', 'microsoft', 'ibm', 'apple', 'google', 'amazon']) {
       const { container } = render(<PageIcon icon={{ kind: 'brand', value: slug }} pageId="1" />);

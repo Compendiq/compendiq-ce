@@ -14,13 +14,23 @@ vi.mock('../../stores/auth-store', () => ({
 }));
 
 // Import after mocks are set up
-const { apiFetch, logoutApi, ApiError } = await import('./api');
+const { apiFetch, logoutApi, ApiError, RefreshUnavailableError } = await import('./api');
+const { beginDraftEdit, persistDraft, readDraft } = await import('./editor-drafts');
+const { readRecentSearches, rememberRecentSearch } = await import('./recent-searches');
 
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = btoa(JSON.stringify({ exp }));
   return `${header}.${payload}.sig`;
+}
+
+/** The backend's retry-safe busy 503 body. */
+function busyResponse(code: string): Response {
+  return new Response(
+    JSON.stringify({ statusCode: 503, error: 'Service Unavailable', message: 'busy', code }),
+    { status: 503, headers: { 'Content-Type': 'application/json' } },
+  );
 }
 
 describe('apiFetch', () => {
@@ -37,6 +47,7 @@ describe('apiFetch', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -100,6 +111,73 @@ describe('apiFetch', () => {
 
     await expect(apiFetch('/test')).rejects.toThrow('Session expired');
     expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('retries a retry-safe busy refresh with backoff and keeps the session until it succeeds', async () => {
+    vi.useFakeTimers();
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(busyResponse('refresh_busy'))
+      .mockResolvedValueOnce(busyResponse('refresh_busy'))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: 'ok' }), { headers: { 'Content-Type': 'application/json' } }),
+      );
+    const refreshCalls = () => fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh').length;
+
+    const result = apiFetch('/test');
+    await vi.advanceTimersByTimeAsync(999);
+    expect(refreshCalls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(3_001);
+
+    await expect(result).resolves.toEqual({ data: 'ok' });
+    expect(refreshCalls()).toBe(3);
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a 503 without clearing auth when the refresh stays busy', async () => {
+    vi.useFakeTimers();
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+      String(input) === '/api/auth/refresh'
+        ? busyResponse('refresh_busy')
+        : new Response('Unauthorized', { status: 401 }),
+    );
+
+    const result = apiFetch('/test');
+    const settled = expect(result).rejects.toBeInstanceOf(RefreshUnavailableError);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    await settled;
+    await expect(result).rejects.toMatchObject({ statusCode: 503 });
+    expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(3);
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  // After a lost response or a proxy error the rotation may have committed;
+  // presenting the cookie again would count as token reuse.
+  it.each([
+    ['a network error', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['an unmarked 503', () => Promise.resolve(new Response('<html>Bad gateway</html>', { status: 503 }))],
+    ['a 502', () => Promise.resolve(new Response('bad gateway', { status: 502 }))],
+  ])('does not retry the refresh after %s and keeps the session', async (_label, refresh) => {
+    storeState.accessToken = null;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) =>
+      String(input) === '/api/auth/refresh'
+        ? refresh()
+        : Promise.resolve(new Response('Unauthorized', { status: 401 })),
+    );
+
+    await expect(apiFetch('/test')).rejects.toBeInstanceOf(RefreshUnavailableError);
+    expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(1);
+    expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
   it('deduplicates concurrent refresh calls on multiple 401s', async () => {
@@ -390,6 +468,53 @@ describe('logoutApi', () => {
 
   it('clears auth even when backend call fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
+
+    await logoutApi();
+
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('keeps the session and rejects when the server could not revoke anything (marked 503)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(busyResponse('logout_busy'));
+
+    await expect(logoutApi()).rejects.toMatchObject({
+      statusCode: 503,
+      message: 'Sign-out did not complete. Please try again.',
+    });
+    expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  // GHSA-r652-53hc-h6jh: sign-out discards local editor drafts and recent
+  // searches, but only once it has actually completed — a busy 503 keeps the
+  // session and both.
+  it('keeps local drafts and recent searches on the marked 503 and discards them once sign-out completes', async () => {
+    localStorage.clear();
+    const pending = beginDraftEdit('page-7');
+    if (!pending) throw new Error('expected a signed-in draft scope');
+    persistDraft(pending, () => '<p>unsaved</p>');
+    rememberRecentSearch('quarterly numbers');
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(busyResponse('logout_busy'));
+    await expect(logoutApi()).rejects.toMatchObject({ statusCode: 503 });
+    expect(readDraft('page-7')).toBe('<p>unsaved</p>');
+    expect(readRecentSearches()).toEqual(['quarterly numbers']);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await logoutApi();
+    expect(readDraft('page-7')).toBeNull();
+    expect(readRecentSearches()).toEqual([]);
+  });
+
+  it('clears auth on an unmarked 503 from a proxy', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>Unavailable</html>', { status: 503 }));
+
+    await logoutApi();
+
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('still clears auth on other logout failures', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status: 500 }));
 
     await logoutApi();
 

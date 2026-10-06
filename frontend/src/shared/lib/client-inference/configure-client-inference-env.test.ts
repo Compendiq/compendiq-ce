@@ -4,41 +4,55 @@ import {
   wrapAssetFetch,
   type TransformersEnvLike,
 } from './configure-client-inference-env';
+import { parseClientAssetRequest } from './opfs-model-cache';
 
-function emptyEnv(): TransformersEnvLike {
-  return {
-    allowRemoteModels: false,
-    allowLocalModels: true,
-    remoteHost: 'https://huggingface.co/',
-    remotePathTemplate: '{model}/resolve/{revision}/',
-    useBrowserCache: true,
-    useCustomCache: false,
-    customCache: null,
-    fetch,
-    backends: { onnx: { wasm: { wasmPaths: undefined } } },
-  };
-}
-
-describe('configureClientInferenceEnv', () => {
-  it('points ORT wasm at same-origin paths and never leaves the Hub remote host', () => {
-    const env = emptyEnv();
-    const cache = { match: async () => undefined, put: async () => undefined };
-    configureClientInferenceEnv(env, {
-      origin: 'https://kb.example',
-      wasmPaths: { mjs: '/assets/ort.mjs', wasm: '/assets/ort.wasm' },
-      fetch,
-      customCache: cache,
-    });
-    expect(env.backends.onnx?.wasm?.wasmPaths).toEqual({
-      mjs: '/assets/ort.mjs',
-      wasm: '/assets/ort.wasm',
-    });
-    expect(env.remoteHost).toBe('https://kb.example/api/models/client-assets/');
-    expect(env.remotePathTemplate).toBe('{model}/');
-    expect(env.useCustomCache).toBe(true);
-    expect(env.customCache).toBe(cache);
-    expect(env.useBrowserCache).toBe(false);
-    expect(env.allowLocalModels).toBe(false);
+describe('same-origin model loading with the installed Transformers runtime', () => {
+  it.each([
+    'onnx-community--Qwen3-0.6B-ONNX',
+    'qwen2.5-0.5b-instruct-q4',
+  ])('loads %s cold and reuses its existing cache identity', async (modelId) => {
+    const { env, AutoConfig } = await vi.importActual<{
+      env: TransformersEnvLike & { useFS: boolean };
+      AutoConfig: { from_pretrained(path: string): Promise<{ model_type: string }> };
+    }>('@huggingface/transformers');
+    const original = { ...env };
+    const originalWasmPaths = env.backends.onnx?.wasm?.wasmPaths;
+    const modelPath = `/api/models/client-assets/${modelId}`;
+    const cached = new Map<string, Response>();
+    const cacheKey = (request: string) => {
+      const asset = parseClientAssetRequest(request);
+      return asset ? `${asset.modelId}/${asset.file}` : '';
+    };
+    const match = vi.fn(async (request: string) => cached.get(cacheKey(request))?.clone());
+    let offline = false;
+    const fetchAsset: typeof fetch = async (input) => {
+      if (offline) throw new Error('model network disabled');
+      if (input !== `${modelPath}/config.json`) throw new Error(`Unexpected model request: ${String(input)}`);
+      return Response.json({ model_type: 'qwen3' });
+    };
+    try {
+      // Mirror browser file loading while exercising the real library, not a
+      // mocked pipeline that accepts the invalid Hub id containing "--".
+      env.useFS = false;
+      configureClientInferenceEnv(env, {
+        origin: 'https://kb.example',
+        wasmPaths: { mjs: '/assets/ort.mjs', wasm: '/assets/ort.wasm' },
+        fetch: fetchAsset,
+        customCache: {
+          match,
+          put: async (request, response) => { cached.set(cacheKey(request), response.clone()); },
+        },
+      });
+      expect((await AutoConfig.from_pretrained(modelPath)).model_type).toBe('qwen3');
+      expect(cached.has(`${modelId}/config.json`)).toBe(true);
+      offline = true;
+      match.mockClear();
+      expect((await AutoConfig.from_pretrained(modelPath)).model_type).toBe('qwen3');
+      expect(match).toHaveBeenCalledWith(`${modelPath}/config.json`);
+    } finally {
+      Object.assign(env, original);
+      if (env.backends.onnx?.wasm) env.backends.onnx.wasm.wasmPaths = originalWasmPaths;
+    }
   });
 });
 

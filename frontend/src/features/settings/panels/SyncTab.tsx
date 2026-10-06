@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { SyncOverviewResponse, SyncOverviewSpace } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { CONFLUENCE_SETTINGS_PATH } from '../../../shared/lib/routes';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
@@ -29,7 +31,21 @@ interface SummaryStatusResponse {
   isProcessing: boolean;
 }
 
-export function SyncTab() {
+interface SyncTabProps {
+  /**
+   * #1623: false when the user turned the Confluence integration off, i.e.
+   * standalone mode. Only the Confluence-specific regions go — the sync
+   * overview, the per-space health grid and Missing Assets. Attachment
+   * storage, quality analysis and page summaries are maintenance surfaces
+   * for the local corpus and keep running, because the corpus does.
+   *
+   * Defaults to true so a caller that hasn't loaded settings yet (or a
+   * pre-#1623 payload, which omits the key) behaves exactly as before.
+   */
+  confluenceEnabled?: boolean;
+}
+
+export function SyncTab({ confluenceEnabled = true }: SyncTabProps) {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
@@ -45,6 +61,9 @@ export function SyncTab() {
       const status = query.state.data?.sync.status;
       return status === 'syncing' || status === 'embedding' ? 2000 : false;
     },
+    // Nothing renders it in standalone mode, and it is a corpus-wide scan —
+    // don't pay for it, and don't poll for it.
+    enabled: confluenceEnabled,
   });
 
   const { data: qualityStatus } = useQuery<QualityStatusResponse>({
@@ -105,6 +124,173 @@ export function SyncTab() {
       <AttachmentStorageCard />
     </section>
   ) : null;
+
+  // #1623: the quality and summary workers score and summarise whatever is
+  // in the corpus, Confluence-sourced or not, so they are lifted out of the
+  // single return — beside `attachmentStorageSection` and for the same
+  // reason — and rendered by the standalone branch below as well.
+  const qualityWorkerSection = (
+    <section className="space-y-3" data-testid="quality-worker-section">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Quality Analysis</h2>
+            {qualityStatus && (
+              <StatusBadge
+                label={qualityStatus.isProcessing ? 'Analyzing' : 'Idle'}
+                classes={qualityStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
+                testId="quality-worker-status"
+              />
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Background worker that scores each page on completeness, clarity, structure, accuracy, and readability.
+          </p>
+        </div>
+
+        {isAdmin && (
+          <button
+            onClick={() => qualityRescanMutation.mutate()}
+            disabled={qualityRescanMutation.isPending}
+            className="nm-button-ghost whitespace-nowrap"
+            data-testid="quality-force-rescan"
+          >
+            {qualityRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
+          </button>
+        )}
+      </div>
+
+      {qualityStatus && (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <MetricCard
+            label="Analyzed"
+            value={String(qualityStatus.analyzedPages)}
+            hint={`of ${qualityStatus.totalPages} total pages`}
+            testId="quality-metric-analyzed"
+          />
+          <MetricCard
+            label="Pending"
+            value={String(qualityStatus.pendingPages)}
+            hint="Waiting for analysis"
+            testId="quality-metric-pending"
+          />
+          <MetricCard
+            label="Failed"
+            value={String(qualityStatus.failedPages)}
+            hint="Analysis encountered errors"
+            testId="quality-metric-failed"
+          />
+          <MetricCard
+            label="Skipped"
+            value={String(qualityStatus.skippedPages)}
+            hint="Content too short"
+            testId="quality-metric-skipped"
+          />
+          <MetricCard
+            label="Avg Score"
+            value={qualityStatus.averageScore !== null ? String(qualityStatus.averageScore) : '—'}
+            hint={qualityStatus.averageScore !== null ? 'Out of 100' : 'No scores yet'}
+            testId="quality-metric-avg-score"
+          />
+        </div>
+      )}
+    </section>
+  );
+
+  const summaryWorkerSection = (
+    <section className="space-y-3" data-testid="summary-worker-section">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Page Summaries</h2>
+            {summaryStatus && (
+              <StatusBadge
+                label={summaryStatus.isProcessing ? 'Summarizing' : 'Idle'}
+                classes={summaryStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
+                testId="summary-worker-status"
+              />
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Background worker that generates concise summaries for each page using the LLM.
+          </p>
+        </div>
+
+        {isAdmin && (
+          <button
+            onClick={() => summaryRescanMutation.mutate()}
+            disabled={summaryRescanMutation.isPending}
+            className="nm-button-ghost whitespace-nowrap"
+            data-testid="summary-force-rescan"
+          >
+            {summaryRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
+          </button>
+        )}
+      </div>
+
+      {summaryStatus && (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Summarized"
+            value={String(summaryStatus.summarizedPages)}
+            hint={`of ${summaryStatus.totalPages} total pages`}
+            testId="summary-metric-summarized"
+          />
+          <MetricCard
+            label="Pending"
+            value={String(summaryStatus.pendingPages)}
+            hint="Waiting for summarization"
+            testId="summary-metric-pending"
+          />
+          <MetricCard
+            label="Failed"
+            value={String(summaryStatus.failedPages)}
+            hint="Summarization encountered errors"
+            testId="summary-metric-failed"
+          />
+          <MetricCard
+            label="Skipped"
+            value={String(summaryStatus.skippedPages)}
+            hint="No content to summarize"
+            testId="summary-metric-skipped"
+          />
+        </div>
+      )}
+    </section>
+  );
+
+  // #1623 standalone mode. This return is deliberately NOT a blanket hide:
+  // everything below it that the local corpus owns — attachment storage,
+  // quality analysis, page summaries — still renders, because those jobs
+  // still run. What goes is the Confluence link's own reporting: the sync
+  // status/metrics header, the per-space health grid and Missing Assets
+  // (expected-vs-cached counts derived from Confluence page bodies), plus
+  // Sync Now / Refresh / Force Re-sync All, which would only queue work
+  // against an integration that is off. It sits above the isError /
+  // isLoading guards because the overview query is disabled here, so `data`
+  // never arrives and those guards would otherwise hold the panel on a
+  // skeleton for ever.
+  if (!confluenceEnabled) {
+    return (
+      <div className="space-y-6" data-testid="sync-tab-panel">
+        <p className="text-sm text-muted-foreground" data-testid="sync-confluence-off">
+          Confluence sync is off — nothing is pulled from or pushed to Confluence, so there is no
+          sync to report. The maintenance sections below still apply to the pages stored here. Turn
+          the integration back on in{' '}
+          <Link
+            className="underline underline-offset-2 hover:text-foreground"
+            to={CONFLUENCE_SETTINGS_PATH}
+          >
+            Confluence settings
+          </Link>
+          .
+        </p>
+        {attachmentStorageSection}
+        {qualityWorkerSection}
+        {summaryWorkerSection}
+      </div>
+    );
+  }
 
   // Distinguish a failed overview fetch from the loading state so a
   // 500/network error surfaces a retry instead of an infinite skeleton.
@@ -407,133 +593,9 @@ export function SyncTab() {
 
       {attachmentStorageSection}
 
-      {/* Quality Analysis Worker */}
-      <section className="space-y-3" data-testid="quality-worker-section">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Quality Analysis</h2>
-              {qualityStatus && (
-                <StatusBadge
-                  label={qualityStatus.isProcessing ? 'Analyzing' : 'Idle'}
-                  classes={qualityStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
-                  testId="quality-worker-status"
-                />
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Background worker that scores each page on completeness, clarity, structure, accuracy, and readability.
-            </p>
-          </div>
+      {qualityWorkerSection}
 
-          {isAdmin && (
-            <button
-              onClick={() => qualityRescanMutation.mutate()}
-              disabled={qualityRescanMutation.isPending}
-              className="nm-button-ghost whitespace-nowrap"
-              data-testid="quality-force-rescan"
-            >
-              {qualityRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
-            </button>
-          )}
-        </div>
-
-        {qualityStatus && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <MetricCard
-              label="Analyzed"
-              value={String(qualityStatus.analyzedPages)}
-              hint={`of ${qualityStatus.totalPages} total pages`}
-              testId="quality-metric-analyzed"
-            />
-            <MetricCard
-              label="Pending"
-              value={String(qualityStatus.pendingPages)}
-              hint="Waiting for analysis"
-              testId="quality-metric-pending"
-            />
-            <MetricCard
-              label="Failed"
-              value={String(qualityStatus.failedPages)}
-              hint="Analysis encountered errors"
-              testId="quality-metric-failed"
-            />
-            <MetricCard
-              label="Skipped"
-              value={String(qualityStatus.skippedPages)}
-              hint="Content too short"
-              testId="quality-metric-skipped"
-            />
-            <MetricCard
-              label="Avg Score"
-              value={qualityStatus.averageScore !== null ? String(qualityStatus.averageScore) : '—'}
-              hint={qualityStatus.averageScore !== null ? 'Out of 100' : 'No scores yet'}
-              testId="quality-metric-avg-score"
-            />
-          </div>
-        )}
-      </section>
-
-      {/* Summary Worker */}
-      <section className="space-y-3" data-testid="summary-worker-section">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Page Summaries</h2>
-              {summaryStatus && (
-                <StatusBadge
-                  label={summaryStatus.isProcessing ? 'Summarizing' : 'Idle'}
-                  classes={summaryStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
-                  testId="summary-worker-status"
-                />
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Background worker that generates concise summaries for each page using the LLM.
-            </p>
-          </div>
-
-          {isAdmin && (
-            <button
-              onClick={() => summaryRescanMutation.mutate()}
-              disabled={summaryRescanMutation.isPending}
-              className="nm-button-ghost whitespace-nowrap"
-              data-testid="summary-force-rescan"
-            >
-              {summaryRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
-            </button>
-          )}
-        </div>
-
-        {summaryStatus && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
-              label="Summarized"
-              value={String(summaryStatus.summarizedPages)}
-              hint={`of ${summaryStatus.totalPages} total pages`}
-              testId="summary-metric-summarized"
-            />
-            <MetricCard
-              label="Pending"
-              value={String(summaryStatus.pendingPages)}
-              hint="Waiting for summarization"
-              testId="summary-metric-pending"
-            />
-            <MetricCard
-              label="Failed"
-              value={String(summaryStatus.failedPages)}
-              hint="Summarization encountered errors"
-              testId="summary-metric-failed"
-            />
-            <MetricCard
-              label="Skipped"
-              value={String(summaryStatus.skippedPages)}
-              hint="No content to summarize"
-              testId="summary-metric-skipped"
-            />
-          </div>
-        )}
-      </section>
+      {summaryWorkerSection}
 
       {/* Force Re-sync All guard. Copy mirrors POST /pages/bulk/sync with
           { source: 'confluence' }: a re-fetch of every Confluence page plus

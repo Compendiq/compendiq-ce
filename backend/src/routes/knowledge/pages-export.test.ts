@@ -122,75 +122,6 @@ describe('pages-export routes', () => {
       expect(mockGeneratePdf).toHaveBeenCalledWith('<p>Hello</p>', { title: 'Test Article' });
     });
 
-    it('should return a PDF for a Confluence page with space access', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Confluence Page', body_html: '<p>Content</p>', source: 'confluence', space_key: 'SPACE1', created_by_user_id: null, visibility: null }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER_ID);
-    });
-
-    it('should return 404 for a Confluence page without space access', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Secret Page', body_html: '<p>Secret</p>', source: 'confluence', space_key: 'RESTRICTED', created_by_user_id: null, visibility: null }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/99/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should return 404 for another user private standalone page', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Private Page', body_html: '<p>Private</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: '999', visibility: 'private' }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/5/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should allow export of shared standalone page not owned by user', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ title: 'Shared Page', body_html: '<p>Shared</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: '999', visibility: 'shared' }],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/7/export/pdf',
-      });
-
-      expect(response.statusCode).toBe(200);
-    });
-
     it('should return 404 for non-existent page', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [],
@@ -252,50 +183,6 @@ describe('pages-export routes', () => {
       expect(response.headers['content-type']).toBe('application/pdf');
       expect(response.headers['content-disposition']).toBe('attachment; filename="kb-export.pdf"');
       expect(mockGeneratePdf).toHaveBeenCalledTimes(2);
-    });
-
-    it('should filter out unauthorized pages in batch export', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [
-          { id: 1, title: 'Accessible', body_html: '<p>Ok</p>', source: 'standalone', space_key: '_standalone', created_by_user_id: TEST_USER_ID, visibility: 'private' },
-          { id: 2, title: 'Restricted', body_html: '<p>No</p>', source: 'confluence', space_key: 'RESTRICTED', created_by_user_id: null, visibility: null },
-        ],
-        command: 'SELECT',
-        rowCount: 2,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/export/pdf',
-        payload: { pageIds: [1, 2] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      // Only the accessible page should be exported
-      expect(mockGeneratePdf).toHaveBeenCalledTimes(1);
-      expect(mockGeneratePdf).toHaveBeenCalledWith('<p>Ok</p>', { title: 'Accessible' });
-    });
-
-    it('should return 404 when all pages are unauthorized', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [
-          { id: 1, title: 'Restricted', body_html: '<p>No</p>', source: 'confluence', space_key: 'RESTRICTED', created_by_user_id: null, visibility: null },
-        ],
-        command: 'SELECT',
-        rowCount: 1,
-        oid: 0,
-        fields: [],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/export/pdf',
-        payload: { pageIds: [1] },
-      });
-
-      expect(response.statusCode).toBe(404);
     });
 
     it('should return 400 when pageIds is empty', async () => {

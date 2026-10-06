@@ -303,7 +303,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      surface and it fails with the measured ratio. */
   --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
   --color-foreground: #e7e9eb;          /* Graphite ink */
-  --color-card: #161617;                /* Pane — softened document and route content */
+  --color-card: #19191a;                /* Pane — shared document, left pane and context rail */
   --color-card-foreground: #e7e9eb;
   --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
   /* Steel — the single brand AND interaction accent: brand mark, primary
@@ -329,31 +329,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
   --color-muted-foreground: #a0a4aa;
-  /* THREE state fills, not one. Until 2026-08-30 `--color-accent`,
-     `--color-secondary` and `--color-muted` were all #1c1d1d, so hover,
-     selected, pressed and a quiet field fill were the same value: a critique
-     measured ΔE-OK 0.0000 between them, which in a 40-row page tree means a
-     hovered row is indistinguishable from the selected one. Each state now has
-     its own rung above the pane (#161617): hover 1.070:1, pressed 1.138:1,
-     selected 1.258:1 — and selection still adds its interactive outline on top.
-     `--color-muted` stays at the hover value on purpose: it is a resting FIELD
-     fill, not a state.
-
-     WIDENED 2026-08-31. The first split shipped pressed at #1e1f21, one step off
-     hover: ΔE-OK 0.0101 at 1.024:1, which a critique could not tell apart from
-     hover in rendered 13px rows. The guard asserted ordering and distinctness
-     but no perceptual floor, so an invisible step passed. Steps are now ΔE-OK
-     0.0292 / 0.0241 / 0.0321, each at or above Paper's equivalent.
-
-     Widening downward was blocked by two other tokens, and the fix was to move
-     THEM rather than hug a floor: at #282a2e the old --color-border-interactive
-     (#71717a) measured 2.97:1 — the edge that IS the selected state, under
-     1.4.11's 3:1 — and --color-status-inactive (#8b8f99) measured 4.44:1. Both
-     were lifted; see their declarations. The dark ladder was compressed because
-     its edge token was too dark, not because the state values were wrong. */
-  --color-accent: #1c1d1d;             /* hover    — 1.070:1 on Pane */
-  --color-pressed: #212226;            /* :active  — 1.138:1 */
-  --color-selected: #282a2e;           /* current destination — 1.258:1 */
+  /* Separate hover, press and selection fills. The brighter Pane (2026-09-12)
+     needs a small hover lift to preserve the visible state step; press and
+     selection retain their existing values and interactive outline.
+     Muted remains a resting field fill, independent of the state ladder. */
+  --color-accent: #1d1e1e;             /* hover — 1.051:1 on Pane */
+  --color-pressed: #212226;            /* :active — 1.106:1 */
+  --color-selected: #282a2e;           /* current destination — 1.222:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -399,6 +381,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
      and 4.37:1 on the pane, which is what gave the dark ladder its room. */
   --color-border-interactive: #7c7c85;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 90%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
   --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -537,7 +521,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
-
+  --app-workspace-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px -4px rgba(0, 0, 0, 0.6);
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
@@ -553,7 +537,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
 
   /* text-xs override — 0.8125rem = 13 px at the 16 px base. Lifts the
      11.25 px outliers (nav pills, stat-card labels) up to a legible floor. */
-  --font-size-xs: 0.8125rem;
+  --text-xs: 0.8125rem;
 
   /* Retired in-page glass tokens, resolved onto the flat system.
 
@@ -563,8 +547,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      These `--glass-*` tokens stay resolved onto `--color-*` and must not be
      revived as a second glass system.
 
-     Floating popovers are the one exception: `nm-popover-glass` keeps the
-     measured interactive overlay edge (WCAG 1.4.11) and `--shadow-overlay`,
+     Floating popovers are the one exception: `nm-popover-glass` softens border
+     contrast (18% of the interactive edge) and uses frosted glass with 12px blur,
      and `prefers-reduced-transparency` strips its blur and translucency.
 
      The ~80 `bg-[var(--glass-*)]` callsites are left in place deliberately.
@@ -670,6 +654,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      `--color-*` values in the `@theme` block above, which this theme already
      redefines — so both themes follow automatically and there is nothing to
      keep in sync here. */
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
 
   /* Elevation tokens (light) — same contract as Graphite: in-flow surfaces
      cast nothing, and only true overlays get a shadow. See the dark block for
@@ -707,11 +693,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
 
-  /* Dropdown chevron — mineral stroke (#6a6a68, URL-escaped to %236a6a68),
+  /* Dropdown chevron — mineral stroke (#616878, URL-escaped to %23616878),
      matching the light theme's --color-muted-foreground. The :root default is
      the dark-theme value and washes out on paper. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236a6a68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236a6a68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23616878' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23616878' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ---- Theme: Paper — the light half of the workspace system ----
@@ -744,10 +730,25 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
       it Paper's order returned to v0.7's: Canvas → Chrome → Workspace → Pane.
    6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8.
    7. Pass 7 (2026-09-07). "Set the app-chassis to #e8e8e8. also fit the other colors to this color."
-      Canvas to #e8e8e8, 1.241:1 on Pane. The destination rail's 12px labels are --color-muted-foreground
-      on Canvas and #686866 measures 4.56:1 there against 1.4.3's 4.5.
-      in either pass; the fills fitted in pass 4 are measured against Pane, not
+      Canvas to #e8e8e8, 1.23:1 on Pane, and --color-muted-foreground refitted to
+      #686866 so the destination rail's 12px labels held 1.4.3's 4.5:1 on it.
+   8. Pass 8 (2026-09-11). "Make the grey of the app-shell lighter." At 1.23:1
+      the frame had stopped reading as the ground the workspace card sits on and
+      started reading as a grey border drawn around it on all four sides. Canvas
+      came up eight 8-bit steps to #f0efed — 1.149:1 on Pane, still a step you
+      can see, and clear of the 1.08:1 floor app-shell-layout.test.ts holds under
+      the unlined card. Nothing else moved: every ink and edge fitted in pass 7
+      gains contrast on a lighter frame (rail labels 4.86:1, interactive edge
+      3.34:1), and the fills fitted in pass 4 are measured against Pane, not
       against the frame.
+   9. Pass 9 (2026-09-12). "Set --app-chassis color to #ededed." Canvas was
+      #ededed — 1.171:1 on Pane, a few 8-bit steps deeper and cooler than
+      #f0efed. Nothing else in the ramp moved.
+   10. Pass 10 (2026-09-15). "Implement Edition2: Balanced Console". The warm
+       ramp (R > B) was replaced by Nordic Slate — a cool slate ramp (B > R) at
+       the owner's request. Canvas was updated to #e8ecf0 (1.171:1 on Pane),
+       Primary Steel to #31638a, body ink to #111827, secondary ink to #616878,
+       interactive edge to #768494, and hairline to #eaedf3.
 
    The state fills were the real casualty of pass 3, and pass 4 split them into
    three: hover, press and selection each own a token and a rung. A fifth pass
@@ -762,72 +763,59 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 [data-theme="paper"] {
   /* Pane is PURE WHITE by explicit product decision (2026-08-30): the document,
      the left navigation pane and the detached context rail — every surface a
-     user reads or works in — are #ffffff, and the (quiet) warm ramp lives in the
+     user reads or works in — are #ffffff, and the Nordic Slate cool ramp lives in the
      frame around them (Canvas, Chrome, Workspace) plus the fills and borders on
      top. This retires the earlier "reading panes avoid pure white" rule for
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is the darkest step again as of 2026-09-07 (#e8e8e8), having spent a
-     day above Workspace at #f9f8f7 → #fdfdfd → #fafaf9. The reason is not
-     symmetry with Graphite: when the workspace and rail hairlines came off,
-     nothing but the Canvas/Pane step was left to draw the card, and #fafaf9
-     measured 1.04:1 — a boundary you could not see without the line. Two passes
-     later the frame is a real grey at 1.24:1. The document is still the
-     brightest surface, which is the part that was always load-bearing. */
-  --color-background: #f8f8f7;          /* Workspace — card ground, bg-background fills */
-  --color-foreground: #191918;          /* ink, one step warm */
+     Canvas is the frame's own step. On 2026-09-28 the owner pinned it to
+     #f5f5f5 (1.090:1 on Pane), a light neutral grey for the flat frame; it was
+     #e8ecf0 from 2026-09-15 (Nordic Slate, Edition 2: Balanced Console,
+     1.187:1), #ededed from 2026-09-12; #f0efed from 2026-09-11 (1.149:1); above
+     Workspace for a day (#f9f8f7 → #fdfdfd → #fafaf9), where it measured 1.04:1
+     once the workspace and rail hairlines came off — a boundary you could not
+     see without the line — and it was #e8e8e8 until 2026-09-11, where the owner
+     read it as a grey border drawn around the work rather than as the ground
+     under it. The document is still the brightest surface, which is the part
+     that was always load-bearing. */
+  --color-background: #f4f6f8;          /* Workspace — card ground, bg-background fills */
+  --color-foreground: #111827;          /* slate ink, cool depth */
   --color-card: #ffffff;                /* Pane — document, left pane, context rail */
-  --color-card-foreground: #191918;
+  --color-card-foreground: #111827;
   /* Raised matches Pane rather than out-lightening it: above white there is no
      step left to take. An overlay separates on its offset shadow and its
      hairline, both of which the light --shadow-overlay recipe was deepened for. */
   --color-card-elevated: #ffffff;
-  --color-primary: #3f627c;             /* Steel — the light-theme sibling */
+  --color-primary: #31638a;             /* Steel — Nordic Slate light-theme sibling */
   --color-primary-foreground: #ffffff;
-  --color-primary-gradient-start: #3f627c;
-  --color-primary-gradient-end: #3f627c; /* flat: the canon has no gradient fills */
-  --color-primary-glow: rgba(63, 98, 124, 0.22);
-  /* This Steel value clears AA as both fill and text (6.08:1 on Workspace,
-     6.46:1 on Pane), so Paper does not need a separate darker text sibling.
-     Steel stays exactly as it was: the accent is brand, not neutral, and
-     warming it would have moved the one colour both themes are pinned to. */
-  --color-primary-ink: #3f627c;
+  --color-primary-gradient-start: #31638a;
+  --color-primary-gradient-end: #31638a; /* flat: the canon has no gradient fills */
+  --color-primary-glow: rgba(49, 99, 138, 0.22);
+  /* This Steel value clears AA as both fill and text (5.91:1 on Workspace,
+     6.40:1 on Pane), so Paper does not need a separate darker text sibling.
+     Steel stays desaturated brand accent, harmonizing with the cool slate chassis. */
+  --color-primary-ink: #31638a;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
      paper, mirroring dark's inverted pair; leaves Steel free for "primary". */
-  --color-action: #191918;             /* matches --color-foreground */
+  --color-action: #111827;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
-  --color-action-hover: #2e2e2d;
+  --color-action-hover: #1e293b;
   /* Quiet FIELD fill — an input's or chip's resting surface, not a state.
-     SPLIT off --color-selected 2026-08-31: both were #ebebea, so an input
-     resting inside a selected row painted exactly the row's value and had only
-     its border to separate the two. One rung lighter now, which also lifts the
-     interactive edge's binding ground from 3.22:1 to 3.30:1. */
-  --color-secondary: #eeeeed;
-  --color-secondary-foreground: #393938;
-  --color-muted: #eeeeed;
+     One rung lighter than selection, ensuring the interactive edge clears 3.0:1. */
+  --color-secondary: #e9eef3;
+  --color-secondary-foreground: #334155;
+  --color-muted: #e9eef3;
   /* Measured against the WORST surface it lands on — white Pane and Raised
-     (5.42:1), not the chassis. */
-  --color-muted-foreground: #686866;
-  /* THREE state fills on the white pane, each its own rung. One token used to
-     serve hover AND selected — `nav-selection`, `nm-card-hover`,
-     `nm-card-interactive:hover` and 23 `hover:bg-accent` callsites all read the
-     same value — so a hovered row and the selected row were the same colour and
-     selection rested entirely on its 1px outline.
-
-     Measured against Pane #ffffff: hover 1.081:1, pressed 1.140:1, selected
-     1.193:1, each step ≈1.05:1 from the last, which is the smallest step that
-     survives an IPS panel at 13px. SELECTED is the deepest because it is the
-     only one that persists — a press lasts as long as a finger is down, and
-     hover as long as the cursor rests; "where I am" outranks both. The band is bounded from below by the
-     statuses: no state fill may be darker than Y=0.820 or a status label
-     sitting on it drops under AA, which is why these are close together rather
-     than comfortably spaced. Selection keeps its interactive outline (3.36:1
-     on this fill) and weight 500 on top of the deeper fill. */
-  --color-accent: #f6f6f5;             /* hover    — 1.081:1 on Pane */
-  --color-pressed: #f0f0ef;            /* :active  — 1.140:1 */
-  --color-selected: #ebebea;           /* current destination — 1.193:1 */
-  --color-accent-foreground: #191918;
+     (5.59:1), and Canvas (4.70:1). */
+  --color-muted-foreground: #616878;
+  /* THREE state fills on the white pane, each its own rung.
+     Measured against Pane #ffffff: hover 1.094:1, pressed 1.149:1, selected
+     1.225:1, each step ≈1.05:1 from the last. Selected is the deepest because it persists. */
+  --color-accent: #f2f5f8;             /* hover    — 1.094:1 on Pane */
+  --color-pressed: #eaf0f5;            /* :active  — 1.149:1 */
+  --color-selected: #e2e9f0;           /* current destination — 1.225:1 */
+  --color-accent-foreground: #111827;
   /* Semantic aliases — var() references, exactly as in the dark block. The
      re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
      the root element, so the :root alias already substitutes against this
@@ -845,31 +833,24 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      1.044:1 value step to its gutter, so this hairline was doing a value step's
      job. Canvas then went grey (#e8e8e8, 1.241:1) and the card went unlined
      entirely, which left the line with nothing to carry — and on 2026-08-31 the
-     owner asked for the survivors to be very slim or gone. #efeeec: 1.16:1 on
-     the white Pane, 1.09:1 on Workspace, 1.06:1 on Chrome. Warm side of the
-     ramp still (239 R over 236 B), which workspace-themes.test.ts measures.
+     owner asked for the survivors to be very slim or gone. Earlier #efeeec was 1.16:1 on
+     the white Pane, 1.09:1 on Workspace, 1.06:1 on Chrome (the prior warm ramp).
+     Now Nordic Slate sets #eaedf3 (1.173:1 on the white Pane, cool slate B > R).
 
      The two grounds that argued for 1.414 are both answered elsewhere now: the
      card is drawn by the Canvas step (app-shell-layout.test.ts holds 1.08:1
      under it), and a Raised surface sharing Pane's pure white takes
      --color-border-interactive plus the offset overlay shadow, not this line.
      It is a separator and NOT an operable edge. */
-  --color-border: #efeeec;
-  /* Document content, held at the app rule's pre-softening value: `.prose` and
-     `.tiptap` table cells, the blockquote marker, `hr`. See the dark block. */
-  --doc-rule: #d9d9d6;
-  /* Darkened twice under the cool ramp, and every retune since keeps that
-     hard-won headroom rather than restarting the argument. It carries more than
-     a boundary: it is what marks a selected row once the fill went quiet, so it
-     must not be softened. The binding ground is `muted` — the pressed/field
-     fill — since that is the darkest surface a control sits on. All Paper
-     grounds are measured by workspace-themes.test.ts:
-     3.30 field / 3.55 hover / 3.36 press / 3.22 selection / 3.52 Chrome /
-     3.61 Workspace / 3.67 Canvas / 3.84 Pane / 3.84 Raised. (The 3.42 that stood
-     here was measured against the pass-3 accent, not the one this block
-     declares — a stale figure a critique caught before any guard did.) */
-  --color-border-interactive: #838281;
-  --color-ring: #3f627c;
+  --color-border: #eaedf3;
+  /* Document content rule: `.prose` and `.tiptap` table cells, `hr`. */
+  --doc-rule: #cbd5e1;
+  /* Interactive border clears 3.0:1 on all operational grounds: selection 3.12:1,
+     canvas 3.28:1, field 3.32:1, and white Pane 3.82:1. */
+  --color-border-interactive: #768494;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
+  --color-ring: #31638a;
   --color-success: var(--color-status-connected);
   --color-warning: var(--color-status-syncing);
   /* Indigo = informational, light sibling — see the dark block's note for why
@@ -904,17 +885,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      token is body-adjacent ink tuned for reading, this one is a status hue that
      needed to clear `connected` under deuteranopia. Different jobs, so they no
      longer track each other. */
-  --color-status-inactive: #5c5c5a;
+  --color-status-inactive: #576474;
 
-  /* Code colors — matched against --color-code-bg #f1f1ef, a tint sitting
+  /* Code colors — matched against --color-code-bg #edf2f7, a tint sitting
      between Chrome and the pressed fill so a code block reads as recessed
      against the white pane. */
-  --color-code-bg: #f1f1ef;
+  --color-code-bg: #edf2f7;
   --color-code-keyword: #7041a8;
-  --color-code-string: #18754a;
-  --color-code-function: #2959a4;
-  --color-code-comment: #6a6a67;   /* neutral by role — tracks the ramp */
-  --color-code-number: #8a5a00;
+  --color-code-string: #0d7445;
+  --color-code-function: #2559a4;
+  --color-code-comment: #606f82;   /* neutral by role — tracks the ramp */
+  --color-code-number: #80590f;
   --color-code-type: #0b6878;
   --color-code-meta: #a3195b;      /* pink,   6.52:1 */
 
@@ -924,33 +905,47 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --inline-code-color: #7041a8;
 
   /* Canvas is the gutter around the white workspace card, and it also paints the
-     left destination rail and the top app header. Owner-pinned five times: on
+     left destination rail and the top app header. Owner-pinned seven times: on
      2026-08-30 at 249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9;
      on 2026-08-31 to #F4F3F1 when the workspace and rail hairlines came off and
-     the value step became the whole card boundary; and again the same day to
-     #E8E8E8, asked for as "more gray". The frame now measures 1.241:1 against
-     the white Pane — the rung --color-selected occupies (1.193:1), and a frame
-     you read as grey rather than as off-white.
+     the value step became the whole card boundary; on 2026-08-31 again to
+     #E8E8E8, asked for as "more gray"; on 2026-09-11 back up to #f0efed, because
+     at 1.23:1 the frame had stopped reading as the ground the card sits on and
+     started reading as a grey border drawn around the work on all four sides;
+     and on 2026-09-12 to this value.
 
-     THIS IS THE GREYEST VALUE THE SECONDARY INK ALLOWS. The left destination
-     rail labels ("Pages", "AI", "Graph") are 12px --color-muted-foreground on
-     this surface, so 1.4.3 applies at 4.5:1 and #686866 on #E8E8E8 measures
-     4.56:1. Any deeper grey needs --color-muted-foreground darkened first;
-     workspace-themes.test.ts pins that relationship so the rail cannot lose its
-     labels to a later retune. --color-border-interactive on Canvas is 3.13:1,
-     still over the 1.4.11 floor. Every other neutral in this block is fitted to
-     white and to this frame, which is why the ramp reads near-neutral rather
-     than beige. The rail's destinations are unaffected: they carry hover and
-     selection with ink and a Steel marker line, never a fill. */
-  --app-chassis: #e8e8e8;
+     #ededed measures 1.171:1 against the white Pane — a visible step, and not
+     the 1.044:1 non-edge #FAFAF9 gave. app-shell-layout.test.ts holds the floor
+     at 1.08:1, because that step is the only thing drawing the unlined card.
+     Any frame light enough to stop reading as a border lands INSIDE the state
+     band (hover 1.081:1 → selected 1.193:1) — there is nowhere else between
+     white and a grey, and it costs nothing: the fills paint rows inside the
+     panes, the frame paints the gutter outside them, and no surface carries
+     both.
+
+     THE SECONDARY INK SETS THE FLOOR UNDER HOW GREY THIS MAY GO — never a
+     ceiling on how light. The left navigation's 12px secondary labels are
+     --color-muted-foreground on this surface, so 1.4.3 applies at 4.5:1, and
+     #616878 clears that floor here (5.12:1 on #f5f5f5; 4.70:1 on the prior
+     #e8ecf0). Lighter is always safe for them; any deeper grey needs
+     --color-muted-foreground darkened first, and workspace-themes.test.ts pins
+     that relationship so the labels cannot be lost to a later retune.
+     --color-border-interactive on Canvas is over the 1.4.11 floor. Every
+     other neutral in this block is fitted to white and to this frame, which is
+     why the ramp reads near-neutral rather than beige. The rail's destinations
+     are unaffected: they carry hover and selection with ink and a Steel marker
+     line, never a fill. */
+  --app-chassis: #f5f5f5;
   /* The login page keeps the ground its halo was measured against. Canvas left
-     it behind on 2026-08-31: at #E8E8E8 the halo composites to #DDDFDF and the
-     hero's 18px lead paragraph measures 4.013:1, under 1.4.3's 4.5. This value
+     it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
+     hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
      is #FAFAF9 — the frame's own value for one day — where the composite holds
-     4.607:1. It is not "the old chassis kept around": it is the login surface's
-     ground, owned by `login-halo-surface.test.ts`, which measures the halo
-     against THIS token. Retune it and that guard re-measures; retune Canvas and
-     it does not, which is the whole point of the split. */
+     4.607:1. The split outlives the reason it was opened (Canvas is lighter than
+     this token again as of 2026-09-11, #f0efed) because it is not "the old
+     chassis kept around": it is the login surface's ground, owned by
+     `login-halo-surface.test.ts`, which measures the halo against THIS token.
+     Retune it and that guard re-measures; retune Canvas and it does not, which
+     is the whole point of the split. */
   --app-login-ground: #fafaf9;
   /* Chrome for internal panel headers and toolbars: one step under Workspace and
      a band you can see on a white Pane (1.09:1). It is no longer the deepest
@@ -962,9 +957,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      because that band must not drift
      between the surfaces that keep it. The top app header is Canvas, so the
      outer frame has one colour on all four sides. */
-  --app-header-bg: #f5f5f4;
+  --app-header-bg: #f0f3f6;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
+  --app-workspace-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px -2px rgba(0, 0, 0, 0.06);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1078,21 +1074,16 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 :root {
   --app-inset: 0px;
   --app-header-height: 2.75rem;
-  /* Pages / AI / Graph chassis column: 30px wider than the header band (74px
-     at the compact 44px header), giving the labelled destinations breathing
-     room outside their controls after the rail's padding. */
-  --app-nav-rail-width: calc(var(--app-header-height) + 30px);
+  /* Left column on the chassis; the boot skeleton reserves this width for the
+     tree, whose own default and reset are the same 282px. */
+  --app-nav-rail-width: 282px;
   --app-shell-radius: 0px;
-  --app-rail-gap: 0px;
-  --app-rail-radius: 0px;
 }
 
 @media (min-width: 768px) {
   :root {
     --app-inset: 12px;
     --app-shell-radius: 12px;
-    --app-rail-gap: 4px;
-    --app-rail-radius: 12px;
   }
 }
 
@@ -1100,16 +1091,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   :root {
     --app-inset: 16px;
     --app-shell-radius: 14px;
-    --app-rail-gap: 6px;
-    --app-rail-radius: 14px;
   }
 }
 
 @utility app-chassis {
+  /* One flat colour on every side of the workspace card. The tree column and
+     the header are transparent over it, so any image here (the retired
+     diagonal wash) showed as a tonal band around the card's left corners. */
   background: var(--app-chassis);
-  /* Destinations live on the left chassis. A matching inset there stacked a
-     second grey gutter beside the 48px rail; keep the inset on the end and
-     bottom so the workspace card still floats off the right and floor. */
   padding-inline-start: 0;
   padding-inline-end: var(--app-inset);
   padding-bottom: var(--app-inset);
@@ -1118,50 +1107,29 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility app-shell {
   min-height: 0;
+  padding-top: 4px;
 }
 
 /* The workspace card is defined by value and shape, not by a line: the chassis
    inset holds it off the frame, the radius cuts its corners, and Pane sits a
-   step above Canvas in both themes (1.10:1 Graphite, 1.11:1 Paper). The 1px
+   step above Canvas in both themes (1.101:1 Graphite, 1.171:1 Paper). The 1px
    hairline that used to trace all four sides was a third statement of the same
    boundary, and it read as a frame drawn around the work. Do not add it back:
    retune --app-chassis if the card stops reading as a card. */
 @utility app-workspace {
   background: var(--app-shell-bg);
   border-radius: var(--app-shell-radius);
+  box-shadow: var(--app-workspace-shadow);
   min-width: 0;
 }
 
-@utility app-body-with-rail {
-  gap: 0;
-}
-
-/* Detached sibling of the workspace card. Its boundary is the --app-rail-gap
-   strip of Canvas on one side and the chassis inset on the other three, plus
-   the same Pane-over-Canvas step the workspace uses — so it needs no hairline
-   either. Below `md` it is the inspector sheet over a dimmed backdrop, where a
-   border would be the only line on screen. */
+/* The inspector is attached inside the workspace card, beside <main>. The
+   card clips it to the shared outer radius; the 1px left hairline is its only
+   boundary with the document. Below `md` it is the inspector sheet instead. */
 @utility app-context-rail {
   background: var(--app-rail-bg);
-  border-radius: var(--app-rail-radius);
-}
-
-/* Sibling of the workspace card: same height, matching radius, and an explicit
-   gutter from --app-rail-gap. The gutter belongs to this positioning context
-   so ArticleRightPane's resize separator can fill it rather than borrowing
-   hit area from the panel. Do not stretch through the bottom inset — that
-   squared the rail to the viewport and made a short island when height did
-   not fill. */
-@utility app-rail-beside {
-  align-self: stretch;
-  min-height: 0;
-  height: 100%;
-  padding-left: var(--app-rail-gap);
-  position: relative;
-}
-
-.app-rail-beside .app-context-rail {
-  height: 100%;
+  border-left-width: 1px;
+  border-color: var(--color-border);
 }
 
 /* The rail's tab row inherits the rail, exactly as the left navigation's title
@@ -1170,11 +1138,19 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    rail's top edge measured 1.03:1 against Canvas in Graphite and 1.00:1 in
    Paper, so the top 48px — and the top corners' radius with it — dissolved into
    the frame and left the row's own hairline floating. On Pane the same edge is
-   1.10:1 / 1.11:1. Chrome now belongs to the header band of a list INSIDE the
+   1.101:1 / 1.171:1. Chrome now belongs to the header band of a list INSIDE the
    content pane — the Library results headers, and nothing else — never to a
    pane's own first row. */
-.app-context-rail .panel-toolbar {
+.app-context-rail .panel-toolbar:not(.nm-popover-glass) {
   background: transparent;
+}
+
+/* The rail and the chrome are the same Pane colour, so the overlay 82–90%
+   fill is invisible. This row is a true overlay: thinner fill, heavier blur. */
+.app-context-rail .panel-toolbar.nm-popover-glass {
+  background-color: color-mix(in srgb, var(--color-card-elevated) 42%, transparent);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
@@ -1184,7 +1160,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    not a chrome band beside a reading pane. The detached context rail is the
    same composition: one pane, its own first row, no band. */
 @utility app-header {
-  background: var(--app-chassis);
+  /* Let the chassis wash continue through the header without restarting. */
+  background: transparent;
   border-color: var(--color-border);
   height: var(--app-header-height);
   min-height: var(--app-header-height);
@@ -1193,7 +1170,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: var(--color-card);
+  background: transparent;
   border-color: var(--color-border);
 }
 
@@ -1236,6 +1213,16 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   color: var(--color-foreground);
   background: var(--color-card);
   box-shadow: var(--shadow-overlay-sm);
+}
+
+/* Inspector segmented track. Graphite keeps muted. Paper lifts the trough
+   toward Pane so the glass tab bar does not read as a grey well; the active
+   chip is still the white elevated step. */
+@utility panel-tab-track {
+  background: var(--color-muted);
+}
+[data-theme="paper"] .panel-tab-track {
+  background: color-mix(in srgb, var(--color-muted) 50%, var(--color-card));
 }
 
 /* A selected destination is a quiet neutral fill with full-strength ink — the
@@ -1390,19 +1377,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   box-shadow: var(--shadow-overlay);
 }
 
-/* Floating popovers and dropdowns. Same overlay contract as `nm-card-elevated`
-   (interactive ≥3:1 edge + `--shadow-overlay`) because Paper Raised == Pane.
-   The 95% fill keeps text and the edge readable even over black/white images;
-   the opaque token alone does not bound contrast on a translucent overlay.
-   `prefers-reduced-transparency` strips the fill's transparency and 10px blur.
+/* Floating popovers and dropdowns (Insert, block context, selected text, etc).
+   Softened border with reduced contrast (18% of interactive edge) and frosted
+   glass with 12px blur in both dark and bright modes.
+   Light mode uses 82% elevated fill so the frosted glass effect is visible
+   over document content, matching dark mode's translucency and blur.
+   `prefers-reduced-transparency` strips the fill's transparency and blur.
    Radius is `--radius-xl` (10px), the top of the workspace scale. */
 @utility nm-popover-glass {
   border-radius: var(--radius-xl);
-  border: 1px solid var(--color-border-interactive);
+  border: 1px solid var(--popover-glass-border, color-mix(in srgb, var(--color-border-interactive) 18%, transparent));
   background-color: var(--color-card-elevated);
-  background-color: color-mix(in srgb, var(--color-card-elevated) 95%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background-color: var(--popover-glass-bg, color-mix(in srgb, var(--color-card-elevated) 90%, transparent));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -1597,8 +1585,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     color: var(--color-destructive);
   }
 
+  /* Focus is the app's one Steel outline (DESIGN.md), never red: a red ring on
+     the destructive control reads as an error state, and the hue already marks
+     the action at rest. */
   &:focus-visible {
-    outline: 2px solid var(--color-destructive);
+    outline: 2px solid var(--color-ring);
     outline-offset: 2px;
   }
 
@@ -1642,8 +1633,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     background-color: color-mix(in oklab, var(--color-destructive) 74%, var(--color-foreground));
   }
 
+  /* Focus is Steel on every control (DESIGN.md); the fill already says
+     destructive, and a red ring on a red button hides "where am I". */
   &:focus-visible {
-    outline-color: var(--color-destructive);
+    outline-color: var(--color-ring);
   }
 
   &:disabled {
@@ -1898,7 +1891,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border: 1px solid var(--color-border-interactive);
   background-color: var(--color-card);
   padding: 0 1.75rem 0 0.625rem;
-  font-size: var(--font-size-xs);
+  font-size: var(--text-xs);
   line-height: 1;
   color: var(--color-foreground);
   outline: none;
@@ -1990,7 +1983,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
-  .nm-popover-glass {
+  .nm-popover-glass,
+  .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -2475,9 +2469,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Horizontal rules — neutral divider.
    Padding (not margin) is the hover target so the drag handle can land on
-   a 1px rule. background-clip keeps the painted line 1px tall. */
+   a 1px rule. background-clip keeps the painted line 1px tall; box-sizing:
+   content-box preserves the 1px height under Tailwind's border-box reset (#1637). */
 .prose :where(hr),
 .tiptap hr {
+  box-sizing: content-box;
   border: none;
   height: 1px;
   margin: 0.5rem 0;
@@ -2975,27 +2971,56 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Notion-style page links: inherit the article colour and stay underlined.
    `.prose :where(a)` paints every link Steel and only underlines on hover —
-   that treatment is chrome, not a document title. */
+   that treatment is chrome, not a document title.
+
+   The rule is a 1px background on the *inline* title, not `text-decoration`.
+   Decorating the flex row paints each flex item separately and skips spaces,
+   so "File System Issues" reads as three underlines. `text-decoration-skip-
+   spaces: none` is missing in WebKit and still gaps a multi-word title there.
+   `box-decoration-break: clone` keeps one continuous rule under each wrapped
+   line, spaces included. Mixes stay well below body ink so a dense index
+   does not read as a link farm — Paper's dark-on-light rule is a step quieter
+   than Graphite's because the same mix reads heavier on white. */
 .prose .confluence-children-view a,
 .tiptap .confluence-children-view a {
   color: inherit;
-  font-weight: inherit;
-  text-decoration: underline;
-  text-decoration-thickness: from-font;
-  text-underline-offset: 0.18em;
-  text-decoration-color: oklch(from var(--color-foreground) l c h / 0.45);
+  font-weight: 500;
+  text-decoration: none;
   /* `.prose :where(a)` only transitions color/decoration and would snap the
      pages-list accent fill. Include background so hover eases like a row. */
   transition:
     color 0.15s ease,
-    text-decoration-color 0.15s ease,
     background-color 0.15s ease;
+}
+.prose .confluence-children-view a .children-directory-title,
+.tiptap .confluence-children-view a .children-directory-title,
+.confluence-children-view .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 22%, transparent);
+  font-weight: 500;
+  text-decoration: none;
+  background-image: linear-gradient(var(--children-title-rule), var(--children-title-rule));
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+  background-position: 0 calc(1em + 0.14em);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .prose .confluence-children-view a:hover,
 .tiptap .confluence-children-view a:hover {
   color: inherit;
-  text-decoration: underline;
-  text-decoration-color: var(--color-foreground);
+  text-decoration: none;
+}
+.prose .confluence-children-view a:hover .children-directory-title,
+.tiptap .confluence-children-view a:hover .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 36%, transparent);
+}
+[data-theme-type="light"] .prose .confluence-children-view a .children-directory-title,
+[data-theme-type="light"] .tiptap .confluence-children-view a .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 16%, transparent);
+}
+[data-theme-type="light"] .prose .confluence-children-view a:hover .children-directory-title,
+[data-theme-type="light"] .tiptap .confluence-children-view a:hover .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 28%, transparent);
 }
 
 /* Confluence layout macros — multi-column grid */
@@ -3373,8 +3398,8 @@ span[data-comment-id] {
 [data-theme-type="light"] .comment-mark,
 [data-theme-type="light"] mark[data-comment-id],
 [data-theme-type="light"] span[data-comment-id] {
-  background-color: rgba(63, 98, 124, 0.16);
-  border-bottom: 2px solid rgba(63, 98, 124, 0.7);
+  background-color: rgba(49, 99, 138, 0.16);
+  border-bottom: 2px solid rgba(49, 99, 138, 0.7);
 }
 
 .comment-mark:hover,
@@ -3387,8 +3412,8 @@ span[data-comment-id]:hover {
 [data-theme-type="light"] .comment-mark:hover,
 [data-theme-type="light"] mark[data-comment-id]:hover,
 [data-theme-type="light"] span[data-comment-id]:hover {
-  background-color: rgba(63, 98, 124, 0.26);
-  border-bottom-color: #3f627c;
+  background-color: rgba(49, 99, 138, 0.26);
+  border-bottom-color: #31638a;
 }
 
 /* Resolved comments: subtle dashed indicator */
@@ -3403,7 +3428,7 @@ span[data-comment-id][data-comment-resolved="true"] {
 [data-theme-type="light"] .comment-mark.comment-resolved,
 [data-theme-type="light"] mark[data-comment-id][data-comment-resolved="true"],
 [data-theme-type="light"] span[data-comment-id][data-comment-resolved="true"] {
-  border-bottom: 1.5px dashed rgba(63, 98, 124, 0.35);
+  border-bottom: 1.5px dashed rgba(49, 99, 138, 0.35);
   opacity: 0.75;
 }
 
@@ -4348,3 +4373,80 @@ table caption {
     color: HighlightText;
   }
 }
+
+/* ============================================
+   Page Icon — Filled variant & cutouts
+   Lucide icons default to outline (stroke-only). When icon.filled is true,
+   fill="currentColor" makes them solid. For icons with inner cutout
+   details (e.g. camera lens, gauge needle, gear center, checkmarks),
+   these rules override the inner element's fill and stroke to match
+   the surface background so cutouts render cleanly in both themes.
+   ============================================ */
+.page-icon-filled {
+  --page-icon-cutout: var(--color-card, #ffffff);
+}
+
+/* Page title and list contexts can specify cutout to match their surface */
+.page-icon-title .page-icon-filled {
+  --page-icon-cutout: var(--color-background, #ffffff);
+}
+
+/* Camera: inner circle is the lens cutout */
+.page-icon-filled.lucide-camera circle {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* Gauge / GaugeCircle: first path is needle cutout */
+.page-icon-filled.lucide-gauge path:first-child,
+.page-icon-filled.lucide-gauge-circle path:first-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Settings / Cog: inner circle is center hole */
+.page-icon-filled.lucide-settings circle,
+.page-icon-filled.lucide-cog circle {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* Database: divider lines between tiers */
+.page-icon-filled.lucide-database path:last-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Alert / Info / Help / Circle inner symbols */
+.page-icon-filled.lucide-circle-alert line,
+.page-icon-filled.lucide-alert-circle line,
+.page-icon-filled.lucide-circle-x path,
+.page-icon-filled.lucide-x-circle path,
+.page-icon-filled.lucide-info path,
+.page-icon-filled.lucide-circle-help path,
+.page-icon-filled.lucide-help-circle path,
+.page-icon-filled.lucide-circle-question-mark path {
+  stroke: var(--page-icon-cutout);
+}
+
+/* Circle Check / Checkmark */
+.page-icon-filled.lucide-circle-check path:last-child,
+.page-icon-filled.lucide-circle-check-big path:last-child,
+.page-icon-filled.lucide-check-circle path:last-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Play circle: play triangle cutout */
+.page-icon-filled.lucide-circle-play path:first-child,
+.page-icon-filled.lucide-play-circle path:first-child {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* FileText: document lines */
+.page-icon-filled.lucide-file-text path:nth-child(n+3) {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+

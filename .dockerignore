@@ -22,10 +22,12 @@ logs
 tmp
 temp
 .claude
-# #1115: the VL embedding shim is a Python tool, so following its README puts a
-# multi-GB venv (mlx/torch wheels) inside the checkout. docker-compose.build.yml
-# builds with `context: ..`, so without these the wheels are tarred up and
-# streamed to the daemon on every local source build. Mirrors the .gitignore block.
+# #1115: the repo's Python tools (today `tools/eval-corpus-images/`; the VL
+# embedding shim until #1618 stage 2 removed it) put a multi-GB venv inside the
+# checkout when you follow their README. docker-compose.build.yml builds with
+# `context: ..`, so without these the wheels are tarred up and streamed to the
+# daemon on every local source build. Broader than .gitignore's `tools/**`
+# equivalents on purpose: this is a build-context filter, not a tracking rule.
 **/.venv
 **/__pycache__
 **/.pytest_cache

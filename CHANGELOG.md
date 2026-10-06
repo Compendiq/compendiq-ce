@@ -7,6 +7,820 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-06
+
+> Minor: fixes for seven security advisories (GHSA-527x, -9v4v, -r652, -mvgq, -59q7, -v22g, -98hf), page restrictions on every read, Confluence as a per-user toggle (standalone mode), image analysis in retrieval (ADR-027), dependency security updates. **Every user signs in again once after upgrading.** 237 commits since v0.8.0.
+
+### Security
+
+- **Dependency security updates.** `nodemailer` 9.1.1 → 10.0.13 (address
+  parser denial of service, cross-transport TLS server-name reuse, malformed
+  envelope recipients); `brace-expansion` → 1.1.21 / 2.1.7 / 5.0.12 and
+  `fast-uri` → 3.1.8 (transitive). `@types/nodemailer` is dropped because
+  nodemailer 10 ships its own type declarations. Nodemailer 10 requires
+  Node.js 20+; Compendiq already requires 22+. `fastify` 5.12.1 → 5.12.5
+  (malformed URLs reaching encapsulated not-found handlers, request body and
+  header/boolean-schema validation bypasses, HTTP/2 trailer DoS),
+  `dompurify` → 3.4.16, and the transitive `@grpc/grpc-js` → 1.14.5 and
+  `nanoid` → 3.3.19.
+
+- **Editor drafts are private to the account that wrote them.** The
+  non-collaborative editor's autosaved draft was stored in the browser under
+  the page alone, survived sign-out, and was offered through **Restore
+  draft?** to the next account that opened the same page in that browser.
+  Drafts are now stored per user id and only ever offered to that user.
+  Signing out from the account menu now **discards that user's unsaved local
+  drafts** (the sign-out confirmation does not warn about them). Pending
+  autosaves in the signing-out tab are fenced immediately; those in other
+  tabs are fenced once the sign-out is visible to them (browsers may
+  replicate storage between tabs with a sub-millisecond delay), and anything
+  written in that window stays under the signed-out user's own scope and is
+  never offered to another account.
+  A session that ends without a sign-out (expiry, a failed refresh) keeps
+  them for the same user's next sign-in. Drafts saved by earlier versions
+  have no owner: they are deleted at app start and are never offered.
+- **Command-palette recent searches are private to the account that made
+  them.** The terms listed under **Recent Searches** in the command palette
+  (Ctrl/⌘ K) were stored in the browser without an owner, survived sign-out,
+  and were shown to the next account that opened the palette in that browser.
+  They are now stored per user id and only shown to that user; nothing is
+  recorded while no one is signed in. Signing out from the account menu
+  deletes them; a session that ends without a sign-out keeps them for the same
+  user. The list saved by earlier versions has no owner: it is deleted at app
+  start and is never shown. Likewise, the space selected in the sidebar page
+  tree is now forgotten when the session ends, so the next account no longer
+  starts in the previous account's space.
+- **A refresh token no longer works as an access token.** Access and refresh
+  tokens were signed with the same key and issuer, and the bearer check did
+  not look at the token's purpose. A refresh token, including one already
+  revoked by logout, was therefore accepted as `Authorization: Bearer` on
+  protected API routes and the collaboration socket for up to seven days.
+  Each token now declares its purpose in its signed `typ` header (`at+jwt` for
+  access, `rt+jwt` for refresh). Every bearer check requires the access
+  marker, and `/api/auth/refresh` refuses access tokens. Tokens issued before
+  this change carry no marker and are refused, so **every user signs in again
+  once after upgrading** (#1683).
+- **Page restrictions now apply to every non-RAG read.** A Confluence page
+  with custom permissions (`inherit_perms = false` plus page ACEs, from the
+  admin access-control routes, the Enterprise bulk route or restriction sync)
+  was refused by page detail but still appeared, for users with a role on its
+  space and no ACE, in lists, trees, hierarchy, search results and snippets,
+  facets, graphs, space counts and home pages, pins, status counts, sub-page
+  LLM context and several page-scoped routes. All of them now apply the
+  restriction in both editions; administrators' listings are unchanged. RAG
+  retrieval keeps its documented gate (space-level, plus the Enterprise
+  `rag_permission_enforcement` post-filter). ACE and group-membership changes
+  now invalidate page caches from the database, so no cached view keeps a
+  newly restricted page. Semantic and hybrid `/api/search` authorize a
+  candidate pool of at least twice `limit` before applying `limit`, so
+  results fall short only when more unreadable pages than that headroom rank
+  first; their analytics rows count the results actually returned.
+- **Status changes for unreadable pages.** Presence heartbeat and stream
+  answer 404 instead of 403 (leaving answers 204); the version list answers
+  200 with no versions instead of 403; single versions, semantic diff and
+  restore answer 404 instead of 403; a collaboration join closes 4404 instead
+  of 4403 (mid-session revocation still closes 4403); watching an unreadable
+  or missing page answers 404.
+- **The shared AI answer cache no longer replays answers from pages the
+  asker cannot read.** `POST /api/llm/ask` builds its page-tree context per
+  user (private standalone pages and restricted pages drop out), but the
+  cached answer was keyed on the requested page id. A user who asked the same
+  question with the same page selected received the answer another user had
+  generated from content they may not read, and it was saved to their
+  conversation. Cached answers are now keyed on the exact prompt the model
+  receives, including the exact bytes of any knowledge-base images shown to
+  it, so a cached answer is served only when it was generated from the
+  same context; users with the same readable context still share cached
+  answers. Edits and permission changes that change that context no longer
+  hit an older answer. Follow-up questions in an existing conversation are no
+  longer written to the shared cache. Existing cached answers stop matching
+  once, for one `LLM_CACHE_TTL`.
+
+### Changed
+
+- **Inspector Details: Source first, remedies beside warnings, deletion fenced
+  by consequence.** The tab opens with a **Source** block — `Confluence · KEY`
+  or `Local space · KEY`, last synced (date stamp visible, time-of-day in the
+  tooltip), version, the Confluence link — and carries the Confluence verbs:
+  `Pull latest from Confluence…` now confirms first and states what it does
+  (replaces the local title and content, keeps labels and any draft; the
+  collapsed rail's Re-sync uses the same confirm), and `Move to Confluence…`
+  sits there for local articles. Document health puts its remedy on the same
+  block (`Index now` / `Retry indexing` / `Re-check quality` / `Open
+  Assistant`, which only opens the Assistant tab) beside `Record verification`,
+  and names the quality band when the page is healthy. Page actions are one
+  flat list of 32px rows with no `More actions`; a local article's `Move to
+  trash` is an ordinary row (it is restorable for 30 days) while a Confluence
+  page's `Delete in Confluence…` and `Move to a local space — deletes the
+  Confluence page` sit behind the Danger zone. Freshness and index chips are
+  passive (no tab stop; the date is in the visible text) and the index Retry
+  is a real 32px button; the quality meter's empty segments move from ink at
+  50% to the interactive-border token — the one value that clears 3:1 against
+  every ground the chip sits on and 3:1 short of a filled segment in both
+  themes — and stay legible under forced colours; every destructive control
+  focuses in Steel; note threads are hairline-separated rows; the freeze
+  refusal links to Confluence settings; the mobile inspector's close control
+  is 32px.
+- **Inspector Details: one status-chip recipe, legible in Graphite.** The
+  Document health row's verification, freshness and search-index chips now
+  share one 24px pill with a hairline, the compositing tint, secondary ink and
+  a leading glyph on every state; the label chips and the space tile take the
+  same fill. The `Not Embedded` pill and the space tile were `bg-muted`, which
+  measured 1.04:1 on the inspector's pane in Graphite and vanished. The quality
+  meter's empty segments are now ink at 50% instead of the hairline, so a low
+  score reads as one of four rather than a single tick. The index chip says
+  `Not indexed` / `Indexing…` / `Indexed <date>` / `Indexing failed`, matching
+  the health sentence above it; every readout in the panel is sentence case;
+  the inspector prints one absolute date stamp (day precision, with the year)
+  everywhere a date appears; the quality summary renders its Markdown emphasis
+  instead of printing `**bold**`; the embedding Retry control and `Move to
+  trash` meet the 13px / 32px floors; and the empty Notes state is one row
+  aligned with its heading instead of a 156px illustration.
+
+- **Header destinations, tree on the chassis, one lifted workspace card
+  (ADR-010 v1.7, v1.8).** Pages / AI / Graph move from the left icon rail to flat
+  tabs in the top bar. The route's sidebar (page tree, AI conversations,
+  settings) now sits directly on the frame in a wider left column, and the
+  page inspector is attached inside the workspace card beside the document,
+  resizable from its own left edge like the tree. The frame is one flat colour
+  in both themes (the diagonal chassis wash is retired; in light mode it is now
+  `#F5F5F5`), and the card carries
+  a light shadow that follows its rounded corners. The edit toolbar now folds
+  tools into Insert by measured overflow, so it no longer grows a horizontal
+  scrollbar that lifted its tools off centre at some widths. The mobile drawer
+  and inspector sheet are unchanged.
+
+- **Rejected page deletes no longer corrupt Library caches (#1668).** Page
+  removal now waits for a successful DELETE, adjusts totals only for cached
+  result sets that contain the confirmed row, and invalidates page, tree, pin,
+  trash, and space-derived data for reconciliation. Failed deletes preserve
+  inactive rows and totals even when the follow-up fetch also fails.
+
+- **LLM response-cache lock releases preserve the current owner (#1660).**
+  Every cache-stampede lease now carries a per-acquisition UUID and releases
+  through an atomic compare-and-delete, so a request that outlives its TTL
+  cannot delete a successor's live lock. Redis-unavailable and cache-wait
+  timeout generation fallbacks remain unchanged.
+
+- **Version restore concurrency (#1659).** The optional optimistic version is
+  now checked against the live page row under its transaction lock, before the
+  superseded snapshot or restored content is written. A concurrent edit wins
+  and the restore returns 409; callers that omit the version retain the existing
+  unconditional restore behavior.
+
+- **Upgrade the client inference dependency family (#1654).** Transformers
+  4.3.0 brings ORT node 1.30.0 and web 1.31.0-dev.20260914-8d85527a0;
+  the resolved sharp 0.35.4 and adm-zip 0.6.1 no longer need the obsolete
+  Transformers 4.2.0 overrides. Load models through API-relative local paths
+  so the new Hub ID validation cannot reject Compendiq's `org--name` asset
+  IDs. Same-origin authentication and existing OPFS caches are preserved.
+
+- **Immutable article baselines and protected-writer enforcement (#275,
+  #276).** Added canonical manifest-v1 digests, exclusive retained media,
+  append-only freeze/thaw evidence, shared writer intents, and conservative
+  recovery, then registered enforcement version 1 across collaboration, sync,
+  purge, and subtree/cascade writers. Creation is installed but default-off:
+  activation requires a ready single-protocol writer deployment and the acting
+  administrator's Confluence integration explicitly off; new baselines also
+  require standalone page provenance and the acting user's integration off.
+  Existing freeze enforcement, thaw, and evidence access remain independent of
+  that mode. Governed signing/approval (#278) and the full UI (#277) are not
+  included.
+
+- **An analysis whose only schema violation is inside `structured` is kept
+  (#1615).** Measured while driving #1619's arm B backfill over the 187-image
+  corpus: 9 images produced a payload that broke a bound only in the OPTIONAL
+  `structured` block — `chart.trend` over 120 characters (6), a
+  `diagram.nodes[]` entry over 50 (1), a `diagram.edges[]` entry over 70 (1),
+  26 diagram nodes against a cap of 25 (1) — while their `description` and
+  `visibleText` were in bounds, and the client discarded the whole analysis as
+  `malformed`. That left **4.8 % of a real corpus permanently unanalyzable**
+  with its pages *partial* forever: the bounds are already maximal at the
+  16,384 ceiling (`imageAnalysisCeilingScale` returns 1), so no ceiling raise
+  widens them, and stating every cap in the prompt still left 2 of 4 re-probed
+  images violating one. The block is now dropped and the payload re-validated
+  — exactly what a model emitting no structured block would have produced.
+  Nothing else is relaxed: a violation in `description`, `visibleText`,
+  `language` or `limitations`, a reply with no JSON object, a mixed violation,
+  a refusal, an empty payload and a `length` finish all still fail.
+
+- **The ADR-027 B-vs-C retrieval pair is captured (#1619).** Both arms on
+  `a9f0fbb8`, DE image fixture, Qwen3-Embedding-4B Q8_0 at 2560 dims, FTS
+  `german`, rerank off; arm B analysed **187/187** images with `qwen3.8-27b`.
+  Page **R@1 .9320 → .9806** (+4.85 pp, 16 W / 1 L, McNemar exact
+  **p = 0.000275**, 95 % bootstrap CI [+2.34, +7.72] pp over 65 page
+  clusters), R@5 .9871 → **1.0000**, R@10 .9968 → **1.0000**, MRR
+  .9599 → .9903 (+3.04 pp, CI [+1.47, +4.84]), image-negative leakage@1
+  **0 of 24** on both arms, query cost p50 56.7 / p95 65.5 ms. So on this
+  corpus image analysis retrieves the expected page **better than no image
+  analysis** — and that is the whole claim: the pre-registered primary is
+  answer correctness, **no human judging was taken** (amendment A-5), so the
+  gate verdict stays **inconclusive by design** and nothing here says anything
+  about the retired ADR-025 image leg. Artifacts and full provenance:
+  `backend/src/domains/llm/eval/artifacts/1611/`.
+
+- **BREAKING — the legacy image-embedding path is retired (#1618 stage 2,
+  migration 118).** The authorisation, verbatim: **"Remove it, nobody was
+  using it in production."** The basis is that it was **unused in production**
+  and carried **standing maintenance cost**. It is explicitly **not** a
+  measurement, and nothing in #1619 justified it: the pre-registered primary
+  (B vs A) was **never measured** — arm A needs a vision-language *embedding*
+  endpoint the owner will not stand up — **no human answer-correctness
+  judgement was taken**, arm B stands at **100 of 187** images analysed, and
+  what #1619 did capture is arm C and the legacy-revision-C control, which
+  show #1617's lexical change to be a measured **no-op** on that corpus.
+  ADR-025 is **superseded in full**; AC-4's "passing verdict" route is
+  superseded in writing by ADR-027 amendment **A-5** plus the owner's explicit
+  go. Migration 118 drops `page_image_embeddings`, `pages.image_embedding_dirty`
+  and its partial index, the `image_embedding` assignment row, the
+  `image_embedding_*` and `rag_image_leg_enabled` / `image_index_last_run`
+  settings rows, and **narrows** the `llm_usecase_assignments` CHECK to the
+  eight surviving use cases — the first migration to narrow it. It removes no
+  page content and no attachment bytes. **Rollback is a restore**, not a down
+  migration: `docs/runbooks/image-embedding-retirement.md` carries the
+  `pg_dump` set, the two-arm restore procedure and its exercise record.
+  Pictures stay retrievable and citable through ADR-027's image *analysis*
+  (derived, provenance-marked `page_embeddings` chunks) — one index, one query
+  embed, no third RRF leg, and a text-only chat model can still cite a
+  diagram.
+
+- **The ADR-027 gate is re-registered B vs C, and no condition can be dropped
+  in silence (#1619).** Arm A needs a real vision-language *embedding*
+  endpoint; the owner declined to stand one up (the goal being to remove VL
+  embedding entirely), so arm A is permanently unobtainable and every
+  endpoint that named it is re-registered or retired in writing — ADR-027
+  "Amendment (2026-09-16, #1619)", drafted A-1…A-6. `--unblind` now requires
+  `{B, C}` and refuses a primary with no registered comparator (an arm A
+  report no longer parses at all — #1634 narrowed `EVAL_ARMS` to `[B, C]`,
+  correcting the claim this entry first made that it stayed accepted as a
+  secondary pairing); the primary,
+  the secondary pairs, the pilot and the safety endpoints run C → B, and each
+  condition names the arms it scored. **O5's image-evidence guardrail is
+  retired**: under B vs C the paired endpoint is null by construction and
+  `decideGate` used to omit the row, so a B-vs-C run would have passed a rule
+  one condition shorter than the one on record — it is now printed as a
+  `retired` condition and excluded from the aggregation. **A pilot stop prints
+  the conditions too**: ψ below the floor pre-empts the DECISION (the
+  aggregate stays `inconclusive-by-design`), not the record, so a stopped run
+  can no longer swallow the retired row or a measured safety failure.
+  **O7 becomes an
+  absolute cap on arm B's own image-negative leakage** in queries (arm C leaks
+  0 on every negative by construction, so the paired reading compared against
+  a constant), and a slice below O2's 48 negatives reads `inconclusive`.
+  `--control-a` becomes **`--control-legacy-c`**: text-gate reports record
+  `revisionSha` where git can answer for a clean tree, and the scorer refuses
+  a side without one or two sides sharing a revision — nothing checked the
+  revision before, so legacy controls were published under the label "C vs
+  A". `sources[].attachmentUrl` is **stripped from the judging sheet** and
+  added to the blinding guard's forbidden keys: it is present only on an arm
+  with an image leg, so under the amended primary it separates exactly the two
+  arms being compared. **Retirement of the legacy image-embedding path
+  (#1618 stage 2) proceeds because it was unused in production and carries
+  maintenance cost — not because a measurement justified it — and no human
+  answer-correctness judgement was taken for #1619** (the owner declined the
+  judging burden), so the figures on record are retrieval metrics only; the
+  ADR says both plainly.
+
+### Removed
+
+- **#1618 stage 2 — everything the image-embedding leg owned.** Backend:
+  `vl-embedding-client.ts`, `image-embedding-probe.ts`,
+  `image-embedding-index.ts`, `image-embedding-service.ts`,
+  `image-leg-search.ts`, `image-embedding-target-dimensions.ts`,
+  `routes/llm/llm-image-index.ts` and the `image_embedding` probe/assignment
+  routes; `resolveImageEmbeddingUsecase`, `getRagImageLegEnabled`,
+  `ImageEmbeddingDimensionMismatchError`. Contracts: the `image_embedding`
+  member of `LlmUsecaseSchema`, `SearchResult.imageHits` / `imageOnly` /
+  `imageTextSynthesized`, the `image_only_context` refusal reason and
+  `degraded_reason = 'image_leg_unavailable'` (historical `search_analytics`
+  rows keep the text; no CHECK constrained that column). Settings UI: the
+  Image-leg toggle, the MRL truncation-width control, the image-embedding
+  probe chip and the Image-embedding assignment row. Eval: the paired
+  `--images` axis, `EVAL_IMAGE_EMBEDDING_*`, `eval/vl-stub-server.ts`,
+  `tools/vl-embedding-shim/` and its CI job; `--arm A` is refused like any
+  unknown arm. Docs: `docs/runbooks/image-index.md` (rewritten as
+  `image-analysis.md`) and `docs/runbooks/vl-embedding-dev.md`.
+  `core/services/image-embedding-dirty.ts` was **renamed**
+  `image-analysis-dirty.ts` with the column it writes, and
+  `IMAGE_PROBE_TIMEOUT_MS` became `VISION_PROBE_TIMEOUT_MS`.
+
+### Fixed
+
+- **Local writes to synced pages while Confluence is off** (AI improvement
+  apply, version restore, label edits) now require the same page access and
+  edit rights as the page editor.
+
+- **Conversation pagination retains PostgreSQL microseconds (#1667).** Opaque
+  keyset cursors now carry the exact six-digit `updated_at` ordering key plus
+  the UUID tiebreaker, so conversations inside the same millisecond are returned
+  exactly once instead of disappearing after a page boundary. Precision-losing
+  legacy cursors are rejected with 400; the conversation sidebar restarts its
+  traversal from the first page when that happens.
+
+- **Refresh-token rotation is atomic and single-use.** `POST /api/auth/refresh`
+  now claims the presented refresh token with a conditional update and inserts
+  its successor in the same transaction under the user's row lock, so one
+  refresh token can never yield two usable successors. A replayed or
+  concurrently re-presented token revokes its family as before, and family
+  revocation, logout, role changes and deactivation serialize with rotation so
+  no successor can outlive them. Lock waits are bounded: a refresh that times
+  out returns a retry-safe 503 (`code: "refresh_busy"`) without consuming the
+  cookie, a rotation that stalls inside its transaction is ended by the
+  database after 10s idle, and a revocation that times out runs without the
+  lock under its own deadlines and then retries once under it, so a stalled
+  rotation's successor is still revoked. If a logout's revocation cannot run at
+  all, logout answers 503 (`code: "logout_busy"`) and keeps the cookie instead
+  of reporting success, and the SPA keeps the session and offers a retry. In
+  the SPA, refresh, login, registration, setup, SSO exchange and logout
+  requests are serialized across tabs (Web Locks, or an IndexedDB lease on
+  plain-HTTP deployments), so tabs sharing the cookie no longer log each other
+  out by refreshing at the same moment. A refresh that fails transiently no
+  longer signs the user out: only the retry-safe 503 is retried (with the lock
+  released between attempts), and network or proxy errors are reported without
+  a retry.
+
+- **Page hierarchy metadata follows per-page visibility.** Local-space trees,
+  page lists and trees, breadcrumbs, children, graphs, pins, filter facets and
+  space summaries now show only pages the caller can read (assigned Confluence
+  spaces, shared standalone pages, the caller's own private pages); a hidden
+  parent is presented as a root. `/has-children` and `/children` answer a
+  collision with an unreadable page like the detail route instead of 409, and
+  the focused graph keeps enforcing Confluence page restrictions. Cached trees
+  and lists are invalidated by role and group changes.
+
+- **Page saves are now single-flight per editing session (#1662).** Rapid
+  repeated `Ctrl`/`Cmd`+`S` gestures, including saves that first drain pending
+  draw.io work or commit a collaborative snapshot, now share the operation
+  already in progress instead of sending the same stale page version twice.
+  If the current editor is discarded or the retained `/pages/:id` route moves
+  to another article while that operation is pending, Edit remains visibly
+  unavailable until the older flight settles, rather than exposing a new
+  session whose Save would be silently dropped. The guard releases after both
+  success and failure so an intentional retry still works.
+
+- **Fresh migrated installations now promote the first real registration to
+  administrator (#1661).** The migration-seeded `__system__` template owner no
+  longer makes `/api/auth/register` assign the ordinary user role. Registration
+  and `/api/setup/admin` now share one transaction and users-table lock, so
+  concurrent bootstrap requests produce exactly one real administrator; later
+  open registrations remain regular users and a raced closed registration is
+  rejected by the existing policy.
+  The bootstrap sequence diagram also renders its transaction separator
+  correctly instead of failing Mermaid parsing.
+
+- **Trashing a standalone article now takes its whole sub-article subtree with
+  it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its
+  live descendants kept `parent_id` pointing at a trashed page: `GET
+  /api/pages/tree`'s `LEFT JOIN pages parent_page ON (…) AND parent_page.deleted_at
+  IS NULL` answered `parentId: null` for them and the sidebar rendered them as
+  top-level pages. `has_children` on `GET /api/pages/:id` matched
+  `parent_id = confluence_id` only, so a standalone parent reported `false`
+  however many sub-articles it had, and no dialog could warn. Soft delete and
+  `?permanent=true` now walk the subtree in one statement
+  (`core/services/page-subtree.ts`; `UNION`, so a `parent_id` cycle terminates
+  instead of hanging the request) and `hasChildren` uses the tree's
+  dual-identifier join. `GET /api/pages/:id` gains `descendantCount` (the live
+  STANDALONE descendants OF THE CALLER'S OWN — exactly the rows the cascade
+  takes), and all three delete dialogs name what the action costs from
+  `shared/lib/trash-copy.ts`.
+
+  A cascade only ever touches rows the caller may act on. Both cascades guard
+  on `source = 'standalone'` (Confluence owns a synced row's lifecycle, and its
+  sync upsert would resurrect anything trashed locally) **and** on
+  `created_by_user_id` (`POST /api/pages` validates a `parentId` for existence
+  and space but not for ownership, so another user's article can legitimately
+  sit inside this subtree — trashing it would put it in a trash its owner
+  cannot restore from, and `?permanent=true` would destroy it outright). A row
+  either guard skips stays live under a trashed parent, so the tree renders it
+  at the root: that orphan is the stated, deliberate cost of not acting outside
+  the caller's authority. A subtree whose parent identifier is ambiguous — a
+  standalone page whose PK is also another page's `confluence_id`, which
+  `pages.id` being a serial makes reachable — is REFUSED with 409
+  `subtree_identifier_ambiguous` rather than resolved, the same rule
+  `PUT /pages/:id/move` and the bulk selection resolver already follow (#1166,
+  #1167); resolving it either way would cascade into an unrelated tree.
+
+  Restore puts back the whole delete BATCH (the rows sharing the cascade's
+  single `deleted_at`), and answers 409 `Restore "<title>" first` when the
+  page's DIRECT parent is still in the trash *and* is one the caller can
+  actually restore — their own standalone row. A live direct parent never
+  blocks a restore however far up the chain something else is trashed, and an
+  unrestorable trashed parent (Confluence-sourced, or another user's) no longer
+  blocks it either: refusing there left the row stuck until the 30-day purge
+  destroyed it. `POST /pages/bulk/delete` shares the walk and its guards; its
+  response still counts the selected pages.
+
+- **Image analysis asks the provider not to think (ADR-027 D8 erratum,
+  #1619).** A reasoning vision model spends **82.0–93.3 %** of its output
+  tokens on a thinking pass at the shipped 8,192 ceiling (measured over the
+  ten rows of #1619's vision pre-check, tabulated in ADR-027; one row reads
+  99.96 % at a 16,384 ceiling, off a generation cut at the host's 8,192-token
+  context wall), and those tokens come out of the same
+  `max_tokens` budget the analysis payload needs: on the 187-image eval
+  corpus, 14 images failed deterministically at the shipped 8,192 ceiling
+  (8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`) and each would have
+  gone `failed_terminal` after five attempts. The analysis request — and only
+  the analysis request, never a chat or answer call — now carries the shipped
+  non-thinking hints, so the ceiling and the 120 s per-image budget did not
+  have to move. One of those fourteen images was re-probed with the hints
+  (`waermepumpe__3.png`: HTTP 400 after 73.2 s → a valid payload in 62.8 s);
+  the other thirteen were not re-run, because the provider host stopped
+  answering before the backfill could complete. The hints
+  are advisory: strict OpenAI hosts are sent none, and a provider that ignores
+  them keeps reasoning.
+
+- **`--arm B` reaches arm B's index state unattended (#1619).** Two gaps, both
+  the harness's: the image seeder never raised `pages.image_analysis_dirty` —
+  that flag IS the analysis queue (ADR-027 D6.2) and migration 116's
+  initial-backlog UPDATE runs before any corpus page exists — so the reconcile
+  claimed nothing, no analysis was ever written and the run died at its
+  `--backfill-timeout` reporting 0/187; and nothing re-embedded afterwards,
+  while `embedPage` is the only writer of derived `page_embeddings` rows, so
+  the top-K carried no derived chunk and the run was refused at the 50%
+  image-evidence floor. The seeder now raises the flag through the product's
+  own writer (`markPageImagesDirty`), and `eval/arm-b-backfill.ts` drives the
+  product's own entrypoints — `runImageAnalysisBatch()` then
+  `processDirtyPages()` — from inside the process that owns the run's
+  `ATTACHMENTS_DIR`, which is what an external driver could not see. It
+  refuses a state it cannot advance (a `failed_terminal` row under the ceiling
+  in force, an intake skip, an unassigned or drifted identity, a failing embed
+  pass) instead of spinning to the deadline.
+
+### Added
+
+- **Confluence is now a per-user toggle, and off means standalone mode (#1623,
+  migration 119).** The authorisation, verbatim: **"When confluence is off the
+  app should be in standalone mode, all features should work just with no sync
+  to confluence."** `user_settings.confluence_enabled` is `BOOLEAN NOT NULL
+  DEFAULT TRUE`, so every existing deployment is untouched and a row that
+  predates the column reads as enabled — the no-row read path in
+  `GET /api/settings` emits the same `true`. `confluenceEnabled` is
+  **required** on `SettingsResponseSchema` (a client that cannot see the flag
+  would keep nagging a standalone user) and **optional** on
+  `UpdateSettingsSchema`, where an omitted key leaves the column alone.
+  **Off is not a degraded product:** pages, the editor, search, the AI
+  assistant, Q&A, quality analysis, versions and the knowledge graph all keep
+  working on the local corpus. Scheduled and manual sync stay idle and no save,
+  move or delete is pushed upstream — a page that synced earlier stays fully
+  editable, movable and deletable, its writes landing locally while it keeps
+  its `confluence_id` and its history. **Credentials are retained, never
+  cleared**, so switching back on needs no re-paste, and
+  `Confluence not configured` stays reserved for an *enabled* user whose
+  credentials are missing or broken. **No surface asks for a URL or a PAT while
+  the flag is off:** Settings → Confluence renders the credential form only
+  behind a `Sync with Confluence` switch that saves on flip (the panel's Save
+  still submits credentials only); the first-run wizard's Confluence step
+  offers `Use Standalone Mode`, and a successful connection test re-enables the
+  integration; Spaces & Sync drops `Fetch Spaces`, `Sync Selected` and the sync
+  overview while keeping the saved space selection listed and editable; the
+  Library's browse-empty state answers the mode ahead of both Confluence
+  branches and carries no primary action, because there is nothing to finish in
+  Settings; the Getting Started checklist renders three milestones instead of
+  five, omitting the two Confluence steps rather than greying them out or
+  ticking them; and version history reports a new `skipped_confluence_off`
+  backfill status — "the list below is this page's local history" — instead of
+  the credential prompt `skipped_no_credentials` earns. One backend truth
+  source, `isConfluenceEnabled(userId)` in
+  `domains/confluence/services/sync-service.ts` (`true` when no row exists);
+  `getClientForUser` returns `null` when the flag is off, and because it also
+  returns `null` for enabled-but-unconfigured, a caller that must keep working
+  locally asks the helper instead of inferring the mode from a null client.
+  Every read is `confluenceEnabled === false`, never a falsy test: a payload
+  from a backend predating the field legitimately omits the key, and falsy would
+  read *unknown* as *off* and turn a connected user's workspace standalone.
+  **A local write succeeds; only a Confluence-ONLY operation refuses** —
+  creating a page *in* a Confluence space, `POST /pages/bulk/sync`,
+  `POST /embeddings/force-embed-tree` and `POST /pages/:id/relocate` answer
+  `Confluence integration is disabled`, `POST /api/sync` answers 200 with the
+  same sentence and writes no `SYNC_STARTED` audit row,
+  `GET /api/spaces/available` answers 409 and a `selectedSpaces` write 422,
+  while `DELETE /pages/:id` deletes the local row and leaves the upstream page
+  alone. Re-enabling introduces no reconciliation model: a standalone stretch is
+  reconciled by the existing `local_modified_at` conflict path on the next sync.
+
+- **O15 labelling packet and validator (ADR-027, #1619).** The gate's primary
+  endpoint runs on the image-dependent labels, and that classification is an
+  independent human pass — so the two scripts that carry it decide nothing.
+  `backend/scripts/build-label-packet.ts` re-presents all 309 shipped image
+  fixture labels as a worksheet (CSV for the spreadsheet pass, JSONL with the
+  per-image detail structured, and a header quoting ADR-027's definitions of
+  image-dependent and image-negative verbatim with a worked example of each):
+  the query, the page, every picture on it with the attachment key it is
+  scored under and the file on disk, what `expectedImages` already says, and
+  two EMPTY decision columns. It refuses to write a packet in which one is
+  filled. `backend/scripts/validate-label-packet.ts` reads the returned file
+  (either shape) and refuses an unknown, duplicated or missing label id, a
+  value outside `true|false` or the class list, a class without a `true`, a
+  `true` without a class, a `true` on a label with no expected image, and more
+  than 5 image-dependent labels on one page — then reports every O2 count it
+  cannot fix (190 image-dependent with the 144 floor, 48 image-negative, ≥ 45
+  pages, 197 control queries per language) **with the distance still to go**,
+  and prints what `auditSample` — the function `--unblind` decides under —
+  would make of the labels. `--write` records them in `fixture-de-images.json`
+  through the raw JSON, so every existing field survives and a second run is
+  byte-identical. The packet itself is generated, not committed; the fixture
+  diff is. Runbook: `docs/runbooks/retrieval-eval.md` "The O15 labelling
+  packet".
+- **Image analysis processing card and retirement preparation (ADR-027, #1618
+  stage 1).** Settings → AI Models → Embeddings gains an **Image analysis**
+  card beside the legacy Image index card — *is it running?*, where #1615's
+  row on LLM providers answers *can it run?*. It reports rows by status with
+  `analyzed` and **`stale`** kept apart, skip reasons by name, the two
+  distinct backlogs ("analysis complete, text embedding still pending" costs
+  no vision call; a partially analyzed corpus still owes calls), the retained
+  model identity and whether it matches the assignment (D13's third gate, so a
+  backlog that will not drain is no longer the only symptom), and the last
+  batch's three steps including a stop's reason and HTTP status. Three
+  actions — **Process now**, **Retry failed** and **Re-analyze all**, the last
+  behind a confirm dialog that states the scope — the exact image count, or
+  the set it covers when the status could not be read — and the cost
+  before it runs and refused with a 409 while a corpus re-embed or a shadow
+  backfill holds the one-active-run slot. Unassigned renders as the pause it
+  is, not an outage: valid descriptions stay searchable, changed images stay
+  pending and authored text search is unaffected. A failed status read says the
+  status could not be *read*, states that nothing was touched, and keeps all
+  three actions available. Four new admin routes behind Zod contracts
+  (`GET /api/admin/embedding/image-analysis` plus the three POSTs) over reads
+  #1616 already shipped — no DDL, no new SQL. `useNoticeRetry` is now one
+  shared module instead of two hand-copies.
+  **Preparation only:** nothing legacy is removed. The destructive half (the
+  forward migration, the module and settings deletions) is written, reviewed
+  and **held** in `docs/held-migrations/`, gated on #1619's passing verdict and
+  an explicit owner go. Its recovery procedure —
+  `docs/runbooks/image-embedding-retirement.md` — ships with it, rehearsed end
+  to end on disposable databases, and records three amendments to ADR-027's
+  dump set: `pages.image_embedding_dirty` is not in it, the dump needs
+  `--clean --if-exists`, and — because that makes `admin_settings` and
+  `llm_usecase_assignments` restore *wholesale* — the rollback has to capture
+  the replacement's own `image_analysis_*` rows and vision assignment before
+  the restore and replay them after it, or a rollback of the legacy leg
+  silently rewinds the retained analysis identity with it.
+  ADR-027 errata move the MRL-width, probe-chip and
+  Image-leg-toggle removals to the destructive half (they still gate live
+  serving code) and add `image_index_last_run` to the rows it deletes.
+- **Lexical chunk resolution (ADR-027 D10, #1617).** The keyword leg's
+  candidate set is now `pages.tsv` ∪ the DERIVED per-chunk documents
+  (`page_embeddings.chunk_tsv` where `metadata.source = 'image_analysis'`), a
+  page's lexical rank is the greater of the two, and every lexical and
+  exact-identifier page hit resolves to the CHUNK that matched — ordered
+  `(chunk_tsv @@ q) DESC, ts_rank DESC, chunk_index ASC`. A fact that exists
+  only inside a screenshot is therefore findable lexically. **This is a
+  measured retrieval change that reaches AUTHORED hits too:** `chunkText` was
+  `substring(body_text, 1, 500)` for every keyword row, so the reranker's
+  input and the `/api/search?mode=hybrid` snippet now carry the matching
+  passage instead of a page prefix. The prefix survives only for a page with
+  no `page_embeddings` row at all. `pages.tsv` is unchanged, so authored page
+  ranking is bit-identical; a page with five matching images is still one
+  candidate at one rank, and there is no third RRF leg. The exact-identifier
+  pin keeps its `rag_context_chars_per_page`-sized lede unless a chunk really
+  matches the identifier (erratum #1617/Q1). `/api/search?mode=keyword` keeps
+  its own authored-text SQL (erratum #1617/Q2) — a recorded asymmetry, see
+  `docs/runbooks/retrieval-eval.md`.
+- **Image evidence in answers and citations (ADR-027 D11/D12, #1617).**
+  `SearchResult` gains `derived` provenance read from the chunk's `metadata`,
+  so a derived chunk is an ordinary result: same MMR, the same
+  `RERANK_DOC_MAX_CHARS` window with no exception, and a measured row for
+  `computeRetrievalConfidence`. A text-only chat model answers from the
+  description. `/llm/ask` appends one `kind: 'image'` source per distinct
+  `(pageId, attachmentStore, attachmentKey)` among the answer's top-K derived
+  rows (best fused rank first, capped at 4) carrying `attachmentUrl`,
+  `similarity: null` and four new optional `SourceSchema` fields —
+  `attachmentStore`, `attachmentKey`, `contentHash`, `analysisVersion` —
+  which `toPersistedSources` copies together with `kind`/`attachmentUrl` or
+  not at all, so a reopened conversation round-trips them. Replay still
+  re-applies page visibility: a revoked page's entry is `unavailable` hash or
+  no hash. The optional answer-time image bytes for a confirmed
+  vision-capable chat model are re-sourced from derived provenance, under the
+  same count, byte, format and ACL limits — falling back WHOLE-SET to the
+  legacy image leg's hits when no row in the answer's set carries provenance,
+  so an instance with `image_embedding` assigned and nothing analyzed yet
+  keeps the chips and pictures it had (and `image_only_context` keeps its
+  three discriminating arms instead of promising attachments it cannot
+  produce). #1618 retires the fallback with the leg.
+- **Migration 117 — the derived lexical arm's own index (#1617).**
+  `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the arm only while idle: after a corpus-wide analysis batch the full GIN's
+  pending list re-priced the plan and the arm scanned every derived chunk
+  behind a `chunk_tsv` filter — measured 8.9–10.4 ms for a one-row match
+  against 0.021 ms with this index, at 429 pending pages on a 4,001-page
+  corpus (review r2 re-measured the full statement at 7.8–9.0 ms steady plus
+  an 18–74 ms tail). `fastupdate = off` is what keeps the new index out of
+  that state: a plain partial GIN is already a 5–10× win, but it pends
+  identically, so its cost tracks the pending list and a bad window remains.
+  Only the embedding worker's own derived inserts pay the reloption, at
+  ~38 µs per derived chunk.
+- **Image analysis in the text index — ingestion half (ADR-027, #1616).**
+  Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
+  and a trigger-maintained, GIN-indexed `page_embeddings.chunk_tsv` (rebuilt in
+  the same transaction as `pages.tsv` on an FTS-language change). A new
+  `image-analysis` worker (one bounded batch per sync cadence, lease
+  `worker:lock:image-analysis`) sweeps stale analyses, reconciles every
+  changed page's image references into `page_image_analyses`, and analyzes
+  pending images with the assigned vision model — with backoff, a terminal
+  state at 5 attempts, provider-status and uniform-rejection stops. `embedPage`
+  composes valid analyses as derived chunks after the authored ones
+  (`metadata.source = 'image_analysis'`), excluded from both page averages and
+  from sibling assembly; an image-only page with a substantive analysis is
+  embeddable and counted by coverage. Every image writer raises the new flag
+  beside `image_embedding_dirty`. New Workers-tab knob `imageAnalysisBatchSize`
+  (default 50, [1, 500]). Inference runs against #1615's assigned vision
+  model, retained identity and `analyzeImage` client directly: with both
+  halves merged there is no seam module left between them. A batch's job
+  summary names `pagesFailed` and the number of unreadable references beside
+  the analyzed/failed counts, so a batch whose only problem is a
+  partially-unreadable page is not recorded as an unqualified success. A
+  relocate that cannot read an attachment still refuses with a 400 naming the
+  file, but a database fault while looking the attachment up is a 500 again,
+  not a permissions complaint.
+- **Image analysis (vision) use case (#1615, ADR-027).** `image_analysis` as a third non-inheriting ADR-021 use case: probe-gated assignment PUT (422 `reason` = `no_provider` / `no_model` / `text_only` / `unconfirmed`, previous assignment and retained identity untouched), retained identity in `admin_settings.image_analysis_identity` (pause, not purge), `GET/POST /admin/llm-usecases/image_analysis/capability|recheck`, the `reanalysis-scope` preview, `GET /admin/pages/:id/image-analyses`, the `image_analysis_max_output_tokens` setting (default 8,192, [4,096, 16,384]), migration 115 (`page_image_analyses`), `imageAnalysisPayloadSchema(T)` contracts, the pure `analyzeImage` client with D8's six failure classes, `chatCompletion()` (finish reason + usage), a bounded `probeVision` timeout, and the Settings → AI Models **Image analysis (vision)** card with **Max output tokens**. The use-case assignment rows and their capability strips now stack below 640 px instead of clipping. Every non-inheriting row's **"Assigned, but no model resolves"** line now follows the SAVED assignment rather than the draft, so it appears only once a pick is saved and persists through a draft-unassign of a saved-but-unresolvable `rerank`, `image_embedding`, `inline_completion` or `image_analysis` row until Save — verdicts describe what is saved, the same rule the egress sentence uses. A description OF a refusal or error screenshot is no longer classed `refused`: the pattern match on `description` counts only when nothing else in the payload read the image. Assigning `image_embedding` maps only a missing provider ROW to its 422; a database failure is a 500 again.
+- Drag an article onto another in a local-space sidebar to nest it as a
+  sub-article. Click the row's drag handle for the same move, including
+  back to top level.
+- Page icons can be tinted with the editor text-colour palette, the same
+  Notion-style row of the selected glyph in each hue. Lucide and logo marks
+  keep the colour; emoji and uploads do not.
+- Sports and outdoor marks in the icon picker (hiking, diving, sailing,
+  volleyball) and logos (Strava, Garmin, Adidas, Nike, Puma, The North Face,
+  Komoot, AllTrails, Under Armour). PADI is not in the Simple Icons CC0
+  set, so it is not in the catalogue.
+- ADR-027 records the image-aware RAG architecture (#1611, #1614): page
+  images are analysed once at ingestion by an explicitly assigned generative
+  vision model and the resulting text is indexed by the ordinary text
+  embedder beside the page's own chunks, replacing the separate image
+  embedding space and its retrieval leg. The ADR fixes the storage, identity,
+  invalidation, lexical-index and citation contracts for the implementing
+  packages, specifies the vision reply's output-token ceiling as an admin
+  setting outside the analysis cache key, and pre-registers the paired
+  A/B/C quality gate — margins, sample size, single-judge protocol and a
+  quality-only decision rule, all confirmed by the owner — that decides the
+  cutover; the shipped image leg is unchanged until that gate passes.
+- The retrieval eval can run ADR-027's pre-registered A/B/C comparison
+  (#1614 PR2): `run-retrieval-eval.ts --images --arm A|B|C` measures one
+  arm of the image corpus with the provenance the ADR requires (revision,
+  corpus and query-set hashes, embedder, FTS, rerank and answer-model
+  assignments, hardware, every retrieval knob and the command line) and
+  refuses a pair that drifted in any of them — knob by knob — or an arm
+  report missing what only that arm may carry (A's VL endpoint, B's vision
+  model, output-token ceiling and analysis version pair); `--arm B` refuses
+  a wrong revision right after the migrations, before the corpus is seeded,
+  and `--arm C` asserts the ablation's state on the database rather than on
+  a top-K window, reading `image_analysis` through the product's own resolver, the very predicate arm B
+  requires — a resolvable provider and model, so migration 115's seeded
+  `('image_analysis', NULL, NULL)` row is the unassigned state both arms
+  agree on and not an assignment that refuses the arm. A report is refused
+  on a dirty tree, since the recorded revision pins the prompts.
+  `run-arm-answers.ts` asks every fixture question through the real ask
+  route with `rag_answer_max_images = 0` and writes arm-blinded answer
+  artifacts, counting each refusal's reason in the run's provenance and
+  aborting the arm outright on an infrastructure refusal
+  (`semantic_index_unavailable`) so an outage can never be scored as the
+  arm's quality; `judge-arms.ts` merges the arms into one blinded judgment
+  sheet, reads the ADR's pilot ψ over the first 30 judged pairs
+  (`--check --mapping`, exit code 3 below the floor) so a run can stop
+  before the remaining ~680 judgments, refuses to un-blind until every item
+  has exactly one judgment by one judge and until every answer run's
+  provenance matches its arm's retrieval report, and scores the paired
+  endpoints with McNemar exact, a
+  page-cluster bootstrap and the owner's margins into a single-judge
+  verdict. Both of O2's pre-registered sizes decide: 190 image-dependent
+  labels at full power, 144–189 at reduced power with the achieved power
+  printed and the document labelled `REDUCED POWER`, and below the hard
+  floor of 144 the sheet is refused (`--allow-underpowered` then scores it
+  as tooling verification, deciding nothing — and reporting no achieved
+  power, because a power figure describes a decision) — as are O2's page
+  constraints
+  and the EN/DE control counts at any N. The judge's file is verified, not
+  just hashed at merge time: `--unblind` (and `--check`, over the file it
+  was handed as `--answers`, when the operator's sheet is at hand)
+  re-hashes `answers-<sheet>.jsonl` against the
+  merge's record AND re-derives every row from the per-arm answers files, so
+  a sheet rewritten after judging started — even with its own recorded hash
+  updated to match — is refused; a sheet whose recorded `runId` is not the
+  run being read is refused too. No arm has
+  been measured yet — the baselines and the image-dependent labelling pass
+  are #1619's and the labeller's; the ADR records that the answer model
+  runs at the provider's default temperature.
+
+### Changed
+
+- **`image_only_context` keeps its three discriminating arms (#1617).** The
+  answer-time byte pick prefers derived provenance, and a title-synthesised
+  row by construction has none — so the pick falls back to the legacy image
+  leg's hits for such a set, and the refusal still depends on the vision
+  verdict, the cap and whether the bytes are readable, exactly as before. The
+  rule, the flag, the fallback and the legacy leg are removed together in
+  #1618.
+- The `Sources (N)` disclosure on an answer now reports its state through
+  `aria-expanded`, so a screen reader announces whether the citation list is
+  open (it has two row types since #1617: pages and pictures).
+
+- The page inspector's Details tab groups the Confluence link with provenance,
+  places Notes before secondary page actions, and exposes the quality breakdown,
+  timestamp, and full analysis summary through a keyboard- and touch-accessible disclosure.
+- Notes uses readable 13px metadata and 32px controls that wrap on narrow screens.
+  Empty and short lists fit their content; composing hides empty-list guidance,
+  and longer lists retain capped scrolling with a visible keyboard focus outline.
+- Pages per batch for the quality and summary workers is now set per worker
+  under Settings → AI Models → Workers (default 5, range 1–100) and read at the start of
+  each batch. The `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` environment
+  variables are removed and ignored.
+  The controls preserve edits made during saving, report failed reads with
+  Retry recovery, and use accessible input borders in both themes.
+
+- Child pages lists use two columns by default. The editor toggle still
+  switches to a single stack (`columns=1`); Confluence ignores the param.
+  Listed titles sit with tighter vertical spacing, like consecutive document lines.
+  A multi-word title keeps one underline through the spaces.
+  Child page titles are medium weight, like Notion’s page names.
+- Article Connections at the bottom of a page is collapsible and lays its
+  groups out in two columns.
+- Floating pop-up borders use a softened contrast rim across both themes, and light
+  mode features matching frosted glass with 12px blur and 82% elevated fill.
+- Floating HUDs and overlays (Bulk action bars, Command palette, Toaster notifications,
+  Image lightbox controls, Page preview hover cards, Find & replace, inline writing aids,
+  Knowledge graph node tooltips, pending shortcut sequence HUD, mobile table-of-contents button,
+  mobile AI assistant bottom sheet, location picker, tag suggestions, use-case help popovers,
+  and the comments drawer) use frosted glass (`nm-popover-glass`) for spatial depth above content.
+  The article inspector tab bar is a translucent overlay; Outline, Details, and Assistant
+  content scroll underneath it.
+- Light mode's app-shell frame — the top header, left destination rail, and the
+  gutter on all four sides of the workspace card — is `#EDEDED`. The frame still
+  reads as a step under the white document, left navigation, and context rail.
+  The inspector's Assistant / Outline / Details track is a lighter trough on
+  that pane. Dark mode is unchanged.
+- The AI page's composer no longer sits in a grey box: the sticky bar behind the
+  input field and the diagram-mode setting strip paint the route pane's own
+  colour, so the composer's hairline is the only edge in that region.
+
+### Fixed
+
+- On-device inline suggestions now start without a server-model assignment and
+  recover after tab/idle unload. Fixed Transformers v4 runtime selection,
+  CSP-safe module loading, nginx `.mjs` MIME handling, and chat-template use
+  for Qwen3's short non-thinking completions. GPU sessions are disposed before
+  reload; downloaded model files no longer appear as proof of GPU readiness.
+- Server-backed inline suggestions retry once with `reasoning_effort: "none"`
+  when a tolerant provider (LM Studio) ignores the non-thinking template hints
+  and returns no visible text. The hint is retry-only: vLLM 0.10–0.12 reject
+  it and newer vLLM forwards it into chat templates that can raise, so a
+  failed retry yields the empty first reply and never counts against the
+  provider's circuit breaker.
+- Library search keeps Local and Confluence provenance consistent across
+  Keyword, Semantic, and Hybrid results, including local pages in named spaces.
+- Search keyboard navigation no longer enters stale results while a new query
+  is pending. Removing a focused result returns focus to the query field, but
+  scrolling it out of the virtualized viewport no longer jumps back to Search.
+  Filter dropdowns no longer add invisible duplicate Tab stops.
+- Search modes, space scope, and Filters remain usable on narrow phones and
+  sidebar-constrained tablet layouts without clipping or collapsing the scope.
+
+- Quality and Summary workers share renewed locks across scheduled and manual
+  runs, preventing duplicate inference and recovery of articles still in flight.
+  Failed articles no longer count as successful processing, and BullMQ records
+  batches containing errors as failed instead of claiming successful generation.
+  Run Now remains a single bounded batch.
+- Document health reports failed indexing even when no error message is returned,
+  and distinguishes quality analysis in progress from search indexing.
+- Unsent page notes and replies survive inspector tab switches on the same page.
+- The shared `text-xs` token now applies the documented 13px label floor in
+  Tailwind; Details section headings and labels use the consistent scale.
+
+- Notion import uses the 3 req/s Notion budget instead of walking pages one
+  by one. Sibling block fetches and discovered children overlap; board-view
+  probes reuse one lookup per database and skip `/v1/views/:id` when the
+  list already typed every view. The cap is unchanged — this cuts idle time
+  and the extra GETs that were triggering 429 backoffs.
+
+- Notion web bookmarks import as links instead of being dropped. A page whose
+  only content is bookmarks imported with an empty body; re-running the import
+  on it fills the body in without duplicating the page. Embeds, link previews,
+  and video still stay in Notion.
+
+- Notion PDF embeds and PDF file blocks import as local attachments with a
+  download link on the article. They were skipped, so a page of PDFs arrived
+  empty. Non-PDF file blocks stay in Notion.
+
+- Nested pages in a local space can be reordered with drag-and-drop, same
+  as top-level pages. They previously shared one sortable list with the
+  roots, so a parent's droppable swallowed its children.
+
+- Provider URLs are stored as typed. Pasting
+  `https://openrouter.ai/api/v1/embeddings` or `…/v1/rerank` no longer strips
+  the resource or appends another `/v1`. Bare hosts still get `/v1`. The client
+  does not append `/embeddings` or `/rerank` when the stored URL already ends
+  with that path.
+- Listing models for a stored `…/v1/embeddings` provider hits
+  `…/v1/embeddings/models`. A stored `…/v1/rerank` URL asks
+  `/models?output_modalities=rerank` and never returns the chat catalog
+  (OpenRouter's unfiltered `/v1/models` is hundreds of text models). Name
+  filter is the fallback. Use-case pickers accept a typed model id.
+- Settings → AI Models no longer snaps Preset to Custom when the operator
+  pastes or edits an embeddings URL. Keep current keeps the chosen hosted
+  preset with the typed URL; a stored `…/v1/embeddings` path infers that host
+  on edit. Escape still cancels the preset change.
+
 ## [0.8.0] - 2026-09-10
 
 > Minor: Notion import, encrypted backup, Connections, custom templates, Paper palette. 649 commits since v0.7.2.

@@ -7,23 +7,25 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { query } from '../../../core/db/postgres.js';
 
 /**
- * #1115 P5b — the image seeder against real Postgres, a real temp
- * `ATTACHMENTS_DIR` and the REAL intake (`embedPageImages`).
+ * #1115 P5b — the image seeder against real Postgres and a real temp
+ * `ATTACHMENTS_DIR`. The text embedder is stubbed at the same seam
+ * `seed.integration.test.ts` uses; nothing else is.
  *
- * The vision-language endpoint is the only thing mocked, and it is mocked at
- * its HTTP boundary (`vl-stub-server.ts`), so every image goes through
- * `vl-embedding-client.ts` for real. The text embedder is stubbed at the same
- * seam `seed.integration.test.ts` uses.
+ * **#1618 stage 2 retired the image-EMBEDDING phase**, and with it this file's
+ * VL stub server, the `prepareImageIndex` probe and every throughput figure
+ * the per-page embed loop produced. What the seeder still owes the arms is the
+ * start state ADR-027's B and C share: a page body pointing at bytes on disk,
+ * text chunks, and `image_analysis_dirty` raised — the analysis backfill's
+ * whole queue (D6.2).
  *
- * What this file is FOR: the seeder's whole job is to put bytes somewhere
+ * What this file is FOR: the seeder's job is to put bytes somewhere
  * `resolveAttachmentBytes` will find them and a body somewhere
  * `extractImageReferencesFromHtml` will read them. Both sides are silent when
  * they disagree — the reader answers `null`, which is indistinguishable from
- * "no such attachment", and the run reports a leg that measured nothing.
+ * "no such attachment", and the run reports an arm that measured nothing.
  */
 
 const TEXT_MODEL_DIMS = 384;
-const VL_DIMS = 64;
 
 const { generateEmbeddingMock } = vi.hoisted(() => ({
   generateEmbeddingMock: vi.fn(async (_cfg: unknown, _model: string, input: string | string[]) => {
@@ -38,10 +40,8 @@ vi.mock('../services/openai-compatible-client.js', async () => {
   return { ...actual, generateEmbedding: generateEmbeddingMock };
 });
 
-const { startVlStubServer } = await import('./vl-stub-server.js');
 const {
   seedImageCorpus,
-  prepareImageIndex,
   stageEvalAttachmentsDir,
   imageAttachmentKey,
   ImageIntakeError,
@@ -50,28 +50,20 @@ const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus, EVA
 const { loadImageCorpusManifest, IMAGE_CORPUS_DIR } = await import('./corpus-images.js');
 const { resolveAttachmentBytes } = await import('../../../core/services/attachment-store.js');
 const { buildPageImageUrl } = await import('../../../core/services/image-references.js');
-// The worker's own valve, imported rather than spelled: the backfill figure is
-// derived from it, and a literal here would let the two drift (review r3).
-const { INTER_PAGE_DELAY_MS } = await import('../services/image-embedding-service.js');
 
 const dbAvailable = await isDbAvailable();
 const USER = 'aaaaaaaa-1115-4000-8000-000000005115';
 const MAX_PAGES = 2;
 
-type VlStub = Awaited<ReturnType<typeof startVlStubServer>>;
-
 describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
-  let vl: VlStub;
   let attachmentsDir: string;
   const previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
 
   beforeAll(async () => {
     await setupTestDb();
-    vl = await startVlStubServer({ dimensions: VL_DIMS });
   }, 60_000);
 
   afterAll(async () => {
-    await vl.close();
     if (attachmentsDir) await rm(attachmentsDir, { recursive: true, force: true });
     if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
     else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
@@ -87,16 +79,10 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
        VALUES ($1::uuid, $1::text, $1::text || '@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
       [USER],
     );
-    vl.reset();
     attachmentsDir = await stageEvalAttachmentsDir();
     await ensureVectorDimensions(TEXT_MODEL_DIMS);
     await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });
-    await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
     await resetEvalCorpus();
-    // AFTER the probe: `prepareImageIndex` embeds a known image and a known
-    // text to establish the width, so a request count taken from here would
-    // otherwise carry the gate's two calls into the seeder's own totals.
-    vl.reset();
   }, 60_000);
 
   afterEach(async () => {
@@ -162,24 +148,31 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
     }
   }, 120_000);
 
-  it('embeds every corpus image through the real intake, and skips none', async () => {
+  it('stages every corpus image and leaves each page on the analysis queue (D6.2)', async () => {
+    // What replaced the embedding phase. `image_analysis_dirty` IS the
+    // backfill's queue and nothing else is walked, so a corpus seeded without
+    // it hands `--arm B` a backfill that never starts — #1619 lost a run to
+    // exactly that, reporting 0/187 valid analyses at its deadline.
     const seeded = await seedImageCorpus(USER, { maxPages: MAX_PAGES });
 
-    expect(seeded.imagesEmbedded).toBe(seededImages.length);
-    expect(seeded.imagesReused).toBe(0);
-    // The corpus is curated — every image is a raster under both ceilings — so
-    // any skip at all is a bug in the rig rather than a fact about the corpus.
-    expect(seeded.skipped).toEqual({
-      missing: 0, unsupported: 0, oversized: 0, tooLarge: 0, capped: 0, external: 0,
-    });
+    expect(seeded.pages).toBe(seededPages.length);
+    expect(seeded.imagesStaged).toBe(seededImages.length);
 
-    const rows = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_image_embeddings`);
-    expect(rows.rows[0]!.n).toBe(seededImages.length);
-    // …and the vectors really came off the wire, one request per image.
-    expect(vl.imageRequests()).toHaveLength(seededImages.length);
+    const dirty = await query<{ page_id: number; image_analysis_dirty: boolean }>(
+      `SELECT id AS page_id, image_analysis_dirty FROM pages ORDER BY id`,
+    );
+    expect(dirty.rows).toHaveLength(seededPages.length);
+    expect(dirty.rows.every((r) => r.image_analysis_dirty)).toBe(true);
+    // And the retired leg leaves no trace: no column, no table, nothing for a
+    // stale writer to have raised.
+    const legacy = await query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM information_schema.columns
+        WHERE table_name = 'pages' AND column_name = 'image_embedding_dirty'`,
+    );
+    expect(legacy.rows[0]!.n).toBe(0);
   }, 120_000);
 
-  it('seeds the pages the way the text corpus is seeded, so both legs measure the same rows', async () => {
+  it('seeds the pages the way the text corpus is seeded, so both arms measure the same rows', async () => {
     const seeded = await seedImageCorpus(USER, { maxPages: MAX_PAGES });
 
     const page = seededPages[0]!;
@@ -200,58 +193,14 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
     expect(seeded.textSkipped).toEqual([]);
   }, 120_000);
 
-  it('records image-embed throughput, which is the axis\'s own cost figure', async () => {
-    const seeded = await seedImageCorpus(USER, { maxPages: MAX_PAGES });
-
-    expect(seeded.imageEmbedWallClockMs).toBeGreaterThan(0);
-    expect(seeded.throughputImagesPerSec).toBeGreaterThan(0);
-    expect(seeded.throughputImagesPerSec).toBeCloseTo(
-      seeded.imagesEmbedded / (seeded.imageEmbedWallClockMs / 1000),
-      6,
-    );
-  }, 120_000);
-
-  it('publishes the BACKFILL rate separately, because this loop pays no inter-page valve', async () => {
-    // The raw figure above is the endpoint's: the loop embeds one page after
-    // another with nothing in between. `processDirtyPageImages` sleeps
-    // INTER_PAGE_DELAY_MS after every page, so on the 65-page corpus a backfill
-    // pays 13 s this number never sees — calling it "what a backfill would see"
-    // overstated the operator's figure by exactly that (review r3). The valve
-    // is added to the denominator rather than slept here, so the raw rate stays
-    // a statement about the endpoint.
-    const seeded = await seedImageCorpus(USER, { maxPages: MAX_PAGES });
-
-    expect(seeded.interPageDelayMs).toBe(INTER_PAGE_DELAY_MS);
-    expect(seeded.backfillThroughputImagesPerSec).toBeCloseTo(
-      seeded.imagesEmbedded /
-        (seeded.imageEmbedWallClockMs / 1000 + (INTER_PAGE_DELAY_MS / 1000) * seeded.pages),
-      6,
-    );
-    // Strictly slower, always — the valve is a positive addition to the
-    // denominator, and a rate that came back equal would mean it was dropped.
-    expect(seeded.backfillThroughputImagesPerSec).toBeLessThan(seeded.throughputImagesPerSec);
-  }, 120_000);
-
-  it('REFUSES the run when a page\'s intake fails, instead of measuring a half-filled index', async () => {
-    // A VL outage mid-seed leaves the affected pages dirty and their images
-    // absent from the index. The run would still complete and would still
-    // print a paired verdict — computed against a corpus whose pictures are
-    // partly missing, which is a number about the outage.
-    vl.failWith(502);
-
-    await expect(seedImageCorpus(USER, { maxPages: 1 })).rejects.toBeInstanceOf(ImageIntakeError);
-    vl.failWith(null);
-  }, 120_000);
-
   it('REFUSES a corpus whose stored bodies carry fewer images than the manifest lists', async () => {
-    // The per-page check compares the intake against the body THIS SEEDER
-    // wrote, so a picture lost on the way in shrinks the expectation in step
-    // with the result and each page passes its own check at a smaller count —
-    // and `rewriteImageSources` cannot see it either, because an element
-    // dropped outright leaves no `src="images/` behind to find. Latent against
-    // the committed corpus (markdownToHtml emits all 187 srcs today); this
-    // builds the state that makes it live, which is the only way to test a
-    // guard whose subject is a disagreement between two producers.
+    // The corpus-level check compares the manifest against the bodies THIS
+    // SEEDER wrote, and `rewriteImageSources` cannot see the loss either,
+    // because an element dropped outright leaves no `src="images/` behind to
+    // find. Latent against the committed corpus (markdownToHtml emits all 187
+    // srcs today); this builds the state that makes it live, which is the only
+    // way to test a guard whose subject is a disagreement between two
+    // producers.
     const page = seededPages.find((p) => p.images.length >= 2)!;
     const dir = await mkdtemp(join(tmpdir(), 'compendiq-eval-corpus-'));
     try {
@@ -273,123 +222,10 @@ describe.skipIf(!dbAvailable)('image corpus seeder (#1115 P5b)', () => {
       await expect(boom).rejects.toBeInstanceOf(ImageIntakeError);
       await expect(boom).rejects.toThrow(/manifest lists/i);
       await expect(boom).rejects.toThrow(
-        new RegExp(`Indexed ${page.images.length - 1} of the ${page.images.length} images`),
+        new RegExp(`reference ${page.images.length - 1} of the ${page.images.length} images`),
       );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 120_000);
-
-  it('REFUSES a page whose intake could not READ one of its pictures, naming the pictures', async () => {
-    // The reason no `skipped.unsupported` warning exists (review r2): every
-    // skip reason lands in the per-page count check, because `embedded + reused`
-    // is the reference count minus the failures minus every skip. A warn beside
-    // the refusal was unreachable by construction — this is the state it
-    // claimed to cover, and it is a refusal.
-    const page = seededPages.find((p) => p.images.length >= 2)!;
-    const unreadable = page.images[0]!;
-    const dir = await mkdtemp(join(tmpdir(), 'compendiq-eval-corpus-'));
-    try {
-      await mkdir(join(dir, 'images'), { recursive: true });
-      for (const image of page.images) {
-        await writeFile(join(dir, image.file), readFileSync(join(IMAGE_CORPUS_DIR, image.file)));
-      }
-      // A vector image behind a raster name — the ADR-025 D10 skip, and the one
-      // a corpus rebuild is most likely to reintroduce. The bytes are there and
-      // the key is right; the sniff is what refuses them.
-      await writeFile(join(dir, unreadable.file), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
-      await writeFile(join(dir, page.file), readFileSync(join(IMAGE_CORPUS_DIR, page.file), 'utf8'));
-      await writeFile(
-        join(dir, 'MANIFEST.json'),
-        JSON.stringify({ generatedBy: 'test', purpose: 'test', pages: [page] }),
-      );
-
-      const boom = seedImageCorpus(USER, { corpusDir: dir });
-      await expect(boom).rejects.toBeInstanceOf(ImageIntakeError);
-      await expect(boom).rejects.toThrow(/"unsupported":1/);
-      // The counters alone leave the operator grepping the corpus for which
-      // picture went missing, so the refusal names the page's own image keys.
-      await expect(boom).rejects.toThrow(new RegExp(`referenced:[^)]*${imageAttachmentKey(unreadable.file)}`));
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }, 120_000);
-
-  it('REFUSES the run when the image use case is unassigned, rather than seeding an empty index', async () => {
-    // `embedPageImages` answers `unassigned` and KEEPS the flag by design — the
-    // queue is the flag. For the eval that is not a queue, it is a leg-on arm
-    // with nothing to search.
-    await query(`DELETE FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`);
-
-    const boom = seedImageCorpus(USER, { maxPages: 1 });
-    await expect(boom).rejects.toBeInstanceOf(ImageIntakeError);
-    await expect(boom).rejects.toThrow(/unassigned/i);
-  }, 120_000);
-});
-
-describe.skipIf(!dbAvailable)('prepareImageIndex (#1115 P5b)', () => {
-  let vl: VlStub;
-  const previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
-
-  beforeAll(async () => {
-    await setupTestDb();
-    vl = await startVlStubServer({ dimensions: VL_DIMS });
-  }, 60_000);
-
-  afterAll(async () => {
-    await vl.close();
-    if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
-    else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
-    await teardownTestDb();
-  });
-
-  beforeEach(async () => {
-    await truncateAllTables();
-    vl.reset();
-  });
-
-  it('probes the assigned pair and types the column to the width it measured', async () => {
-    const prepared = await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
-
-    expect(prepared.dimensions).toBe(VL_DIMS);
-    const col = await query<{ dims: number }>(
-      `SELECT atttypmod AS dims FROM pg_attribute
-        WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
-    );
-    expect(col.rows[0]!.dims).toBe(VL_DIMS);
-    // Assigned through the product's own non-inheriting resolver, not a
-    // hand-built config: an eval that skipped the assignment would measure a
-    // leg the deployment cannot reproduce.
-    const assignment = await query<{ model: string }>(
-      `SELECT model FROM llm_usecase_assignments WHERE usecase = 'image_embedding'`,
-    );
-    expect(assignment.rows[0]!.model).toBe('stub-vl');
-  }, 60_000);
-
-  it('sends the MRL width and records it in the index identity', async () => {
-    const prepared = await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: 32 });
-
-    expect(prepared.dimensions).toBe(32);
-    expect(prepared.identity).toContain('#32');
-    // The count FIRST, because `every` over an empty log is vacuously true: a
-    // probe that stopped sending anything at all would satisfy the line below
-    // and this case would still certify that the width was requested. Two is
-    // the probe's own contract — it embeds a known image AND a known text and
-    // requires equal widths back, which is what catches a server that templates
-    // images and silently skips text.
-    expect(vl.requests).toHaveLength(2);
-    expect(vl.imageRequests()).toHaveLength(1);
-    expect(vl.textRequests()).toHaveLength(1);
-    expect(vl.requests.every((r) => r.body.dimensions === 32)).toBe(true);
-  }, 60_000);
-
-  it('REFUSES a probe the endpoint cannot serve, naming the category', async () => {
-    // The 422 a plain text-embedding server answers the `messages` body with.
-    // Left to run, the eval would type no column and every image would fail.
-    vl.failWith(422);
-
-    const boom = prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
-    await expect(boom).rejects.toThrow(/shape_rejected/);
-    vl.failWith(null);
-  }, 60_000);
 });

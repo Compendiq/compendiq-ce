@@ -108,6 +108,10 @@ export const SETTINGS_NAV = [
         adminOnly: true,
         enterpriseOnly: true,
       }),
+      // Baseline activation and the per-space governance marker are CE, so
+      // this panel is admin-visible in CE; its approval-role sections reveal
+      // under an Enterprise licence (#277).
+      navItem('baselines', 'Article baselines', { adminOnly: true }),
     ],
   },
   {

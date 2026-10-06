@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { PageLifecycleEventSchema, type PageLifecycleEvent } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { refreshAccessTokenOnce } from '../../shared/lib/api';
 
@@ -32,7 +34,10 @@ export function usePresence(pageId: string | null | undefined): {
   viewers: PresenceViewer[];
   selfIsEditing: boolean;
   setEditing: (v: boolean) => void;
+  lifecycle: PageLifecycleEvent | null;
 } {
+  const queryClient = useQueryClient();
+  const [lifecycle, setLifecycle] = useState<PageLifecycleEvent | null>(null);
   const [viewers, setViewers] = useState<PresenceViewer[]>([]);
   const [selfIsEditing, setSelfIsEditingState] = useState(false);
   const selfIsEditingRef = useRef(false);
@@ -63,6 +68,7 @@ export function usePresence(pageId: string | null | undefined): {
 
   useEffect(() => {
     if (!pageId) return;
+    setLifecycle(null);
 
     const abort = new AbortController();
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -89,8 +95,10 @@ export function usePresence(pageId: string | null | undefined): {
           },
           signal: abort.signal,
         });
-        if (res.status === 403) {
-          // Forbidden — retrying won't help. Park until unmount.
+        if (res.status === 403 || res.status === 404) {
+          // Missing or unreadable (the server answers both with 404 so page
+          // restrictions are no existence oracle) — retrying won't help.
+          // Park until unmount.
           cancelled = true;
           if (heartbeatTimer) {
             clearInterval(heartbeatTimer);
@@ -120,6 +128,8 @@ export function usePresence(pageId: string | null | undefined): {
 
         // Connected — reset backoff and fire an immediate heartbeat.
         backoffMs = 1000;
+        // Reconnect may have missed a complete freeze/thaw cycle.
+        void queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
         void sendHeartbeat(selfIsEditingRef.current);
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         heartbeatTimer = setInterval(() => {
@@ -140,7 +150,16 @@ export function usePresence(pageId: string | null | undefined): {
             const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
             if (!dataLine) continue;
             try {
-              applyEvent(JSON.parse(dataLine.slice(6)) as PresenceEvent);
+              const payload: unknown = JSON.parse(dataLine.slice(6));
+              const event = PageLifecycleEventSchema.safeParse(payload);
+              if (event.success && event.data.pageId === Number(pageId)) {
+                setLifecycle((previous) => !previous ||
+                  BigInt(event.data.lifecycleRevision) > BigInt(previous.lifecycleRevision)
+                  ? event.data : previous);
+                void queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+              } else {
+                applyEvent(payload as PresenceEvent);
+              }
             } catch {
               // Skip malformed frames.
             }
@@ -183,10 +202,10 @@ export function usePresence(pageId: string | null | undefined): {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       handleBeforeUnload();
     };
-  }, [pageId, selfUserId, sendHeartbeat]);
+  }, [pageId, selfUserId, sendHeartbeat, queryClient]);
 
   return useMemo(
-    () => ({ viewers, selfIsEditing, setEditing }),
-    [viewers, selfIsEditing, setEditing],
+    () => ({ viewers, selfIsEditing, setEditing, lifecycle }),
+    [viewers, selfIsEditing, setEditing, lifecycle],
   );
 }

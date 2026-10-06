@@ -127,10 +127,14 @@ vi.mock('../../shared/components/article/Editor', async () => {
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
-    getDraft: () => mockDraftContent,
-    clearDraft: vi.fn(),
   };
 });
+
+vi.mock('../../shared/lib/editor-drafts', async () => ({
+  ...(await vi.importActual<typeof import('../../shared/lib/editor-drafts')>('../../shared/lib/editor-drafts')),
+  readDraft: () => mockDraftContent,
+  clearDraft: vi.fn(),
+}));
 
 vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -202,12 +206,6 @@ vi.mock('./use-presence', () => ({
   }),
 }));
 
-const { useCollabProviderMock } = vi.hoisted(() => ({
-  useCollabProviderMock: vi.fn(),
-}));
-vi.mock('./use-collab-provider', () => ({
-  useCollabProvider: (opts: unknown) => useCollabProviderMock(opts),
-}));
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -361,14 +359,6 @@ describe('PageViewPage', () => {
     mockDraftContent = null;
     mockPresenceViewers = [];
     mockSetPresenceEditing.mockReset();
-    useCollabProviderMock.mockReset();
-    useCollabProviderMock.mockImplementation(() => ({
-      ydoc: null,
-      provider: null,
-      synced: false,
-      awarenessUsers: [],
-      error: null,
-    }));
     vi.mocked(apiFetch).mockClear();
     vi.mocked(apiFetch).mockResolvedValue({ linked: [], section: [], related: [] } as never);
     localStorage.clear();
@@ -908,6 +898,10 @@ describe('PageViewPage', () => {
   });
 
   it('Alt+Shift+D opens the move-to-trash dialog; confirming soft-deletes the page', async () => {
+    // Standalone, because the soft-delete copy asserted below is the copy of
+    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
+    // deletes upstream with no Trash to restore from (#1636).
+    currentMockPage = { ...mockPage, source: 'standalone' };
     render(<PageViewPage />, { wrapper: createWrapper() });
     const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
     expect(deleteShortcut).toBeDefined();
@@ -928,6 +922,79 @@ describe('PageViewPage', () => {
       expect(mockDeleteMutateAsync).toHaveBeenCalledWith('page-1');
     });
     expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  /**
+   * #1636 — the dialog must name what the trash actually moves. `mockPage` has
+   * `hasChildren: true` and no `descendantCount`, so every other test in this
+   * file is exercising the unknown-count fallback: it passes only while that
+   * fallback is the no-cascade copy.
+   *
+   * The count is quoted for a STANDALONE page only, because only that branch of
+   * `DELETE /pages/:id` trashes a subtree. The Confluence branch is a different
+   * action entirely — see below.
+   */
+  it('names the sub-article count when the page has descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'standalone', createdByUserId: '1', descendantCount: 3 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/^This page has 3 sub-articles\./)).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and 3 sub-articles to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+  });
+
+  it('uses the singular copy for exactly one sub-article (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'standalone', createdByUserId: '1', descendantCount: 1 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Move page and its sub-article to trash?')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and sub-article to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+  });
+
+  /**
+   * A synced page is not trashed at all: `DELETE /pages/:id` propagates the
+   * delete UP to Confluence, and afterwards `GET /pages/trash` filters
+   * `source = 'standalone'` while restore refuses anything else — the row never
+   * reaches Trash and can never be restored. The N=0 copy this used to render
+   * promised a 30-day restore, which is the one sentence no later action could
+   * make true.
+   */
+  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
+    // Its real descendants are left live, so naming a cascade would be a lie
+    // about the request as much as the restore promise was.
+    expect(screen.queryByText(/sub-article/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
   });
 
   it('cancelling the move-to-trash dialog does not delete', async () => {
@@ -1347,7 +1414,7 @@ describe('PageViewPage', () => {
       act(() => {
         deleteShortcut!.action();
       });
-      expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+      expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
 
       currentMockPage = {
         ...mockPage,
@@ -1363,7 +1430,6 @@ describe('PageViewPage', () => {
       // Left open, confirming would trash page B (mutateAsync(id) with the
       // new id). It must be dismissed on navigation instead.
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
-      expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
       expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
     });
   });
@@ -1482,241 +1548,5 @@ describe('PageViewPage', () => {
 
   });
 
-  describe('collaborative editing (#1447)', () => {
-    it('flag off: provider stays disabled in edit mode and SSE still drives presence', async () => {
-      mockPresenceViewers = [
-        { userId: 'u1', name: 'Alice', role: 'editor', isEditing: true },
-        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
-      ];
-      render(<PageViewPage />, { wrapper: createWrapper() });
-
-      expect(await screen.findByTestId('presence-avatar-stack')).toBeInTheDocument();
-      expect(screen.getByText('Bob')).toBeInTheDocument();
-      const alice = screen.getByText('Alice').closest('[data-testid="presence-avatar"]');
-      expect(alice).toHaveAttribute('data-is-editing', 'true');
-
-      fireEvent.click(screen.getByText('Edit'));
-
-      await waitFor(() => {
-        expect(useCollabProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({ enabled: false, pageId: 'page-1' }),
-        );
-      });
-      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
-    });
-
-    async function waitForCollabConfig(): Promise<void> {
-      await waitFor(() => {
-        expect(apiFetch).toHaveBeenCalledWith('/collab/config');
-      });
-    }
-
-    it('flag on: provider mounts only in edit mode, and the editor receives the ydoc', async () => {
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        return { linked: [], section: [], related: [] };
-      });
-      const ydoc = { __ydoc: true };
-      useCollabProviderMock.mockImplementation(() => ({
-        ydoc,
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [],
-        error: null,
-      }));
-
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitFor(() => {
-        expect(useCollabProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({ enabled: false }),
-        );
-      });
-      await waitForCollabConfig();
-
-      fireEvent.click(screen.getByText('Edit'));
-
-      await waitFor(() => {
-        expect(useCollabProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({ enabled: true, pageId: 'page-1' }),
-        );
-      });
-      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'true');
-    });
-
-    it('latches collab vs local at Edit so a late config fetch cannot remount', async () => {
-      let resolveConfig: ((value: { enabled: boolean }) => void) | undefined;
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') {
-          return new Promise<{ enabled: boolean }>((resolve) => {
-            resolveConfig = resolve;
-          });
-        }
-        return { linked: [], section: [], related: [] };
-      });
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      fireEvent.click(await screen.findByText('Edit'));
-      await waitFor(() => {
-        expect(useCollabProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({ enabled: false }),
-        );
-      });
-      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
-
-      await act(async () => {
-        resolveConfig?.({ enabled: true });
-      });
-      expect(useCollabProviderMock.mock.calls.at(-1)?.[0]).toEqual(
-        expect.objectContaining({ enabled: false }),
-      );
-      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
-    });
-
-    it('keeps the collab editor mounted when synced goes false after first sync', async () => {
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        return { linked: [], section: [], related: [] };
-      });
-      const live = {
-        ydoc: { __ydoc: true },
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [] as unknown[],
-        error: null as string | null,
-      };
-      useCollabProviderMock.mockImplementation(() => live);
-
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitForCollabConfig();
-      fireEvent.click(await screen.findByText('Edit'));
-      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
-
-      live.synced = false;
-      fireEvent.change(screen.getByTestId('edit-title-input'), {
-        target: { value: 'Engineering Handbook' },
-      });
-      expect(screen.queryByTestId('collab-connecting')).toBeNull();
-      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
-    });
-
-    it('Done confirms when title diverged and leaves the session without isDirty', async () => {
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        return { linked: [], section: [], related: [] };
-      });
-      useCollabProviderMock.mockImplementation(() => ({
-        ydoc: { __ydoc: true },
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [],
-        error: null,
-      }));
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitForCollabConfig();
-      fireEvent.click(await screen.findByText('Edit'));
-      fireEvent.change(screen.getByTestId('edit-title-input'), {
-        target: { value: 'Renamed in collab' },
-      });
-      fireEvent.click(screen.getByText('Done'));
-      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: /discard changes/i }));
-      await waitFor(() => {
-        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
-      });
-    });
-
-    it('flag on: Save posts /collab/commit, not PUT with a stale version', async () => {
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        if (path === '/pages/page-1/collab/commit') {
-          return { id: 1, title: 'Updated Engineering Handbook', version: 8, source: 'standalone' };
-        }
-        return { linked: [], section: [], related: [] };
-      });
-      useCollabProviderMock.mockImplementation(() => ({
-        ydoc: { __ydoc: true },
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [],
-        error: null,
-      }));
-
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitForCollabConfig();
-      fireEvent.click(await screen.findByText('Edit'));
-      fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
-        target: { value: 'Updated Engineering Handbook' },
-      });
-      fireEvent.click(screen.getByText('Save'));
-
-      await waitFor(() => {
-        expect(apiFetch).toHaveBeenCalledWith(
-          '/pages/page-1/collab/commit',
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ title: 'Updated Engineering Handbook' }),
-          }),
-        );
-      });
-      expect(mockUpdatePage).not.toHaveBeenCalled();
-    });
-
-    it('flag on: confluence_modified shows a neutral alert, not a toast, and stays in edit mode', async () => {
-      vi.mocked(toast.error).mockClear();
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        if (path === '/pages/page-1/collab/commit') {
-          const err = new ApiError(409, 'This page was modified in Confluence.', 'confluence_modified');
-          err.remoteVersion = 9;
-          err.localVersion = 7;
-          throw err;
-        }
-        return { linked: [], section: [], related: [] };
-      });
-      useCollabProviderMock.mockImplementation(() => ({
-        ydoc: { __ydoc: true },
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [],
-        error: null,
-      }));
-
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitForCollabConfig();
-      fireEvent.click(await screen.findByText('Edit'));
-      fireEvent.click(screen.getByText('Save'));
-
-      expect(await screen.findByTestId('confluence-modified-alert')).toBeInTheDocument();
-      expect(vi.mocked(toast.error).mock.calls.every((c) => !String(c[0]).match(/Confluence/i))).toBe(true);
-      expect(screen.getByText('Save')).toBeInTheDocument();
-      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
-    });
-
-    it('flag on: SSE usePresence still runs so viewers stay on the stack', async () => {
-      mockPresenceViewers = [
-        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
-      ];
-      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-        if (path === '/collab/config') return { enabled: true };
-        return { linked: [], section: [], related: [] };
-      });
-      useCollabProviderMock.mockImplementation(() => ({
-        ydoc: { __ydoc: true },
-        provider: { awareness: { getStates: () => new Map() } },
-        synced: true,
-        awarenessUsers: [{ id: 'u3', name: 'Nia', color: '#5C6B8A' }],
-        error: null,
-      }));
-
-      render(<PageViewPage />, { wrapper: createWrapper() });
-      await waitForCollabConfig();
-      fireEvent.click(await screen.findByText('Edit'));
-
-      await waitFor(() => {
-        expect(screen.getByText('Nia')).toBeInTheDocument();
-      });
-      expect(screen.getByText('Bob')).toBeInTheDocument();
-      expect(mockSetPresenceEditing).toHaveBeenCalledWith(false);
-    });
-  });
 
 });

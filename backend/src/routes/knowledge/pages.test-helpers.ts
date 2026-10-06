@@ -13,6 +13,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import type { RedisClientType } from 'redis';
+import { PageSubtreeFrozenError } from '../../core/services/page-subtree.js';
 import { query } from '../../core/db/postgres.js';
 
 // --- Seeders ---
@@ -38,14 +39,15 @@ export async function insertStandalonePage(
   visibility: 'private' | 'shared',
   createdBy: string,
   spaceKey: string,
-  opts: { dirty?: boolean; deletedAt?: Date } = {},
+  opts: { dirty?: boolean; deletedAt?: Date; parentId?: string | null } = {},
 ): Promise<number> {
   const res = await query<{ id: number }>(
     `INSERT INTO pages (space_key, title, body_html, body_text, version, source,
-                        visibility, created_by_user_id, embedding_dirty, embedding_status, deleted_at)
-     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, $5, 'not_embedded', $6)
+                        visibility, created_by_user_id, embedding_dirty, embedding_status, deleted_at,
+                        parent_id)
+     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, $5, 'not_embedded', $6, $7)
      RETURNING id`,
-    [spaceKey, title, visibility, createdBy, opts.dirty ?? false, opts.deletedAt ?? null],
+    [spaceKey, title, visibility, createdBy, opts.dirty ?? false, opts.deletedAt ?? null, opts.parentId ?? null],
   );
   return res.rows[0]!.id;
 }
@@ -54,14 +56,15 @@ export async function insertConfluencePage(
   confluenceId: string,
   title: string,
   spaceKey: string,
-  opts: { deletedAt?: Date } = {},
+  opts: { deletedAt?: Date; parentId?: string | null } = {},
 ): Promise<number> {
   const res = await query<{ id: number }>(
     `INSERT INTO pages (confluence_id, source, space_key, title, body_text,
-                        body_storage, body_html, inherit_perms, embedding_dirty, deleted_at)
-     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE, FALSE, $4)
+                        body_storage, body_html, inherit_perms, embedding_dirty, deleted_at,
+                        parent_id)
+     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE, FALSE, $4, $5)
      RETURNING id`,
-    [confluenceId, spaceKey, title, opts.deletedAt ?? null],
+    [confluenceId, spaceKey, title, opts.deletedAt ?? null, opts.parentId ?? null],
   );
   return res.rows[0]!.id;
 }
@@ -91,11 +94,23 @@ export async function buildKnowledgeTestApp(
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(sensible);
-  app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+  app.setErrorHandler((error: Error & { statusCode?: number; reason?: string }, _request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({ error: 'Validation failed' });
     }
-    return reply.status(error.statusCode ?? 500).send({ error: error.message });
+    if (error instanceof PageSubtreeFrozenError) {
+      return reply.status(error.statusCode).send({
+        error: error.name,
+        reason: error.reason,
+        message: error.message,
+        blockedCount: error.blockedCount,
+      });
+    }
+    return reply.status(error.statusCode ?? 500).send(
+      error.reason
+        ? { error: error.name, reason: error.reason }
+        : { error: error.message },
+    );
   });
   app.decorate('authenticate', async (request: { userId: string }) => {
     request.userId = getCurrentUserId();

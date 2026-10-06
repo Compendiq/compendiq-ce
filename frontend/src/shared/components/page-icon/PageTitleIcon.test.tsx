@@ -65,6 +65,9 @@ describe('PageTitleIcon', () => {
     expect(screen.getByLabelText('IBM')).toBeInTheDocument();
     expect(screen.getByLabelText('Apple')).toBeInTheDocument();
     expect(screen.getByLabelText('Google')).toBeInTheDocument();
+    expect(screen.getByLabelText('Strava')).toBeInTheDocument();
+    expect(screen.getByLabelText('Garmin')).toBeInTheDocument();
+    expect(screen.getByLabelText('Nike')).toBeInTheDocument();
   });
 
   it('shows the existing mark as Change page icon', () => {
@@ -80,5 +83,93 @@ describe('PageTitleIcon', () => {
     );
     expect(screen.getByRole('button', { name: 'Change page icon' })).toBeInTheDocument();
     expect(screen.getByText('🚀')).toBeInTheDocument();
+  });
+
+  it('shows a text-palette colour row for a lucide mark and keeps the picker open', () => {
+    const onSelect = vi.fn();
+    render(
+      <PageTitleIcon
+        icon={{ kind: 'lucide', value: 'rocket' }}
+        pageId="1"
+        editable
+        onSelect={onSelect}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
+    expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Blue icon' }));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#3b82f6' });
+    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#6366f1' });
+    expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
+  });
+
+  it('provides an Outline / Filled segmented toggle for lucide icons', () => {
+    const onSelect = vi.fn();
+    render(
+      <PageTitleIcon
+        icon={{ kind: 'lucide', value: 'camera' }}
+        pageId="1"
+        editable
+        onSelect={onSelect}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
+    const outlineBtn = screen.getByTestId('page-icon-style-outline');
+    const filledBtn = screen.getByTestId('page-icon-style-filled');
+    expect(outlineBtn).toBeInTheDocument();
+    expect(filledBtn).toBeInTheDocument();
+    expect(outlineBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(filledBtn).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(filledBtn);
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', filled: true });
+  });
+
+  it('persists filled state when picking new icons and colors', () => {
+    const onSelect = vi.fn();
+    render(
+      <PageTitleIcon
+        icon={{ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true }}
+        pageId="1"
+        editable
+        onSelect={onSelect}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
+    const filledBtn = screen.getByTestId('page-icon-style-filled');
+    expect(filledBtn).toHaveAttribute('aria-pressed', 'true');
+
+    // Picking a colour retains filled: true
+    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true });
+
+    // Switching back to outline
+    const outlineBtn = screen.getByTestId('page-icon-style-outline');
+    fireEvent.click(outlineBtn);
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1' });
+  });
+
+  it('lists diving and hiking glyphs in the icon grid', () => {
+    render(
+      <PageTitleIcon
+        icon={null}
+        pageId="1"
+        editable
+        onSelect={vi.fn()}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add icon' }));
+    expect(screen.getByLabelText('Diving')).toBeInTheDocument();
+    expect(screen.getByLabelText('Hiking')).toBeInTheDocument();
+    expect(screen.getByLabelText('Sailing')).toBeInTheDocument();
   });
 });

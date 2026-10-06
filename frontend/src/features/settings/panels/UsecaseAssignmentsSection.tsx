@@ -5,7 +5,7 @@ import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from
 import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
-import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
+import { ImageAnalysisCard } from './ImageAnalysisCard';
 import { SearchableSelect } from '../../../shared/components/SearchableSelect';
 import { filterModelsForKind, type ModelKindFilter } from './model-kind';
 import { Info } from 'lucide-react';
@@ -17,20 +17,20 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   auto_tag: 'Auto-tag',
   embedding: 'Embedding',
   rerank: 'Rerank',
-  image_embedding: 'Image embedding',
   inline_completion: 'Inline completion',
+  image_analysis: 'Image analysis (vision)',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /**
- * The use cases that never inherit the default provider (#1104, #1115, #1417). Their
+ * The use cases that never inherit the default provider (#1104, #1417, #1615). Their
  * "unset" option says **Disabled**, because there is no fallback behind it —
  * offering "Inherit default" would name a resolution that does not happen.
  */
 const NON_INHERITING: Record<string, string> = {
   rerank: 'Disabled (no reranking)',
-  image_embedding: 'Disabled (no image search)',
   inline_completion: 'Disabled (no inline suggestions)',
+  image_analysis: 'Disabled (no image analysis)',
 };
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -64,7 +64,7 @@ function UsecaseInfoPopover({
           side="top"
           sideOffset={6}
           collisionPadding={8}
-          className="nm-card-elevated z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
+          className="nm-popover-glass z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
           data-testid={testId ? `${testId}-content` : undefined}
         >
           <p className="font-medium text-foreground">{title}</p>
@@ -108,14 +108,14 @@ interface Props {
   providers: LlmProvider[];
   onChange: (next: UsecaseAssignments) => void;
   /**
-   * #1115 — the image leg's MRL truncation width
-   * (`admin_settings.image_embedding_target_dimensions`). It is not a use-case
+   * #1615 — the image-analysis output-token ceiling
+   * (`admin_settings.image_analysis_max_output_tokens`). It is not a use-case
    * assignment, so it rides through this section rather than living in it: the
-   * control belongs beside the row it changes, and the value belongs with the
-   * panel's Save, which writes it before re-probing the assignment.
+   * control belongs beside the row it bounds, the value belongs with the
+   * panel's Save.
    */
-  imageTargetDimensions: number | null;
-  onImageTargetDimensionsChange: (next: number | null) => void;
+  imageAnalysisMaxOutputTokens: number;
+  onImageAnalysisMaxOutputTokensChange: (next: number) => void;
   /**
    * The embedding row's next action (re-embed). Lives under this row so the
    * control that starts the index change sits where the assignment changed —
@@ -129,8 +129,8 @@ export function UsecaseAssignmentsSection({
   savedAssignments,
   providers,
   onChange,
-  imageTargetDimensions,
-  onImageTargetDimensionsChange,
+  imageAnalysisMaxOutputTokens,
+  onImageAnalysisMaxOutputTokensChange,
   embeddingAction,
 }: Props) {
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
@@ -170,11 +170,23 @@ export function UsecaseAssignmentsSection({
         // model anywhere). Without this, the row looks configured while the
         // stage is silently disabled. The image and inline-completion legs have
         // the same state: none inherits, so none has a fallback to fall back to.
+        //
+        // Read from the SAVED row, like every other verdict on this surface
+        // (#1615 review r1): `resolved` is the server's answer for what is
+        // saved, so a draft pick of a provider that HAS a default model still
+        // carried the NIL the saved NULL row resolves to, and the line called
+        // the stage disabled for a choice the server had not yet seen.
+        const saved = savedAssignments[u] ?? row;
         const assignedButUnresolvable =
-          u in NON_INHERITING && row.providerId !== null && row.resolved.providerId === NIL_UUID;
+          u in NON_INHERITING && saved.providerId !== null && saved.resolved.providerId === NIL_UUID;
         return (
           <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
-            <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
+            {/*
+              Four columns from `sm` up; one stacked column below it, where
+              140 + 180 px of fixed columns cannot fit a ~324 px card and the
+              row clipped instead of reflowing (#1615 review r1, AC-6).
+            */}
+            <div className="grid items-center gap-2 sm:grid-cols-[140px_180px_1fr_auto]">
               <span className="flex items-center gap-1 text-sm font-medium">
                 {USECASE_LABELS[u]}
                 {u === 'embedding' && (
@@ -259,20 +271,17 @@ export function UsecaseAssignmentsSection({
             )}
             {u === 'chat' && chatDefault && <ChatVisionCapability vision={chatDefault.vision} />}
             {/*
-              #1115: the image leg's strip is always rendered, not only when
-              assigned — its two sentences are what tell an operator whether
-              this row is even usable on their stack, and the probe status
-              inside it is gated on the assignment instead.
-
-              On the SAVED assignment, never `row` (the draft): the probe route
-              and Re-check both resolve what the server has, so a dropdown
-              change that has not been saved must not fire either.
+              #1615: the image-analysis strip is always rendered, not only when
+              assigned — its copy is what tells an operator which provider
+              receives page images and that unassigning is a pause — and it
+              reads the SAVED assignment for everything that describes the live
+              pipeline (the egress sentence, the capability query, Re-check).
             */}
-            {u === 'image_embedding' && (
-              <ImageEmbeddingCapability
-                assigned={savedAssignments[u]?.providerId != null}
-                targetDimensions={imageTargetDimensions}
-                onTargetDimensionsChange={onImageTargetDimensionsChange}
+            {u === 'image_analysis' && (
+              <ImageAnalysisCard
+                savedAssignment={savedAssignments[u]}
+                maxOutputTokens={imageAnalysisMaxOutputTokens}
+                onMaxOutputTokensChange={onImageAnalysisMaxOutputTokensChange}
               />
             )}
           </div>
@@ -319,6 +328,8 @@ function ModelPicker({
       onChange={(next) => onChange(next || null)}
       testId={testId}
       ariaLabel={ariaLabel}
+      allowCustom
+      emptyMessage="No listed models. Type an id and press Enter."
     />
   );
 }

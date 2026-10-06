@@ -285,6 +285,7 @@ import {
   Fish,
   Flag,
   Flame,
+  Footprints,
   FlameKindling,
   Flashlight,
   FlaskConical,
@@ -376,6 +377,7 @@ import {
   LayoutGrid,
   Leaf,
   Library,
+  LifeBuoy,
   Lightbulb,
   Link,
   List,
@@ -501,6 +503,7 @@ import {
   Route,
   Rss,
   Ruler,
+  Sailboat,
   Salad,
   Sandwich,
   Satellite,
@@ -633,6 +636,7 @@ import {
   Video,
   VideoOff,
   Voicemail,
+  Volleyball,
   Volume,
   Volume1,
   Volume2,
@@ -1310,6 +1314,10 @@ const ICONS: Record<PageLucideIconId, LucideIcon> = {
   'alarm-clock-minus': AlarmClockMinus,
   'alarm-clock-off': AlarmClockOff,
   'alarm-clock-plus': AlarmClockPlus,
+  'footprints': Footprints,
+  'life-buoy': LifeBuoy,
+  'sailboat': Sailboat,
+  'volleyball': Volleyball,
 };
 
 export function getPageLucideIcon(id: string): LucideIcon | null {

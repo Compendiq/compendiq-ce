@@ -18,11 +18,26 @@ import { useSettings, useUpdateSettings } from './use-settings';
  * on purpose: a stored boolean drifts from the truth the moment a user
  * disconnects their PAT or clears their space selection, and `hasConfluencePat`
  * / `selectedSpaces` are on the same response already.
+ *
+ * **In standalone mode the list is three steps, not five (#1623).** With the
+ * Confluence integration switched off there is no account to connect and no
+ * spaces to choose, so those two rows are not rendered — and they are NOT
+ * marked done either: a milestone that does not apply is not an achievement,
+ * and checking it off would congratulate the user for work they never did.
+ * The flag is read as `=== false`, never as a falsy test: a `GET /settings`
+ * payload from before the column existed omits the key, and "unknown" is the
+ * connected product rather than standalone.
  */
 
 /** The three milestones that have no live signal and must be remembered. */
 export type OnboardingFlag = 'firstAiQueryMade' | 'shortcutsModalViewed' | 'pageCreatedOrEdited';
 
+/**
+ * Every milestone the product HAS — the superset the checklist is drawn from,
+ * not the list any one user sees, since standalone users get the last three.
+ * It types `STEP_COPY`, which keeps the copy table exhaustive whatever a given
+ * user's settings say.
+ */
 export const ONBOARDING_STEP_IDS = [
   'connect-confluence',
   'select-spaces',
@@ -204,16 +219,23 @@ export function useOnboarding({ trackCompletion = false }: UseOnboardingOptions 
   const actions = useOnboardingActions();
   const state = settings?.onboardingState;
 
+  const confluenceEnabled = settings?.confluenceEnabled !== false;
+
   const steps = useMemo<OnboardingStep[]>(
     () => [
-      // Computed, not stored — see the module comment.
-      { id: 'connect-confluence', complete: settings?.hasConfluencePat === true },
-      { id: 'select-spaces', complete: (settings?.selectedSpaces?.length ?? 0) > 0 },
+      // Computed, not stored — see the module comment. Dropped entirely in
+      // standalone mode rather than pre-checked: see the same comment.
+      ...(confluenceEnabled
+        ? ([
+            { id: 'connect-confluence', complete: settings?.hasConfluencePat === true },
+            { id: 'select-spaces', complete: (settings?.selectedSpaces?.length ?? 0) > 0 },
+          ] satisfies OnboardingStep[])
+        : []),
       { id: 'ask-ai', complete: state?.firstAiQueryMade === true },
       { id: 'shortcuts', complete: state?.shortcutsModalViewed === true },
       { id: 'create-page', complete: state?.pageCreatedOrEdited === true },
     ],
-    [settings?.hasConfluencePat, settings?.selectedSpaces, state],
+    [confluenceEnabled, settings?.hasConfluencePat, settings?.selectedSpaces, state],
   );
 
   const ready = settings !== undefined;

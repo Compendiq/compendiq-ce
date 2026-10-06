@@ -224,11 +224,85 @@ export async function paginateAll<T>(
   return items;
 }
 
+function viewIsBoard(view: Record<string, unknown>): boolean {
+  if (view.type === 'board') return true;
+  const configuration = view.configuration;
+  return Boolean(
+    configuration
+    && typeof configuration === 'object'
+    && 'type' in configuration
+    && configuration.type === 'board',
+  );
+}
+
+function viewDeclaresLayout(view: Record<string, unknown>): boolean {
+  if (typeof view.type === 'string') return true;
+  const configuration = view.configuration;
+  return Boolean(configuration && typeof configuration === 'object' && 'type' in configuration);
+}
+
+
 export class NotionClient {
   private readonly token: string;
   private readonly baseUrl: string;
   private readonly minIntervalMs: number;
   private nextSlotAt = 0;
+  /** One views lookup per database per client — tree + import share a client. */
+  private readonly boardViewByDatabase = new Map<string, Promise<boolean>>();
+  /**
+   * True when any view on this database is a Board. Uses the views API version
+   * only; 404/400/empty means the database is not a board.
+   */
+  async databaseHasBoardView(databaseId: string): Promise<boolean> {
+    const key = databaseId.replace(/-/g, '').toLowerCase();
+    const cached = this.boardViewByDatabase.get(key);
+    if (cached) return cached;
+    const pending = this.lookupBoardView(databaseId);
+    this.boardViewByDatabase.set(key, pending);
+    try {
+      return await pending;
+    } catch (err) {
+      this.boardViewByDatabase.delete(key);
+      throw err;
+    }
+  }
+
+  /**
+   * List first. Detail GETs only for views whose list row has no type —
+   * a typed table/list/board list is enough, and eight extra GETs per
+   * database is what blew the 3 req/s budget on a wiki of ordinary tables.
+   */
+  private async lookupBoardView(databaseId: string): Promise<boolean> {
+    try {
+      const list = await this.fetchJson<{ results?: Array<Record<string, unknown>> }>(
+        `/v1/views?database_id=${encodeURIComponent(databaseId)}`,
+        { notionVersion: NOTION_VIEWS_VERSION },
+      );
+      const results = Array.isArray(list.results) ? list.results : [];
+      const untyped: string[] = [];
+      for (const ref of results) {
+        if (!ref || typeof ref !== 'object') continue;
+        if (viewIsBoard(ref)) return true;
+        if (viewDeclaresLayout(ref)) continue;
+        if (typeof ref.id === 'string') untyped.push(ref.id);
+      }
+      for (const id of untyped.slice(0, 8)) {
+        try {
+          const view = await this.fetchJson<{ type?: string; configuration?: unknown }>(
+            `/v1/views/${encodeURIComponent(id)}`,
+            { notionVersion: NOTION_VIEWS_VERSION },
+          );
+          if (viewIsBoard(view)) return true;
+        } catch (err) {
+          if (err instanceof NotionError && err.statusCode === 401) throw err;
+        }
+      }
+    } catch (err) {
+      if (err instanceof NotionError && err.statusCode === 401) throw err;
+      return false;
+    }
+    return false;
+  }
 
   constructor(token: string, options: { baseUrl?: string; minIntervalMs?: number } = {}) {
     this.token = token;
@@ -419,58 +493,6 @@ export class NotionClient {
     );
   }
 
-  /**
-   * True when any view on this database is a Board. Uses the views API version
-   * only; 404/400/empty means the database is not a board.
-   */
-  async databaseHasBoardView(databaseId: string): Promise<boolean> {
-    try {
-      const list = await this.fetchJson<{ results?: Array<Record<string, unknown>> }>(
-        `/v1/views?database_id=${encodeURIComponent(databaseId)}`,
-        { notionVersion: NOTION_VIEWS_VERSION },
-      );
-      const results = Array.isArray(list.results) ? list.results : [];
-      for (const ref of results) {
-        if (!ref || typeof ref !== 'object') continue;
-        if (ref.type === 'board') return true;
-        const configuration = ref.configuration;
-        if (
-          configuration
-          && typeof configuration === 'object'
-          && 'type' in configuration
-          && configuration.type === 'board'
-        ) {
-          return true;
-        }
-      }
-      for (const ref of results.slice(0, 8)) {
-        const id = ref && typeof ref === 'object' && typeof ref.id === 'string' ? ref.id : null;
-        if (!id) continue;
-        try {
-          const view = await this.fetchJson<{ type?: string; configuration?: unknown }>(
-            `/v1/views/${encodeURIComponent(id)}`,
-            { notionVersion: NOTION_VIEWS_VERSION },
-          );
-          if (view.type === 'board') return true;
-          const configuration = view.configuration;
-          if (
-            configuration
-            && typeof configuration === 'object'
-            && 'type' in configuration
-            && configuration.type === 'board'
-          ) {
-            return true;
-          }
-        } catch (err) {
-          if (err instanceof NotionError && err.statusCode === 401) throw err;
-        }
-      }
-    } catch (err) {
-      if (err instanceof NotionError && err.statusCode === 401) throw err;
-      return false;
-    }
-    return false;
-  }
 
   async getBlock(blockId: string): Promise<Record<string, unknown>> {
     return this.fetchJson(`/v1/blocks/${encodeURIComponent(blockId)}`);

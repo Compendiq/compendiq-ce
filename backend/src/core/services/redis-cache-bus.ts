@@ -45,7 +45,8 @@ export type CacheBusChannel =
   | 'pii:policy:changed'
   | 'license:changed'
   | 'user:security:changed'
-  | 'collab:enabled:changed';
+  | 'collab:enabled:changed'
+  | 'page:lifecycle';
 
 type Handler<T = unknown> = (payload: T) => void | Promise<void>;
 

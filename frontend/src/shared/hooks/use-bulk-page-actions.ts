@@ -75,6 +75,20 @@ function plural(count: number): string {
   return count === 1 ? 'page' : 'pages';
 }
 
+/**
+ * #1636 — `succeeded` counts SELECTED pages, not rows changed: the bulk delete
+ * now cascades to every live sub-article of each selected page, so
+ * `3 pages moved to trash` reads as "three rows changed" over a request that
+ * may have trashed thirty. The real total is not on the wire (the route
+ * reports its per-id outcome, not the cascade's reach), so the toast names the
+ * cascade instead of counting it — the same reason the confirm dialog does.
+ */
+function successMessage(action: BulkAction, succeeded: number): string {
+  const base = `${succeeded} ${plural(succeeded)} ${PAST_TENSE[action]}`;
+  if (action !== 'delete') return base;
+  return `${base}, with ${succeeded === 1 ? 'its' : 'their'} sub-articles`;
+}
+
 export function useBulkPageAction(onSettled?: () => void) {
   const queryClient = useQueryClient();
 
@@ -89,7 +103,7 @@ export function useBulkPageAction(onSettled?: () => void) {
       const failed = result.failed ?? 0;
 
       if (succeeded > 0) {
-        toast.success(`${succeeded} ${plural(succeeded)} ${PAST_TENSE[action]}`);
+        toast.success(successMessage(action, succeeded));
       }
 
       // `failed` + `errors` are the only channel these routes have for a

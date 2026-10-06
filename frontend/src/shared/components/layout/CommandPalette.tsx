@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { apiFetch } from '../../lib/api';
+import { readRecentSearches, rememberRecentSearch } from '../../lib/recent-searches';
 import { cn } from '../../lib/cn';
 import type { PageIcon as PageIconValue } from '@compendiq/contracts';
 import { PageIcon } from '../page-icon/PageIcon';
@@ -31,24 +32,6 @@ const QUICK_ACTIONS: QuickAction[] = [
   { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
   { id: 'ai-assistant', label: 'AI Assistant', icon: Bot, path: '/ai' },
 ];
-
-const RECENT_SEARCHES_KEY = 'kb-recent-searches';
-const MAX_RECENT = 5;
-
-function getRecentSearches(): string[] {
-  try {
-    const stored = localStorage.getItem(RECENT_SEARCHES_KEY);
-    return stored ? JSON.parse(stored) : [];
-  } catch {
-    return [];
-  }
-}
-
-function addRecentSearch(term: string) {
-  const recent = getRecentSearches().filter((s) => s !== term);
-  recent.unshift(term);
-  localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
-}
 
 export function CommandPalette() {
   const isOpen = useCommandPaletteStore((s) => s.isOpen);
@@ -74,7 +57,7 @@ export function CommandPalette() {
   // Reset transient state when opened (focus is handled by Radix onOpenAutoFocus)
   useEffect(() => {
     if (isOpen) {
-      setRecentSearches(getRecentSearches());
+      setRecentSearches(readRecentSearches());
       setQuery('');
       setResults([]);
       setSelectedIndex(0);
@@ -189,7 +172,7 @@ export function CommandPalette() {
 
     if (item.path) {
       if (item.type === 'result') {
-        addRecentSearch(query);
+        rememberRecentSearch(query);
       }
       navigate(item.path);
       close();
@@ -255,7 +238,7 @@ export function CommandPalette() {
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
-              'nm-card-elevated overflow-hidden',
+              'nm-popover-glass overflow-hidden',
               // The glow went with the rest of them: a 30px coloured bloom is
               // the retired world's way of saying "this mode is special", and
               // `nm-card-elevated` already carries the one overlay shadow the

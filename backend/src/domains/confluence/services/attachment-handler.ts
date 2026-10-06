@@ -3,6 +3,7 @@ import path from 'path';
 import { JSDOM } from 'jsdom';
 import { request } from 'undici';
 import type { RedisClientType } from 'redis';
+import type { PoolClient } from 'pg';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
 import { assertNonSsrfUrl } from '../../../core/utils/ssrf-guard.js';
@@ -21,12 +22,10 @@ import {
 import {
   attachmentCacheDir,
   attachmentDir,
-  listCachedAttachments,
-  readCachedAttachmentFile,
   safeAttachmentPath,
   validateFilename,
 } from '../../../core/services/attachment-store.js';
-import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-embedding-dirty.js';
+import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-analysis-dirty.js';
 
 /**
  * The path-resolution and READ half of this module lives in
@@ -607,6 +606,7 @@ export async function writeAttachmentCache(
   pageId: string,
   filename: string,
   data: Buffer,
+  client?: PoolClient,
 ): Promise<string> {
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
@@ -618,7 +618,7 @@ export async function writeAttachmentCache(
   // unconditionally rather than by diffing: the page's own reconcile pass is
   // what decides whether anything is actually re-embedded, and an unchanged
   // file reuses its row by sha256 for the cost of one file read.
-  await markPageImagesDirtyByAttachmentKey(pageId);
+  await markPageImagesDirtyByAttachmentKey(pageId, client);
   logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
   return filePath;
 }
@@ -677,12 +677,16 @@ export async function getMissingAttachments(
  * Clean up all attachments for a page.
  * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
-export async function cleanPageAttachments(pageId: string): Promise<void> {
-  const dir = attachmentDir(pageId);
+export async function cleanPageAttachments(
+  pageId: string,
+  options?: { client?: PoolClient; strict?: boolean },
+): Promise<void> {
+  const dir = attachmentCacheDir(pageId);
   try {
     await fs.rm(dir, { recursive: true, force: true });
-  } catch {
-    // Directory may not exist
+  } catch (error) {
+    if (options?.strict) throw error;
+    // Legacy sync cleanup remains best-effort; admitted writes require removal.
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
@@ -691,44 +695,11 @@ export async function cleanPageAttachments(pageId: string): Promise<void> {
   // `embedPageImages` reconciles against the page's BODY, which this function
   // never touches, so every image comes back as a `missing` skip whose row is
   // deliberately kept — a stale row is recoverable, a deleted one costs a
-  // re-embed, and `resolveAttachmentBytes` cannot tell "gone" from "the read
-  // failed". The re-read is the point: on the sync path these bytes are about
+  // re-embed, and the legacy leg counts "gone" and "the read failed" as the
+  // same miss. The re-read is the point: on the sync path these bytes are about
   // to be downloaded again and may differ, and on a delete path the page row
   // (and its rows, by CASCADE) is going anyway.
-  await markPageImagesDirtyByAttachmentKey(pageId);
-}
-
-/**
- * Copy a page's cached attachments from one key to another (#1123 relocate).
- *
- * A COPY, never a move: relocate runs this *before* its database transaction
- * commits, so an abort must leave the original directory intact. The old key
- * is removed only after the commit, via {@link cleanPageAttachments}.
- * Idempotent — re-running overwrites the destination files.
- *
- * Returns the filenames copied.
- */
-export async function copyAttachmentDirectory(
-  fromPageId: string,
-  toPageId: string,
-): Promise<string[]> {
-  if (fromPageId === toPageId) return [];
-  const filenames = await listCachedAttachments(fromPageId);
-  if (filenames.length === 0) return [];
-
-  const destDir = attachmentCacheDir(toPageId);
-  await fs.mkdir(destDir, { recursive: true });
-
-  const copied: string[] = [];
-  for (const filename of filenames) {
-    const data = await readCachedAttachmentFile(fromPageId, filename);
-    if (data === null) continue;
-    const safeFilename = validateFilename(filename);
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
-    await fs.writeFile(path.resolve(destDir, safeFilename), data);
-    copied.push(filename);
-  }
-  return copied;
+  await markPageImagesDirtyByAttachmentKey(pageId, options?.client);
 }
 
 /**

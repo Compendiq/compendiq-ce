@@ -28,8 +28,21 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+const mockPageSources = new Map<number, 'confluence' | 'standalone'>();
 vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
+  query: (sql: string, params?: unknown[]) => {
+    // Result metadata (semantic/hybrid). Its caller-bound authorization is
+    // proven against real PostgreSQL in search-restriction.integration.test.ts.
+    if (sql.includes('SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version')) {
+      return Promise.resolve({
+        rows: (params![0] as number[]).flatMap((id) => {
+          const source = mockPageSources.get(id);
+          return source ? [{ id, source }] : [];
+        }),
+      });
+    }
+    return mockQueryFn(sql, params);
+  },
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
@@ -51,9 +64,12 @@ vi.mock('../../domains/llm/services/rag-service.js', async () => {
     vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
     hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
     recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
+    // The tracked fire-and-forget variant writes the same row; one spy covers both.
+    trackSearchAnalytics: (...args: unknown[]) => {
+      mockRecordAnalytics(...args);
+    },
     getEmbeddingCoverage: (...args: unknown[]) => mockGetEmbeddingCoverage(...args),
     deriveDegradedReason: actual.deriveDegradedReason,
-    resolveStageLimit: actual.resolveStageLimit,
     DEGRADED_COVERAGE_THRESHOLD: actual.DEGRADED_COVERAGE_THRESHOLD,
   };
 });
@@ -98,18 +114,21 @@ const makeSearchResult = (
   pageId: number,
   title: string,
   overrides?: { score?: number; vectorScore?: number | null; keywordRank?: number | null },
-) => ({
-  pageId,
-  confluenceId: `page-${pageId}`,
-  chunkText: `Excerpt for ${title}`,
-  pageTitle: title,
-  sectionTitle: title,
-  spaceKey: 'TEST',
-  score: 0.8,
-  vectorScore: 0.8,
-  keywordRank: null,
-  ...overrides,
-});
+) => {
+  mockPageSources.set(pageId, 'confluence');
+  return {
+    pageId,
+    confluenceId: `page-${pageId}`,
+    chunkText: `Excerpt for ${title}`,
+    pageTitle: title,
+    sectionTitle: title,
+    spaceKey: 'TEST',
+    score: 0.8,
+    vectorScore: 0.8,
+    keywordRank: null,
+    ...overrides,
+  };
+};
 
 /**
  * #1284 — pair an INSERT's column list with its VALUES list by POSITION.
@@ -188,6 +207,7 @@ describe('Search Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPageSources.clear();
     // The semantic branch reads the real fetch-width TTL cache
     // (admin-settings-service) — clear it so no test's resolved width serves
     // the rest of the file for 60s.
@@ -220,6 +240,7 @@ describe('Search Routes', () => {
               {
                 id: 1,
                 confluence_id: 'page-1',
+                source: 'confluence',
                 title: 'Redis Guide',
                 space_key: 'DEV',
                 author: 'Alice',
@@ -232,6 +253,7 @@ describe('Search Routes', () => {
               {
                 id: 2,
                 confluence_id: 'page-2',
+                source: 'confluence',
                 title: 'Redis Config',
                 space_key: 'OPS',
                 author: 'Bob',
@@ -384,7 +406,7 @@ describe('Search Routes', () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
-            rows: [{ id: 1, confluence_id: 'p-1', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
+            rows: [{ id: 1, confluence_id: 'p-1', source: 'confluence', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
           };
         }
         return { rows: [] };
@@ -423,6 +445,7 @@ describe('Search Routes', () => {
               {
                 id: 99,
                 confluence_id: 'page-99',
+                source: 'confluence',
                 title: 'Redis Tuning',
                 space_key: 'DEV',
                 body_text: 'Tuning advice',
@@ -436,6 +459,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Redis Guide',
               space_key: 'DEV',
               author: 'Alice',
@@ -586,8 +610,8 @@ describe('Search Routes', () => {
       // The vector leg counts CHUNKS while `limit` counts pages-after-dedup:
       // fetching exactly `limit` rows under-delivered whenever one page's
       // chunks occupied several top slots. The route now fetches
-      // resolveStageLimit(limit, width, false) chunks and slices to `limit`
-      // after dedupe.
+      // searchCandidatePool chunks (`max(width, 2×limit)`, capped at
+      // RAG_FETCH_WIDTH_MAX) and slices to `limit` after dedupe.
       mockQueryFn.mockResolvedValue({ rows: [] });
       const fakeEmbedding = new Array(768).fill(0.1);
       mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
@@ -609,7 +633,7 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // Fetch width: max(default width 10, limit 2) = 10 chunks requested.
+      // searchCandidatePool: max(default width 10, 2×limit 4) = 10 chunks requested.
       expect(mockVectorSearch).toHaveBeenCalledTimes(1);
       expect(mockVectorSearch.mock.calls[0]?.[2]).toBe(10);
       // Return width: sliced to the caller's limit AFTER dedupe-by-page.
@@ -631,6 +655,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Keyword Result',
               space_key: 'DEV',
               author: null,
@@ -714,15 +739,22 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // 3rd arg: the page-search candidate pool, max(width 10, 2 × limit 10).
       // 4th arg: the route's own coverage reading, handed over so hybridSearch
       // does not probe a second time (review r1). 5th arg: #1351's spaceKey
-      // scoping option — undefined here since the request carries none.
+      // scoping option — undefined here since the request carries none — and
+      // the suppressed service-side analytics row the route writes instead.
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined, surface: 'search' },
+        {
+          spaceKey: undefined,
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
       const body = response.json();
       expect(body.mode).toBe('hybrid');
@@ -746,34 +778,19 @@ describe('Search Routes', () => {
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: 'DEV', surface: 'search' },
+        {
+          spaceKey: 'DEV',
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
     });
 
     // ── The image leg (#1115 P3) ──────────────────────────────────────────
 
-    it('hybrid mode leaves the image leg to the admin setting, and the wire shape is unchanged', async () => {
-      // `imageLeg` is deliberately ABSENT rather than `true`: `/api/search`
-      // has no per-request opinion, so the leg follows
-      // `rag_image_leg_enabled` exactly as it does on the chat path. Passing
-      // `true` would force it past a switch an operator turned off.
-      mockQueryFn.mockResolvedValue({ rows: [] });
-      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Result')]);
-
-      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockHybridSearch.mock.calls[0]![4]).not.toHaveProperty('imageLeg');
-      // Page rows, exactly as before — the leg changes RANKING, never the
-      // shape. No image field leaks onto a search item.
-      const item = response.json().items[0] as Record<string, unknown>;
-      expect(Object.keys(item).sort()).toEqual([
-        'author', 'confluenceId', 'id', 'labels', 'lastModifiedAt', 'rank',
-        'score', 'similarity', 'snippet', 'spaceKey', 'title',
-      ]);
-    });
 
     it('semantic mode runs no image leg at all — it never reaches hybridSearch', async () => {
       // The narrower, structural guarantee: `mode=semantic` calls
@@ -936,9 +953,14 @@ describe('Search Routes', () => {
       expect(mockHybridSearch).toHaveBeenCalledWith(
         'test-user-id',
         'test',
-        10,
+        20,
         { embeddedPages: 3, totalPages: 3, coverage: 1 },
-        { spaceKey: undefined, surface: 'search' },
+        {
+          spaceKey: undefined,
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: expect.any(Function),
+        },
       );
     });
 
@@ -1295,6 +1317,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Redis Guide',
               space_key: 'DEV',
               author: 'Alice',
@@ -1345,6 +1368,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Test',
               space_key: 'DEV',
               author: 'Alice',

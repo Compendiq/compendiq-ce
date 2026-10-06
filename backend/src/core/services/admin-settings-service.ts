@@ -561,65 +561,77 @@ export function invalidateRagImageIntakeCache(): void {
 }
 
 /**
- * #1115 P3 — `rag_image_leg_enabled`, the RETRIEVAL half of the image index.
- * Default **on**, cached like `rag_pin_identifiers` and read on the hot path
- * (once per hybrid search).
+ * #1615 (ADR-027 D8) — `image_analysis_max_output_tokens`, the `max_tokens`
+ * every image-analysis request sends and the ceiling the payload schema's
+ * bounds are derived from. Default **8,192**, allowed range **[4,096, 16,384]**
+ * (the contract's `ImageAnalysisMaxOutputTokensSchema` mirrors all three).
  *
- * It is deliberately a SEPARATE switch from the `image_embedding` assignment,
- * and the two are not redundant. Unassigning the use case turns off both
- * halves: nothing indexes and nothing retrieves, and the index stops being
- * filled while pages keep accumulating the dirty flag. This knob turns off
- * only the query-time half — the one extra embedding call every question pays
- * — and leaves the index being built. An operator who finds the leg too slow,
- * or who wants a clean A/B, needs exactly that and nothing else.
+ * NOT part of the retained identity (D5/D7): a change invalidates no analyzed
+ * row and fires no probe; the worker reads it once per batch, and raising it
+ * re-opens only rows that failed `truncated` under a lower ceiling (D13).
  *
- * It also cannot turn the leg ON: with the use case unassigned or
- * `page_image_embeddings` empty the leg does not run whatever this says. A
- * setting that can only subtract is safe to read from a cache.
- *
- * Soft-fail is "leg stays enabled", the same direction as its siblings: a DB
- * hiccup must not silently narrow retrieval, because a result set that lost
- * its image leg is indistinguishable from a corpus with no matching pictures.
+ * The same STRICT shape as `rag_images_per_page_max`, for the same reason: a
+ * `parseInt` truncation (`'8e3'` → 8) would land below the floor and be
+ * clamped to 4,096 — a legal ceiling that silently halves every transcription
+ * bound. An unparseable or out-of-range row reads as the DEFAULT, never as a
+ * refusal and never clamped: the range's two ends are chosen, not derived, and
+ * a value outside them is not an operator's intent this reader can guess.
  */
-const RAG_IMAGE_LEG_TTL_MS = 60_000;
-let ragImageLegCache: { value: boolean; expiresAt: number } | null = null;
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT = 8192;
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN = 4096;
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX = 16_384;
 
-export async function getRagImageLegEnabled(): Promise<boolean> {
-  if (ragImageLegCache && Date.now() < ragImageLegCache.expiresAt) return ragImageLegCache.value;
-  let resolved = true;
+const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_TTL_MS = 60_000;
+let imageAnalysisMaxOutputTokensCache: { value: number; expiresAt: number } | null = null;
+
+export async function getImageAnalysisMaxOutputTokens(): Promise<number> {
+  if (imageAnalysisMaxOutputTokensCache && Date.now() < imageAnalysisMaxOutputTokensCache.expiresAt) {
+    return imageAnalysisMaxOutputTokensCache.value;
+  }
+  let value = IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT;
   try {
     const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_image_leg_enabled'`,
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'image_analysis_max_output_tokens'`,
     );
-    // An OFF-list, like `rag_pin_identifiers`: anything unrecognised leaves the
-    // default standing, so a half-written row cannot disable a retrieval leg.
-    const raw = (r.rows[0]?.setting_value ?? '').trim().toLowerCase();
-    if (raw === '0' || raw === 'false' || raw === 'off') resolved = false;
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n >= IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN && n <= IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX) {
+        value = n;
+      }
+    }
   } catch (err) {
-    logger.warn({ err }, 'Failed to resolve rag_image_leg_enabled — the image leg stays enabled');
+    logger.warn({ err }, 'Failed to resolve image_analysis_max_output_tokens — using the default');
   }
-  ragImageLegCache = { value: resolved, expiresAt: Date.now() + RAG_IMAGE_LEG_TTL_MS };
-  return resolved;
+  imageAnalysisMaxOutputTokensCache = {
+    value,
+    expiresAt: Date.now() + IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_TTL_MS,
+  };
+  return value;
 }
 
-export function invalidateRagImageLegCache(): void {
-  ragImageLegCache = null;
+export function invalidateImageAnalysisMaxOutputTokensCache(): void {
+  imageAnalysisMaxOutputTokensCache = null;
 }
 
 /**
- * #1115 P4 — `rag_answer_max_images`, how many of the images the leg matched
- * on the pages grounding an answer are ATTACHED to the question as image
- * parts. Default **2**, clamped to [0, 8], cached like its siblings and read
- * once per `/llm/ask` that gets as far as a completion.
+ * #1115 P4 — `rag_answer_max_images`, how many of the pictures behind the
+ * pages grounding an answer are ATTACHED to the question as image parts.
+ * Default **2**, clamped to [0, 8], cached like its siblings and read once per
+ * `/llm/ask` that gets as far as a completion. The candidate set is D11's
+ * derived provenance since #1617; the legacy image-embedding leg that used to
+ * supply it was retired by #1618 stage 2, and this knob SURVIVES that
+ * (ADR-025 D8/D8b, ADR-027 D11) because the optional chat attachment is not
+ * the leg.
  *
  * **Zero is a value, and this reader is the one place that shows.** Its
  * sibling `rag_images_per_page_max` refuses 0 outright, because a zero INTAKE
  * cap reconciles every row away on the next scan. A zero ANSWER cap subtracts
- * nothing durable: the index still fills, the leg still ranks, and the
- * pictures still reach the reader as `kind: 'image'` sources. So `'0'` must
- * resolve to 0 rather than falling back — otherwise the panel's own off switch
- * would be unreachable and every vision-capable deployment would keep paying
- * the bytes.
+ * nothing durable: the analyses still fill, the derived chunks still rank, and
+ * the pictures still reach the reader as `kind: 'image'` sources. So `'0'`
+ * must resolve to 0 rather than falling back — otherwise the panel's own off
+ * switch would be unreachable and every vision-capable deployment would keep
+ * paying the bytes.
  *
  * The SHAPE is strict for the intake cap's reason, read the other way round:
  * `parseInt('1e3')` is 1, and a permissive parse would read a fat-fingered row
@@ -1085,6 +1097,58 @@ export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
     if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
   }
   return 90;
+}
+
+/**
+ * Items the quality, summary and image-analysis workers take per batch — one
+ * bounded batch per scheduled cycle and per Run Now; there is no
+ * backlog-draining loop. Rows `quality_batch_size` / `summary_batch_size`
+ * (pages, default 5, [1, 100]) and `image_analysis_batch_size` (images,
+ * default 50, [1, 500] — ADR-027 D13, seeded by migration 116), written by the
+ * Workers tab through `PUT /api/admin/settings`. No env var behind them: the
+ * former `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` are gone, not
+ * bootstrap-only.
+ *
+ * Clamped per key. No caching — read once per batch, and a batch runs at
+ * most once per worker cadence. Never throws: an unreadable row answers the
+ * default rather than aborting a batch.
+ */
+export const WORKER_BATCH_SIZE_DEFAULT = 5;
+export const WORKER_BATCH_SIZE_MIN = 1;
+export const WORKER_BATCH_SIZE_MAX = 100;
+
+export const IMAGE_ANALYSIS_BATCH_SIZE_DEFAULT = 50;
+export const IMAGE_ANALYSIS_BATCH_SIZE_MIN = 1;
+export const IMAGE_ANALYSIS_BATCH_SIZE_MAX = 500;
+
+export type WorkerBatchSizeKey = 'quality_batch_size' | 'summary_batch_size' | 'image_analysis_batch_size';
+
+const WORKER_BATCH_SIZE_BOUNDS: Record<WorkerBatchSizeKey, { default: number; min: number; max: number }> = {
+  quality_batch_size: { default: WORKER_BATCH_SIZE_DEFAULT, min: WORKER_BATCH_SIZE_MIN, max: WORKER_BATCH_SIZE_MAX },
+  summary_batch_size: { default: WORKER_BATCH_SIZE_DEFAULT, min: WORKER_BATCH_SIZE_MIN, max: WORKER_BATCH_SIZE_MAX },
+  image_analysis_batch_size: {
+    default: IMAGE_ANALYSIS_BATCH_SIZE_DEFAULT,
+    min: IMAGE_ANALYSIS_BATCH_SIZE_MIN,
+    max: IMAGE_ANALYSIS_BATCH_SIZE_MAX,
+  },
+};
+
+export async function getWorkerBatchSize(settingKey: WorkerBatchSizeKey): Promise<number> {
+  const bounds = WORKER_BATCH_SIZE_BOUNDS[settingKey];
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+      [settingKey],
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= bounds.min && n <= bounds.max) return n;
+    }
+  } catch (err) {
+    logger.warn({ err, settingKey }, 'Failed to read worker batch size — using default');
+  }
+  return bounds.default;
 }
 
 // ─── LLM queue settings — cluster-wide cached getters (Compendiq/compendiq-ee#113 Phase B-3) ──

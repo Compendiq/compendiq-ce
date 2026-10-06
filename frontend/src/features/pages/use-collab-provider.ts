@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
-import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
+import { COLLAB_WS_PROTOCOL, CollabWritableAdmissionControlSchema, PageLifecycleEventSchema } from '@compendiq/contracts';
 import { refreshAccessTokenOnce } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import type { CollabAwarenessUser } from './merge-presence';
 
 const MESSAGE_CONTROL = 4;
+// Rejoin pauses after an unavailable token refresh, as in use-presence.
+const REJOIN_BACKOFF_START_MS = 1_000;
+const REJOIN_BACKOFF_CAP_MS = 30_000;
 
 export type CollabJoinError = 'unauthorized' | 'forbidden' | 'not_found';
+export type CollabReadOnlyReason =
+  | 'frozen'
+  | 'lifecycle_changed'
+  | 'permission_loss'
+  | 'document_changed'
+  | 'unauthorized'
+  | 'not_found';
 
 export interface UseCollabProviderResult {
   ydoc: Y.Doc | null;
@@ -19,6 +29,9 @@ export interface UseCollabProviderResult {
   synced: boolean;
   awarenessUsers: CollabAwarenessUser[];
   error: CollabJoinError | null;
+  connected: boolean;
+  writable: boolean;
+  readOnlyReason: CollabReadOnlyReason | null;
 }
 
 function collabWsUrl(): string {
@@ -54,25 +67,37 @@ function closeCodeError(code: number): CollabJoinError | null {
  * - `if (!token) return` — never `protocols: [v1, '']`.
  * - 4401 on `closed` (shouldConnect already false) → refresh JWT, set
  *   `protocols`, `connect()` on the same instance.
- * - 4403 / 4404 → destroy, do not reconnect.
- * - `doc_reset` / close 1001 `doc_reset` → destroy provider **and** Y.Doc,
- *   then a new pair so TipTap remounts. Never reconnect onto the old document.
+ * - A document keeps the lifecycle revision it joined with across reconnects.
+ * - A writable admission is acknowledged explicitly; page state is not permission.
+ * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
+ *   disconnect it, and never silently replay it into a new lifecycle.
  * - `disableBc: true` so two tabs go through Redis, not BroadcastChannel.
  */
 export function useCollabProvider({
   pageId,
   enabled,
+  expectedLifecycleRevision,
 }: {
   pageId: string | undefined;
   enabled: boolean;
+  expectedLifecycleRevision?: string;
 }): UseCollabProviderResult {
   const [ydoc, setYdoc] = useState<Y.Doc | null>(null);
   const [provider, setProvider] = useState<WebsocketProvider | null>(null);
   const [synced, setSynced] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [writable, setWritable] = useState(false);
+  const [readOnlyReason, setReadOnlyReason] = useState<CollabReadOnlyReason | null>(null);
   const [awarenessUsers, setAwarenessUsers] = useState<CollabAwarenessUser[]>([]);
   const [error, setError] = useState<CollabJoinError | null>(null);
+  // Refetches must not upgrade the epoch of an already-open document.
+  const latestRevision = useRef(expectedLifecycleRevision);
+  latestRevision.current = expectedLifecycleRevision;
 
   useEffect(() => {
+    setConnected(false);
+    setWritable(false);
+    setReadOnlyReason(null);
     if (!enabled || !pageId) {
       setYdoc(null);
       setProvider(null);
@@ -83,136 +108,131 @@ export function useCollabProvider({
     }
 
     const token = useAuthStore.getState().accessToken;
-    if (!token) {
-      // Do not construct WebsocketProvider with an empty protocol token.
-      return;
-    }
+    if (!token) return;
 
     let cancelled = false;
-    let current: WebsocketProvider | null = null;
-    let doc = new Y.Doc();
-    let awareness = new Awareness(doc);
+    let blocked = false;
+    let rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
+    // Same timer-handle type use-presence uses for its reconnect timer.
+    let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
+    const joinedRevision = latestRevision.current;
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
     setYdoc(doc);
     setError(null);
     setSynced(false);
-
     const selfUserId = useAuthStore.getState().user?.id;
-
     const refreshAwareness = () => {
-      if (cancelled) return;
-      setAwarenessUsers(readAwarenessUsers(awareness, selfUserId));
+      if (!cancelled) setAwarenessUsers(readAwarenessUsers(awareness, selfUserId));
     };
     awareness.on('update', refreshAwareness);
 
-    const remount = (jwt: string) => {
-      if (cancelled || !jwt) return;
-      const oldWs = current;
-      const oldDoc = doc;
-      const oldAwareness = awareness;
-      current = null;
-      oldWs?.destroy();
-      oldAwareness.off('update', refreshAwareness);
-      try { oldAwareness.destroy(); } catch { /* */ }
-      try { oldDoc.destroy(); } catch { /* */ }
-      doc = new Y.Doc();
-      awareness = new Awareness(doc);
-      awareness.on('update', refreshAwareness);
-      setYdoc(doc);
-      setSynced(false);
-      setError(null);
-      connect(jwt);
-    };
+    const ws = new WebsocketProvider(collabWsUrl(), String(pageId), doc, {
+      protocols: [COLLAB_WS_PROTOCOL, token],
+      params: joinedRevision === undefined ? {} : { expectedLifecycleRevision: joinedRevision },
+      disableBc: true,
+      resyncInterval: 30_000,
+      awareness,
+    });
+    setProvider(ws);
 
-    const attachControlHandler = (ws: WebsocketProvider) => {
-      ws.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
-        try {
-          const raw = decoding.readVarString(decoder);
-          const control = JSON.parse(raw) as { type?: string };
-          if (control.type === 'doc_reset') {
-            const jwt = useAuthStore.getState().accessToken;
-            if (jwt) remount(jwt);
-            return;
-          }
-          if (control.type === 'tombstone') {
-            ws.destroy();
-            if (!cancelled) {
-              setProvider(null);
-              setSynced(false);
-              setError('not_found');
-            }
-          }
-        } catch {
-          // Unknown type-4 payload — ignore, same as stock y-websocket.
+    const preserveReadOnly = (reason: CollabReadOnlyReason) => {
+      if (cancelled || blocked) return;
+      blocked = true;
+      setWritable(false);
+      setConnected(false);
+      setReadOnlyReason(reason);
+      // Keep both the document and provider identity mounted in TipTap.
+      ws.disconnect();
+    };
+    ws.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
+      try {
+        const control: unknown = JSON.parse(decoding.readVarString(decoder));
+        const lifecycle = PageLifecycleEventSchema.safeParse(control);
+        if (lifecycle.success) {
+          if (lifecycle.data.pageId !== Number(pageId)) return;
+          if (joinedRevision !== undefined &&
+              BigInt(lifecycle.data.lifecycleRevision) < BigInt(joinedRevision)) return;
+          if (lifecycle.data.isFrozen) preserveReadOnly('frozen');
+          else if (lifecycle.data.lifecycleRevision !== joinedRevision) preserveReadOnly('lifecycle_changed');
+          return;
         }
-      };
+        const admission = CollabWritableAdmissionControlSchema.safeParse(control);
+        if (admission.success) {
+          if (!cancelled && !blocked && admission.data.lifecycleRevision === joinedRevision) {
+            setWritable(true);
+          }
+          return;
+        }
+        if (typeof control !== 'object' || control === null || !('type' in control)) return;
+        if (control.type === 'writable_refused') preserveReadOnly('lifecycle_changed');
+        else if (control.type === 'permission_loss') preserveReadOnly('permission_loss');
+        else if (control.type === 'doc_reset') preserveReadOnly('document_changed');
+        else if (control.type === 'tombstone') preserveReadOnly('not_found');
+      } catch {
+        // Unknown control frames never grant edit authority.
+      }
     };
-
-    const connect = (jwt: string) => {
-      if (cancelled || !jwt) return;
-      const ws = new WebsocketProvider(collabWsUrl(), String(pageId), doc, {
-        protocols: [COLLAB_WS_PROTOCOL, jwt],
-        disableBc: true,
-        resyncInterval: 30_000,
-        awareness,
-      });
-      current = ws;
-      attachControlHandler(ws);
-      if (!cancelled) setProvider(ws);
-
-      ws.on('sync', (isSynced: boolean) => {
-        if (!cancelled) setSynced(isSynced);
-      });
-      ws.on('closed', (event: { code: number; reason: string }) => {
-        if (cancelled) return;
-        if (event.code === 4401) {
-          void refreshAccessTokenOnce().then((fresh) => {
-            if (cancelled || current !== ws) return;
+    ws.on('sync', (isSynced: boolean) => {
+      if (!cancelled && isSynced) setSynced(true);
+    });
+    ws.on('status', ({ status }: { status: string }) => {
+      // A connected socket ends any refresh outage, as in use-presence.
+      if (status === 'connected') rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
+      if (!cancelled && !blocked) setConnected(status === 'connected');
+    });
+    ws.on('closed', (event: { code: number; reason: string }) => {
+      if (cancelled || blocked) return;
+      setWritable(false);
+      if (event.code === 4401) {
+        refreshAccessTokenOnce().then(
+          (fresh) => {
+            if (cancelled || blocked) return;
             if (!fresh) {
-              ws.destroy();
-              current = null;
               setError('unauthorized');
-              setProvider(null);
-              setSynced(false);
+              preserveReadOnly('unauthorized');
               return;
             }
             ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
             ws.connect();
-          });
-          return;
-        }
-        const joinError = closeCodeError(event.code);
-        if (joinError === 'forbidden' || joinError === 'not_found') {
-          ws.destroy();
-          if (current === ws) current = null;
-          setProvider(null);
-          setSynced(false);
-          setError(joinError);
-        }
-      });
-      ws.on('connection-close', (event: CloseEvent | null) => {
-        if (cancelled || !event) return;
-        if (event.code === 1001 && event.reason === 'doc_reset') {
-          if (current === ws) {
-            const jwt = useAuthStore.getState().accessToken;
-            if (jwt) {
-              remount(jwt);
-              return;
-            }
-            ws.destroy();
-            current = null;
-            setProvider(null);
-            setSynced(false);
-          }
-        }
-      });
-    };
-
-    connect(token);
+          },
+          () => {
+            // Refresh temporarily unavailable: keep the session and rejoin
+            // after a growing pause (like presence), so a busy session lock
+            // is not hammered. A still-stale token is closed with 4401 again,
+            // which retries the refresh.
+            if (cancelled || blocked) return;
+            const delay = rejoinBackoffMs;
+            rejoinBackoffMs = Math.min(rejoinBackoffMs * 2, REJOIN_BACKOFF_CAP_MS);
+            rejoinTimer = setTimeout(() => {
+              if (cancelled || blocked) return;
+              const current = useAuthStore.getState().accessToken;
+              if (current) ws.protocols = [COLLAB_WS_PROTOCOL, current];
+              ws.connect();
+            }, delay);
+          },
+        );
+        return;
+      }
+      const joinError = closeCodeError(event.code);
+      if (joinError === 'forbidden' || joinError === 'not_found') {
+        setError(joinError);
+        preserveReadOnly(joinError === 'forbidden' ? 'permission_loss' : 'not_found');
+      }
+    });
+    ws.on('connection-close', (event: CloseEvent | null) => {
+      if (cancelled) return;
+      setConnected(false);
+      setWritable(false);
+      if (event?.code === 1001 && event.reason === 'doc_reset') preserveReadOnly('document_changed');
+    });
 
     return () => {
       cancelled = true;
+      clearTimeout(rejoinTimer);
       awareness.off('update', refreshAwareness);
-      current?.destroy();
+      ws.destroy();
+      awareness.destroy();
       doc.destroy();
       setYdoc(null);
       setProvider(null);
@@ -221,5 +241,5 @@ export function useCollabProvider({
     };
   }, [enabled, pageId]);
 
-  return { ydoc, provider, synced, awarenessUsers, error };
+  return { ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error };
 }

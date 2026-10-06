@@ -651,7 +651,7 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
   it('shows a standalone local graph and never traverses an inaccessible intermediary', async () => {
     await seedPage({ id: 800, title: 'Standalone source', bodyHtml: '<a href="/pages/801">first</a>' });
     await seedPage({ id: 801, title: 'First hop', bodyHtml: '<a href="/pages/804">second</a>' });
-    await seedPage({ id: 802, title: 'Restricted intermediary', source: 'confluence', confluenceId: 'hidden', inheritPerms: false, bodyHtml: '<a href="/pages/803">hidden path</a>' });
+    await seedPage({ id: 802, title: 'Restricted intermediary', ownerId: otherUserId, visibility: 'private', bodyHtml: '<a href="/pages/803">hidden path</a>' });
     await seedPage({ id: 803, title: 'Visible only through hidden' });
     await seedPage({ id: 804, title: 'Second hop', bodyHtml: '<a href="/pages/805">third</a>' });
     await seedPage({ id: 805, title: 'Third hop' });
@@ -668,5 +668,223 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     expect(body.nodes.some((node: { id: string }) => node.id === '802')).toBe(false);
     expect(body.nodes.some((node: { id: string }) => node.id === '803')).toBe(false);
     expect(body.nodes.some((node: { id: string }) => node.id === '805')).toBe(false);
+  });
+
+  it('never traverses a page-ACE-restricted Confluence intermediary', async () => {
+    await seedPage({ id: 830, title: 'Standalone source', bodyHtml: '<a href="/pages/831">first</a>' });
+    await seedPage({ id: 831, title: 'First hop' });
+    await seedPage({
+      id: 832,
+      title: 'ACE-restricted intermediary',
+      source: 'confluence',
+      confluenceId: 'ace-restricted',
+      inheritPerms: false,
+      bodyHtml: '<a href="/pages/833">hidden path</a>',
+    });
+    await seedPage({ id: 833, title: 'Visible only through restricted' });
+    await seedRelationship(830, 832, 'embedding_similarity', 0.99);
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/830/graph/local?hops=2' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().nodes.map((node: { id: string }) => node.id).sort()).toEqual(['830', '831']);
+    expect(response.body).not.toContain('ACE-restricted intermediary');
+    expect(response.body).not.toContain('Visible only through restricted');
+  });
+
+  it('makes a page-ACE-restricted center byte-identical to a missing one', async () => {
+    const missing = await app.inject({ method: 'GET', url: '/api/pages/ace-center/graph/local' });
+    expect(missing.statusCode, missing.body).toBe(200);
+
+    await seedPage({
+      id: 834,
+      title: 'ACE-restricted center',
+      source: 'confluence',
+      confluenceId: 'ace-center',
+      inheritPerms: false,
+    });
+    const restricted = await app.inject({ method: 'GET', url: '/api/pages/ace-center/graph/local' });
+
+    expect(restricted.statusCode, restricted.body).toBe(missing.statusCode);
+    expect(restricted.body).toBe(missing.body);
+  });
+
+  it('re-roots a child of a page-ACE-restricted parent until the caller holds the ACE', async () => {
+    await seedPage({
+      id: 835,
+      title: 'ACE parent',
+      source: 'confluence',
+      confluenceId: 'ace-parent',
+      inheritPerms: false,
+    });
+    await seedPage({
+      id: 836,
+      title: 'Visible child',
+      source: 'confluence',
+      confluenceId: 'ace-child',
+      parentId: 'ace-parent',
+    });
+
+    const denied = await app.inject({ method: 'GET', url: '/api/pages/836/graph/local' });
+    expect(denied.statusCode, denied.body).toBe(200);
+    expect(denied.json().nodes).toEqual([
+      expect.objectContaining({ id: '836', parentId: null }),
+    ]);
+    expect(denied.json().edges).toEqual([]);
+    expect(denied.body).not.toContain('ACE parent');
+
+    await query(
+      `INSERT INTO access_control_entries
+         (resource_type, resource_id, principal_type, principal_id, permission)
+       VALUES ('page', 835, 'user', $1, 'read')`,
+      [currentUserId],
+    );
+    const granted = await app.inject({ method: 'GET', url: '/api/pages/836/graph/local' });
+    expect(granted.statusCode, granted.body).toBe(200);
+    expect(granted.json().nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: '835', title: 'ACE parent' }),
+      expect.objectContaining({ id: '836', parentId: 'ace-parent' }),
+    ]));
+    expect(granted.json().edges).toContainEqual({
+      source: '835',
+      target: '836',
+      type: 'parent_child',
+      score: 1,
+    });
+  });
+
+  it('re-roots a focused-graph node whose canonical parent is private', async () => {
+    await seedPage({
+      id: 810,
+      title: 'Private parent',
+      ownerId: otherUserId,
+      visibility: 'private',
+    });
+    await seedPage({
+      id: 811,
+      title: 'Shared child',
+      ownerId: otherUserId,
+      visibility: 'shared',
+      parentId: '810',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/811/graph/local' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().nodes).toContainEqual(
+      expect.objectContaining({ id: '811', parentId: null }),
+    );
+    expect(response.body).not.toContain('Private parent');
+  });
+  it('projects only a unique visible focused-graph parent across both identifier arms', async () => {
+    await seedPage({
+      id: 813,
+      title: 'Canonical parent',
+      source: 'confluence',
+      confluenceId: 'canonical-parent',
+    });
+    await seedPage({
+      id: 814,
+      title: 'Canonical child',
+      parentId: 'canonical-parent',
+    });
+    const canonical = await app.inject({
+      method: 'GET',
+      url: '/api/pages/814/graph/local',
+    });
+    expect(canonical.statusCode, canonical.body).toBe(200);
+    expect(canonical.json().nodes).toContainEqual(
+      expect.objectContaining({ id: '814', parentId: 'canonical-parent' }),
+    );
+
+    await seedPage({
+      id: 815,
+      title: 'Colliding parent',
+      source: 'confluence',
+      confluenceId: '813',
+    });
+    await seedPage({
+      id: 816,
+      title: 'Ambiguous child',
+      parentId: '813',
+    });
+    const ambiguous = await app.inject({
+      method: 'GET',
+      url: '/api/pages/816/graph/local',
+    });
+    expect(ambiguous.statusCode, ambiguous.body).toBe(200);
+    expect(ambiguous.json().nodes).toContainEqual(
+      expect.objectContaining({ id: '816', parentId: null }),
+    );
+  });
+
+  it('ignores inaccessible collisions when deriving focused parent links', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source)
+       VALUES ('HIDDEN', 'Hidden', 'confluence')`,
+    );
+    await seedPage({ id: 819, title: 'Visible parent' });
+    await seedPage({
+      id: 820,
+      title: 'Visible child',
+      parentId: '819',
+    });
+    await seedPage({
+      id: 821,
+      title: 'Inaccessible collision',
+      source: 'confluence',
+      confluenceId: '819',
+      spaceKey: 'HIDDEN',
+      ownerId: otherUserId,
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/820/graph/local' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: '819', parentId: null }),
+        expect.objectContaining({ id: '820', parentId: '819' }),
+      ]),
+    );
+    expect(response.json().edges).toContainEqual({
+      source: '819',
+      target: '820',
+      type: 'parent_child',
+      score: 1,
+    });
+    expect(response.body).not.toContain('Inaccessible collision');
+  });
+
+  it('fails closed when a focused-graph center is ambiguous across identifier arms', async () => {
+    await seedPage({ id: 817, title: 'Numeric center' });
+    await seedPage({
+      id: 818,
+      title: 'Confluence center',
+      source: 'confluence',
+      confluenceId: '817',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/817/graph/local' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({ nodes: [], edges: [], centerId: '817' });
+  });
+
+
+  it('makes a missing and private focused-graph center byte-identical', async () => {
+    const missing = await app.inject({ method: 'GET', url: '/api/pages/000812/graph/local' });
+    expect(missing.statusCode, missing.body).toBe(200);
+
+    await seedPage({
+      id: 812,
+      title: 'Private center',
+      ownerId: otherUserId,
+      visibility: 'private',
+    });
+    const inaccessible = await app.inject({
+      method: 'GET',
+      url: '/api/pages/000812/graph/local',
+    });
+
+    expect(inaccessible.statusCode, inaccessible.body).toBe(missing.statusCode);
+    expect(inaccessible.headers['content-type']).toBe(missing.headers['content-type']);
+    expect(inaccessible.body).toBe(missing.body);
   });
 });

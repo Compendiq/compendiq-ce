@@ -70,20 +70,23 @@ export async function findDuplicates(
   // rag-service retrieval filters).
   const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
-  // Get the source page id and title for title similarity comparison
-  const sourcePageResult = await query<{ id: number; title: string; space_key: string | null }>(
-    'SELECT id, title, space_key FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-    [confluenceId],
+  // Get the source page id and title for title similarity comparison.
+  // #733: a source page outside the caller's accessible spaces, or one the
+  // caller may not read under the shared list definition (including page
+  // restrictions), behaves exactly like a nonexistent one — no existence
+  // oracle, no neighbor leak.
+  const sourcePageResult = await query<{ id: number; title: string }>(
+    `SELECT cp.id, cp.title FROM pages cp
+      WHERE cp.confluence_id = $1
+        AND cp.deleted_at IS NULL
+        AND cp.space_key = ANY($2::text[])
+        AND ${visiblePagesPredicate(2, 3)}`,
+    [confluenceId, accessibleSpaces, userId],
   );
   if (sourcePageResult.rows.length === 0) {
     return [];
   }
   const sourcePage = sourcePageResult.rows[0]!;
-  // #733: a source page outside the caller's accessible spaces behaves
-  // exactly like a nonexistent one — no existence oracle, no neighbor leak.
-  if (!sourcePage.space_key || !accessibleSpaces.includes(sourcePage.space_key)) {
-    return [];
-  }
   const sourceTitle = sourcePage.title;
   const sourcePageId = sourcePage.id;
 

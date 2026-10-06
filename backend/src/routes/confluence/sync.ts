@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { syncUser, getSyncStatus, setSyncStatus } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
@@ -14,6 +15,14 @@ export async function syncRoutes(fastify: FastifyInstance) {
     const status = await getSyncStatus(userId);
     if (status.status === 'syncing') {
       return reply.status(409).send({ message: 'Sync already in progress', status });
+    }
+
+    // Standalone mode (#1623): nothing syncs. Report it instead of flipping the
+    // status to `syncing` and letting the background run settle it back to
+    // `idle` — same response shape, no phantom progress, no audit event for a
+    // sync that never ran.
+    if (!(await isConfluenceEnabled(userId))) {
+      return { message: 'Confluence integration is disabled', status };
     }
 
     // Set status to syncing immediately so the response reflects it

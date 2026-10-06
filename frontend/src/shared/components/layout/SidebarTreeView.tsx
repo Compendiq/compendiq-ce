@@ -22,8 +22,9 @@ import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
-import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
+import { useLocalSpaces, useReorderPage, useMovePage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
+import { useSettings } from '../../hooks/use-settings';
 import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
@@ -31,6 +32,7 @@ import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
 import { useTreeRovingFocus } from './sidebar-tree-keyboard';
+import { FrozenBadge } from '../badges/FrozenBadge';
 
 export type { TreeNode };
 
@@ -333,6 +335,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
+        {/* Frozen is a state the row must carry, and a tree row already has
+            its whole horizontal budget spoken for. One neutral glyph with an
+            accessible name — no extra tab stop, no second icon column. */}
+        {node.page.isFrozen === true && (
+          <FrozenBadge frozenVersion={node.page.frozenVersion} compact className="ml-1.5" />
+        )}
         {/* All-Spaces scope merges every space's pages into one flat, sorted
             run with nothing else distinguishing them — a corpus with any
             amount of templated content (runbooks, meeting notes) reliably
@@ -458,6 +466,13 @@ export function SidebarTreeView({
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
   const { data: pinnedData } = usePinnedPages();
+  // #1623: in standalone mode the tree must not send an empty workspace to
+  // Confluence settings — nothing syncs, so "Sync a Space" is the one action
+  // that cannot help. `=== false` on purpose: settings in flight, a failed
+  // read or a payload predating the flag all mean "unknown", which keeps
+  // today's copy rather than guessing standalone.
+  const { data: userSettings } = useSettings();
+  const confluenceOff = userSettings?.confluenceEnabled === false;
   const {
     data: treeData,
     isLoading,
@@ -478,6 +493,7 @@ export function SidebarTreeView({
   const treeFailedWithNothingToShow = treeIsError && !treeData;
   const treeIsStale = treeIsError && !!treeData;
   const reorderPage = useReorderPage();
+  const movePage = useMovePage();
 
   // Merge confluence + local spaces for the selector
   const allSpaces = useMemo<SpaceOption[]>(() => {
@@ -754,7 +770,7 @@ export function SidebarTreeView({
           animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-r overflow-hidden"
+          className="app-sidebar flex flex-col items-center overflow-hidden"
         >
           {/* Keep the collapsed control in the same 48px chrome row as the
               expanded main-nav toolbar, so both panes start their content on
@@ -823,7 +839,7 @@ export function SidebarTreeView({
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex max-w-full flex-col border-r overflow-hidden',
+        'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
       )}
     >
@@ -855,7 +871,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-background px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-card border border-border px-2 text-left transition-colors hover:border-border-interactive hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption
@@ -1237,20 +1253,26 @@ export function SidebarTreeView({
               <FileText size={20} className="text-muted-foreground" />
             </div>
             <p className="text-xs font-medium text-foreground/70">
-              {treeSidebarSpaceKey ? 'No pages in this space' : 'No pages synced yet'}
+              {treeSidebarSpaceKey
+                ? 'No pages in this space'
+                : confluenceOff ? 'No pages yet' : 'No pages synced yet'}
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
+              {treeSidebarSpaceKey
+                ? 'This space has no content.'
+                : confluenceOff
+                  ? 'Create a page to get started.'
+                  : 'Sync a Confluence space to get started.'}
             </p>
             {!treeSidebarSpaceKey && (
               <Button
-                onClick={() => navigate('/settings')}
+                onClick={() => navigate(confluenceOff ? '/pages/new' : '/settings')}
                 variant="secondary"
                 size="sm"
                 leftIcon={<Plus size={12} />}
                 className="mt-3"
               >
-                Sync a Space
+                {confluenceOff ? 'New Page' : 'Sync a Space'}
               </Button>
             )}
           </div>
@@ -1268,6 +1290,7 @@ export function SidebarTreeView({
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               reorderPage={reorderPage}
+              movePage={movePage}
               rovingId={rovingId}
               onRowFocus={handleRowFocus}
               onRowKeyDown={handleRowKeyDown}

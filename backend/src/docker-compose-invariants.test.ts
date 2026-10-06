@@ -518,9 +518,9 @@ describe('.dockerignore excludes nested env secrets from build contexts', () => 
   });
 
   it('ignores the Python tool venv and bytecode .gitignore also excludes (#1115)', () => {
-    // `tools/vl-embedding-shim/` is a Python tool, so its README has every
-    // developer create a venv holding mlx/torch wheels measured in gigabytes
-    // INSIDE the checkout. docker-compose.build.yml builds with `context: ..`,
+    // `tools/eval-corpus-images/` is a Python tool, so its README has every
+    // developer create a venv holding Pillow and friends INSIDE the checkout.
+    // docker-compose.build.yml builds with `context: ..`,
     // so without these the wheels are tarred up and streamed to the daemon on
     // every local source build. .gitignore carries the same block, and a repo
     // can easily carry one half and not the other — this is the other half.

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, screen, fireEvent, act } from '@testing-library/react';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
@@ -34,7 +34,9 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { Editor, clearDraft } from './Editor';
+import { Editor } from './Editor';
+import { clearDraft, readDraft } from '../../lib/editor-drafts';
+import { useAuthStore } from '../../../stores/auth-store';
 import type { Editor as EditorType } from '@tiptap/react';
 import { TextSelection } from '@tiptap/pm/state';
 import { CellSelection, cellAround } from '@tiptap/pm/tables';
@@ -1038,6 +1040,48 @@ describe('Editor', () => {
         );
       });
     });
+
+    it('does not apply a delayed HTML paste after the editor becomes read-only', async () => {
+      const importResult = Promise.withResolvers<{ url: string }>();
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          return importResult.promise;
+        }
+        return undefined;
+      });
+
+      const { rerender } = render(
+        <Editor content="<p>seed</p>" editable={true} pageId="42" />,
+      );
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+      });
+
+      dispatchHtmlPaste('<p>delayed <img src="https://cdn.example.com/late.png"></p>');
+      await waitFor(() => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/pages/42/images/import',
+          expect.objectContaining({ method: 'POST' }),
+        );
+      });
+
+      rerender(<Editor content="<p>seed</p>" editable={false} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+      });
+
+      await act(async () => {
+        importResult.resolve({ url: '/api/attachments/42/late.png' });
+      });
+
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror img')).toBeNull();
+        expect(document.querySelector('.ProseMirror')).toHaveTextContent('seed');
+      });
+    });
   });
 
   describe('table cell selection (#1135)', () => {
@@ -1508,10 +1552,16 @@ describe('draft auto-save flush on unmount (#877)', () => {
   // AUTO_SAVE_DELAY (2000ms) never elapses within a synchronous test body —
   // the debounced write is still pending when we unmount.
   beforeEach(() => {
-    // Wipe drafts AND the module-level suppressedFlushKeys' observable effect
-    // between tests so unique keys can't bleed across cases.
+    // Wipe drafts AND the module-level suppressed keys' observable effect
+    // between tests so unique keys can't bleed across cases. Drafts are kept
+    // per signed-in account, so an account must be signed in.
     localStorage.clear();
+    useAuthStore.getState().setAuth('jwt-877', { id: 'user-877', username: 'writer', role: 'user' });
     mockFetchAuthenticatedBlob.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
   });
 
   it('flushes a pending debounced draft to localStorage when the editor unmounts', async () => {
@@ -1532,13 +1582,13 @@ describe('draft auto-save flush on unmount (#877)', () => {
     // A real doc change fires onUpdate -> saveDraft, scheduling the 2000ms
     // debounce. The write has NOT happened yet (test runs in ms).
     editor!.commands.insertContent(' typed');
-    expect(localStorage.getItem('draft:page-877-flush')).toBeNull();
+    expect(readDraft('page-877-flush')).toBeNull();
 
     // Navigating away unmounts the Editor within the debounce window. Pre-fix
     // this cleared the timer without writing, silently losing the edit.
     unmount();
 
-    const draft = localStorage.getItem('draft:page-877-flush');
+    const draft = readDraft('page-877-flush');
     expect(draft).not.toBeNull();
     expect(draft).toContain('typed');
   });
@@ -1565,7 +1615,7 @@ describe('draft auto-save flush on unmount (#877)', () => {
     unmount();
 
     // The unmount flush must skip the suppressed key — no resurrection.
-    expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
+    expect(readDraft('page-877-suppress')).toBeNull();
   });
 
   it('renders and toggles task list items interactively', async () => {

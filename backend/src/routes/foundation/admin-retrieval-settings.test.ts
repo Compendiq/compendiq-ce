@@ -100,10 +100,12 @@ import {
   invalidateRagRankingPriorCache,
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
-  getRagImageLegEnabled,
   getRagAnswerMaxImages,
   invalidateRagImageIntakeCache,
   invalidateRagAnswerMaxImagesCache,
+  getImageAnalysisMaxOutputTokens,
+  invalidateImageAnalysisMaxOutputTokensCache,
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
   getRagEfSearch,
   invalidateRagEfSearchCache,
   RAG_EF_SEARCH_DEFAULT,
@@ -223,6 +225,7 @@ beforeEach(() => {
   invalidateRagRankingPriorCache();
   invalidateRagImageIntakeCache();
   invalidateRagAnswerMaxImagesCache();
+  invalidateImageAnalysisMaxOutputTokensCache();
   invalidateRagEfSearchCache();
   // #1285 — the deprecated bootstrap variable is process-global too. A stray
   // value would make the "absent row answers with the default" assertions
@@ -276,58 +279,6 @@ function stored(key: string): string | undefined {
   return rows[key];
 }
 
-/**
- * #1115 — the image leg's MRL truncation width.
- *
- * It lives here rather than beside the assignment because it is an
- * `admin_settings` row like every knob above, and because three different
- * callers have to read the SAME number: the assignment probe, `Re-check`, and
- * (from P2) the image embedder and the query side. The write path is what makes
- * the remedy the settings row, the 422 and the runbook all name actually
- * performable — vLLM's `dimensions` is a per-request parameter, so without a
- * stored value nothing ever sends one and an 8B stays at 4096 for ever.
- */
-describe('PUT /api/admin/settings — the image leg’s MRL truncation width (#1115)', () => {
-  it('persists the requested width under image_embedding_target_dimensions', async () => {
-    const res = await put({ imageEmbeddingTargetDimensions: 2048 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-  });
-
-  it('clears the row on an explicit null — back to the model’s native width', async () => {
-    await put({ imageEmbeddingTargetDimensions: 2048 });
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-
-    const res = await put({ imageEmbeddingTargetDimensions: null });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
-  });
-
-  it('leaves the stored width alone when the body omits it', async () => {
-    await put({ imageEmbeddingTargetDimensions: 2048 });
-    const res = await put({ ragFetchWidth: 40 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-  });
-
-  it.each([63, 16_001, 2048.5])('refuses %s at the boundary', async (value) => {
-    const res = await put({ imageEmbeddingTargetDimensions: value });
-    expect(res.statusCode).toBe(400);
-    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
-  });
-
-  /**
-   * 4000 is the largest INDEXABLE width, not the largest legal one — the row
-   * reports the unindexed tier rather than refusing it, and `columnTypeFor`
-   * accepts it. Refusing here would make the two disagree.
-   */
-  it('accepts a storable-but-unindexable width', async () => {
-    const res = await put({ imageEmbeddingTargetDimensions: 4096 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('4096');
-  });
-});
-
 describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', () => {
   it('writes each knob under its documented admin_settings key', async () => {
     const res = await put({
@@ -378,6 +329,31 @@ describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', ()
     // the default" read alike today, but a row nobody set is a lie about what
     // the operator configured — and the assembly budget's last-good fallback
     // is written assuming no phantom row.
+    expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
+  });
+
+  /**
+   * #1618 stage 2 — a retired settings key is IGNORED, and the save that
+   * carried it still lands. `UpdateAdminSettingsSchema` is a plain `z.object`,
+   * so unknown keys are stripped rather than refused, and that is the intended
+   * contract: on the wire a retired key is indistinguishable from one an older
+   * backend has not learned yet, so refusing it would mean a newer bundle
+   * (rolling deploy, cached SPA) loses the operator's whole save over a name
+   * the server merely does not know. `.strict()` would break that for every
+   * future key; a blacklist of dead names would have to be maintained forever.
+   *
+   * What must hold is that the retired key writes nothing — migration 118
+   * deleted its row, and a handler that forwarded unknown keys into
+   * `admin_settings` would re-create it here. Out-of-range values on LIVE keys
+   * still 400, above: "unknown" and "invalid" are different answers.
+   */
+  it('ignores retired keys and still applies the rest of the body (#1618)', async () => {
+    const res = await put({
+      ragFetchWidth: 40,
+      ragImageLegEnabled: true,
+      imageEmbeddingTargetDimensions: 512,
+    });
+    expect(res.statusCode).toBe(200);
     expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
   });
 
@@ -636,6 +612,26 @@ describe('admin settings — the keyword-index language comes from the row alone
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it('rebuilds page_embeddings.chunk_tsv in the SAME transaction as pages.tsv (ADR-027 D10)', async () => {
+    // A language switch that rebuilt only `pages.tsv` would leave derived (and
+    // authored) chunk text indexed under the previous configuration while the
+    // panel reports the new one.
+    await put({ ftsLanguage: 'german' });
+
+    const calls = mockQuery.mock.calls.map(([sql, params]) => ({ sql: String(sql), params }));
+    const begin = calls.findIndex((c) => /^\s*BEGIN/i.test(c.sql));
+    const pages = calls.findIndex((c) => /UPDATE pages SET tsv/i.test(c.sql));
+    const chunks = calls.findIndex((c) => /UPDATE page_embeddings SET chunk_tsv = to_tsvector/i.test(c.sql));
+    const commit = calls.findIndex((c) => /^\s*COMMIT/i.test(c.sql));
+
+    expect(chunks, 'the language save must rebuild the per-chunk lexical document').toBeGreaterThan(begin);
+    expect(chunks).toBeGreaterThan(pages);
+    expect(commit).toBeGreaterThan(chunks);
+    // Bound, not interpolated, like the pages rebuild; every row, no filter.
+    expect(calls[chunks]!.params).toEqual(['german']);
+    expect(calls[chunks]!.sql).not.toMatch(/WHERE/i);
+  });
+
   it('bounds the LOCK wait too — lifting statement_timeout removes the only cancellation there was', async () => {
     // Review r3. `UPDATE pages` carries no WHERE, so it is the widest lock the
     // app takes, and no pool sets `lock_timeout` (only `runMigrations`, to 0).
@@ -793,34 +789,6 @@ describe('PUT /api/admin/settings — image-index intake knobs (#1115 P2)', () =
   });
 });
 
-describe('PUT /api/admin/settings — the image retrieval leg (#1115 P3)', () => {
-  it('writes rag_image_leg_enabled under its documented key', async () => {
-    const res = await put({ ragImageLegEnabled: false });
-
-    expect(res.statusCode).toBe(200);
-    expect(rows).toEqual({ rag_image_leg_enabled: 'false' });
-  });
-
-  it('makes the NEXT SEARCH see the change — the write goes through the cached path (#1118)', async () => {
-    // The leg reads this per request through a 60-second cache. A write that
-    // did not invalidate would leave the leg running (or dark) for a minute
-    // after an operator turned it off (or on) — the #1118 lesson, restated
-    // for the one knob that costs an outbound request per question.
-    await put({ ragImageLegEnabled: false });
-    await expect(getRagImageLegEnabled()).resolves.toBe(false);
-    await put({ ragImageLegEnabled: true });
-    await expect(getRagImageLegEnabled()).resolves.toBe(true);
-  });
-
-  it('rejects anything that is not a boolean, rather than saving a value the reader ignores', async () => {
-    for (const body of [{ ragImageLegEnabled: 'off' }, { ragImageLegEnabled: 0 }]) {
-      const res = await put(body);
-      expect(res.statusCode, JSON.stringify(body)).toBe(400);
-    }
-    expect(rows).toEqual({});
-  });
-});
-
 describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () => {
   it('writes rag_answer_max_images under its documented key', async () => {
     const res = await put({ ragAnswerMaxImages: 4 });
@@ -857,10 +825,12 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
     // of 2, i.e. a control that reports a value the answer path is not using.
     //
     // Parsed through `AdminSettingsSchema` rather than asserted key by key,
-    // because the same gap is open on P2's two intake knobs and P3's leg
-    // toggle — the schema requires all four, so one parse holds the whole
-    // Image retrieval group to the contract.
-    await put({ ragAnswerMaxImages: 5, ragImagesPerPageMax: 40, ragImageLegEnabled: false });
+    // because the same gap is open on P2's two intake knobs — the schema
+    // requires all three, so one parse holds the surviving Image group to the
+    // contract. #1618 stage 2 retired `ragImageLegEnabled`, which used to be
+    // the fourth; the cap itself SURVIVES the retirement (ADR-025 D8/D8b,
+    // ADR-027 D11) because the optional chat attachment is not the leg.
+    await put({ ragAnswerMaxImages: 5, ragImagesPerPageMax: 40 });
 
     const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
 
@@ -868,7 +838,9 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
     const settings = AdminSettingsSchema.parse(res.json());
     expect(settings.ragAnswerMaxImages).toBe(5);
     expect(settings.ragImagesPerPageMax).toBe(40);
-    expect(settings.ragImageLegEnabled).toBe(false);
+    // The retired toggle must not come back on the read half either: a stale
+    // field would render a control for a leg that no longer exists.
+    expect(Object.keys(res.json() as object)).not.toContain('ragImageLegEnabled');
   });
 
   it('rejects a cap outside the reader range, rather than saving a lie', async () => {
@@ -882,6 +854,92 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
     }
     expect(rows).toEqual({});
+  });
+});
+
+/**
+ * #1615 (ADR-027 D8) — the image-analysis output-token ceiling, through the
+ * same key table and against the REAL reader, so "the next batch sends the
+ * new `max_tokens`" is a claim about this handler and not about a spy.
+ */
+describe('PUT /api/admin/settings — the image-analysis output-token ceiling (#1615)', () => {
+  it('writes image_analysis_max_output_tokens under its documented key and the next read sees it', async () => {
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT);
+    const res = await put({ imageAnalysisMaxOutputTokens: 6000 });
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ image_analysis_max_output_tokens: '6000' });
+    // The reader's 60 s TTL cache was primed by the read above; the write
+    // must have dropped it, or the worker keeps sending the old ceiling.
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(6000);
+  });
+
+  it('answers the saved ceiling on the READ half', async () => {
+    await put({ imageAnalysisMaxOutputTokens: 16384 });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(res.statusCode).toBe(200);
+    expect(AdminSettingsSchema.parse(res.json()).imageAnalysisMaxOutputTokens).toBe(16384);
+  });
+
+  it('rejects a ceiling outside [4096, 16384] rather than saving one the reader would discard', async () => {
+    for (const body of [
+      { imageAnalysisMaxOutputTokens: 4095 },
+      { imageAnalysisMaxOutputTokens: 16385 },
+      { imageAnalysisMaxOutputTokens: 8192.5 },
+      { imageAnalysisMaxOutputTokens: '8192' },
+    ]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+
+  it('reads an unparseable or out-of-range row as the DEFAULT, never clamped and never a refusal', async () => {
+    // A row written outside this handler (psql, a restored dump). The floor
+    // is a chosen boundary, not a clamp target: '100' must not become 4,096
+    // and quietly halve every transcription bound.
+    for (const raw of ['100', '99999', '8e3', 'eight thousand', '']) {
+      rows = { image_analysis_max_output_tokens: raw };
+      invalidateImageAnalysisMaxOutputTokensCache();
+      await expect(getImageAnalysisMaxOutputTokens(), raw).resolves.toBe(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT);
+    }
+    rows = { image_analysis_max_output_tokens: '4096' };
+    invalidateImageAnalysisMaxOutputTokensCache();
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(4096);
+  });
+});
+
+describe('PUT /api/admin/settings — worker batch sizes (Settings → AI Models → Workers)', () => {
+  it('round-trips each size through its own row and reports the per-key default with no row', async () => {
+    const none = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    // 5 pages for the text workers; 50 images for the analysis worker (ADR-027 D13).
+    expect(AdminSettingsSchema.parse(none.json())).toMatchObject({ qualityBatchSize: 5, summaryBatchSize: 5, imageAnalysisBatchSize: 50 });
+
+    expect((await put({ qualityBatchSize: 40 })).statusCode).toBe(200);
+    expect(rows).toEqual({ quality_batch_size: '40' });
+    expect((await put({ imageAnalysisBatchSize: 200 })).statusCode).toBe(200);
+    expect(rows).toEqual({ quality_batch_size: '40', image_analysis_batch_size: '200' });
+
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ qualityBatchSize: 40, summaryBatchSize: 5, imageAnalysisBatchSize: 200 });
+  });
+
+  it('rejects a size the workers would refuse, rather than saving a lie', async () => {
+    for (const body of [
+      { qualityBatchSize: 0 },
+      { summaryBatchSize: 101 },
+      { summaryBatchSize: 2.5 },
+      { imageAnalysisBatchSize: 0 },
+      { imageAnalysisBatchSize: 501 },
+    ]) {
+      expect((await put(body)).statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+
+  it('reads an out-of-range image_analysis_batch_size row as the default, never as a refusal', async () => {
+    rows.image_analysis_batch_size = '9999';
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ imageAnalysisBatchSize: 50 });
   });
 });
 

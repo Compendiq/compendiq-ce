@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest';
 import {
   hashLlmInputs,
   buildLlmCacheKey,
@@ -66,9 +66,12 @@ describe('buildLlmCacheKey', () => {
 });
 
 describe('buildRagCacheKey', () => {
+  /** One fixed prompt, so each case below varies only the component it names. */
+  const P = { prompt: { system: 'system prompt', user: 'Context from knowledge base:\n\nctx' } };
+
   it('keys on the assembly budget — killing assembly must not replay large-context answers (#1270 m6)', () => {
     const at = (contextChars?: number) =>
-      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars });
+      buildRagCacheKey('m', 'q', ['d1'], { ...P, provider: 'p1', contextChars });
     expect(at(6000)).not.toBe(at(0));
     expect(at(6000)).toBe(at(6000));
     // Absent stays its own namespace (pre-#1270 callers).
@@ -77,7 +80,7 @@ describe('buildRagCacheKey', () => {
 
   it('keys on the pin count — a soft-failed pin must not serve the pinned answer for the TTL (#1273 M5)', () => {
     const at = (pinnedCount: number) =>
-      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', pinnedCount });
+      buildRagCacheKey('m', 'q', ['d1'], { ...P, provider: 'p1', pinnedCount });
     expect(at(1)).not.toBe(at(0));
     expect(at(1)).toBe(at(1));
   });
@@ -89,7 +92,7 @@ describe('buildRagCacheKey', () => {
     // literally the single-query result. Without the flag one mode poisons
     // the other for the whole TTL, in both directions.
     const at = (deepSearch?: boolean) =>
-      buildRagCacheKey('m', 'q', ['d1', 'd2'], { provider: 'p1', deepSearch });
+      buildRagCacheKey('m', 'q', ['d1', 'd2'], { ...P, provider: 'p1', deepSearch });
     expect(at(true)).not.toBe(at(false));
     expect(at(true)).toBe(at(true));
     // Absent and false are the same request — the flag defaults off, so a
@@ -98,18 +101,18 @@ describe('buildRagCacheKey', () => {
   });
 
   it('keys on attached reference text so different documents never share an answer', () => {
-    const withoutReference = buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1' });
+    const withoutReference = buildRagCacheKey('m', 'q', ['d1'], { ...P, provider: 'p1' });
     const firstReference = buildRagCacheKey('m', 'q', ['d1'], {
-      provider: 'p1', referenceText: 'first document',
+      ...P, provider: 'p1', referenceText: 'first document',
     });
     const secondReference = buildRagCacheKey('m', 'q', ['d1'], {
-      provider: 'p1', referenceText: 'second document',
+      ...P, provider: 'p1', referenceText: 'second document',
     });
 
     expect(firstReference).not.toBe(withoutReference);
     expect(firstReference).not.toBe(secondReference);
     expect(firstReference).toBe(buildRagCacheKey('m', 'q', ['d1'], {
-      provider: 'p1', referenceText: 'first document',
+      ...P, provider: 'p1', referenceText: 'first document',
     }));
   });
 
@@ -122,7 +125,7 @@ describe('buildRagCacheKey', () => {
     // either side of an admin moving `rag_answer_max_images`, or of one of
     // the pictures being deleted from its page.
     const at = (retrievedImages?: string) =>
-      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', retrievedImages });
+      buildRagCacheKey('m', 'q', ['d1'], { ...P, provider: 'p1', retrievedImages });
 
     expect(at('2-abcdef')).not.toBe(at(undefined));
     expect(at('2-abcdef')).not.toBe(at('1-abcdef'));
@@ -132,86 +135,78 @@ describe('buildRagCacheKey', () => {
 
   it('keys on the REALIZED outcome — a soft-failed chunk-level answer never occupies the assembled key (#1270 F9)', () => {
     const at = (assembledPages: number) =>
-      buildRagCacheKey('m', 'q', ['d1'], { provider: 'p1', contextChars: 6000, assembledPages });
+      buildRagCacheKey('m', 'q', ['d1'], { ...P, provider: 'p1', contextChars: 6000, assembledPages });
     expect(at(5)).not.toBe(at(0));
     expect(at(5)).toBe(at(5));
   });
 
   it('should prefix with kb:llm:', () => {
-    const key = buildRagCacheKey('qwen3.5', 'What is X?', ['doc1', 'doc2']);
+    const key = buildRagCacheKey('qwen3.5', 'What is X?', ['doc1', 'doc2'], P);
     expect(key).toMatch(/^kb:llm:[a-f0-9]{64}$/);
   });
 
   it('should be independent of docId order', () => {
-    const key1 = buildRagCacheKey('model', 'question', ['doc1', 'doc2', 'doc3']);
-    const key2 = buildRagCacheKey('model', 'question', ['doc3', 'doc1', 'doc2']);
+    const key1 = buildRagCacheKey('model', 'question', ['doc1', 'doc2', 'doc3'], P);
+    const key2 = buildRagCacheKey('model', 'question', ['doc3', 'doc1', 'doc2'], P);
     expect(key1).toBe(key2);
   });
 
   it('should differ when doc IDs change', () => {
-    const key1 = buildRagCacheKey('model', 'question', ['doc1', 'doc2']);
-    const key2 = buildRagCacheKey('model', 'question', ['doc1', 'doc3']);
+    const key1 = buildRagCacheKey('model', 'question', ['doc1', 'doc2'], P);
+    const key2 = buildRagCacheKey('model', 'question', ['doc1', 'doc3'], P);
     expect(key1).not.toBe(key2);
   });
 
-  it('should differ when includeSubPages is toggled', () => {
-    const keyWithout = buildRagCacheKey('model', 'question', ['doc1']);
-    const keyWith = buildRagCacheKey('model', 'question', ['doc1'], {
-      includeSubPages: true,
-      pageId: 'page-1',
+  it('keys on the prompt text as sent — a caller whose assembly left a page tree out never shares the key', () => {
+    // Same question, doc ids and options; one caller's user turn carries a
+    // page tree the other caller's page gate excluded. The request's pageId
+    // is identical for both, so only the assembled text can tell them apart.
+    const at = (user: string) => buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', prompt: { system: 'system prompt', user },
     });
-    expect(keyWithout).not.toBe(keyWith);
+    const withTree = at('Page tree context:\n\nSECRET\n\n---\n\nAdditional knowledge base context:\n\nctx');
+    const withoutTree = at('Context from knowledge base:\n\nctx');
+    expect(withTree).not.toBe(withoutTree);
+    // Equal assembled text is one entry: equivalent authorized prompts share.
+    expect(withTree).toBe(at('Page tree context:\n\nSECRET\n\n---\n\nAdditional knowledge base context:\n\nctx'));
   });
 
-  it('should differ when pageId changes with includeSubPages', () => {
-    const key1 = buildRagCacheKey('model', 'question', ['doc1'], {
-      includeSubPages: true,
-      pageId: 'page-1',
+  it('keys on the system prompt — a caller\'s custom prompt never serves another caller', () => {
+    const at = (system: string) => buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', prompt: { system, user: 'u' },
     });
-    const key2 = buildRagCacheKey('model', 'question', ['doc1'], {
-      includeSubPages: true,
-      pageId: 'page-2',
-    });
-    expect(key1).not.toBe(key2);
+    expect(at('default prompt')).not.toBe(at('custom prompt naming a private project'));
   });
 
-  it('should match key without options when includeSubPages is false', () => {
-    const keyNoOpts = buildRagCacheKey('model', 'question', ['doc1']);
-    const keyFalse = buildRagCacheKey('model', 'question', ['doc1'], {
-      includeSubPages: false,
-      pageId: 'page-1',
+  it('keeps the system/user boundary inside the prompt component', () => {
+    const at = (system: string, user: string) => buildRagCacheKey('m', 'q', ['d1'], {
+      provider: 'p1', prompt: { system, user },
     });
-    expect(keyNoOpts).toBe(keyFalse);
+    expect(at('ab', 'c')).not.toBe(at('a', 'bc'));
   });
 
   it('should differ when provider changes (issue #217)', () => {
     const keyOllama = buildRagCacheKey('same-model', 'question', ['doc1'], {
-      provider: 'ollama',
+      ...P, provider: 'ollama',
     });
     const keyOpenai = buildRagCacheKey('same-model', 'question', ['doc1'], {
-      provider: 'openai',
+      ...P, provider: 'openai',
     });
     expect(keyOllama).not.toBe(keyOpenai);
-  });
-
-  it('should match key without provider when provider is omitted', () => {
-    const keyNoProvider = buildRagCacheKey('model', 'question', ['doc1']);
-    const keyEmptyOpts = buildRagCacheKey('model', 'question', ['doc1'], {});
-    expect(keyNoProvider).toBe(keyEmptyOpts);
   });
 
   // Thinking-on responses must live in a separate cache namespace, otherwise
   // a prior thinking-off answer is replayed when the user toggles Think on
   // and the upstream LLM never sees the new request.
   it('should differ when thinking is toggled', () => {
-    const off = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p' });
-    const on  = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p', thinking: true });
+    const off = buildRagCacheKey('model', 'q', ['d1'], { ...P, provider: 'p' });
+    const on  = buildRagCacheKey('model', 'q', ['d1'], { ...P, provider: 'p', thinking: true });
     expect(off).not.toBe(on);
   });
 
   it('should treat thinking:false as equivalent to omitted', () => {
-    const off = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p' });
-    const offExplicit = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p', thinking: false });
+    const off = buildRagCacheKey('model', 'q', ['d1'], { ...P, provider: 'p' });
+    const offExplicit = buildRagCacheKey('model', 'q', ['d1'], { ...P, provider: 'p', thinking: false });
     expect(off).toBe(offExplicit);
   });
 });
@@ -219,12 +214,13 @@ describe('buildRagCacheKey', () => {
 describe('LlmCache', () => {
   let cache: LlmCache;
   let mockRedis: {
-    get: ReturnType<typeof vi.fn>;
-    set: ReturnType<typeof vi.fn>;
-    setEx: ReturnType<typeof vi.fn>;
-    scan: ReturnType<typeof vi.fn>;
-    del: ReturnType<typeof vi.fn>;
-    exists: ReturnType<typeof vi.fn>;
+    get: Mock;
+    set: Mock;
+    setEx: Mock;
+    scan: Mock;
+    del: Mock;
+    exists: Mock;
+    eval: Mock;
   };
 
   beforeEach(() => {
@@ -235,6 +231,7 @@ describe('LlmCache', () => {
       scan: vi.fn(),
       del: vi.fn(),
       exists: vi.fn(),
+      eval: vi.fn(),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cache = new LlmCache(mockRedis as any);
@@ -297,44 +294,69 @@ describe('LlmCache', () => {
   });
 
   describe('acquireLock', () => {
-    it('should return true when lock is acquired (SET NX succeeds)', async () => {
+    it('returns the unique ownership token stored by SET NX', async () => {
       mockRedis.set.mockResolvedValue('OK');
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      expect(acquired).toBe(true);
-      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 120 });
+
+      const token = await cache.acquireLock('kb:llm:abc123');
+
+      expect(token).toMatch(/^[0-9a-f-]{36}$/);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        'llm:lock:kb:llm:abc123',
+        token,
+        { NX: true, EX: 120 },
+      );
     });
 
-    it('should return false when lock is already held (SET NX returns null)', async () => {
+    it('creates a fresh identity for every acquisition attempt', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+
+      const first = await cache.acquireLock('kb:llm:first');
+      const second = await cache.acquireLock('kb:llm:second');
+
+      expect(first).not.toBe(second);
+    });
+
+    it('returns null when the lock is already held', async () => {
       mockRedis.set.mockResolvedValue(null);
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      expect(acquired).toBe(false);
+      await expect(cache.acquireLock('kb:llm:abc123')).resolves.toBeNull();
     });
 
-    it('should accept a custom TTL', async () => {
+    it('accepts a custom TTL', async () => {
       mockRedis.set.mockResolvedValue('OK');
-      await cache.acquireLock('kb:llm:abc123', 30);
-      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 30 });
+      const token = await cache.acquireLock('kb:llm:abc123', 30);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        'llm:lock:kb:llm:abc123',
+        token,
+        { NX: true, EX: 30 },
+      );
     });
 
-    it('should return true on Redis error (graceful degradation)', async () => {
+    it('returns a token on Redis error to preserve graceful degradation', async () => {
       mockRedis.set.mockRejectedValue(new Error('Redis down'));
-      const acquired = await cache.acquireLock('kb:llm:abc123');
-      // On failure, allow caller to proceed rather than blocking
-      expect(acquired).toBe(true);
+      await expect(cache.acquireLock('kb:llm:abc123')).resolves.toMatch(
+        /^[0-9a-f-]{36}$/,
+      );
     });
   });
 
   describe('releaseLock', () => {
-    it('should delete the lock key', async () => {
-      mockRedis.del.mockResolvedValue(1);
-      await cache.releaseLock('kb:llm:abc123');
-      expect(mockRedis.del).toHaveBeenCalledWith('llm:lock:kb:llm:abc123');
+    it('atomically deletes only the lock owned by the supplied token', async () => {
+      mockRedis.eval.mockResolvedValue(1);
+
+      await cache.releaseLock('kb:llm:abc123', 'owner-token');
+
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+        {
+          keys: ['llm:lock:kb:llm:abc123'],
+          arguments: ['owner-token'],
+        },
+      );
     });
 
-    it('should not throw on Redis error', async () => {
-      mockRedis.del.mockRejectedValue(new Error('Redis down'));
-      // Should not throw
-      await cache.releaseLock('kb:llm:abc123');
+    it('does not throw on Redis error', async () => {
+      mockRedis.eval.mockRejectedValue(new Error('Redis down'));
+      await cache.releaseLock('kb:llm:abc123', 'owner-token');
     });
   });
 

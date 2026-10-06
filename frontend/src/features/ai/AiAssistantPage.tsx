@@ -289,7 +289,7 @@ export function AiAssistantPage() {
           would still consume its `py-1` and both gaps out of the message
           pane's height at every other mode.
 
-          The opaque UNDER-mask (bg-background, z-[-1]) behind the bar is
+          The opaque UNDER-mask (bg-card, z-[-1]) behind the bar is
           belt-and-braces through the supported viewport range, not
           load-bearing. It was what occluded chat content scrolling up behind
           the bar (#703) — but since #1218 the message pane owns the scroller
@@ -300,10 +300,10 @@ export function AiAssistantPage() {
           #769's phantom scroll re-opened on a page that had stopped scrolling
           entirely. */}
       {mode === 'diagram' && (
-        <div className="sticky top-0 z-20 isolate -mx-1 bg-background px-1 py-1">
+        <div className="sticky top-0 z-20 isolate -mx-1 bg-card px-1 py-1">
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+            className="pointer-events-none absolute inset-0 z-[-1] bg-card"
           />
           <DiagramTypeSelector />
         </div>
@@ -473,10 +473,10 @@ export function AiAssistantPage() {
         </div>
       </div>
 
-      {/* Mode-specific input bar — sticky at the bottom of the column, with a
-          translucent backdrop.
+      {/* Mode-specific input bar — sticky at the bottom of the column, on the
+          route pane's own fill.
 
-          Its opaque UNDER-mask (bg-background, z-[-1]) is belt-and-braces for
+          Its opaque UNDER-mask (bg-card, z-[-1]) is belt-and-braces for
           the same reason as the sub-header's above: it occluded chat content
           scrolling down behind the bar (#703), but since #1218 the message
           pane owns the scroller and this column does not scroll through the
@@ -493,11 +493,22 @@ export function AiAssistantPage() {
           mirrored -bottom-5 this bug was originally filed with is exactly that
           mistake; the strip it aimed at is gone because nothing scrolls into
           it, not because something covers it. */}
-      {/* Opaque, no blur — same reasoning as the sub-header above. */}
-      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background px-1 py-1">
+      {/* Opaque, no blur — same reasoning as the sub-header above.
+
+          bg-card, not bg-background (owner request, 2026-09-11). The route
+          pane is `app-content-pane`, which paints --color-card, so a bar
+          filled with Workspace painted a visible box around the composer on
+          every mode: a grey strip in Paper (#f8f8f7 on white, hugging the
+          composer's own --color-card fill) and a darker one in Graphite. The
+          mask's contract is OPACITY, not a value step — nothing here is a
+          surface of its own, so it takes the pane's colour and the composer's
+          hairline is the only edge in the region again. Whatever this bar
+          paints, the two must match: the strip and its under-mask are one
+          surface. */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-card px-1 py-1">
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+          className="pointer-events-none absolute inset-0 z-[-1] bg-card"
         />
         <AssistantAttachmentsScope>
           {mode === 'ask' && <AskModeInput />}

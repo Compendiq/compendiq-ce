@@ -233,4 +233,23 @@ describe.skipIf(!dbAvailable)('pinned pages, unbounded (#1130) [integration]', (
     const body = JSON.parse((await listPinned()).body);
     expect(body.items[0].excerpt).toHaveLength(200);
   });
+
+  it('omits a persisted pin after the page becomes another user’s private page', async () => {
+    const owner = await makeUser();
+    const pageId = await makePage(1);
+    expect((await pin(pageId)).statusCode).toBe(200);
+
+    await query(
+      `UPDATE pages
+       SET visibility = 'private', created_by_user_id = $2
+       WHERE id = $1`,
+      [pageId, owner],
+    );
+
+    const listed = await listPinned();
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(listed.json()).toEqual({ items: [], total: 0 });
+    expect(listed.body).not.toContain(String(pageId));
+    expect(listed.body).not.toContain('Page 1');
+  });
 });

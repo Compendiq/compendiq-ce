@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { query, getPool } from '../../../core/db/postgres.js';
 import {
@@ -12,7 +13,6 @@ import { confluenceToHtml, htmlToText } from '../../../core/services/content-con
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
-import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
@@ -33,6 +33,13 @@ import {
   clearAttachmentFailures,
   MAX_ATTACHMENT_FAILURES as REDIS_MAX_ATTACHMENT_FAILURES,
 } from '../../../core/services/redis-cache.js';
+import { isConfluenceEnabled } from '../../../core/services/confluence-integration.js';
+import {
+  getPageWriterRuntimeId,
+  lockPageWriterRuntime,
+  lockPageWrites,
+} from '../../../core/services/page-write-admission.js';
+import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
 
 interface SyncStatus {
   userId: string;
@@ -249,16 +256,40 @@ async function tryClaimSpaceReconcile(spaceKey: string): Promise<boolean> {
   }
 }
 
+
 /**
  * Get a ConfluenceClient for a user by decrypting their stored credentials.
+ *
+ * Returns `null` both when the integration is switched off and when it is on
+ * but unconfigured — the two are NOT interchangeable for callers that must
+ * keep serving the user locally; those ask `isConfluenceEnabled` as well.
+ *
+ * A caller already holding a transaction client may supply it so credential
+ * resolution does not acquire another connection from the same pool.
  */
-export async function getClientForUser(userId: string): Promise<ConfluenceClient | null> {
-  const result = await query<{ confluence_url: string | null; confluence_pat: string | null }>(
-    'SELECT confluence_url, confluence_pat FROM user_settings WHERE user_id = $1',
-    [userId],
-  );
+export async function getClientForUser(
+  userId: string,
+  dbClient?: PoolClient,
+): Promise<ConfluenceClient | null> {
+  const statement =
+    'SELECT confluence_url, confluence_pat, confluence_enabled FROM user_settings WHERE user_id = $1';
+  const result = dbClient
+    ? await dbClient.query<{
+        confluence_url: string | null;
+        confluence_pat: string | null;
+        confluence_enabled: boolean | null;
+      }>(statement, [userId])
+    : await query<{
+        confluence_url: string | null;
+        confluence_pat: string | null;
+        confluence_enabled: boolean | null;
+      }>(statement, [userId]);
 
   const row = result.rows[0];
+  // Switched off → standalone mode, so nothing may leave the box. Compared to
+  // `false` explicitly: credentials are retained across a toggle, and a falsy
+  // check would also reject rows that simply carry no value for the column.
+  if (row?.confluence_enabled === false) return null;
   if (!row?.confluence_url || !row?.confluence_pat) return null;
 
   const pat = decryptPat(row.confluence_pat);
@@ -269,6 +300,15 @@ export async function getClientForUser(userId: string): Promise<ConfluenceClient
  * Sync all pages from a user's selected spaces.
  */
 export async function syncUser(userId: string): Promise<void> {
+  // Standalone mode (#1623): the integration is off, so a scheduled or manual
+  // run has nothing to do. Credentials stay on the row, so this is not a
+  // configuration problem — say so, and settle the status back to idle.
+  if (!(await isConfluenceEnabled(userId))) {
+    logger.info({ userId }, 'Confluence integration disabled, skipping sync (standalone mode)');
+    await setSyncStatus(userId, { userId, status: 'idle' });
+    return;
+  }
+
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
@@ -352,19 +392,10 @@ export async function syncUser(userId: string): Promise<void> {
       lastSynced: new Date(),
     });
 
-    // #1115 P2 — the image index's only scheduled trigger.
-    //
-    // It rides the sync cadence rather than getting a repeatable BullMQ job of
-    // its own, because that is exactly how `processDirtyPages` is driven:
-    // `queue-service.ts` schedules the SYNC, and the text embedder runs off
-    // its tail. Mirroring that keeps one cadence to reason about, and the
-    // image worker's own no-op fast path means an unassigned leg costs one
-    // resolver read per sync. Fire-and-forget beside the text pass rather than
-    // after it: the two share no lock, no table and no provider, and chaining
-    // them would make an image scan wait on a text re-embed of the corpus.
-    void processDirtyPageImages().catch((err) => {
-      logger.error({ err, userId }, 'Post-sync image indexing failed');
-    });
+    // The ADR-027 analysis worker (#1616) is NOT kicked here: its BullMQ
+    // repeat (`image-analysis`, queue-service.ts; the interval worker when
+    // BullMQ is off) is its one scheduled cadence. A per-user kick beside the
+    // repeat made N+1 lease contests per cycle, each a sweep + reconcile read.
 
     // Trigger embedding for dirty pages; update status when complete
     processDirtyPages(userId).then(async ({ processed, errors }) => {
@@ -564,7 +595,7 @@ async function softDeleteVanishedPage(
   reason: string,
 ): Promise<void> {
   const res = await query<{ id: number }>(
-    'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL RETURNING id',
+    "UPDATE pages SET deleted_at = NOW() WHERE source = 'confluence' AND confluence_id = $1 AND deleted_at IS NULL RETURNING id",
     [confluenceId],
   );
   if ((res.rowCount ?? 0) > 0) {
@@ -664,6 +695,7 @@ async function syncPage(
   // want to hold the row lock for the duration.
   const existing = await query<{
     id: number;
+    source: string;
     version: number;
     title: string;
     body_html: string;
@@ -671,11 +703,15 @@ async function syncPage(
     local_modified_at: Date | null;
     last_synced: Date | null;
   }>(
-    `SELECT id, version, title, body_html, body_text, local_modified_at, last_synced
+    `SELECT id, source, version, title, body_html, body_text, local_modified_at, last_synced
        FROM pages
       WHERE confluence_id = $1`,
     [page.id],
   );
+
+  // An old Confluence identifier does not transfer ownership of a local article.
+  // Refuse before attachment cleanup/download, snapshots, or any inbound write.
+  if (existing.rows[0] && existing.rows[0].source !== 'confluence') return;
 
   if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
     const existingRow = existing.rows[0]!;
@@ -788,19 +824,18 @@ async function syncPage(
   // deleted_at = NULL restores pages that were previously soft-deleted
   // (e.g. page was restored from Confluence trash)
   const wasFreshCreate = existing.rows.length === 0;
-  await query(
-    // #1115 P2 — `image_embedding_dirty` rides along with `embedding_dirty`
+  const upsert = await query(
+    // ADR-027 D4 — `image_analysis_dirty` rides along with `embedding_dirty`
     // here and ONLY here in this statement: a new page version can move,
-    // remove or add an `<img>`, and the reconcile pass is what makes the index
-    // agree with the body again. The two flags stay separate columns
-    // (migration 093) because the reverse is not true — an attachment changing
-    // under an unchanged version must re-embed the images and not the text,
-    // which is what the `syncImageAttachments` / `syncDrawioAttachments`
-    // writers handle.
+    // remove or add an `<img>`, and the reconcile pass is what makes the
+    // analyses agree with the body again. The two flags stay separate columns
+    // because the reverse is not true — an attachment changing under an
+    // unchanged version must re-analyse the images and not the text, which is
+    // what the `syncImageAttachments` / `syncDrawioAttachments` writers handle.
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
-        image_embedding_dirty, summary_status)
+        image_analysis_dirty, summary_status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending')
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
@@ -814,16 +849,18 @@ async function syncPage(
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
        embedding_dirty = TRUE,
-       image_embedding_dirty = TRUE,
+       image_analysis_dirty = TRUE,
        summary_status = 'pending',
        -- Clear local-edit markers (#305) — see matching note in the
        -- version-mismatch branch above.
        local_modified_at = NULL,
        local_modified_by = NULL,
-       deleted_at = NULL`,
+       deleted_at = NULL
+     WHERE pages.source = 'confluence'`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
+  if ((upsert.rowCount ?? 0) === 0) return;
   if (wasFreshCreate) {
     counts.pagesCreated++;
   } else {
@@ -932,7 +969,7 @@ async function applyConflictPolicyForExistingPage(
     }>(
       `SELECT id, version, body_html, body_text, local_modified_at, last_synced
          FROM pages
-        WHERE confluence_id = $1
+        WHERE confluence_id = $1 AND source = 'confluence'
         FOR UPDATE`,
       [args.confluenceId],
     );
@@ -1067,13 +1104,13 @@ async function applyConflictPolicyForExistingPage(
                OR body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE embedding_dirty
            END,
-           -- #1115 P2 — gated on the HTML alone, because that is where the
+           -- ADR-027 D4 — gated on the HTML alone, because that is where the
            -- img src attributes live. A body_text-only change (whitespace the
            -- flattener treats differently) cannot move an image, and dirtying
            -- on it would re-scan pages whose pictures are provably identical.
-           image_embedding_dirty = CASE
+           image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-             ELSE image_embedding_dirty
+             ELSE image_analysis_dirty
            END,
            summary_status = CASE
              WHEN body_text IS DISTINCT FROM $5
@@ -1088,7 +1125,7 @@ async function applyConflictPolicyForExistingPage(
            local_modified_at = NULL,
            local_modified_by = NULL,
            deleted_at = NULL
-       WHERE confluence_id = $1`,
+       WHERE confluence_id = $1 AND source = 'confluence'`,
       [
         args.confluenceId,
         args.pageDbTitle,
@@ -1245,7 +1282,7 @@ async function syncPageRestrictions(
   // guaranteed to exist. A missing row means the INSERT silently failed
   // upstream — log and bail rather than plough on with a bogus resource_id.
   const pageRow = await query<{ id: number; restrictions_synced_at: Date | null }>(
-    `SELECT id, restrictions_synced_at FROM pages WHERE confluence_id = $1`,
+    `SELECT id, restrictions_synced_at FROM pages WHERE confluence_id = $1 AND source = 'confluence'`,
     [page.id],
   );
   if (pageRow.rows.length === 0) {
@@ -1466,7 +1503,7 @@ async function sweepStaleConfluenceAces(
      WHERE resource_type = 'page'
        AND source = 'confluence'
        AND (synced_at IS NULL OR synced_at < $1)
-       AND resource_id IN (SELECT id FROM pages WHERE space_key = ANY($2))`,
+       AND resource_id IN (SELECT id FROM pages WHERE space_key = ANY($2) AND source = 'confluence')`,
     [syncRunStartedAt, spaceKeys],
   );
   if (res.rowCount && res.rowCount > 0) {
@@ -1503,7 +1540,7 @@ async function syncMissingAttachments(
     // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
     const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
       `SELECT confluence_id, body_storage FROM pages
-       WHERE space_key = $1 AND body_storage IS NOT NULL
+       WHERE space_key = $1 AND source = 'confluence' AND body_storage IS NOT NULL
          AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
        ORDER BY confluence_id
        LIMIT $2 OFFSET $3`,
@@ -1643,6 +1680,7 @@ async function detectDeletedPages(
     `UPDATE pages
         SET deleted_at = NULL
       WHERE space_key = $1
+        AND source = 'confluence'
         AND deleted_at IS NOT NULL
         AND deleted_at < NOW() - make_interval(secs => $2)
         AND confluence_id = ANY($3::text[])
@@ -1656,17 +1694,15 @@ async function detectDeletedPages(
     );
   }
 
-  // Local non-deleted rows for this space, ordered cyclically from the row after
-  // the persisted cursor. Only rows backed by a Confluence page are reconcilable
-  // — standalone KB articles carry a space_key but a NULL confluence_id and have
-  // no upstream to confirm against. Excluding them here (mirroring the guard in
-  // purgeDeletedPages) keeps a NULL id from becoming a bogus candidate that fires
-  // getPage(null) and aborts the sync (#905).
+  // Only Confluence-origin rows belong to upstream deletion reconciliation.
+  // A standalone article can retain a historical identifier; neither its live
+  // state nor its trash state is controlled by the upstream page behind it.
   const existingResult = await query<{ id: number; confluence_id: string }>(
     `SELECT p.id, p.confluence_id
        FROM pages p
        LEFT JOIN spaces s ON s.space_key = p.space_key
       WHERE p.space_key = $1
+        AND p.source = 'confluence'
         AND p.deleted_at IS NULL
         AND p.confluence_id IS NOT NULL
       ORDER BY
@@ -1736,9 +1772,10 @@ async function detectDeletedPages(
 
     logger.info({ spaceKey, confluenceId }, 'Soft-deleting page confirmed deleted in Confluence');
     const deleted = await query<{ id: number }>(
-      'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL RETURNING id',
+      "UPDATE pages SET deleted_at = NOW() WHERE source = 'confluence' AND confluence_id = $1 AND deleted_at IS NULL RETURNING id",
       [confluenceId],
     );
+    if ((deleted.rowCount ?? 0) === 0) continue;
     for (const row of deleted.rows) {
       await tombstoneCollabRoomAfterCommit(row.id);
     }
@@ -1833,7 +1870,7 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
       // cache below this is the page's own content with no re-fetch behind it
       // — and the #1349 sweep is forbidden to walk that store, so nothing else
       // would ever collect it.
-      await discardPageIconForDeletedPage(id);
+      await discardPageIconForDeletedPage({ id });
       await tombstoneCollabRoomAfterCommit(id);
       if (!confluence_id) continue;
       await cleanPageAttachments(confluence_id);
@@ -1848,22 +1885,14 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
  * against Confluence — only local rows/files are deleted.
  *
  * Atomicity (#721 review WARNING 1): all row deletes run inside a single
- * BEGIN…COMMIT on one pooled client (the same pattern as `postgres.ts` and
- * `applyConflictPolicyForExistingPage`). On any error we ROLLBACK and re-throw,
+ * BEGIN…COMMIT on one pooled client. On any error we ROLLBACK and re-throw,
  * so a crash mid-purge can never leave a space half-removed.
  *
- * Ordering note: filesystem attachment cleanup (`cleanPageAttachments`) is
- * inherently non-transactional — files can't be rolled back. We run it
- * best-effort BEFORE opening the transaction and never let a file-cleanup
- * failure abort the DB work (it's logged, not fatal). Worst case is a few
- * orphaned files if the transaction later rolls back; that is preferable to
- * leaving DB rows pointing at a deleted space, and a re-run of unsync would
- * sweep them again.
- *
- * The uploaded page ICONS are the exception and run AFTER the commit (#1349
- * review r1): that store is the only copy of those bytes and no sweep may walk
- * it, so a pre-transaction delete would be unrecoverable on a ROLLBACK that
- * restores every page row with `icon_kind = 'image'` still set.
+ * The runtime epoch, global hierarchy-exclusive fence, sorted lifecycle
+ * locks, and page-write guards are all acquired before any row or file is
+ * removed. A frozen page or unresolved intent therefore refuses the whole
+ * operation before space configuration or attachment bytes are touched.
+ * Attachment and icon cleanup runs only after the database commit.
  *
  * Deleting the `pages` rows cascades to `page_embeddings` and `page_versions`
  * (page_id FK ON DELETE CASCADE, migration 030).
@@ -1886,78 +1915,45 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
  *     outlives the space, just unscoped.
  */
 export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
-  // Best-effort, non-transactional filesystem cleanup BEFORE the DB
-  // transaction. A failure here must never abort the row deletes.
-  // Attachment directories are keyed by confluence_id for synced pages
-  // (syncImageAttachments, the serving route in routes/confluence/attachments.ts)
-  // and by the integer PK only for standalone pages (confluence_id IS NULL) —
-  // passing the SERIAL id for a synced page would delete nothing and orphan
-  // the real data/attachments/<confluence_id> directory (#746).
-  const pages = await query<{ id: number; confluence_id: string | null }>(
-    'SELECT id, confluence_id FROM pages WHERE space_key = $1',
-    [spaceKey],
-  );
-  for (const p of pages.rows) {
-    const attachmentKey = p.confluence_id ?? String(p.id);
-    try {
-      await cleanPageAttachments(attachmentKey);
-    } catch (err) {
-      logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
-    }
-  }
-
   const pool = getPool();
   const conn = await pool.connect();
+  let deletedRows: Array<{ id: number; confluence_id: string | null }> = [];
   try {
     await conn.query('BEGIN');
-
-    // Pages → cascades to page_embeddings + page_versions (migration 030).
-    // `RETURNING id` so the icon removal below can run over the rows the
-    // transaction actually destroyed (#1349 review r1) — including any page
-    // INSERTed between the pre-transaction SELECT and this DELETE.
-    const del = await conn.query<{ id: number }>(
-      'DELETE FROM pages WHERE space_key = $1 RETURNING id',
+    await lockPageWriterRuntime(conn, await getPageWriterRuntimeId());
+    await conn.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+    const pages = await conn.query<{ id: number; confluence_id: string | null }>(
+      'SELECT id, confluence_id FROM pages WHERE space_key = $1 ORDER BY id',
       [spaceKey],
     );
+    await lockPageWrites(conn, pages.rows.map((page) => page.id));
+    const del = await conn.query<{ id: number; confluence_id: string | null }>(
+      'DELETE FROM pages WHERE space_key = $1 RETURNING id, confluence_id',
+      [spaceKey],
+    );
+    deletedRows = del.rows;
 
-    // RBAC / sync-selection rows for the removed space.
     await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
-
-    // OIDC group→space mappings scoped to this space (NULL = global, kept).
     await conn.query('DELETE FROM oidc_group_role_mappings WHERE space_key = $1', [spaceKey]);
-
-    // User-authored artifacts: detach (retain the row, NULL the space_key)
-    // rather than delete, so unsyncing a space never silently destroys work.
     await conn.query('UPDATE templates SET space_key = NULL WHERE space_key = $1', [spaceKey]);
-
-    // Finally the space row itself.
     await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
-
     await conn.query('COMMIT');
-
-    // AFTER the commit, never before (#1349 review r1). The icon store is keyed
-    // by `pages.id` whatever the page's source, and these rows are now gone, so
-    // the mark has no owner left — see `discardPageIconForDeletedPage`. Unlike
-    // the attachment CACHE above (re-fetchable from Confluence, hence
-    // best-effort ahead of the transaction), the mark is the only copy of user
-    // bytes and the sweep is forbidden to walk `page-icons/`: doing it before
-    // `BEGIN` would destroy it for good on a ROLLBACK that leaves every page
-    // row alive with `icon_kind = 'image'`. Best-effort and never-throwing, so
-    // a filesystem hiccup cannot fail a unsync whose rows are already gone.
-    for (const { id } of del.rows) {
-      await discardPageIconForDeletedPage(id);
-    }
-
-    logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
-    return { pagesDeleted: del.rowCount ?? 0 };
   } catch (err) {
-    await conn.query('ROLLBACK').catch(() => {
-      /* rollback failures are not actionable; original error already surfacing */
-    });
+    await conn.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     conn.release();
   }
+
+  for (const row of deletedRows) {
+    const attachmentKey = row.confluence_id ?? String(row.id);
+    await cleanPageAttachments(attachmentKey).catch((err) => {
+      logger.warn({ err, pageId: row.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed after commit');
+    });
+    await discardPageIconForDeletedPage({ id: row.id });
+  }
+  logger.info({ spaceKey, pagesDeleted: deletedRows.length }, 'unsyncSpace: purged synced space');
+  return { pagesDeleted: deletedRows.length };
 }
 
 /**
@@ -2045,6 +2041,7 @@ export async function runScheduledSync(): Promise<number> {
     const users = await query<{ user_id: string }>(
       `SELECT DISTINCT us.user_id FROM user_settings us
        WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+         AND us.confluence_enabled
          AND EXISTS (
            SELECT 1 FROM space_role_assignments sra
            WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT
@@ -2087,10 +2084,11 @@ export function startSyncWorker(intervalMinutes = 15): void {
     }, SYNC_LOCK_RENEW_INTERVAL_MS);
 
     try {
-      // Get all users with configured connections and RBAC space assignments
+      // Users with a configured, switched-on connection and RBAC space assignments
       const users = await query<{ user_id: string }>(
         `SELECT DISTINCT us.user_id FROM user_settings us
          WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+           AND us.confluence_enabled
            AND EXISTS (
              SELECT 1 FROM space_role_assignments sra
              WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT

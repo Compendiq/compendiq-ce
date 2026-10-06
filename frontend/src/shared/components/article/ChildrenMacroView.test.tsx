@@ -95,11 +95,12 @@ describe('ChildrenMacroView', () => {
     expect(links[0].getAttribute('href')).toBe('/pages/1');
     expect(links[1].getAttribute('href')).toBe('/pages/2');
 
-    // Marker-free directory: no disc column, and a single stack by default.
+    // Marker-free directory: no disc column, two columns by default.
     const list = screen.getByTestId('children-list').querySelector('ul');
     expect(list?.classList.contains('list-disc')).toBe(false);
     expect(list?.classList.contains('list-none')).toBe(true);
-    expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
+    expect(list?.classList.contains('sm:grid-cols-2')).toBe(true);
+    expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('2');
     expect(screen.queryByTestId('children-columns-toggle')).toBeNull();
 
     // Notion-style page links: body colour + underline. The accent prose-link
@@ -107,11 +108,19 @@ describe('ChildrenMacroView', () => {
     // this read as chrome rather than document. Hover uses the same accent
     // fill as PagesPage / the page tree — a background change, not a border.
     expect(links[0].classList.contains('children-directory-link')).toBe(true);
+    const titleEl = links[0].querySelector('.children-directory-title');
+    expect(titleEl?.textContent).toBe('Getting Started');
+    // Title stays inline (not a flex item) so the rule paints through spaces.
+    expect(titleEl?.parentElement).not.toBe(links[0]);
     expect(links[0].className).not.toMatch(/text-primary/);
     expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
+    expect(links[0].className).toMatch(/(?:^|\s)py-0\.5(?:\s|$)/);
+    expect(links[0].className).not.toMatch(/(?:^|\s)py-1(?:\s|$)/);
     expect(links[0].className).toMatch(/hover:bg-accent/);
     expect(links[0].className).toMatch(/rounded-md/);
     expect(links[0].className).toMatch(/transition-colors/);
+    expect(list?.className).toMatch(/(?:^|\s)gap-y-0(?:\s|$)/);
+    expect(list?.className).not.toMatch(/(?:^|\s)gap-1(?:\s|$)/);
     expect(list?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
   });
 
@@ -224,7 +233,7 @@ describe('ChildrenMacroView', () => {
     });
 
     const toggle = screen.getByRole('button', { name: 'Two columns' });
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
     expect(toggle.getAttribute('aria-describedby')).toBeTruthy();
     expect(screen.getByTestId('children-columns-hint').textContent).toContain(
       'Compendiq only',
@@ -236,10 +245,10 @@ describe('ChildrenMacroView', () => {
     // pages-list hover fill — that would advertise a click that is not there.
     expect(title.className).not.toMatch(/hover:bg-accent/);
     toggle.click();
-    expect(updateAttributes).toHaveBeenCalledWith({ columns: '2' });
+    expect(updateAttributes).toHaveBeenCalledWith({ columns: '1' });
   });
 
-  it('clears the columns param when the pressed toggle is clicked', async () => {
+  it('writes columns=1 when the pressed default toggle is clicked', async () => {
     mockApiFetch.mockResolvedValueOnce({
       children: [
         { id: 1, confluenceId: 'child-1', title: 'Getting Started', spaceKey: 'DEV' },
@@ -258,7 +267,35 @@ describe('ChildrenMacroView', () => {
     const toggle = screen.getByRole('button', { name: 'Two columns' });
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
     toggle.click();
-    expect(updateAttributes).toHaveBeenCalledWith({ columns: null });
+    expect(updateAttributes).toHaveBeenCalledWith({ columns: '1' });
+  });
+
+  it('keeps a single stack when columns=1', async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      children: [
+        { id: 1, confluenceId: 'child-1', title: 'Getting Started', spaceKey: 'DEV' },
+        { id: 2, confluenceId: 'child-2', title: 'Installation Guide', spaceKey: 'DEV' },
+      ],
+    });
+
+    const updateAttributes = vi.fn();
+    const editable = makeProps({ columns: '1' }, { isEditable: true });
+    editable.updateAttributes = updateAttributes;
+    renderWithRouter(editable);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
+    const list = screen.getByTestId('children-list').querySelector('ul');
+    expect(list?.classList.contains('sm:grid-cols-2')).toBe(false);
+    expect(list?.classList.contains('flex')).toBe(true);
+
+    const toggle = screen.getByRole('button', { name: 'Two columns' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    toggle.click();
+    expect(updateAttributes).toHaveBeenCalledWith({ columns: '2' });
   });
 
   it('passes correct query params to the API', async () => {
@@ -350,12 +387,21 @@ describe('ChildrenMacroView link treatment', () => {
 
   it('overrides prose accent links with an inherited, always-underlined title', () => {
     expect(css).toMatch(
-      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*underline/,
+      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*none/,
     );
     const start = css.indexOf('.prose .confluence-children-view a,');
     expect(start).toBeGreaterThan(-1);
-    const block = css.slice(start, start + 1100);
+    const block = css.slice(start, start + 2800);
     expect(block).not.toMatch(/--color-primary/);
+    // Continuous rule under the whole phrase, spaces included. text-decoration
+    // skip-spaces is missing in WebKit and still gaps a multi-word title.
+    expect(block).toMatch(/\.children-directory-title[\s\S]*?background-image:\s*linear-gradient/);
+    expect(block).toMatch(/box-decoration-break:\s*clone/);
+    expect(block).not.toMatch(/text-decoration-skip-spaces/);
+    expect(block).toMatch(/color-mix\(in oklab, var\(--color-foreground\) 22%, transparent\)/);
+    expect(block).toMatch(/\[data-theme-type="light"\][\s\S]*?color-mix\(in oklab, var\(--color-foreground\) 16%, transparent\)/);
+    expect(block).not.toMatch(/text-decoration-color:\s*var\(--color-foreground\)/);
+    expect(block).toMatch(/font-weight:\s*500/);
     expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
     expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
     // Prose's `transition: color, text-decoration` would snap the row fill

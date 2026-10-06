@@ -13,6 +13,11 @@ vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
+const mockCreateRegistrationUser = vi.fn();
+vi.mock('../../core/services/account-bootstrap-service.js', () => ({
+  createRegistrationUser: (...args: unknown[]) => mockCreateRegistrationUser(...args),
+}));
+
 const mockBcryptHash = vi.fn();
 const mockBcryptCompare = vi.fn();
 vi.mock('bcrypt', () => ({
@@ -25,6 +30,7 @@ vi.mock('bcrypt', () => ({
 const mockGenerateAccessToken = vi.fn().mockResolvedValue('mock-access-token');
 const mockGenerateRefreshToken = vi.fn().mockResolvedValue({ token: 'mock-refresh-token', jti: 'mock-jti' });
 const mockVerifyRefreshToken = vi.fn();
+const mockRotateRefreshToken = vi.fn();
 const mockRevokeToken = vi.fn();
 const mockRevokeAllUserTokens = vi.fn();
 const mockCleanupExpiredTokens = vi.fn();
@@ -33,6 +39,8 @@ vi.mock('../../core/plugins/auth.js', () => ({
   generateAccessToken: (...a: unknown[]) => mockGenerateAccessToken(...a),
   generateRefreshToken: (...a: unknown[]) => mockGenerateRefreshToken(...a),
   verifyRefreshToken: (...a: unknown[]) => mockVerifyRefreshToken(...a),
+  rotateRefreshToken: (...a: unknown[]) => mockRotateRefreshToken(...a),
+  RefreshSessionBusyError: class extends Error {},
   revokeToken: (...a: unknown[]) => mockRevokeToken(...a),
   revokeAllUserTokens: (...a: unknown[]) => mockRevokeAllUserTokens(...a),
   cleanupExpiredTokens: (...a: unknown[]) => mockCleanupExpiredTokens(...a),
@@ -132,6 +140,20 @@ describe('Auth routes', () => {
     mockGenerateAccessToken.mockResolvedValue('mock-access-token');
     mockGenerateRefreshToken.mockResolvedValue({ token: 'mock-refresh-token', jti: 'mock-jti' });
     mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'open', allowRegistration: true });
+    mockCreateRegistrationUser.mockImplementation(async (input: {
+      username: string;
+      email: string | null;
+      displayName: string | null;
+    }) => ({
+      kind: 'created',
+      user: {
+        id: TEST_USER.id,
+        username: input.username,
+        role: TEST_USER.role,
+        email: input.email,
+        display_name: input.displayName,
+      },
+    }));
   });
 
   // ==========================================================================
@@ -141,12 +163,7 @@ describe('Auth routes', () => {
   describe('POST /api/auth/register', () => {
     it('should create a user and return 201 with accessToken and user', async () => {
       mockBcryptHash.mockResolvedValue('hashed-password');
-      // First query: INSERT user RETURNING id, username, role, email, display_name
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
-      });
-      // Second query: INSERT user_settings
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // The transactional bootstrap service owns all registration writes.
 
       const response = await app.inject({
         method: 'POST',
@@ -178,10 +195,10 @@ describe('Auth routes', () => {
 
     it('should return 409 when username is already taken', async () => {
       mockBcryptHash.mockResolvedValue('hashed-password');
-      // Simulate PostgreSQL unique constraint violation (code 23505)
+      // Simulate PostgreSQL unique constraint violation (code 23505).
       const duplicateError = new Error('duplicate key value violates unique constraint') as Error & { code: string };
       duplicateError.code = '23505';
-      mockQuery.mockRejectedValueOnce(duplicateError);
+      mockCreateRegistrationUser.mockRejectedValueOnce(duplicateError);
 
       const response = await app.inject({
         method: 'POST',
@@ -216,10 +233,7 @@ describe('Auth routes', () => {
 
     it('should create a user with email and displayName when provided', async () => {
       mockBcryptHash.mockResolvedValue('hashed-password');
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: 'user@example.com', display_name: 'Test User' }],
-      });
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // The default service mock reflects normalized optional fields.
 
       const response = await app.inject({
         method: 'POST',
@@ -244,11 +258,10 @@ describe('Auth routes', () => {
     });
 
     it('should return 409 when email is already in use', async () => {
-      mockBcryptHash.mockResolvedValue('hashed-password');
       const duplicateError = new Error('duplicate key value violates unique constraint') as Error & { code: string; detail: string };
       duplicateError.code = '23505';
       duplicateError.detail = 'Key (email)=(user@example.com) already exists.';
-      mockQuery.mockRejectedValueOnce(duplicateError);
+      mockCreateRegistrationUser.mockRejectedValueOnce(duplicateError);
 
       const response = await app.inject({
         method: 'POST',
@@ -294,13 +307,31 @@ describe('Auth routes', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+    it('returns the same 403 when setup closes bootstrap after the preflight', async () => {
+      mockGetEffectiveRegistrationPolicy.mockResolvedValue({
+        mode: 'closed',
+        allowRegistration: true,
+        bootstrap: true,
+      });
+      mockCreateRegistrationUser.mockResolvedValueOnce({ kind: 'registration_disabled' });
+      mockBcryptHash.mockResolvedValue('hashed-password');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'lost-bootstrap-race', password: 'securepassword' },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toBe('registration_disabled');
+      expect(mockBcryptHash).toHaveBeenCalledWith('securepassword', 12);
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+    });
+
     it('should return 201 when registration is allowed (mode open)', async () => {
       mockGetEffectiveRegistrationPolicy.mockResolvedValue({ mode: 'open', allowRegistration: true });
       mockBcryptHash.mockResolvedValue('hashed-password');
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
-      });
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // The default service mock returns a regular user.
 
       const response = await app.inject({
         method: 'POST',
@@ -426,22 +457,17 @@ describe('Auth routes', () => {
   // POST /refresh
   // ==========================================================================
 
+  // Rotation semantics (single-use claim, reuse, deactivation, missing user)
+  // run against real PostgreSQL in auth-refresh.test.ts; these cover the
+  // route's HTTP mapping only.
   describe('POST /api/auth/refresh', () => {
-    it('should rotate tokens and return a new accessToken', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        jti: 'old-jti',
-        family: 'token-family-1',
+    it('should set the rotated refresh cookie and return the new session', async () => {
+      const user = { id: TEST_USER.id, username: TEST_USER.username, role: 'user', email: null, displayName: null };
+      mockRotateRefreshToken.mockResolvedValue({
+        accessToken: 'new-access-token',
+        refreshToken: 'new-refresh-token',
+        user,
       });
-      // SELECT user by id
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
-      });
-      mockRevokeToken.mockResolvedValue(undefined);
-      mockGenerateAccessToken.mockResolvedValue('new-access-token');
-      mockGenerateRefreshToken.mockResolvedValue({ token: 'new-refresh-token', jti: 'new-jti' });
 
       const response = await app.inject({
         method: 'POST',
@@ -450,30 +476,11 @@ describe('Auth routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.accessToken).toBe('new-access-token');
-      expect(body.user).toEqual({
-        id: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        email: null,
-        displayName: null,
-      });
-
-      // Verify old token was revoked
-      expect(mockRevokeToken).toHaveBeenCalledWith('old-jti');
-
-      // Verify new refresh cookie was set
+      expect(mockRotateRefreshToken).toHaveBeenCalledWith('valid-refresh-token');
+      expect(JSON.parse(response.body)).toEqual({ accessToken: 'new-access-token', user });
       const setCookieHeader = response.headers['set-cookie'];
-      expect(setCookieHeader).toBeDefined();
       const cookieStr = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
       expect(cookieStr).toContain('kb_refresh=new-refresh-token');
-
-      // Verify family was passed for rotation tracking
-      expect(mockGenerateRefreshToken).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: TEST_USER.id }),
-        'token-family-1',
-      );
     });
 
     it('should return 401 when no refresh cookie is present', async () => {
@@ -487,78 +494,18 @@ describe('Auth routes', () => {
       expect(body.error).toContain('No refresh token');
     });
 
-    it('should return 401 when refresh token is invalid or expired', async () => {
-      mockVerifyRefreshToken.mockRejectedValue(new Error('Token expired'));
+    it('should return 401 without a cookie when rotation rejects the token', async () => {
+      mockRotateRefreshToken.mockRejectedValue(new Error('Refresh token reuse detected - family revoked'));
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'expired-token' },
+        cookies: { kb_refresh: 'replayed-token' },
       });
 
       expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-    });
-
-    it('should return 401 when user no longer exists', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: 'deleted-user-id',
-        username: 'deleted',
-        role: 'user',
-        jti: 'some-jti',
-        family: 'some-family',
-      });
-      // User lookup returns empty
-      mockQuery.mockResolvedValueOnce({ rows: [] });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'valid-token-deleted-user' },
-      });
-
-      expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-    });
-
-    // PR #311 Finding #3 — defence-in-depth: deactivated users must not be
-    // able to mint fresh access tokens via /refresh even if their refresh
-    // JTI row somehow survives deactivation.
-    it('should return 401 when user is deactivated', async () => {
-      mockVerifyRefreshToken.mockResolvedValue({
-        sub: TEST_USER.id,
-        username: TEST_USER.username,
-        role: TEST_USER.role,
-        jti: 'some-jti',
-        family: 'some-family',
-      });
-      // User exists but is deactivated
-      mockQuery.mockResolvedValueOnce({
-        rows: [
-          {
-            id: TEST_USER.id,
-            username: TEST_USER.username,
-            role: TEST_USER.role,
-            email: null,
-            display_name: null,
-            deactivated_at: new Date('2026-01-01T00:00:00Z'),
-          },
-        ],
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/auth/refresh',
-        cookies: { kb_refresh: 'valid-token-deactivated-user' },
-      });
-
-      expect(response.statusCode).toBe(401);
-      const body = JSON.parse(response.body);
-      expect(body.error).toContain('Invalid refresh token');
-      // The deactivated-user refresh must not mint a new access token.
-      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+      expect(JSON.parse(response.body).error).toContain('Invalid refresh token');
+      expect(response.headers['set-cookie']).toBeUndefined();
     });
   });
 
@@ -611,9 +558,7 @@ describe('Auth routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Logged out');
 
-      // Verify specific refresh JTI was revoked
-      expect(mockRevokeToken).toHaveBeenCalledWith('refresh-jti');
-      // Verify all user tokens were revoked
+      // Every token of the cookie's user (the presented JTI included) was revoked
       expect(mockRevokeAllUserTokens).toHaveBeenCalledWith(TEST_USER.id);
     });
 

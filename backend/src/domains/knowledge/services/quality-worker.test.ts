@@ -5,7 +5,6 @@ import {
   parseQualityScores,
   processBatch,
   forceQualityRescan,
-  startQualityWorker,
   stopQualityWorker,
 } from './quality-worker.js';
 
@@ -271,7 +270,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
         "SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE confluence_id = 'q1'",
@@ -279,6 +278,31 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(result.rows[0].quality_status).toBe('analyzed');
       expect(result.rows[0].quality_score).toBe(75);
       expect(result.rows[0].quality_retry_count).toBe(0);
+    });
+
+    it('takes at most admin_settings.quality_batch_size pages per run and 5 when the row is absent', async () => {
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      for (let i = 0; i < 7; i++) {
+        await query(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+           VALUES ($1, $2, 'Batch Page', $3, $4, 'pending')`,
+          [`batch-${i}`, testSpaceKey, longContent, `<p>${longContent}</p>`],
+        );
+      }
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('quality_batch_size', '2')`,
+      );
+
+      expect(await processBatch()).toEqual({ processed: 2, errors: 0 });
+
+      // No row → the hard default of 5 bounds the remaining backlog.
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'quality_batch_size'`);
+      expect(await processBatch()).toEqual({ processed: 5, errors: 0 });
+
+      const left = await query<{ n: string }>(
+        "SELECT COUNT(*)::text AS n FROM pages WHERE quality_status = 'pending'",
+      );
+      expect(left.rows[0].n).toBe('0');
     });
 
     it('should not pick up failed pages that have exhausted retries', async () => {
@@ -290,7 +314,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(0);
+      expect(processed).toEqual({ processed: 0, errors: 0 });
 
       // Status should remain failed
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
@@ -310,7 +334,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
         "SELECT quality_status, quality_retry_count FROM pages WHERE confluence_id = 'retry1'",
@@ -333,7 +357,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number }>(
         "SELECT quality_status, quality_score FROM pages WHERE confluence_id = 'stuck-analyzing'",
@@ -354,7 +378,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(0);
+      expect(processed).toEqual({ processed: 0, errors: 0 });
 
       const result = await query<{ quality_status: string }>(
         "SELECT quality_status FROM pages WHERE confluence_id = 'fresh-analyzing'",
@@ -375,7 +399,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string }>(
         "SELECT quality_status FROM pages WHERE confluence_id = 'changed-failed'",
@@ -441,7 +465,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       const pageId = insertResult.rows[0].id;
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
         'SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE id = $1',
@@ -481,19 +505,6 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
       // r3: already pending, unchanged
       expect(result.rows[2].quality_status).toBe('pending');
-    });
-  });
-
-  describe('worker lifecycle', () => {
-    it('should start and stop without errors', () => {
-      startQualityWorker(999); // large interval so it doesn't fire
-      stopQualityWorker();
-    });
-
-    it('should be idempotent on start', () => {
-      startQualityWorker(999);
-      startQualityWorker(999); // second call should be a no-op
-      stopQualityWorker();
     });
   });
 });

@@ -1,36 +1,15 @@
-import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const { cacheStore } = vi.hoisted(() => ({
-  cacheStore: new Map<string, unknown>(),
-}));
-
-vi.mock('../../core/services/redis-cache.js', () => ({
-  getRedisClient: () => null,
-  setRedisClient: vi.fn(),
-  RedisCache: class {
-    async get(userId: string, type: string, identifier: string) {
-      return cacheStore.get(`${userId}:${type}:${identifier}`) ?? null;
-    }
-    async set(userId: string, type: string, identifier: string, data: unknown) {
-      cacheStore.set(`${userId}:${type}:${identifier}`, data);
-    }
-    async invalidate(userId: string, type: string) {
-      for (const key of [...cacheStore.keys()]) {
-        if (key.startsWith(`${userId}:${type}:`)) cacheStore.delete(key);
-      }
-    }
-    async invalidateAcrossUsers() {}
-  },
-}));
 import {
   isDbAvailable,
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
 import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
 import { setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
@@ -38,15 +17,65 @@ import { resetNotionImportStatusForTests } from '../../domains/knowledge/service
 import { buildKnowledgeTestApp, insertUser } from './pages.test-helpers.js';
 import { notionRoutes } from './notion.js';
 
-const dbAvailable = await isDbAvailable();
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
+const dependenciesAvailable = dbAvailable && redisAvailable;
 const TOKEN = 'secret_route_ntn_must_never_appear_on_get';
+const testUserIds = new Set<string>();
+let redis: RedisClientType;
+
+beforeAll(async () => {
+  if (!dependenciesAvailable) return;
+  redis = createClient({
+    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    socket: { connectTimeout: 1_000, reconnectStrategy: false },
+  });
+  await redis.connect();
+  setRedisClient(redis);
+});
 
 beforeEach(() => {
-  cacheStore.clear();
+  testUserIds.clear();
   resetNotionImportStatusForTests();
 });
 
-describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', () => {
+afterEach(async () => {
+  if (!dependenciesAvailable) return;
+  for (const userId of testUserIds) {
+    await vi.waitFor(async () => {
+      expect(await redis.exists(`notion:import:lock:${userId}`)).toBe(0);
+    }, { timeout: 10_000, interval: 20 });
+    await redis.del([
+      `kb:${userId}:notion_tree:workspace`,
+      `notion:import:status:${userId}`,
+      `notion:import:lock:${userId}`,
+    ]);
+  }
+  resetNotionImportStatusForTests();
+});
+
+afterAll(async () => {
+  setNotionApiBaseUrlForTests(null);
+  setRedisClient(null);
+  if (redis?.isOpen) await redis.quit();
+});
+
+async function insertNotionUser(username: string): Promise<string> {
+  const userId = await insertUser(username);
+  testUserIds.add(userId);
+  return userId;
+}
+
+async function buildNotionTestApp(getUserId: () => string): Promise<FastifyInstance> {
+  return buildKnowledgeTestApp(getUserId, async (fastify) => {
+    fastify.redis = redis;
+    await fastify.register(notionRoutes, { prefix: '/api' });
+  });
+}
+
+describe.skipIf(!dependenciesAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', () => {
   let server: FakeNotionServer;
   let userId: string;
 
@@ -64,7 +93,7 @@ describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', (
 
   beforeEach(async () => {
     await truncateAllTables();
-    userId = await insertUser('notion-route-user');
+    userId = await insertNotionUser('notion-route-user');
   });
 
   afterEach(() => {
@@ -72,9 +101,7 @@ describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', (
   });
 
   async function app() {
-    return buildKnowledgeTestApp(() => userId, async (fastify) => {
-      await fastify.register(notionRoutes, { prefix: '/api' });
-    });
+    return buildNotionTestApp(() => userId);
   }
 
   it('GET never echoes the token and reports hasToken only', async () => {
@@ -165,20 +192,36 @@ describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', (
     }
   });
 
-  it('GET /notion/connection handler source never decrypts or names the secret', () => {
-    const src = readFileSync(new URL('./notion.ts', import.meta.url), 'utf8');
-    const start = src.indexOf("fastify.get('/notion/connection'");
-    const end = src.indexOf("fastify.put('/notion/connection'");
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    const connectionGet = src.slice(start, end);
-    expect(connectionGet).not.toContain('getDecryptedNotionToken');
-    expect(connectionGet).not.toContain('decryptPat');
-    expect(connectionGet).toContain('getNotionConnectionStatus');
+  it('keeps connection state private to the authenticated user', async () => {
+    const ownerId = userId;
+    const otherUserId = await insertNotionUser('notion-route-other-user');
+    const instance = await app();
+    try {
+      const connected = await instance.inject({
+        method: 'PUT',
+        url: '/api/notion/connection',
+        payload: { token: TOKEN },
+      });
+      expect(connected.statusCode).toBe(200);
+
+      userId = otherUserId;
+      const otherStatus = await instance.inject({ method: 'GET', url: '/api/notion/connection' });
+      expect(otherStatus.statusCode).toBe(200);
+      expect(otherStatus.json()).toEqual({ hasToken: false });
+      expect(otherStatus.body).not.toContain(TOKEN);
+
+      userId = ownerId;
+      const ownerStatus = await instance.inject({ method: 'GET', url: '/api/notion/connection' });
+      expect(ownerStatus.json()).toEqual({ hasToken: true });
+      expect(ownerStatus.body).not.toContain(TOKEN);
+    } finally {
+      userId = ownerId;
+      await instance.close();
+    }
   });
 });
 
-describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
+describe.skipIf(!dependenciesAvailable)('GET /api/notion/tree (#1463)', () => {
   let server: FakeNotionServer;
   let userId: string;
 
@@ -239,7 +282,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
 
   beforeEach(async () => {
     await truncateAllTables();
-    userId = await insertUser('notion-tree-user');
+    userId = await insertNotionUser('notion-tree-user');
     server.requests.length = 0;
   });
 
@@ -249,9 +292,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
   });
 
   async function app() {
-    return buildKnowledgeTestApp(() => userId, async (fastify) => {
-      await fastify.register(notionRoutes, { prefix: '/api' });
-    });
+    return buildNotionTestApp(() => userId);
   }
 
   it('returns 400 when no token is stored and never echoes a secret', async () => {
@@ -346,7 +387,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
   });
 });
 
-describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', () => {
+describe.skipIf(!dependenciesAvailable)('GET /api/notion/tree upstream failures (#1463)', () => {
   let server: FakeNotionServer;
   let userId: string;
 
@@ -361,7 +402,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', 
 
   beforeEach(async () => {
     await truncateAllTables();
-    userId = await insertUser('notion-tree-5xx-user');
+    userId = await insertNotionUser('notion-tree-5xx-user');
     server = await startFakeNotionServer({
       validToken: TOKEN,
       searchResults: [
@@ -386,9 +427,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', 
   });
 
   it('returns the Search tree when Notion page bodies are unavailable and never echoes the token', async () => {
-    const instance = await buildKnowledgeTestApp(() => userId, async (fastify) => {
-      await fastify.register(notionRoutes, { prefix: '/api' });
-    });
+    const instance = await buildNotionTestApp(() => userId);
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
       const res = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
@@ -404,7 +443,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', 
   });
 });
 
-describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
+describe.skipIf(!dependenciesAvailable)('POST /api/notion/import (#1465)', () => {
   let server: FakeNotionServer;
   let userId: string;
 
@@ -452,7 +491,7 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
 
   beforeEach(async () => {
     await truncateAllTables();
-    userId = await insertUser('notion-import-route-user');
+    userId = await insertNotionUser('notion-import-route-user');
     server.requests.length = 0;
   });
 
@@ -463,9 +502,7 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
   });
 
   async function app() {
-    return buildKnowledgeTestApp(() => userId, async (fastify) => {
-      await fastify.register(notionRoutes, { prefix: '/api' });
-    });
+    return buildNotionTestApp(() => userId);
   }
 
   type ImportItem = {
@@ -475,6 +512,22 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     reason?: string;
     importedAs?: string;
   };
+
+  async function waitForImportComplete(instance: FastifyInstance): Promise<{ items: ImportItem[] }> {
+    const done = await vi.waitFor(
+      async () => {
+        const res = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as { status: string; items?: ImportItem[]; error?: string };
+        expect(body.status).not.toBe('importing');
+        return body;
+      },
+      { timeout: 10_000, interval: 20 },
+    );
+    expect(done.status).toBe('complete');
+    expect(Array.isArray(done.items)).toBe(true);
+    return { items: done.items as ImportItem[] };
+  }
 
   async function importUntilComplete(
     instance: FastifyInstance,
@@ -488,18 +541,7 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     expect(post.statusCode).toBe(202);
     expect(post.json()).toEqual({ status: 'importing' });
     expect(post.body).not.toContain(TOKEN);
-    const done = await vi.waitFor(
-      async () => {
-        const res = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
-        const body = res.json() as { status: string; items?: ImportItem[]; error?: string };
-        expect(body.status).not.toBe('importing');
-        return body;
-      },
-      { timeout: 10_000, interval: 20 },
-    );
-    expect(done.status).toBe('complete');
-    expect(Array.isArray(done.items)).toBe(true);
-    return { items: done.items as ImportItem[] };
+    return waitForImportComplete(instance);
   }
 
 
@@ -609,12 +651,51 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     }
   });
 
-  it('GET handlers still never decrypt the token after the import route is added', () => {
-    const src = readFileSync(new URL('./notion.ts', import.meta.url), 'utf8');
-    const start = src.indexOf("fastify.get('/notion/connection'");
-    const end = src.indexOf("fastify.put('/notion/connection'");
-    const connectionGet = src.slice(start, end);
-    expect(connectionGet).not.toContain('getDecryptedNotionToken');
-    expect(src).not.toMatch(/queryDatabase|\/v1\/databases\/.*query/);
+  it('holds one real import lock per authenticated user and exposes its status', async () => {
+    const ownerId = userId;
+    const otherUserId = await insertNotionUser('notion-import-route-other-user');
+    const instance = await app();
+    server.state.lookupDelayMs = 250;
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const accepted = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'], visibility: 'private' },
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(accepted.json()).toEqual({ status: 'importing' });
+
+      const active = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+      expect(active.statusCode).toBe(200);
+      expect(active.json()).toEqual({ status: 'importing' });
+
+      const duplicate = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'], visibility: 'private' },
+      });
+      expect(duplicate.statusCode).toBe(409);
+      expect(duplicate.json()).toMatchObject({
+        message: 'Notion import already in progress',
+        statusCode: 409,
+      });
+
+      userId = otherUserId;
+      const otherStatus = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+      expect(otherStatus.statusCode).toBe(200);
+      expect(otherStatus.json()).toEqual({ status: 'idle' });
+
+      userId = ownerId;
+      const completed = await waitForImportComplete(instance);
+      expect(completed.items[0]).toMatchObject({
+        notionPageId: 'notes',
+        status: 'success',
+      });
+    } finally {
+      server.state.lookupDelayMs = undefined;
+      userId = ownerId;
+      await instance.close();
+    }
   });
 });

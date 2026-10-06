@@ -102,6 +102,10 @@ export type OnboardingStatePatch = z.infer<typeof OnboardingStatePatchSchema>;
 
 export const UserSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
+  // #1623: FALSE = standalone mode. Not a credential state — the URL/PAT
+  // above are retained across a toggle, and `confluenceConnected` on the
+  // response schema still reports whether credentials exist.
+  confluenceEnabled: z.boolean(),
   confluencePat: z.string().nullable(), // Only sent on update, never returned
   selectedSpaces: z.array(z.string()),
   theme: z.string(),
@@ -124,6 +128,9 @@ export const UserSettingsSchema = z.object({
 export const UpdateSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable().optional(),
   confluencePat: z.string().nullable().optional(),
+  // #1623: the toggle. Optional like every other key here — an omitted key
+  // must leave the column alone.
+  confluenceEnabled: z.boolean().optional(),
   selectedSpaces: z.array(z.string()).optional(),
   theme: z.string().optional(),
   syncIntervalMin: z.number().int().min(1).max(1440).optional(),
@@ -162,6 +169,11 @@ export const SettingsResponseSchema = z.object({
   theme: z.string(),
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),
+  // #1623: whether the Confluence integration is on for this user. FALSE is
+  // standalone mode: every feature keeps working on the local corpus, nothing
+  // syncs. Independent of `confluenceConnected` above, which only says
+  // whether credentials are stored — a user can be connected and disabled.
+  confluenceEnabled: z.boolean(),
   showSpaceHomeContent: z.boolean(),
   customPrompts: CustomPromptsSchema,
   inlineCompletionEnabled: z.boolean(),

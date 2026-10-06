@@ -77,7 +77,7 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = (...args: unknown[]) => mockGetCachedResponse(...args);
     setCachedResponse = vi.fn();
-    acquireLock = vi.fn().mockResolvedValue(true);
+    acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
     releaseLock = vi.fn().mockResolvedValue(undefined);
     waitForCachedResponse = vi.fn().mockResolvedValue(null);
     clearAll = vi.fn();
@@ -104,6 +104,10 @@ vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => 
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
+}));
+
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
@@ -239,7 +243,8 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(response.statusCode).toBe(200);
 
     expect(selects[0]!.sql).toContain('WHERE id = $1');
-    expect(selects[0]!.params).toEqual([11]);
+    // The lookup also binds the caller's readable spaces and id (visibility gate).
+    expect(selects[0]!.params[0]).toBe(11);
     const insertCall = (mockQuery.mock.calls as unknown[][]).find(
       (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
     );

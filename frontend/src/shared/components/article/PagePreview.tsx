@@ -70,7 +70,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
             )}
             data-testid="page-preview-card"
           >
-            <div className="nm-card-elevated overflow-hidden p-3">
+            <div className="nm-popover-glass overflow-hidden p-3">
               {isLoading ? (
                 <div className="space-y-2">
                   <div className="h-4 w-3/4 animate-pulse rounded bg-foreground/10" />
@@ -98,8 +98,11 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
                     <span className={cn('rounded px-1.5 py-0.5 text-[11px]', neutralChipInk)}>
                       {page.spaceKey}
                     </span>
+                    {/* min-h-0 py-0.5 keeps this row at its prior 23px: the
+                        inspector recipe's 24px floor would grow the hover
+                        card's meta row by a fraction of a pixel. */}
                     {page.lastModifiedAt && (
-                      <FreshnessBadge lastModified={page.lastModifiedAt} />
+                      <FreshnessBadge lastModified={page.lastModifiedAt} className="min-h-0 py-0.5" />
                     )}
                   </div>
                 </>

@@ -45,7 +45,7 @@ interface ConfluenceAttachment {
   metadata?: { mediaType: string; comment?: string };
   extensions?: { mediaType: string; fileSize: number };
   _links?: { download: string };
-  version?: { when: string };
+  version?: { number?: number; when: string };
 }
 
 /**
@@ -422,7 +422,7 @@ export class ConfluenceClient {
 
     while (true) {
       const page = await this.fetch<PaginatedResponse<ConfluenceAttachment>>(
-        `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?limit=${limit}&start=${start}`,
+        `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?expand=version&limit=${limit}&start=${start}`,
       );
       allResults.push(...page.results);
       if (page.results.length < limit) break;
@@ -993,6 +993,14 @@ export class ConfluenceClient {
       start += limit;
     }
     return out;
+  }
+
+  /** Fetch one exact historical page revision for conditional-write recovery. */
+  async getHistoricalPage(pageId: string, version: number): Promise<ConfluencePage> {
+    return this.fetch(
+      `/rest/api/content/${encodeURIComponent(pageId)}?status=historical&version=${version}&expand=body.storage,version`,
+      { method: 'GET' },
+    );
   }
 
   /** #722: fetch a historical version's storage-format body (read-only). */

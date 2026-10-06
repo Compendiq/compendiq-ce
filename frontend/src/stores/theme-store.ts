@@ -115,14 +115,14 @@ export const THEMES: ThemeMeta[] = [
     // Hex values must match the rendered surfaces in index.css — the picker
     // chip is the only way users see a surface before applying the theme, and
     // a test compares these against the tokens rather than trusting either.
-    preview: { bg: '#0f0f10', card: '#161617', primary: '#86aec8', accent: '#e7e9eb' },
+    preview: { bg: '#0f0f10', card: '#19191a', primary: '#86aec8', accent: '#e7e9eb' },
   },
   {
     id: 'paper',
     label: 'Paper',
-    description: 'Warm paper surfaces with one Steel accent',
+    description: 'Cool Nordic Slate surfaces with one Steel accent',
     category: 'light',
-    preview: { bg: '#f8f8f7', card: '#ffffff', primary: '#3f627c', accent: '#191918' },
+    preview: { bg: '#f4f6f8', card: '#ffffff', primary: '#31638a', accent: '#111827' },
   },
 ];
 

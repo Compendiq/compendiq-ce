@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -8,6 +8,7 @@ const LOCK_PREFIX = 'llm:lock:';
 const LOCK_TTL = 120; // seconds — safety net if holder crashes
 const LOCK_POLL_INTERVAL_MS = 1_000; // 1 second between polls
 const LOCK_POLL_TIMEOUT_MS = 60_000; // give up waiting after 60 seconds
+const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
 export interface CachedLlmResponse {
   content: string;
@@ -54,12 +55,24 @@ export function buildLlmCacheKey(
 
 /**
  * Build a cache key for a RAG Q&A call.
- * Based on: model + question + sorted top-K doc IDs + optional sub-page context.
- * This means the cache automatically invalidates when documents are re-embedded
- * (because the top-K results will change).
  *
- * The `includeSubPages` and `pageId` parameters ensure that identical questions
- * produce different cache keys when sub-page context is toggled on/off.
+ * The hash of `prompt` — the system and user text exactly as sent — is what
+ * guarantees a hit never widens the current caller's grounding. It is
+ * REQUIRED because the answer cache is shared across users while the prompt
+ * is assembled per caller: the page tree behind `pageId`, the caller's custom
+ * system prompt, fetched external docs and web results all depend on who asks
+ * and what they may read. A key that names those inputs (a page id, a URL
+ * list) instead of carrying what they produced served one caller's answer,
+ * grounded in a private or restricted page tree, to a caller whose own
+ * assembly had excluded it. Two callers share an entry only when the text
+ * sent to the model is identical, and an edit or a permission change that
+ * alters the assembled text moves the key.
+ *
+ * Every other component is retained namespacing: it can only cause misses,
+ * never let two different prompts share an entry. The model, provider,
+ * thinking flag and image digests name inputs the text does not carry; the
+ * question, doc IDs, external URLs, reference text, deep-search flag and
+ * assembly counts are already reflected in the text.
  *
  * When `provider` is supplied (issue #217), it is folded into the hash so
  * that admin flips of the `chat` use-case provider do not serve a stale
@@ -69,9 +82,9 @@ export function buildRagCacheKey(
   model: string,
   question: string,
   docIds: string[],
-  options?: {
-    includeSubPages?: boolean;
-    pageId?: string;
+  options: {
+    /** The system and user message text exactly as sent to the model. */
+    prompt: { system: string; user: string };
     externalUrls?: string[];
     searchWeb?: boolean;
     provider?: string;
@@ -102,7 +115,7 @@ export function buildRagCacheKey(
     /**
      * #1115 P4: the RETRIEVED images the request actually carried, as
      * `retrievedImagesCacheComponent` renders them (count + a hash of the
-     * page/store/key/size tuples), or `undefined` when none were sent.
+     * page/store/key/content-digest tuples), or `undefined` when none were sent.
      *
      * The doc-id component above says which pages ground the answer and
      * nothing about whether the model could SEE them, so without this a
@@ -131,26 +144,26 @@ export function buildRagCacheKey(
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
-  const subPageSuffix = options?.includeSubPages && options?.pageId
-    ? `subpages:${options.pageId}`
-    : '';
-  const externalSuffix = options?.externalUrls?.length
+  const promptSuffix = `prompt:${createHash('sha256')
+    .update(JSON.stringify([options.prompt.system, options.prompt.user]))
+    .digest('hex')}`;
+  const externalSuffix = options.externalUrls?.length
     ? `ext:${[...options.externalUrls].sort().join(',')}`
     : '';
-  const webSuffix = options?.searchWeb ? 'web:1' : '';
-  const providerSuffix = options?.provider ? `provider:${options.provider}` : '';
+  const webSuffix = options.searchWeb ? 'web:1' : '';
+  const providerSuffix = options.provider ? `provider:${options.provider}` : '';
   // Thinking-on responses are slower and reason differently — they must live
   // in a separate cache namespace so a prior thinking-off answer can't be
   // replayed when the user toggles Think on (and vice versa).
-  const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
-  const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
-  const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
-  const deepSuffix = options?.deepSearch ? 'deep:1' : '';
-  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
-  const retrievedImagesSuffix = options?.retrievedImages ? `rimg:${options.retrievedImages}` : '';
-  const referenceSuffix = options?.referenceText ? `ref:${options.referenceText}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
+  const thinkingSuffix = options.thinking ? 'think:1' : '';
+  const contextSuffix = options.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
+  const assembledSuffix = options.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
+  const pinnedSuffix = options.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
+  const deepSuffix = options.deepSearch ? 'deep:1' : '';
+  const imageSuffix = options.imageHash ? `img:${options.imageHash}` : '';
+  const retrievedImagesSuffix = options.retrievedImages ? `rimg:${options.retrievedImages}` : '';
+  const referenceSuffix = options.referenceText ? `ref:${options.referenceText}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
 }
 
 export class LlmCache {
@@ -191,28 +204,36 @@ export class LlmCache {
 
   /**
    * Acquire a Redis-based lock for a cache key using SET NX EX.
-   * Returns true if the lock was acquired, false if another holder has it.
+   * Returns a unique ownership token if acquired, or null if another holder
+   * owns the lock. The token must be passed to releaseLock so an expired
+   * holder cannot delete a successor's live lock.
    */
-  async acquireLock(cacheKey: string, ttl: number = LOCK_TTL): Promise<boolean> {
+  async acquireLock(cacheKey: string, ttl: number = LOCK_TTL): Promise<string | null> {
+    const token = randomUUID();
     try {
       const lockKey = LOCK_PREFIX + cacheKey;
-      // SET key value NX EX ttl — atomic "set if not exists" with expiry
-      const result = await this.redis.set(lockKey, '1', { NX: true, EX: ttl });
-      return result !== null;
+      // SET key token NX EX ttl — atomic "set if not exists" with expiry
+      const result = await this.redis.set(lockKey, token, { NX: true, EX: ttl });
+      return result !== null ? token : null;
     } catch (err) {
       logger.error({ err, cacheKey }, 'LLM lock acquire error');
-      // On Redis failure, allow the caller to proceed (degrade gracefully)
-      return true;
+      // On Redis failure, allow the caller to proceed (degrade gracefully).
+      // A later release is still ownership-checked in case Redis recovers.
+      return token;
     }
   }
 
   /**
-   * Release the Redis lock for a cache key.
-   * Safe to call even if the lock was not held (no-op).
+   * Release the Redis lock only when token still identifies its current owner.
+   * The compare-and-delete Lua script is atomic, so a holder whose TTL expired
+   * cannot delete a successor's lock. Redis failures remain a no-op.
    */
-  async releaseLock(cacheKey: string): Promise<void> {
+  async releaseLock(cacheKey: string, token: string): Promise<void> {
     try {
-      await this.redis.del(LOCK_PREFIX + cacheKey);
+      await this.redis.eval(RELEASE_LOCK_SCRIPT, {
+        keys: [LOCK_PREFIX + cacheKey],
+        arguments: [token],
+      });
     } catch (err) {
       logger.error({ err, cacheKey }, 'LLM lock release error');
     }

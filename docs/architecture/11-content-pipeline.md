@@ -23,7 +23,7 @@ truth. Two writers move `body_html`:
 
 | Path | What it writes | What it must not write |
 |------|----------------|------------------------|
-| **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_embedding_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
+| **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_analysis_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
 | **Commit** (`POST /api/pages/:id/collab/commit`) | Snapshot HTML from the Y.Doc (do **not** bump `pages.version` yet). **Standalone:** `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. **Confluence:** GET remote version; if `version.number` moved vs current `pages.version` → 409 `{ code: 'confluence_modified', remoteVersion, localVersion }`, no `updatePage`, room stays live. Else `htmlToConfluence` + `uploadLocalImagesToConfluence` then **`client.updatePage` first** (pass the current local version; the client adds 1). On 5xx local version unchanged. On success one transaction: `body_html` / `body_text` / `body_storage` / `version = confPage.version.number` / `last_synced` / clear `local_modified_*` / summary+quality pending. Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Never increment `pages.version` before the remote write succeeds. |
 
 A non-collab `body_html` writer (PUT, restore, Apply, draft-publish) **409s**
@@ -469,7 +469,7 @@ not a fourth editor format and not a `pages.source = 'notion'` row.
 `backend/src/domains/knowledge/services/notion-block-converter.ts` takes
 already-fetched Notion block objects (nested `children` attached by the
 caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
-download intents, and a skip report. It never calls `api.notion.com`, and that
+and PDF download intents, and a skip report. It never calls `api.notion.com`, and that
 is enforced rather than asserted: `backend/eslint.config.js` restricts the
 global `fetch` and any HTTP-client import in that one file, so a violation fails
 lint instead of slipping past a regex over the module's own source.
@@ -489,7 +489,7 @@ compare-and-swap on the lock token. A missing Redis key is idle.
 The POST used to wait for every paced Notion call inside one HTTP request;
 nginx `proxy_read_timeout 300` then answered 504 while the importer kept
 running. Later UI batches merge results
-by normalized identity. Images are written through `putLocalAttachment`; the
+by normalized identity. Images and PDFs are written through `putLocalAttachment`; the
 converter only spells the URL the store already serves:
 
 `buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
@@ -508,6 +508,8 @@ converter only spells the URL the store already serves:
 | `divider` | `<hr>` |
 | `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
 | `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
+| `pdf` | `<p><a href="/api/local-attachments/…">` plus an attachment intent. Label is the caption, else the filename. `sourceUrl` must be `http(s)` |
+| `file` | Same as `pdf` when the Notion `name` or URL pathname ends in `.pdf`. Other file types stay omitted |
 | `child_page` | One existing `div.confluence-children-macro` per parent for successfully imported direct children (`data-depth="1"`, `data-sort="title"`). Nested columns share that one list. Nonchild or unavailable pages remain links |
 | `link_to_page`, page mentions | `<a href="/pages/{id}">` for imported identities, otherwise the Notion URL. These references never create or reparent articles; database links stay Notion URLs |
 | `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside one is enumerated and rendered like any other |
@@ -695,6 +697,11 @@ caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
 
 On `POST /llm/improvements/apply` the route:
 
+0. Authorizes a local write, meaning a standalone page or a synced page while
+   the caller's integration is off. The `PUT /pages/:id` rule applies:
+   `userCanAccessPage` AND `userCanEditPage`. A denial answers the same 404 a
+   missing page gets, before any of the steps below can answer 409 or 422.
+   The rule is re-checked on the transaction client under the page fence.
 1. Re-derives the same token map from the **current** `body_html` stored in
    the DB (same deterministic order — no token map needs to be persisted).
 2. Calls `markdownToHtml(improvedMarkdown, { layoutSkeleton })` on the LLM
@@ -1119,8 +1126,27 @@ Two things this pipeline nonetheless owns, because the index depends on them:
 
 `buildPageImageUrl` (`core/services/image-references.ts`) is the exact inverse
 of that enumerator and shares its directory rule, so the reader's key and the
-citation's URL cannot drift. Design of record: ADR-025; operations:
-`docs/runbooks/image-index.md`.
+citation's URL cannot drift. Design of record: ADR-027 (ADR-025 is superseded
+in full — #1618 stage 2 retired the image-embedding space);
+operations: `docs/runbooks/image-analysis.md`.
+
+**Analysis text is DERIVED data, still never a conversion rule (ADR-027).**
+The paragraph above stays true of it. Every attachment writer raises
+`image_analysis_dirty` through `core/services/image-analysis-dirty.ts` and
+every body writer raises it inline, gated on `body_html`, and the reconcile
+(`domains/llm/services/image-analysis-reconcile.ts`) claims that flag before
+enumerating. A generative vision model reads the attachment's bytes at
+ingestion and its output is stored in `page_image_analyses` and composed by
+`embedPage` into `page_embeddings` rows — it is never written into
+`body_storage`, `body_html` or `body_text`, never shown in the editor, and
+never round-tripped to Confluence or Notion. `<img>` still converts to
+`<img>`; `htmlToEmbeddingText` still contributes only the alt text;
+`document-extractor.ts` still has no image branch; there is still no OCR
+*step in this pipeline* — the transcription lives beside the page as
+searchable evidence with `metadata.source = 'image_analysis'`, and the two
+enumerator rules above (URL-decoded key, store from the prefix) are exactly
+what the candidate's reconcile reuses to find the bytes. Design of record:
+ADR-027.
 
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

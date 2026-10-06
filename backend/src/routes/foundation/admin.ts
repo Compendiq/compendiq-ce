@@ -1,6 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query, getPool } from '../../core/db/postgres.js';
+import {
+  getPageWriterRuntimeId,
+  lockPageLifecycle,
+  lockPageWriterRuntime,
+  lockPageWrites,
+  PageWriteError,
+} from '../../core/services/page-write-admission.js';
 import { encryptPat, isEncryptedSecretFormat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
@@ -16,6 +23,7 @@ import {
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
+  getWorkerBatchSize,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
   getRagFetchWidth,
@@ -36,10 +44,10 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   invalidateRagImageIntakeCache,
-  getRagImageLegEnabled,
-  invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
+  getImageAnalysisMaxOutputTokens,
+  invalidateImageAnalysisMaxOutputTokensCache,
   resolveRagEfSearch,
   noteRagEfSearchRowSaved,
 } from '../../core/services/admin-settings-service.js';
@@ -55,10 +63,6 @@ import { listClientAssetManifest } from '../../core/services/client-model-assets
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
-import {
-  getImageEmbeddingTargetDimensions,
-  IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
-} from '../../core/services/image-embedding-target-dimensions.js';
 import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
@@ -109,6 +113,52 @@ const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRat
  * in-flight page write. Exported for the test that pins the pairing.
  */
 export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
+
+/**
+ * Global label changes are one authored mutation, not a partial bulk operation.
+ * Select before locking, then recheck membership while every selected page is
+ * serialized. A concurrent new member requires a retry, never an unlocked write.
+ */
+async function updateLabelAcrossPages(oldName: string, newName: string | null): Promise<number> {
+  const runtimeId = await getPageWriterRuntimeId();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockPageWriterRuntime(client, runtimeId, { newAdmission: true });
+    const selected = await client.query<{ id: number }>(
+      'SELECT id FROM pages WHERE $1 = ANY(labels) ORDER BY id',
+      [oldName],
+    );
+    const selectedIds = selected.rows.map((row) => row.id);
+    await lockPageLifecycle(client, selectedIds);
+    const current = await client.query<{ id: number }>(
+      'SELECT id FROM pages WHERE $1 = ANY(labels) ORDER BY id',
+      [oldName],
+    );
+    const locked = new Set(selectedIds);
+    if (current.rows.some((row) => !locked.has(row.id))) {
+      throw new PageWriteError(409, 'page_targets_changed', 'The label changed on another page. Retry the operation.');
+    }
+    const pageIds = current.rows.map((row) => row.id);
+    await lockPageWrites(client, pageIds);
+    const result = newName === null
+      ? await client.query(
+        'UPDATE pages SET labels = array_remove(labels, $1) WHERE id = ANY($2::int[]) AND $1 = ANY(labels)',
+        [oldName, pageIds],
+      )
+      : await client.query(
+        'UPDATE pages SET labels = array_replace(labels, $1, $2) WHERE id = ANY($3::int[]) AND $1 = ANY(labels)',
+        [oldName, newName, pageIds],
+      );
+    await client.query('COMMIT');
+    return result.rowCount ?? 0;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
@@ -322,26 +372,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request) => {
     const { oldName, newName } = LabelRenameSchema.parse(request.body);
 
-    // Replace oldName with newName in the labels array for all pages that have the old label
-    const result = await query(
-      `UPDATE pages
-       SET labels = array_replace(labels, $1, $2)
-       WHERE $1 = ANY(labels)`,
-      [oldName, newName],
-    );
+    const affectedPages = await updateLabelAcrossPages(oldName, newName);
 
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'label',
       undefined,
-      { action: 'rename', oldName, newName, affectedPages: result.rowCount },
+      { action: 'rename', oldName, newName, affectedPages },
       request,
     );
 
     return {
       message: `Label renamed from "${oldName}" to "${newName}"`,
-      affectedPages: result.rowCount ?? 0,
+      affectedPages,
     };
   });
 
@@ -349,25 +393,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request) => {
     const { name } = LabelNameParamSchema.parse(request.params);
 
-    const result = await query(
-      `UPDATE pages
-       SET labels = array_remove(labels, $1)
-       WHERE $1 = ANY(labels)`,
-      [name],
-    );
+    const affectedPages = await updateLabelAcrossPages(name, null);
 
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'label',
       undefined,
-      { action: 'delete', name, affectedPages: result.rowCount },
+      { action: 'delete', name, affectedPages },
       request,
     );
 
     return {
       message: `Label "${name}" removed from all pages`,
-      affectedPages: result.rowCount ?? 0,
+      affectedPages,
     };
   });
 
@@ -396,10 +435,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragRankingPriorWeight,
       ragImagesPerPageMax,
       ragImageIndexExternal,
-      ragImageLegEnabled,
       ragAnswerMaxImages,
-      imageEmbeddingTargetDimensions,
+      imageAnalysisMaxOutputTokens,
       efSearch,
+      qualityBatchSize,
+      summaryBatchSize,
+      imageAnalysisBatchSize,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -438,20 +479,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // from the release the worker ships in.
       getRagImagesPerPageMax(),
       getRagImageIndexExternal(),
-      // #1115 P3 — the retrieval half. Its own reader and its own cache: it is
-      // read once per hybrid search, where the intake pair is read once per
-      // page scanned, so sharing a cache entry would tie a hot-path read to an
-      // invalidation the worker triggers.
-      getRagImageLegEnabled(),
       // #1115 P4 — the ANSWER half: how many of the matched images the chat
-      // model is shown. A third reader rather than a widened one for the same
-      // reason again — it is read once per ask that reaches a completion, and
-      // it is the only one of the three whose 0 is meaningful.
+      // model is shown. Its own reader rather than a widened one — it is read
+      // once per ask that reaches a completion, and it is the one image knob
+      // whose 0 is meaningful.
       getRagAnswerMaxImages(),
-      // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
-      // per admin action, and a stale one would let a probe fired seconds after
-      // the width was saved measure the OLD width and type the column to it.
-      getImageEmbeddingTargetDimensions(),
+      // #1615 (ADR-027 D8) — the image-analysis output-token ceiling, through
+      // its own cached reader: the worker reads it once per batch, and an
+      // unparseable or out-of-range row reads as the default there, so this
+      // is the value the next batch will send as `max_tokens`.
+      getImageAnalysisMaxOutputTokens(),
       // #1285 — the `ef_search` floor, through its own cached reader for the
       // #1118 reason plus one of its own: this is the only knob on the panel
       // with a deprecated env var behind it, and the reader owns the
@@ -463,6 +500,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // resolved and nothing can be saved — the panel needs to know that to
       // offer the one-key write that retires it.
       resolveRagEfSearch(),
+      // Worker batch sizes — uncached like the retention getters: each is
+      // read once per worker batch, and the batch runs at most hourly.
+      getWorkerBatchSize('quality_batch_size'),
+      getWorkerBatchSize('summary_batch_size'),
+      getWorkerBatchSize('image_analysis_batch_size'),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -519,11 +561,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
-      // #1115 — the MRL truncation width the image leg requests, or null for
-      // the model's native width. Read through its own reader (which discards
-      // an out-of-range row) rather than off `map`, so the panel is shown the
-      // number the probe and P2's embedder will actually send.
-      imageEmbeddingTargetDimensions,
       // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
       reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
       // Issue #264 — retention for ADMIN_ACCESS_DENIED audit rows
@@ -544,6 +581,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
       // Per-user concurrent SSE-stream cap (#268)
       llmMaxConcurrentStreamsPerUser,
+      // Items per batch for the quality / summary / image-analysis workers (Settings → AI Models → Workers).
+      qualityBatchSize,
+      summaryBatchSize,
+      imageAnalysisBatchSize,
       // Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue settings.
       // Read via the cached getters so the response reflects the same value
       // every pod's `_limiter` is using (or will be using within ~1s of any
@@ -569,10 +610,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // #1115 P2 — the image-index intake knobs.
       ragImagesPerPageMax,
       ragImageIndexExternal,
-      // #1115 P3 — the retrieval half.
-      ragImageLegEnabled,
       // #1115 P4 — the answer half.
       ragAnswerMaxImages,
+      // #1615 — the image-analysis output-token ceiling (ADR-027 D8).
+      imageAnalysisMaxOutputTokens,
       // #1114 — which model each threshold was tuned against, and whether it
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
@@ -680,28 +721,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
         updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
       }
     }
-    // #1115 — the image leg's MRL truncation width, with the same three-state
-    // semantics: absent leaves it, null clears it back to the model's native
-    // width, a number pins what every image-side call requests. Zod already
-    // bounded it to [64, 16000]; `columnTypeFor` decides the tier from what the
-    // model ANSWERS, so nothing here is interpolated into DDL.
-    //
-    // Writing it does not re-probe on its own. The panel's Save re-sends the
-    // image assignment when this changes, and Re-check is the other entry
-    // point — those are the only two moments the column is brought in line.
-    if (body.imageEmbeddingTargetDimensions !== undefined) {
-      if (body.imageEmbeddingTargetDimensions === null) {
-        await query(
-          `DELETE FROM admin_settings WHERE setting_key = $1`,
-          [IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY],
-        );
-      } else {
-        updates.push({
-          key: IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
-          value: String(body.imageEmbeddingTargetDimensions),
-        });
-      }
-    }
     // Per-user concurrent SSE-stream cap (#268). Zod already validated the
     // range [1, 20], so we trust the value here.
     if (body.llmMaxConcurrentStreamsPerUser !== undefined) {
@@ -709,6 +728,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
         key: 'llm_max_concurrent_streams_per_user',
         value: String(body.llmMaxConcurrentStreamsPerUser),
       });
+    }
+
+    // Worker batch sizes. Zod already enforced the per-key range; the workers
+    // read the row at the start of their next batch, so no cache to invalidate.
+    if (body.qualityBatchSize !== undefined) {
+      updates.push({ key: 'quality_batch_size', value: String(body.qualityBatchSize) });
+    }
+    if (body.summaryBatchSize !== undefined) {
+      updates.push({ key: 'summary_batch_size', value: String(body.summaryBatchSize) });
+    }
+    if (body.imageAnalysisBatchSize !== undefined) {
+      updates.push({ key: 'image_analysis_batch_size', value: String(body.imageAnalysisBatchSize) });
     }
 
     // Issue #257 — reembed-all job history retention. Zod already enforced
@@ -826,14 +857,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
         invalidateRagImageIntakeCache,
         body.ragImageIndexExternal !== undefined ? String(body.ragImageIndexExternal) : undefined,
       ],
-      // #1115 P3 — the retrieval half, through the same cached path so the
-      // next hybrid search reads the new value rather than the old one for up
-      // to a minute (#1118's lesson).
-      [
-        'rag_image_leg_enabled',
-        invalidateRagImageLegCache,
-        body.ragImageLegEnabled !== undefined ? String(body.ragImageLegEnabled) : undefined,
-      ],
       // #1115 P4 — the answer half. `!== undefined`, never a truthiness test:
       // 0 is this knob's off switch (the only one of the three image knobs
       // for which zero is a legal value), and a falsy guard would silently
@@ -842,6 +865,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_answer_max_images',
         invalidateRagAnswerMaxImagesCache,
         body.ragAnswerMaxImages !== undefined ? String(body.ragAnswerMaxImages) : undefined,
+      ],
+      // #1615 (ADR-027 D8) — the image-analysis output-token ceiling. Saved
+      // through the same key table as the image knobs above; the reader's TTL
+      // cache is dropped so the next worker batch sends the new `max_tokens`.
+      // It is deliberately NOT part of the retained identity: saving it fires
+      // no probe, no re-check and no re-analysis.
+      [
+        'image_analysis_max_output_tokens',
+        invalidateImageAnalysisMaxOutputTokensCache,
+        body.imageAnalysisMaxOutputTokens !== undefined
+          ? String(body.imageAnalysisMaxOutputTokens)
+          : undefined,
       ],
       // #1285 — the `ef_search` floor. The moment this row lands, the
       // deprecated `RAG_EF_SEARCH` variable stops being consulted: the reader
@@ -1111,6 +1146,22 @@ export async function adminRoutes(fastify: FastifyInstance) {
             $1::regconfig,
             coalesce(title, '') || ' ' || coalesce(body_text, '')
           )`,
+          [body.ftsLanguage],
+        );
+        // ADR-027 D10: the per-chunk lexical document is rebuilt in the SAME
+        // transaction, or a language switch leaves derived (and authored) chunk
+        // text indexed under the previous configuration with the panel
+        // reporting the new one. Every row, like `pages.tsv` above.
+        //
+        // This is now the widest write the app takes (`page_embeddings` ≫
+        // `pages`), and its row locks hold every concurrent `embedPage`
+        // DELETE/INSERT until COMMIT — deliberately: splitting the chunk
+        // rebuild out (batched, after the commit) would publish a language the
+        // chunk index does not yet have, which is the mixed state the one
+        // transaction exists to prevent. The PUT is slower by the chunk
+        // rewrite; the settings copy and the runbook (§5b) say so.
+        await client.query(
+          `UPDATE page_embeddings SET chunk_tsv = to_tsvector($1::regconfig, coalesce(chunk_text, ''))`,
           [body.ftsLanguage],
         );
         await client.query('COMMIT');

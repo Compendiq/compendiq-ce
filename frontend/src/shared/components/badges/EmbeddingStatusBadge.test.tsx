@@ -5,27 +5,34 @@ import { EmbeddingStatusBadge } from './EmbeddingStatusBadge';
 describe('EmbeddingStatusBadge', () => {
   // ---- Legacy boolean prop backward compatibility ----
 
-  it('renders "Not Embedded" when embeddingDirty is true (legacy)', () => {
+  it('renders "Not indexed" when embeddingDirty is true (legacy)', () => {
     render(<EmbeddingStatusBadge embeddingDirty={true} />);
-    expect(screen.getByText('Not Embedded')).toBeInTheDocument();
+    expect(screen.getByText('Not indexed')).toBeInTheDocument();
   });
 
-  it('renders "Embedded" when embeddingDirty is false (legacy)', () => {
+  it('renders "Indexed" when embeddingDirty is false (legacy)', () => {
     render(<EmbeddingStatusBadge embeddingDirty={false} />);
-    expect(screen.getByText('Embedded')).toBeInTheDocument();
+    expect(screen.getByText('Indexed')).toBeInTheDocument();
   });
 
   // ---- New 4-state embeddingStatus prop ----
 
-  it('renders not_embedded state token-neutral — no hex literals, no dark: variant', () => {
+  it('renders not_embedded state on the neutral chip recipe — no bg-muted, no hex, no dark: variant', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
     const badge = screen.getByTestId('badge-not-embedded');
-    expect(badge).toHaveTextContent('Not Embedded');
-    // The old warm-gray hexes hid behind a `dark:` variant, which — with no
-    // `@custom-variant dark` in this app — compiles to the OS media query, so
-    // OS-dark + user-picked Paper rendered a dark pill on the white page.
-    expect(badge.className).toContain('bg-muted');
-    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge).toHaveTextContent('Not indexed');
+    // `bg-muted` measured 1.04:1 against the inspector's flat Pane in
+    // Graphite: the pill vanished and only its text floated in the row. The
+    // compositing tint (neutral-chip.ts) steps up from that ground, and the
+    // hairline defines the shape. The old warm-gray hexes hid behind a
+    // `dark:` variant, which — with no `@custom-variant dark` in this app —
+    // compiles to the OS media query, so OS-dark + user-picked Paper rendered
+    // a dark pill on the white page.
+    expect(badge.className).toContain('bg-foreground/10');
+    expect(badge.className).toContain('text-secondary-foreground');
+    expect(badge.className).toContain('border-border');
+    expect(badge.className).not.toContain('bg-muted');
+    expect(badge.className).not.toContain('text-muted-foreground');
     expect(badge.className).not.toMatch(/#[0-9a-fA-F]{3,8}|dark:/);
     expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
@@ -38,16 +45,18 @@ describe('EmbeddingStatusBadge', () => {
   // re-stating the ink class would only mirror the stylesheet. What has to
   // hold instead is the two non-colour channels plus the measured weight
   // ceiling.
-  it('renders embedding state hueless — label and glyph carry the state', () => {
+  it('renders embedding state hueless — label and spinner glyph carry the state', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedding" />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent('Embedding...');
+    expect(badge).toHaveTextContent('Indexing…');
     expect(badge).toHaveAttribute('data-status', 'embedding');
 
-    // Channel 1 — a glyph no sibling state renders. This is the one that has
-    // to survive `prefers-reduced-motion: reduce`, under which index.css
-    // clamps every animation to 0.01ms and a single iteration.
-    expect(badge.querySelector('[data-testid="embedding-status-glyph"]')).toBeTruthy();
+    // Channel 1 — the spinner arc, a glyph no sibling state renders. This is
+    // the one that has to survive `prefers-reduced-motion: reduce`, under
+    // which index.css clamps every animation to 0.01ms and a single
+    // iteration: a stopped Loader2 is still a visible arc.
+    const glyph = badge.querySelector('[data-testid="embedding-status-glyph"]');
+    expect(glyph?.getAttribute('class')).toContain('lucide-loader-circle');
     // Channel 2 — motion, a redundant enhancement on top, never the only one.
     expect(badge.className).toContain('animate-pulse');
 
@@ -57,7 +66,8 @@ describe('EmbeddingStatusBadge', () => {
     // the fill at 20% measured 1.527 / 1.746:1, and any `border-` utility
     // bound to this token composites over the fill and reaches 1.439 / 1.592:1
     // at the pill's outer edge. The 10% fill (1.225 / 1.278:1) and the quiet
-    // hairline token are the pair that fits.
+    // hairline token are the pair that fits — and the fill must REPLACE the
+    // recipe's resting tint, not stack on it.
     const utilities = badge.className.split(/\s+/);
     expect(utilities.filter((c) => c.startsWith('bg-'))).toEqual(['bg-status-embedding/10']);
     expect(utilities.filter((c) => c.startsWith('border-'))).toEqual(['border-border']);
@@ -65,26 +75,30 @@ describe('EmbeddingStatusBadge', () => {
 
   // With `embedding` hueless too, three of the four states are neutral. What
   // keeps them apart is enumerated here so a future relabel cannot quietly
-  // collapse two of them into the same rendering.
+  // collapse two of them into the same rendering: every state carries a glyph
+  // now, so the glyph's identity is part of the signature, not its presence.
   it('keeps all four states distinguishable without colour', () => {
     const signatures = (['not_embedded', 'embedding', 'embedded', 'failed'] as const).map(
       (status) => {
-        const { unmount } = render(
+        const { container, unmount } = render(
           <EmbeddingStatusBadge embeddingStatus={status} onRetry={() => {}} />,
         );
         const badge = screen.getByTestId(
           status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge',
         );
+        const glyph = badge.querySelector('[data-testid="embedding-status-glyph"]');
+        expect(glyph, `${status} renders no glyph`).toBeTruthy();
         const signature = [
           badge.textContent,
-          badge.querySelector('[data-testid="embedding-status-glyph"]') ? 'glyph' : '-',
-          badge.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
+          glyph!.getAttribute('class')?.match(/lucide-[\w-]+/)?.[0] ?? '-',
+          container.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
         ].join('|');
         unmount();
         return signature;
       },
     );
     expect(new Set(signatures).size).toBe(4);
+    expect(new Set(signatures.map((s) => s.split('|')[1])).size).toBe(4);
   });
 
   // "Embedded <date>" is the resting state of every healthy page — a
@@ -95,9 +109,10 @@ describe('EmbeddingStatusBadge', () => {
   it('renders embedded state neutral, not in the connected green', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent('Embedded');
-    expect(badge.className).toContain('bg-muted');
-    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge).toHaveTextContent('Indexed');
+    expect(badge.className).toContain('bg-foreground/10');
+    expect(badge.className).toContain('text-secondary-foreground');
+    expect(badge.className).not.toContain('bg-muted');
     expect(badge.className).not.toMatch(/status-connected|success|green/);
     expect(badge).toHaveAttribute('data-status', 'embedded');
   });
@@ -106,37 +121,40 @@ describe('EmbeddingStatusBadge', () => {
     const recentDate = new Date(Date.now() - 3600_000).toISOString(); // 1 hour ago
     render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={recentDate} />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent(/Embedded 1h ago/);
+    expect(badge).toHaveTextContent(/Indexed 1h ago/);
   });
 
-  it('renders failed state with red styling', () => {
+  // Red is never the only channel: the failed chip carries a glyph too.
+  it('renders failed state with red styling and an alert glyph', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge).toHaveTextContent('Embedding Failed');
+    expect(badge).toHaveTextContent('Indexing failed');
     expect(badge.className).toContain('text-status-disconnected');
     expect(badge.className).toContain('bg-status-disconnected/20');
+    expect(badge.querySelector('[data-testid="embedding-status-glyph"]')).toBeTruthy();
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 
-  it('shows retry button for failed state when onRetry is provided', () => {
+  // Retry is a real 32px control beside the chip — nesting it inside a passive
+  // readout put an 11px button in a pill a screen reader announced as a note.
+  it('renders Retry as a sibling button outside the chip', () => {
     const onRetry = vi.fn();
     render(<EmbeddingStatusBadge embeddingStatus="failed" onRetry={onRetry} />);
-    const retryBtn = screen.getByTestId('embedding-retry-button');
-    expect(retryBtn).toBeInTheDocument();
+    const badge = screen.getByTestId('embedding-status-badge');
+    const retryBtn = screen.getByRole('button', { name: /retry/i });
+    expect(retryBtn).toHaveAttribute('type', 'button');
     expect(retryBtn).toHaveTextContent('Retry');
+    expect(badge.contains(retryBtn)).toBe(false);
+    expect(retryBtn.parentElement).toBe(badge.parentElement);
+    expect(retryBtn.className).toContain('h-8');
+    expect(retryBtn.className).not.toContain('text-[11px]');
+    fireEvent.click(retryBtn);
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('does not show retry button for failed state when onRetry is not provided', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     expect(screen.queryByTestId('embedding-retry-button')).not.toBeInTheDocument();
-  });
-
-  it('calls onRetry when retry button is clicked', () => {
-    const onRetry = vi.fn();
-    render(<EmbeddingStatusBadge embeddingStatus="failed" onRetry={onRetry} />);
-    const retryBtn = screen.getByTestId('embedding-retry-button');
-    fireEvent.click(retryBtn);
-    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('stops event propagation when retry button is clicked', () => {
@@ -166,13 +184,6 @@ describe('EmbeddingStatusBadge', () => {
     expect(badge.getAttribute('title')).toContain('being indexed');
   });
 
-  it('shows tooltip with date for embedded state', () => {
-    const date = '2026-01-15T12:00:00Z';
-    render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={date} />);
-    const badge = screen.getByTestId('embedding-status-badge');
-    expect(badge.getAttribute('title')).toContain('Indexed for AI search on');
-  });
-
   it('shows tooltip for failed state', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     const badge = screen.getByTestId('embedding-status-badge');
@@ -188,7 +199,7 @@ describe('EmbeddingStatusBadge', () => {
     );
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge.getAttribute('title')).toContain('Connection refused: Ollama server not reachable');
-    expect(badge.getAttribute('title')).toContain('Embedding failed:');
+    expect(badge.getAttribute('title')).toContain('Indexing failed:');
   });
 
   it('shows generic tooltip when failed with no embeddingError', () => {
@@ -222,6 +233,42 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" className="custom-class" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge.className).toContain('custom-class');
+  });
+
+  // ---- Passive readout ----
+
+  // Passive means passive: a chip that takes focus is a Tab stop with nothing
+  // to do, and an aria-label replaced the visible label with the tooltip copy.
+  it.each(['not_embedded', 'embedding', 'embedded', 'failed'] as const)(
+    '%s chip is not focusable and is named by its visible text',
+    (status) => {
+      const { container } = render(<EmbeddingStatusBadge embeddingStatus={status} />);
+      const badge = screen.getByTestId(
+        status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge',
+      );
+      expect(badge).not.toHaveAttribute('role');
+      expect(badge).not.toHaveAttribute('tabindex');
+      expect(badge).not.toHaveAttribute('aria-label');
+      expect(container.querySelectorAll('[tabindex], button, a[href], input')).toHaveLength(0);
+    },
+  );
+
+  it('offers exactly one Tab stop in the failed state — the Retry button', () => {
+    const { container } = render(
+      <EmbeddingStatusBadge embeddingStatus="failed" onRetry={() => {}} />,
+    );
+    const stops = container.querySelectorAll('[tabindex], button, a[href], input');
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toBe(screen.getByTestId('embedding-retry-button'));
+  });
+
+  it('keeps the exact embedded timestamp in title as a pointer supplement', () => {
+    const date = '2026-01-15T12:00:00Z';
+    render(<EmbeddingStatusBadge embeddingStatus="embedded" embeddedAt={date} />);
+    expect(screen.getByTestId('embedding-status-badge')).toHaveAttribute(
+      'title',
+      `Indexed for AI search on ${new Date(date).toLocaleString()}`,
+    );
   });
 
   // ---- No animation for non-embedding states ----

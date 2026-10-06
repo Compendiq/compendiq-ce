@@ -17,15 +17,33 @@ erDiagram
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
     users ||--o{ templates : "authors"
+    users o|--o{ page_writer_runtimes : "fences; SET NULL"
+    users o|--o{ page_runtime_admissions : "acts; SET NULL"
+    users o|--o{ page_write_intents : "acts/settles; SET NULL"
+    users o|--o{ page_baselines : "prepares/publishes; SET NULL"
+    users o|--o{ page_baseline_history : "acts; SET NULL"
+    users o|--o{ page_baseline_feature_state : "activates; SET NULL"
+    users o|--o{ page_governance_policies : "updates; SET NULL"
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
-    pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
+    pages ||--o{ page_image_analyses : "#1615 (ADR-027, migration 115): one analysis row per referenced image; its text becomes derived page_embeddings rows (writer: #1616)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
     pages ||--o{ spaces : "is custom home of (#352)"
     pages ||--o| page_collaborative_docs : "live CRDT state (#1411)"
+    pages o|--o{ page_baselines : "live page locator; SET NULL"
+    page_baselines o|--o{ pages : "active baseline; RESTRICT"
+    pages o|--o{ page_baseline_history : "live page locator; SET NULL"
+    page_writer_runtimes ||--o{ page_runtime_admissions : "owns; RESTRICT"
+    page_writer_runtimes ||--o{ page_write_intents : "owns; RESTRICT"
+    page_write_intents ||--o{ page_baselines : "preparation intent; RESTRICT"
+    page_write_intents ||--o| page_relocation_preparations : "operation preparation; RESTRICT"
+    page_write_intents ||--o{ page_write_recovery_history_segments : "append-only attempts; RESTRICT"
+    pages ||--o{ page_relocation_preparations : "preserves source until settlement; RESTRICT"
+    page_versions o|--o{ page_baselines : "snapshot locator; SET NULL"
+    page_baselines ||--o{ page_baseline_history : "evidence; RESTRICT"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -54,6 +72,7 @@ erDiagram
         uuid user_id PK,FK
         text confluence_url
         bytea confluence_pat "AES-256-GCM"
+        bool confluence_enabled "per-user Confluence integration toggle (#1623)"
         text[] selected_spaces
         text ollama_model
         text theme
@@ -87,19 +106,31 @@ erDiagram
         text body_html
         text body_text
         int version
-        int parent_id FK
+        text parent_id "source-aware parent key; deliberately no FK"
         text source "confluence | standalone"
         text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
-        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
+        bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by every attachment and body writer"
+        bigint image_analysis_revision "migration 116, #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
         text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
         text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
+        bigint content_revision "migration 120; DEFAULT 0, monotonic protected payload revision"
+        bigint lifecycle_revision "migration 120; DEFAULT 0, monotonic freeze/thaw revision"
+        uuid baseline_id FK "active published baseline; nullable, ON DELETE RESTRICT"
+        int frozen_version "nullable live projection"
+        timestamptz frozen_at "nullable live projection"
+        uuid frozen_by_user_id FK "nullable; ON DELETE SET NULL"
+        text frozen_by_name "immutable display snapshot while frozen"
+        text freeze_reason
+        text freeze_provenance "manual_assertion | authenticated_approval"
+        jsonb freeze_reported_signatories "caller assertions, not authenticated approvals"
+        text freeze_reported_reference
     }
 
     page_collaborative_docs {
@@ -124,6 +155,199 @@ erDiagram
         text message "nullable; Confluence version comment (migration 077)"
     }
 
+    page_writer_runtimes {
+        text runtime_id PK "one backend process epoch"
+        jsonb deployment_identity "immutable host/pid/start identity"
+        int enforcement_version "migration 124; DEFAULT 0, current protocol = 1"
+        timestamptz started_at "DEFAULT NOW"
+        timestamptz quiesced_at
+        uuid quiescence_ack
+        timestamptz fenced_at
+        uuid fenced_by FK "users; ON DELETE SET NULL"
+        text fence_reason
+        jsonb fence_proof "closed server-verified proof kinds"
+    }
+
+    page_runtime_admissions {
+        uuid id PK "DEFAULT gen_random_uuid"
+        text runtime_id FK "page_writer_runtimes; ON DELETE RESTRICT"
+        int page_id "deliberately no FK; durable identity after deletion"
+        uuid actor_id FK "users; ON DELETE SET NULL"
+        bigint lifecycle_revision "admission fence"
+        text purpose "legacy | collab_room | collab_request (migration 127)"
+        timestamptz admitted_at "DEFAULT NOW"
+        timestamptz released_at
+        text release_kind "clean_disconnect | runtime_fenced"
+    }
+
+    page_write_intents {
+        uuid id PK "DEFAULT gen_random_uuid"
+        text runtime_id FK "page_writer_runtimes; ON DELETE RESTRICT"
+        text kind "closed effect/recovery policy; includes collab commit/media"
+        uuid actor_id FK "users; ON DELETE SET NULL"
+        int_array page_ids "sorted protected targets; no page FK"
+        jsonb revisions "content + lifecycle revision per page"
+        int_array deleted_page_ids "durable deletion tombstones"
+        text recovery_mode "local_verified | remote_conditional | remote_terminal_only"
+        jsonb effect "bounded, no secrets/full request content"
+        text status "pending | completed | cancelled | reconciled_*"
+        timestamptz effect_started_at
+        timestamptz effect_finished_at
+        timestamptz remote_effect_started_at "first mutating remote phase"
+        timestamptz remote_effects_completed_at "all remote phases succeeded"
+        jsonb remote_terminal_result "bounded server-owned terminal identity"
+        boolean cache_invalidation_pending "retry until pages/search eviction succeeds"
+        jsonb recovery_history "current segment; at most 32 entries / 64 KiB"
+        timestamptz recovery_started_at "claimed before any verifier callback"
+        timestamptz settled_at
+        uuid settled_by FK "users; ON DELETE SET NULL"
+        text settlement_reason
+        jsonb settlement_proof
+    }
+
+    page_write_recovery_history_segments {
+        bigserial id PK
+        uuid intent_id FK "page_write_intents; ON DELETE RESTRICT"
+        jsonb recovery_history "complete immutable segment; 1..32 entries / 64 KiB"
+        timestamptz archived_at "DEFAULT NOW; ordered with id"
+    }
+
+    page_cache_invalidation_queue {
+        int page_id PK "coalesced delivery identity; deliberately no FK"
+        timestamptz queued_at "DEFAULT NOW; ordered delivery index"
+    }
+
+    page_relocation_preparations {
+        uuid intent_id PK,FK "page_write_intents; ON DELETE RESTRICT"
+        int page_id FK "pages; ON DELETE RESTRICT"
+        text direction "to_confluence | to_local"
+        uuid actor_id "original identity; not a live authority grant"
+        text target_space_key
+        text target_visibility
+        text original_source
+        text original_confluence_id
+        text original_space_key
+        text original_title
+        text original_body_html
+        text original_body_storage
+        text original_body_text
+        int original_version
+        text original_visibility
+        uuid original_created_by_user_id
+        boolean original_inherit_perms
+        timestamptz original_local_modified_at
+        uuid original_local_modified_by
+        boolean original_embedding_dirty
+        boolean original_image_analysis_dirty
+        text original_embedding_status
+        timestamptz original_embedded_at
+        text original_key
+        int_array child_ids
+        jsonb access_control_entries
+        jsonb attachments
+        text expected_remote_title_sha256
+        text expected_remote_body_storage_sha256
+        text parent_confluence_id
+        text created_confluence_id "acknowledged before further provider work"
+        jsonb created_page_receipt "nullable; bounded exact returned page identity"
+        jsonb attachment_receipts "ordered acknowledged receipts; bounded by admitted inventory"
+        timestamptz created_at "DEFAULT NOW"
+    }
+
+    page_baseline_feature_state {
+        boolean singleton PK
+        boolean creation_enabled "DEFAULT FALSE"
+        timestamptz activated_at
+        uuid activated_by_user_id FK "users; ON DELETE SET NULL"
+        text activated_by_name "actor display snapshot"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_baseline_capacity {
+        boolean singleton PK
+        bigint reserved_bytes "DEFAULT 0; retained rows until guarded cleanup"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_baselines {
+        uuid id PK "stable preparation/publication identity"
+        int page_id FK "nullable live locator; pages ON DELETE SET NULL"
+        int original_page_id "immutable; deliberately no FK"
+        jsonb page_identity "source-aware offline identity"
+        int version "ordinary page version"
+        bigint content_revision "captured protected payload revision"
+        bigint lifecycle_revision "captured pre-freeze lifecycle"
+        int manifest_version "DEFAULT 1; constrained to 1"
+        text manifest_digest "SHA-256 lowercase hex"
+        jsonb manifest "canonical fixed array"
+        bytea manifest_bytes "exact canonical framed bytes"
+        text title "authored snapshot"
+        text body_html "authored snapshot"
+        text body_storage "authored snapshot"
+        text body_text "authored snapshot"
+        text_array labels "authored snapshot"
+        jsonb parent_identity "source-aware, nullable"
+        jsonb icon "raw-field tuple, nullable"
+        jsonb attachments "retained inventory; DEFAULT []"
+        bigint total_bytes
+        bigint reserved_bytes
+        text status "preparing | prepared | published | abandoned"
+        uuid prepared_by_user_id FK "users; ON DELETE SET NULL"
+        text prepared_by_name "immutable display snapshot"
+        uuid preparation_intent_id FK "page_write_intents; ON DELETE RESTRICT"
+        timestamptz prepared_at "DEFAULT NOW"
+        uuid published_by_user_id FK "users; ON DELETE SET NULL"
+        text published_by_name "immutable display snapshot"
+        timestamptz published_at
+        text provenance "manual_assertion | authenticated_approval"
+        text freeze_reason
+        jsonb reported_signatories "DEFAULT []; caller assertions"
+        text reported_reference
+        uuid version_snapshot_id FK "page_versions; ON DELETE SET NULL"
+        timestamptz abandoned_at
+    }
+
+    page_baseline_history {
+        uuid id PK "DEFAULT gen_random_uuid"
+        int page_id FK "nullable live locator; pages ON DELETE SET NULL"
+        int original_page_id "immutable; deliberately no FK"
+        uuid baseline_id FK "page_baselines; ON DELETE RESTRICT"
+        text action "freeze | thaw"
+        int version "baseline version; mandatory for both actions"
+        text manifest_digest "mandatory for both actions"
+        bigint content_revision
+        bigint lifecycle_revision "unique with original_page_id"
+        text reason
+        uuid actor_user_id FK "users; ON DELETE SET NULL"
+        text actor_display_name "immutable snapshot"
+        text provenance "manual_assertion | authenticated_approval"
+        jsonb reported_signatories "DEFAULT []"
+        text reported_reference
+        timestamptz created_at "DEFAULT NOW"
+    }
+
+    page_governance_policies {
+        text space_key PK
+        boolean governance_enabled "DEFAULT FALSE"
+        bigint policy_revision "DEFAULT 1"
+        uuid updated_by_user_id FK "users; ON DELETE SET NULL"
+        text updated_by_name "actor display snapshot"
+        timestamptz updated_at "DEFAULT NOW"
+    }
+
+    page_lifecycle_outbox {
+        uuid id PK "DEFAULT gen_random_uuid"
+        int page_id "deliberately no FK; event survives page deletion"
+        bigint lifecycle_revision "unique with page_id"
+        jsonb event "typed page_lifecycle payload"
+        int attempt_count "DEFAULT 0"
+        timestamptz next_attempt_at "DEFAULT NOW"
+        text last_error
+        timestamptz delivered_at
+        timestamptz claimed_at
+        timestamptz created_at "DEFAULT NOW"
+    }
+
     page_embeddings {
         bigint id PK
         uuid user_id FK
@@ -131,21 +355,29 @@ erDiagram
         int chunk_index
         text chunk_text
         vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
-        jsonb metadata
+        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (#1616, ADR-027 D9)"
+        tsvector chunk_tsv "migration 116, #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
     }
 
-    page_image_embeddings {
-        bigint id PK
+
+    page_image_analyses {
+        bigint id PK "#1615 (ADR-027 D4, migration 115) — the derived-analysis store; rows are written by the #1616 worker"
         int page_id FK "ON DELETE CASCADE"
         text source "confluence | local — which attachment store the key resolves in"
-        text attachment_key "filename inside that store"
-        text sha256 "content address of the embedded bytes; the re-scan skip"
+        text attachment_key "URL-decoded filename inside that store"
+        text content_hash "sha256 of the analyzed bytes; the reference revision (ADR-027 D6)"
         text format "sniffed: png | jpeg | webp | gif"
-        int width "nullable; header-declared only"
-        int height "nullable; header-declared only"
-        text model "provider model id that produced the vector"
-        vector embedding "vector(n) or halfvec(n) — n is the probed IMAGE model's width; no HNSW until the probe"
-        timestamptz created_at
+        text status "pending | analyzed | failed | failed_terminal | skipped"
+        text skip_reason "missing | unsupported | oversized | too_large | external | capped"
+        uuid provider_id FK "the RETAINED identity (ADR-027 D5/D7) with model and base_url, stamped per attempt; the worker refuses to call when the live assignment resolves elsewhere"
+        text identity_hash "sha256 over the three identity fields; valid only while it equals the retained identity"
+        int prompt_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_PROMPT_VERSION"
+        int schema_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_SCHEMA_VERSION"
+        jsonb payload "ImageAnalysisPayloadV1, validated at write time against the bounds of the ceiling then in force (never re-validated on read); kept across a sweep re-pend, NULLed on new bytes"
+        int analysis_version "+1 per successful payload write"
+        int attempts "failures since the last reset: success, Retry failed, new bytes, the sweep returning a failed/terminal row whose identity or versions changed, or the sweep re-opening a truncated row under a raised ceiling; deterministic classes go terminal at 5"
+        timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
+        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling; unavailable:bytes = the file was there but unreadable); admin-only"
     }
 
     page_relationships {
@@ -321,7 +553,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|inline_completion|image_analysis (image_analysis since migration 115, #1615, ADR-027 D3 — non-inheriting, probe-gated before write; image_embedding DROPPED from the CHECK by migration 118, #1618 stage 2)"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -354,6 +586,190 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**Immutable baseline foundation and enforcement (migrations 120–122,
+124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and
+new `pages` rows receive `content_revision = 0` and
+`lifecycle_revision = 0`; the backfill deliberately invents no historical
+freeze, approval or ledger entry. Migration 121 installs the protected-write
+trigger after adding `baseline_id`, leaving legacy writers usable between the
+separately committed migrations. That trigger rejects protected
+title/body/storage/text/label/hierarchy/identity/icon/draft/deletion changes
+while `baseline_id` is set and advances `content_revision` exactly once for an
+editable protected update. Attachment-only writers explicitly touch the
+revision under the same lifecycle lock. `lifecycle_revision` advances on
+freeze/thaw; both revisions are non-negative `BIGINT`s and cross the API as
+decimal strings.
+
+`page_writer_runtimes` is one durable row per process epoch. Migration 124
+adds `enforcement_version`: old runtimes are version 0, current #276 writers
+register version 1, and the database rejects an incompatible registration once
+creation is enabled or any published baseline exists. The activation
+transaction locks the feature row before checking active, non-quiesced
+runtimes, closing the registration/readiness race.
+`page_runtime_admissions` retains writable-room and request tokens until clean
+release or proven runtime fencing. Migration 127 distinguishes durable
+`collab_room` owners from short-lived `collab_request` Save admissions; unknown
+historical rows remain `legacy` and cannot be silently treated as room owners.
+`page_write_intents` retains the exact target set, content/lifecycle revisions,
+dispatch/finish markers, deletion tombstones and settlement proof. Its
+`page_ids`/`deleted_page_ids` arrays intentionally have no page FK: a local
+delete can commit before the intent settles, and a missing row is accepted only
+when its ID appears in that intent's immutable tombstones. Only `pending`
+intents block writes/freeze; uncertain outcomes remain pending without TTL
+expiry. Runtime/admission/intent ownership uses `ON DELETE RESTRICT`; nullable
+human actor/settler/fencer references use `ON DELETE SET NULL`.
+Recovery transfers `runtime_id` and stamps `recovery_started_at` before invoking
+the verifier, not only before a local repair. That marker disqualifies no-start
+fencing/cancellation even if the original effect never began; phase timestamps
+and all recovery attempts remain intact across ownership changes.
+Each recovery mutation also holds a current active system administrator row
+on its transaction client; this does not substitute for original-writer access.
+Quiescence records its authorized request before closing the local gate and
+rechecks the administrator before persisting an acknowledgment.
+Each accepted same-runtime retry also appends the actual administrator and
+reason before callbacks; quiescence cancellation writes its `settled_by`.
+Migration 122 rolls the bounded current `recovery_history` segment into
+`page_write_recovery_history_segments` before appending would exceed 32 entries
+or 64 KiB of PostgreSQL JSONB text. Archive insertion and the next current
+segment commit atomically before callbacks. Archived rows reject UPDATE and
+DELETE and restrict parent-intent deletion; their actor identities are JSON
+evidence, not nullable live-user foreign keys. There is no lifetime attempt
+limit and no discarded attribution.
+The process retains retry eligibility once the claim UPDATE succeeds, before
+awaiting COMMIT acknowledgment. Durable ownership distinguishes a committed
+claim from a rolled-back one on the next attempt; callbacks still wait for an
+acknowledged claim.
+
+The page-table publication trigger writes one
+`page_cache_invalidation_queue` row per affected page in the same transaction.
+It covers inserts, deletes, content/lifecycle revisions, visibility, ownership
+and permission inheritance; unrelated telemetry updates do not enqueue work.
+Its primary key coalesces repeated writes, its delivery index orders pending
+work, and the deliberate absence of a page FK preserves hard-delete delivery.
+The conflict arm updates the existing tuple without changing `queued_at`, holding
+its lock through the new writer's commit. A conflict no-op that takes no tuple
+lock would let delivery delete the old entry before the new change becomes visible.
+Intent-owned publication also retains its terminal-only partial queue index.
+Delivery clears either queue only after real cache invalidation succeeds.
+
+Migration 129 adds the same queueing for page ACEs (`access_control_entries`
+rows with `resource_type = 'page'`: insert, delete, or a principal/resource
+change — not a `synced_at`/`source`/permission-name refresh) and for
+`group_memberships` changes of groups that hold page ACEs, because both decide
+which restricted pages non-RAG reads return.
+
+`page_relocation_preparations` holds exact operation-owned rollback/publication
+state outside the generic intent's 32 KiB metadata ceiling. Its source-page FK
+prevents deletion while preparation remains necessary. Settlement removes it
+in the transaction that settles the intent; failed recovery preserves it.
+Its insertion is itself a gated local effect, so a crash on either side of
+that commit cannot disguise a retained preparation as an unstarted intent.
+Exact unchanged local state plus absent remote-start evidence permits an active
+recovery administrator to remove a to-Confluence preparation after original-actor
+revocation or deletion; it authorizes no publication or to-local restoration.
+A to-local recovery with no cutover leaves current grants and revocations intact.
+During rollback, a `SHARE ROW EXCLUSIVE` lock on `access_control_entries`
+precedes the page row lock, matching restriction refresh's ACE-then-page order.
+It serializes ordinary grant/revoke writers with verification of the still-empty
+cutover ACL and exact snapshot restoration. A changed ACL refuses restoration.
+The create identity is recorded before readback or uploads, and every successful
+upload appends its own bounded receipt before the next provider call. Receipt
+capacity scales with the admitted inventory; the generic terminal result holds
+only its count and canonical ordered SHA-256, never a second full receipt array.
+
+Migration 121 seeds exactly one feature-state row with
+`creation_enabled = false` and one zeroed capacity row. #276 registers the
+deployment-readiness provider at backend startup; readiness is true only when
+all active, non-quiesced runtimes report the current enforcement version.
+Activation remains an explicit system-admin write, also requiring that
+administrator's Confluence integration to be explicitly off. Preview/freeze
+and future governed proposal/approval additionally require
+`pages.source = 'standalone'`; a Confluence-origin row remains ineligible even
+when integration is off. Capability reads do not lock settings, whereas
+mutation admission uses `lockSettings = true` so the explicit-off row remains
+stable through commit. Missing settings or a failed read never means “off.”
+Existing frozen-page enforcement, retained evidence/history access and audited
+thaw do not depend on the current mode, and re-enabling Confluence does not
+auto-thaw or delete evidence. #278 proposal/signature/archive persistence and
+#277's full baseline UI remain outside this schema.
+
+Migrations 125 and 128 keep the intent policy closed in SQL as new #276
+writers arrive: `collab.commit.confluence` is remote-conditional, while a
+collaborative commit that first uploads Confluence media is terminal-only
+because an unversioned attachment mutation cannot be made conditionally
+recoverable by the later page PUT. No request body, PAT or full document is
+stored in the intent. Migrations numbered 123 and 126 were unshipped candidate
+workflows and are absent; there is no frozen-Confluence candidate
+capture/refresh/preview/accept/retention schema or EE adapter in this slice.
+
+A preview owns one stable `page_baselines.id`. The partial unique index on
+`(original_page_id, prepared_by_user_id, content_revision,
+lifecycle_revision)` for `preparing`/`prepared` rows makes concurrent or
+retried previews reuse that preparation rather than reserve another copy.
+Publishing one preview atomically abandons the page's other prepared previews.
+Maintenance removes only these unpublished copies and releases their reservations;
+published evidence is never a capacity-cleanup candidate.
+The same cleanup also releases `preparing` reservations whose intents were
+durably cancelled before effect-start. Pending and started reservations are
+never made reclaimable by age alone.
+Manifest v1 persists both its fixed JSON array and the exact UTF-8 bytes hashed
+into `manifest_digest`; authored title/HTML/storage/text, sorted labels,
+source-aware page/parent identity, raw icon tuple and complete attachment
+inventory are independent of the mutable page. The inventory records
+`local`/`confluence`/`icon` store identity, owner key, filename, byte count,
+media type and SHA-256. `page_baseline_capacity.reserved_bytes` covers every
+published, preparing, prepared or not-yet-cleaned abandoned row and is
+serialized by its singleton row.
+
+Retained media is stored outside live attachment keyspaces at
+`ATTACHMENTS_DIR/page-baselines/<baseline UUID>/<attempt UUID>/`. The namespace
+is reserved from the orphan sweep and hard-delete cleanup, and every path
+segment is validated. Defaults are 512 attachments and 1 GiB per preparation,
+50 GiB total retained bytes, and a 64 MiB free-space reserve. Preparation
+capacity is committed with its `baseline.prepare` intent before streamed
+copy/hash/fsync verification. Published evidence is never evicted or garbage
+collected. Cleanup can delete only a committed `abandoned` preparation after
+proving it was never published/referenced and its intent is terminal or safely
+transferred; capacity is released only after byte removal succeeds.
+
+The baseline row permits only `preparing → prepared|abandoned` and `prepared →
+published|abandoned`, with immutable preparation fields. Its trigger otherwise
+allows only FK-driven nulling of `page_id`, actor IDs and
+`version_snapshot_id`; published content/evidence cannot be updated or deleted.
+The live page points to the active baseline with `ON DELETE RESTRICT`.
+`version_snapshot_id` is only a locator: publication inserts
+`page_versions` with `ON CONFLICT DO NOTHING`, then links it only if the
+existing same-version title/body are byte-equivalent. It never overwrites an
+older snapshot, and the baseline remains authoritative when no link can be
+made.
+
+`page_baseline_history` is append-only except for FK-driven nulling of its live
+page/actor pointers. Every freeze **and** thaw row retains the mandatory
+baseline UUID, ordinary version, manifest digest, content/lifecycle revisions,
+reason, provenance, original page ID and actor display snapshot. Consequently
+page/user deletion removes neither the ledger nor its attribution snapshot;
+the old page URL no longer authorizes it, while system-admin evidence/history
+reads remain available by baseline identity. The unique
+`(original_page_id, lifecycle_revision)` key prevents duplicate transitions.
+
+Freeze/thaw also inserts one `page_lifecycle_outbox` row in the same
+transaction, unique by `(page_id,lifecycle_revision)`. Outbox rows deliberately
+have no page FK, survive deletion, and carry only the typed lifecycle event.
+Delivery is at least once after commit with claim recovery/backoff; cache,
+Redis event and optional EE webhook failure updates retry state instead of
+rolling back or misreporting the committed transition. Enqueue is deduplicated,
+but a retry may repeat or reorder delivery, so consumers compare the monotonic
+lifecycle revision and ignore stale/already-observed events.
+
+`page_governance_policies` is the durable CE fail-closed marker. An enabled
+space cannot manually publish even when the enterprise plugin/license is
+absent; the optional core hook must revalidate and finalize on the locked CE
+transaction. Migration 121 provides the marker and extension point only.
+Proposal requirements, votes, signatures and archive protection belong to
+#278 and are not represented as delivered CE tables here. Operations and
+rollout are documented in
+[`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md).
 
 **Deterministic relationship freshness (#1314, migration 111).** The
 `pages_deterministic_relationship_dirty` trigger records committed content,
@@ -428,7 +844,7 @@ empty cells, never as retention counts/days or fabricated zeroes.
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
 
 `inline_completion` is one of three non-inheriting use cases, alongside
-`rerank` and `image_embedding`. Its seeded assignment has null provider/model,
+`rerank` and `image_analysis`. Its seeded assignment has null provider/model,
 which means the feature is disabled until an administrator explicitly assigns
 both a usable provider and model. The personal `user_settings` fields only
 control when an already-assigned feature may run; they cannot select or
@@ -520,7 +936,7 @@ together, which matters most for #1114's query-side prefix.
   kind-aware, because failing a comparison with "start a new benchmark" names
   a run its admin never started. A compare run is additionally scoped to
   `requested_by` on read: its report carries page titles retrieved under that
-  admin's own ACL (`visiblePagesPredicate` admits their private standalone
+  admin's own ACL (`ragRetrievalPagesPredicate` admits their private standalone
   pages). The 091 one-active partial unique index is deliberately NOT scoped
   by kind: both runs spend the shared LLM queue, so one at a time is the
   point, and the 092 heartbeat recovery covers both.
@@ -541,7 +957,7 @@ together, which matters most for #1114's query-side prefix.
   had no admin dimension, so the last judge of a query physically OVERWROTE the
   earlier judge's `live_page_ids` / `candidate_page_ids` / `judged_by` —
   irrecoverably, because those arrays come from `vectorSearch(adminUserId, …)`
-  filtered through `visiblePagesPredicate`, i.e. they are that admin's view and
+  filtered through `ragRetrievalPagesPredicate`, i.e. they are that admin's view and
   nobody else's. Now every judge's row persists. The reason the key had no
   judge in the first place still holds — one query is one trial and McNemar
   counts trials, so reading two rows for one query would inflate both N and the
@@ -627,75 +1043,106 @@ together, which matters most for #1114's query-side prefix.
   destructive `enqueueReembedAll({newDimensions})` path refuses to run while
   that state row exists (and vice versa). Runbook:
   `docs/runbooks/shadow-reembed.md`.
-- **The image index is a separate table (#1115) — `P0 schema, typed at probe
-  time in P1, populated from P2`.** `page_image_embeddings` holds one vector per
-  referenced image per page, produced by a *different* model from a *different*
-  ADR-021 use case (`image_embedding`), and `pages.image_embedding_dirty` is its
-  own dirty flag. Migration `093` ships the shape, P1 gives it its real type and
-  index, and **P2 fills it**: `image-embedding-service.ts` upserts one row per
-  image the page's `body_html` references, keyed `(page_id, source,
-  attachment_key)` — where `source` follows the URL PREFIX in that body, never
-  `confluence_id IS NULL`, because a relocated page has no `confluence_id` and
-  its bytes in the local store. `sha256` is what makes a re-scan cheap: an
-  unchanged file keeps its row and costs no request. **P3 reads it** —
-  `image-leg-search.ts` kNN-searches this table under the same
-  `visiblePagesPredicate` the vector leg uses and fuses the result as a third
-  RRF leg; **P4 reads the BYTES behind it**, attaching up to
-  `rag_answer_max_images` of the matched pictures to the chat request. A row
-  never becomes a `SearchResult` itself: an image-reached page enters ranking as
-  its own `chunk_index 0` chunk, or as a title-synthesised one. Four properties
-  are deliberate:
-  - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
-    `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
-    `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
-    sibling assembly all conditional. A separate table keeps every one of them
-    text-only by construction, and it is the only shape that can hold two
-    different probed widths at once.
-  - **The declared `vector(…)` width in the migration is a placeholder, and
-    the index is built at PROBE TIME.** The live type follows the image model's
-    probed width through the same tiering the text column uses
-    (`core/db/vector-column-tier.ts`, shared with the destructive re-embed, the
-    shadow path and the eval seeder), and **the migration ships no HNSW index at
-    all** — the opclass is unknown until the probe answers. Assigning the
-    `image_embedding` use case runs the probe and then
-    `ensureImageEmbeddingColumn(dims, {providerId, model, baseUrl,
-    targetDimensions})` (P1), which retypes the column and creates
-    `page_image_embeddings_embedding_hnsw_idx` under the same bounded-lock DDL
-    discipline as the shadow columns above. Above 4000 dimensions there is no
-    index and the settings panel says so — with the remedy beside it, since
-    `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
-    *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
-    the client asks). `admin_settings.image_embedding_dimensions` and
-    `…_index_model` record what the live index was built for — the second as the
-    full identity string `provider:model@baseUrl#dims`, which is the only thing
-    that can tell two same-width spaces apart. `…_probe` holds the last probe's
-    verdict, and it is admin-only: its `error` is the provider's own body
-    (#1184's rule).
-  - **A model change here truncates and re-scans.** No shadow swap: the leg is
-    disabled while the index is empty, so text retrieval is never degraded, and
-    images are cheap to redo (content-addressed by `sha256`). The trigger is the
-    probed width **or** the recorded `provider:model@baseUrl#dims` changing — two
-    models at the same width are two incompatible spaces, and a column type
-    cannot tell them apart; the base URL is there because a provider row's
-    endpoint can move without its id changing, and the model is the *resolved*
-    one, pinned into the assignment row at probe time so it cannot follow
-    `provider.default_model` around.
-  - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
-    An attachment can change under an unchanged page version — sync's
-    version-unchanged branch is exactly that case — and then the images must be
-    re-embedded and the text must not. P2 raises it at every write that can move
-    an image, in two shapes: the ATTACHMENT writers call
-    `core/services/image-embedding-dirty.ts` (the two sync attachment writers,
-    `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
-    `cleanPageAttachments`), while the BODY writers raise the column inline in
-    the UPDATE they already own, gated on `body_html` alone (the sync upsert,
-    the conflict-policy update, both relocate directions, the four `body_html`
-    writers in `routes/knowledge/pages-crud.ts`, `restoreVersion` and both
-    branches of `POST /llm/improvements/apply` — the last two matter because a
-    restore and an Apply are the two ways a page's `img` set moves with no
-    attachment write to notice it). It is CLEARED only
-    by a page whose scan had no failure, so the flag is the retry queue as well
-    as the work queue. Design of record: ADR-025.
+- **The image index was a separate table (#1115) — RETIRED by #1618 stage 2.**
+  `page_image_embeddings` held one vector per referenced image per page,
+  produced by a *different* model from a *different* ADR-021 use case
+  (`image_embedding`), with `pages.image_embedding_dirty` as its own dirty
+  flag, a probe-time column type, an HNSW index built only once the probe
+  answered, and `admin_settings.image_embedding_{dimensions,index_model,probe,
+  target_dimensions}` recording what the live index was built for. **Migration
+  118 drops the table, the column, those settings rows, the
+  `rag_image_leg_enabled` row and the `image_embedding` assignment, and
+  narrows the `llm_usecase_assignments` CHECK to the eight surviving use
+  cases.** The basis was **"Remove it, nobody was using it in production."** —
+  unused in production plus maintenance burden, explicitly not a measurement
+  (ADR-027 A-5). Migration 093's history is retained, so a schema archaeology
+  pass still finds the shape; what to expect on a rollback is
+  `docs/runbooks/image-embedding-retirement.md`. The design of record, ADR-025,
+  is **superseded in full**; the surviving design is the bullet below.
+- **Image analysis in the text index (ADR-027; #1615–#1617 merged, #1618 stage 2 retired the legacy space).**
+  #1615 landed the store, the use case and the settings rows (migration 115,
+  `page_image_analyses`, the `image_analysis` assignment, the retained identity
+  in `admin_settings.image_analysis_identity` — JSON `{providerId, model,
+  baseUrl, identityHash, assignedAt}`, written only by the assignment PUT and
+  the capability re-check after a `true` probe, never cleared by an unassign
+  — and `image_analysis_max_output_tokens`); #1616 landed migration 116, the
+  worker, the reconcile, `embedPage` composition, derived FTS, coverage and
+  readiness. Retrieval over the derived rows landed in #1617 and the
+  operator surfaces in #1618 stage 1; **stage 2 removed the legacy table, flag
+  and leg** (migration 118), so this is now the only image design. The
+  pre-registered measurement it was once gated behind is described after
+  the #1619 gate.
+  A generative vision model (`image_analysis`, a non-inheriting use case
+  probed with the tri-state vision probe BEFORE its row is written) reads
+  each referenced raster once at ingestion; the result is **derived data** in
+  `page_image_analyses` (migration **115**, #1615): one row per
+  `(page_id, source, attachment_key)`, keyed for reuse on
+  `(content_hash, identity_hash, prompt_version, schema_version)` where the
+  identity is `(provider_id, model, base_url)`, the two versions are code
+  constants compared on every read, page context (title, caption, heading)
+  never reaches the model — it is composed into the chunk at embed time — and
+  the closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5):
+  in particular `image_analysis_max_output_tokens` — the vision reply's
+  token ceiling, an admin setting (default 8,192, [4,096, 16,384]) that also
+  sizes the payload schema's transcription bounds — is deliberately outside
+  the identity and the cache key; changing it invalidates no row (payloads
+  are validated at write time only), and raising it re-opens only rows that
+  failed `truncated` under the lower value (ADR-027 D8/D13).
+  `embedPage` — still the only writer of `page_embeddings` — composes the
+  page's authored chunks **and** one chunk per valid analysis (status
+  `analyzed`, `identity_hash` equal to the retained
+  `admin_settings.image_analysis_identity`, versions equal to the running
+  code's — ADR-027 D5's validity predicate), appended after every authored
+  index with `metadata.source = 'image_analysis'` plus the attachment
+  provenance, embedded by the ordinary text embedder, dual-written under a
+  #1116 shadow, and **excluded from both page averages** by predicate
+  (ADR-027 D2/D9). Migration **116** (#1616) adds `pages.image_analysis_dirty`
+  (raised by every attachment and body writer, consumed by a
+  claim-first reconcile), `pages.image_analysis_revision` (the token
+  `embedPage` checks before clearing `embedding_dirty`, so neither worker
+  loses the other's update) and `page_embeddings.chunk_tsv` — a per-chunk
+  tsvector maintained by a trigger that reads `admin_settings.fts_language`
+  like migration 049's, rebuilt in the SAME transaction as `pages.tsv` on a
+  language change. The QUERY side of that column is #1617's: the keyword leg
+  and the #1107 pin union `pages.tsv` with derived `chunk_tsv` matches, rank a
+  page by the greater of the two, and resolve every hit to the matching chunk
+  (ADR-027 D10, and see `09-flow-rag-chat.md`). #1617's own DDL is migration
+  **117**, and it is ONE index: `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the derived arm through a `BitmapAnd` only while both were idle; after a
+  corpus-wide analysis batch the full GIN's pending list re-priced that plan
+  and the planner scanned every derived chunk behind a `chunk_tsv` filter
+  (review r1: 8.9–10.4 ms against 0.021 ms; review r2 re-measured the full
+  statement at 7.8–9.0 ms STEADY plus an 18–74 ms tail). A partial GIN
+  WITHOUT `fastupdate = off` is already a 5–10× win, but a derived write
+  burst pends it exactly like the full one, so its cost tracks the pending
+  list and it keeps a bad window — the reloption is what makes the arm's cost
+  independent of the burst, at ~38 µs per derived chunk on `embedPage`'s
+  inserts. Both 116 indexes stay — the full GIN serves authored chunk
+  resolution, the btree partial the `page_id`-keyed composition read.
+  Citations read provenance from `page_embeddings.metadata` only, so the query
+  path never joins `page_image_analyses`.
+  No runtime DDL, no second vector width, no
+  third RRF leg. The worker's batch is sweep →
+  reconcile → analyze, and only the analyze step needs the assignment — and
+  it needs the assignment to resolve to the SAME identity the settings row
+  retains, or it skips with `identity_drift` and writes nothing (a provider
+  `base_url` edit is a pause ended by the operator's re-check, never a
+  per-batch loop): an unassigned or drifted instance still re-pends replaced
+  images, drops rows for removed references, takes rows that fail the
+  validity predicate (identity or version changed) out of composition and
+  flips re-pended rows whose kept payload is valid again back to `analyzed`
+  without a call (`reused`), so a pause never composes an obsolete
+  description and a rollback loses nothing (ADR-027 D7/D13). Deterministic
+  failures (`rejected` is exactly 400/413/415/422) stop at five attempts
+  (`failed_terminal`); every other 4xx is `unavailable` and ends the batch
+  with a re-probe, as do three identical `rejected` statuses at the head of
+  a batch (a server fact such as `max_model_len`). Readiness is derived
+  from the rows' status alone, never the clock
+  (`none | pending | partial | complete | failed | skipped`) beside
+  `NOT embedding_dirty` for "analysis complete, text embedding pending".
+  Design of record: ADR-027 in `docs/ARCHITECTURE-DECISIONS.md`.
 - **The attachment stores are filesystem-only, and #1349 gives them a
   reconciler.** Two trees under `ATTACHMENTS_DIR`:
   `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on
@@ -752,8 +1199,8 @@ together, which matters most for #1114's query-side prefix.
   Confluence tree (non-image lazily-cached attachments have no enumerator),
   local rows whose FILE is missing are counted, never deleted, and a live run
   refuses against an empty-on-disk store the database still references. Files
-  a live run deletes take their `page_image_embeddings` rows with them and
-  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  a live run deletes take their `page_image_analyses` rows with them and
+  re-raise `image_analysis_dirty` on the owning pages. State lives in two
   `admin_settings` JSON rows (`attachment_sweep_last_run`,
   `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
@@ -765,6 +1212,20 @@ together, which matters most for #1114's query-side prefix.
   top-K nearest-neighbour edges from this index scoped to the changed pages,
   instead of AVG-ing the whole `page_embeddings` table and doing an index-less
   pairwise scan on every embedding run.
+- **The Confluence toggle is a mode, not a credential state (#1623,
+  migration 119).** `user_settings.confluence_enabled` is `BOOLEAN NOT NULL
+  DEFAULT TRUE`, so every row that predates the column keeps behaving exactly
+  as it did and the no-row read path in `routes/foundation/settings.ts` emits
+  the same `true`. `FALSE` means **standalone mode**: no scheduled or manual
+  sync, no upstream push when a page is saved, moved or deleted, and no
+  surface that asks for a URL or a PAT. It deliberately does **not** clear
+  `confluence_url` or `confluence_pat` — re-enabling needs no re-paste — and
+  previously synced rows keep their `pages.confluence_id` and their history,
+  so the column is independent of the derived `confluenceConnected` (which
+  answers only whether credentials exist). Do not confuse it with
+  `pages.source = 'standalone'`, which classifies a single row's origin; this
+  column is a per-user integration mode and says nothing about any page's
+  provenance.
 - **Encryption at rest.** `user_settings.confluence_pat` and
   `user_settings.notion_integration_token` (#1462) are stored as
   ciphertext blobs (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
@@ -815,12 +1276,21 @@ together, which matters most for #1114's query-side prefix.
   the target to the `__system__` sentinel user
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
-- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443).** `page_id`
-  is the PK and an `ON DELETE CASCADE` FK. `doc_state` is the full
-  `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental and
-  never this column). `version` is the BYTEA write generation for crash
+- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443 /
+  #276).** `page_id` is the PK and an `ON DELETE CASCADE` FK. `doc_state` is
+  the full `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental
+  and never this column). `version` is the BYTEA write generation for crash
   recovery — it is **not** `pages.version` and is never shown to editors.
-  Rows appear on first collab join; there is no backfill. The feature flag
+  Rows appear only when a writable admission initializes the document; a
+  read-only room does not create the row and there is no backfill. Multiple
+  processes may own one room through distinct unreleased `collab_room`
+  admissions. Save uses a fresh correlated state-dump round across exactly
+  those admission IDs, merges persisted and returned updates, rechecks the
+  owner set and Redis transport generation, then compares a server Yjs Snapshot
+  against the client's bounded Snapshot (state-vector clocks **and** delete-set).
+  `collab_request` admissions fence the Save but are not room owners. Lifecycle
+  changes retire room ownership and prevent a stale document from being
+  replayed into the next generation. The feature flag
   `admin_settings.collab_editing_enabled` defaults to `'0'`. Topology:
   [`12-realtime-collaboration.md`](./12-realtime-collaboration.md).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
@@ -834,11 +1304,16 @@ together, which matters most for #1114's query-side prefix.
   Confluence-synced and standalone/local pages accumulate history. The
   right-pane "Version history" UI lists snapshots + the live version, previews
   any snapshot, and offers a Confluence-style **restore**
-  (`POST /api/pages/:id/versions/:version/restore`): it snapshots the current
-  live state first, then applies the target snapshot as a **new** bumped
-  version (older versions remain), marks `embedding_dirty`, and — for
-  Confluence-sourced pages — pushes the restored content upstream as a new
-  Confluence version so the next sync doesn't clobber the revert. Retention
+  (`POST /api/pages/:id/versions/:version/restore`): after locking the live row,
+  it rejects a supplied stale optimistic version before writing history or live
+  content (an omitted version deliberately remains unconditional), snapshots
+  the current live state, then applies the target snapshot as a **new** bumped
+  version. Older versions remain, `embedding_dirty` is raised, and — for
+  Confluence-sourced pages — the restored content is pushed upstream as a new
+  Confluence version so the next sync doesn't clobber the revert. A restore that
+  stays local (a standalone page, or the caller's integration is off) applies
+  the `PUT /pages/:id` authority, `userCanAccessPage` AND `userCanEditPage`,
+  both before the write and under the page fence. Retention
   keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
   (`data-retention-service.ts`).
 - **Cached asset expectations** (`pages.expected_image_files` /

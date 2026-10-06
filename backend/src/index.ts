@@ -17,6 +17,7 @@ import { initEmailService, closeEmailService } from './core/services/email-servi
 import { warnIfFtsLanguageEnvSet } from './core/services/fts-language.js';
 import { warnIfRagEfSearchEnvSet } from './core/services/admin-settings-service.js';
 import { isValidEncryptionKey } from './core/utils/crypto.js';
+import { ensureAttachmentsRoot } from './core/services/local-attachment-service.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -44,6 +45,7 @@ async function start() {
   logger.info('Running database migrations...');
   await runMigrations();
   logger.info('Migrations complete');
+  await ensureAttachmentsRoot();
 
   // SSRF allowlist bootstrap is now wired inside `buildApp()` alongside the
   // Redis pub/sub subscriber (issue #306) so every pod, in every process,

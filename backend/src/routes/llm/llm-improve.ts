@@ -15,7 +15,7 @@ import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-aud
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   assembleContextIfNeeded,
-  resolvePageRef,
+  resolveReadablePageRef,
   resolveSystemPrompt,
   checkCacheWithLock,
   sendCachedSSE,
@@ -196,7 +196,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
-    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
@@ -211,12 +211,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     // Pre-insert improvement record so we have the row to update after
-    // streaming. resolvePageRef accepts both id forms — the frontend passes
-    // the INTERNAL pages.id, which the old confluence_id-only subquery never
-    // matched, so UI-driven improvements silently skipped this record.
+    // streaming. The ref accepts both id forms — the frontend passes the
+    // INTERNAL pages.id, which the old confluence_id-only subquery never
+    // matched, so UI-driven improvements silently skipped this record. A page
+    // the caller cannot read gets no row, exactly like a missing page.
     let improvementId: string | undefined;
     if (body.pageId) {
-      const page = await resolvePageRef(body.pageId);
+      const page = await resolveReadablePageRef(userId, body.pageId);
       if (page) {
         const insertResult = await query<{ id: string }>(
           `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
@@ -309,7 +310,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       });
       throw err;
     } finally {
-      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+      if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
     } finally {
       await slot.release();

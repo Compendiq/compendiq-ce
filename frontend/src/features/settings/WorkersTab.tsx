@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import { m, useReducedMotion } from 'framer-motion';
+import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
@@ -115,6 +116,163 @@ function useWorkerAction(endpoint: string, successMsg: string) {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Action failed'),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Batch size — pages the worker takes per scheduled run / Run Now
+// ---------------------------------------------------------------------------
+
+type BatchSizeField = 'qualityBatchSize' | 'summaryBatchSize' | 'imageAnalysisBatchSize';
+
+/**
+ * Per-field bounds and copy. Mirrors `WORKER_BATCH_SIZE_*` and
+ * `IMAGE_ANALYSIS_BATCH_SIZE_*` in the backend admin-settings service: pages
+ * for the quality / summary workers, images for the analysis worker (ADR-027
+ * D13, one bounded batch per scheduled cycle and per Run Now).
+ */
+const BATCH_SIZE_FIELDS: Record<BatchSizeField, { label: string; description: string; min: number; max: number }> = {
+  qualityBatchSize: {
+    label: 'Pages per batch',
+    description: 'Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.',
+    min: 1,
+    max: 100,
+  },
+  summaryBatchSize: {
+    label: 'Pages per batch',
+    description: 'Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.',
+    min: 1,
+    max: 100,
+  },
+  imageAnalysisBatchSize: {
+    label: 'Images per batch',
+    description: 'Each scheduled run and Run Now sends at most this many images to the vision model; the rest wait for the next run.',
+    min: 1,
+    max: 500,
+  },
+};
+
+function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusKey: string }) {
+  const queryClient = useQueryClient();
+  const { data: settings, isError, refetch } = useQuery<AdminSettings>({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch('/admin/settings'),
+  });
+  // Draft-over-server, like EmbeddingTab: `undefined` means "showing the
+  // saved value", so a background refetch never clobbers an unsaved edit.
+  const [draft, setDraft] = useState<number | undefined>(undefined);
+  const saved = settings?.[field];
+  const value = draft ?? saved;
+  const dirty = draft !== undefined && draft !== saved;
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [retryInFlight, setRetryInFlight] = useState(false);
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+
+  // Follow the settings notice retry pattern: retain the pressed control
+  // while fetching, then rehome only focus orphaned by a successful retry.
+  useEffect(() => {
+    if (!restoreFocusAfterRetry || isError || retryInFlight || saved === undefined) return;
+    setRestoreFocusAfterRetry(false);
+    if (document.activeElement === document.body) inputRef.current?.focus();
+  }, [restoreFocusAfterRetry, isError, retryInFlight, saved]);
+
+  function retry() {
+    if (retryInFlight) return;
+    setRetryInFlight(true);
+    void refetch()
+      .then(
+        (result) => setRestoreFocusAfterRetry(!result.isError),
+        () => setRestoreFocusAfterRetry(false),
+      )
+      .finally(() => setRetryInFlight(false));
+  }
+
+  const save = useMutation({
+    mutationFn: (size: number) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ [field]: size }) }),
+    onSuccess: async (_result, size) => {
+      // The write is confirmed even if the subsequent read fails.
+      queryClient.setQueryData<AdminSettings>(['admin-settings'], (current) =>
+        current ? { ...current, [field]: size } : current,
+      );
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      setDraft((current) => current === size ? undefined : current);
+      toast.success('Batch size saved — applies from the next run');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save batch size'),
+  });
+
+  const bounds = BATCH_SIZE_FIELDS[field];
+  const inputId = `${statusKey}-batch-size`;
+  const noticeId = `${inputId}-notice`;
+  const showFailure = isError || retryInFlight;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border pt-3">
+      <div className="min-w-0">
+        <label htmlFor={inputId} className="text-xs font-medium">
+          {bounds.label}
+        </label>
+        <p className="text-xs text-muted-foreground">
+          {bounds.description}
+        </p>
+        <p
+          role="status"
+          className={cn('text-xs', showFailure && 'mt-2', saved === undefined ? 'text-destructive' : 'text-warning')}
+        >
+          {showFailure ? (
+            <>
+              <span id={noticeId}>
+                {saved === undefined
+                  ? 'Batch size could not be read.'
+                  : 'Batch size could not be refreshed. Last loaded settings and unsaved edits are still shown.'}
+              </span>{' '}
+              <button
+                type="button"
+                onClick={retry}
+                aria-disabled={retryInFlight || undefined}
+                aria-describedby={noticeId}
+                className="nm-button-ghost h-8 text-xs aria-disabled:cursor-default aria-disabled:opacity-70"
+              >
+                {retryInFlight ? 'Retrying…' : 'Retry'}
+              </button>
+            </>
+          ) : saved === undefined ? (
+            <span className="text-muted-foreground">Loading batch size…</span>
+          ) : null}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <input
+          ref={inputRef}
+          id={inputId}
+          data-testid={inputId}
+          type="number"
+          min={bounds.min}
+          max={bounds.max}
+          value={value ?? ''}
+          disabled={saved === undefined}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (Number.isFinite(v)) {
+              setDraft(Math.max(bounds.min, Math.min(bounds.max, v)));
+            }
+          }}
+          className="nm-input w-20 text-right"
+        />
+        <Button
+          onClick={() => {
+            if (value !== undefined && saved !== undefined && !save.isPending) save.mutate(value);
+          }}
+          disabled={saved === undefined || !dirty || save.isPending}
+          isLoading={save.isPending}
+          variant="secondary"
+          size="sm"
+          data-testid={`${inputId}-save`}
+        >
+          Save
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -296,7 +454,7 @@ function ProgressBar({ completed, total }: { completed: number; total: number })
 // Worker card
 // ---------------------------------------------------------------------------
 
-function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, rescanDescription, resetFailedEndpoint, normalize }: {
+function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, rescanDescription, resetFailedEndpoint, batchSizeField, normalize }: {
   title: string;
   statusKey: string;
   statusEndpoint: string;
@@ -305,6 +463,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   /** Per-worker ConfirmDialog copy — must match what the backend rescan route actually does. */
   rescanDescription: string;
   resetFailedEndpoint?: string;
+  /** Which `AdminSettings` field holds this worker's pages-per-batch knob; omit for workers without one. */
+  batchSizeField?: BatchSizeField;
   normalize: StatusNormalizer;
 }) {
   const { data: status, isLoading } = useWorkerStatus(statusKey, statusEndpoint, normalize);
@@ -425,6 +585,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
         </>
       ) : null}
 
+      {batchSizeField && <BatchSizeControl field={batchSizeField} statusKey={statusKey} />}
+
       {usesEmbeddingStream && runNow.isPending && (
         // `--color-status-embedding` resolves to body ink now (it had been
         // byte-identical to `--color-primary`, so ambient pipeline telemetry
@@ -496,6 +658,7 @@ export function WorkersTab() {
         rescanEndpoint="/llm/quality-rescan"
         rescanDescription="Every page is reset to pending and existing quality scores are cleared, then the background worker re-analyzes all pages. This can take a while and uses LLM capacity."
         normalize={normalizeQuality}
+        batchSizeField="qualityBatchSize"
       />
 
       <WorkerCard
@@ -506,6 +669,7 @@ export function WorkersTab() {
         rescanEndpoint="/llm/summary-rescan"
         rescanDescription="Every page is reset to pending and re-summarized by the background worker. Existing summaries stay visible until they are replaced. This can take a while and uses LLM capacity."
         normalize={normalizeSummary}
+        batchSizeField="summaryBatchSize"
       />
 
       <WorkerCard
@@ -518,6 +682,20 @@ export function WorkersTab() {
         resetFailedEndpoint="/llm/embedding-reset-failed"
         normalize={normalizeEmbedding}
       />
+
+      {/* ADR-027 D13 (#1616): the image analysis worker's one knob. Its
+          status, Run Now, Retry failed and Re-analyze all arrive with #1618's
+          progress card under AI Models; until then the batch size lives here
+          beside the other worker knobs. */}
+      <div className="nm-card p-4 space-y-3" data-testid="worker-card-image-analysis">
+        <div>
+          <h3 className="text-sm font-semibold">Image Analysis</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Runs after every sync: re-enumerates changed pages, then analyzes pending images with the assigned vision model.
+          </p>
+        </div>
+        <BatchSizeControl field="imageAnalysisBatchSize" statusKey="image-analysis" />
+      </div>
     </div>
   );
 }

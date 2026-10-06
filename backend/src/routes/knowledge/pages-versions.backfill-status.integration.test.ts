@@ -24,6 +24,8 @@ import { pagesVersionRoutes } from './pages-versions.js';
  *     but the synthetic current row is still returned (the list is never
  *     empty for a resolvable page);
  *   - `failed` → Confluence error is surfaced, current row still returned;
+ *   - `skipped_confluence_off` (#1623) → the integration is off, so the
+ *     credential path is never entered even with credentials still stored;
  *   - standalone pages → no backfillStatus at all.
  */
 
@@ -126,6 +128,69 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — backfillStatus (#
     expect(body.versions).toHaveLength(1);
     expect(body.versions[0]).toMatchObject({ versionNumber: 3, isCurrent: true });
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('"skipped_confluence_off": the flag is off with credentials still stored → nothing is imported (#1623)', async () => {
+    const pageId = await seedConfluencePage('c-1623-off', 3);
+    // Working credentials are deliberately present: turning the integration
+    // off never clears them, so the flag alone must stop the import.
+    await seedCredentials();
+    await query(`UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1`, [userId]);
+    const spy = vi
+      .spyOn(ConfluenceClient.prototype, 'getPageVersions')
+      .mockRejectedValue(new Error('must not be called'));
+
+    const r = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/versions` });
+
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('skipped_confluence_off');
+    // Standalone mode is a choice, not a configuration gap.
+    expect(body.backfillDetail).not.toMatch(/PAT/i);
+    expect(body.backfillDetail).not.toMatch(/credential/i);
+    expect(spy).not.toHaveBeenCalled();
+    // The page stays fully usable — its local history is still returned.
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 3, isCurrent: true });
+    // The credentials survived the read path untouched.
+    const kept = await query<{ confluence_pat: string | null }>(
+      'SELECT confluence_pat FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    expect(kept.rows[0]!.confluence_pat).not.toBeNull();
+  });
+
+  it('"skipped_confluence_off" is decided before any client construction — a corrupt stored PAT cannot turn it into "failed" (#1623)', async () => {
+    const pageId = await seedConfluencePage('c-1623-off-badpat', 2);
+    // The same corrupt ciphertext that makes client construction throw for an
+    // ENABLED user (see the "failed" case below). Reaching 'failed' here would
+    // prove the credential path ran; 'skipped_confluence_off' proves it did not.
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+       VALUES ($1, 'https://confluence.example.com', 'not-a-valid-ciphertext', FALSE)`,
+      [userId],
+    );
+
+    const r = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/versions` });
+
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('skipped_confluence_off');
+  });
+
+  it('"skipped_no_credentials" still wins for an ENABLED user without credentials (#1623)', async () => {
+    const pageId = await seedConfluencePage('c-1623-on-nocreds', 4);
+    await query(
+      `INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, TRUE)`,
+      [userId],
+    );
+
+    const r = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/versions` });
+
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('skipped_no_credentials');
+    expect(body.backfillDetail).toMatch(/Settings/);
   });
 
   it('"failed": Confluence error during backfill → status surfaced, current row still returned', async () => {

@@ -307,7 +307,7 @@ export async function listCachedAttachments(pageId: string): Promise<string[]> {
  * rather than answering null, because a refused path is a bug in the caller
  * and not an absent file.
  */
-function cachedAttachmentPath(pageId: string, filename: string): string {
+export function cachedAttachmentPath(pageId: string, filename: string): string {
   const dir = attachmentDirNow(pageId);
   const safeFilename = validateFilename(filename);
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both inputs validated above (validatePageId via attachmentDirNow, validateFilename); containment asserted below
@@ -318,17 +318,31 @@ function cachedAttachmentPath(pageId: string, filename: string): string {
   return resolved;
 }
 
-/** Read one cached attachment's bytes by key + filename, or null if absent. */
+/**
+ * `readFile` that answers `null` for an ABSENT file (`ENOENT`) and rethrows
+ * everything else. The distinction is the whole point: `EACCES`, `EIO`,
+ * `ESTALE` are facts about the disk right now, not about the corpus, and a
+ * caller that records "no such file" for them parks a recoverable image
+ * behind a state no re-read ever revisits (#1626 review r2).
+ */
+async function readFileOrAbsent(resolved: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(resolved);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Read one cached attachment's bytes by key + filename, or null if absent.
+ * Any other read failure throws (see {@link readFileOrAbsent}).
+ */
 export async function readCachedAttachmentFile(
   pageId: string,
   filename: string,
 ): Promise<Buffer | null> {
-  const resolved = cachedAttachmentPath(pageId, filename);
-  try {
-    return await fs.readFile(resolved);
-  } catch {
-    return null;
-  }
+  return readFileOrAbsent(cachedAttachmentPath(pageId, filename));
 }
 
 // ── Validated removal (#1349) ──────────────────────────────────────────────
@@ -347,13 +361,14 @@ export async function readCachedAttachmentFile(
  * attachment keys (#1349, fixer external round).
  *
  * They sit inside the Confluence-style root and their names pass that tree's
- * key allow-list (`page-icons` / `client-models` because `-` is in it), so a
- * walker that treats every root entry as a key finds no page row for them
- * and judges the whole store one orphan directory. `local/` was reserved
- * from the start; the page-icon store was not, and a live sweep deleted
- * every uploaded page mark — permanently, because migrations 095/096 persist
- * only the sha. `#1418` adds `client-models/` for operator-supplied ONNX
- * weights on the same volume; forgetting that reservation is the same loss.
+ * key allow-list (`page-icons`, `client-models` and `page-baselines` because
+ * `-` is in it), so a walker that treats every root entry as a key finds no
+ * page row for them and judges the whole store one orphan directory. `local/`
+ * was reserved from the start; the page-icon store was not, and a live sweep
+ * deleted every uploaded page mark — permanently, because migrations 095/096
+ * persist only the sha. `#1418` adds `client-models/` for operator-supplied
+ * ONNX weights, and #275 adds permanently retained immutable baseline bytes.
+ * Forgetting either reservation is irreversible evidence loss.
  *
  * Anything that enumerates the root must skip these by name, and
  * `removeCachedAttachmentDirectory` refuses them outright so a future walker
@@ -361,11 +376,14 @@ export async function readCachedAttachmentFile(
  */
 /** Operator-supplied on-device model weights (#1418). Same attachments volume. */
 export const CLIENT_MODEL_STORE_DIRNAME = 'client-models';
+/** Immutable article baseline bytes (#275). Never traversed by live cleanup. */
+export const BASELINE_STORE_DIRNAME = 'page-baselines';
 
 export const ATTACHMENT_ROOT_RESERVED_DIRNAMES: ReadonlySet<string> = new Set([
   LOCAL_STORE_DIRNAME,
   PAGE_ICON_STORE_DIRNAME,
   CLIENT_MODEL_STORE_DIRNAME,
+  BASELINE_STORE_DIRNAME,
 ]);
 
 /**
@@ -492,9 +510,14 @@ function isDirectChildKey(key: string): boolean {
  * **This applies NO authorisation** — see the module header. It is for the
  * embedding worker and for the post-retrieval answer path, never for a route.
  *
- * Never throws: a page's images are enumerated from its HTML, and one bad key
- * must not abort the whole page's batch. A refusal is logged and answered as
- * an absence.
+ * A refused key is logged and answered as an absence: a page's images are
+ * enumerated from its HTML, and one bad key must not abort the whole page's
+ * batch. A read failure that is NOT an absence (`EACCES`, `EIO`, `ESTALE` —
+ * anything but `ENOENT`) THROWS: the file may well be there and readable in
+ * a minute, and only the caller knows whether that means "fail open for this
+ * answer" (`retrieved-images.ts`) or "retry later" (the analysis worker's
+ * `failed (unavailable:bytes)`). Collapsing it into `null` used to park such
+ * an image as `skipped (missing)`, a state no re-read revisits.
  *
  * Note it reads the EXACT key and does not run `readAttachment`'s `.xref-`
  * fallback. Normally the key IS the on-disk name: it comes out of the same
@@ -524,17 +547,19 @@ export async function resolveAttachmentBytes(
     return null;
   }
 
+  let resolved: string;
   try {
-    const bytes = source === 'local'
-      ? await readLocalStoreFile(pageId, key)
-      : await readCachedAttachmentFile(confluenceTreeKey(pageSource, pageId, confluenceId), key);
-
-    if (bytes === null) return null;
-    return { bytes, sniffedFormat: sniffImageFormat(bytes) };
+    resolved = source === 'local'
+      ? localStorePath(pageId, key)
+      : cachedAttachmentPath(confluenceTreeKey(pageSource, pageId, confluenceId), key);
   } catch (err) {
-    logger.warn({ err, pageId, source, key }, 'attachment-store: could not resolve attachment bytes');
+    logger.warn({ err, pageId, source, key }, 'attachment-store: refused an attachment path');
     return null;
   }
+
+  const bytes = await readFileOrAbsent(resolved);
+  if (bytes === null) return null;
+  return { bytes, sniffedFormat: sniffImageFormat(bytes) };
 }
 
 /**
@@ -542,7 +567,7 @@ export async function resolveAttachmentBytes(
  * store — the local half of {@link cachedAttachmentPath}, extracted for the
  * same reason.
  */
-function localStorePath(pageId: number, key: string): string {
+export function localStorePath(pageId: number, key: string): string {
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new Error('Invalid page id');
   }
@@ -561,13 +586,58 @@ function localStorePath(pageId: number, key: string): string {
   return resolved;
 }
 
-async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
-  const resolved = localStorePath(pageId, key);
-  try {
-    return await fs.readFile(resolved);
-  } catch {
-    return null;
+const UUID_PATH_SEGMENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_PATH_SEGMENT = /^[0-9a-f]{64}$/;
+
+/** Absolute root of the retained immutable-baseline namespace. */
+export function baselineStoreRoot(): string {
+  return path.resolve(attachmentsRootNow(), BASELINE_STORE_DIRNAME);
+}
+
+/**
+ * Path for one exclusive preparation attempt. UUID-only segments keep the
+ * retained namespace closed to traversal and make abandoned attempts
+ * unreachable unless their exact identity was persisted.
+ */
+export function baselineAttemptDirectory(baselineId: string, attemptId: string): string {
+  if (!UUID_PATH_SEGMENT.test(baselineId) || !UUID_PATH_SEGMENT.test(attemptId)) {
+    throw new Error('Invalid baseline storage identity');
   }
+  const root = baselineStoreRoot();
+  const resolved = path.resolve(root, baselineId, attemptId);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
+}
+
+/**
+ * Path of a copied media object. The filename is its SHA-256 identity, not a
+ * mutable source filename; the source identity remains in the manifest.
+ */
+export function baselineMediaPath(
+  baselineId: string,
+  attemptId: string,
+  mediaId: string,
+): string {
+  if (!SHA256_PATH_SEGMENT.test(mediaId)) {
+    throw new Error('Invalid baseline media identity');
+  }
+  return path.join(baselineAttemptDirectory(baselineId, attemptId), 'media', mediaId);
+}
+
+/** Candidate paths for an uploaded page icon, whose extension records format. */
+export function pageIconAttachmentPaths(pageId: number, sha256: string): string[] {
+  if (!Number.isInteger(pageId) || pageId <= 0 || !SHA256_PATH_SEGMENT.test(sha256)) {
+    throw new Error('Invalid page icon identity');
+  }
+  const dir = path.resolve(attachmentsRootNow(), PAGE_ICON_STORE_DIRNAME, String(pageId));
+  const root = attachmentsRootNow();
+  if (!dir.startsWith(root + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return ['png', 'jpg', 'webp', 'gif'].map((extension) => path.join(dir, `${sha256}.${extension}`));
 }
 
 /**

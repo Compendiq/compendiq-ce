@@ -2,33 +2,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../../test-db-helper.js';
+import {
+  setupTestDb,
+  truncateAllTables,
+  teardownTestDb,
+  isDbAvailable,
+  usecaseCheckMigrations,
+} from '../../../../test-db-helper.js';
 import { query, runMigrations } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
 const migrationsDir = path.dirname(fileURLToPath(import.meta.url)) + path.sep + '..';
-
-/**
- * Every migration that (re)writes `llm_usecase_assignments_usecase_check`.
- *
- * DISCOVERED, never listed. The CHECK is 054's inline column constraint, which
- * Postgres auto-names `<table>_<column>_check`, so widening it means dropping
- * and re-adding the WHOLE list — 090 added `rerank`, 093 added
- * `image_embedding`, and the next use case will do the same. The repair below
- * has to re-run all of them in order; re-running only the one that happened to
- * be current when this file was written leaves the constraint NARROWER than
- * the schema, which is the exact bug this comment used to describe for 090.
- */
-function usecaseCheckMigrations(): string[] {
-  return fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
-    .filter((f) =>
-      fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes('llm_usecase_assignments_usecase_check'),
-    )
-    .sort();
-}
 
 /**
  * Undo the schema damage the pre-054 simulation cases below inflict on the
@@ -48,6 +33,12 @@ async function repairSharedSchema(): Promise<void> {
   // silently reverting its usecase CHECK to the five original names (#1104 was
   // the first victim). Same fix, over every widener rather than a hardcoded
   // one — all of them are idempotent (`DROP CONSTRAINT IF EXISTS` + `ADD`).
+  // Replaying only the widener that happened to be current when this file was
+  // written would leave the constraint NARROWER than the schema, which is the
+  // exact bug this comment used to describe for 090 — so the list is
+  // `usecaseCheckMigrations()`, which lives in `test-db-helper.ts` because the
+  // helper repairs the same constraint for every file (`restoreUsecaseCheck`)
+  // and one definition of "which migrations write it" is enough.
   //
   // The rows go first: replaying the wideners in order means an OLDER one
   // briefly re-imposes its shorter list, and `ADD CONSTRAINT` validates
@@ -203,24 +194,29 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     ]);
   });
 
-  it('repairs the usecase CHECK to the NEWEST widener, not to a hardcoded one', async () => {
+  it('repairs the usecase CHECK to the NEWEST writer, not to a hardcoded one', async () => {
     // The cases above leave the shared database carrying 054's original
     // five-name CHECK. The repair in `afterAll` has to put every later
-    // widening migration back — if it re-runs only the one that was current
+    // rewriter back — if it re-runs only the one that was current
     // when it was written, the constraint ends up narrower than the schema
     // and the *next* test file to assert on a newer use case fails for a
     // reason that has nothing to do with it (093 hit exactly this).
-    const wideners = usecaseCheckMigrations();
-    expect(wideners.length).toBeGreaterThan(1); // 090 and 093 today
+    //
+    // The newest writer is no longer a widener: #1618's 118 drops and re-adds
+    // the constraint WITHOUT `image_embedding`, so the repair must follow a
+    // narrowing too.
+    const rewriters = usecaseCheckMigrations();
+    expect(rewriters.length).toBeGreaterThan(1); // 090, 093, 108, 115, 118 today
 
-    // Names the newest widener admits — read from the migration rather than
-    // listed here, so a future widener is covered without editing this test.
-    const newest = fs.readFileSync(path.join(migrationsDir, wideners[wideners.length - 1]!), 'utf8');
+    // Names the newest writer admits — read from the migration rather than
+    // listed here, so a future rewriter is covered without editing this test.
+    const newest = fs.readFileSync(path.join(migrationsDir, rewriters[rewriters.length - 1]!), 'utf8');
     const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(newest);
     expect(listed).not.toBeNull();
     const expected = [...listed![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
-    expect(expected).toContain('image_embedding');
+    expect(expected).not.toContain('image_embedding');
     expect(expected).toContain('inline_completion');
+    expect(expected).toContain('image_analysis');
 
     // Revert to 054's inline five — exactly the end state the pre-054 cases
     // above produce by recreating the table from 054's own DDL.

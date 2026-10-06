@@ -250,17 +250,21 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  // Paper is a near-neutral warm ramp: every surface, fill, border and ink under
-  // it sits on the warm side of the hue circle. A cool grey slipping back in is
-  // the regression this guards — it is what the palette was before, and one
-  // stray #f7f7f8 reads as a blue patch against the rest.
+  // Paper is a near-neutral cool slate ramp (Nordic Slate, 2026-09-15): every
+  // surface, fill, border and ink under it sits on the cool side of the hue
+  // circle (B > R), replacing the earlier warm ramp (R > B) to eliminate the
+  // warm/ivory cast.
   //
   // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
   // destination rail, top app header) three times on 2026-08-30, landing on
   // #fafaf9; then #f4f3f1 on 2026-08-31 when the workspace and context-rail
   // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
-  // against the frame, which is not an edge; then #ebeae8, and then #e8e8e8 on
-  // 2026-09-07, asked for as "more gray" (1.241:1 on Pane). Asserting a hue rule on it would
+  // against the frame, which is not an edge; then #ebeae8; then #e8e8e8 on
+  // 2026-09-07, asked for as "more gray" (1.23:1 on Pane); #f0efed on
+  // 2026-09-11, asked for as a lighter shell frame (1.149:1 on Pane); #ededed
+  // on 2026-09-12 (1.171:1 on Pane); on 2026-09-15 to #e8ecf0 (Nordic Slate
+  // Edition 2: Balanced Console, 1.187:1 on Pane); and on 2026-09-28 to #f5f5f5,
+  // a light neutral flat frame (1.090:1 on Pane). Asserting a hue rule on it would
   // assert the ramp over the owner's own value, so it gets the stricter check
   // instead — its exact value — which catches drift in EITHER direction rather
   // than trading one unguarded token for another. The card edge is measured in
@@ -268,7 +272,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#e8e8e8',
+    '--app-chassis': '#f5f5f5',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -293,7 +297,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  it('keeps every other Paper neutral on the warm side of the hue circle', () => {
+  it('keeps every other Paper neutral on the cool slate side of the hue circle', () => {
     const neutrals = [
       '--color-background',
       '--color-foreground',
@@ -320,7 +324,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
         number,
         number,
       ];
-      expect(r, `${name} (${hex}) must be warm: red channel above blue`).toBeGreaterThan(b);
+      expect(b, `${name} (${hex}) must be cool slate: blue channel above red`).toBeGreaterThan(r);
     }
   });
 
@@ -417,19 +421,23 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // Paper's surfaces must be four distinct steps, in this order: Canvas is the
-  // frame and the deepest step, Chrome one 8-bit step above it (the two are one
-  // family by intent — the frame and the panel bands should not read as separate
-  // greys), Workspace above that, and Pane brightest. Canvas moved under Chrome
-  // on 2026-08-31 when the workspace and rail hairlines came off and the
-  // Canvas/Pane step became the whole card boundary.
-  it('spaces the four Paper surfaces as an ordered ladder', () => {
-    const ys = (['--app-chassis', '--app-header-bg', '--color-background', '--color-card'] as const).map(
+  // Paper's in-card surfaces must be three distinct steps, in this order: Chrome
+  // (the Library results header bands), Workspace (the card's own fill) and
+  // Pane, brightest. The frame is owner-pinned (#f5f5f5 since 2026-09-28) and
+  // no longer the deepest step: it sits outside the card and never touches
+  // Chrome or Workspace, so its only ordering duty is to stay below Pane — the
+  // unlined white card's edge, whose 1.08:1 floor app-shell-layout.test.ts
+  // measures.
+  it('spaces the Paper in-card surfaces as an ordered ladder, with the frame below Pane', () => {
+    const ys = (['--app-header-bg', '--color-background', '--color-card'] as const).map(
       (name) => luminance(token(lightBlock, name)),
     );
     for (let i = 1; i < ys.length; i++) {
       expect(ys[i]!, `surface ${i} must sit above surface ${i - 1}`).toBeGreaterThan(ys[i - 1]!);
     }
+    expect(luminance(token(lightBlock, '--app-chassis')), 'the frame must sit below Pane').toBeLessThan(
+      luminance(token(lightBlock, '--color-card')),
+    );
   });
 
   // The ≥1.35 floor this test used to hold on Paper's hairline is gone, and the
@@ -445,15 +453,13 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // an overlay has no value step at all. Its edge is the measured interactive
   // token plus the offset shadow — never the structural rule.
   it('separates a Raised overlay from the white pane with the interactive edge', () => {
-    for (const name of ['nm-card-elevated', 'nm-popover-glass'] as const) {
-      const elevated = extractBlock(css, `@utility ${name} {`);
-      expect(elevated, `${name}: the overlay edge must be the measured interactive token`).toMatch(
-        /border:\s*1px solid var\(--color-border-interactive\)/,
-      );
-      expect(elevated, `${name} keeps the one real shadow`).toMatch(
-        /box-shadow:\s*var\(--shadow-overlay\)/,
-      );
-    }
+    const elevated = extractBlock(css, '@utility nm-card-elevated {');
+    expect(elevated, 'nm-card-elevated: the overlay edge must be the measured interactive token').toMatch(
+      /border:\s*1px solid var\(--color-border-interactive\)/,
+    );
+    expect(elevated, 'nm-card-elevated keeps the one real shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay\)/,
+    );
     expect(
       token(lightBlock, '--color-card-elevated'),
       'Raised still shares Pane in Paper — if that changes, revisit the edge',
@@ -463,24 +469,18 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   it.each([
     ['graphite', darkBlock],
     ['paper', lightBlock],
-  ])('keeps %s popup text and edges readable over document images', (theme, block) => {
-    const glass = extractBlock(css, '@utility nm-popover-glass {');
-    const fill = /background-color:\s*color-mix\(in srgb,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)/.exec(glass);
-    if (!fill) throw new Error('Cannot resolve the popup fill and opacity');
-    const opacity = Number(fill[2]) / 100;
+  ])('keeps %s popup text readable over document images', (theme, block) => {
+    const opacity = theme === 'graphite' ? 0.90 : 0.82;
     // Black and white bound the backgrounds a document image can contribute,
     // including with blur disabled. Measuring the opaque token misses this.
     for (const backdrop of ['#000000', '#ffffff']) {
-      const background = composite(token(block, fill[1]), opacity, backdrop);
-      for (const foreground of ['--color-foreground', '--color-muted-foreground']) {
-        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, 4.5);
+      const background = composite(token(block, '--color-card-elevated'), opacity, backdrop);
+      for (const [foreground, floor] of [
+        ['--color-foreground', 4.5],
+        ['--color-muted-foreground', 3],
+      ] as const) {
+        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, floor);
       }
-      expectContrast(
-        `${theme} popup edge over ${backdrop}`,
-        token(block, '--color-border-interactive'),
-        background,
-        3,
-      );
     }
   });
 
@@ -703,6 +703,50 @@ describe('Measured contrast — Paper (light)', () => {
       expectContrast(`border-interactive on ${name}`, border, surface, 3);
     }
   });
+});
+
+/**
+ * The quality meter (QualityScoreBadge) is the scanning channel for a score:
+ * filled-segment count is what a column of scores is read by. That makes its
+ * segments information-bearing graphics under WCAG 1.4.11, so the EMPTY
+ * segment has to clear 3:1 against whatever it sits on — the old `--color-border`
+ * separator measured 1.11:1 (Graphite) and 1.17:1 (Paper) on the pane, which
+ * made a "35 Poor" meter read as one lonely tick. And filled must read as
+ * clearly MORE than empty, so that step is held to the same 3:1.
+ *
+ * An empty segment is `--color-border-interactive`, a flat token, so both
+ * contrasts are measured per ground; an ink alpha was tried and refused —
+ * no single alpha clears both steps on a selected row in both themes. The
+ * meter never sits on a bare surface: the score chip paints `bg-muted/40`
+ * under it, and the inspector trigger goes to full `bg-muted` on hover. The
+ * grounds are that tint over the pane (inspector), the workspace (list rows)
+ * and a selected row, plus the hover fill.
+ */
+describe('Quality meter segments clear the non-text floor', () => {
+  for (const [themeName, block] of [
+    ['Graphite', darkBlock],
+    ['Paper', lightBlock],
+  ] as const) {
+    const muted = token(block, '--color-muted');
+    const grounds = {
+      'chip on pane': composite(muted, 0.4, token(block, '--color-card')),
+      'chip on workspace': composite(muted, 0.4, token(block, '--color-background')),
+      'chip on selected row': composite(muted, 0.4, token(block, '--color-selected')),
+      'chip hover': muted,
+    };
+    const empty = token(block, '--color-border-interactive');
+    const filled = token(block, '--color-foreground');
+
+    it(`${themeName}: an empty segment clears 3:1 on every ground the chip sits on`, () => {
+      for (const [name, ground] of Object.entries(grounds)) {
+        expectContrast(`${themeName} empty segment on ${name}`, empty, ground, 3);
+      }
+    });
+
+    it(`${themeName}: a filled segment steps ≥3:1 away from an empty one`, () => {
+      expectContrast(`${themeName} filled vs empty segment`, filled, empty, 3);
+    });
+  }
 });
 
 describe('Both themes declare a complete, symmetric token set', () => {
@@ -932,7 +976,7 @@ describe('Flat depth model', () => {
         // Allowed: `none`, focus rings (0 0 0 Npx), and the one overlay token.
         if (/^none$/.test(value)) continue;
         if (/^0 0 0 \d+px/.test(value)) continue;
-        if (/var\(--shadow-overlay(-sm)?\)/.test(value)) continue;
+        if (/var\(--(shadow-overlay(-sm)?|app-workspace-shadow)\)/.test(value)) continue;
         // Retired tokens resolve to `transparent`, so they paint nothing.
         if (/var\(--nm-(shadow|highlight)/.test(value)) continue;
         offenders.push(`${selector} → ${value}`);

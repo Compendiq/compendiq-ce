@@ -11,16 +11,16 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 |---|---------|------|------|
 | 1 | System Context (C4 L1) | [`01-system-context.md`](./01-system-context.md) | Users + external systems talking to Compendiq |
 | 2 | Container Diagram (C4 L2) | [`02-container.md`](./02-container.md) | Deployable units (frontend, backend, Postgres, Redis, mcp-docs, searxng) |
-| 3 | Backend Domains (C4 L3) | [`03-backend-domains.md`](./03-backend-domains.md) | Components per domain + ESLint boundary rules |
-| 4 | Frontend Structure | [`04-frontend-structure.md`](./04-frontend-structure.md) | Feature folders, providers, enterprise gating |
+| 3 | Backend Domains (C4 L3) | [`03-backend-domains.md`](./03-backend-domains.md) | Components, boundaries, immutable-baseline admission, distributed collab ownership and retained evidence |
+| 4 | Frontend Structure | [`04-frontend-structure.md`](./04-frontend-structure.md) | Feature folders, providers, enterprise gating, snapshot-bound Save and draft recovery |
 | 5 | Docker Deployment | [`05-deployment.md`](./05-deployment.md) | Compose services, networks, ports, volumes |
-| 6 | Data Model (ERD) | [`06-data-model.md`](./06-data-model.md) | Key PostgreSQL tables and relationships |
+| 6 | Data Model (ERD) | [`06-data-model.md`](./06-data-model.md) | Core tables, versioned writer readiness, lifecycle admissions, recovery and immutable evidence |
 | 7 | Auth & Login Flow | [`07-flow-auth.md`](./07-flow-auth.md) | Local JWT flow + OIDC (EE) |
-| 8 | Confluence Sync Flow | [`08-flow-sync.md`](./08-flow-sync.md) | Scheduler → fetch → convert → persist → embed |
+| 8 | Confluence Sync Flow | [`08-flow-sync.md`](./08-flow-sync.md) | Mode-gated ordinary sync, source-aware persistence and downstream embedding |
 | 9 | RAG Chat Flow | [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) | Ask pipeline: retrieve → prompt → stream |
 | 10 | Enterprise License Flow | [`10-flow-enterprise-license.md`](./10-flow-enterprise-license.md) | Open-core plugin loading + license persistence |
 | 11 | Content Format Pipeline | [`11-content-pipeline.md`](./11-content-pipeline.md) | Confluence XHTML ↔ HTML ↔ Markdown ↔ Editor |
-| 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs CRDT gateway, dual-run presence, BYTEA persist |
+| 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs gateway, durable room owners, correlated cross-process snapshots and BYTEA persistence |
 
 ## Runbooks
 
@@ -29,10 +29,11 @@ a diagram points when "what do I DO about it" is the question.
 
 | Runbook | Covers |
 |---|---|
-| [`image-index.md`](../runbooks/image-index.md) | Serving, assigning and probing the `image_embedding` leg; what fills the index, how retrieval reads it, what the model is shown, and what changing the model costs (#1115) |
-| [`vl-embedding-dev.md`](../runbooks/vl-embedding-dev.md) | Running the local VL embedding shim (`mlx` / `llama` backends) so the image index and the eval have an endpoint on a laptop (#1115) |
-| [`retrieval-eval.md`](../runbooks/retrieval-eval.md) | The #1102 retrieval harness: corpora, fixtures, the FTS-language axis, the `--images` axis, and how to read a verdict |
+| [`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md) | Canonical activation/readiness, standalone eligibility, retained-storage capacity, runtime fencing, distributed collab admission, intent reconciliation and evidence-recovery operations |
+| [`image-analysis.md`](../runbooks/image-analysis.md) | Operating the `image_analysis` use case (ADR-027): what the model has to be, assigning and probing it, intake, the worker, the operator card, what the chat model is shown, and what changing the model costs |
+| [`retrieval-eval.md`](../runbooks/retrieval-eval.md) | The #1102 retrieval harness: corpora, fixtures, the FTS-language axis, the `--images` arm axis, the ADR-027 arm protocol, and how to read a verdict |
 | [`shadow-reembed.md`](../runbooks/shadow-reembed.md) | Zero-downtime TEXT embedding model change — lifecycle, go/no-go, revert (#1116) |
+| [`image-embedding-retirement.md`](../runbooks/image-embedding-retirement.md) | The legacy `image_embedding` space's retirement (#1618 stage 2, migration 118 — APPLIED): the destructive boundary, the `pg_dump` set, the restore procedure and its two-arm exercise record |
 
 ## Maintenance
 
@@ -51,20 +52,23 @@ Quick reference for what to update when:
 | A new **route** inside an existing `frontend/src/features/*` folder, or a provider's data model changing | `04-frontend-structure.md` |
 | A migration that adds/drops/renames a core table or FK | `06-data-model.md` |
 | Auth routes, JWT/refresh logic, or OIDC wiring | `07-flow-auth.md` |
-| `sync-service.ts`, sync scheduler, attachment handler | `08-flow-sync.md` |
+| `core/services/confluence-integration.ts`, `sync-service.ts`, sync scheduler, attachment handler, or source-aware sync ownership | `08-flow-sync.md` |
 | `core/services/attachment-store.ts` (the shared attachment reader) or which store/ACL a caller reaches it through | `03-backend-domains.md` |
 | `rag-service.ts`, `multi-query-search.ts`, `llm-ask.ts`, `routes/knowledge/search.ts`, prompt-building, caching | `09-flow-rag-chat.md` |
-| `vl-embedding-client.ts`, `image-embedding-probe.ts`, `image-embedding-index.ts`, or the `image_embedding` assignment/probe routes | `03-backend-domains.md`, `06-data-model.md`, `09-flow-rag-chat.md` |
-| `image-embedding-service.ts`, `image-embedding-dirty.ts`, the `image_embedding_dirty` writers, or the image-index admin routes | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md` |
-| `image-leg-search.ts`, the third RRF leg's fusion in `rag-service.ts`, or the `kind: 'image'` source shape | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
+| `image-analysis-dirty.ts`, the `image_analysis_dirty` writers, or `routes/llm/llm-image-analysis.ts` | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md` |
+| The `kind: 'image'` source shape, or derived image provenance in `rag-service.ts` (the third RRF leg it replaced is retired — #1618 stage 2) | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
 | `retrieved-images.ts`, the vision gate on the answer path, or `rag_answer_max_images` | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
-| The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
+| The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) or the ADR-027 arm axis (`eval/arms.ts`, `answers.ts`, `judgments.ts`, `scripts/run-arm-answers.ts`, `scripts/judge-arms.ts`, `eval/artifacts/1611/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
+| The ADR-027 candidate — shipped by #1616: migration 116 (`pages.image_analysis_dirty/_revision`, `page_embeddings.chunk_tsv`), `domains/llm/services/image-analysis-{provider,validity,reconcile,worker,serialize,compose,readiness}.ts`, `image-intake.ts`, derived `page_embeddings` rows, the `image-analysis` queue; shipped by #1615/#1617: `page_image_analyses`, the `image_analysis` assignment/capability routes, lexical chunk resolution | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md`, `09-flow-rag-chat.md`, `11-content-pipeline.md`, `docs/runbooks/image-analysis.md` §4 + ADR-027 |
+| `routes/llm/llm-image-analysis.ts` (the image-analysis status and the three operator actions) or `features/settings/panels/ImageAnalysisProgressCard.tsx` | `03-backend-domains.md`, `04-frontend-structure.md`, `docs/runbooks/image-analysis.md` §5 |
+| The legacy image space's retirement — migration `118_retire_image_embedding_space.sql` (applied), the dump set, or the restore procedure | `docs/runbooks/image-embedding-retirement.md` + ADR-027 "Retirement plan" |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
+| Immutable-baseline migrations `120`, `121`, `122`, `124`, `125`, `127`, `128`; `core/services/page-write-admission.ts`; `page-baseline-{manifest,service,outbox,governance}.ts`; `confluence-integration.ts`; `collab-{room-service,persistence,schema}.ts`; `page-subtree.ts`; `routes/knowledge/pages-collab.ts`; `domains/confluence/services/{collab-commit-intent-reconciler,page-put-intent-reconciler,ordinary-page-write-reconciler}.ts`; baseline/recovery routes; or retained `page-baselines/` bytes | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md`, `12-realtime-collaboration.md`, `docs/runbooks/immutable-page-baselines.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
-| Collab gateway (`pages-collab.ts`, `@fastify/websocket`, Redis `collab:*`), `page_collaborative_docs`, or `collab_editing_enabled` | `12-realtime-collaboration.md` (and `06-data-model.md` if the table or FK changes) |
-| Collab editor (`use-collab-provider.ts`, Editor Collaboration + Caret, PresenceAvatarStack merge, `collabEditingEnabled` toggle) | `04-frontend-structure.md`, `12-realtime-collaboration.md` |
+| Collab gateway and enforcement (`pages-collab.ts`, `collab-room-service.ts`, `collab-persistence.ts`, `admin_settings.collab_editing_enabled`, Redis `collab:*`, `page_runtime_admissions`, migrations `124`/`127`/`128`) or `page_collaborative_docs` | `03-backend-domains.md`, `06-data-model.md`, `12-realtime-collaboration.md` |
+| Collab editor/recovery (`frontend/src/features/pages/PageViewPage.tsx`, `use-collab-provider.ts`, Editor Collaboration + Caret, snapshot-bound Save, draft guards/Download/Open current, PresenceAvatarStack) | `04-frontend-structure.md`, `12-realtime-collaboration.md` |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
 becomes stale and you are not sure how to update it, flag it in the PR

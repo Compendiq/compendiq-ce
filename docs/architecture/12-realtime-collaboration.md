@@ -98,14 +98,14 @@ sequenceDiagram
     N->>F: Upgrade headers forwarded
     F->>F: Map Sec-WebSocket-Protocol JWT onto Authorization Bearer
     F-->>B: 101 Switching Protocols subprotocol compendiq.collab.v1
-    F->>F: verify JWT and userCanAccessPage and flag and page row
+    F->>F: verify JWT and flag and page row and userCanAccessPage
     alt missing or expired JWT
         F-->>B: close 4401
         B->>B: refreshAccessTokenOnce then reconnect
-    else no access or flag off
+    else flag off or upgrade rate limited
         F-->>B: close 4403
         B->>B: destroy provider do not reconnect
-    else missing or folder or trashed
+    else missing or no page access or folder or trashed
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
     else ok
@@ -119,8 +119,8 @@ sequenceDiagram
 | Code | When |
 |------|------|
 | **4401** | Missing / invalid / expired JWT, deactivated user (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) |
-| **4403** | Authenticated but no page access, or flag off at join or mid-session, or write attempted while read-only |
-| **4404** | Missing page, `page_type = 'folder'`, or committed trash (`deleted_at`) |
+| **4403** | Flag off at join or mid-session, upgrade rate limit, page access revoked mid-session, or write attempted while read-only |
+| **4404** | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) |
 | **1001** | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect |
 | HTTP 401 (no socket) | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. |
 
@@ -148,7 +148,7 @@ client-claimed identity. Color is deterministic from `userId`.
 |----------------|---------------|---------------------------|
 | In-memory `Y.Doc` + Redis **incremental** `doc.on('update')` | Every keystroke | Live truth. `Y.applyUpdate(..., 'redis')` on receive so the handler does not loop. |
 | `page_collaborative_docs.doc_state` / `state_vector` | Debounced **2 s** after last applied update, and immediately when the last editor disconnects | Increments **this table's** `version` (persistence generation). Always. |
-| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty` / gated `image_embedding_dirty`. **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. |
+| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. |
 | `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds) |
 | Confluence DC | Collab commit for `source = 'confluence'` | Remote write **first**, same order as today's PUT |
 

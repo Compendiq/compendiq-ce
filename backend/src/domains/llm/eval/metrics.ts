@@ -266,6 +266,177 @@ export function winLoss(
   return table;
 }
 
+// ---------------------------------------------------------------------------
+// #1614 PR2 — the ADR-027 gate's statistics (Measurement plan, O1–O7).
+// ---------------------------------------------------------------------------
+
+/** One paired per-query difference, tagged with the page it was asked about. */
+export interface ClusteredDelta {
+  queryId: string;
+  /** The page cluster — `expectedFiles[0]` for the image fixture. */
+  cluster: string;
+  /** candidate − baseline on this query. */
+  delta: number;
+}
+
+export interface ClusterBootstrapCi extends BootstrapCi {
+  /** Distinct clusters resampled. */
+  clusters: number;
+  queries: number;
+  /**
+   * The one-sided 95% bounds the non-inferiority and safety rules read: the
+   * `1 − confidence` and `confidence` quantiles of the same bootstrap
+   * distribution, so the two-sided interval and the one-sided bound come off
+   * one resample and cannot disagree about the data.
+   */
+  oneSidedLower: number;
+  oneSidedUpper: number;
+}
+
+/**
+ * Paired bootstrap resampling PAGES rather than queries (ADR-027 O3).
+ *
+ * A fixture puts several questions on one page, and a page-level failure —
+ * one bad description, one page the leg never reaches — moves all of them at
+ * once. Resampling queries would treat those as independent evidence and
+ * print an interval that is too narrow by the design effect. Resampling
+ * clusters draws whole pages with replacement and averages every query the
+ * drawn pages carry, which is the standard cluster bootstrap for a mean.
+ *
+ * With every cluster holding one query this is `pairedBootstrapCi` exactly —
+ * same PRNG, same draw order, same quantile — and `metrics.test.ts` pins
+ * that, so the two cannot drift into different arithmetic for the same data.
+ * 10,000 draws by default, as the ADR pre-registers.
+ */
+export function clusterBootstrapCi(
+  deltas: readonly ClusteredDelta[],
+  opts: { seed: number; iterations?: number; confidence?: number },
+): ClusterBootstrapCi {
+  const iterations = opts.iterations ?? 10_000;
+  const confidence = opts.confidence ?? 0.95;
+
+  const seen = new Set<string>();
+  for (const d of deltas) {
+    if (seen.has(d.queryId)) throw new Error(`Cluster bootstrap saw query ${d.queryId} twice — pairs must be one row per query`);
+    seen.add(d.queryId);
+  }
+
+  // First-seen order, so a singleton-cluster input draws exactly as
+  // pairedBootstrapCi draws its queries.
+  const byCluster = new Map<string, number[]>();
+  for (const d of deltas) {
+    const bucket = byCluster.get(d.cluster);
+    if (bucket) bucket.push(d.delta);
+    else byCluster.set(d.cluster, [d.delta]);
+  }
+  const clusters = [...byCluster.values()];
+  const observedDelta = mean(deltas.map((d) => d.delta));
+
+  const random = mulberry32(opts.seed);
+  const means: number[] = [];
+  for (let i = 0; i < iterations; i++) {
+    let sum = 0;
+    let n = 0;
+    for (let j = 0; j < clusters.length; j++) {
+      const drawn = clusters[Math.floor(random() * clusters.length)]!;
+      for (let k = 0; k < drawn.length; k++) sum += drawn[k]!;
+      n += drawn.length;
+    }
+    means.push(n === 0 ? 0 : sum / n);
+  }
+  means.sort((a, b) => a - b);
+
+  const tail = (1 - confidence) / 2;
+  const lower = quantile(means, tail);
+  const upper = quantile(means, 1 - tail);
+  return {
+    observedDelta,
+    lower,
+    upper,
+    excludesZero: (lower > 0 && upper > 0) || (lower < 0 && upper < 0),
+    iterations,
+    confidence,
+    clusters: clusters.length,
+    queries: deltas.length,
+    oneSidedLower: quantile(means, 1 - confidence),
+    oneSidedUpper: quantile(means, confidence),
+  };
+}
+
+export type MarginVerdict = 'pass' | 'fail' | 'inconclusive';
+
+/**
+ * Non-inferiority at the one-sided 95% level (ADR-027 O4, O5): the candidate
+ * may be worse than the baseline by at most `margin`, so the one-sided lower
+ * bound of candidate − baseline must sit ABOVE −margin. Non-significance is
+ * not non-inferiority: an interval that straddles the margin is inconclusive,
+ * and only an interval lying wholly beyond it is a fail.
+ */
+export function nonInferiorityVerdict(ci: ClusterBootstrapCi, margin: number): MarginVerdict {
+  if (ci.oneSidedLower > -margin) return 'pass';
+  if (ci.oneSidedUpper < -margin) return 'fail';
+  return 'inconclusive';
+}
+
+/**
+ * A safety margin (ADR-027 O6, O7): the candidate's rate may exceed the
+ * baseline's by at most `margin`, so the one-sided 95% upper bound of
+ * candidate − baseline must sit at or BELOW it. Same three-way reading.
+ */
+export function safetyVerdict(ci: ClusterBootstrapCi, margin: number): MarginVerdict {
+  if (ci.oneSidedUpper <= margin) return 'pass';
+  if (ci.oneSidedLower > margin) return 'fail';
+  return 'inconclusive';
+}
+
+export interface DiscordanceCheck {
+  pairs: number;
+  discordant: number;
+  /** ψ = p₁₀ + p₀₁, the share of pairs whose verdict differs between arms. */
+  psi: number;
+  /** Whether enough pairs were judged for the pilot rule to apply. */
+  evaluated: boolean;
+  /** ADR-027: below the floor the run stops as inconclusive by design. */
+  stop: boolean;
+}
+
+/**
+ * The pilot rule (ADR-027 "Sample size"): after the first `pilotPairs` judged
+ * pairs, a discordant rate below `floor` means the pre-registered power
+ * calculation does not hold and the run stops rather than judging more.
+ */
+export function pilotDiscordance(
+  outcomes: ReadonlyArray<{ baseline: 0 | 1; candidate: 0 | 1 }>,
+  opts: { pilotPairs: number; floor: number },
+): DiscordanceCheck {
+  const pilot = outcomes.slice(0, opts.pilotPairs);
+  const discordant = pilot.filter((o) => o.baseline !== o.candidate).length;
+  const psi = pilot.length === 0 ? 0 : discordant / pilot.length;
+  const evaluated = pilot.length >= opts.pilotPairs;
+  return { pairs: pilot.length, discordant, psi, evaluated, stop: evaluated && psi < opts.floor };
+}
+
+/**
+ * McNemar power for a paired binary endpoint (Connor 1987, as ADR-027 writes
+ * it): Φ((δ√(N/DE) − z_α√ψ) / √(ψ − δ²)). `zAlpha` is 1.96 for the two-sided
+ * primary test and 1.645 for a one-sided non-inferiority margin, where δ is
+ * the margin itself and the power is the chance of clearing it at a true
+ * difference of zero — which is how the ADR arrives at ≈ 0.44 for
+ * image-evidence R@5 (O5) and ≈ 0.90 for the primary endpoint at N = 190.
+ */
+export function mcnemarPower(opts: {
+  n: number;
+  psi: number;
+  delta: number;
+  designEffect: number;
+  zAlpha: number;
+}): number {
+  const { n, psi, delta, designEffect, zAlpha } = opts;
+  if (n <= 0 || psi <= 0 || psi <= delta * delta) return 0;
+  const z = (delta * Math.sqrt(n / designEffect) - zAlpha * Math.sqrt(psi)) / Math.sqrt(psi - delta * delta);
+  return standardNormalCdf(z);
+}
+
 function mean(xs: number[]): number {
   return xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
 }

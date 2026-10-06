@@ -4,14 +4,14 @@ The shadow re-embed replaces the destructive `POST /admin/embedding/reembed
 {newDimensions}` path for model/dimension changes. Search serves the live
 vectors throughout; the old model stays recoverable until the final cleanup.
 
-**This runbook is about the TEXT index only.** The image index
-(`page_image_embeddings`, #1115) is a separate space with its own model, its own
-dirty flag and its own destructive rebuild, so a text cutover — swap, rollback
-or cleanup — neither touches it nor is touched by it. Changing the *image* model
-is `docs/runbooks/image-index.md` §8, and it deliberately has no shadow path:
-the image leg simply goes dark while its index refills, which is affordable
-because text retrieval is unaffected and unchanged images are reused by sha256
-(ADR-025 D7).
+**This runbook is about the TEXT index only** — which, since #1618 stage 2
+retired ADR-025's separate image space, is the only vector index there is.
+Image ANALYSIS text is embedded by this same model as ordinary
+`page_embeddings` rows (ADR-027), so a swap re-embeds it with everything else
+and needs no image-side step. Changing the *vision* model is a different
+operation with no shadow path — `docs/runbooks/image-analysis.md` §7 — and it
+is affordable because retrieval keeps serving the old descriptions until each
+page's new one is valid, and unchanged images are reused by content hash.
 
 ## Lifecycle
 

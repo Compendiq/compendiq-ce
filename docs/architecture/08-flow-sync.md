@@ -1,9 +1,9 @@
 # 8. Confluence Sync Flow
 
-End-to-end flow for pulling a user's selected Confluence spaces into the
-local Postgres + pgvector store. Triggered either manually
-(`POST /api/confluence/sync/:spaceKey`) or automatically by the in-process
-sync scheduler.
+End-to-end flow for ordinary Confluence ingestion into the local Postgres +
+pgvector store. It is triggered manually (`POST /api/sync`) or by the
+in-process scheduler only while the acting user's integration is on.
+This flow does not create, refresh or accept immutable-baseline candidates.
 
 ## Sequence
 
@@ -12,6 +12,7 @@ sequenceDiagram
     autonumber
     participant T as Trigger<br/>(scheduler / API)
     participant S as sync-service
+    participant CI as core/confluence-integration
     participant R as Redis (lock + status)
     participant CL as confluence-client
     participant CF as Confluence DC
@@ -20,12 +21,18 @@ sequenceDiagram
     participant DB as Postgres (pages)
     participant ES as embedding-service
     participant OL as Ollama (/embed)
-    participant IW as image-embedding-service
+    participant IW as image-analysis-worker
     participant AS as attachment-store
-    participant VL as VL endpoint (vLLM)
+    participant VL as vision model (/chat/completions)
 
-    T->>S: syncSpace(userId, spaceKey)
-    S->>R: SETEX NX sync:worker:lock (TTL 600s)
+    T->>S: syncUser(userId)
+    S->>CI: isConfluenceEnabled(userId)
+    alt explicit confluence_enabled = false
+        CI-->>S: false
+        S-->>T: idle#59; no lock, credentials or provider call
+    else no row or enabled
+        CI-->>S: true
+        S->>R: SETEX NX sync:worker:lock (TTL 600s)
     alt already locked
         R-->>S: nil
         S-->>T: skip (another run in progress)
@@ -48,8 +55,8 @@ sequenceDiagram
             S->>AH: downloadAttachments(page)
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
-            AH->>DB: on a real DOWNLOAD only:<br/>SET image_embedding_dirty = true (#35;1115)
-            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_embedding_dirty = true
+            AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
+            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
             S->>R: HSET sync:status:{user} progress
         end
 
@@ -60,15 +67,15 @@ sequenceDiagram
         CL->>CF: GET /rest/api/content?spaceKey=… (ids only, no expand)
         CF-->>CL: authoritative live id set
         CL-->>S: liveIds
-        S->>DB: UPDATE pages SET deleted_at = NULL<br/>WHERE deleted_at older than grace window AND id ∈ liveIds
+        S->>DB: UPDATE pages SET deleted_at = NULL<br/>WHERE source='confluence' AND deleted_at older than grace window AND id ∈ liveIds
         Note over S,DB: revival cross-check (#35;766) — a trash-restored page is live again<br/>but never re-upserted by incremental sync (no new version)#59;<br/>grace window protects in-flight delete intents
-        S->>DB: SELECT confluence_id FROM pages WHERE space_key=… AND deleted_at IS NULL
+        S->>DB: SELECT confluence_id FROM pages<br/>WHERE space_key=… AND source='confluence' AND deleted_at IS NULL
         loop per candidate (local row absent from liveIds)
             S->>CL: getPage(confluenceId) — confirm gone
             CL->>CF: GET /rest/api/content/{id}
             alt 404 or 200 status:"trashed" (deleted — #35;766)
                 CF-->>S: 404 / 200 trashed
-                S->>DB: UPDATE pages SET deleted_at = NOW()
+                S->>DB: UPDATE pages SET deleted_at = NOW()<br/>WHERE source='confluence'
             else 200 current / 403 (still there / not visible to this principal)
                 CF-->>S: 200 current / 403
                 Note over S: leave row in place (shared-space safe)
@@ -77,6 +84,7 @@ sequenceDiagram
 
         S->>R: DEL sync:worker:lock
         S-->>T: done
+    end
     end
 
     Note over ES,OL: Embedding worker (separate loop)
@@ -89,43 +97,62 @@ sequenceDiagram
         ES->>DB: UPDATE pages SET embedding_dirty = false
     end
 
-    Note over IW,VL: Image index worker (#35;1115 P2) — kicked beside the text pass,<br/>own worker lock, no-op when image_embedding is unassigned
-    IW->>DB: SELECT pages WHERE image_embedding_dirty = true LIMIT N
+    Note over IW,VL: Image analysis worker (#35;1616, ADR-027 D13) — its OWN repeatable job<br/>on the sync cadence, own worker lock, no-op when image_analysis is unassigned<br/>(#35;1618 stage 2 retired #35;1115 P2's image-EMBEDDING worker)
+    IW->>DB: SELECT pages WHERE image_analysis_dirty = true LIMIT N
     loop per page
         IW->>IW: enumerate body_html img src<br/>store follows the URL PREFIX
         IW->>AS: resolveAttachmentBytes(page, source, key)
         AS-->>IW: bytes + sniffed format (or null)
         alt unsupported / too large / oversized / missing
             IW->>IW: skip and COUNT — never resize (D10)
-        else sha256 unchanged
-            IW->>IW: reuse the existing row, no request
+        else content hash + identity unchanged
+            IW->>IW: reuse the existing analysis, no request
         else
-            IW->>VL: POST /v1/embeddings (chat-embeddings shape)
-            VL-->>IW: image vector
-            IW->>DB: UPSERT page_image_embeddings
+            IW->>VL: POST /chat/completions (image_url part)
+            VL-->>IW: bounded description text
+            IW->>DB: UPSERT page_image_analyses
         end
     end
-    IW->>DB: DELETE rows the body no longer references
-    IW->>DB: UPDATE pages SET image_embedding_dirty = false<br/>only when nothing FAILED
+    IW->>DB: reconcile away rows the body no longer references
+    IW->>DB: UPDATE pages SET image_analysis_dirty = false<br/>only when nothing FAILED
+    Note over IW,ES: the derived text becomes page_embeddings rows with<br/>metadata.source = 'image_analysis' on the next embedPage
 ```
 
 ## Triggers
 
 | Trigger | Source | Cadence |
 |---------|--------|---------|
-| Manual sync | `POST /api/confluence/sync/:spaceKey` | on demand |
+| Manual sync | `POST /api/sync` | on demand |
 | Scheduled sync | In-process sync scheduler in `backend/src/index.ts` (`startQueueWorkers`) | every `SYNC_INTERVAL_MIN` (default 15 min) |
 | Webhook (future) | not yet implemented | — |
 
 ## Concurrency & safety
 
-- **Redis lock (`sync:worker:lock`)** — single active sync per instance. The
-  600s TTL acts as a dead-man's switch; while a run is in flight an
+- **One canonical integration reader.** `core/services/confluence-integration.ts`
+  owns `isConfluenceEnabled`. Only a persisted `false` means off; a missing
+  settings row means enabled and a read failure propagates rather than being
+  interpreted as standalone mode. Ordinary sync and read-only capability
+  checks never lock the settings row. `lockSettings = true` is reserved for
+  baseline mutation/activation transactions that must hold an existing
+  explicit-off row stable through commit.
+- **Redis lock (`sync:worker:lock`)** — one active sync per shared Redis
+  namespace, across backend processes. The 600s TTL acts as a dead-man's switch;
   ownership-checked heartbeat re-`EXPIRE`s the key every TTL/3 (200s) so a sync
   that outlasts one TTL can't lapse and admit a second concurrent worker
   (#906). The heartbeat is cleared alongside the lock release in `finally`.
 - **Per-user PAT scope** — each sync decrypts the PAT just-in-time, uses it
   for the duration of the run, and never logs it.
+- **Source-aware ordinary sync.** The existing-row lookup checks `pages.source`
+  before attachment cleanup/download, snapshots or any inbound write, and every
+  later conflict/upsert mutation is limited to `source = 'confluence'`. An old
+  `confluence_id` on a standalone row therefore never transfers ownership to
+  sync. The protected-page database guard remains authoritative: an inbound
+  body or lifecycle mutation cannot overwrite a frozen row. That enforcement
+  and explicit thaw are independent of the user's current integration mode;
+  re-enabling the integration does not auto-thaw or remove evidence.
+- **No candidate side channel.** A normal Confluence fetch remains a normal
+  sync. The unshipped frozen-Confluence capture/refresh/preview/accept/retention
+  workflow and its EE adapter were removed; this flow must not recreate them.
 - **SSRF guard** — `confluence-client` uses the shared SSRF guard from
   `core/utils/ssrf-guard.ts` to reject URLs pointing at loopback / link-local
   / metadata IPs. Each user-configured Confluence URL is added to a
@@ -135,17 +162,20 @@ sequenceDiagram
   multi-pod deployments stay coherent (issue #306).
 - **TLS** — respects `CONFLUENCE_VERIFY_SSL` (default `true`) and
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
-- **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column
-  is written from Confluence's own version counter; no double-writes.
-- **Live collab rooms (#1448)** — while `collab:active:{pageId}` is non-empty,
-  inbound sync must not treat snapshot HTML drift as `htmlChanged` and
-  confluence-wins overwrite the CRDT session. `applyConflictPolicyForExistingPage`
-  skips that overwrite unless the remote `version.number` **increased**. On
-  increase: apply the inbound HTML, rebuild BYTEA, send control `doc_reset`,
-  close sockets **1001**. Collab **commit** for Confluence pages GETs the
-  remote version first; a moved version is 409 `{ code: 'confluence_modified' }`
-  with the room left live, and `client.updatePage` runs **before** the local
-  `pages.version` write (same order as PUT).
+- **Idempotency** — Confluence rows upsert through the partial unique
+  `confluence_id` key and mutate only `source = 'confluence'`; the upstream
+  version guard prevents duplicate writes.
+- **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
+  only liveness advice. Inbound sync skips snapshot-HTML drift unless the
+  remote version increased; a real increase applies the inbound HTML, rebuilds
+  BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
+  instead takes durable lifecycle admissions, gathers a freshly correlated
+  state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
+  Redis transport generation before publishing. For a Confluence-sourced page
+  with integration on it still GETs the remote version first; a moved version
+  is 409 `{ code: 'confluence_modified' }` with the room left live. With
+  integration explicitly off, the same page commits locally and performs no
+  Confluence call.
 - **Timezone-safe incremental window (#858)** — `getModifiedPages` builds the
   `lastmodified >=` lower bound as a **minute-granular CQL datetime literal**
   (`yyyy/MM/dd HH:mm`, from the UTC wall-clock) widened by a **24h overlap
@@ -335,25 +365,29 @@ flips the **same row** — `page_embeddings`, `page_versions` and
 ### Ordering — why each direction commits when it does
 
 The hazard in both directions is `detectDeletedPages`, whose candidate query is
-`WHERE space_key = $1 AND deleted_at IS NULL AND confluence_id IS NOT NULL`. A
-row whose `confluence_id` points at a page that is not live gets **soft-deleted
-by the next sync** — i.e. the user's article disappears.
+`WHERE space_key = $1 AND source = 'confluence' AND deleted_at IS NULL AND
+confluence_id IS NOT NULL`. A Confluence-owned row whose `confluence_id` points
+at a page that is not live gets **soft-deleted by the next sync**. The source
+predicate is load-bearing: a standalone row carrying a historical
+`confluence_id` is not adopted or reconciled by ordinary sync.
 
-- **local → Confluence: create upstream first, commit `confluence_id` last.**
-  In the window between the two, the row still has `confluence_id IS NULL`, so
-  reconciliation cannot see it at all. Committing an id the upstream create
-  never produced is structurally impossible. If anything after the create fails
-  — attachment upload, the transaction, an identifier collision — the
-  just-created Confluence page is deleted again and **nothing local changed**.
+- **local → Confluence: create upstream first, commit source + id last.**
+  In the window between the two, the row is still `source = 'standalone'` (and
+  ordinarily has `confluence_id IS NULL`), so reconciliation cannot claim it.
+  Committing an id the upstream create never produced is structurally
+  impossible. If anything after the create fails — attachment upload, the
+  transaction, an identifier collision — the just-created Confluence page is
+  deleted again and **nothing local changed**.
 - **Confluence → local: commit the local flip first, delete upstream after.**
-  Once `confluence_id` is `NULL` the article is permanently outside
-  reconciliation's reach. The inverse order would leave a window in which a
-  committed row points at a trashed page, which reconciliation resolves by
-  soft-deleting the article. If the upstream `DELETE` then fails, the outcome
-  is confirmed with `getPage()` using the exact test reconciliation applies
-  (404, or `status: 'trashed'` — DC trashes rather than purges). Only when the
-  page is provably still **live** does a compensating transaction restore the
-  pre-move state, so neither side changed.
+  The transaction changes the row to `source = 'standalone'` and clears
+  `confluence_id`, putting the article outside reconciliation's reach. The
+  inverse order would leave a window in which a Confluence-owned row points at
+  a trashed page, which reconciliation resolves by soft-deleting the article.
+  If the upstream `DELETE` then fails, the outcome is confirmed with
+  `getPage()` using the exact test reconciliation applies (404, or
+  `status: 'trashed'` — DC trashes rather than purges). Only when the page is
+  provably still **live** does a compensating transaction restore the pre-move
+  state, so neither side changed.
 
 Deleting the Confluence page is deliberate (product decision on #1123): a
 detach-only move would leave the page live upstream and the next `syncSpace`
@@ -693,23 +727,24 @@ embeds. A new embedding path can no longer inherit a policy by omission.
 
 ## The image index rides this cadence (#1115 P2)
 
-The image worker has **no repeatable job of its own**. It is kicked
-fire-and-forget from `syncUser`'s tail, beside `processDirtyPages` and not
-after it — the two share no lock, no table and no provider, and chaining them
-would make an image scan wait out a text re-embed of the corpus. That mirrors
-how the text embedder is scheduled: `queue-service.ts` schedules the SYNC, and
-the embedding pass runs off its tail.
+The image worker is ADR-027's analysis worker, and it **has a repeatable job
+of its own** on the sync cadence (`queue-service.ts`, queue `image-analysis`,
+concurrency 1; the interval worker stands in when BullMQ is off). #1115 P2's
+image-EMBEDDING worker, which was kicked fire-and-forget from `syncUser`'s
+tail instead, was retired with the leg by #1618 stage 2. The price of one
+cadence is latency: a page a sync writes waits up to one sync interval for its
+first reconcile.
 
 Several properties keep that cheap and safe on the instances that will never use
 it — deliberately unnumbered, because the count was wrong the first time the
 list grew and a reader who trusts it stops at the wrong bullet:
 
-- **A no-op fast path before the lock.** `resolveImageEmbeddingUsecase()` is
-  consulted first, so an unassigned leg — the default, and ADR-021's "the leg is
-  off" state — costs one query per sync and takes no Redis lock. The "idle"
+- **A no-op fast path before the inference.** `image_analysis` resolving to
+  nothing — the default, and ADR-021's non-inheriting state — means the sweep
+  and reconcile still run but no image byte leaves the host (ADR-027 D3). The "idle"
   notice is logged **once per process**, not once per tick, or it would be pure
   noise at whatever `SYNC_INTERVAL_MIN` is set to.
-- **Its own lock key.** `worker:lock:image-embedding-index`, never the per-user
+- **Its own lock key.** `worker:lock:image-analysis`, never the per-user
   `embedding:lock:*`: `processDirtyPages` backs off when it finds another holder
   of that key, so borrowing it would have silently blocked every text embed on
   the instance for the duration of an image scan.
@@ -738,7 +773,7 @@ The attachment writers close what P0 called the fact-base hole: sync's
 **version-unchanged** branch re-downloads missing attachments without touching
 the page row, so the page's images can change while `embedding_dirty` correctly
 stays put. `syncImageAttachments` / `syncDrawioAttachments` raise
-`image_embedding_dirty` there — but only on a real DOWNLOAD, because both
+`image_analysis_dirty` there — but only on a real DOWNLOAD, because both
 functions skip files already on disk and an unconditional flag would re-scan
 every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
 per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
@@ -755,10 +790,10 @@ deliberately kept.
 
 **#1349's orphan sweep is the fourth caller of that module, and the only one
 that also DELETES index rows.** A live `attachment-sweep-service` run removes
-the `page_image_embeddings` rows of the files it deleted — a safety net that
+the `page_image_analyses` rows of the files it deleted — a safety net that
 normally finds none, since a `missing` row's file is still referenced by a body
 and is therefore in the sweep's global keep-set — and marks the affected pages
-`image_embedding_dirty` through `markPageImagesDirty`, which now answers
+`image_analysis_dirty` through `markPageImagesDirty`, which now answers
 `Promise<boolean>` (did the row move) so the run can report `pagesMarkedDirty`
 rather than guess at it. Same reasoning as `cleanPageAttachments` above: the
 flag re-queues a page for a re-read and never shrinks the index.
@@ -793,9 +828,9 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/core/services/page-icon-store.ts` — `discardPageIconForDeletedPage`, called after `unsyncSpace`'s and `purgeDeletedPages`' committed deletes
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
-- `backend/src/domains/llm/services/image-embedding-service.ts` — `embedPageImages`, `processDirtyPageImages` (#1115 P2)
-- `backend/src/core/services/image-embedding-dirty.ts` — `pages.image_embedding_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-025)
-- `backend/src/routes/llm/llm-image-index.ts` — status, re-scan, process (all `requireAdmin`)
+- `backend/src/domains/llm/services/image-analysis-worker.ts` — `runImageAnalysisBatch` (#1616, ADR-027 D13)
+- `backend/src/core/services/image-analysis-dirty.ts` — `pages.image_analysis_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-027)
+- `backend/src/routes/llm/llm-image-analysis.ts` — status, process, retry-failed, reanalyze-all (all `requireAdmin`)
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview

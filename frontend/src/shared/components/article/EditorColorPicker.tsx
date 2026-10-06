@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { Baseline } from 'lucide-react';
+import { PRESET_TEXT_COLORS } from '@compendiq/contracts';
 import { cn } from '../../lib/cn';
 import { TOOLBAR_ITEM_ATTR } from './use-toolbar-roving-focus';
 
@@ -9,18 +10,7 @@ import { TOOLBAR_ITEM_ATTR } from './use-toolbar-roving-focus';
  * so existing marks still read as selected; Brown and Teal fill the two
  * gaps against the Notion / Plane row (grey → brown → warm → cool → red).
  */
-export const PRESET_COLORS = [
-  { label: 'Grey', value: '#6b7280' },
-  { label: 'Brown', value: '#b45309' },
-  { label: 'Orange', value: '#f97316' },
-  { label: 'Yellow', value: '#eab308' },
-  { label: 'Green', value: '#22c55e' },
-  { label: 'Teal', value: '#0d9488' },
-  { label: 'Blue', value: '#3b82f6' },
-  { label: 'Purple', value: '#a855f7' },
-  { label: 'Pink', value: '#ec4899' },
-  { label: 'Red', value: '#ef4444' },
-] as const;
+export const PRESET_COLORS = PRESET_TEXT_COLORS;
 
 const SWATCH_BUTTON =
   'flex size-6 items-center justify-center rounded-full border outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring';

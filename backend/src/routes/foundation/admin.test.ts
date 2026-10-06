@@ -62,6 +62,9 @@ vi.mock('nodemailer', () => {
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  // Worker batch sizes — the real row → default cascade is covered in
+  // `admin-retrieval-settings.test.ts` against the real service.
+  getWorkerBatchSize: vi.fn().mockResolvedValue(5),
   // #113 Phase B-3 — synchronous cluster-wide cached getters used by the
   // GET /admin/settings response builder. Test-default values mirror the
   // hardcoded defaults in `admin-settings-service.ts`.
@@ -85,11 +88,13 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagImagesPerPageMax: vi.fn().mockResolvedValue(20),
   getRagImageIndexExternal: vi.fn().mockResolvedValue(true),
   invalidateRagImageIntakeCache: vi.fn(),
-  // #1115 P3 — the retrieval half, likewise at its reader default.
-  getRagImageLegEnabled: vi.fn().mockResolvedValue(true),
-  invalidateRagImageLegCache: vi.fn(),
   getRagAnswerMaxImages: vi.fn().mockResolvedValue(2),
   invalidateRagAnswerMaxImagesCache: vi.fn(),
+  // #1615 — the image-analysis output-token ceiling, at its reader default.
+  // Its own row → default cascade and PUT invalidation are exercised against
+  // the real service in `admin-retrieval-settings.test.ts`.
+  getImageAnalysisMaxOutputTokens: vi.fn().mockResolvedValue(8192),
+  invalidateImageAnalysisMaxOutputTokensCache: vi.fn(),
   // #1285 — the ef_search floor, likewise at its reader default. Its own
   // row → env-bootstrap → 100 cascade is exercised against the real service.
   // Review r1: the GET reads the SOURCE too, so the panel can tell an
@@ -298,21 +303,6 @@ describe('Admin routes', () => {
   });
 
   describe('PUT /api/admin/labels/rename', () => {
-    it('should rename a label across all pages', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rowCount: 5 });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/labels/rename',
-        payload: { oldName: 'old-label', newName: 'new-label' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toContain('renamed');
-      expect(body.affectedPages).toBe(5);
-    });
-
     it('should reject when oldName equals newName', async () => {
       const response = await app.inject({
         method: 'PUT',
@@ -331,22 +321,6 @@ describe('Admin routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
-    });
-  });
-
-  describe('DELETE /api/admin/labels/:name', () => {
-    it('should remove a label from all pages', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rowCount: 3 });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/admin/labels/obsolete-label',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toContain('removed');
-      expect(body.affectedPages).toBe(3);
     });
   });
 

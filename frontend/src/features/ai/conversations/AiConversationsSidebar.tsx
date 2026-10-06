@@ -27,11 +27,11 @@ export const CONVERSATION_FILTER_THRESHOLD = 8;
  * onForceExpand: the layout presets that used to produce them were deleted, and
  * `app-shell-layout.test.ts` fails if either name comes back in AppLayout.
  *
- * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. The desktop
- * shell renders <MainNavChassisRail /> outside the workspace card and passes
- * `false`; the mobile drawer has no such rail and takes the default. When it is
- * false there is no nav row at all, so the collapse button moves into the row
- * below — the tree's own two-branch treatment (SidebarTreeView.tsx:1087-1096).
+ * `embedMainNav` mirrors SidebarTreeView / SettingsSidebar exactly. On desktop
+ * the header's tabs (MainNavHeaderTabs) own Pages / AI / Graph, so AppLayout
+ * passes `false`; the mobile drawer has no header tabs and takes the default.
+ * When it is false there is no nav row at all, so the collapse button moves
+ * into the row below — the tree's own two-branch treatment.
  */
 export function AiConversationsSidebar({
   onNavigate,
@@ -134,7 +134,7 @@ export function AiConversationsSidebar({
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="app-sidebar flex flex-col items-center border-r overflow-hidden"
+          className="app-sidebar flex flex-col items-center overflow-hidden"
         >
           <button
             type="button"
@@ -177,7 +177,7 @@ export function AiConversationsSidebar({
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'app-sidebar relative flex max-w-full flex-col border-r overflow-hidden',
+        'app-sidebar relative flex max-w-full flex-col overflow-hidden',
         isResizing && 'select-none',
       )}
     >

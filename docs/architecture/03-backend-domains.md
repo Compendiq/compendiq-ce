@@ -10,24 +10,24 @@ imports enforced by `eslint-plugin-boundaries` (see
 flowchart LR
     subgraph routes["routes/ (HTTP entry points)"]
         direction TB
-        rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
+        rF["foundation<br/>health, auth, settings,<br/>admin, page-write recovery,<br/>admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
-        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import,<br/>pages-collab (WS gateway)"]
+        rK["knowledge<br/>pages CRUD, baselines, relocate,<br/>versions, tags, embeddings,<br/>duplicates, pinned, templates,<br/>comments, search, analytics,<br/>export/import, notion connection,<br/>tree/import, pages-collab (WS gateway)"]
     end
 
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-analysis-client<br/>image-analysis-worker<br/>image-analysis-compose<br/>image-intake<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance<br/>page-identity"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service<br/>notion-client<br/>notion-token-service<br/>notion-tree<br/>notion-block-converter<br/>notion-import-service (#1459)<br/>notion-import-job"]
     end
 
     subgraph core["core/ (infrastructure)"]
         direction TB
-        cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
+        cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry,<br/>page lifecycle advisory namespace"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, confluence-integration,<br/>page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service/persistence/schema,<br/>collab-flag/tombstone/guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -51,6 +51,31 @@ flowchart LR
     dK --> dC
 ```
 
+### Quality and summary batch execution
+
+```mermaid
+flowchart LR
+    schedule["BullMQ scheduler<br/>one active job per queue"] --> batch["knowledge workers<br/>processBatch / runSummaryBatch"]
+    manual["Run Now / rescan / regeneration / legacy timer"] --> batch
+    batch --> lease["Local guard + Redis worker lock<br/>600s TTL, renewed every 60s"]
+    lease --> candidates["Recover orphaned work<br/>select bounded candidates"]
+    candidates --> inference["Sequential provider requests"]
+    inference --> pages["Persist article success, skip or failure"]
+    pages --> result["Separate processed and error counts"]
+    result --> history["BullMQ job_history<br/>any errors means failed batch"]
+```
+
+The exported batch entrypoints own the lease and `isProcessing` state, not
+only the manual/timer wrappers. This prevents a scheduled run from reclaiming
+an article still being processed by a manual run. A configured Redis acquisition
+failure refuses the run; a deployment without a Redis client retains the local
+guard. Lease loss stops the loop before the next article, and release compares
+the ownership token. Batch size is `admin_settings.quality_batch_size` /
+`summary_batch_size` (Settings → AI Models → Workers), read once at the start of each
+batch; cadence stays on the interval env vars, and there is no automatic
+backlog-draining loop. Operator recovery:
+[Background Workers](../ADMIN-GUIDE.md#background-workers).
+
 ### Article Connections (#1314)
 
 ```mermaid
@@ -70,16 +95,284 @@ flowchart LR
     collect --> audit["core/audit-service<br/>durable collection, no content metadata"]
     audit --> store["audit_log<br/>unique user + article + visit impression"]
     panel --> local["Existing focused graph<br/>GET /pages/:id/graph/local?hops=2"]
-    local --> access
-    local --> materialize
+    local --> listVisibility["Shared list visibility<br/>visible unique parent projection"]
+    listVisibility --> materialize
 ```
 
-Authorization removes inaccessible source/target pages before panel ranking and
-before local-graph traversal, limits, and counts. Unavailable intermediate pages
-cannot expose second-hop neighbors. The global graph and its navigation remain
-unchanged. Explicit links and hierarchy do not depend on embeddings; current
-bodies and parent IDs recover direction from canonical persisted pairs.
+Connection-panel authorization removes inaccessible source/target pages before
+ranking. The focused graph uses the hierarchy list contract (assigned
+Confluence spaces, shared standalone pages, and the caller's own private
+standalone pages) plus page-level ACEs for `inherit_perms = false` Confluence
+pages, through `authorizedPageIds`. It applies that set before traversal,
+limits, and counts, so an unavailable intermediate cannot expose second-hop
+neighbors, and an ACE-denied parent is treated as a hidden parent.
+Missing, ambiguous, and inaccessible centers return the same caller-keyed empty
+response. Focused-graph hierarchy links are derived from the caller-visible
+vertex set for both traversal and edge output; node `parentId` is retained only
+when both identifier arms resolve one visible parent. An inaccessible
+identifier collision therefore cannot alter the focused response. Explicit
+links and hierarchy do not depend on embeddings; current bodies and parent IDs
+recover direction from canonical persisted pairs.
 Recommendations remain bounded to five, ordered by persisted evidence score.
+
+### Page hierarchy read authorization
+
+```mermaid
+flowchart LR
+    caller["Authenticated caller"] --> visibility["Assigned Confluence spaces<br/>Shared standalone<br/>Own private standalone"]
+    visibility --> restriction{"inherit_perms = FALSE?"}
+    restriction -->|no| rows["Caller-visible page rows"]
+    restriction -->|"yes: user or group ACE,<br/>or system admin"| rows
+    visibility --> parents["Visible unambiguous parent rows"]
+    rows --> projection["Tree / list / graph / pins / facets / search<br/>space page counts + home ids / sub-page context"]
+    parents --> projection
+    writes["Page + RBAC visibility writes"] --> generation["Per-user + global pages<br/>cache generation"]
+    aceWrites["ACE + group membership rows<br/>(CE routes, sync, relocate, EE)"] --> queue["page_cache_invalidation_queue<br/>(migration 129 triggers)"]
+    queue --> generation
+    generation --> projection
+```
+
+Local-space access grants access to the space container, not to every
+standalone page assigned to it. Every non-RAG page read — list and hierarchy
+projections, search rows and facets, graphs, pins, counts, verification, and
+sub-page LLM context — uses the shared caller-bound list definition
+`visiblePagesPredicate`: Confluence pages in assigned spaces, shared
+standalone pages, and the caller's own private standalone pages, plus the
+page-restriction arm `userCanAccessPage` applies. A Confluence page with
+`inherit_perms = FALSE` additionally needs a page ACE naming the caller
+directly or through a group, in both editions. System
+administrators are exempt from that restriction arm only, so their listings
+are unchanged: restricted pages stay visible, other users' private standalone
+pages stay hidden. Semantic and hybrid `/api/search` retrieve a pool of
+`max(rag_fetch_width, 2 × limit)` pages, authorize all of it, then apply
+`limit` (see `09-flow-rag-chat.md`). RAG retrieval is the one
+exception: it uses the separately named space-level
+`ragRetrievalPagesPredicate` and keeps ADR-023's
+Enterprise-gated post-filter. Parent identity is projected only when the
+direct parent is visible and its stored key identifies one live candidate.
+Mixed-source parent/child links remain valid because the parent's source
+determines its canonical stored key.
+
+A visible child whose parent is not visible — another user's private page or
+a restricted page without an ACE — is presented as a root (`parentId: null`);
+this includes full, clustered, and focused graph nodes. The local tree
+recomputes all descendant depths from that visible forest. Breadcrumbs retain
+only the contiguous visible suffix, and descendant tree walks do not traverse
+through an invisible or ambiguous node. `/has-children`
+and `/children` answer a collision with an unreadable row like the detail
+route (no children, status 200); 409 is reserved for collisions among
+readable rows.
+
+Hierarchy trees, lists and graphs use the generational `pages` cache namespace
+with per-user keys. Page visibility, ownership, hierarchy, lifecycle and
+`inherit_perms` writers invalidate that namespace. RBAC invalidation also
+advances its generation, so role and group membership changes cannot reuse or
+refill a pre-change projection. Each fill captures its generation before
+reading RBAC inputs and gates access before serving a cached body, unless the
+RBAC input is part of the cache key, as the space list is in `/pages/filters`.
+Page ACE rows and group memberships behind
+page ACEs are fenced in the database: migration 129 queues the affected pages
+in the writer's own transaction, and the page publication worker drains the
+queue with a namespace-wide generation bump. That covers writers that never
+call CE cache code — Confluence restriction sync and its sweep, page
+relocation, and the Enterprise bulk permission route; the CE admin ACE routes
+additionally invalidate synchronously. Cache-key versioning prevents pre-fix
+values surviving a deployment. `GET /api/spaces/local` and `GET /api/spaces`
+combine mutable space metadata with caller-visible page counts and home-page
+identity, so they remain uncached rather than pretending one of those two
+independent invalidation domains covers both.
+
+### Immutable page baselines (#275 foundation, #276 enforcement)
+
+Immutable baselines and their #276 writer enforcement are CE `core` facilities
+because every route/domain writer and every backend process must share one
+serialization and readiness boundary. `routes/knowledge/page-baselines.ts`
+exposes authenticated preview, freeze, thaw, current-page history and frozen
+media reads; its baseline evidence/history and activation endpoints add a
+system-admin gate. `routes/foundation/page-write-recovery.ts` is the separate
+system-admin surface for runtime quiescence/fencing and intent reconciliation.
+The split introduces no new domain edge: both route groups depend on `core`;
+domains never import the route implementation.
+
+```mermaid
+flowchart TD
+    writer["Protected SQL / file / remote writer"] --> runtime["Versioned runtime epoch row<br/>SHARE before page work"]
+    runtime --> locks["Advisory xact locks<br/>namespace 279001, page ids ascending"]
+    locks --> subsystem["Collaboration-init / attachment / move locks<br/>then pages rows"]
+    subsystem --> sql["SQL-only: validate + mutate<br/>on the same PoolClient"]
+    subsystem --> intent["File/remote: commit pending intent<br/>with revisions before I/O"]
+    intent --> effect["runPageWriteIntentEffect<br/>durable started → effect → durable finished"]
+    effect --> settle["complete or reconcile under<br/>the same locks and revision fence"]
+
+    room["Writable collab room<br/>durable collab_room admission"] --> save["Save sends bounded Yjs Snapshot<br/>clocks + delete-set"]
+    save --> owners["Read every active room owner<br/>exclude collab_request admission"]
+    owners --> dumps["Correlated state_dump round<br/>request id + admission + lifecycle"]
+    dumps --> fence["Re-read identical owner set<br/>and transport generation"]
+    fence --> commitSnapshot["Fresh merged HTML + server Snapshot<br/>under current request admission"]
+    commitSnapshot --> sql
+
+    preview["Authorized freeze preview"] --> eligible["Standalone row + acting user's<br/>Confluence integration explicitly off"]
+    eligible --> inspect["Source-aware manifest inspection<br/>authored fields + local/Confluence/icon bytes"]
+    inspect --> reserve["Capacity row + preparing baseline<br/>+ baseline.prepare intent, one transaction"]
+    reserve --> copy["Exclusive retained copy<br/>stream/hash/fsync/verify"]
+    copy --> prepared["prepared baseline UUID/digest"]
+    prepared --> freeze["Freeze: try locks; re-authorize,<br/>re-inspect sources, verify retained bytes"]
+    freeze --> policyFence["Shared space policy fence<br/>namespace 279002, held through commit"]
+    policyWrite["Audited policy INSERT / UPDATE<br/>exclusive namespace 279002 fence"] --> policyFence
+    policyFence --> marker{"CE governance marker?"}
+    marker -->|off| publish["Atomic publish"]
+    marker -->|on| hook["Registered governance hook<br/>revalidates inside transaction"]
+    hook --> publish
+    publish --> state["pages live freeze state + lifecycle revision"]
+    publish --> evidence["published baseline + page_versions reconciliation"]
+    publish --> ledger["append-only history + audit + lifecycle outbox"]
+    ledger --> delivery["post-commit cache/event/webhook retry"]
+    sql["Committed page insert/update/delete<br/>including SQL-only writers"] --> cacheQueue["Per-page cache invalidation queue<br/>coalesced transactionally"]
+    cacheQueue --> delivery
+```
+
+The lock order is runtime epoch row, sorted lifecycle locks, subsystem locks,
+then page rows. Multi-page discovery is retried with the complete sorted set.
+SQL-only writers hold the process epoch through their commit, not just external
+writers. Freeze and thaw acquire it too and refuse a closed local admission gate.
+They cannot commit after that epoch's durable quiescence or retirement.
+SQL-only writers check editability and mutate on the locking transaction.
+Final freeze holds a shared space-policy fence after its page locks; policy
+changes take the same fence exclusively and never acquire page locks. The
+advisory fence covers an absent policy row as well as an existing one, so an
+enable cannot slip between the final policy decision and publication. Policy
+enablement and EE availability never block authorized audited thaw.
+External writers first persist a closed-policy intent with the observed content
+and lifecycle revisions. `runPageWriteIntentEffect` requires an explicit local
+or remote phase and durably records dispatch and completion while the intent is
+still pending. Local staging never claims that a remote mutation was dispatched.
+The declared final remote phase records all-remote completion separately; later
+local phases preserve that proof and any bounded server-owned terminal identity.
+An intermediate SQL advance records started work but cannot certify external
+completion. Only the effect gate may record it, and only then may
+`completePageWriteIntent` settle the final SQL. A crash or uncertain response
+remains pending until kind-owned reconciliation proves applied or not applied.
+There is no timeout or `finally` force-clear.
+Successful effect phases retain local ownership between stages until final SQL
+settlement. Quiescence refuses new work but lets those admitted continuations
+finish; it holds the runtime row before cancelling no-start reservations and
+recording the acknowledgment. A failed/unproven final commit cannot manufacture
+a drained state.
+Every recovery attempt joins the recovering process's drain before its first
+await. Before any verifier runs, it transfers durable ownership and stamps
+`recovery_started_at`, retaining the original phase evidence. The callback,
+local repair, settlement and publication all remain owned; a quiesced/fenced
+process cannot begin recovery, and a crash requires fencing the new owner.
+A fully failed attempt may retry on the same active process, never concurrently.
+
+`domains/confluence/services/page-put-intent-reconciler.ts` owns one transactional
+publisher for normal and recovered conditional page PUTs. Exact E+1 evidence
+must update local authored content plus its original AI-improvement or restore
+history metadata before the intent settles. Provider observation remains
+read-only; local publication is not. Missing completion identity, revoked actor
+state, conflicting history or conversion failure leaves recovery pending.
+The publisher deletes stale collaborative document bytes transactionally, taking
+the collaboration-init lock before the page row, and marks the exact intent's
+`cache_invalidation_pending` flag. A page-table trigger separately coalesces
+inserts, protected/lifecycle/security updates and deletes in
+`page_cache_invalidation_queue`, covering SQL-only writes without an intent.
+Queue IDs deliberately have no page FK, so deletion cannot erase delivery work.
+Completion flushes after commit; the existing outbox poller retries both queues.
+Global cache generations reject a fill begun before an invalidation, and
+user-local generations isolate targeted invalidations. Redis failure retains
+durable work, not a failed publication response. These deliveries fabricate no
+lifecycle events. Publisher shutdown aborts both PostgreSQL checkout/lock waits
+and Redis delivery; a late pool lease is released without executing SQL.
+
+`ordinary-page-write-reconciler.ts` owns terminal-only CRUD recovery. A compact
+successful page PUT is durably acknowledged before a separate provider read;
+the receipt distinguishes command identity from fields actually returned.
+Local publication requires an exact non-trashed provider page/version and any
+returned fingerprints. Readback failure retains the acknowledgment and never
+permits another mutation. Each admitted remote phase re-reads actor, page,
+space authority and current integration settings/credentials on its held client.
+
+Relocation keeps its operation-owned original bodies, authority, child IDs and
+attachment receipts in `page_relocation_preparations`, not a bounded generic
+intent payload. Terminal settlement removes that preparation transactionally.
+A successful upstream creation is never compensated by deleting the created
+page when a later local phase fails; its known result is recovered instead.
+
+Writable room ownership is now end-to-end #276 enforcement, not a Redis
+liveness claim. Every writable backend owns a durable `collab_room` admission;
+the HTTP Save owns a separate `collab_request` admission and must collect all
+room owners recorded in PostgreSQL. A correlated Redis dump round names the
+request, lifecycle revision and exact admission IDs. The coordinator merges
+each fenced owner dump, then re-reads the identical owner set and checks the
+Redis transport generation before producing HTML and a server-side Yjs
+Snapshot. Any missing, stale, quiesced/fenced or newly appearing owner fails
+closed. Client Save supplies a bounded base64 Yjs Snapshot containing clocks
+and the delete-set; the server refuses until its fresh distributed snapshot
+includes both. Runtime fencing takes the runtime row for update before
+discovering and locking the union of affected page IDs; accepted proof remains
+limited to the owner's quiescence acknowledgment, durable proof that no effect
+started, or independently verified local process termination.
+
+Manifest v1 is the SHA-256 of canonical UTF-8 bytes for one fixed JSON array
+tree; it preserves authored strings/nullability and sorts labels and attachment
+identities by UTF-8 bytes. Media inventory covers internal URLs in authored
+HTML, storage-format attachment references, Draw.io rendered/XML siblings and
+image icons across the `local`, `confluence` and `icon` stores. Cross-page
+references require fresh access to the authoritative owner before bytes are
+read and again before retention; mutable owner pages join the sorted lock/intent
+set, while an already-frozen foreign owner contributes its verified retained
+copy. The source-aware page/parent/store identity is persisted rather than
+inferred from a nullable Confluence ID. Frozen rendering rewrites only the
+authorized projection to an exact baseline/media route; authored HTML
+and manifest bytes remain unchanged.
+
+Retained bytes live under the reserved
+`ATTACHMENTS_DIR/page-baselines/<baseline UUID>/<attempt UUID>/` namespace.
+Live orphan sweeps and page hard-delete cleanup cannot traverse or delete it.
+The default limits are 512 media objects and 1 GiB per preparation, 50 GiB of
+logical retained capacity, and 64 MiB of filesystem free-space reserve.
+Reservations include in-progress copies; capacity failure evicts no published
+evidence. Only a committed, abandoned, never-published preparation with terminal
+or safely transferred intent state is eligible for guarded cleanup.
+
+Publication atomically changes the prepared row to `published`, links the live
+page, advances its lifecycle revision, reconciles (never overwrites) the
+same-version `page_versions` snapshot, appends freeze history/audit, and enqueues
+the lifecycle event. Thaw clears only live freeze fields and appends history
+against the original baseline/version/digest; the baseline and retained bytes
+remain. Current-page reads apply current visibility/RBAC and chronological
+history redacts caller-reported signatory email. Once a page is deleted, its
+nullable live links disappear and retained evidence/history is available only
+through authenticated system-admin endpoints; immutable page identities, actor
+display snapshots and original page IDs survive page or actor deletion.
+
+The durable CE governance marker is independent of plugin/license state. When it
+is enabled, manual publication is vetoed and a missing/failing hook denies
+finalization. The hook is only an extension boundary here: #278's proposal,
+approval, signing and archive workflow is not implemented by this slice, and no
+caller-reported signatory is authenticated or signed evidence. Likewise #277
+owns the full baseline-management UI.
+
+New activation requires the acting system administrator's Confluence integration
+to be explicitly off. Preview, freeze and future governed proposal/approval
+additionally require `pages.source = 'standalone'`; a Confluence-origin row
+remains ineligible even with integration off. Historical `confluence_id` values
+never change page provenance. Missing settings and read failures never mean
+“off”; mutation admission locks an existing explicit-off row through commit,
+while capability reads are read-only and never request that lock. Re-enabling
+integration neither thaws an existing baseline nor deletes retained evidence.
+Existing frozen-page enforcement, authorized evidence reads/export/verification
+and explicit audited thaw remain mode-independent.
+
+Migration 121 still seeds `creation_enabled = false`, so activation is an
+explicit system-admin operation. #276 now registers the readiness provider at
+startup. It reports ready only when every active, non-quiesced runtime carries
+the current `enforcement_version`; migration 124 also prevents an older runtime
+from registering once creation is enabled or published evidence exists.
+Operational activation, capacity, storage and recovery procedures are kept in
+the canonical
+[`immutable-page-baselines.md`](../runbooks/immutable-page-baselines.md)
+runbook.
 
 
 ## ESLint-enforced boundary rules
@@ -298,97 +591,156 @@ is five more routes on `routes/llm/llm-embedding-shadow.ts`
 `POST/GET …/compare/:id/judgements`), all `requireAdmin`, all scoped to the
 admin who started the run, results carrying page ids and titles only.
 
-## The image-embedding leg (#1115 P1–P4)
+## The image-embedding leg — RETIRED (#1115 P1–P4, removed by #1618 stage 2)
 
-Six modules in `domains/llm/services`, two in `core/services`, and two rules
-hoisted into `core/db`:
+Six modules in `domains/llm/services`, two in `core/services` and two rules in
+`core/db` implemented ADR-025's separate image vector space:
+`vl-embedding-client.ts` (vLLM's chat-embeddings extension),
+`image-embedding-probe.ts`, `image-embedding-index.ts` (the runtime DDL that
+retyped `page_image_embeddings.embedding` to the probed width),
+`image-embedding-service.ts` (`embedPageImages`, the `image_embedding_dirty`
+backlog under `worker:lock:image-embedding-index`), `image-leg-search.ts` (the
+third RRF leg) and `core/services/image-embedding-target-dimensions.ts` (the
+MRL truncation width). **All of them are deleted** — migration 118 drops the
+table, the column, the two `admin_settings` rows and the `image_embedding`
+assignment — on the authorisation **"Remove it, nobody was using it in
+production."**: unused in production plus maintenance burden, explicitly not a
+measurement (ADR-027 A-5). `docs/runbooks/image-embedding-retirement.md` is
+the cutover and its rollback.
 
-- **`vl-embedding-client.ts`** — the only thing in the tree that speaks vLLM's
-  chat-embeddings extension: `POST {baseUrl}/embeddings` with a `messages`
-  array and a trailing empty `assistant` turn. It sits beside
-  `rerank-client.ts` for the same reason that one exists — a differently-shaped
-  endpoint that still inherits `providerRequestInfra` (queue, per-provider
-  breaker, bearer headers, TLS dispatcher) — and **not** as a branch inside
-  `openai-compatible-client.ts`'s `generateEmbedding`, whose `{model, input}`
-  body bypasses the chat template. Its module header carries the non-support
-  list (TEI, LM Studio, `llama-server`'s non-OpenAI route, the plain shape) and
-  the pinned-vLLM-version rule, so nobody re-derives them.
-- **`image-embedding-probe.ts`** — `vision-probe.ts`'s sibling. It embeds a
-  known image *and* a text through the client, requires equal widths, and
-  persists the verdict in `admin_settings.image_embedding_probe`. Its `error`
-  is the provider's own body, so it is admin-only (#1184's rule). It also
-  sends the configured MRL truncation width on both calls and requires it
-  back — see the core reader below — and it classifies a failure by status:
-  the four `VL_SHAPE_REFUSAL_STATUSES` are `shape_rejected`, everything else
-  with an HTTP answer is `provider_error`.
-- **`image-embedding-index.ts`** — `ensureImageEmbeddingColumn(dims, pair)`, the
-  runtime DDL migration 093 deliberately left out: it retypes
-  `page_image_embeddings.embedding` to the probed width, builds the HNSW index
-  for that tier, and truncates + re-dirties when the width or the assigned
-  `provider:model@baseUrl#dims` changes. The base URL is in the identity because
-  a provider row's endpoint can move without its id changing (ADR-025 D12), the
-  `#dims` half is the requested MRL truncation width, and the model half is the
-  **resolved** one, which `llm-usecases.ts` pins into
-  `llm_usecase_assignments.model` at probe time so it cannot drift with
-  `provider.default_model`.
-- **`image-embedding-service.ts` (P2)** — the consumer for all three.
-  `embedPageImages(pageId)` enumerates the page's `body_html`, resolves each
-  image's bytes through `core/services/attachment-store.ts`, skips-and-counts
-  what it cannot embed, reuses an unchanged file's row by sha256, upserts the
-  rest and reconciles away the rows the body no longer references — in one
-  transaction that re-reads the index identity after its DELETE, mirroring
-  `embedPage`'s shadow-epoch recheck. `processDirtyPageImages()` drives that
-  over the `image_embedding_dirty` backlog under its own
-  `worker:lock:image-embedding-index` — **not** the per-user
-  `embedding:lock:*`, whose holders `processDirtyPages` backs off from, so
-  borrowing it would have made an image scan block every text embed.
+Three things survive the deletion and are described below:
 
-Two `core` modules complete the P2 half. `core/services/image-embedding-dirty.ts`
-raises `pages.image_embedding_dirty` for the ATTACHMENT writers — the two sync
-attachment writers, `fetchAndCachePageImage`, `writeAttachmentCache`,
-`cleanPageAttachments` (all `domains/confluence`) and `putLocalAttachment`
-(`core`) — which is why it is in `core`: `core` may not import a domain, and one
-of its callers lives there. The **body** writers do not go through it; each is
-already issuing an UPDATE (or INSERT) on the row and raises the column inline as
-one more clause. **Unconditionally** where the statement is rewriting the body
-wholesale and has nothing to diff against: the sync upsert (`sync-service.ts`),
-both relocate directions (`page-relocate-service.ts`) and both create arms in
-`routes/knowledge/pages-crud.ts`. **Gated on `body_html IS DISTINCT FROM $n`**,
-so a title-only save costs nothing, on the edit paths: the conflict-policy
-update (`sync-service.ts`), the four `body_html` writers in
-`routes/knowledge/pages-crud.ts`, `restoreVersion`
-(`domains/knowledge/services/version-tracker.ts`) and both branches of
-`POST /llm/improvements/apply` (`routes/llm/llm-conversations.ts`). Audit the
-column, not this module's importers. And
-`core/services/image-references.ts` gained `extractImageReferencesFromHtml`,
-which reads the STORED body rather than Confluence's storage format, because a
-standalone page has no `body_storage` and a relocated one still carries a stale
-copy describing attachments its body no longer points at.
+- **`core/services/image-analysis-dirty.ts`** — the same module, renamed with
+  its column (`pages.image_analysis_dirty`, ADR-027 D6.2). It still exists in
+  `core` for the same reason: `core` may not import a domain, and its
+  ATTACHMENT-writer callers — the two sync attachment writers,
+  `fetchAndCachePageImage`, `writeAttachmentCache`, `cleanPageAttachments`
+  (all `domains/confluence`) and `putLocalAttachment` (`core`) — include one
+  that lives there. The **body** writers still do not go through it: each is
+  already issuing an UPDATE (or INSERT) on the row and raises the column
+  inline as one more clause — **unconditionally** where the statement rewrites
+  the body wholesale (the sync upsert in `sync-service.ts`, both relocate
+  directions in `page-relocate-service.ts`, both create arms in
+  `routes/knowledge/pages-crud.ts`), and **gated on
+  `body_html IS DISTINCT FROM $n`** so a title-only save costs nothing, on the
+  edit paths (the conflict-policy update, the four `body_html` writers in
+  `routes/knowledge/pages-crud.ts`, `restoreVersion` in
+  `domains/knowledge/services/version-tracker.ts`, and both branches of
+  `POST /llm/improvements/apply`). Audit the column, not this module's
+  importers.
+- **`core/services/image-references.ts`** — `extractImageReferencesFromHtml`
+  reads the STORED body rather than Confluence's storage format, because a
+  standalone page has no `body_storage` and a relocated one still carries a
+  stale copy describing attachments its body no longer points at. The image
+  analysis intake reads it exactly as the embedder did.
+- **`retrieved-images.ts` (P4)** — the answer-time byte pick, rewired by
+  #1617 to take its candidates from derived provenance; see below.
 
-`core/services/image-embedding-target-dimensions.ts` holds the MRL truncation
-width (`admin_settings.image_embedding_target_dimensions`), in `core` because
-`routes/foundation/admin.ts` writes it through `PUT /admin/settings` and
-`routes/foundation` may not import a domain. `dimensions` is a **per-request**
-vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and the
-422 both name actually performable — and one reader is what keeps the probe, the
-column type, the image embedder (P2) and — from P3 — the query side sending the
-same number.
 
-**`image-leg-search.ts` (P3)** is the reader the index had been waiting for:
-the gate, one VL query embed and one kNN over `page_image_embeddings`,
-answering a page-denominated hit list that `rag-service.ts` fuses as a third
-RRF leg. It is a sibling of `rag-service.ts` rather than part of it only
-because `hybridSearch` is already the longest function in the backend — every
-FUSION decision (how the ranks combine, what an image-only page gets as text,
-what the stable head reconstructs) stayed in `rag-service.ts`, beside the other
-two legs' ranking rules. Its visibility predicate is
-`core/services/page-visibility.ts`'s shared fragment, the same one the vector
-leg uses; an image row carries no ACL of its own.
+### Image analysis in the text index (ADR-027, #1616 — ingestion half)
 
-**`retrieved-images.ts` (P4)** turns the hits the leg attached to the returned
-pages into `image_url` parts on the user turn: `pickRetrievedImages` selects
-round-robin across pages with a byte-identity dedupe, re-runs `validateImage`
-unforked and stops at a derived base64 budget. **The vision gate is the
+The ADR-027 candidate's ingestion side lives in `domains/llm/services/`, all
+of it `llm` → `core` only; the vision assignment, identity and client modules
+it consumes are #1615's and reach it through one import point:
+
+- **`image-analysis-provider.ts`** — a PURE re-export of #1615's
+  `image-analysis-identity.ts` (the resolved and retained identity),
+  `image-analysis-client.ts` (`analyzeImage` and its failure classing),
+  `getImageAnalysisMaxOutputTokens` and the `@compendiq/contracts` payload
+  types. It holds no logic: while the two packages were in flight it carried
+  local stand-ins with the agreed signatures, and #1615's merge replaced every
+  one of them.
+- **`image-analysis-validity.ts`** — D5's ONE validity predicate
+  (`validitySql` / `isValidAnalysisRow`) with the prompt and schema versions
+  bound from code. With nothing retained the predicate is unsatisfiable, so a
+  never-assigned instance composes and counts nothing.
+- **`image-intake.ts`** — the raster intake both image pipelines share
+  (resolve bytes, sniff, `MAX_IMAGE_BYTES` / `MAX_IMAGE_DIMENSION`, sha256),
+  moved out of `image-embedding-service.ts` under #1616's ownership. Its
+  outcomes separate the corpus from the disk: `skipped` (absent, unsupported,
+  oversized, …) is a verdict, `unavailable` is a read failure that is NOT an
+  absence (`EACCES`, `EIO`, …) and carries no skip reason.
+- **`image-analysis-reconcile.ts`** — D4/D6.2: claim `image_analysis_dirty`
+  BEFORE enumerating, upsert `page_image_analyses` rows from the body's
+  current references (new → `pending`; changed hash → `pending`, fresh
+  budget; gone → deleted; absent file → row kept, `missing` only when never
+  rowed; unreadable file → no row for that reference, an existing one kept,
+  the page's other references still written, the page left dirty and counted
+  in the batch's `pagesFailed`; policy → `skipped`), and bump `image_analysis_revision` +
+  `embedding_dirty` in one statement only when the VALID derived set changed
+  (an `analyzed` row deleted, re-pended or skipped — D6.3); a new
+  `pending`/`skipped` row bumps nothing.
+- **`image-analysis-worker.ts`** — D13: `runImageAnalysisBatch()` on the
+  #1612 pattern (`worker:lock:image-analysis`, 600 s / 60 s, `assertLockHeld`
+  before every write, the last-run line included). Step 1 sweep (+ inverse
+  `reused`, stale-failed return, `truncated:<ceiling>` re-open), step 2
+  reconcile, step 3 analyze behind the three-term gate; a work row whose file
+  is ABSENT at call time → `skipped (missing)`, out of the work window, one
+  that is there but unreadable → `failed (unavailable:bytes)` with an attempt
+  charged and never terminal; backoff
+  `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` (clamped exponent),
+  `IMAGE_ANALYSIS_MAX_ATTEMPTS` = 5, provider-status and uniform-rejection
+  stops with re-probe; `retryFailedImageAnalyses`, `reanalyzeAllImages` (409
+  under the one-active-run rule) and `readImageAnalysisLastRun` for #1618's
+  card. Queue `image-analysis` (concurrency 1, sync cadence) in
+  `core/services/queue-service.ts` is its one scheduled trigger; sync does
+  not kick it.
+- **`image-analysis-serialize.ts`** — D8's deterministic
+  `serializeImageAnalysis(payload, context)` (fixed labels, bounded context
+  lines, ≤ 3 parts over `CHUNK_HARD_LIMIT`) and `substantiveChars`.
+- **`image-analysis-compose.ts`** — D9: `planDerivedChunks` reads the valid
+  rows and the page's `image_analysis_revision`; `embedPage` appends them
+  after every authored index with `metadata.source = 'image_analysis'` +
+  provenance, excludes them from both page averages, dual-writes them under a
+  shadow, and clears `embedding_dirty` only if the revision is unchanged.
+- **`image-analysis-readiness.ts`** — the pure readiness function
+  (`none | complete | partial | pending | failed | skipped`) and the corpus
+  counts #1618 renders.
+- **`lexical-chunk-resolution.ts`** (#1617) — D10's query-time SQL, as
+  fragments rather than a second copy: the derived candidate arm
+  (`MAX(ts_rank(chunk_tsv, q)) GROUP BY page_id`, carrying the caller's
+  `ragRetrievalPagesPredicate`), the per-page `LATERAL` best-chunk resolution, and
+  the mapper that turns its columns into `chunkText`/`chunkIndex`/
+  `sectionTitle`/`derived`. `keywordSearch` and `lookupIdentifier` are its two
+  callers and differ in ONE argument — the pin adopts the resolved chunk only
+  on a real `chunk_tsv @@ q` hit (erratum #1617/Q1). One definition, the
+  `image-analysis-validity.ts` precedent.
+- **`derived-provenance.ts`** (#1617) — D9.4's `metadata` → `SearchResult.
+  derived` reader (TOTAL and STRICT: a partial shape yields `undefined`, never
+  a half-populated object, because D12 requires the four citation fields to
+  travel together), the `(pageId, attachment_source, attachment_key)` dedup
+  and fused-rank ordering, and `buildDerivedImageSources` — the D12
+  `kind: 'image'` citations, whose one batched `pages` read supplies the three
+  columns `buildPageImageUrl` needs and which soft-fails to no citations
+  rather than 500 an answerable turn. It is the only reader of that metadata:
+  neither the route nor the byte pick touches raw `metadata`, and nothing on
+  the query path joins `page_image_analyses`.
+- **`page-identity.ts`** (#1617 review r1) — the memoized
+  `(id, confluence_id, source)` reader both of the above need
+  (`buildPageImageUrl` and `resolveAttachmentBytes` each require all three and
+  refuse to infer `source`). `/llm/ask` builds ONE per request and hands it to
+  the citation append and the byte pick, so a turn that cites a picture and
+  shows it to the model takes one `pages` read, not two identical ones.
+  No visibility predicate, deliberately: the ids come from retrieval, which
+  already applied it (D14), so a reader must never be given a page id from a
+  request.
+
+`core/services/image-analysis-dirty.ts` and every inline `image_analysis_dirty`
+writer raise the flag in the same statement; `rag-service.ts`'s
+coverage query counts a page with a valid analysis and its sibling window never
+crosses the authored/derived boundary. The FTS-language PUT rebuilds
+`page_embeddings.chunk_tsv` in the same transaction as `pages.tsv`.
+
+**`retrieved-images.ts` (P4, rewired by #1617)** turns the pictures the
+answer's rows came from into `image_url` parts on the user turn:
+`pickRetrievedImages` selects round-robin across pages with a byte-identity
+dedupe, re-runs `validateImage` unforked and stops at a derived base64 budget.
+Since #1617 its candidates come from `SearchResult.derived` through
+`derived-provenance.ts` (ADR-027 D11) — so it imports no `ImageHit` and there
+is no per-image score to order by: the carrying row's fused rank decides, then
+`part`. #1617's whole-set fallback to ADR-025's `imageHits` is **gone** (#1618 stage
+2 deleted it with the leg it read): a set with no derived provenance attaches
+no picture, and the module names no legacy hit type at all. **The vision gate is the
 CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
 verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
 first"). So the pick loads bytes unconditionally, and nothing that has not
@@ -396,7 +748,7 @@ already applied that gate may reach it. **It is a service because of the P0
 guard, not despite it.** `resolveAttachmentBytes` applies no ACL and
 `attachment-store.test.ts` fails if any file under `src/routes` names it, so
 the read is legal only where retrieval has already applied
-`visiblePagesPredicate` and the EE per-page filter — and that argument is what
+`ragRetrievalPagesPredicate` and the EE per-page filter — and that argument is what
 the module boundary records. `routes/llm/llm-ask.ts` reaches
 `pickRetrievedImages`, never the store.
 
@@ -409,11 +761,10 @@ in `core/db` because they are facts about Postgres and pgvector, not about LLMs,
 and because `domains/llm` may import `core` and nothing else.
 
 All arrows stay inside `llm → core`. Two admin surfaces, both `requireAdmin`
-throughout: `routes/llm/llm-usecases.ts` owns the leg's CONFIGURATION (the
-probe-gated assignment PUT plus `GET`/`POST`
-`/admin/llm-usecases/image_embedding/probe` / `…/reprobe`), and
-`routes/llm/llm-image-index.ts` owns its WORK (`GET
-/admin/embedding/image-index` for the status the Embeddings-tab card renders,
+throughout: `routes/llm/llm-usecases.ts` owns the CONFIGURATION (the
+probe-gated `image_analysis` assignment PUT), and
+`routes/llm/llm-image-analysis.ts` owns the WORK (`GET
+/admin/embedding/image-analysis` for the status the Embeddings-tab card renders,
 plus `…/rescan` and `…/process`, both of which start a detached scan and answer
 immediately — a corpus-wide run outlives every proxy timeout in the path).
 
@@ -425,6 +776,134 @@ refusals), `seed-images.ts` (the corpus through the REAL intake),
 same `hybridSearch` and `embedPageImages` the product runs, which is the point:
 a harness with its own copy measures its own copy. Recipe and report fields:
 `docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
+
+The ADR-027 arm axis (#1614 PR2) adds three modules beside them and two
+entrypoints, still nothing the server loads: `arms.ts` (the `--arm B|C`
+flag — arm A is refused like any unknown arm since #1618 stage 2 retired its
+index — `ArmRunReportSchema`, the provenance the ADR refuses a report
+without, `assertComparableArms` over the "Held fixed" list, the per-arm
+evidence rule reading D11's `derived.attachmentKey`, and the owner decisions
+O1–O7 as constants), `answers.ts` (one arm's answers through the real
+`POST /api/llm/ask` — `buildApp()` + `inject`, `rag_answer_max_images = 0`,
+SSE parsed — written arm-blinded with a structural key walk that refuses a
+leak) and `judgments.ts` (`JudgmentRowSchema`, the blinded sheet merge with
+its pre-judging hashes, the `--unblind` refusal until every item carries
+exactly one judgment by one judge, and the paired verdict: McNemar exact,
+the page-cluster bootstrap from `metrics.ts`, the one-sided margins and the
+three-part decision rule, labelled single-judge). `runner-images.ts` gains
+the single-arm `runArmEval`; `seed-images.ts` seeds the text half and the
+attachment bytes only — the state both surviving arms start from. `scripts/run-arm-answers.ts` and
+`scripts/judge-arms.ts` are the entrypoints; `eval/artifacts/1611/` is where
+captured runs live (none yet — its README says why).
+
+## Image analysis: assignment, identity and the inference client (#1615, ADR-027)
+
+The candidate that replaces the leg above (ADR-027; epic #1611). #1615 lands the
+configuration half — the use case, its probe-gated assignment, the retained
+identity, the settings ceiling and the pure inference client — and nothing that
+writes a `page_image_analyses` row (the worker, the reconcile and the sweep are
+#1616's). Two modules in `domains/llm/services`, both `llm → core` only:
+
+- **`image-analysis-identity.ts`** — the ONE place that hashes (ADR-027 D5):
+  `computeIdentityHash({providerId, model, baseUrl})` =
+  `sha256(providerId + '\n' + model + '\n' + baseUrl)`; `resolveImageAnalysisIdentity()`
+  (the live assignment through `resolveImageAnalysisUsecase`, null when
+  unassigned); `resolveCandidateImageAnalysisIdentity({providerId, model?})` (the
+  PUT's resolution rule — assignment model, else `default_model`, else the typed
+  `no_provider` / `no_model` refusal — shared with the scope preview so the two
+  cannot disagree); the retained identity's read
+  (`getRetainedImageAnalysisIdentity`, `admin_settings.image_analysis_identity`,
+  JSON `{providerId, model, baseUrl, identityHash, assignedAt}`, never seeded)
+  and its ONLY writer (`retainImageAnalysisIdentity`, D7: equal hash → resume,
+  different → replace and count the analyzed rows that fail D5's validity
+  predicate under the new one — `countRowsInvalidatedBy` /
+  `reanalysisScopeFor`, both constants bound from code). It re-exports
+  `IMAGE_ANALYSIS_PROMPT_VERSION` so the worker binds the predicate from one
+  import.
+- **`image-analysis-client.ts`** — `analyzeImage(...)`, pure: no row is read or
+  written, no page context enters the prompt, nothing of the reply or the bytes
+  is logged (D14). One chat completion through `chatCompletion()` (the
+  `openai-compatible-client.ts` sibling of `chat()` that also answers
+  `finish_reason` and `usage`; `chat()` is now a one-line wrapper over it) with
+  `temperature: 0`, `max_tokens` = the ceiling, no `tools`, no
+  `response_format`, the image as a `data:` URL. It validates the first JSON
+  object of the reply against `imageAnalysisPayloadSchema(T)` from
+  `@compendiq/contracts` and answers one of D8's six classes on failure —
+  `malformed`, `refused` (matched against `REFUSAL_PATTERNS`, which live HERE
+  and not in `sanitize-llm-input.ts`, ADR-027 erratum; on the bare reply when
+  no JSON parsed, else on the parsed `description` BEFORE the substantive
+  floor, so a polite wrapped refusal cannot pass as a description — never on
+  `visibleText`, which transcribes the image, and only when nothing outside
+  the description observed the image either, so a description OF a refusal
+  or error screenshot with the transcription or the `structured` block beside
+  it stays an analysis), `empty` (below the floor),
+  `truncated` (with the ceiling), `rejected` (exactly 400/413/415/422, with
+  the status) and `unavailable` (408, 429, 5xx and non-HTTP failures keep the
+  batch running; every other 4xx is the provider-level default arm,
+  `providerLevel: true`).
+  `encodeImageAnalysisError` spells the row's `error` column
+  (`truncated:8192`, `rejected:413`, `unavailable:405`). It refuses to post
+  bytes at a provider whose `base_url` differs from the identity it was handed.
+  `IMAGE_ANALYSIS_PROMPT_VERSION` is defined here, beside the prompt it versions.
+
+`vision-probe.ts` / `model-capabilities.ts` gained an optional `timeoutMs`
+(`refreshVisionCapability(providerId, model, { timeoutMs })`): the assignment PUT
+runs the known-content probe synchronously inside an admin request and bounds it
+at `vision-probe.ts`'s own `VISION_PROBE_TIMEOUT_MS`; the chat path's
+fire-and-forget refresh is unchanged. `core/services/admin-settings-service.ts`
+gained `getImageAnalysisMaxOutputTokens()` (`image_analysis_max_output_tokens`,
+default 8192, range [4096, 16384], strict-shape read — an unparseable or
+out-of-range row is the DEFAULT, never clamped — 60 s TTL, invalidated by the
+admin PUT's key table), the ceiling the worker reads once per batch and the
+client sizes the payload schema from.
+
+Two admin surfaces, all `requireAdmin`. `routes/llm/llm-usecases.ts` owns the
+CONFIGURATION: the pre-write probe branch in `PUT /admin/llm-usecases` (four
+422 reasons — `no_provider`, `no_model`, `text_only`, `unconfirmed` — each
+leaving the previous row AND the retained identity untouched; `true` pins the
+resolved model, commits, then retains the identity and answers
+`{ ok, reanalyzeRows }`), `GET /admin/llm-usecases/image_analysis/capability`
+(`ImageAnalysisCapabilityDetailSchema`: the chat detail plus `identity`,
+`identityDrift` — resolved hash ≠ retained hash, the state a provider
+`base_url` edit produces — and, on the re-check only, `reanalyzeRows`),
+`POST …/image_analysis/recheck` (D7's second writer: a `true` verdict on a
+drifted identity adopts it; `false`/`null` touch nothing) and
+`GET …/image_analysis/reanalysis-scope?providerId&model` (the D7 scope preview:
+resolves by the PUT's rule, hashes, counts — no probe, no write, no call; 422
+with the PUT's two resolution reasons, never the probe's). The new
+**`routes/llm/llm-page-image-analyses.ts`** owns the D14 diagnostic:
+`GET /admin/pages/:id/image-analyses[?payload=1]` — page visibility through
+`visiblePagesPredicate` BEFORE any row is read (404 either way, so a shared
+`content_hash` grants nothing), rows without `payload` unless asked, `error` as
+the D8 class, and `valid` as D5's predicate evaluated against the retained
+identity and the running constants.
+
+**`routes/llm/llm-image-analysis.ts`** (#1618 stage 1) is the operator's
+processing surface, `requireAdmin` + the admin rate limit, and it adds no SQL
+of its own (`llm-image-index.ts`, which it was mounted beside, went with the
+retired leg in stage 2) — it is four HTTP routes over
+reads and actions #1616 shipped without one. `GET /admin/embedding/image-analysis`
+(`ImageAnalysisStatusSchema`) composes `readImageAnalysisCorpusCounts()`, the
+retained identity, `resolveImageAnalysisIdentity()`, `readImageAnalysisLastRun()`
+and the worker lock into four facts none of which may be inferred from another:
+assignment, retained identity, whether those agree
+(`identityMatchesAssignment`, D13's third gate — `null` only when nothing is
+assigned, because an unassigned instance is PAUSED, not mismatched), and the
+last batch. `POST …/process`, `…/retry-failed` and `…/reanalyze-all` each kick
+`runImageAnalysisBatch()` **detached** and report `started` / `alreadyRunning`
+read from the lock BEFORE the kick: a batch is bounded by
+`image_analysis_batch_size` (seeded 50) at up to 120 s per image, so awaiting it
+would hold the request past every proxy timeout in the path. The two bulk
+actions' row counts ARE awaited — one bounded statement each, and the count is
+what the toast quotes. `reanalyzeAllImages()` owns the one-active-run rule it
+shares with text Re-embed all and the #1116 shadow backfill and throws the 409;
+the route does not restate it.
+
+Migration `115_page_image_analyses.sql` (the ADR's SQL verbatim): the table,
+the two indexes, the use-case CHECK re-added with `image_analysis`, the NULL
+assignment row and the `image_analysis_max_output_tokens = '8192'` seed. The
+worker-side columns (`pages.image_analysis_dirty` / `_revision`,
+`page_embeddings.chunk_tsv`) are migration 116, #1616.
 
 ## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
 

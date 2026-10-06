@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema } from '@compendiq/contracts';
+import { SearchHybridQuerySchema, type PageSource } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 // Use the request-scoped memoised wrapper so the search route and downstream
 // rag-service calls resolve the readable-space set once per request. See
@@ -10,17 +10,20 @@ import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { chooseLexicalParser } from '../../core/utils/lexical-query.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
+import { freezeSummary } from '../../core/services/page-baseline-service.js';
 import {
   vectorSearch,
   hybridSearch,
   recordSearchAnalytics,
+  trackSearchAnalytics,
   getEmbeddingCoverage,
   deriveDegradedReason,
-  resolveStageLimit,
   type DegradedReason,
   type EmbeddingCoverage,
+  type RetrievalMeta,
 } from '../../domains/llm/services/rag-service.js';
-import { getRagFetchWidth } from '../../core/services/admin-settings-service.js';
+import { computeRetrievalConfidence } from '../../domains/llm/services/retrieval-confidence.js';
+import { getRagFetchWidth, RAG_FETCH_WIDTH_MAX } from '../../core/services/admin-settings-service.js';
 import { markdownToSnippetText } from '../../core/services/content-converter.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
@@ -173,6 +176,54 @@ async function generateSearchEmbedding(
   }
 }
 
+/**
+ * Read current source and lifecycle metadata, never infer it from retrieved
+ * chunks. Semantic and hybrid modes reuse RAG retrieval, which is space-level
+ * by design (ADR-022/ADR-023); this page-search surface authorizes each
+ * returned row with the caller-bound list definition, so a restricted page
+ * the caller may not read drops out here exactly as it does in keyword mode.
+ */
+async function getSearchPageMetadata(
+  pageIds: number[],
+  searchSpaces: string[],
+  userId: string,
+): Promise<Map<number, {
+  source: PageSource;
+  isFrozen: boolean;
+  baselineId: string | null;
+  frozenVersion: number | null;
+}>> {
+  if (pageIds.length === 0) return new Map();
+  const { rows } = await query<{
+    id: number;
+    source: PageSource;
+    baseline_id: string | null;
+    frozen_version: number | null;
+  }>(
+    `SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version
+       FROM pages cp
+      WHERE cp.id = ANY($1::int[])
+        AND ${visiblePagesPredicate(2, 3)}`,
+    [pageIds, searchSpaces, userId],
+  );
+  return new Map(rows.map((row) => [row.id, { source: row.source, ...freezeSummary(row) }]));
+}
+
+/**
+ * Candidate pool, in pages, that semantic and hybrid page search retrieve
+ * before authorization: `max(rag_fetch_width, 2 × limit)`, capped at
+ * `RAG_FETCH_WIDTH_MAX`. Retrieval is space-level (ADR-022/ADR-023), so pages
+ * the caller cannot read may rank inside the pool; the route authorizes the
+ * whole pool and only then slices to `limit`. The pool always exceeds `limit`
+ * by at least `limit` pages, so a response comes back short only when fewer
+ * than `limit` readable pages rank inside the pool — i.e. when there are not
+ * that many readable matches, or when more than `pool − limit` unreadable
+ * pages rank above them.
+ */
+async function searchCandidatePool(limit: number): Promise<number> {
+  return Math.min(Math.max(await getRagFetchWidth(), 2 * limit), RAG_FETCH_WIDTH_MAX);
+}
+
 export async function searchRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -256,34 +307,40 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // append pages after the ones a narrower fetch found, never reorder
       // them. (Exact while ef_search is constant: ef now covers the RAW
       // fetch, 8x the stage limit, so the constant range is stage limits
-      // <= `rag_ef_search`/8 — 12 at the default floor of 100, still true at
-      // the default width 10, but narrower than the pre-#1106 <= 50. Since
+      // <= `rag_ef_search`/8 — 12 at the default floor of 100. Since
       // #1285 that floor is an admin_settings knob, so the range moves with
       // it rather than with a restart. Beyond it, a raised ef explores
       // more of the HNSW graph and can genuinely surface a nearer neighbour
       // above previous results — an accuracy improvement, not the RRF
-      // dilution the hybrid path guards against.)
-      const stageLimit = resolveStageLimit(limit, await getRagFetchWidth(), false);
+      // dilution the hybrid path guards against.) The stage is the page
+      // search candidate pool (see `searchCandidatePool`), not `limit`.
+      const candidatePool = await searchCandidatePool(limit);
       // #1351: the Space filter now actually narrows semantic results — see
       // the matching note on vectorSearch. Previously this call ignored
       // `spaceKey` entirely, so a user scoping semantic search to one space
       // silently got answers from the whole accessible corpus.
-      const vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit, { spaceKey });
+      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey });
 
-      // Deduplicate by pageId (take best chunk per page), then honour the
-      // caller's return width — the wider fetch is ranking headroom, not a
-      // bigger response.
+      // Deduplicate by pageId (take best chunk per page). The wider fetch is
+      // ranking headroom, not a bigger response: authorize the WHOLE deduped
+      // pool first, then honour the caller's return width, so pages the
+      // caller cannot read do not consume their result slots.
       const seen = new Set<number>();
-      const deduped = vectorResults
-        .filter((r) => {
-          if (seen.has(r.pageId)) return false;
-          seen.add(r.pageId);
-          return true;
-        })
-        .slice(0, limit);
+      const deduped = vectorResults.filter((r) => {
+        if (seen.has(r.pageId)) return false;
+        seen.add(r.pageId);
+        return true;
+      });
 
-      const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic', {
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      // Pages removed since retrieval, or not readable by this caller, have no
+      // canonical result to return.
+      const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
+
+      // The row describes what this caller received: the authorized, sliced
+      // set, never the pre-authorization pool.
+      const maxScore = returned.length > 0 ? Math.max(...returned.map((r) => r.score)) : null;
+      trackSearchAnalytics(userId, q, returned.length, maxScore, 'semantic', {
         degradedReason,
         embeddingCoverage,
         // #1284 — this is the page-search surface, and the #1105 refuse gate
@@ -292,11 +349,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // absent because no basis was computed, and a 0 would read as a
         // measured verdict rather than as nothing.
         surface: 'search',
-      }).catch(() => {});
+      });
 
-      const items = deduped.map((r) => ({
+      const items = returned.map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
+        ...metadata.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -336,16 +394,28 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // parallel vector + keyword search, RRF fusion, and deduplication internally.
     if (effectiveMode === 'hybrid') {
       let deduped;
+      // Ask for the page-search candidate pool rather than `limit`, then
+      // authorize the pool before slicing below, so pages the caller cannot
+      // read do not consume their result slots (bound: `searchCandidatePool`).
+      // Beyond `rag_fetch_width` the legs widen with it; fusion keeps a stable
+      // head (`fuseWithStableHead`), so the widening never reorders the head.
+      const candidatePool = await searchCandidatePool(limit);
+      // hybridSearch's own analytics row would describe the pre-authorization
+      // pool, so it is suppressed and the route records the returned set.
+      const retrieval: { meta: RetrievalMeta | null } = { meta: null };
       try {
         // Hand over this request's coverage reading (null = probe failed) so
         // hybridSearch skips its own probe — one COUNT per request, and the
         // wire and analytics describe the same measurement.
         // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
-        // #1284: hybridSearch writes the row here, and it records the
-        // confidence it computed. The verdict is real — the same formula, on
-        // the same returned set — but this surface never GATES on it, so the
-        // row is labelled 'search' and the Retrieval readout leaves it out.
-        deduped = await hybridSearch(userId, q, limit, cov, { spaceKey, surface: 'search' });
+        deduped = await hybridSearch(userId, q, candidatePool, cov, {
+          spaceKey,
+          surface: 'search',
+          recordAnalytics: false,
+          onRetrievalMeta: (meta) => {
+            retrieval.meta = meta;
+          },
+        });
       } catch (err) {
         if (err instanceof CircuitBreakerOpenError) {
           reply.status(503).send({
@@ -366,9 +436,36 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const items = deduped.map((r) => ({
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
+
+      // Same row hybridSearch would write — max fused score (pinned NEW rows
+      // excluded), final search type, health caveat and the #1284
+      // confidence — but over the set this caller received. This surface
+      // never requests the rerank stage, so there is no rerank score. The
+      // verdict is real, yet the surface never GATES on it, so the row is
+      // labelled 'search' and the Retrieval readout leaves it out.
+      const meta = retrieval.meta;
+      const scoreRows = returned.filter(
+        (r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null,
+      );
+      const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
+      const confidence = computeRetrievalConfidence(
+        returned,
+        meta ? meta.healthCaveat : degradedReason ?? (cov === null ? 'coverage_unknown' : null),
+      );
+      trackSearchAnalytics(userId, q, returned.length, maxScore, meta?.searchType ?? 'hybrid', {
+        degradedReason: meta ? meta.degradedReason : degradedReason,
+        embeddingCoverage: meta ? meta.embeddingCoverage : embeddingCoverage,
+        confidence: confidence.score,
+        confidenceBasis: confidence.basis,
+        surface: 'search',
+      });
+
+      const items = returned.map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
+        ...metadata.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -484,6 +581,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const dataQueryPromise = query<{
       id: number;
       confluence_id: string;
+      source: PageSource;
+      baseline_id: string | null;
+      frozen_version: number | null;
       title: string;
       space_key: string;
       author: string | null;
@@ -494,9 +594,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
       total_count: string;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
-              cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value,
+      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
+              cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
+              cp.baseline_id, cp.frozen_version,
               ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
               ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
@@ -513,17 +616,23 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const trgmQueryPromise = query<{
       id: number;
       confluence_id: string;
+      source: PageSource;
+      baseline_id: string | null;
+      frozen_version: number | null;
       title: string;
       space_key: string;
       body_text: string;
       rank: number;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key,
+      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key,
+              cp.baseline_id, cp.frozen_version,
               substring(cp.body_text, 1, 300) AS body_text,
               similarity(cp.title, $1) AS rank,
-              cp.icon_kind, cp.icon_value
+              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
        FROM pages cp
        -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
        -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
@@ -585,6 +694,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const ftsItems = dataResult.rows.map((row) => ({
       id: row.id,
       confluenceId: row.confluence_id,
+      source: row.source,
+      ...freezeSummary(row),
       title: row.title,
       spaceKey: row.space_key,
       author: row.author,
@@ -592,7 +703,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       labels: row.labels,
       rank: row.rank,
       snippet: row.snippet,
-      icon: toPageIcon(row.icon_kind, row.icon_value),
+      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     }));
 
     const ftsIds = new Set(ftsItems.map((r) => r.id));
@@ -601,6 +712,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         ftsItems.push({
           id: trgmRow.id,
           confluenceId: trgmRow.confluence_id,
+          source: trgmRow.source,
+          ...freezeSummary(trgmRow),
           title: trgmRow.title,
           spaceKey: trgmRow.space_key,
           author: null,
@@ -608,7 +721,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
           labels: [],
           rank: trgmRow.rank,
           snippet: trgmRow.body_text,
-          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value),
+          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value, trgmRow.icon_color, trgmRow.icon_filled),
         });
       }
     }

@@ -128,22 +128,6 @@ export function LibraryFilterDropdown({
 
   return (
     <div className={cn('relative w-full', className)}>
-      {/* Backing native select for accessibility & programmatic test harness compatibility */}
-      <select
-        id={id}
-        data-testid={testId}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={accessibleLabel}
-        className="sr-only"
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-
       <Popover.Root
         open={open}
         onOpenChange={(nextOpen) => {
@@ -153,6 +137,7 @@ export function LibraryFilterDropdown({
       >
         <Popover.Trigger asChild>
           <button
+            id={id}
             type="button"
             data-testid={testId ? `${testId}-control` : undefined}
             aria-label={`${accessibleLabel}, current: ${displayLabel}`}
@@ -189,7 +174,7 @@ export function LibraryFilterDropdown({
             aria-label={label || 'Filter options'}
             onOpenAutoFocus={(event) => {
               event.preventDefault();
-              if (searchable) {
+              if (searchInputRef.current) {
                 searchInputRef.current?.focus();
               } else {
                 const idx = Math.max(0, filteredOptions.findIndex((opt) => opt.value === value));

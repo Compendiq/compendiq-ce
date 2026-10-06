@@ -16,6 +16,7 @@ import { FTS_LANGUAGES } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
 import { SETTINGS_PANELS } from '../settings-nav';
+import { NumberRow, type NumericField } from './NumberRow';
 
 /**
  * #1118 — Settings → AI Models → Retrieval.
@@ -93,12 +94,10 @@ interface RetrievalValues {
   ragMmrLambda: number;
   ragRankingPriorWeight: number;
   /**
-   * #1115 — image retrieval. Three knobs across two halves of one feature:
-   * `ragImageLegEnabled` is the QUERY side (P3), the other two are the INTAKE
-   * side (P2) and their controls live here because this is where an operator
-   * reasons about what retrieval sees.
+   * #1115 — the image INTAKE side: how many of a page's images are taken and
+   * whether externally-hosted ones are. The controls live here because this is
+   * where an operator reasons about what retrieval sees.
    */
-  ragImageLegEnabled: boolean;
   ragImagesPerPageMax: number;
   ragImageIndexExternal: boolean;
   /**
@@ -284,7 +283,6 @@ const DEFAULTS: RetrievalValues = {
   ragMmrEnabled: false,
   ragMmrLambda: 0.7,
   ragRankingPriorWeight: 0,
-  ragImageLegEnabled: true,
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
   ragAnswerMaxImages: 2,
@@ -308,19 +306,7 @@ type NumericKey = {
   [K in keyof RetrievalValues]: RetrievalValues[K] extends number ? K : never;
 }[keyof RetrievalValues];
 
-interface NumericField {
-  key: NumericKey;
-  label: string;
-  /** Unit shown after the input. Empty for a bare ratio. */
-  unit?: string;
-  min: number;
-  max: number;
-  step: number;
-  /** Decimal places used when resetting / formatting the default. */
-  decimals?: number;
-}
-
-const FIELDS: Record<NumericKey, NumericField> = {
+const FIELDS: Record<NumericKey, NumericField<NumericKey>> = {
   ragFetchWidth: { key: 'ragFetchWidth', label: 'Fetch width', unit: 'rows / leg', min: 10, max: 200, step: 1 },
   ragEfSearch: {
     key: 'ragEfSearch',
@@ -455,12 +441,6 @@ const CONFIDENCE_BASIS_COPY = {
 } as const;
 
 type CalibrationFieldKey = keyof typeof CONFIDENCE_BASIS_COPY;
-
-/** Strips floating-point noise from a stepped input without changing the value. */
-function round(value: number, decimals: number | undefined): number {
-  if (decimals === undefined) return value;
-  return Number(value.toFixed(decimals));
-}
 
 export function RetrievalTab() {
   const queryClient = useQueryClient();
@@ -917,17 +897,15 @@ export function RetrievalTab() {
   const rerankActive =
     !!rerankRow && rerankRow.providerId !== null && rerankRow.resolved.providerId !== NIL_UUID;
 
-  // #1115 P3 — the same non-inheriting rule as `rerank`: `resolved` reports
-  // what WOULD serve if assigned, so the leg is live only on an explicit
+  // #1615 — the same non-inheriting rule as `rerank`: `resolved` reports what
+  // WOULD serve if assigned, so image analysis runs only on an explicit
   // `providerId`. Rendered as a NOTICE, never as a disabled control.
   //
   // `assignments === undefined` (the query has not answered, or failed) shows
-  // NOTHING rather than the notice: telling an operator their leg is off on
-  // evidence the panel has not collected is the mistake `usePageTree`'s
+  // NOTHING rather than the notice: telling an operator their pipeline is off
+  // on evidence the panel has not collected is the mistake `usePageTree`'s
   // three-state rule is about, one surface over.
-  const imageEmbeddingRow = assignments?.image_embedding;
-  const imageEmbeddingUnassigned = !!assignments && !imageEmbeddingRow?.providerId;
-
+  const imageAnalysisUnassigned = !!assignments && !assignments.image_analysis?.providerId;
   const { data: benchmark } = useQuery<BenchmarkRun>({
     queryKey: ['retrieval-benchmark', benchmarkRunId],
     queryFn: () => apiFetch(`/admin/retrieval-benchmark/${benchmarkRunId}`),
@@ -1084,7 +1062,8 @@ export function RetrievalTab() {
           <div className="space-y-1.5 text-xs text-muted-foreground">
             <p id="ftsLanguage-help">
               Stemming and stop words for the keyword leg of search. Saving rebuilds the keyword
-              index for every page.
+              index for every page and every embedded chunk in one step; embedding writes wait
+              until it finishes.
             </p>
             {values.ftsLanguage === 'simple' && (
               // Muted, never amber: on a default install this is permanent,
@@ -1664,47 +1643,29 @@ export function RetrievalTab() {
         </ToggleRow>
       </Section>
 
-      {/* ── Image retrieval (#1115) ─────────────────────────────────────── */}
+      {/* ── Image retrieval (#1115 intake, ADR-027) ─────────────────────── */}
       <Section
         title="Image retrieval"
-        description="Pictures in your pages are embedded into their own index and searched as a third retrieval leg beside the semantic and keyword ones."
+        description="Pictures in your pages are described by a vision model at ingestion time, and those descriptions are indexed as ordinary text beside the page's own."
       >
         {/*
           The unassigned notice is MUTED, not amber (ADR-010): on an instance
-          with no vision-language model this is the permanent, correct state —
-          not a warning — and amber that is always on is amber that stops
-          meaning anything. The controls stay ENABLED beside it: they are
-          settings, not actions, and an operator configuring the leg before
-          assigning the model is a reasonable order to work in.
+          with no vision model this is the permanent, correct state — not a
+          warning — and amber that is always on is amber that stops meaning
+          anything. The controls stay ENABLED beside it: they are settings, not
+          actions, and an operator configuring intake before assigning the
+          model is a reasonable order to work in.
         */}
-        {imageEmbeddingUnassigned && (
+        {imageAnalysisUnassigned && (
           <p className="text-xs text-muted-foreground" data-testid="retrieval-image-unassigned">
-            Image embedding is not assigned; the image leg does not run. Assign a
-            vision-language model under{' '}
+            Image analysis is not assigned; no new picture is described. Assign a
+            vision-capable model under{' '}
             <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
               {SETTINGS_PANELS.models.label} → LLM providers
             </Link>
             .
           </p>
         )}
-
-        <ToggleRow
-          id="rag-image-leg-enabled"
-          label="Image leg"
-          checked={values.ragImageLegEnabled}
-          onChange={(v) => set('ragImageLegEnabled', v)}
-          defaultChecked={DEFAULTS.ragImageLegEnabled}
-        >
-          <p>
-            Fuses the image index into page ranking, so a page whose diagram answers the question
-            is found even when its text does not mention it. On by default.
-          </p>
-          <p>
-            It costs one extra embedding call per question — the question is embedded a second
-            time, by the vision-language model, alongside the ordinary retrieval. Turn it off to
-            stop paying that while leaving the index being built.
-          </p>
-        </ToggleRow>
 
         <NumberRow
           field={FIELDS.ragImagesPerPageMax}
@@ -2512,144 +2473,6 @@ function OffChip() {
   );
 }
 
-/**
- * A number input that clamps on COMMIT, not on keystroke.
- *
- * Clamping in `onChange` — which is what the sibling rate-limits panel does —
- * makes several of these fields untypeable: fetch width has a minimum of 10,
- * so typing "40" snaps to 10 after the first digit and the next keystroke
- * lands on "100". The keystroke belongs to the draft; the range belongs to the
- * committed value, which is also what Save diffs against, so a half-typed
- * number can never enable Save or reach the PUT.
- */
-function NumberRow({
-  field,
-  value,
-  onChange,
-  defaultValue,
-  disabled,
-  describedBy,
-  children,
-  aside,
-}: {
-  field: NumericField;
-  value: number;
-  onChange: (value: number) => void;
-  defaultValue: number;
-  disabled?: boolean;
-  /**
-   * #1284 — the id of the paragraph that becomes this input's accessible
-   * description. Today: the row's measured-distribution readout
-   * ({@link distributionDescriptionId}).
-   *
-   * **Opt-in, never panel-wide** (review r1). A description flattens to one
-   * string, so the region it names must be PROSE ONLY: three of this panel's
-   * rows carry an operable child inside their help — the two wayfinding
-   * `<Link>`s to LLM providers and `Use measured value` — and wiring those
-   * announces a link and a button as description text with no way to act on
-   * them, then repeats them on the next tab stop. The blanket form of this
-   * prop shipped in the first cut of #1284 and did exactly that.
-   *
-   * **And it names ONE paragraph, not the help block** (review r1): the block
-   * form made the rerank threshold's description 975 characters, re-read on
-   * every focus, with the measurement it exists to carry at the far end of it.
-   * `RetrievalTab.test.tsx` sweeps every `[aria-describedby]` the panel
-   * renders and fails on any region holding something operable, so the
-   * prose-only rule is enforced for all rows rather than spot-checked on one.
-   */
-  describedBy?: string;
-  children?: React.ReactNode;
-  /**
-   * Everything under the row that is NOT description: an operable control, or
-   * a wayfinding sentence pointing at another panel. Rendered in the same
-   * muted block, immediately below the description and OUTSIDE it.
-   *
-   * Review r2 — `aria-describedby` flattens its region to a text string, so a
-   * button folded into it announces as prose with no hint it can be pressed,
-   * and a link announces as wayfinding the reader cannot act on from the
-   * announcement. That is the exact reason the `RAG_EF_SEARCH` note sits
-   * outside its row (see its comment in the Candidate pools section); the
-   * blanket wiring above would otherwise have re-created it inside three
-   * rows. `RetrievalTab.test.tsx` walks the region behind EVERY
-   * `aria-describedby` on the panel — not only a field's — and fails if one
-   * contains an interactive element; review r3 widened it from inputs and
-   * selects after the calibration strip's `Keep` button turned out to be
-   * described by a sentence carrying a wayfinding link.
-   */
-  aside?: React.ReactNode;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  // Any committed change — Save's re-hydration, "reset to default", "use
-  // measured value" — retires the draft so the field shows the real value.
-  useEffect(() => setDraft(null), [value]);
-
-  function commit() {
-    if (draft === null) return;
-    const raw = Number(draft);
-    // An emptied field is not a value: fall back to what is committed rather
-    // than inventing a 0 (which several of these knobs read as a kill switch).
-    if (draft.trim() === '' || !Number.isFinite(raw)) {
-      setDraft(null);
-      return;
-    }
-    const clamped = round(Math.max(field.min, Math.min(field.max, raw)), field.decimals);
-    setDraft(null);
-    if (clamped !== value) onChange(clamped);
-  }
-
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-start justify-between gap-4">
-        <label htmlFor={field.key} className="pt-1.5 text-sm font-medium">
-          {field.label}
-        </label>
-        <div className="flex shrink-0 items-center gap-2">
-          <input
-            id={field.key}
-            type="number"
-            min={field.min}
-            max={field.max}
-            step={field.step}
-            disabled={disabled}
-            value={draft ?? String(value)}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commit();
-            }}
-            // #1284/#1285 — confidence thresholds name their one measured
-            // readout; every other knob names its prose-only help block. An
-            // operable aside must never enter either description region.
-            aria-describedby={describedBy ?? (children ? `${field.key}-help` : undefined)}
-            className="w-24 rounded-md border border-border-interactive bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-45"
-            data-testid={`retrieval-${field.key}`}
-          />
-          {field.unit && <span className="w-24 text-xs text-muted-foreground">{field.unit}</span>}
-        </div>
-      </div>
-      {(children || aside) && (
-        <div className="space-y-1.5 text-xs text-muted-foreground">
-          {/* Only this half is the input's description — see `aside`'s JSDoc. */}
-          <div id={`${field.key}-help`} className="space-y-1.5">
-            {children}
-          </div>
-          {aside}
-        </div>
-      )}
-      {value !== defaultValue && (
-        <button
-          type="button"
-          onClick={() => onChange(defaultValue)}
-          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-          data-testid={`retrieval-${field.key}-reset`}
-        >
-          Reset to default ({defaultValue})
-        </button>
-      )}
-    </div>
-  );
-}
-
 function ToggleRow({
   id,
   label,
@@ -2678,7 +2501,7 @@ function ToggleRow({
           // #1285, review r1 — the same wiring `NumberRow` gained, for the same
           // reason. Leaving it on the number rows alone meant that inside ONE
           // group a screen-reader user heard the caveat for `Images per page`
-          // and not the one for `Image leg` directly above it — and the toggles
+          // and not the one for the toggle directly above it — and the toggles
           // are where the sharpest caveats on this panel live ("It costs one
           // extra embedding call per question", the identifier-pinning
           // explanation, "No Recall@1 gain measured"). A caveat reachable by

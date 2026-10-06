@@ -14,6 +14,7 @@ import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { authorizedPageIds } from '../../../core/services/authorized-pages.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
@@ -27,6 +28,7 @@ import { materializeDeterministicRelationships } from './deterministic-relations
 import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
+import { planDerivedChunks, type DerivedChunkMetadata } from './image-analysis-compose.js';
 import pgvector from 'pgvector';
 
 /**
@@ -77,6 +79,13 @@ interface ChunkMetadata {
   space_key: string;
   confluence_id: string;
 }
+
+/**
+ * Rows in `page_embeddings` carry one of two metadata shapes: the authored
+ * one above, or the derived one (ADR-027 D9.4) whose `source` field is the
+ * ONLY provenance marker anything downstream may read.
+ */
+type PageChunkMetadata = ChunkMetadata | DerivedChunkMetadata;
 
 interface EmbeddingStatus {
   totalPages: number;
@@ -551,17 +560,43 @@ export async function embedPage(
     // page the probe counts either embeds or is genuinely empty both ways.
     plainText = htmlToText(bodyHtml);
   }
-  if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
+  const authoredChars = plainText ? plainText.length : 0;
+
+  // ADR-027 D9: the page's currently VALID image analyses, serialized with
+  // the page's current context, composed AFTER the authored chunks. Read
+  // before the floor: an image-only page with one substantive analysis is
+  // embeddable (D9.5), so the floor is authored + substantive derived chars.
+  // Pass String(pageId) as the confluenceId metadata field (cosmetic only; never queried)
+  const derived = await planDerivedChunks(
+    pageId,
+    bodyHtml,
+    { page_title: pageTitle, space_key: spaceKey, confluence_id: String(pageId) },
+    CHUNK_HARD_LIMIT,
+  );
+
+  if (authoredChars + derived.substantiveChars < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
+    // ADR-027 D6.3 on the settle path too: an analysis committing between
+    // `planDerivedChunks` and this write re-raised `embedding_dirty` with a
+    // new revision; clearing it unconditionally would hide that page from the
+    // next pass until another writer touched it. Same guard as the embed write.
     await query(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [pageId],
+      `UPDATE pages SET embedding_dirty = CASE WHEN image_analysis_revision = $2 THEN FALSE ELSE embedding_dirty END,
+              embedding_status = 'not_embedded', embedding_error = NULL
+        WHERE id = $1`,
+      [pageId, derived.revision],
     );
     return 0;
   }
 
-  // Pass String(pageId) as the confluenceId metadata field (cosmetic only; never queried)
-  const chunks = chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap);
+  const authored: Array<{ text: string; metadata: PageChunkMetadata }> =
+    authoredChars >= MIN_EMBEDDABLE_TEXT_CHARS
+      ? chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap)
+      : [];
+  // Derived rows take `chunk_index = authoredCount + i` (D9.3): after every
+  // authored index, allocated in this one composition, so `UNIQUE (page_id,
+  // chunk_index)` cannot collide and sibling assembly's boundary holds.
+  const chunks: Array<{ text: string; metadata: PageChunkMetadata }> = [...authored, ...derived.chunks];
   if (chunks.length === 0) return 0;
 
   // Schema-epoch snapshot (#1116, review r1): taken BEFORE any model is
@@ -576,7 +611,7 @@ export async function embedPage(
   // If the LLM call fails here, no transaction is opened and the old embeddings
   // remain intact in the database.
   const batchSize = 10;
-  const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
+  const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: PageChunkMetadata }> = [];
   // Tracks whether any batch was dropped because it exceeded the embedding
   // model's context length. Used to distinguish "page legitimately has no
   // embeddable content" from "every batch was skipped" so we never destroy
@@ -791,20 +826,37 @@ export async function embedPage(
     // subquery sees the rows just inserted above (same transaction) and is a
     // single-page AVG — cheap — so the relationship computation no longer has
     // to AVG the whole page_embeddings table on every run.
+    //
+    // ADR-027 D2/D9.7: the averages measure AUTHORED prose only — a page of
+    // screenshots must not drift toward every other screenshot page in
+    // `computePageRelationships` and the duplicate detector — so derived rows
+    // are excluded by `metadata.source`, the one provenance marker. An
+    // image-only page therefore keeps a NULL average.
+    //
+    // ADR-027 D6.3: `embedding_dirty` is cleared ONLY if the page's
+    // `image_analysis_revision` still equals the snapshot taken before the
+    // vectors were generated. Otherwise the chunks are written (they are
+    // current for the authored text) and the page stays dirty for a recompose
+    // on the next pass — which spends no vision call. Neither worker can lose
+    // the other's update.
     await client.query(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL,
-              page_avg_embedding = (SELECT AVG(embedding) FROM page_embeddings WHERE page_id = $1)
+      `UPDATE pages SET embedding_dirty = CASE WHEN image_analysis_revision = $2 THEN FALSE ELSE embedding_dirty END,
+              embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL,
+              page_avg_embedding = (SELECT AVG(embedding) FROM page_embeddings
+                                     WHERE page_id = $1 AND (metadata->>'source') IS DISTINCT FROM 'image_analysis')
        WHERE id = $1`,
-      [pageId],
+      [pageId, derived.revision],
     );
 
     if (withShadow) {
       // Shadow average only when every row carries a shadow vector — a
-      // partial AVG would skew related-pages after the swap.
+      // partial AVG would skew related-pages after the swap. The COUNT keeps
+      // counting derived rows (D2): a derived row whose shadow embed failed
+      // still blocks the average, exactly as an authored one does.
       await client.query(
         `UPDATE pages SET page_avg_embedding_next = (
            SELECT CASE WHEN COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0
-                       THEN AVG(embedding_next) END
+                       THEN AVG(embedding_next) FILTER (WHERE (metadata->>'source') IS DISTINCT FROM 'image_analysis') END
            FROM page_embeddings WHERE page_id = $1
          ) WHERE id = $1`,
         [pageId],
@@ -831,7 +883,7 @@ export const DIRTY_PAGE_BATCH_SIZE = 100;
  * locking primitive can coordinate BOTH per-user triggers and the global
  * reembed-all run, preventing overlap in either direction.
  */
-const REEMBED_ALL_LOCK_USER = '__reembed_all__';
+export const REEMBED_ALL_LOCK_USER = '__reembed_all__';
 
 /**
  * Check if embedding processing is already running for a user.
@@ -877,8 +929,13 @@ interface ProcessDirtyPagesOpts {
  * as failed, the loop waits for the breaker to recover and retries.
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
+ * The run itself is global (every dirty page), but the events go to `userId`:
+ * a page title appears in `currentPage` or the error list only when that
+ * user may read the page under `visiblePagesPredicate`, re-checked per batch.
+ * Counts stay global because they describe the worker's whole queue.
  *
- * userId is used only for the Redis embedding-lock. The embedding provider is resolved via resolveUsecase('embedding').
+ * userId is used for the Redis embedding-lock and for that title check. The
+ * embedding provider is resolved via resolveUsecase('embedding').
  */
 export async function processDirtyPages(
   userId: string,
@@ -1052,7 +1109,16 @@ export async function processDirtyPages(
         [batchPageIds],
       );
 
+      // The reembed-all system caller consumes counts only and is no user,
+      // so it gets no titles at all.
+      const readableIds = onProgress && userId !== REEMBED_ALL_LOCK_USER
+        ? await authorizedPageIds(userId, batchPageIds)
+        : new Set<number>();
+      const errorEntry = (title: string | undefined, message: string) =>
+        (title ? `${title}: ${message}` : message);
+
       for (const page of batch.rows) {
+        const shownTitle = readableIds.has(page.id) ? page.title : undefined;
         // Holder-epoch guard (plan §2.10): re-read the lock key every
         // GUARD_CHECK_EVERY pages from inside the per-page loop too, so a
         // force-release mid-batch aborts quickly rather than after the
@@ -1102,7 +1168,7 @@ export async function processDirtyPages(
               total: batchTotal,
               completed: totalProcessed,
               failed: totalErrors,
-              currentPage: page.title,
+              currentPage: shownTitle,
               percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
             });
           }
@@ -1132,7 +1198,7 @@ export async function processDirtyPages(
                   total: batchTotal,
                   completed: totalProcessed,
                   failed: totalErrors,
-                  currentPage: page.title,
+                  currentPage: shownTitle,
                   percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
                   reason: `Circuit breaker open, waiting ${Math.round(waitMs / 1000)}s for recovery (attempt ${cbRetries + 1}/${MAX_CIRCUIT_BREAKER_RETRIES})`,
                 });
@@ -1159,7 +1225,7 @@ export async function processDirtyPages(
                     total: batchTotal,
                     completed: totalProcessed,
                     failed: totalErrors,
-                    currentPage: page.title,
+                    currentPage: shownTitle,
                     percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
                   });
                 }
@@ -1179,7 +1245,7 @@ export async function processDirtyPages(
                   totalErrors++;
                   batchRemainingDirty++;
                   consecutiveFailures++;
-                  errorList.push(`${page.title}: ${toUserFacingEmbeddingError(retryErr)}`);
+                  errorList.push(errorEntry(shownTitle, toUserFacingEmbeddingError(retryErr)));
                   cbSuccess = true; // Mark as handled (failed, but handled)
                   break;
                 }
@@ -1212,7 +1278,7 @@ export async function processDirtyPages(
           batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
-          errorList.push(`${page.title}: ${toUserFacingEmbeddingError(err)}`);
+          errorList.push(errorEntry(shownTitle, toUserFacingEmbeddingError(err)));
 
           // Pause after too many consecutive failures to let the server recover
           if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {
@@ -1243,7 +1309,7 @@ export async function processDirtyPages(
               total: batchTotal,
               completed: totalProcessed,
               failed: totalErrors,
-              currentPage: page.title,
+              currentPage: shownTitle,
               percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
             });
           }

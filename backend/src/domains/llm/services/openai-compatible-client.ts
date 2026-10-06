@@ -8,6 +8,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 // accept a real `Response`.
 import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
+import { filterListedModels, listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -21,7 +22,7 @@ export { LlmHttpError } from './llm-http-error.js';
 
 export interface ProviderConfig {
   providerId: string;
-  baseUrl: string;           // already normalized to end with /v1
+  baseUrl: string;           // OpenAI-compatible root (typically …/v1)
   apiKey: string | null;
   authType: 'bearer' | 'none';
   verifySsl: boolean;
@@ -122,6 +123,10 @@ export const providerRequestInfra = { headers, dispatcherFor, errorDetail } as c
  * Together, Groq, Fireworks, OpenRouter, etc.) ignores unknown fields, so
  * "tolerant" is the safer default. Adding a host here means the toggle
  * silently no-ops rather than 400s for models that don't support reasoning.
+ * "Unknown" is the load-bearing word: a field a tolerant host PARSES is not
+ * covered by this premise. `reasoning_effort` is the standing example — see
+ * `reasoningOffExtras` — so check a new hint against the servers' request
+ * schemas before adding it to `nonThinkingExtras`.
  *
  * Hosted DeepSeek (`api.deepseek.com`) 400s on `think` /
  * `chat_template_kwargs` the same way OpenAI does, so it is strict — but
@@ -213,15 +218,35 @@ function thinkingExtras(
 }
 
 /**
- * Inline completions have a tiny latency and token budget. On Qwen reasoning
- * models, the default thinking pass can consume that whole budget before any
- * visible continuation reaches `message.content`. Local OpenAI-compatible
- * providers accept these template hints; strict OpenAI hosts must not receive
- * them because they reject unknown fields.
+ * Inline completions have a tiny latency and token budget. A reasoning pass
+ * can consume it before any visible continuation reaches `message.content`.
+ * Local OpenAI-compatible providers accept these template hints; strict
+ * OpenAI hosts must not receive them because they reject unknown fields.
  */
 export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
   if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
   return { think: false, chat_template_kwargs: { enable_thinking: false } };
+}
+
+/**
+ * The second-attempt hint for servers that ignore `nonThinkingExtras`. LM
+ * Studio is the observed case: with only the template hints its reasoning
+ * hits the newline stop before any text reaches `message.content`, and
+ * `reasoning_effort: 'none'` is what turns reasoning off there.
+ *
+ * It is deliberately NOT part of the first request. Unlike `think` and
+ * `chat_template_kwargs`, `reasoning_effort` is a field tolerant hosts parse
+ * and validate rather than ignore: vLLM 0.10–0.12 declare it as
+ * `Literal["low", "medium", "high"]` and 400 on `"none"`, and newer vLLM
+ * forwards it into chat templates that may `raise_exception` on a value they
+ * do not list (vllm-project/vllm#54017) — a 500 that would count against the
+ * provider's shared breaker. So the inline client sends it only after a
+ * first reply carried no visible text, and swallows whatever that retry
+ * returns short of the caller's own abort (see `requestInlineCompletion`).
+ */
+export function reasoningOffExtras(baseUrl: string): Record<string, unknown> {
+  if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
+  return { reasoning_effort: 'none' };
 }
 
 // Exported for unit testing only — the wire-format assertions on
@@ -231,6 +256,7 @@ export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
 export const __test_only__ = {
   thinkingExtras,
   nonThinkingExtras,
+  reasoningOffExtras,
   isStrictOpenAiCompatibleHost,
   isOpenAiReasoningModel,
   setStreamErrorDetailTimeoutMs: (ms: number) => { streamErrorDetailTimeoutMs = ms; },
@@ -271,12 +297,31 @@ export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
     'llm.list_models',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/models`, {
-          headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
-        });
-        if (!res.ok) throw new LlmHttpError('listModels', res.status, await errorDetail(res));
-        const body = await res.json() as { data?: Array<{ id: string }> };
-        return (body.data ?? []).map((m) => ({ name: m.id }));
+        const urls = listModelsCandidateUrls(cfg.baseUrl);
+        let lastMiss: LlmHttpError | null = null;
+        for (const url of urls) {
+          const res = await undiciFetch(url, {
+            headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
+          });
+          if (res.ok) {
+            const body = await res.json() as { data?: Array<{
+              id: string;
+              architecture?: { output_modalities?: string[] };
+            }> };
+            return filterListedModels(cfg.baseUrl, body.data ?? []);
+          }
+          const retryable = res.status === 404
+            || (res.status === 400 && url.includes('output_modalities='));
+          const err = new LlmHttpError(
+            'listModels', res.status, await errorDetail(res), retryable,
+          );
+          if (retryable) {
+            lastMiss = err;
+            continue;
+          }
+          throw err;
+        }
+        throw lastMiss ?? new LlmHttpError('listModels', 404, 'no /models catalog');
       }),
     ),
     { 'llm.provider_id': cfg.providerId },
@@ -400,9 +445,50 @@ async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promis
   return winner.trim().slice(0, ERROR_BODY_MAX_CHARS);
 }
 
-export async function chat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
-): Promise<string> {
+/**
+ * #1615 (ADR-027 D8) — what a non-streaming completion answers beyond its
+ * text. `finishReason` is the provider's `finish_reason` (`'length'` is how a
+ * reply that overran `max_tokens` announces itself, and the analysis client
+ * classes it `truncated`); `usage` is the provider's token report, null when
+ * it sent none (O11 reports tokens per image as a corpus mean from it).
+ */
+export interface ChatCompletionResult {
+  text: string;
+  finishReason: string | null;
+  usage: { promptTokens?: number; completionTokens?: number } | null;
+}
+
+export interface ChatCompletionOptions extends StreamChatOptions {
+  /**
+   * Sampling temperature, sent as the standard `temperature` field when set.
+   * The analysis client sends `0`: D8's deterministic failure classes rest on
+   * the same request producing the same reply. Omitted (provider default) for
+   * every other caller, which is the behaviour `chat()` always had.
+   */
+  temperature?: number;
+  /**
+   * Ask a reasoning model NOT to think (`nonThinkingExtras`). Set by the
+   * image-analysis call alone (ADR-027 D8 erratum, #1619): a reasoning pass
+   * spends the output budget without contributing to the payload — measured
+   * at 82.0–93.3 % of the reply's tokens at the 8,192 ceiling (#1619's
+   * ten-row vision pre-check, recorded in ADR-027), and 14 of 187 corpus
+   * images failed deterministically at that ceiling because of it. The hints are
+   * ADVISORY: strict OpenAI hosts are sent none, and a provider that ignores
+   * them is not broken. Never set on a chat or answer call, so no arm's
+   * answer behaviour changes.
+   */
+  nonThinking?: boolean;
+}
+
+/**
+ * One non-streaming chat completion through the queue and the per-provider
+ * breaker, answering the text AND the two wire fields `chat()` discards.
+ * `tools` is never sent — nothing in this codebase asks a provider to call
+ * one, and the analysis path (D8) must not.
+ */
+export async function chatCompletion(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: ChatCompletionOptions,
+): Promise<ChatCompletionResult> {
   // Created BEFORE enqueue so the budget covers queue wait too (see
   // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
   // waiting and abort on admission, not run a request the caller gave up on.
@@ -415,24 +501,44 @@ export async function chat(
     'llm.chat',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({
             model, messages, stream: false,
             ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
-            ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
+            ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+            ...(opts?.nonThinking === true ? nonThinkingExtras(cfg.baseUrl) : thinkingExtras(cfg.baseUrl, model, opts?.thinking)),
           }),
           dispatcher: dispatcherFor(cfg),
           signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
         });
         if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
-        const body = await res.json() as { choices: Array<{ message?: CompletionText }> };
-        return composeAssistantText(body.choices[0]?.message, opts?.thinking);
+        const body = await res.json() as {
+          choices: Array<{ message?: CompletionText; finish_reason?: string | null }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+        };
+        const choice = body.choices[0];
+        return {
+          text: composeAssistantText(choice?.message, opts?.thinking),
+          finishReason: choice?.finish_reason ?? null,
+          usage: body.usage
+            ? {
+                ...(typeof body.usage.prompt_tokens === 'number' ? { promptTokens: body.usage.prompt_tokens } : {}),
+                ...(typeof body.usage.completion_tokens === 'number' ? { completionTokens: body.usage.completion_tokens } : {}),
+              }
+            : null,
+        };
       }),
     ),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
+}
+
+export async function chat(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+): Promise<string> {
+  return (await chatCompletion(cfg, model, messages, opts)).text;
 }
 
 /**
@@ -453,7 +559,7 @@ export async function* streamChat(
   const res = await withSpan(
     'llm.stream_chat.dispatch',
     () => getProviderBreaker(cfg.providerId).execute(async () => {
-      const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+      const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),
         body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true }, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
@@ -548,7 +654,7 @@ export async function generateEmbedding(
     'llm.embeddings',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
+        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, input }),

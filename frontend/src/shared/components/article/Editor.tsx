@@ -73,6 +73,7 @@ import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar
 import { InlineCompletionExtension } from './InlineCompletionExtension';
 import { SpellcheckExtension } from './SpellcheckExtension';
 import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
+import { beginDraftEdit, persistDraft, type PendingDraft } from '../../lib/editor-drafts';
 import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
 import {
   getClientInferenceManager,
@@ -333,7 +334,10 @@ interface EditorProps {
   onChange?: (dirty: boolean) => void;
   editable?: boolean;
   placeholder?: string;
-  /** Key for localStorage auto-save (e.g. "page-draft-12345"). Omit to disable. */
+  /**
+   * Logical draft name for local auto-save (e.g. `pageDraftKey(id)`), stored
+   * per signed-in account by `shared/lib/editor-drafts`. Omit to disable.
+   */
   draftKey?: string;
   /** Remove the nm-card wrapper (use inside an already-styled card). Default false. */
   naked?: boolean;
@@ -647,28 +651,6 @@ async function rewriteHtmlImageSrcs(
 
 const AUTO_SAVE_DELAY = 2000;
 
-// eslint-disable-next-line react-refresh/only-export-components
-export function getDraft(key: string): string | null {
-  try {
-    return localStorage.getItem(`draft:${key}`);
-  } catch {
-    return null;
-  }
-}
-
-// Keys whose pending unmount-flush must be suppressed because the parent
-// explicitly cleared the draft (page saved or edit cancelled). Prevents the
-// #877 flush-on-unmount from resurrecting a draft the user just discarded.
-const suppressedFlushKeys = new Set<string>();
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function clearDraft(key: string): void {
-  try {
-    localStorage.removeItem(`draft:${key}`);
-  } catch { /* ignore */ }
-  suppressedFlushKeys.add(key);
-}
-
 function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
@@ -701,7 +683,7 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
       role="status"
       aria-label={ariaLabel}
       data-testid="inline-completion-hint"
-      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+      className="nm-popover-glass pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
     >
       {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
       {mode === 'full' && (
@@ -718,10 +700,10 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
 
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // draftKey of a debounced draft awaiting write, so unmount can flush it
-  // (#877). We store only the key and serialize the editor lazily at flush
-  // time (#954) rather than snapshotting getHTML() on every keystroke.
-  const pendingDraftRef = useRef<string | null>(null);
+  // Debounced draft awaiting write, so unmount can flush it (#877). It holds
+  // the account scope captured when the edit was made, and the editor is
+  // serialized lazily at write time (#954) rather than on every keystroke.
+  const pendingDraftRef = useRef<PendingDraft | null>(null);
   // Ref for the editor instance so async paste/drop handlers can insert images
   const editorRef = useRef<EditorType | null>(null);
   // Keep pageId in a ref so editorProps closures see the latest value
@@ -782,38 +764,30 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   const saveDraft = useCallback(() => {
     if (!draftKey) return;
-    // Fresh edits mean there IS unsaved work again — allow it to be flushed.
-    suppressedFlushKeys.delete(draftKey);
-    pendingDraftRef.current = draftKey;
-    if (timerRef.current) clearTimeout(timerRef.current);
+    clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    const pending = beginDraftEdit(draftKey);
+    pendingDraftRef.current = pending;
+    if (!pending) return;
     timerRef.current = setTimeout(() => {
-      // Serialize lazily here (once per debounce window) instead of on every
-      // keystroke (#954). editorRef is still live — the timer only fires while
-      // mounted; the unmount path clears it and flushes separately below.
-      try {
-        const html = editorRef.current?.getHTML();
-        if (html != null) localStorage.setItem(`draft:${draftKey}`, html);
-      } catch { /* quota exceeded — ignore */ }
+      // editorRef is still live — the timer only fires while mounted; the
+      // unmount path clears it and flushes separately below.
+      persistDraft(pending, () => editorRef.current?.getHTML());
       pendingDraftRef.current = null;
       timerRef.current = undefined;
     }, AUTO_SAVE_DELAY);
   }, [draftKey]);
 
   // Flush any pending debounced draft on unmount so navigating away within
-  // the AUTO_SAVE_DELAY window still persists the last edit (#877). Skip keys
-  // the parent explicitly cleared (save/cancel) to avoid resurrecting a
-  // discarded draft. Uses refs only, so [] deps are correct.
+  // the AUTO_SAVE_DELAY window still persists the last edit (#877).
+  // persistDraft drops it if the parent cleared the draft (save/cancel) or the
+  // user signed out since the edit. Uses refs only, so [] deps are correct.
   useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    const pendingKey = pendingDraftRef.current;
-    if (pendingKey && !suppressedFlushKeys.has(pendingKey)) {
-      // This cleanup runs before useEditor's own teardown, so editorRef still
-      // points at a live editor we can serialize (#954).
-      try {
-        const html = editorRef.current?.getHTML();
-        if (html != null) localStorage.setItem(`draft:${pendingKey}`, html);
-      } catch { /* quota exceeded — ignore */ }
-    }
+    clearTimeout(timerRef.current);
+    const pending = pendingDraftRef.current;
+    // This cleanup runs before useEditor's own teardown, so editorRef still
+    // points at a live editor we can serialize (#954).
+    if (pending) persistDraft(pending, () => editorRef.current?.getHTML());
     pendingDraftRef.current = null;
   }, []);
 
@@ -822,6 +796,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
    * Returns true if an image was handled, false to let TipTap process normally.
    */
   const handleImageFiles = useCallback((files: File[]): boolean => {
+    const targetEditor = editorRef.current;
+    if (!targetEditor?.isEditable) return true;
     const imageFile = files.find((f) => f.type.startsWith('image/'));
     if (!imageFile) return false;
 
@@ -832,8 +808,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     }
 
     uploadPastedImage(imageFile, currentPageId).then((url) => {
-      if (url && editorRef.current) {
-        editorRef.current.chain().focus().setImage({ src: url }).run();
+      const current = editorRef.current;
+      if (
+        url && current === targetEditor && !current.isDestroyed &&
+        current.isEditable && pageIdRef.current === currentPageId
+      ) {
+        // An upload may outlive the editor session that started it. Insert
+        // only into that same still-writable session; a retired lifecycle or
+        // page switch must never receive the delayed result.
+        current.chain().focus().setImage({ src: url }).run();
       }
     });
 
@@ -904,7 +887,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       InlineCompletionExtension.configure({
         enabled: () => {
           const config = inlineCompletionRef.current;
-          if (!editable || !config?.enabled) return false;
+          if (editorRef.current?.isEditable !== true || !config?.enabled) return false;
           return getClientInferenceManager().decideGhostAvailability(
             !!config.available,
             config.clientInferenceWithoutServer ?? true,
@@ -983,6 +966,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       // #1135 — triple-click selects the whole cell, not one paragraph.
       handleTripleClick: handleTableCellTripleClick,
       handlePaste(_view, event) {
+        if (!_view.editable) {
+          event.preventDefault();
+          return true;
+        }
         const items = Array.from(event.clipboardData?.items ?? []);
         const imageItem = items.find((i) => i.type.startsWith('image/'));
         if (imageItem) {
@@ -1017,7 +1004,18 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         const importToastId = toast.loading('Importing pasted images…');
         rewriteHtmlImageSrcs(htmlPayload, currentPageId)
           .then(({ html, imported, failed, total }) => {
-            editorInstance.chain().focus().insertContent(html).run();
+            const current = editorRef.current;
+            if (
+              current !== editorInstance || current.isDestroyed ||
+              !current.isEditable || pageIdRef.current !== currentPageId
+            ) {
+              // The network work is complete, but its destination was frozen,
+              // retired or replaced while it was in flight. Do not replay the
+              // old session's clipboard payload into the surviving editor.
+              toast.dismiss(importToastId);
+              return;
+            }
+            current.chain().focus().insertContent(html).run();
             if (total === 0) {
               toast.dismiss(importToastId);
               return;
@@ -1036,6 +1034,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         return true;
       },
       handleDrop(_view, event, _slice, moved) {
+        if (!_view.editable) {
+          event.preventDefault();
+          return true;
+        }
         // Only handle external drops (not internal drag-and-drop of existing content)
         if (moved) return false;
         const files = Array.from(event.dataTransfer?.files ?? []);
@@ -1061,6 +1063,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   // Keep the editor ref in sync
   editorRef.current = editor;
+
+  useEffect(() => {
+    if (editor && !editor.isDestroyed && editor.isEditable !== editable) {
+      editor.setEditable(editable, false);
+    }
+  }, [editor, editable]);
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
@@ -1089,7 +1097,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           className="px-3 py-2 text-xs leading-5 text-muted-foreground"
           data-testid="collab-readonly-banner"
         >
-          You&apos;re following this session as read-only.
+          This document is read-only. Its contents remain available to copy.
         </p>
       )}
       {editable && editor && !hideToolbar && (

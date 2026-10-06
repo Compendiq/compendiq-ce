@@ -72,10 +72,42 @@ describe('rerank-client (#1104)', () => {
     expect(out.map((r) => r.relevanceScore)).toEqual([0.9, 0.5, 0.2]);
   });
 
+  it('posts to a stored …/rerank URL without appending /rerank again', async () => {
+    respondWith([{ index: 0, relevance_score: 0.7 }]);
+    const out = await rerank(
+      { ...cfg(), baseUrl: `${baseUrl}/rerank` },
+      'bge-reranker-v2-m3',
+      'q',
+      ['a'],
+    );
+    expect(out).toEqual([{ index: 0, relevanceScore: 0.7 }]);
+  });
+
   it('truncates documents to RERANK_DOC_MAX_CHARS before sending', async () => {
     respondWith([{ index: 0, relevance_score: 0.5 }]);
     await rerank(cfg(), 'm', 'q', ['x'.repeat(RERANK_DOC_MAX_CHARS + 500)]);
     expect(lastBody.documents![0]!.length).toBe(RERANK_DOC_MAX_CHARS);
+  });
+
+  it('applies the SAME window to a derived image-analysis document — no exception (ADR-027 D11)', async () => {
+    // ADR-027 `:4287-4299` is explicit that #1617 must not widen this window
+    // for derived text, and that the D8 serialization order is chosen FOR it:
+    // the label, the bounded context lines and the ≤1,200-char description
+    // come first, so the cross-encoder always sees the provenance, the page
+    // context and the retrieval-oriented summary, and only the tail of a long
+    // `visibleText` falls outside. This is the assertion that reds if someone
+    // widens the window (or forks a second one) to "fix" that tail.
+    const label = '[Image: console.png — screenshot]\nPage: Checkout outage\n';
+    const derivedDoc = label + 'Description: the gateway returned ERR-4711. '
+      + 'Visible text: '.padEnd(RERANK_DOC_MAX_CHARS, 'z');
+    respondWith([{ index: 0, relevance_score: 0.5 }]);
+    await rerank(cfg(), 'm', 'q', [derivedDoc]);
+
+    expect(lastBody.documents![0]!.length).toBe(RERANK_DOC_MAX_CHARS);
+    // And it is the HEAD that survives — the provenance and the description,
+    // not an arbitrary slice.
+    expect(lastBody.documents![0]!.startsWith(label)).toBe(true);
+    expect(lastBody.documents![0]).toContain('ERR-4711');
   });
 
   it('drops malformed result entries (bad index, non-finite score)', async () => {

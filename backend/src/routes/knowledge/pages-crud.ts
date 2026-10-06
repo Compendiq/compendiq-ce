@@ -1,10 +1,18 @@
 import { FastifyInstance } from 'fastify';
+import type { PoolClient } from 'pg';
+import { createHash } from 'node:crypto';
 import { query, getPool } from '../../core/db/postgres.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
-import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
+import {
+  CONFLUENCE_DISABLED_MESSAGE,
+  pageWriteStaysLocal,
+} from '../../domains/confluence/services/standalone-mode.js';
+import { htmlToConfluence, confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
+import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -24,24 +32,79 @@ import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standal
 import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
+import {
+  authorizedSubtreeComponents,
+  activeDescendantCount,
+  findSubtreeKeyAmbiguity,
+  resolveParentOf,
+  trashBatchIds,
+  type AuthorizedSubtreeComponent,
+  type SubtreeKeyAmbiguity,
+  PageSubtreeFrozenError,
+} from '../../core/services/page-subtree.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_HIERARCHY_LOCK_ID,
+} from '../../core/db/advisory-locks.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
-import { getUserAccessibleSpaces, isSystemAdmin } from '../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpaces,
+  userCanAccessPage,
+} from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
+import { ConfluenceError, type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import {
+  confirmPagePublication,
+  pagePublicationReceipt,
+  publishCreatedConfluencePage,
+  type PublishedConfluencePage,
+} from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
+import {
+  freezeSummary,
+  getPageLifecycleState,
+  renderedFrozenPageBodyHtml,
+} from '../../core/services/page-baseline-service.js';
+import {
+  type PageWriteIntent,
+  type PageRevision,
+  PageWriteError,
+  advancePageWriteIntent,
+  advancePageWriteIntentInTransaction,
+  assertPageHierarchyParentsAvailable,
+  completePageWriteIntent,
+  cancelPageWriteIntentBeforeEffect,
+  getPageWriterRuntimeId,
+  lockPageLifecycle,
+  lockPageWriterRuntime,
+  lockPageWrites,
+  reservePageWriteIntent,
+  reservePageWriteIntentInTransaction,
+  withPageHierarchyWriteTransaction,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+} from '../../core/services/page-write-admission.js';
+import { enqueuePageWriteInvalidation } from '../../core/services/page-write-invalidation.js';
+import {
+  imageAttachmentPageKey,
+  loadAuthorizedImagePage,
+  userCanUploadPageImage,
+  writePageImageCache,
+  type ImageUploadPage,
+} from '../../core/services/page-image-cache.js';
 
 /** Escape ILIKE metacharacters so user input like "100%" doesn't match all rows. */
 function escapeIlikeTerm(term: string): string {
   return term.replace(/[%_\\]/g, '\\$&');
 }
+
 
 /**
  * Shared schema for the 4 existing bulk routes (delete/sync/embed/tag). Either
@@ -134,31 +197,93 @@ const ImportImageSchema = z.object({
   url: z.string().url().max(2048),
 });
 
-type ImageUploadPage = {
-  id: number;
-  source: string;
-  confluence_id: string | null;
-  created_by_user_id: string | null;
-  space_key: string | null;
-  visibility: string | null;
-};
 
-/**
- * Who may attach an image to a page. Matches PUT /pages/:id and
- * pages-icon assertCanEdit, plus the system-admin bypass that
- * userCanAccessPage already grants for read — otherwise an admin
- * who can open the editor is refused at paste.
- */
-async function userCanUploadPageImage(userId: string, page: ImageUploadPage): Promise<boolean> {
-  if (await isSystemAdmin(userId)) return true;
-  if (page.source === 'standalone') {
-    return page.created_by_user_id === userId || page.visibility === 'shared';
+/** Capture authority/revisions under admission; later phases must present that original pair. */
+async function loadAuthorizedContentWriteState(
+  client: PoolClient,
+  pageId: number,
+  userId: string,
+  expected: PageRevision | null,
+  allowDeleted = false,
+): Promise<PageRevision & {
+  source: string;
+  confluenceId: string | null;
+  spaceKey: string | null;
+  visibility: string;
+}> {
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+    [userId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
   }
-  if (page.space_key) {
-    const accessibleSpaces = await getUserAccessibleSpaces(userId);
-    return accessibleSpaces.includes(page.space_key);
+  const result = await client.query<PageRevision & {
+    source: string;
+    confluenceId: string | null;
+    created_by_user_id: string | null;
+    visibility: string;
+    spaceKey: string | null;
+  }>(
+    `SELECT source, confluence_id AS "confluenceId", created_by_user_id, visibility,
+            space_key AS "spaceKey", content_revision::text AS "contentRevision",
+            lifecycle_revision::text AS "lifecycleRevision"
+       FROM pages WHERE id = $1 AND ($2::boolean OR deleted_at IS NULL) FOR UPDATE`,
+    [pageId, allowDeleted],
+  );
+  const current = result.rows[0];
+  if (!current) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  if (current.source === 'confluence') {
+    const spaces = await getUserAccessibleSpaces(userId, client);
+    if (!current.spaceKey || !spaces.includes(current.spaceKey)) {
+      throw new PageWriteError(403, 'not_authorized', 'Access denied to this space');
+    }
+  } else if (current.created_by_user_id !== userId && current.visibility !== 'shared') {
+    throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
   }
-  return false;
+  if (!(await userCanAccessPage(userId, pageId, client, allowDeleted))) {
+    throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+  }
+  if (expected && current.lifecycleRevision !== expected.lifecycleRevision) {
+    throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after the content was read');
+  }
+  if (expected && current.contentRevision !== expected.contentRevision) {
+    throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after the content was read');
+  }
+  return current;
+}
+
+/** A captured PAT is not authority to dispatch after an admission wait. */
+async function loadCurrentConfluenceWriteClient(
+  client: PoolClient,
+  intent: PageWriteIntent,
+  pageId: number,
+  userId: string,
+  confluenceId: string,
+  allowDeleted = false,
+): Promise<ConfluenceClient> {
+  const current = await loadAuthorizedContentWriteState(
+    client, pageId, userId, intent.revisions[pageId]!, allowDeleted,
+  );
+  if (current.source !== 'confluence' || current.confluenceId !== confluenceId) {
+    throw new PageWriteError(409, 'page_source_changed', 'The page source changed before the remote write');
+  }
+  if (!(await isConfluenceEnabled(userId, client))) {
+    throw new PageWriteError(
+      409,
+      'confluence_integration_disabled',
+      CONFLUENCE_DISABLED_MESSAGE,
+    );
+  }
+  const confluence = await getClientForUser(userId, client);
+  if (!confluence) {
+    throw new PageWriteError(
+      409,
+      'confluence_connection_changed',
+      'Confluence credentials changed before the remote write',
+    );
+  }
+  return confluence;
 }
 
 /** Magic-byte signatures for each allowed import MIME. The leading bytes must
@@ -322,9 +447,87 @@ async function readBodyWithSizeCap(
   return { ok: true, buffer: Buffer.concat(chunks) };
 }
 
+/**
+ * The 409 body a delete or restore answers when the subtree it would walk
+ * contains a page whose parent key is also another page's identifier (#1636).
+ *
+ * Refusing rather than resolving is the rule every other `parent_id` reader
+ * follows — `assertIdentifierUnambiguous` for `/move` and `/relocate` (#1166),
+ * `resolveBulkSelection` for the bulk routes (#1167) — because the stored key
+ * stays ambiguous whichever candidate is picked, so a cascade that guessed
+ * would trash or destroy rows in an unrelated tree.
+ *
+ * The response names no page, key, id, or title: an ambiguity can be reached
+ * through an inaccessible traversal row, so even the member inside the walk
+ * is not necessarily visible to the caller. Operator-only detail stays in the
+ * log. `reason` is a slug the client branches on, distinct from the transient
+ * `restore_ancestor_trashed`, because this refusal is not retryable.
+ */
+function ambiguousSubtreeConflict(
+  ambiguity: SubtreeKeyAmbiguity,
+  log: FastifyInstance['log'],
+) {
+  log.warn(
+    {
+      pageId: ambiguity.pageId,
+      key: ambiguity.key,
+      conflictingPageId: ambiguity.conflictingPageId,
+      conflictingTitle: ambiguity.conflictingTitle,
+    },
+    'pages: refused a subtree operation on an ambiguous parent identifier (#1636)',
+  );
+  return {
+    statusCode: 409,
+    error: 'Conflict',
+    message:
+      'Cannot act on this subtree because its stored parent identifiers are ambiguous. ' +
+      'Move or relocate the affected pages first.',
+    reason: 'subtree_identifier_ambiguous',
+  };
+}
+
+
+
+function assertSingleCascadeEditable(component: AuthorizedSubtreeComponent, rootId: number): void {
+  const frozenCount = component.members
+    .filter((member) => member.baselineId !== null)
+    .length;
+  if (frozenCount === 0) return;
+  if (component.members.some((member) => member.id === rootId && member.baselineId !== null)) {
+    throw new PageWriteError(423, 'page_is_frozen', 'Protected page content is frozen');
+  }
+  throw new PageSubtreeFrozenError(frozenCount);
+}
+
+/**
+ * Hierarchy cascades take the process epoch first, then the global hierarchy
+ * fence exclusively. Expansion, lifecycle admission and the SQL mutation (or
+ * durable whole-component intent reservation) all happen before this commits.
+ */
+async function withHierarchyCascadeTransaction<T>(
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const runtimeId = await getPageWriterRuntimeId();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockPageWriterRuntime(client, runtimeId);
+    await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
+    const result = await operation(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
+
 
   // GET /api/pages - list/search pages
   fastify.get('/pages', async (request) => {
@@ -337,10 +540,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // results after edits, embedding status during processing).
     const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || dateFrom || dateTo);
     const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
-    const cacheKey = `list:${filterParts}`;
+    const cacheKey = `list:v3:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
-    const cached = await cache.get(userId, 'pages', cacheKey);
+    const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
     const ftsLang = await getFtsLanguage();
@@ -505,6 +708,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
+      baseline_id: string | null;
+      frozen_version: number | null;
     };
 
     async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
@@ -526,14 +733,29 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const pi = vals.length + obVals.length + 1;
       const dataSql = `
         SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
-               cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+               CASE WHEN parent_page.id IS NULL THEN NULL ELSE cp.parent_id END AS parent_id,
+               cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
                cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
                cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
                cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
                cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
                cp.summary_status, cp.source, cp.visibility,
-               cp.icon_kind, cp.icon_value
+               cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
+               cp.baseline_id, cp.frozen_version
         FROM pages cp
+        LEFT JOIN pages parent_page ON (
+          parent_page.confluence_id = cp.parent_id
+          OR parent_page.id::text = cp.parent_id
+        )
+          AND parent_page.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM pages parent_collision
+            WHERE parent_collision.deleted_at IS NULL
+              AND (parent_collision.confluence_id = cp.parent_id
+                   OR parent_collision.id::text = cp.parent_id)
+              AND parent_collision.id <> parent_page.id
+          )
+          AND ${visiblePagesPredicate(1, 2, 'parent_page')}
         ${wc}
         ORDER BY ${ob}
         LIMIT $${pi} OFFSET $${pi + 1}
@@ -598,7 +820,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         summaryStatus: row.summary_status,
         source: row.source,
         visibility: row.visibility,
-        icon: toPageIcon(row.icon_kind, row.icon_value),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
+        ...freezeSummary(row),
       })),
       total,
       page,
@@ -607,7 +830,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ...(usedIlikeFallback ? { fuzzyMatch: true } : {}),
     };
 
-    await cache.set(userId, 'pages', cacheKey, response, cacheTtl);
+    await cache.setIfCurrent(userId, 'pages', cacheKey, generation, response, cacheTtl);
 
     return response;
   });
@@ -617,24 +840,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const params = PageTreeQuerySchema.parse(request.query);
 
-    const cacheKey = `tree:${params.spaceKey ?? 'all'}`;
-    const cached = await cache.get(userId, 'pages', cacheKey);
+    const cacheKey = `tree:v3:${params.spaceKey ?? 'all'}`;
+    const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control: same visibility predicate as the list route —
-    //   - Confluence pages from user's accessible spaces (via RBAC)
-    //   - Shared standalone articles (visible to all)
-    //   - Their own private standalone articles
-    // Local-space pages are always standalone, so they surface through the
-    // visibility branches (#527/#528); local space keys are still merged into
-    // the Confluence branch as belt-and-braces against legacy data drift.
+    // Reuse the shared list visibility definition. Confluence rows require an
+    // actual RBAC space assignment; standalone visibility is independent of
+    // space access, so local-space keys must not authorize moved Confluence
+    // rows.
     const rbacSpaces = await getUserAccessibleSpaces(userId);
-    const localSpacesResult = await query<{ space_key: string }>(
-      `SELECT space_key FROM spaces WHERE source = 'local'`,
-    );
-    const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
-    const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
-    const values: unknown[] = [treeSpaces, userId];
+    const values: unknown[] = [rbacSpaces, userId];
     let treeWhereClause = `WHERE ${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
 
     if (params.spaceKey) {
@@ -658,6 +873,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedding_error: string | null;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
+      baseline_id: string | null;
+      frozen_version: number | null;
     }>(
       // #959: order by sort_order first so a persisted drag-reorder (written by
       // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
@@ -667,12 +886,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
-              cp.icon_kind, cp.icon_value
+              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
+              cp.baseline_id, cp.frozen_version
        FROM pages cp
        LEFT JOIN pages parent_page ON (
          parent_page.confluence_id = cp.parent_id
-         OR CAST(parent_page.id AS TEXT) = cp.parent_id
-       ) AND parent_page.deleted_at IS NULL
+         OR parent_page.id::text = cp.parent_id
+       )
+         AND parent_page.deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM pages parent_collision
+           WHERE parent_collision.deleted_at IS NULL
+             AND (parent_collision.confluence_id = cp.parent_id
+                  OR parent_collision.id::text = cp.parent_id)
+             AND parent_collision.id <> parent_page.id
+         )
+         AND ${visiblePagesPredicate(1, 2, 'parent_page')}
        ${treeWhereClause}
        ORDER BY cp.sort_order ASC, cp.title ASC`,
       values,
@@ -692,12 +921,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
         embeddingError: row.embedding_error,
-        icon: toPageIcon(row.icon_kind, row.icon_value),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
+        ...freezeSummary(row),
       })),
       total: result.rows.length,
     };
 
-    await cache.set(userId, 'pages', cacheKey, response);
+    await cache.setIfCurrent(userId, 'pages', cacheKey, generation, response);
     return response;
   });
 
@@ -710,23 +940,28 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Cache key based on sorted space list to ensure consistency
     const spacesKey = [...filterSpaces].sort().join(',');
-    const cacheKey = `filters:${spacesKey}`;
+    const cacheKey = `filters:v3:${spacesKey}`;
 
-    const cached = await cache.get<{ authors: string[]; labels: string[] }>(userId, 'pages', cacheKey);
+    const { value: cached, generation } = await cache.getWithGeneration<{
+      authors: string[]; labels: string[];
+    }>(userId, 'pages', cacheKey);
     if (cached) return cached;
 
     const [authorsResult, labelsResult] = await Promise.all([
       query<{ author: string }>(
         `SELECT DISTINCT cp.author FROM pages cp
-         WHERE cp.space_key = ANY($1::text[])
-           AND cp.author IS NOT NULL ORDER BY cp.author ASC`,
-        [filterSpaces],
+         WHERE cp.author IS NOT NULL
+           AND cp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(1, 2)}
+         ORDER BY cp.author ASC`,
+        [filterSpaces, userId],
       ),
       query<{ label: string }>(
         `SELECT DISTINCT unnest(cp.labels) AS label FROM pages cp
-         WHERE cp.space_key = ANY($1::text[])
+         WHERE cp.deleted_at IS NULL
+           AND ${visiblePagesPredicate(1, 2)}
          ORDER BY label ASC`,
-        [filterSpaces],
+        [filterSpaces, userId],
       ),
     ]);
 
@@ -735,7 +970,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       labels: labelsResult.rows.map((r) => r.label),
     };
 
-    await cache.set(userId, 'pages', cacheKey, response, 300); // 5-minute TTL
+    await cache.setIfCurrent(userId, 'pages', cacheKey, generation, response, 300); // 5-minute TTL
 
     return response;
   });
@@ -786,6 +1021,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Determine lookup strategy: numeric ids use the integer PK, strings use confluence_id
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+
     const isNumericId = /^\d+$/.test(id);
 
     const result = await query<{
@@ -831,6 +1068,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       verified_at: Date | null;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
+      baseline_id: string | null;
+      frozen_version: number | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
@@ -839,15 +1080,42 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
               cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-              EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL AND c2.deleted_at IS NULL) as has_children,
+              -- Children use the parent's canonical stored key: a Confluence
+              -- parent's upstream id, or a standalone parent's numeric id.
+              -- Reject a key that also identifies a second live page, and
+              -- apply the same shared list visibility as the children route.
+              EXISTS(SELECT 1 FROM pages c2
+                      WHERE c2.parent_id = CASE
+                              WHEN cp.source = 'confluence' THEN cp.confluence_id
+                              ELSE cp.id::text
+                            END
+                        AND c2.deleted_at IS NULL
+                        AND NOT EXISTS (
+                          SELECT 1 FROM pages parent_collision
+                          WHERE parent_collision.deleted_at IS NULL
+                            AND parent_collision.id <> cp.id
+                            AND (
+                              parent_collision.confluence_id = CASE
+                                WHEN cp.source = 'confluence' THEN cp.confluence_id
+                                ELSE cp.id::text
+                              END
+                              OR parent_collision.id::text = CASE
+                                WHEN cp.source = 'confluence' THEN cp.confluence_id
+                                ELSE cp.id::text
+                              END
+                            )
+                        )
+                        AND ${visiblePagesPredicate(3, 2, 'c2')}) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
               (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
-              cp.verified_at, cp.icon_kind, cp.icon_value
+              cp.verified_at, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
+              cp.baseline_id, cp.frozen_version
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
-         AND cp.deleted_at IS NULL`,
-      [isNumericId ? parseInt(id, 10) : id],
+         AND cp.deleted_at IS NULL
+         AND ${visiblePagesPredicate(3, 2, 'cp')}`,
+      [isNumericId ? parseInt(id, 10) : id, userId, accessibleSpaces],
     );
 
     if (result.rows.length === 0) {
@@ -856,18 +1124,47 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0]!;
 
-    // Access control: Confluence pages require RBAC space access; standalone pages
-    // require ownership or shared visibility
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      // Standalone: owner or shared
-      if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
+
+    let visibleParentId = row.parent_id;
+    if (visibleParentId !== null) {
+      const parentResult = await query<{ id: number }>(
+        `SELECT parent.id
+         FROM pages parent
+         WHERE (parent.confluence_id = $1 OR parent.id::text = $1)
+           AND parent.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id <> parent.id
+               AND (parent_collision.confluence_id = $1
+                    OR parent_collision.id::text = $1)
+           )
+           AND ${visiblePagesPredicate(2, 3, 'parent')}
+         ORDER BY parent.id`,
+        [visibleParentId, accessibleSpaces, userId],
+      );
+      if (parentResult.rows.length !== 1) visibleParentId = null;
+    }
+
+    // Counted through the same walk the delete cascade uses (#1636), from the
+    // page's own PK — so it cannot drift from the ids the trash actually
+    // takes, and a Confluence-id lookup still gets the row's numeric root.
+    // Owner-scoped for the same reason the cascade is: it counts what a trash
+    // by THIS caller would move, which is never another user's article.
+    const descendantCount = await activeDescendantCount(row.id, userId);
+    const lifecycleClient = await getPool().connect();
+    let lifecycleState: PageLifecycleState;
+    let renderedBodyHtml: string | null;
+    try {
+      await lifecycleClient.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      lifecycleState = await getPageLifecycleState(lifecycleClient, row.id, userId);
+      renderedBodyHtml = await renderedFrozenPageBodyHtml(lifecycleClient, row.id, userId);
+      await lifecycleClient.query('COMMIT');
+    } catch (err) {
+      await lifecycleClient.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      lifecycleClient.release();
     }
 
     return {
@@ -877,14 +1174,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       title: row.title,
       pageType: row.page_type ?? 'page',
       bodyHtml: row.body_html,
+      renderedBodyHtml,
       bodyText: row.body_text,
       version: row.version,
-      parentId: row.parent_id,
+      parentId: visibleParentId,
       labels: row.labels,
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
       hasChildren: row.has_children,
+      // Live STANDALONE descendants, the page itself excluded (#1636): what the
+      // confirm dialog names and what a trash of this page moves. Deliberately
+      // not a restatement of `hasChildren` — the tree shows a Confluence
+      // subtree the cascade will not take.
+      descendantCount,
       embeddingDirty: row.embedding_dirty,
       embeddingStatus: row.embedding_status,
       embeddedAt: row.embedded_at,
@@ -913,7 +1216,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
       verifiedAt: row.verified_at,
-      icon: toPageIcon(row.icon_kind, row.icon_value),
+      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
+      ...lifecycleState,
     };
   });
 
@@ -925,15 +1229,103 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // GET /api/pages/:id/has-children - check if a page has sub-pages
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
 
-    const result = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM pages WHERE parent_id = $1 AND deleted_at IS NULL',
-      [id],
+    const isNumericId = /^\d+$/.test(id);
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const rootSpaceParam = isNumericId ? 3 : 2;
+    const rootUserParam = rootSpaceParam + 1;
+    const pageResult = await query<{
+      id: number;
+      confluence_id: string | null;
+      source: string;
+      canonical_key_hidden_collision: boolean;
+      canonical_key_ambiguous: boolean;
+    }>(
+      `SELECT page.id, page.confluence_id, page.source,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+                  AND NOT COALESCE(${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'candidate')}, false)
+              ) AS canonical_key_hidden_collision,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+              ) AS canonical_key_ambiguous
+       FROM pages page
+       WHERE ${isNumericId ? '(page.confluence_id = $1 OR page.id::text = $2)' : 'page.confluence_id = $1'}
+         AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'page')}
+       ORDER BY page.id`,
+      isNumericId
+        ? [id, toPageIdText(id), accessibleSpaces, userId]
+        : [id, accessibleSpaces, userId],
+    );
+    if (pageResult.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    if (pageResult.rows.length > 1) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
+
+    const page = pageResult.rows[0]!;
+
+    const parentLookupId = page.source === 'confluence'
+      ? page.confluence_id!
+      : String(page.id);
+    // A collision with a row the caller cannot see fails closed exactly like
+    // the detail route's `hasChildren` (no distinct status, so no existence
+    // oracle). 409 is reserved for collisions among rows the caller can read.
+    if (page.canonical_key_hidden_collision) {
+      return { hasChildren: false };
+    }
+    if (page.canonical_key_ambiguous) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
+    const childResult = await query<{ has_children: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM pages child
+         WHERE child.parent_id = $1
+           AND child.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id <> $2
+               AND (parent_collision.confluence_id = $1
+                    OR parent_collision.id::text = $1)
+           )
+           AND ${visiblePagesPredicate(3, 4, 'child')}
+       ) AS has_children`,
+      [parentLookupId, page.id, accessibleSpaces, userId],
     );
 
-    const row = result.rows[0];
-    if (!row) throw new Error('Expected a row from COUNT query');
-    return { hasChildren: parseInt(row.count, 10) > 0 };
+    return { hasChildren: childResult.rows[0]?.has_children ?? false };
   });
 
   // GET /api/pages/:id/children - list child pages for the Confluence Children macro
@@ -966,34 +1358,87 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // longer find page 7. It applies to the id arm ONLY — confluence_id is a
     // text column and must still be matched verbatim.
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
-      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
-         AND deleted_at IS NULL
-       LIMIT 1`,
-      isNumericId ? [id, toPageIdText(id)] : [id],
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    const rootSpaceParam = isNumericId ? 3 : 2;
+    const rootUserParam = rootSpaceParam + 1;
+    const pageResult = await query<{
+      id: number;
+      confluence_id: string | null;
+      space_key: string | null;
+      source: string;
+      visibility: string;
+      created_by_user_id: string | null;
+      canonical_key_hidden_collision: boolean;
+      canonical_key_ambiguous: boolean;
+    }>(
+      `SELECT page.id, page.confluence_id, page.space_key, page.source,
+              page.visibility, page.created_by_user_id,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+                  AND NOT COALESCE(${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'candidate')}, false)
+              ) AS canonical_key_hidden_collision,
+              EXISTS (
+                SELECT 1
+                FROM pages candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.id <> page.id
+                  AND (
+                    candidate.confluence_id = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                    OR candidate.id::text = CASE
+                      WHEN page.source = 'confluence' THEN page.confluence_id
+                      ELSE page.id::text
+                    END
+                  )
+              ) AS canonical_key_ambiguous
+       FROM pages page
+       WHERE ${isNumericId ? '(page.confluence_id = $1 OR page.id::text = $2)' : 'page.confluence_id = $1'}
+         AND page.deleted_at IS NULL
+         AND ${visiblePagesPredicate(rootSpaceParam, rootUserParam, 'page')}
+       ORDER BY page.id`,
+      isNumericId
+        ? [id, toPageIdText(id), accessibleSpaces, userId]
+        : [id, accessibleSpaces, userId],
     );
 
     if (pageResult.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    if (pageResult.rows.length > 1) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
 
     const page = pageResult.rows[0]!;
 
-    // Access control: same pattern as GET /pages/:id
-    if (page.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!page.space_key || !spaces.includes(page.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else {
-      if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    }
 
-    // Children are linked via parent_id which stores the confluence_id string
-    const parentLookupId = page.confluence_id ?? String(page.id);
+    // Children store the canonical key of the parent, independent of the
+    // child's source, so mixed-source hierarchies remain representable.
+    const parentLookupId = page.source === 'confluence'
+      ? page.confluence_id!
+      : String(page.id);
+
+    // Same fail-closed rule as /has-children and the detail route.
+    if (page.canonical_key_hidden_collision) {
+      return { children: [] };
+    }
+    if (page.canonical_key_ambiguous) {
+      throw fastify.httpErrors.conflict('Page identifier is ambiguous');
+    }
 
     // Validate sort column to prevent SQL injection (only allow whitelisted values)
     const sortColumn = sort === 'created_at' ? 'created_at' : 'title';
@@ -1012,26 +1457,51 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       parent_id: string | null;
       depth: number;
+      source: string;
       icon_kind: string | null;
       icon_value: string | null;
+      icon_color: string | null;
+      icon_filled: boolean | null;
     };
 
     const treeResult = await query<FlatChildRow>(
       `WITH RECURSIVE tree AS (
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth,
-                p.icon_kind, p.icon_value
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, p.source, 1 AS depth,
+                p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
-         WHERE p.parent_id = $1 AND p.deleted_at IS NULL
+         WHERE p.parent_id = $1
+           AND p.deleted_at IS NULL
+           AND ${visiblePagesPredicate(4, 5, 'p')}
          UNION ALL
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1,
-                p.icon_kind, p.icon_value
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, p.source, t.depth + 1,
+                p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
-         JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
-         WHERE p.deleted_at IS NULL AND t.depth < $2
+         JOIN tree t ON p.parent_id = CASE
+           WHEN t.source = 'confluence' THEN t.confluence_id
+           ELSE t.id::text
+         END
+         WHERE p.deleted_at IS NULL
+           AND t.depth < $2
+           AND NOT EXISTS (
+             SELECT 1 FROM pages parent_collision
+             WHERE parent_collision.deleted_at IS NULL
+               AND parent_collision.id <> t.id
+               AND (
+                 parent_collision.confluence_id = CASE
+                   WHEN t.source = 'confluence' THEN t.confluence_id
+                   ELSE t.id::text
+                 END
+                 OR parent_collision.id::text = CASE
+                   WHEN t.source = 'confluence' THEN t.confluence_id
+                   ELSE t.id::text
+                 END
+               )
+           )
+           AND ${visiblePagesPredicate(4, 5, 'p')}
        )
        SELECT * FROM tree ORDER BY depth, ${sortColumn} ${sortOrder}
        LIMIT $3`,
-      [parentLookupId, depth, MAX_TOTAL_NODES],
+      [parentLookupId, depth, MAX_TOTAL_NODES, accessibleSpaces, userId],
     );
 
     // Assemble flat rows into nested tree structure
@@ -1052,7 +1522,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         confluenceId: row.confluence_id,
         title: row.title,
         spaceKey: row.space_key,
-        icon: toPageIcon(row.icon_kind, row.icon_value),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       };
       const nodeKey = row.confluence_id ?? String(row.id);
       nodeMap.set(nodeKey, node);
@@ -1072,62 +1542,139 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
-  fastify.post('/pages/:id/restore', async (request) => {
+  fastify.post('/pages/:id/restore', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    const existing = await query<{
-      id: number; title: string; source: string;
-      created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
-      notion_page_id: string | null;
-    }>(
-      'SELECT id, title, source, created_by_user_id, deleted_at, visibility, notion_page_id FROM pages WHERE id = $1',
-      [id],
-    );
-    if (existing.rows.length === 0) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
-
-    const page = existing.rows[0]!;
-    if (page.source !== 'standalone') {
-      throw fastify.httpErrors.badRequest('Only standalone articles can be restored');
-    }
-    if (page.created_by_user_id !== userId) {
-      throw fastify.httpErrors.forbidden('Not the owner');
-    }
-    if (!page.deleted_at) {
-      throw fastify.httpErrors.badRequest('Page is not in trash');
-    }
-
-    if (page.notion_page_id) {
-      const clash = await query<{ id: number }>(
-        `SELECT id FROM pages
-          WHERE created_by_user_id = $1
-            AND deleted_at IS NULL
-            AND id <> $2
-            AND notion_page_id IS NOT NULL
-            AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
-          LIMIT 1`,
-        [page.created_by_user_id, page.id, page.notion_page_id],
+    const restored = await withHierarchyCascadeTransaction(async (client) => {
+      const existing = await client.query<{
+        id: number; title: string; source: string; parent_id: string | null;
+        created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
+        notion_page_id: string | null;
+      }>(
+        `SELECT id, title, source, parent_id, created_by_user_id, deleted_at, visibility,
+                notion_page_id
+           FROM pages WHERE id = $1`,
+        [id],
       );
-      if (clash.rows.length > 0) {
-        throw fastify.httpErrors.conflict('A live import of this Notion page already exists');
+      const page = existing.rows[0];
+      if (!page) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      if (page.source !== 'standalone') {
+        throw new PageWriteError(400, 'restore_source_invalid', 'Only standalone articles can be restored');
       }
+      if (page.created_by_user_id !== userId) {
+        throw new PageWriteError(403, 'not_authorized', 'Not the owner');
+      }
+      if (!page.deleted_at) {
+        return { page, restored: false, restoredCount: 0, rows: [] as Array<{ visibility: string }> };
+      }
+
+      const parentResolution = await resolveParentOf(page.parent_id, client);
+      if (parentResolution.kind === 'ambiguous') {
+        fastify.log.warn(
+          { pageId: page.id, key: parentResolution.key, candidateIds: parentResolution.candidateIds },
+          'pages: refused a restore whose parent identifier names more than one page (#1636)',
+        );
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            message:
+              'Cannot restore because the stored parent identifier is ambiguous. ' +
+              'Move or relocate the affected pages first.',
+            reason: 'restore_parent_ambiguous',
+          },
+        };
+      }
+      if (
+        parentResolution.kind === 'resolved' &&
+        parentResolution.parent.deletedAt &&
+        parentResolution.parent.source === 'standalone' &&
+        parentResolution.parent.createdByUserId === userId
+      ) {
+        return {
+          refusal: {
+            statusCode: 409,
+            error: 'Conflict',
+            message: `Restore "${parentResolution.parent.title}" first`,
+            reason: 'restore_ancestor_trashed',
+          },
+        };
+      }
+      if (
+        parentResolution.kind === 'resolved' &&
+        parentResolution.parent.deletedAt === null
+      ) {
+        await assertPageHierarchyParentsAvailable(client, [parentResolution.parent.id]);
+      }
+
+      if (page.notion_page_id) {
+        const clash = await client.query<{ id: number }>(
+          `SELECT id FROM pages
+            WHERE created_by_user_id = $1
+              AND deleted_at IS NULL
+              AND id <> $2
+              AND notion_page_id IS NOT NULL
+              AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
+            LIMIT 1`,
+          [page.created_by_user_id, page.id, page.notion_page_id],
+        );
+        if (clash.rows.length > 0) {
+          throw new PageWriteError(409, 'restore_import_conflict', 'A live import of this page already exists');
+        }
+      }
+
+      const ambiguity = await findSubtreeKeyAmbiguity(page.id, client);
+      if (ambiguity) {
+        return { refusal: ambiguousSubtreeConflict(ambiguity, fastify.log) };
+      }
+      const batchIds = await trashBatchIds(page.id, userId, client);
+      await lockPageLifecycle(client, batchIds);
+      const batch = await client.query<{
+        id: number;
+        visibility: string;
+        baseline_id: string | null;
+      }>(
+        `SELECT id, visibility, baseline_id
+           FROM pages
+          WHERE id = ANY($1::int[])
+          ORDER BY id`,
+        [batchIds],
+      );
+      const component: AuthorizedSubtreeComponent = {
+        rootIds: [page.id],
+        members: batch.rows.map((row) => ({
+          id: row.id,
+          visibility: row.visibility,
+          baselineId: row.baseline_id,
+        })),
+      };
+      assertSingleCascadeEditable(component, page.id);
+      await lockPageWrites(client, batchIds);
+      const rows = await client.query<{ visibility: string }>(
+        'UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[]) RETURNING visibility',
+        [batchIds],
+      );
+      return { page, restored: true, restoredCount: batchIds.length, rows: rows.rows };
+    });
+
+    if (restored.refusal) {
+      return reply.status(restored.refusal.statusCode).send(restored.refusal);
     }
-
-    await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);
-
-    // A restored shared page reappears in every user's lists/trees (#893) —
-    // mirror the delete path: clear all users' caches. Private stays per-user.
-    if (page.visibility === 'shared') {
+    if (!restored.restored) {
+      return { id: restored.page.id, title: restored.page.title, restored: false };
+    }
+    if (restored.rows.some((row) => row.visibility === 'shared')) {
       await cache.invalidateAcrossUsers('pages');
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id),
-      { source: 'standalone', title: page.title }, request);
-
-    return { id: page.id, title: page.title, restored: true };
+    await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id), {
+      source: 'standalone',
+      title: restored.page.title,
+      restoredCount: restored.restoredCount,
+    }, request);
+    return { id: restored.page.id, title: restored.page.title, restored: true };
   });
 
   // POST /api/pages - create page (standalone local or Confluence + local cache)
@@ -1174,50 +1721,48 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Use space key only for local spaces (already looked up above)
       const spaceKey: string | null = spaceSource === 'local' ? body.spaceKey! : null;
 
-      // Validate and compute path if parentId is provided
-      let parentPath: string | null = null;
-      if (body.parentId) {
-        const parentResult = await query<{ path: string | null; space_key: string | null }>(
-          'SELECT path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
-          [body.parentId],
+      // Creation is a hierarchy write even though it has no existing page id.
+      // The empty protected transaction holds hierarchy SHARE; only then do we
+      // resolve the parent and reject a pending destructive component.
+      const newPage = await withPageWriteTransaction([], async (client) => {
+        let parentPath: string | null = null;
+        if (body.parentId) {
+          const parentResult = await client.query<{
+            id: number;
+            path: string | null;
+            space_key: string | null;
+          }>(
+            'SELECT id, path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [body.parentId],
+          );
+          const parent = parentResult.rows[0];
+          if (!parent) throw fastify.httpErrors.badRequest('Parent page not found');
+          if (spaceKey && parent.space_key !== spaceKey) {
+            throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
+          }
+          await assertPageHierarchyParentsAvailable(client, [parent.id]);
+          parentPath = parent.path;
+        }
+
+        const result = await client.query<{ id: number; title: string; version: number }>(
+          `INSERT INTO pages
+             (title, body_html, body_text, body_storage, source, created_by_user_id,
+              visibility, version, space_key, confluence_id, parent_id,
+              page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
+           VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
+                   $8, $9, $9, 'not_embedded', NOW(), $10)
+           RETURNING id, title, version`,
+          [body.title, effectiveBodyHtml, bodyText, userId,
+           visibility, spaceKey, body.parentId ?? null,
+           pageType, !isFolder, body.labels ?? []],
         );
-        if (parentResult.rows.length === 0) {
-          throw fastify.httpErrors.badRequest('Parent page not found');
-        }
-        // Verify parent belongs to the same space (when a space is specified)
-        if (spaceKey && parentResult.rows[0]!.space_key !== spaceKey) {
-          throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
-        }
-        parentPath = parentResult.rows[0]!.path;
-      }
-
-      const result = await query<{ id: number; title: string; version: number }>(
-        // #1115 P2 (review r2) — a create is a body writer, so it queues the
-        // image index too. Bound to the SAME `!isFolder` parameter as
-        // `embedding_dirty`: a folder is excluded by the image worker's own
-        // WHERE, so flagging one is a backlog entry no scan can ever clear.
-        // Unconditional rather than gated: there is no previous body to diff
-        // against, and a create with no image costs one scan that enumerates
-        // nothing and clears the flag.
-        `INSERT INTO pages
-           (title, body_html, body_text, body_storage, source, created_by_user_id,
-            visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels)
-         VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, $9, 'not_embedded', NOW(), $10)
-         RETURNING id, title, version`,
-        [body.title, effectiveBodyHtml, bodyText, userId,
-         visibility, spaceKey, body.parentId ?? null,
-         pageType, !isFolder, body.labels ?? []],
-      );
-
-      const newPage = result.rows[0]!;
-
-      // Compute and set materialized path now that we have the page id
-      const newPath = parentPath ? `${parentPath}/${newPage.id}` : `/${newPage.id}`;
-      const depth = newPath.split('/').filter(Boolean).length - 1;
-      await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
-        [newPath, depth, newPage.id]);
+        const created = result.rows[0]!;
+        const newPath = parentPath ? `${parentPath}/${created.id}` : `/${created.id}`;
+        const depth = newPath.split('/').filter(Boolean).length - 1;
+        await client.query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
+          [newPath, depth, created.id]);
+        return created;
+      });
 
       // A new shared page appears in every user's lists/trees (#893) — clear
       // all users' caches so it isn't missing for them until the TTL expires.
@@ -1255,6 +1800,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // #1623 — creating a page IN Confluence is Confluence work, not a local
+    // write: a standalone row cannot even hold a Confluence space key (see the
+    // local branch above), so there is no local path to fall back to. Refuse by
+    // naming the integration, never by asking for credentials. Local spaces and
+    // spaceless articles stay fully available while the integration is off.
+    if (!(await isConfluenceEnabled(userId))) {
+      throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -1263,63 +1817,152 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Convert TipTap HTML to Confluence storage format
     const storageBody = htmlToConfluence(body.bodyHtml);
 
-    // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
-    //
-    // #1167: the id arm compares `id::text`, not `$1::int`. `pages.id` is
-    // SERIAL (int4), so casting the parameter overflowed on any Confluence
-    // content id above 2^31 — and because the cast is evaluated before the OR
-    // can match, the `confluence_id` arm never got the chance to rescue it:
-    // the whole statement aborted with 22003 and the create 500ed even though
-    // the parent row was right there.
-    //
-    // `toPageIdText` keeps the numeric normalisation the cast used to provide
-    // (see the children route above). It matters more here than anywhere else:
-    // an unresolved lookup leaves `confluenceParentId` holding the caller's raw
-    // input, which then goes upstream to `client.createPage` as a parent id, so
-    // a silent miss misplaces the page in Confluence rather than 404ing.
-    let confluenceParentId = body.parentId;
-    if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
-      const parentLookup = await query<{ confluence_id: string | null }>(
-        'SELECT confluence_id FROM pages WHERE id::text = $1 OR confluence_id = $2',
-        [toPageIdText(confluenceParentId), confluenceParentId],
-      );
-      if (parentLookup.rows[0]?.confluence_id) {
-        confluenceParentId = parentLookup.rows[0].confluence_id;
-      }
+    // A child create claims the resolved local parent as a hierarchy reference
+    // before dispatch. The source-aware parent key is the Confluence id for a
+    // synced parent and the local PK for a standalone parent. The reference is
+    // not an authored target, so a frozen unchanged parent remains a legal
+    // place to create a child; its revision and competing destructive intents
+    // are still fenced.
+    let remoteParentConfluenceId: string | null = null;
+    let localParentReferenceId: string | null = null;
+    let createIntent: PageWriteIntent | undefined;
+    if (body.parentId) {
+      const rawParentId = body.parentId;
+      createIntent = await withPageWriteTransaction([], async (writeClient) => {
+        const lookupId = /^\d+$/.test(rawParentId) ? toPageIdText(rawParentId) : rawParentId;
+        const parentLookup = await writeClient.query<{
+          id: number;
+          confluence_id: string | null;
+          space_key: string | null;
+          source: string;
+          deleted_at: Date | null;
+        }>(
+          `SELECT id, confluence_id, space_key, source, deleted_at
+             FROM pages
+            WHERE id::text = $1 OR confluence_id = $2
+            ORDER BY id`,
+          [lookupId, rawParentId],
+        );
+        if (parentLookup.rows.length !== 1) {
+          throw new PageWriteError(
+            409,
+            parentLookup.rows.length === 0 ? 'parent_not_found' : 'parent_identifier_ambiguous',
+            'The requested parent is unavailable',
+          );
+        }
+        const parent = parentLookup.rows[0]!;
+        const parentIsConfluence = parent.source === 'confluence';
+        const resolvedLocalParentReference = parentIsConfluence
+          ? parent.confluence_id
+          : parent.source === 'standalone'
+            ? String(parent.id)
+            : null;
+        if (
+          !resolvedLocalParentReference ||
+          parent.deleted_at !== null ||
+          parent.space_key !== body.spaceKey
+        ) {
+          throw new PageWriteError(
+            409,
+            'parent_identity_mismatch',
+            'The requested parent is unavailable',
+          );
+        }
+        if (!(await userCanAccessPage(userId, parent.id, writeClient))) {
+          throw new PageWriteError(403, 'parent_access_denied', 'Access denied to the parent page');
+        }
+        await assertPageHierarchyParentsAvailable(writeClient, [parent.id]);
+        remoteParentConfluenceId = parentIsConfluence ? parent.confluence_id : null;
+        localParentReferenceId = resolvedLocalParentReference;
+        return reservePageWriteIntentInTransaction(writeClient, {
+          pageIds: [parent.id],
+          kind: 'pages.create.confluence',
+          actorId: userId,
+          effect: {
+            effectClass: 'remote',
+            parentPageId: parent.id,
+            parentConfluenceId: remoteParentConfluenceId,
+            spaceKey: body.spaceKey!,
+            titleSha256: createHash('sha256').update(body.title).digest('hex'),
+            storageSha256: createHash('sha256').update(storageBody).digest('hex'),
+          },
+        });
+      });
     }
 
-    const page = await client.createPage(body.spaceKey!, body.title, storageBody, confluenceParentId);
-
-    // Convert back to clean HTML for local cache
-    const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey!);
-    const { htmlToText } = await import('../../core/services/content-converter.js');
-    const bodyText = htmlToText(bodyHtml);
-
-    // Store in local cache (shared table, no user_id)
-    await query(
-      // #1115 P2 (review r2) — confluenceToHtml emits /api/attachments/<id>/<file>
-      // for any <ac:image><ri:attachment> the created storage carries, so this
-      // body really can reference images. The DO UPDATE arm re-writes body_html
-      // on a row that may already carry index entries, which is the reconcile's
-      // trigger, so it raises the flag as well.
-      `INSERT INTO pages
-         (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, image_embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
-       ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
-         title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
-         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
-         image_embedding_dirty = TRUE`,
-      // #1123: bind the RESOLVED `confluenceParentId`, not the raw
-      // `body.parentId`. A Confluence-sourced child must store its parent's
-      // `confluence_id` — binding the frontend's internal numeric id wrote the
-      // standalone flavour into a Confluence row, so the tree CTE resolved the
-      // child against the wrong arm until the next sync silently corrected it.
-      // Relocate rewrites `parent_id` from what is actually stored, so this had
-      // to be right before that code could trust the column.
-      [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
-       bodyHtml, bodyText, page.version.number, confluenceParentId ?? null],
-    );
+    const page = createIntent
+      ? await runPageWriteIntentEffect(
+          createIntent,
+          {
+            kind: 'remote',
+            completesRemoteWork: true,
+            terminalResult: (created) =>
+              pagePublicationReceipt(created.id, created.version.number, created),
+          },
+          () => client.createPage(
+            body.spaceKey!,
+            body.title,
+            storageBody,
+            remoteParentConfluenceId ?? undefined,
+          ),
+        )
+      : await client.createPage(body.spaceKey!, body.title, storageBody, undefined);
+    const publishedStorage = page.body?.storage?.value ?? storageBody;
+    if (
+      createIntent &&
+      (createHash('sha256').update(page.title).digest('hex') !==
+        createHash('sha256').update(body.title).digest('hex') ||
+        createHash('sha256').update(publishedStorage).digest('hex') !==
+          createHash('sha256').update(storageBody).digest('hex'))
+    ) {
+      throw new PageWriteError(
+        409,
+        'intent_terminal_evidence_mismatch',
+        'The acknowledged Confluence child differs from the requested publication',
+      );
+    }
+    const publication = {
+      confluenceId: page.id,
+      spaceKey: body.spaceKey!,
+      parentConfluenceId: localParentReferenceId,
+      title: page.title,
+      storage: publishedStorage,
+      version: page.version.number,
+    };
+    let createdPageState: PublishedConfluencePage;
+    if (createIntent) {
+      const admittedCreateIntent = createIntent;
+      createdPageState = await completePageWriteIntent(
+        admittedCreateIntent,
+        async (writeClient) => {
+          const actor = await writeClient.query<{ active: boolean }>(
+            'SELECT deactivated_at IS NULL AS active FROM users WHERE id = $1',
+            [userId],
+          );
+          if (
+            actor.rows[0]?.active !== true ||
+            !(await userCanAccessPage(
+              userId,
+              admittedCreateIntent.pageIds[0]!,
+              writeClient,
+            ))
+          ) {
+            throw new PageWriteError(
+              403,
+              'parent_access_changed',
+              'Access to the Confluence parent changed before local publication',
+            );
+          }
+          const published = await publishCreatedConfluencePage(writeClient, publication);
+          await enqueuePageWriteInvalidation(writeClient, admittedCreateIntent.id);
+          return published;
+        },
+      );
+    } else {
+      createdPageState = await withPageWriteTransaction([], (writeClient) =>
+        publishCreatedConfluencePage(writeClient, publication));
+    }
+    const localPageId = createdPageState.id;
 
     // A new Confluence page is visible to every user with space access (#893),
     // and the cached spaces payload carries per-space pageCount which this
@@ -1330,14 +1973,65 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Labels supplied at creation (#1133). Confluence owns them for a synced
     // page, so they go upstream first and the local row mirrors what stuck. A
     // failure here must not fail the create: the page exists and is correct.
-    if (body.labels?.length) {
+    const createLabels = body.labels;
+    if (createLabels?.length && localPageId !== undefined && createdPageState) {
+      const targetLabels = [...new Set([...(createdPageState.labels ?? []), ...createLabels])];
+      let labelsIntent: PageWriteIntent | undefined;
       try {
-        await client.addLabels(page.id, body.labels);
-        await query('UPDATE pages SET labels = $2 WHERE confluence_id = $1', [page.id, body.labels]);
+        labelsIntent = await reservePageWriteIntent({
+          pageIds: [localPageId],
+          expectedRevisions: {
+            [localPageId]: {
+              contentRevision: createdPageState.contentRevision,
+              lifecycleRevision: createdPageState.lifecycleRevision,
+            },
+          },
+          kind: 'pages.create.labels',
+          actorId: userId,
+          effect: {
+            effectClass: 'remote',
+            confluenceId: page.id,
+            labelsSha256: createHash('sha256').update(JSON.stringify(targetLabels)).digest('hex'),
+            priorLabels: createdPageState.labels ?? [],
+            targetLabels,
+          },
+        });
+        const admittedLabelsIntent = labelsIntent;
+        let labelsClient: ConfluenceClient;
+        try {
+          labelsClient = await withPageWriteTransaction(
+            [localPageId],
+            (writeClient) => loadCurrentConfluenceWriteClient(
+              writeClient, admittedLabelsIntent, localPageId, userId, page.id,
+            ),
+            { intent: admittedLabelsIntent },
+          );
+        } catch (error) {
+          await cancelPageWriteIntentBeforeEffect(admittedLabelsIntent);
+          throw error;
+        }
+        await runPageWriteIntentEffect(
+          labelsIntent,
+          { kind: 'remote', completesRemoteWork: true },
+          () => labelsClient.addLabels(page.id, createLabels),
+        );
+        const labelsIntentId = labelsIntent.id;
+        await completePageWriteIntent(labelsIntent, async (writeClient) => {
+          await loadAuthorizedContentWriteState(
+            writeClient, localPageId, userId, admittedLabelsIntent.revisions[localPageId]!,
+          );
+          await writeClient.query(
+            'UPDATE pages SET labels = $2 WHERE id = $1',
+            [localPageId, targetLabels],
+          );
+          await enqueuePageWriteInvalidation(writeClient, labelsIntentId);
+        });
       } catch (err) {
+        // The create itself succeeded. Keep a possibly-effectful labels intent
+        // for reconciliation rather than guessing whether the remote call stuck.
         logger.warn(
-          { err, confluenceId: page.id, labels: body.labels },
-          'Page created but its labels could not be applied in Confluence',
+          { err, confluenceId: page.id, intentId: labelsIntent?.id },
+          'Page created but its labels outcome requires reconciliation',
         );
       }
     }
@@ -1373,8 +2067,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       source: string; created_by_user_id: string | null;
       visibility: string; confluence_id: string | null; deleted_at: Date | null;
       page_type: string;
+      content_revision: string; lifecycle_revision: string;
     }>(
-      `SELECT id, version, space_key, source, created_by_user_id, visibility, confluence_id, deleted_at, page_type FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, version, space_key, source, created_by_user_id, visibility,
+              confluence_id, deleted_at, page_type, content_revision::text,
+              lifecycle_revision::text
+         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -1391,105 +2089,200 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Folder pages cannot have body content. Only the title can be updated.');
     }
 
-    if (existingPage.source === 'standalone') {
-      // --- Standalone article: no Confluence call ---
+    // #1623 — ONE rule: an article with no upstream, and a synced article whose
+    // owner switched the integration off, take the SAME local write path. No
+    // remote version check, no image upload, no `updatePage`.
+    if (await pageWriteStaysLocal(userId, existingPage.source)) {
+      // --- Local write: no Confluence call ---
 
-      // Access control: only owner or shared pages can be edited
-      if (existingPage.created_by_user_id !== userId && existingPage.visibility !== 'shared') {
+      // Access control. A Confluence-sourced article is space-scoped no matter
+      // which mode this user is in, so it keeps the space check the remote path
+      // applies below instead of the standalone owner rule (its
+      // `created_by_user_id` is NULL — sync created the row).
+      if (existingPage.source === 'confluence') {
+        if (existingPage.space_key) {
+          const accessibleSpaces = await getUserAccessibleSpaces(userId);
+          if (!accessibleSpaces.includes(existingPage.space_key)) {
+            throw fastify.httpErrors.forbidden('Access denied to this space');
+          }
+        }
+      } else if (existingPage.created_by_user_id !== userId && existingPage.visibility !== 'shared') {
         throw fastify.httpErrors.forbidden('Not authorized to edit this page');
       }
 
-      await rejectIfLiveCollabRoom(existingPage.id, (m) => fastify.httpErrors.conflict(m));
+      // Visibility is security metadata and stays mutable while frozen. Classify
+      // against the persisted authored payload under the lifecycle lock: a stale
+      // client cannot smuggle old title/body bytes through a visibility request.
+      const runtimeId = await getPageWriterRuntimeId();
+      const writeClient = await getPool().connect();
+      let newVersion = existingPage.version;
+      let authoredContentChanged = false;
+      let visibilityChanged = false;
+      let committedVisibility = existingPage.visibility;
+      let committedSource = existingPage.source;
+      let committedSpaceKey = existingPage.space_key;
+      try {
+        await writeClient.query('BEGIN');
+        await lockPageWriterRuntime(writeClient, runtimeId);
+        await lockPageLifecycle(writeClient, [existingPage.id]);
+        const actor = await writeClient.query(
+          'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+          [userId],
+        );
+        if (actor.rowCount !== 1) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        const locked = await writeClient.query<{
+          title: string;
+          body_html: string;
+          version: number;
+          visibility: string;
+          deleted_at: Date | null;
+          source: string;
+          created_by_user_id: string | null;
+          space_key: string | null;
+          page_type: string;
+        }>(
+          `SELECT title, body_html, version, visibility, deleted_at,
+                  source, created_by_user_id, space_key, page_type
+             FROM pages
+            WHERE id = $1
+            FOR UPDATE`,
+          [existingPage.id],
+        );
+        const current = locked.rows[0];
+        if (!current) throw fastify.httpErrors.notFound('Page not found');
+        if (current.deleted_at) {
+          throw fastify.httpErrors.badRequest('Cannot edit a page that is in the trash');
+        }
+        if (current.source !== existingPage.source) {
+          throw fastify.httpErrors.conflict(
+            'Page source changed while you were editing it. Please refresh and try again.',
+          );
+        }
+        if (current.source === 'confluence') {
+          if (current.space_key) {
+            const accessibleSpaces = await getUserAccessibleSpaces(userId, writeClient);
+            if (!accessibleSpaces.includes(current.space_key)) {
+              throw fastify.httpErrors.forbidden('Access denied to this space');
+            }
+          }
+        } else if (
+          current.created_by_user_id !== userId
+          && current.visibility !== 'shared'
+        ) {
+          throw fastify.httpErrors.forbidden('Not authorized to edit this page');
+        }
+        if (!(await userCanAccessPage(userId, existingPage.id, writeClient))) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
+        }
+        if (current.page_type === 'folder' && body.bodyHtml && body.bodyHtml.trim() !== '') {
+          throw fastify.httpErrors.badRequest(
+            'Folder pages cannot have body content. Only the title can be updated.',
+          );
+        }
+        committedVisibility = current.visibility;
+        committedSource = current.source;
+        committedSpaceKey = current.space_key;
 
-      // Optimistic concurrency check
-      if (body.version !== undefined && body.version < existingPage.version) {
-        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+        const protectedPayloadUnchanged =
+          current.title === body.title && current.body_html === body.bodyHtml;
+        visibilityChanged =
+          body.visibility !== undefined && body.visibility !== current.visibility;
+
+        if (protectedPayloadUnchanged) {
+          if (visibilityChanged) {
+            await writeClient.query(
+              'UPDATE pages SET visibility = $2 WHERE id = $1',
+              [existingPage.id, body.visibility],
+            );
+          }
+          newVersion = current.version;
+        } else {
+          await lockPageWrites(writeClient, [existingPage.id]);
+          await rejectIfLiveCollabRoom(
+            existingPage.id,
+            (message) => fastify.httpErrors.conflict(message),
+          );
+          if (body.version !== undefined && body.version < current.version) {
+            throw fastify.httpErrors.conflict(
+              'Page has been modified since you loaded it. Please refresh and try again.',
+            );
+          }
+
+          const bodyText = htmlToText(body.bodyHtml);
+          newVersion = current.version + 1;
+          const userIdParamIndex = body.visibility ? 7 : 6;
+          const versionGuardIndex = body.visibility ? 8 : 7;
+          const updateResult = await writeClient.query(
+            `UPDATE pages SET
+               title = $2, body_html = $3, body_text = $4,
+               version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+               image_analysis_dirty = CASE
+                 WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+                 ELSE image_analysis_dirty
+               END,
+               embedding_status = 'not_embedded', embedded_at = NULL,
+               summary_status = 'pending', summary_retry_count = 0,
+               quality_status = 'pending', quality_retry_count = 0,
+               local_modified_at = NOW(), local_modified_by = $${userIdParamIndex}
+               ${body.visibility ? ', visibility = $6' : ''}
+             WHERE id = $1 AND version = $${versionGuardIndex}`,
+            body.visibility
+              ? [existingPage.id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId, current.version]
+              : [existingPage.id, body.title, body.bodyHtml, bodyText, newVersion, userId, current.version],
+          );
+          if ((updateResult.rowCount ?? 0) === 0) {
+            throw fastify.httpErrors.conflict(
+              'Page has been modified since you loaded it. Please refresh and try again.',
+            );
+          }
+          authoredContentChanged = true;
+        }
+        await writeClient.query('COMMIT');
+      } catch (err) {
+        await writeClient.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        writeClient.release();
       }
 
-      const { htmlToText } = await import('../../core/services/content-converter.js');
-      const bodyText = htmlToText(body.bodyHtml);
-      const newVersion = existingPage.version + 1;
-
-      // Parameter-index layout (must stay in sync with the two branches
-      // of the values array below):
-      //   $1 = id, $2 = title, $3 = bodyHtml, $4 = bodyText, $5 = newVersion
-      // When body.visibility is set   → $6 = visibility, $7 = userId  (7 params)
-      // When body.visibility is unset → $6 = userId                   (6 params)
-      // The `$${body.visibility ? 7 : 6}` expression picks the correct
-      // index for local_modified_by based on whether the visibility
-      // column is being written in the same statement.
-      const userIdParamIndex = body.visibility ? 7 : 6;
-      // #926: guard the write with the version we just read. The JS pre-check
-      // above only rejects a client that SENDS a stale body.version; it can't
-      // see a write that landed between our SELECT and this UPDATE. Binding
-      // `AND version = <read version>` makes a concurrent writer's row (already
-      // bumped to newVersion) fail to match, so we detect the lost update via
-      // rowCount instead of silently clobbering it (last-write-wins).
-      const versionGuardIndex = body.visibility ? 8 : 7;
-      const updateResult = await query(
-        `UPDATE pages SET
-           title = $2, body_html = $3, body_text = $4,
-           version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-           -- #1115 P2 (review r1) — the editor is a body writer, so it can add
-           -- an <img> (paste stages the bytes BEFORE this save lands, so the
-           -- attachment-side flag can be cleared against the old body) and it
-           -- can remove one, which nothing else notices: no attachment write
-           -- happens on a delete, so without this the index keeps a row for a
-           -- picture the page no longer shows. Gated on body_html alone —
-           -- that is where the src attributes are, and a title-only save
-           -- cannot move an image.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           -- #828: the content changed, so re-queue the summary and quality
-           -- workers. Reset both status AND retry_count — a page that had
-           -- exhausted MAX_RETRIES ('failed') is otherwise skipped by the
-           -- workers' candidate queries and keeps a stale/absent summary or
-           -- quality report forever. Mirrors sync-service's reset-on-change.
-           summary_status = 'pending', summary_retry_count = 0,
-           quality_status = 'pending', quality_retry_count = 0,
-           -- Stamp the local-edit markers (#305). Standalone pages have no
-           -- upstream so the markers never clear — they just record who
-           -- touched the page last.
-           local_modified_at = NOW(), local_modified_by = $${userIdParamIndex}
-           ${body.visibility ? ', visibility = $6' : ''}
-         WHERE id = $1 AND version = $${versionGuardIndex}`,
-        body.visibility
-          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId, existingPage.version]
-          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId, existingPage.version],
-      );
-
-      if ((updateResult.rowCount ?? 0) === 0) {
-        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+      if (authoredContentChanged) {
+        await invalidateCollabDocAfterBodyWrite(existingPage.id);
       }
-
-      await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
       // A shared page's list rows (title/snippet) and a visibility flip both
       // change what OTHER users see (#893) — their cached trees/lists would
       // serve stale data for up to the cache TTL (15 min) if we only
       // invalidated the editor's own cache. Private edits stay per-user.
-      const visibilityChanged = body.visibility && body.visibility !== existingPage.visibility;
-      if (visibilityChanged || existingPage.visibility === 'shared') {
+      // A Confluence-sourced article is visible to every user with space
+      // access (#893), so a local write to one clears what the remote path
+      // would have cleared.
+      if (visibilityChanged || committedVisibility === 'shared' || committedSource === 'confluence') {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
       }
-      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { source: 'standalone', title: body.title }, request);
+      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id),
+        // `pushedToConfluence: false` on a synced article is the audit trail's
+        // record that the edit stayed local (#1623).
+        {
+          source: committedSource,
+          title: body.title,
+          ...(committedSource === 'confluence' ? { pushedToConfluence: false } : {}),
+        }, request);
 
       emitWebhookEvent({
         eventType: 'page.updated',
         payload: {
           pageId: existingPage.id,
           title: body.title,
-          spaceKey: existingPage.space_key,
+          spaceKey: committedSpaceKey,
           updatedAt: new Date().toISOString(),
         },
       });
 
-      return { id: existingPage.id, title: body.title, version: newVersion, source: 'standalone' };
+      return { id: existingPage.id, title: body.title, version: newVersion, source: committedSource };
     }
 
     // --- Confluence article: existing flow ---
@@ -1518,53 +2311,119 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // data-confluence-filename, meaning they only exist locally and Confluence
     // doesn't know about them. We upload them as Confluence attachments so the
     // ri:attachment reference resolves correctly after save.
-    const uploadedBodyHtml = await uploadLocalImagesToConfluence(
-      body.bodyHtml, existingPage.confluence_id!, client, request.log,
+    const expectedRevision: PageRevision = {
+      contentRevision: existingPage.content_revision,
+      lifecycleRevision: existingPage.lifecycle_revision,
+    };
+    const runtimeId = await getPageWriterRuntimeId();
+    const reservationClient = await getPool().connect();
+    let writeIntent: PageWriteIntent;
+    try {
+      await reservationClient.query('BEGIN');
+      await lockPageWriterRuntime(reservationClient, runtimeId);
+      await lockPageLifecycle(reservationClient, [existingPage.id]);
+      await loadAuthorizedContentWriteState(reservationClient, existingPage.id, userId, expectedRevision);
+      writeIntent = await reservePageWriteIntentInTransaction(reservationClient, {
+        pageIds: [existingPage.id],
+        kind: 'pages.update.confluence',
+        actorId: userId,
+        expectedRevisions: { [existingPage.id]: expectedRevision },
+        effect: {
+          effectClass: 'remote',
+          confluenceId: existingPage.confluence_id,
+          expectedVersion: existingPage.version,
+          targetTitle: body.title,
+          targetBodyHtmlSha256: createHash('sha256').update(body.bodyHtml).digest('hex'),
+        },
+      });
+      await reservationClient.query('COMMIT');
+    } catch (error) {
+      await reservationClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      reservationClient.release();
+    }
+
+    let admittedClient: ConfluenceClient;
+    try {
+      admittedClient = await withPageWriteTransaction(
+        [existingPage.id],
+        (writeClient) => loadCurrentConfluenceWriteClient(
+          writeClient, writeIntent, existingPage.id, userId, existingPage.confluence_id!,
+        ),
+        { intent: writeIntent },
+      );
+    } catch (error) {
+      await cancelPageWriteIntentBeforeEffect(writeIntent);
+      throw error;
+    }
+
+    const publication = await runPageWriteIntentEffect(
+      writeIntent,
+      {
+        kind: 'remote',
+        completesRemoteWork: true,
+        terminalResult: (result) => result.receipt,
+      },
+      async () => {
+        const uploadedBodyHtml = await uploadLocalImagesToConfluence(
+          body.bodyHtml,
+          existingPage.confluence_id!,
+          admittedClient,
+          request.log,
+        );
+        const nextStorageBody = htmlToConfluence(uploadedBodyHtml);
+        const currentVersion = existingPage.version ?? body.version ?? 1;
+        const nextPage = await admittedClient.updatePage(
+          existingPage.confluence_id!,
+          body.title,
+          nextStorageBody,
+          currentVersion,
+        );
+        return {
+          confPage: nextPage,
+          receipt: pagePublicationReceipt(existingPage.confluence_id!, currentVersion + 1, nextPage),
+        };
+      },
     );
-
-    const storageBody = htmlToConfluence(uploadedBodyHtml);
-    const currentVersion = existingPage.version ?? body.version ?? 1;
-
-    const confPage = await client.updatePage(existingPage.confluence_id!, body.title, storageBody, currentVersion);
+    const confPage = await withPageWriteTransaction([existingPage.id], async (writeClient) => {
+      const currentClient = await loadCurrentConfluenceWriteClient(
+        writeClient, writeIntent, existingPage.id, userId, existingPage.confluence_id!,
+      );
+      return confirmPagePublication(currentClient, publication.receipt, publication.confPage);
+    }, { intent: writeIntent });
 
     // Update local cache
     const bodyHtml = confluenceToHtml(
-      confPage.body?.storage?.value ?? storageBody,
+      confPage.body.storage.value,
       existingPage.confluence_id!,
       existingPage.space_key ?? undefined,
     );
-    const { htmlToText } = await import('../../core/services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
-    await query(
-      `UPDATE pages SET
-         title = $2, body_storage = $3, body_html = $4, body_text = $5,
-         version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-         -- #1115 P2 (review r1) — and this path especially: the comment below
-         -- notes the follow-up sync short-circuits on an already-current
-         -- version, so syncPage's own image flag never runs for it.
-         image_embedding_dirty = CASE
-           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-           ELSE image_embedding_dirty
-         END,
-         embedding_status = 'not_embedded', embedded_at = NULL,
-         -- #828: content changed on this app-side Confluence push, so re-queue
-         -- the summary/quality workers (reset status + retry_count so a
-         -- retry-exhausted 'failed' page is reprocessed). Also stamp
-         -- last_modified_at, which this path previously omitted entirely — the
-         -- subsequent sync short-circuits (version already current), so nothing
-         -- else would have refreshed it and last_modified_at-based change
-         -- detection never fired.
-         last_modified_at = NOW(),
-         summary_status = 'pending', summary_retry_count = 0,
-         quality_status = 'pending', quality_retry_count = 0,
-         -- Clear local-edit markers (#305): the Confluence push has
-         -- succeeded, so the local state is now in sync with the remote.
-         local_modified_at = NULL, local_modified_by = NULL
-       WHERE id = $1`,
-      [id, body.title, confPage.body?.storage?.value ?? storageBody,
-       bodyHtml, bodyText, confPage.version.number],
-    );
+    await completePageWriteIntent(writeIntent, async (writeClient) => {
+      await loadAuthorizedContentWriteState(
+        writeClient, existingPage.id, userId, writeIntent.revisions[existingPage.id]!,
+      );
+      await writeClient.query(
+        `UPDATE pages SET
+           title = $2, body_storage = $3, body_html = $4, body_text = $5,
+           version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+             ELSE image_analysis_dirty
+           END,
+           embedding_status = 'not_embedded', embedded_at = NULL,
+           last_modified_at = NOW(),
+           summary_status = 'pending', summary_retry_count = 0,
+           quality_status = 'pending', quality_retry_count = 0,
+           local_modified_at = NULL, local_modified_by = NULL
+         WHERE id = $1`,
+        [existingPage.id, confPage.title, confPage.body.storage.value,
+         bodyHtml, bodyText, confPage.version.number],
+      );
+      await enqueuePageWriteInvalidation(writeClient, writeIntent.id);
+    });
 
     await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
@@ -1589,7 +2448,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // DELETE /api/pages/:id
   // Accepts integer page id (universal) or confluence_id string (backward compat)
-  fastify.delete('/pages/:id', async (request) => {
+  fastify.delete('/pages/:id', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
@@ -1601,8 +2460,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
       confluence_id: string | null; space_key: string | null; visibility: string;
+      content_revision: string; lifecycle_revision: string;
     }>(
-      `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, source, created_by_user_id, confluence_id, space_key, visibility,
+              content_revision::text, lifecycle_revision::text
+         FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -1617,196 +2479,390 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Not authorized to delete this page');
       }
 
-      if (queryParams.permanent === 'true') {
-        // Hard delete and attachment cleanup share one barrier-owning client,
-        // so a backup cannot archive the post-delete database with pre-delete
-        // directories (or the inverse).
-        await withLocalAttachmentMutationLock(async (client) => {
-          try {
-            await client.query('BEGIN');
-            await client.query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [
-              userId,
-              existingPage.id,
-            ]);
-            await client.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
-            await client.query('COMMIT');
-          } catch (err) {
-            await client.query('ROLLBACK').catch(() => undefined);
-            throw err;
-          }
-          await cleanupStandalonePageAttachmentDirs(existingPage.id, client);
-        });
-      } else {
-        // Soft delete — move to trash
-        await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
+      const isPermanent = queryParams.permanent === 'true';
+
+      // Expansion, ambiguity/freeze checks and either the SQL mutation or the
+      // durable whole-component reservation share one hierarchy-exclusive
+      // transaction. Foreign-owned and synced descendants remain traversal
+      // links only and therefore cannot block or leak through the refusal.
+      const admitted = await withHierarchyCascadeTransaction(async (client) => {
+        const root = await client.query<{
+          id: number;
+          source: string;
+          created_by_user_id: string | null;
+          baseline_id: string | null;
+        }>(
+          'SELECT id, source, created_by_user_id, baseline_id FROM pages WHERE id = $1',
+          [existingPage.id],
+        );
+        const currentRoot = root.rows[0];
+        if (!currentRoot) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        if (currentRoot.source !== 'standalone' || currentRoot.created_by_user_id !== userId) {
+          throw new PageWriteError(403, 'not_authorized', 'Not authorized to delete this page');
+        }
+        if (currentRoot.baseline_id !== null) {
+          throw new PageWriteError(423, 'page_is_frozen', 'Protected page content is frozen');
+        }
+        const ambiguity = await findSubtreeKeyAmbiguity(existingPage.id, client);
+        if (ambiguity) {
+          return { refusal: ambiguousSubtreeConflict(ambiguity, fastify.log) };
+        }
+        const component = (await authorizedSubtreeComponents(
+          client,
+          [existingPage.id],
+          userId,
+          isPermanent,
+        ))[0];
+        if (!component) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+        const targetIds = component.members.map((member) => member.id);
+        await lockPageLifecycle(client, targetIds);
+        assertSingleCascadeEditable(component, existingPage.id);
+
+        if (isPermanent) {
+          const intent = await reservePageWriteIntentInTransaction(client, {
+            pageIds: targetIds,
+            kind: 'pages.delete.standalone',
+            actorId: userId,
+            effect: {
+              effectClass: 'local',
+              rootPageId: existingPage.id,
+              targetCount: targetIds.length,
+              attachmentStores: ['attachment-cache', 'local', 'page-icons'],
+            },
+          });
+          return { component, intent, rows: null };
+        }
+
+        await lockPageWrites(client, targetIds);
+        const result = await client.query<{ id: number; visibility: string }>(
+          `UPDATE pages
+              SET deleted_at = NOW()
+            WHERE id = ANY($1::int[])
+              AND deleted_at IS NULL
+              AND source = 'standalone'
+              AND created_by_user_id = $2
+            RETURNING id, visibility`,
+          [targetIds, userId],
+        );
+        if (result.rows.length !== targetIds.length) {
+          throw new PageWriteError(409, 'subtree_changed', 'The authorized subtree changed before deletion');
+        }
+        await client.query(
+          'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+          [userId, targetIds],
+        );
+        return { component, intent: null, rows: result.rows };
+      });
+      if (admitted.refusal) {
+        return reply.status(admitted.refusal.statusCode).send(admitted.refusal);
       }
-      await tombstoneCollabRoomAfterCommit(existingPage.id);
+
+      let affectedRows: Array<{ id: number; visibility: string }>;
+      if (admitted.intent) {
+        const deleteIntent = admitted.intent;
+        let destroyed: Array<{ id: number; visibility: string }> = [];
+        await runPageWriteIntentEffect(deleteIntent, { kind: 'local' }, async () => {
+          const cleanupClient = await getPool().connect();
+          let transactionOpen = false;
+          let attachmentLockHeld = false;
+          let discardClient: Error | undefined;
+          const onClientError = (error: Error) => {
+            discardClient ??= error;
+          };
+          cleanupClient.on('error', onClientError);
+          try {
+            await cleanupClient.query('SET statement_timeout = 0');
+            await cleanupClient.query('BEGIN');
+            transactionOpen = true;
+            // Lifecycle/hierarchy acquisition precedes the filesystem barrier:
+            // backup takes these in the opposite direction.
+            await lockPageWrites(cleanupClient, deleteIntent.pageIds, { intent: deleteIntent });
+            await cleanupClient.query('SELECT pg_advisory_lock_shared($1)', [
+              ATTACHMENT_SNAPSHOT_LOCK_ID,
+            ]);
+            attachmentLockHeld = true;
+            await withLocalAttachmentMutationLock(async (writeClient) => {
+              const advanced = await advancePageWriteIntentInTransaction(
+                writeClient,
+                deleteIntent,
+                async (client) => {
+                  const result = await client.query<{ id: number; visibility: string }>(
+                    `DELETE FROM pages
+                      WHERE id = ANY($1::int[])
+                        AND source = 'standalone'
+                        AND created_by_user_id = $2
+                      RETURNING id, visibility`,
+                    [deleteIntent.pageIds, userId],
+                  );
+                  if (result.rows.length !== deleteIntent.pageIds.length) {
+                    throw new PageWriteError(
+                      409,
+                      'subtree_changed',
+                      'The admitted subtree changed before permanent deletion',
+                    );
+                  }
+                  await client.query(
+                    'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+                    [userId, deleteIntent.pageIds],
+                  );
+                  await enqueuePageWriteInvalidation(client, deleteIntent.id);
+                  return result.rows;
+                },
+              );
+              await writeClient.query('COMMIT');
+              transactionOpen = false;
+              deleteIntent.revisions = advanced.revisions;
+              destroyed = advanced.result;
+              for (const row of destroyed) {
+                await cleanupStandalonePageAttachmentDirs(row, writeClient);
+              }
+            }, cleanupClient);
+          } catch (error) {
+            if (transactionOpen) {
+              try {
+                await cleanupClient.query('ROLLBACK');
+              } catch (rollbackError) {
+                discardClient ??=
+                  rollbackError instanceof Error
+                    ? rollbackError
+                    : new Error(String(rollbackError));
+              }
+            }
+            throw error;
+          } finally {
+            if (attachmentLockHeld) {
+              try {
+                await cleanupClient.query('SELECT pg_advisory_unlock_shared($1)', [
+                  ATTACHMENT_SNAPSHOT_LOCK_ID,
+                ]);
+              } catch (unlockError) {
+                discardClient ??=
+                  unlockError instanceof Error ? unlockError : new Error(String(unlockError));
+              }
+            }
+            try {
+              await cleanupClient.query('RESET statement_timeout');
+            } catch (resetError) {
+              discardClient ??=
+                resetError instanceof Error ? resetError : new Error(String(resetError));
+            }
+            cleanupClient.removeListener('error', onClientError);
+            cleanupClient.release(discardClient);
+          }
+        });
+        await completePageWriteIntent(deleteIntent, async () => undefined);
+        affectedRows = destroyed;
+      } else {
+        affectedRows = admitted.rows ?? [];
+      }
+      const affectedIds = affectedRows.map((row) => row.id);
+      const touchedSharedPage = affectedRows.some((row) => row.visibility === 'shared');
+
+      // Per-id side effects for a cascade that has ALREADY COMMITTED, so none
+      // of them may abort the rest. `allSettled`, not a bare loop: an unguarded
+      // await here meant one failing tombstone — `closeRoomSockets` and the
+      // Redis publish inside it are not best-effort — skipped every later id's
+      // tombstone and webhook AND jumped over the cache invalidation and the
+      // audit row below, leaving a destructive committed change with no trail
+      // and a stale cache, reported to the client as a 500. The Confluence
+      // hard-delete path in this file already uses `allSettled` for exactly
+      // this.
+      const sideEffects = await Promise.allSettled(
+        affectedIds.map(async (pageId) => {
+          await tombstoneCollabRoomAfterCommit(pageId);
+          emitWebhookEvent({
+            eventType: 'page.deleted',
+            payload: { pageId, isHardDelete: isPermanent },
+          });
+        }),
+      );
+      for (const outcome of sideEffects) {
+        if (outcome.status === 'rejected') {
+          fastify.log.warn(
+            { err: outcome.reason, rootPageId: existingPage.id },
+            'pages: a page.deleted side effect failed after the delete had committed',
+          );
+        }
+      }
 
       // A shared standalone page is visible to every user (#893), so its
-      // removal must clear all users' cached lists/trees. Private stays per-user.
-      if (existingPage.visibility === 'shared') {
+      // removal must clear all users' cached lists/trees. Read off the ROWS the
+      // cascade touched, not off the target: visibility is per page, so a
+      // private parent can hold a shared sub-article, and keying the scope on
+      // the target alone left every other user holding a stale tree.
+      // ONCE per request, never per descendant: the cascade changed one tree.
+      if (touchedSharedPage) {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
       }
+      // ONE audit row, for the ROOT. Audit rows are read by humans and must
+      // stay bounded, so the payload carries the cascade's size, not its ids.
       await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
-        { source: 'standalone', permanent: queryParams.permanent === 'true' }, request);
+        {
+          source: 'standalone',
+          permanent: isPermanent,
+          cascadedCount: affectedIds.filter((pageId) => pageId !== existingPage.id).length,
+        }, request);
 
-      emitWebhookEvent({
-        eventType: 'page.deleted',
-        payload: {
-          pageId: existingPage.id,
-          isHardDelete: queryParams.permanent === 'true',
-        },
-      });
-
-      return { message: queryParams.permanent === 'true' ? 'Page permanently deleted' : 'Page moved to trash' };
+      return { message: isPermanent ? 'Page permanently deleted' : 'Page moved to trash' };
     }
 
-    // --- Confluence article: existing flow ---
-    // RBAC: verify user has access to this page's space before allowing delete
-    if (existingPage.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(existingPage.space_key)) {
-        throw fastify.httpErrors.forbidden('Access denied to this space');
-      }
+    // --- Confluence-sourced article ---
+    // A missing space is not authority to delete an unscoped Confluence row.
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    if (!existingPage.space_key || !accessibleSpaces.includes(existingPage.space_key)) {
+      throw fastify.httpErrors.forbidden('Access denied to this space');
     }
 
-    const client = await getClientForUser(userId);
-    if (!client) {
+    // #1623 — ONE rule, delete flavour. With the integration off the delete
+    // stays local: the local row is destroyed exactly as it is below, and
+    // `deletePage` is never called. The Confluence page survives, so turning
+    // the integration back on hands this page to the sync upsert that already
+    // re-imports anything present upstream — no new reconciliation model.
+    //
+    // The row is DESTROYED rather than trashed because the trash is
+    // standalone-only (`GET /pages/trash` and `/restore` both refuse a
+    // Confluence-sourced row), so a soft delete here would hide the article
+    // where nobody could restore it.
+    const staysLocal = await pageWriteStaysLocal(userId, existingPage.source);
+    const client = staysLocal ? null : await getClientForUser(userId);
+    if (!staysLocal && !client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // #766: record the delete intent locally FIRST (soft-delete), so a failure at
-    // any later step can never leave a user-visible local article whose Confluence
-    // counterpart is already gone. Ordering:
-    //   1. soft-delete the row (single atomic UPDATE — hides it from every
-    //      list/tree/search query, all of which filter `deleted_at IS NULL`);
-    //   2. propagate the delete to Confluence (irreversible upstream side-effect);
-    //   3. on upstream success/404, finish hard local cleanup in ONE transaction;
-    //   4. on upstream failure (non-404), clear the soft-delete so NEITHER side
-    //      changed.
-    // A crash between 1 and 2 leaves a hidden row for a page that still exists
-    // upstream — deletion reconciliation revives it: the page is still in the
-    // live listing, and once the soft-delete is older than the revival grace
-    // window the cross-check in `detectDeletedPages` clears `deleted_at`. (The
-    // sync upsert also restores it, but only if the page is modified upstream
-    // or a full sync runs — incremental sync never re-upserts an unmodified
-    // page.) A failure after 2 leaves at worst a hidden soft-deleted row that
-    // `purgeDeletedPages` converges — never the live orphan from #766.
-    const intent = await query<{ id: number }>(
-      'UPDATE pages SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
-      [existingPage.id],
-    );
-    const intentRecordedHere = (intent.rowCount ?? 0) > 0;
-
-    // Propagate the delete to Confluence. A 404 means the page is already gone
-    // remotely — the desired end state is already true, so we treat it as success
-    // and fall through to local cleanup rather than leaving an orphaned, undeletable
-    // row behind (#706). Any other error is re-thrown so we never silently drop a
-    // page when Confluence genuinely failed (e.g. 5xx, auth, permissions).
-    let alreadyGone = false;
-    try {
-      await client.deletePage(existingPage.confluence_id!);
-    } catch (err) {
-      if (err instanceof ConfluenceError && err.statusCode === 404) {
-        alreadyGone = true;
-        logger.info(
-          { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
-          'Confluence page already deleted remotely (404) — cleaning up locally',
+    const deleteIntent = await withPageHierarchyWriteTransaction(async (writeClient) => {
+      const current = await loadAuthorizedContentWriteState(
+        writeClient,
+        existingPage.id,
+        userId,
+        {
+          contentRevision: existingPage.content_revision,
+          lifecycleRevision: existingPage.lifecycle_revision,
+        },
+        true,
+      );
+      if (
+        current.source !== existingPage.source ||
+        current.confluenceId !== existingPage.confluence_id
+      ) {
+        throw new PageWriteError(
+          409,
+          'page_source_changed',
+          'The page source changed before deletion',
         );
-      } else {
-        // Upstream genuinely failed: roll back the delete intent so neither side
-        // changed. Only clear a soft-delete WE set — a row that was already
-        // soft-deleted (e.g. by sync reconciliation) must stay that way.
-        if (intentRecordedHere) {
-          try {
-            await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [existingPage.id]);
-          } catch (restoreErr) {
-            // Worst case: the page stays hidden although it still exists in
-            // Confluence. Deletion reconciliation revives soft-deleted rows
-            // whose page is still in the live listing (once the soft-delete is
-            // older than the revival grace window), so this self-heals within
-            // a couple of sync cycles.
-            logger.error(
-              { pageId: existingPage.id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
-              'Failed to clear delete intent after Confluence delete failure — sync reconciliation will revive the page',
-            );
-          }
-        }
-        throw err;
       }
+      return reservePageWriteIntentInTransaction(writeClient, {
+        pageIds: [existingPage.id],
+        kind: staysLocal ? 'pages.delete.local' : 'pages.delete.confluence',
+        actorId: userId,
+        expectedRevisions: {
+          [existingPage.id]: {
+            contentRevision: existingPage.content_revision,
+            lifecycleRevision: existingPage.lifecycle_revision,
+          },
+        },
+        effect: {
+          effectClass: staysLocal ? 'local' : 'remote',
+          confluenceId: existingPage.confluence_id,
+          spaceKey: existingPage.space_key,
+          upstreamDelete: !staysLocal,
+          attachmentStore: 'confluence',
+          iconStore: 'page-icons',
+        },
+      });
+    });
+
+    // Preserve the established local-first ordering, but make it a fenced,
+    // durable intermediate step. Any crash or uncertain remote response leaves
+    // the row hidden and the intent actionable rather than silently reviving it.
+    try {
+    await advancePageWriteIntent(deleteIntent, async (writeClient) => {
+      const current = await loadAuthorizedContentWriteState(
+        writeClient, existingPage.id, userId, deleteIntent.revisions[existingPage.id]!, true,
+      );
+      if (current.source !== existingPage.source || current.confluenceId !== existingPage.confluence_id) {
+        throw new PageWriteError(409, 'page_source_changed', 'The page source changed before deletion');
+      }
+      await writeClient.query(
+        'UPDATE pages SET deleted_at = COALESCE(deleted_at, NOW()) WHERE id = $1',
+        [existingPage.id],
+      );
+    });
+    } catch (error) {
+      await cancelPageWriteIntentBeforeEffect(deleteIntent);
+      throw error;
     }
 
-    // Upstream is gone (deleted now, or already 404). Finish the local cleanup in
-    // ONE transaction on a dedicated client — pool.query() draws a random
-    // connection per call, so separate statements would not be atomic
-    // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
-    // cascades, deleted explicitly for clarity).
-    const txClient = await getPool().connect();
-    // Whether the COMMIT really destroyed the row — the icon discard below is
-    // irreversible and must not run on the rollback branch (#1349 fixer r1).
-    let rowDestroyed = false;
-    try {
-      await txClient.query('BEGIN');
-      await txClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [existingPage.id]);
-      const destroyed = await txClient.query<{ id: number }>(
+    let alreadyGone = false;
+    if (client) {
+      const admittedClient = await withPageWriteTransaction(
+        [existingPage.id],
+        (writeClient) => loadCurrentConfluenceWriteClient(
+          writeClient, deleteIntent, existingPage.id, userId, existingPage.confluence_id!, true,
+        ),
+        { intent: deleteIntent },
+      );
+      await runPageWriteIntentEffect(
+        deleteIntent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: () => ({
+            confluenceId: existingPage.confluence_id,
+            outcome: 'deleted',
+          }),
+        },
+        async () => {
+        try {
+          await admittedClient.deletePage(existingPage.confluence_id!);
+        } catch (err) {
+          if (err instanceof ConfluenceError && err.statusCode === 404) {
+            alreadyGone = true;
+            logger.info(
+              { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
+              'Confluence page already deleted remotely (404) — cleaning up locally',
+            );
+          } else {
+            // The provider may have accepted the delete before the response failed.
+            // Keep the intent unresolved for authenticated reconciliation.
+            throw err;
+          }
+        }
+        },
+      );
+    }
+
+    // Commit destruction before touching files. The durable intent records the
+    // DELETE ... RETURNING tombstone so settlement can authenticate the now-
+    // absent page while a cleanup failure remains recoverable.
+    const rowDestroyed = await advancePageWriteIntent(deleteIntent, async (writeClient) => {
+      await writeClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [existingPage.id]);
+      const destroyed = await writeClient.query<{ id: number }>(
         'DELETE FROM pages WHERE id = $1 RETURNING id',
         [existingPage.id],
       );
-      await txClient.query('COMMIT');
-      rowDestroyed = (destroyed.rowCount ?? 0) > 0;
-    } catch (cleanupErr) {
-      await txClient.query('ROLLBACK').catch(() => undefined);
-      // The upstream delete already happened and cannot be rolled back. The row
-      // stays soft-deleted (hidden everywhere) and `purgeDeletedPages` removes it
-      // within the standard 30-day window, so the stores never diverge visibly.
-      // The user-visible outcome (page gone on both sides) is achieved — log
-      // loudly instead of failing the request.
-      logger.error(
-        { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
-        'Local cleanup failed after successful Confluence delete — row left soft-deleted for sync to purge',
-      );
-    } finally {
-      txClient.release();
-    }
-
-    // Attachment files live on the filesystem and cannot participate in the DB
-    // transaction — best-effort, never fatal (same pattern as unsyncSpace).
-    if (existingPage.confluence_id) {
-      try {
-        await cleanPageAttachments(existingPage.confluence_id);
-      } catch (attachErr) {
-        logger.warn(
-          { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: attachErr instanceof Error ? attachErr.message : String(attachErr) },
-          'Attachment cleanup failed after page delete (orphaned files only — DB is consistent)',
-        );
-      }
-    }
-    // …and the icon store, which `cleanPageAttachments` never touches: it is
-    // keyed by `pages.id`, not by `confluence_id`, and the #1349 sweep is
-    // forbidden to walk it, so this event is the only thing that collects a
-    // hard-deleted Confluence page's uploaded mark (#1349 review r2).
-    //
-    // ONLY when the transaction actually committed (#1349 fixer r1). The catch
-    // above deliberately does not rethrow, so on a rollback the row is still
-    // there — soft-deleted, restorable by sync reconciliation until the 30-day
-    // purge — and still carries `icon_kind = 'image'`. The mark is the only
-    // copy of those bytes (migrations 095/096 persist just the sha) and the
-    // sweep may not walk `page-icons/`, so discarding it here would be
-    // unrecoverable for a page that still exists. `purgeDeletedPages` discards
-    // it after its OWN committed DELETE, so nothing leaks permanently.
+      if (client) await enqueuePageWriteInvalidation(writeClient, deleteIntent.id);
+      return (destroyed.rowCount ?? 0) > 0;
+    });
     if (rowDestroyed) {
-      await discardPageIconForDeletedPage(existingPage.id);
       await tombstoneCollabRoomAfterCommit(existingPage.id);
+      await runPageWriteIntentEffect(deleteIntent, { kind: 'local' }, async () => {
+        if (existingPage.confluence_id) await cleanPageAttachments(existingPage.confluence_id, { strict: true });
+        await discardPageIconForDeletedPage({ id: existingPage.id });
+      });
     }
+    await completePageWriteIntent(deleteIntent, async () => undefined);
 
     // Confluence pages are visible to every user with space access (#893), and
     // deleting one may also drop its space — clear every user's cache.
     await cache.invalidateAcrossUsers('pages');
     await cache.invalidateAcrossUsers('spaces');
 
-    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
+    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
+      // `upstreamDeleted: false` is the audit trail's record that the delete
+      // stayed local because the integration is off (#1623).
+      { alreadyGoneRemotely: alreadyGone, upstreamDeleted: !staysLocal }, request);
 
     emitWebhookEvent({
       eventType: 'page.deleted',
@@ -1817,9 +2873,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     });
 
     return {
-      message: alreadyGone
-        ? 'Page was already removed in Confluence — removed locally'
-        : 'Page deleted',
+      message: staysLocal
+        ? 'Page removed locally. Confluence is disconnected, so the Confluence page was left untouched.'
+        : alreadyGone
+          ? 'Page was already removed in Confluence — removed locally'
+          : 'Page deleted',
     };
   });
 
@@ -1835,8 +2893,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
       visibility: string; space_key: string | null; deleted_at: Date | null;
+      content_revision: string; lifecycle_revision: string;
     }>(
-      'SELECT id, source, created_by_user_id, visibility, space_key, deleted_at FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      `SELECT id, source, created_by_user_id, visibility, space_key, deleted_at,
+              content_revision::text, lifecycle_revision::text
+         FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
@@ -1857,10 +2918,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { htmlToText } = await import('../../core/services/content-converter.js');
     const draftText = htmlToText(body.bodyHtml);
 
-    await query(
-      `UPDATE pages SET draft_body_html = $1, draft_body_text = $2, draft_updated_at = NOW(), draft_updated_by = $3 WHERE id = $4`,
-      [body.bodyHtml, draftText, userId, page.id],
-    );
+    await withPageWriteTransaction([page.id], async (writeClient) => {
+      await loadAuthorizedContentWriteState(writeClient, page.id, userId, {
+        contentRevision: page.content_revision,
+        lifecycleRevision: page.lifecycle_revision,
+      });
+      await writeClient.query(
+        `UPDATE pages SET draft_body_html = $1, draft_body_text = $2, draft_updated_at = NOW(), draft_updated_by = $3 WHERE id = $4`,
+        [body.bodyHtml, draftText, userId, page.id],
+      );
+    });
 
     return { id: page.id, hasDraft: true, draftUpdatedAt: new Date().toISOString() };
   });
@@ -1871,30 +2938,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const pageId = parseInt(id, 10);
 
+    // Same caller-bound read rule as GET /pages/:id (space access, standalone
+    // visibility and page restrictions). An unreadable page is 404 exactly
+    // like a missing one — no existence oracle.
+    const spaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
-      id: number; source: string; created_by_user_id: string | null;
-      visibility: string; space_key: string | null; draft_body_html: string | null;
+      id: number; draft_body_html: string | null;
       draft_body_text: string | null; draft_updated_at: Date | null;
       draft_updated_by: string | null;
     }>(
-      `SELECT id, source, created_by_user_id, visibility, space_key, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by FROM pages WHERE id = $1 AND deleted_at IS NULL`,
-      [pageId],
+      `SELECT cp.id, cp.draft_body_html, cp.draft_body_text, cp.draft_updated_at, cp.draft_updated_by
+         FROM pages cp
+        WHERE cp.id = $1 AND cp.deleted_at IS NULL
+          AND ${visiblePagesPredicate(2, 3)}`,
+      [pageId, spaces, userId],
     );
     if (!result.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
     const row = result.rows[0]!;
-
-    // Access control: Confluence pages require RBAC space access; standalone pages
-    // require ownership or shared visibility. Use 404 (no existence oracle) to
-    // match GET /pages/:id semantics.
-    if (row.source === 'confluence') {
-      const spaces = await getUserAccessibleSpaces(userId);
-      if (!row.space_key || !spaces.includes(row.space_key)) {
-        throw fastify.httpErrors.notFound('Page not found');
-      }
-    } else if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
 
     if (!row.draft_body_html) throw fastify.httpErrors.notFound('No draft exists');
 
@@ -1919,8 +2980,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       source: string; created_by_user_id: string | null;
       visibility: string; confluence_id: string | null; space_key: string | null;
       draft_body_html: string | null; draft_body_storage: string | null;
+      content_revision: string; lifecycle_revision: string;
     }>(
-      `SELECT id, version, title, body_html, body_text, body_storage, source, created_by_user_id, visibility, confluence_id, space_key, draft_body_html, draft_body_storage FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT id, version, title, body_html, body_text, body_storage, source,
+              created_by_user_id, visibility, confluence_id, space_key,
+              draft_body_html, draft_body_storage, content_revision::text,
+              lifecycle_revision::text
+         FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
@@ -1942,40 +3008,32 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await rejectIfLiveCollabRoom(page.id, (m) => fastify.httpErrors.conflict(m));
 
-    // Atomically: save current live to page_versions, swap draft -> live, clear draft.
-    // Must use a dedicated client — pool.query() draws random connections per call,
-    // so BEGIN/COMMIT would run on different connections (non-atomic).
-    const txClient = await getPool().connect();
-    try {
-      await txClient.query('BEGIN');
-
-      // Save current live version to page_versions
-      await txClient.query(
+    const expectedRevision: PageRevision = {
+      contentRevision: page.content_revision,
+      lifecycleRevision: page.lifecycle_revision,
+    };
+    let publishedVisibility = page.visibility;
+    const publishDraft = async (writeClient: PoolClient): Promise<void> => {
+      const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
+      await invalidateCollabDocAfterBodyWrite(page.id, writeClient);
+      publishedVisibility = current.visibility;
+      await writeClient.query(
         `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT DO NOTHING`,
         [page.id, page.version, page.title, page.body_html, page.body_text],
       );
-
-      // Swap draft -> live, increment version, mark embedding dirty, clear draft
-      await txClient.query(
+      await writeClient.query(
         `UPDATE pages SET
           body_html = draft_body_html, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1, embedding_dirty = TRUE,
-          -- #1115 P2 (review r1) — publishing a draft is the moment its body
-          -- becomes the live one, so this is the first point at which an
-          -- <img> the draft added or dropped is real. Both sides of the
-          -- comparison read the OLD row, which is what makes the gate work.
-          image_embedding_dirty = CASE
+          image_analysis_dirty = CASE
             WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
-            ELSE image_embedding_dirty
+            ELSE image_analysis_dirty
           END,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
-          -- Stamp local-edit markers (#305): publishing a draft is a local
-          -- edit — the content hits the live columns for the first time
-          -- here, not through sync. Credit goes to the draft author.
           local_modified_at = NOW(),
           local_modified_by = COALESCE(draft_updated_by, local_modified_by),
           draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
@@ -1983,52 +3041,114 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          WHERE id = $1`,
         [page.id],
       );
+    };
 
-      await txClient.query('COMMIT');
-    } catch (err) {
-      await txClient.query('ROLLBACK');
-      throw err;
-    } finally {
-      txClient.release();
+    const remotePublicationRequired =
+      page.confluence_id !== null && !(await pageWriteStaysLocal(userId, page.source));
+    let publishIntent: PageWriteIntent | null = null;
+    if (remotePublicationRequired) {
+      const runtimeId = await getPageWriterRuntimeId();
+      const writeClient = await getPool().connect();
+      try {
+        await writeClient.query('BEGIN');
+        await lockPageWriterRuntime(writeClient, runtimeId);
+        await lockPageWrites(writeClient, [page.id]);
+        await publishDraft(writeClient);
+        // The original pair was checked above. Publication and reservation
+        // commit together, so this revision comes only from our own SQL write.
+        publishIntent = await reservePageWriteIntentInTransaction(writeClient, {
+          pageIds: [page.id],
+          kind: 'pages.draft.publish.confluence',
+          actorId: userId,
+          effect: {
+            effectClass: 'remote',
+            confluenceId: page.confluence_id,
+            expectedVersion: page.version,
+            targetBodyHtmlSha256: createHash('sha256').update(page.draft_body_html!).digest('hex'),
+          },
+        });
+        await writeClient.query('COMMIT');
+      } catch (error) {
+        await writeClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        writeClient.release();
+      }
+    } else {
+      await withPageWriteTransaction([page.id], publishDraft);
     }
 
-    await invalidateCollabDocAfterBodyWrite(page.id);
-
-    // For Confluence articles, push updated content upstream (best-effort)
+    // Confluence draft publishing is intentionally local-first. The durable
+    // intent commits with publication, remains unresolved through
+    // the remote call, and is settled only with the final local mirror.
     let publishedVersion = page.version + 1;
-    if (page.source === 'confluence' && page.confluence_id) {
+    if (publishIntent && page.confluence_id) {
+      const admittedIntent = publishIntent;
+      let storageBody: string;
+      let admittedClient: ConfluenceClient;
       try {
-        const client = await getClientForUser(userId);
-        if (client) {
-          const storageBody = htmlToConfluence(page.draft_body_html!);
-          // updatePage() increments internally, so pass the *previous* live
-          // version (page.version) — the version Confluence currently holds
-          // pre-publish. The local row is already at page.version + 1 from the
-          // transaction above.
-          const confPage = await client.updatePage(page.confluence_id, page.title, storageBody, page.version);
-          // Trust the API-returned version over our locally-computed bump so
-          // local `version` can't drift and mis-trigger the next sync's
-          // conflict guard (mirrors the restore route). Persist the storage
-          // Confluence accepted and clear local-edit markers — local state now
-          // matches the remote.
-          publishedVersion = confPage.version?.number ?? publishedVersion;
-          await query(
-            `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
-               local_modified_at = NULL, local_modified_by = NULL
-             WHERE id = $1`,
-            [page.id, storageBody, publishedVersion],
-          );
+        storageBody = htmlToConfluence(page.draft_body_html!);
+        admittedClient = await withPageWriteTransaction(
+          [page.id],
+          (writeClient) => loadCurrentConfluenceWriteClient(
+            writeClient, admittedIntent, page.id, userId, page.confluence_id!,
+          ),
+          { intent: admittedIntent },
+        );
+      } catch (error) {
+        // Publication and reservation committed together, but provider I/O has
+        // not begun. Keep the authorized local publication as divergence while
+        // releasing the unused reservation.
+        await cancelPageWriteIntentBeforeEffect(admittedIntent);
+        if (page.source === 'confluence' || publishedVisibility === 'shared') {
+          await cache.invalidateAcrossUsers('pages');
+        } else {
+          await cache.invalidate(userId, 'pages');
         }
-      } catch (err) {
-        // Log but don't fail — local publish succeeded
-        request.log.error({ err }, 'Failed to push draft to Confluence');
+        throw error;
       }
+      const publication = await runPageWriteIntentEffect(
+        admittedIntent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (result) => result.receipt,
+        },
+        async () => {
+          const confPage = await admittedClient.updatePage(
+            page.confluence_id!, page.title, storageBody, page.version,
+          );
+          return {
+            confPage,
+            receipt: pagePublicationReceipt(page.confluence_id!, page.version + 1, confPage),
+          };
+        },
+      );
+      const confPage = await withPageWriteTransaction([page.id], async (writeClient) => {
+        const currentClient = await loadCurrentConfluenceWriteClient(
+          writeClient, admittedIntent, page.id, userId, page.confluence_id!,
+        );
+        return confirmPagePublication(currentClient, publication.receipt, publication.confPage);
+      }, { intent: admittedIntent });
+      publishedVersion = confPage.version.number;
+      await completePageWriteIntent(admittedIntent, async (writeClient) => {
+        await loadAuthorizedContentWriteState(
+          writeClient, page.id, userId, admittedIntent.revisions[page.id]!,
+        );
+        await writeClient.query(
+          `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
+             local_modified_at = NULL, local_modified_by = NULL
+           WHERE id = $1`,
+          [page.id, confPage.body.storage.value, publishedVersion],
+        );
+        await enqueuePageWriteInvalidation(writeClient, admittedIntent.id);
+      });
     }
 
     // Publishing a draft rewrites the live content — the same mutation class
     // as PUT /pages/:id (#893): Confluence/shared pages are visible to other
     // users, so their cached lists/trees must be cleared for everyone.
-    if (page.source === 'confluence' || page.visibility === 'shared') {
+    if (page.source === 'confluence' || publishedVisibility === 'shared') {
       await cache.invalidateAcrossUsers('pages');
     } else {
       await cache.invalidate(userId, 'pages');
@@ -2058,8 +3178,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
       visibility: string; space_key: string | null;
+      content_revision: string; lifecycle_revision: string;
     }>(
-      'SELECT id, source, created_by_user_id, visibility, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      `SELECT id, source, created_by_user_id, visibility, space_key,
+              content_revision::text, lifecycle_revision::text
+         FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
@@ -2077,10 +3200,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.forbidden('Not authorized to discard this draft');
     }
 
-    await query(
-      `UPDATE pages SET draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL, draft_updated_at = NULL, draft_updated_by = NULL WHERE id = $1`,
-      [page.id],
-    );
+    await withPageWriteTransaction([page.id], async (writeClient) => {
+      await loadAuthorizedContentWriteState(writeClient, page.id, userId, {
+        contentRevision: page.content_revision,
+        lifecycleRevision: page.lifecycle_revision,
+      });
+      await writeClient.query(
+        `UPDATE pages SET draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL, draft_updated_at = NULL, draft_updated_by = NULL WHERE id = $1`,
+        [page.id],
+      );
+    });
 
     return { id: page.id, hasDraft: false };
   });
@@ -2135,154 +3264,255 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       .filter((r) => r.source === 'standalone' && r.createdByUserId === userId)
       .map((r) => ({ id: r.id, source: 'standalone', confluence_id: r.confluenceId, space_key: r.spaceKey }));
     const confluencePages = resolved.rows.filter((r) => r.source !== 'standalone')
-      .map((r) => ({ id: r.id, source: r.source, confluence_id: r.confluenceId, space_key: r.spaceKey }));
+      .map((r) => ({
+        id: r.id, source: r.source, confluence_id: r.confluenceId, space_key: r.spaceKey,
+        contentRevision: r.contentRevision, lifecycleRevision: r.lifecycleRevision,
+      }));
 
-    // Soft-delete standalone pages (move to trash)
-    const standaloneNumericIds = standalonePages.map((r) => r.id);
+    // Expand and coalesce under one hierarchy-exclusive transaction. A
+    // selected descendant of another selected root belongs to the same
+    // component, so a frozen member refuses that component once; disjoint
+    // components continue independently.
+    const standaloneNumericIds = standalonePages.map((row) => row.id);
+    let standaloneSucceeded = 0;
     if (standaloneNumericIds.length > 0) {
-      await Promise.all([
-        query('UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[])', [standaloneNumericIds]),
-        query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, standaloneNumericIds]),
-      ]);
-      // Bulk delete is a soft-delete (move to trash) for standalone pages.
-      for (const pageId of standaloneNumericIds) {
-        await tombstoneCollabRoomAfterCommit(pageId);
-        emitWebhookEvent({
-          eventType: 'page.deleted',
-          payload: { pageId, isHardDelete: false },
-        });
+      const cascadeResult = await withHierarchyCascadeTransaction(async (client) => {
+        const components = await authorizedSubtreeComponents(
+          client,
+          standaloneNumericIds,
+          userId,
+          false,
+        );
+        await lockPageLifecycle(
+          client,
+          [...new Set(components.flatMap((component) =>
+            component.members.map((member) => member.id)))].sort((left, right) => left - right),
+        );
+        const affectedIds: number[] = [];
+        let succeededRoots = 0;
+        let failedRoots = 0;
+        const componentErrors: string[] = [];
+
+        for (const component of components) {
+          const memberIds = component.members.map((member) => member.id);
+          const memberIdSet = new Set(memberIds);
+          const rootAuthorityChanged = component.rootIds.some((rootId) => !memberIdSet.has(rootId));
+          if (rootAuthorityChanged) {
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the authorized subtree changed before deletion`,
+            );
+            continue;
+          }
+
+          const ambiguity = await findSubtreeKeyAmbiguity(component.rootIds, client);
+          if (ambiguity) {
+            ambiguousSubtreeConflict(ambiguity, fastify.log);
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the subtree parent identifiers are ambiguous`,
+            );
+            continue;
+          }
+
+          // Lifecycle locks for every authorized component were taken above in
+          // global id order while the hierarchy fence remained exclusive.
+          const frozenCount = component.members
+            .filter((member) => member.baselineId !== null)
+            .length;
+          if (frozenCount > 0) {
+            const refusal = new PageSubtreeFrozenError(frozenCount);
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): ${refusal.message} ` +
+              `Frozen page count: ${refusal.blockedCount}.`,
+            );
+            continue;
+          }
+
+          try {
+            await lockPageWrites(client, memberIds);
+          } catch (error) {
+            if (!(error instanceof PageWriteError)) throw error;
+            failedRoots += component.rootIds.length;
+            componentErrors.push(
+              `${component.rootIds.length} selected page(s): the subtree is busy and was not changed`,
+            );
+            continue;
+          }
+
+          const result = await client.query<{ id: number }>(
+            `UPDATE pages
+                SET deleted_at = NOW()
+              WHERE id = ANY($1::int[])
+                AND deleted_at IS NULL
+                AND source = 'standalone'
+                AND created_by_user_id = $2
+              RETURNING id`,
+            [memberIds, userId],
+          );
+          if (result.rows.length !== memberIds.length) {
+            throw new PageWriteError(
+              409,
+              'subtree_changed',
+              'An authorized subtree changed during bulk deletion',
+            );
+          }
+          await client.query(
+            'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+            [userId, memberIds],
+          );
+          affectedIds.push(...result.rows.map((row) => row.id));
+          succeededRoots += component.rootIds.length;
+        }
+        return { affectedIds, succeededRoots, failedRoots, componentErrors };
+      });
+
+      standaloneSucceeded = cascadeResult.succeededRoots;
+      failed += cascadeResult.failedRoots;
+      errors.push(...cascadeResult.componentErrors);
+      const sideEffects = await Promise.allSettled(
+        cascadeResult.affectedIds.map(async (pageId) => {
+          await tombstoneCollabRoomAfterCommit(pageId);
+          emitWebhookEvent({
+            eventType: 'page.deleted',
+            payload: { pageId, isHardDelete: false },
+          });
+        }),
+      );
+      for (const outcome of sideEffects) {
+        if (outcome.status === 'rejected') {
+          fastify.log.warn(
+            { err: outcome.reason },
+            'pages: a bulk page.deleted side effect failed after the trash had committed',
+          );
+        }
       }
     }
-    const standaloneSucceeded = standaloneNumericIds.length;
 
-    // Delete Confluence pages via API
+    // A Confluence-row delete is a local-first distributed write. Each row gets
+    // its own durable intent so partial bulk outcomes remain independently
+    // reconcilable and an uncertain provider response is never treated as a
+    // definite failure that may be rolled back.
     const bulkLimit = pLimit(5);
     let confluenceSucceeded = 0;
     if (confluencePages.length > 0) {
-      const client = await getClientForUser(userId);
-      if (!client) {
-        confluencePages.forEach((p) => {
+      const staysLocal = await pageWriteStaysLocal(userId, 'confluence');
+      const client = staysLocal ? null : await getClientForUser(userId);
+      if (!staysLocal && !client) {
+        confluencePages.forEach((page) => {
           failed++;
-          errors.push(`Page ${p.confluence_id ?? p.id}: Confluence not configured`);
+          errors.push(`Page ${page.confluence_id ?? page.id}: Confluence not configured`);
         });
       } else {
-        // #766: record the delete intent locally FIRST (soft-delete) for every
-        // candidate, mirroring the single-delete route: a failure after the
-        // upstream deletes can then never strand a user-visible local article.
-        // Only rows whose soft-delete WE set are restored on upstream failure.
-        const confluenceNumericIds = confluencePages.map((p) => p.id);
-        const intent = await query<{ id: number }>(
-          'UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id',
-          [confluenceNumericIds],
-        );
-        const intentRecordedHere = new Set(intent.rows.map((r) => r.id));
-
-        const deleteResults = await Promise.allSettled(
-          confluencePages.map((p) => bulkLimit(() => client.deletePage(p.confluence_id!))),
-        );
-
-        const deletedConfluenceIds: string[] = [];
-        const deletedConfluenceNumericIds: number[] = [];
-        const failedNumericIds: number[] = [];
-        for (let i = 0; i < deleteResults.length; i++) {
-          const result = deleteResults[i]!;
-          // A 404 rejection means the page is already gone in Confluence — the
-          // desired end state is already true, so we clean it up locally too
-          // rather than leaving an orphaned, undeletable row behind (#706).
-          const alreadyGone =
-            result.status === 'rejected' &&
-            result.reason instanceof ConfluenceError &&
-            result.reason.statusCode === 404;
-          if (result.status === 'fulfilled' || alreadyGone) {
-            if (alreadyGone) {
-              logger.info(
-                { pageId: confluencePages[i]!.id, confluenceId: confluencePages[i]!.confluence_id },
-                'Confluence page already deleted remotely (404) — cleaning up locally',
+        const deletionResults = await Promise.allSettled(
+          confluencePages.map((page) =>
+            bulkLimit(async () => {
+              const deleteIntent = await reservePageWriteIntent({
+                pageIds: [page.id],
+                kind: client === null ? 'pages.bulk.delete.local' : 'pages.bulk.delete.remote',
+                actorId: userId,
+                expectedRevisions: {
+                  [page.id]: {
+                    contentRevision: page.contentRevision,
+                    lifecycleRevision: page.lifecycleRevision,
+                  },
+                },
+                effect: {
+                  effectClass: client === null ? 'local' : 'remote',
+                  confluenceId: page.confluence_id,
+                  spaceKey: page.space_key,
+                  upstreamDelete: client !== null,
+                  attachmentStore: 'confluence',
+                  iconStore: 'page-icons',
+                },
+              });
+              try {
+                await advancePageWriteIntent(deleteIntent, async (writeClient) => {
+                  const current = await loadAuthorizedContentWriteState(
+                    writeClient, page.id, userId, deleteIntent.revisions[page.id]!,
+                  );
+                  if (current.source !== page.source || current.confluenceId !== page.confluence_id ||
+                    current.spaceKey !== page.space_key) {
+                    throw new PageWriteError(409, 'page_source_changed', 'The page source changed before deletion');
+                  }
+                  await writeClient.query(
+                    'UPDATE pages SET deleted_at = COALESCE(deleted_at, NOW()) WHERE id = $1',
+                    [page.id],
+                  );
+                });
+              } catch (error) {
+                await cancelPageWriteIntentBeforeEffect(deleteIntent);
+                throw error;
+              }
+              if (client) {
+                const admittedClient = await withPageWriteTransaction(
+                  [page.id],
+                  (writeClient) => loadCurrentConfluenceWriteClient(
+                    writeClient, deleteIntent, page.id, userId, page.confluence_id!, true,
+                  ),
+                  { intent: deleteIntent },
+                );
+                await runPageWriteIntentEffect(
+                  deleteIntent,
+                  {
+                    kind: 'remote',
+                    completesRemoteWork: true,
+                    terminalResult: () => ({
+                      confluenceId: page.confluence_id,
+                      outcome: 'deleted',
+                    }),
+                  },
+                  async () => {
+                  try {
+                    await admittedClient.deletePage(page.confluence_id!);
+                  } catch (err) {
+                    if (!(err instanceof ConfluenceError && err.statusCode === 404)) {
+                      throw err;
+                    }
+                    logger.info(
+                      { pageId: page.id, confluenceId: page.confluence_id },
+                      'Confluence page already deleted remotely (404) — cleaning up locally',
+                    );
+                  }
+                  },
+                );
+              }
+              const rowDestroyed = await advancePageWriteIntent(
+                deleteIntent,
+                async (writeClient) => {
+                  await writeClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [page.id]);
+                  const destroyed = await writeClient.query<{ id: number }>(
+                    'DELETE FROM pages WHERE id = $1 RETURNING id',
+                    [page.id],
+                  );
+                  await enqueuePageWriteInvalidation(writeClient, deleteIntent.id);
+                  return (destroyed.rowCount ?? 0) > 0;
+                },
               );
-            }
-            deletedConfluenceIds.push(confluencePages[i]!.confluence_id!);
-            deletedConfluenceNumericIds.push(confluencePages[i]!.id);
+              if (rowDestroyed) {
+                await tombstoneCollabRoomAfterCommit(page.id);
+                await runPageWriteIntentEffect(deleteIntent, { kind: 'local' }, async () => {
+                  if (page.confluence_id) await cleanPageAttachments(page.confluence_id, { strict: true });
+                  await discardPageIconForDeletedPage({ id: page.id });
+                });
+              }
+              await completePageWriteIntent(deleteIntent, async () => undefined);
+            }),
+          ),
+        );
+        for (let index = 0; index < deletionResults.length; index++) {
+          const outcome = deletionResults[index]!;
+          const page = confluencePages[index]!;
+          if (outcome.status === 'fulfilled') {
             confluenceSucceeded++;
           } else {
             failed++;
-            failedNumericIds.push(confluencePages[i]!.id);
             errors.push(
-              `Page ${confluencePages[i]!.confluence_id}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+              `Page ${page.confluence_id ?? page.id}: ${
+                outcome.reason instanceof Error ? outcome.reason.message : 'Unknown error'
+              }`,
             );
-          }
-        }
-
-        // Upstream genuinely failed for these (non-404): roll back the delete
-        // intent so neither side changed for them.
-        const restoreIds = failedNumericIds.filter((id) => intentRecordedHere.has(id));
-        if (restoreIds.length > 0) {
-          try {
-            await query('UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[])', [restoreIds]);
-          } catch (restoreErr) {
-            // Worst case: pages stay hidden although they still exist upstream.
-            // Deletion reconciliation revives soft-deleted rows whose pages are
-            // still in the live listing (once the soft-delete is older than the
-            // revival grace window), so this self-heals within a couple of
-            // sync cycles.
-            logger.error(
-              { pageIds: restoreIds, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
-              'Failed to clear bulk delete intent after Confluence failures — sync reconciliation will revive the pages',
-            );
-          }
-        }
-
-        // Upstream is gone for these. Finish the local cleanup in ONE transaction
-        // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
-        // cascades, deleted explicitly for clarity).
-        if (deletedConfluenceNumericIds.length > 0) {
-          const txClient = await getPool().connect();
-          // The ids the COMMIT really destroyed — empty on the rollback branch,
-          // which must not reach the irreversible icon discard (#1349 fixer r1).
-          let destroyedNumericIds: number[] = [];
-          try {
-            await txClient.query('BEGIN');
-            await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [deletedConfluenceNumericIds]);
-            const destroyed = await txClient.query<{ id: number }>(
-              'DELETE FROM pages WHERE id = ANY($1::int[]) RETURNING id',
-              [deletedConfluenceNumericIds],
-            );
-            await txClient.query('COMMIT');
-            destroyedNumericIds = destroyed.rows.map((r) => r.id);
-          } catch (cleanupErr) {
-            await txClient.query('ROLLBACK').catch(() => undefined);
-            // Upstream deletes already happened — the rows stay soft-deleted
-            // (hidden) and `purgeDeletedPages` converges them; never a live orphan.
-            logger.error(
-              { pageIds: deletedConfluenceNumericIds, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
-              'Bulk local cleanup failed after successful Confluence deletes — rows left soft-deleted for sync to purge',
-            );
-          } finally {
-            txClient.release();
-          }
-          // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
-          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(id))));
-          // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
-          // and is a second pass rather than a line inside the one above
-          // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it
-          // walks the ids the COMMIT returned rather than the ids we intended
-          // to delete (#1349 fixer r1): the catch above does not rethrow, so on
-          // a rollback every row is still alive with its `icon_kind = 'image'`
-          // and the mark is the only copy of those bytes. Left alone, it is
-          // collected by `purgeDeletedPages` after its own committed DELETE.
-          await Promise.allSettled(
-            destroyedNumericIds.map((pageId) =>
-              bulkLimit(() => discardPageIconForDeletedPage(pageId)),
-            ),
-          );
-          await Promise.allSettled(
-            destroyedNumericIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
-          );
-          // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
-          for (const pageId of deletedConfluenceNumericIds) {
-            emitWebhookEvent({
-              eventType: 'page.deleted',
-              payload: { pageId, isHardDelete: true },
-            });
           }
         }
       }
@@ -2314,6 +3544,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/bulk/sync', async (request, reply) => {
     const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
+
+    // #1623 — a re-sync is Confluence work with no local equivalent: it pulls
+    // upstream content. With the integration off it refuses by naming the
+    // integration, never by asking for credentials that are still on file.
+    if (!(await isConfluenceEnabled(userId))) {
+      throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
+    }
 
     const client = await getClientForUser(userId);
     if (!client) {
@@ -2347,45 +3584,50 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // upstream to re-sync from).
     const syncableRows = resolved.rows.filter((r) => r.confluenceId !== null);
     const ownedIds = new Set(syncableRows.map((r) => r.confluenceId as string));
-    const spaceKeysById = new Map(
-      syncableRows.map((r) => [r.confluenceId as string, r.spaceKey ?? '']),
+    const numericIdsByConfluenceId = new Map(
+      syncableRows.map((row) => [row.confluenceId as string, row.id]),
     );
     const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
     let failed = resolutionFailed;
 
-    // Eager-load htmlToText once (avoid repeated dynamic import)
-    const { htmlToText } = await import('../../core/services/content-converter.js');
 
     // Fetch latest from Confluence in parallel with concurrency control
     const bulkLimit = pLimit(5);
     const syncResults = await Promise.allSettled(
       [...ownedIds].map((id) =>
         bulkLimit(async () => {
+          const numericPageId = numericIdsByConfluenceId.get(id);
+          if (numericPageId === undefined) throw new Error(`Missing local page identity for ${id}`);
+          const observed = await withPageWriteTransaction([numericPageId], async (writeClient) => {
+            const state = await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, null);
+            if (state.source !== 'confluence' || state.confluenceId !== id) {
+              throw new PageWriteError(409, 'page_source_changed', 'The page source changed before synchronization');
+            }
+            return state;
+          });
+
+          // GET and conversion change no protected bytes. Keep them outside the
+          // transaction; a failed read must not leave a durable mutation intent.
           const page = await client.getPage(id);
-          const bodyHtml = confluenceToHtml(
-            page.body?.storage?.value ?? '',
-            id,
-            spaceKeysById.get(id),
-          );
+          const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id, observed.spaceKey ?? undefined);
           const bodyText = htmlToText(bodyHtml);
 
-          await query(
-            `UPDATE pages SET
-               title = $2, body_storage = $3, body_html = $4, body_text = $5,
-               version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-               -- #1115 P2 (review r1) — a bulk refresh rewrites body_html
-               -- from upstream, which is exactly what can move an image.
-               image_embedding_dirty = CASE
-                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-                 ELSE image_embedding_dirty
-               END,
-               embedding_status = 'not_embedded', embedded_at = NULL,
-               -- Clear local-edit markers (#305): this is a bulk
-               -- refresh-from-Confluence path (sync-side).
-               local_modified_at = NULL, local_modified_by = NULL
-             WHERE confluence_id = $1`,
-            [id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
-          );
+          await withPageWriteTransaction([numericPageId], async (writeClient) => {
+            await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
+            await writeClient.query(
+              `UPDATE pages SET
+                 title = $2, body_storage = $3, body_html = $4, body_text = $5,
+                 version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+                 image_analysis_dirty = CASE
+                   WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+                   ELSE image_analysis_dirty
+                 END,
+                 embedding_status = 'not_embedded', embedded_at = NULL,
+                 local_modified_at = NULL, local_modified_by = NULL
+               WHERE id = $1`,
+              [numericPageId, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
+            );
+          });
           return id;
         }),
       ),
@@ -2551,7 +3793,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('At least one of addTags or removeTags must be provided');
     }
 
-    const client = await getClientForUser(userId);
+    const confluenceEnabled = await isConfluenceEnabled(userId);
     const tagSpaces = await getUserAccessibleSpaces(userId);
 
     const selection: BulkSelection = {
@@ -2579,12 +3821,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const pageMap = new Map(
-      resolved.rows.map((r) => [String(r.id), { confluenceId: r.confluenceId, labels: r.labels }]),
+      resolved.rows.map((row) => [String(row.id), row]),
     );
     const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
     let failed = resolutionFailed;
-
-    // Process each owned page: compute new labels, update DB, sync to Confluence
+    // Remote-backed rows commit local labels only after fresh admission and a
+    // terminal provider response. Standalone-mode rows still commit directly.
     const bulkLimit = pLimit(5);
     const tagResults = await Promise.allSettled(
       [...pageMap.entries()].map(([id, pageInfo]) =>
@@ -2606,25 +3848,72 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             labels = [...labelSet];
           }
 
-          await query('UPDATE pages SET labels = $2 WHERE id = $1', [
-            parseInt(id, 10),
-            labels,
-          ]);
-
-          // Sync label changes to Confluence (requires confluence_id)
-          if (client && pageInfo.confluenceId) {
+          const numericPageId = parseInt(id, 10);
+          if (confluenceEnabled && pageInfo.source === 'confluence' && pageInfo.confluenceId) {
+            const targetLabelsSha256 = createHash('sha256')
+              .update(JSON.stringify(labels))
+              .digest('hex');
+            const tagIntent = await reservePageWriteIntent({
+              pageIds: [numericPageId],
+              expectedRevisions: {
+                [numericPageId]: {
+                  contentRevision: pageInfo.contentRevision,
+                  lifecycleRevision: pageInfo.lifecycleRevision,
+                },
+              },
+              kind: 'pages.bulk.tags',
+              actorId: userId,
+              effect: {
+                priorLabels: pageInfo.labels,
+                effectClass: 'remote',
+                confluenceId: pageInfo.confluenceId,
+                targetLabelsSha256,
+                targetLabels: labels,
+              },
+            });
+            let admittedClient: ConfluenceClient;
             try {
-              if (addTags && addTags.length > 0) {
-                await client.addLabels(pageInfo.confluenceId, addTags);
-              }
-              if (removeTags && removeTags.length > 0) {
-                for (const label of removeTags) {
-                  await client.removeLabel(pageInfo.confluenceId, label);
-                }
-              }
-            } catch (err) {
-              logger.error({ err, pageId: id, confluenceId: pageInfo.confluenceId, userId }, 'Failed to sync labels to Confluence');
+              admittedClient = await withPageWriteTransaction(
+                [numericPageId],
+                (writeClient) => loadCurrentConfluenceWriteClient(
+                  writeClient, tagIntent, numericPageId, userId, pageInfo.confluenceId!,
+                ),
+                { intent: tagIntent },
+              );
+            } catch (error) {
+              await cancelPageWriteIntentBeforeEffect(tagIntent);
+              throw error;
             }
+            await runPageWriteIntentEffect(
+              tagIntent,
+              { kind: 'remote', completesRemoteWork: true },
+              async () => {
+                if (addTags.length > 0) {
+                  await admittedClient.addLabels(pageInfo.confluenceId!, addTags);
+                }
+                for (const label of removeTags) {
+                  await admittedClient.removeLabel(pageInfo.confluenceId!, label);
+                }
+              },
+            );
+            await completePageWriteIntent(tagIntent, async (writeClient) => {
+              await loadAuthorizedContentWriteState(
+                writeClient, numericPageId, userId, tagIntent.revisions[numericPageId]!,
+              );
+              await writeClient.query('UPDATE pages SET labels = $2 WHERE id = $1', [
+                numericPageId,
+                labels,
+              ]);
+              await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
+            });
+          } else {
+            await withPageWriteTransaction([numericPageId], async (writeClient) => {
+              await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, {
+                contentRevision: pageInfo.contentRevision,
+                lifecycleRevision: pageInfo.lifecycleRevision,
+              });
+              await writeClient.query('UPDATE pages SET labels = $2 WHERE id = $1', [numericPageId, labels]);
+            });
           }
 
           return id;
@@ -2716,17 +4005,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const { errors, failed: initialFailed } = bulkResolutionFailures(resolved);
-    const eligible = resolved.rows.map((r) => ({
-      id: r.id,
-      confluenceId: r.confluenceId,
-      oldLabels: r.labels,
-    }));
+    const eligible = resolved.rows;
 
     if (jobId) {
       await startBulkJob(jobId, eligible.length, userId, 'replace-tags');
     }
 
-    const client = await getClientForUser(userId);
+    const confluenceEnabled = await isConfluenceEnabled(userId);
     const bulkLimit = pLimit(5);
 
     const result = await runBulkInChunks(eligible, 100, jobId ?? null, async (chunk) => {
@@ -2737,25 +4022,72 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const settled = await Promise.allSettled(
         chunk.map((page) =>
           bulkLimit(async () => {
-            await query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, normTags]);
-
-            // Sync to Confluence: remove labels not in new set, add the rest
-            if (client && page.confluenceId) {
-              const oldSet = new Set(page.oldLabels);
+            if (confluenceEnabled && page.source === 'confluence' && page.confluenceId) {
+              const oldSet = new Set(page.labels);
               const newSet = new Set(normTags);
-              const toAdd = normTags.filter((t) => !oldSet.has(t));
-              const toRemove = page.oldLabels.filter((t) => !newSet.has(t));
+              const toAdd = normTags.filter((tag) => !oldSet.has(tag));
+              const toRemove = page.labels.filter((tag) => !newSet.has(tag));
+              const tagIntent = await reservePageWriteIntent({
+                pageIds: [page.id],
+                expectedRevisions: {
+                  [page.id]: {
+                    contentRevision: page.contentRevision,
+                    lifecycleRevision: page.lifecycleRevision,
+                  },
+                },
+                kind: 'pages.bulk.replace_tags',
+                actorId: userId,
+                effect: {
+                  effectClass: 'remote',
+                  confluenceId: page.confluenceId,
+                  targetLabelsSha256: createHash('sha256')
+                    .update(JSON.stringify(normTags))
+                    .digest('hex'),
+                  priorLabels: page.labels,
+                  targetLabels: normTags,
+                },
+              });
+              let admittedClient: ConfluenceClient;
               try {
-                if (toAdd.length > 0) await client.addLabels(page.confluenceId, toAdd);
-                for (const label of toRemove) {
-                  await client.removeLabel(page.confluenceId, label);
-                }
-              } catch (err) {
-                logger.error(
-                  { err, pageId: page.id, confluenceId: page.confluenceId, userId },
-                  'replace-tags: Confluence label sync failed',
+                admittedClient = await withPageWriteTransaction(
+                  [page.id],
+                  (writeClient) => loadCurrentConfluenceWriteClient(
+                    writeClient, tagIntent, page.id, userId, page.confluenceId!,
+                  ),
+                  { intent: tagIntent },
                 );
+              } catch (error) {
+                await cancelPageWriteIntentBeforeEffect(tagIntent);
+                throw error;
               }
+              await runPageWriteIntentEffect(
+                tagIntent,
+                { kind: 'remote', completesRemoteWork: true },
+                async () => {
+                  if (toAdd.length > 0) await admittedClient.addLabels(page.confluenceId!, toAdd);
+                  for (const label of toRemove) {
+                    await admittedClient.removeLabel(page.confluenceId!, label);
+                  }
+                },
+              );
+              await completePageWriteIntent(tagIntent, async (writeClient) => {
+                await loadAuthorizedContentWriteState(
+                  writeClient, page.id, userId, tagIntent.revisions[page.id]!,
+                );
+                await writeClient.query(
+                  'UPDATE pages SET labels = $2 WHERE id = $1',
+                  [page.id, normTags],
+                );
+                await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
+              });
+            } else {
+              await withPageWriteTransaction([page.id], async (writeClient) => {
+                await loadAuthorizedContentWriteState(writeClient, page.id, userId, {
+                  contentRevision: page.contentRevision,
+                  lifecycleRevision: page.lifecycleRevision,
+                });
+                await writeClient.query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, normTags]);
+              });
             }
             return page.id;
           }),
@@ -2869,7 +4201,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
     const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<ImageUploadPage>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
+              p.space_key, p.visibility, p.content_revision::text,
+              p.lifecycle_revision::text
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2896,20 +4230,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Determine the attachment directory key:
-    // Standalone pages use integer id (string); Confluence pages use confluence_id
-    const attachmentPageId = page.source === 'standalone'
-      ? String(page.id)
-      : (page.confluence_id ?? String(page.id));
-
+    const attachmentPageId = imageAttachmentPageKey(page);
+    const uploadForbiddenMessage = page.source === 'standalone' || page.space_key
+      ? 'Not authorized to upload images to this page'
+      : 'Access denied';
     try {
-      await writeAttachmentCache(userId, attachmentPageId, filename, imageBuffer);
+      await writePageImageCache({
+        page, userId, filename, bytes: imageBuffer,
+        kind: 'pages.image.upload', forbiddenMessage: uploadForbiddenMessage,
+      });
 
       const url = `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
       logger.info({ userId, pageId: id, attachmentPageId, filename, size: imageBuffer.length }, 'Image uploaded via paste/drop');
-
       return { url };
     } catch (err) {
+      if (err instanceof PageWriteError) throw err;
       logger.error({ err, userId, pageId: id, filename }, 'Failed to save pasted image');
       throw fastify.httpErrors.internalServerError('Failed to save image');
     }
@@ -2930,7 +4265,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   //    Content-Length) at 10 MB.
   //  - Validates `Content-Type: image/*` AND matches it against the body's
   //    magic bytes (no serving HTML/JS masquerading as image/png).
-  //  - Stores via the same `writeAttachmentCache` path as the inline upload.
+  //  - Stores through the same recoverable image cache writer as inline upload.
   fastify.post('/pages/:id/images/import', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
@@ -2967,7 +4302,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // upload route's logic exactly so the two stay aligned.
     const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<ImageUploadPage>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id,
+              p.space_key, p.visibility, p.content_revision::text,
+              p.lifecycle_revision::text
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2991,6 +4328,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
+    const attachmentPageId = imageAttachmentPageKey(page);
+    const importForbiddenMessage = page.source === 'standalone' || page.space_key
+      ? 'Not authorized to import images to this page'
+      : 'Access denied';
+    // Fetching is read-only: retain the authorized original revision pair,
+    // not a durable mutation intent that could strand the page on a crash.
+    const admittedPage = await withPageWriteTransaction([page.id], (writeClient) =>
+      loadAuthorizedImagePage(writeClient, page.id, userId, attachmentPageId, importForbiddenMessage),
+    );
     let response: Response;
     try {
       response = await safeFetchWithSsrfGuardedRedirects(sourceUrl);
@@ -3094,18 +4440,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // character class the inline-upload Zod schema enforces.
     const filename = pickImportFilename(sourceUrl, contentType);
 
-    // Determine the attachment directory key — same logic as the inline
-    // upload route.
-    const attachmentPageId = page.source === 'standalone'
-      ? String(page.id)
-      : (page.confluence_id ?? String(page.id));
-
     try {
-      await writeAttachmentCache(userId, attachmentPageId, filename, imageBuffer);
+      await writePageImageCache({
+        page: admittedPage, userId, filename, bytes: imageBuffer,
+        kind: 'pages.image.import.store', forbiddenMessage: importForbiddenMessage,
+      });
       const internalUrl = `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
       logger.info({ userId, pageId: id, attachmentPageId, filename, size: imageBuffer.length, sourceUrl }, 'Image imported from URL');
       return { url: internalUrl };
     } catch (err) {
+      if (err instanceof PageWriteError) throw err;
       logger.error({ err, userId, pageId: id, filename }, 'Failed to save imported image');
       throw fastify.httpErrors.internalServerError('Failed to save imported image');
     }

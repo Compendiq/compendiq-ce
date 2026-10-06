@@ -39,6 +39,10 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../../core/services/confluence-integration.js', () => ({
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
+}));
+
 // --- Mock: logger ---
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },

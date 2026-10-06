@@ -21,6 +21,8 @@ function isCookieSecure(request: FastifyRequest): boolean {
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { createSetupAdministrator } from '../../core/services/account-bootstrap-service.js';
+import { realAdminExists } from '../../core/services/registration-policy-service.js';
 import { LLM_HEALTH_TIMEOUT_MS } from './health.js';
 import {
   generateAccessToken,
@@ -32,6 +34,7 @@ import {
   listModels as providerListModels,
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
+import { normalizeBaseUrl } from '../../domains/llm/services/llm-provider-service.js';
 import { decryptPat } from '../../core/utils/crypto.js';
 import {
   validateUrlSyntaxAndProtocol,
@@ -73,17 +76,13 @@ export async function setupRoutes(fastify: FastifyInstance) {
    * decide whether to show the setup wizard or the normal UI.
    */
   fastify.get('/health/setup-status', SETUP_STATUS_RATE_LIMIT, async () => {
-    const [adminResult, confluenceResult] = await Promise.all([
-      query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM users WHERE role = $1 AND id != '00000000-0000-0000-0000-000000000000'`,
-        ['admin'],
-      ),
+    const [adminExists, confluenceResult] = await Promise.all([
+      realAdminExists(),
       query<{ count: string }>('SELECT COUNT(*) AS count FROM pages WHERE source = $1 LIMIT 1', ['confluence']),
     ]);
 
-    // Fail-open for unauthenticated setup status endpoint: if the DB query
-    // somehow returns no rows, treat as "not configured" rather than crashing.
-    const adminExists = parseInt(adminResult.rows[0]?.count ?? '0', 10) > 0;
+    // Fail-open for the unauthenticated setup status endpoint: if the pages
+    // query somehow returns no rows, treat Confluence as unconfigured.
     const confluenceConnected = parseInt(confluenceResult.rows[0]?.count ?? '0', 10) > 0;
 
     // Check LLM health — best-effort, don't let it fail the whole response.
@@ -142,21 +141,10 @@ export async function setupRoutes(fastify: FastifyInstance) {
     const passwordHash = await bcrypt.hash(body.password, SALT_ROUNDS);
 
     try {
-      // Atomic admin creation: INSERT only if no admin exists (prevents TOCTOU race)
-      const result = await query<{ id: string; username: string; role: string }>(
-        `INSERT INTO users (username, password_hash, role)
-         SELECT $1, $2, 'admin'
-         WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND id != '00000000-0000-0000-0000-000000000000')
-         RETURNING id, username, role`,
-        [body.username, passwordHash],
-      );
-      if (result.rows.length === 0) {
+      const user = await createSetupAdministrator(body.username, passwordHash);
+      if (!user) {
         throw fastify.httpErrors.conflict('Admin account already exists');
       }
-      const user = result.rows[0]!;
-
-      // Create default user_settings row
-      await query('INSERT INTO user_settings (user_id) VALUES ($1)', [user.id]);
 
       const accessToken = await generateAccessToken({
         sub: user.id,
@@ -214,13 +202,13 @@ export async function setupRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
-    // Normalize the base URL to end in /v1 — all providers expose OpenAI-
-    // compatible endpoints under /v1 (Ollama's /v1 shim is also OK).
-    let baseUrl = (body.baseUrl ?? '').replace(/\/+$/, '');
+    // Store as typed. Bare hosts get /v1; a pasted /v1/embeddings path is kept.
+    let baseUrl = (body.baseUrl ?? '').trim();
     if (!baseUrl) {
       baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';
+    } else {
+      baseUrl = normalizeBaseUrl(baseUrl);
     }
-    if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
 
     // SSRF guard (issue #736) — same EFFECTIVE policy as the admin
     // LLM-provider routes (`routes/llm/llm-providers.ts`): an authenticated

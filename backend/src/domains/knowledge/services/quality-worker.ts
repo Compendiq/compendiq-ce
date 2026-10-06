@@ -3,7 +3,8 @@
  *
  * Periodically scans pages and runs LLM quality analysis in batches.
  * Modeled after sync-service.ts: setInterval scheduling, in-memory lock,
- * configurable interval and batch size via env vars.
+ * configurable interval via env var; batch size from admin settings
+ * (`quality_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
  * `quality_status = 'skipped'` recovery:
  *   Pages are marked `'skipped'` in two situations:
@@ -28,6 +29,8 @@
  */
 
 import { query } from '../../../core/db/postgres.js';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
@@ -38,12 +41,14 @@ import {
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
+import { acquireWorkerLock, releaseWorkerLock, refreshWorkerLock } from '../../../core/services/redis-cache.js';
+import { getWorkerBatchSize } from '../../../core/services/admin-settings-service.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
 const MAX_RETRIES = 3;
+const LOCK_TTL_SECONDS = 600;
+const LOCK_REFRESH_MS = 60_000;
 
 interface QualityAssignment {
   config: ProviderConfig & { id: string; name: string; defaultModel: string | null };
@@ -160,7 +165,7 @@ async function analyzePageQuality(
   bodyHtml: string,
   bodyText: string,
   currentRetryCount: number = 0,
-): Promise<void> {
+): Promise<'processed' | 'failed'> {
   // Mark as analyzing
   await query(
     `UPDATE pages SET quality_status = 'analyzing' WHERE id = $1`,
@@ -178,7 +183,7 @@ async function analyzePageQuality(
         `UPDATE pages SET quality_status = 'skipped' WHERE id = $1`,
         [pageId],
       );
-      return;
+      return 'processed';
     }
 
     const response = await collectStreamedResponse(assignment, markdown);
@@ -195,7 +200,7 @@ async function analyzePageQuality(
          WHERE id = $1`,
         [pageId, 'Failed to parse structured quality scores from LLM output', currentRetryCount + 1],
       );
-      return;
+      return 'failed';
     }
 
     await query(
@@ -235,6 +240,7 @@ async function analyzePageQuality(
     });
 
     logger.info({ pageId, score: scores.overall }, 'Quality analysis complete');
+    return 'processed';
   } catch (err) {
     const rawMessage = err instanceof Error ? err.message : 'Unknown error';
     // Replace raw network errors with user-friendly messages
@@ -252,6 +258,7 @@ async function analyzePageQuality(
        WHERE id = $1`,
       [pageId, message.slice(0, 1000), currentRetryCount + 1],
     );
+    return 'failed';
   }
 }
 
@@ -265,11 +272,11 @@ async function analyzePageQuality(
  *   2. Content changed since last analysis (last_modified_at > quality_analyzed_at)
  *   3. Previously failed (quality_status = 'failed'), oldest failure first
  */
-export async function processBatch(): Promise<number> {
-  lastRunAt = new Date();
+async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise<{ processed: number; errors: number }> {
   // Resolve `{config, model}` at runtime — no cache, picks up admin edits
   // immediately via the provider cache-bus.
   const assignment = await resolveQualityAssignment();
+  await assertLockHeld();
 
   // When no provider/model can be resolved, mark pending pages as skipped
   // and return rather than making a call with an empty model name (which
@@ -284,7 +291,7 @@ export async function processBatch(): Promise<number> {
       { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
       'No quality provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
     );
-    return 0;
+    return { processed: flipped.rowCount ?? 0, errors: 0 };
   }
 
   // Recover pages stuck in 'analyzing' (#909). A crash/restart while
@@ -308,6 +315,8 @@ export async function processBatch(): Promise<number> {
     );
   }
 
+  const batchSize = await getWorkerBatchSize('quality_batch_size');
+
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
     id: number;
@@ -323,13 +332,13 @@ export async function processBatch(): Promise<number> {
        AND (body_text IS NOT NULL AND body_text != '')
      ORDER BY last_synced ASC
      LIMIT $1`,
-    [QUALITY_BATCH_SIZE],
+    [batchSize],
   );
 
   // Priority 2: Content changed since last analysis
   let pages = pendingResult.rows;
-  if (pages.length < QUALITY_BATCH_SIZE) {
-    const remaining = QUALITY_BATCH_SIZE - pages.length;
+  if (pages.length < batchSize) {
+    const remaining = batchSize - pages.length;
     const staleResult = await query<{
       id: number;
       body_html: string;
@@ -361,8 +370,8 @@ export async function processBatch(): Promise<number> {
   }
 
   // Priority 3: Failed pages (retry up to MAX_RETRIES times)
-  if (pages.length < QUALITY_BATCH_SIZE) {
-    const remaining = QUALITY_BATCH_SIZE - pages.length;
+  if (pages.length < batchSize) {
+    const remaining = batchSize - pages.length;
     const failedResult = await query<{
       id: number;
       body_html: string;
@@ -395,12 +404,77 @@ export async function processBatch(): Promise<number> {
     logger.info({ count: skippedResult.rowCount }, 'Skipped empty pages for quality analysis');
   }
 
-  // Process each page sequentially (LLM calls are resource-intensive)
+  const result = { processed: skippedResult.rowCount ?? 0, errors: 0 };
+  // Process each page sequentially (LLM calls are resource-intensive).
   for (const page of pages) {
-    await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.quality_retry_count);
+    await assertLockHeld();
+    try {
+      const outcome = await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.quality_retry_count);
+      if (outcome === 'failed') result.errors++;
+      else result.processed++;
+    } catch (err) {
+      // Persistence and other unexpected page failures must not abandon the
+      // remaining candidates or turn the failed page into a processed success.
+      result.errors++;
+      logger.error({ err, pageId: page.id }, 'Quality analysis threw for page — continuing batch');
+    }
   }
 
-  return pages.length;
+  return result;
+}
+
+/**
+ * Protected entrypoint shared by BullMQ, manual triggers and the interval worker.
+ */
+export async function processBatch(): Promise<{ processed: number; errors: number }> {
+  if (qualityLock) return { processed: 0, errors: 0 };
+  // Claim the local guard before the first await, including Redis acquisition.
+  qualityLock = true;
+  let token: string | null = null;
+  let guardTimer: NodeJS.Timeout | undefined;
+  let guardInFlight: Promise<void> | undefined;
+  let lockLost = false;
+  try {
+    token = await acquireWorkerLock('quality-worker', LOCK_TTL_SECONDS, { failClosed: true });
+    if (!token) return { processed: 0, errors: 0 };
+    const lockToken = token;
+    isProcessing = true;
+    lastRunAt = new Date();
+    const renewLock = (): Promise<void> => {
+      if (guardInFlight) return guardInFlight;
+      if (lockLost) return Promise.resolve();
+      guardInFlight = refreshWorkerLock('quality-worker', lockToken, LOCK_TTL_SECONDS)
+        .then((holder) => {
+          if (holder !== lockToken) lockLost = true;
+        })
+        .catch((err: unknown) => {
+          lockLost = true;
+          logger.error({ err }, 'Quality worker lock renewal failed');
+        })
+        .finally(() => { guardInFlight = undefined; });
+      return guardInFlight;
+    };
+    const assertLockHeld = async (): Promise<void> => {
+      await guardInFlight;
+      if (lockLost) throw new Error('Quality worker lock lost — batch stopped');
+    };
+    guardTimer = setInterval(() => { void renewLock(); }, LOCK_REFRESH_MS);
+    guardTimer.unref();
+    // Never recover stale rows unless this invocation still holds the lease.
+    await assertLockHeld();
+    const result = await processQualityBatch(assertLockHeld);
+    await assertLockHeld();
+    return result;
+  } finally {
+    clearInterval(guardTimer);
+    try {
+      await guardInFlight;
+      if (token) await releaseWorkerLock('quality-worker', token);
+    } finally {
+      isProcessing = false;
+      qualityLock = false;
+    }
+  }
 }
 
 // ─── Worker lifecycle ─────────────────────────────────────────────────────────
@@ -415,29 +489,19 @@ export function startQualityWorker(intervalMinutes?: number): void {
   const intervalMs = interval * 60 * 1000;
 
   qualityIntervalHandle = setInterval(async () => {
-    if (qualityLock) return;
-    const lockToken = await acquireWorkerLock('quality-worker', 600);
-    if (!lockToken) return;
-    qualityLock = true;
-    isProcessing = true;
-
     try {
-      const processed = await processBatch();
-      if (processed > 0) {
-        logger.info({ processed }, 'Quality analysis batch completed');
+      const result = await processBatch();
+      if (result.processed > 0 || result.errors > 0) {
+        logger.info(result, 'Quality analysis batch completed');
       }
     } catch (err) {
       logger.error({ err }, 'Quality analysis worker error');
-    } finally {
-      qualityLock = false;
-      isProcessing = false;
-      await releaseWorkerLock('quality-worker', lockToken);
     }
   }, intervalMs);
 
   logger.info(
-    { intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE },
-    'Background quality analysis worker started (model resolved at batch time from admin settings)',
+    { intervalMinutes: interval },
+    'Background quality analysis worker started (model and batch size resolved at batch time from admin settings)',
   );
 }
 
@@ -446,23 +510,13 @@ export function startQualityWorker(intervalMinutes?: number): void {
  * Safe to call from startup timers — will no-op if the worker is already processing.
  */
 export async function triggerQualityBatch(): Promise<void> {
-  if (qualityLock) return;
-  const lockToken = await acquireWorkerLock('quality-worker', 600);
-  if (!lockToken) return;
-  qualityLock = true;
-  isProcessing = true;
-
   try {
-    const processed = await processBatch();
-    if (processed > 0) {
-      logger.info({ processed }, 'Initial quality analysis batch completed');
+    const result = await processBatch();
+    if (result.processed > 0 || result.errors > 0) {
+      logger.info(result, 'Initial quality analysis batch completed');
     }
   } catch (err) {
     logger.error({ err }, 'Initial quality analysis batch error');
-  } finally {
-    qualityLock = false;
-    isProcessing = false;
-    await releaseWorkerLock('quality-worker', lockToken);
   }
 }
 
@@ -491,9 +545,12 @@ export async function forceQualityRescan(): Promise<number> {
 }
 
 /**
- * Get aggregate quality analysis status.
+ * Get aggregate quality analysis status over the pages `userId` may read
+ * (`visiblePagesPredicate`, the embedding-status scope): any signed-in user
+ * reads these counts, so a page they cannot see must not move them.
+ * `isProcessing`, `lastRunAt` and the model describe the worker and stay global.
  */
-export async function getQualityStatus(): Promise<{
+export async function getQualityStatus(userId: string): Promise<{
   totalPages: number;
   analyzedPages: number;
   analyzingPages: number;
@@ -506,6 +563,7 @@ export async function getQualityStatus(): Promise<{
   intervalMinutes: number;
   model: string;
 }> {
+  const spaces = await getUserAccessibleSpaces(userId);
   const [result, assignment] = await Promise.all([
     query<{
       total: string;
@@ -524,8 +582,9 @@ export async function getQualityStatus(): Promise<{
          COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
          COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
          ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
-       FROM pages
-       WHERE deleted_at IS NULL`,
+       FROM pages cp
+       WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}`,
+      [spaces, userId],
     ),
     resolveQualityAssignment(),
   ]);

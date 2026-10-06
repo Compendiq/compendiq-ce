@@ -9,6 +9,8 @@ import { EnterpriseProvider } from './shared/enterprise/context';
 import { useThemeStore, isLightTheme, startSystemThemeSync } from './stores/theme-store';
 import { createQueryClient } from './shared/lib/query-client';
 import { installPointerEventBridge } from './shared/lib/pointer-event-bridge';
+import { purgeLegacyDrafts } from './shared/lib/editor-drafts';
+import { purgeLegacyRecentSearches } from './shared/lib/recent-searches';
 import './index.css';
 
 // Auto-recover from stale chunks when a new deployment updates asset hashes.
@@ -16,6 +18,12 @@ window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault();
   window.location.reload();
 });
+
+// Editor drafts and command-palette recent searches written before they were
+// scoped to an account carry no owner, so no account may be offered them.
+// Delete them once, before anyone signs in.
+purgeLegacyDrafts();
+purgeLegacyRecentSearches();
 
 // Restore pointer-based interactions (Radix menus, drag) for input environments
 // that emit only legacy mouse events and no Pointer Events. Tears itself down the
@@ -45,7 +53,7 @@ function ThemedToaster() {
       richColors
       theme={isLightTheme(theme) ? 'light' : 'dark'}
       toastOptions={{
-        className: 'bg-card border border-border',
+        className: 'nm-popover-glass text-foreground',
       }}
     />
   );

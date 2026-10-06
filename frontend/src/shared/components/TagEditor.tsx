@@ -242,7 +242,7 @@ export function TagEditor({
             ref={suggestionsRef}
             role="listbox"
             data-testid="tag-suggestions"
-            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto nm-card-elevated"
+            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto nm-popover-glass"
           >
             {filteredSuggestions.map((suggestion, index) => (
               <li

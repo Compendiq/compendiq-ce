@@ -2,6 +2,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
 import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
 import { invalidateProviderCapabilities } from './model-capabilities.js';
+import { PROVIDER_RESOURCE_SUFFIXES } from './provider-url.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -74,10 +75,43 @@ export async function getProviderById(id: string): Promise<ProviderConfigRow | n
   return r.rows[0] ? rowToConfig(r.rows[0]) : null;
 }
 
+/**
+ * Drop a trailing `/v1` that the old "does not end with /v1" normalizer
+ * appended onto a pasted resource (`…/embeddings/v1`). Keep the resource.
+ */
+function healStrayVersionOnResource(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  if (!trimmed.endsWith('/v1')) return trimmed;
+  const withoutVersion = trimmed.slice(0, -'/v1'.length);
+  if (PROVIDER_RESOURCE_SUFFIXES.some((suffix) => withoutVersion.endsWith(suffix))) {
+    return withoutVersion;
+  }
+  return trimmed;
+}
+
+/**
+ * Store the operator's URL. Trailing slashes are trimmed. Bare hosts get `/v1`.
+ * `/embeddings` and `/rerank` are kept — the client must not be given a
+ * rewritten root when the operator pasted the endpoint they want called.
+ */
 export function normalizeBaseUrl(raw: string): string {
-  let s = raw.trim().replace(/\/+$/, '');
-  if (!/\/v1$/.test(s)) s += '/v1';
-  return s;
+  const trimmed = raw.trim();
+  try {
+    const u = new URL(trimmed);
+    let path = healStrayVersionOnResource(u.pathname);
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length === 0) path = '/v1';
+    u.pathname = path || '/v1';
+    u.search = '';
+    u.hash = '';
+    return u.href.replace(/\/+$/, '');
+  } catch {
+    let s = healStrayVersionOnResource(trimmed.replace(/\/+$/, ''));
+    if (!s.includes('://')) return s;
+    const afterProto = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    if (!afterProto.includes('/')) s += '/v1';
+    return s;
+  }
 }
 
 export async function createProvider(input: LlmProviderInput): Promise<LlmProvider> {

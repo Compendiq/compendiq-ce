@@ -1,301 +1,490 @@
 /**
- * Webhook emit-call-site tests for sync-service (#114).
+ * Sync webhook integration coverage (#114).
  *
- * Verifies that `emitWebhookEvent` fires `sync.completed` once per synced
- * space on the success path with the expected aggregate counters, and is NOT
- * called when the sync errors before the syncSpace finalisation block runs.
+ * The producer is exercised through real PostgreSQL mutations and a real
+ * ConfluenceClient talking to the HTTP fixture below. Events cross the public
+ * webhook extension point and an actual HTTP hop before assertions inspect
+ * the receiver-visible Standard Webhooks body.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { QueryResult } from 'pg';
-import type { RedisClientType } from 'redis';
-
-// ── Mocks (mirror sync-service.test.ts so the module-under-test loads) ───────
-
-vi.mock('../../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock('../../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
-}));
-
-vi.mock('../../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../../core/utils/crypto.js', () => ({
-  decryptPat: vi.fn().mockReturnValue('decrypted-pat'),
-}));
-
-vi.mock('../../../core/utils/ssrf-guard.js', () => ({
-  addAllowedBaseUrlSilent: vi.fn(),
-}));
-
-const mockConfluenceClientInstance: Record<string, ReturnType<typeof vi.fn>> = {
-  getAllSpaces: vi.fn().mockResolvedValue([]),
-  getAllPagesInSpace: vi.fn().mockResolvedValue([]),
-  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
-  getModifiedPages: vi.fn().mockResolvedValue([]),
-  getPage: vi.fn(),
-  getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
-};
-
-// Keep the real `ConfluenceError` so the #706 404-confirmation branch's
-// `instanceof` check works while `ConfluenceClient` itself is stubbed.
-vi.mock('./confluence-client.js', async () => {
-  const actual = await vi.importActual<typeof import('./confluence-client.js')>('./confluence-client.js');
-  return {
-    ...actual,
-    ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
-      Object.assign(this, mockConfluenceClientInstance);
-    }),
-  };
-});
-
-vi.mock('../../../core/services/content-converter.js', () => ({
-  confluenceToHtml: vi.fn().mockReturnValue('<p>html</p>'),
-  htmlToText: vi.fn().mockReturnValue('text'),
-}));
-
-vi.mock('./attachment-handler.js', () => ({
-  syncDrawioAttachments: vi.fn(),
-  syncImageAttachments: vi.fn(),
-  cleanPageAttachments: vi.fn(),
-  getMissingAttachments: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../../core/services/version-snapshot.js', () => ({
-  saveVersionSnapshot: vi.fn(),
-}));
-
-vi.mock('../../llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-}));
-
-const mockEmitWebhookEvent = vi.fn();
-vi.mock('../../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
-}));
-
-const mockRedisSet = vi.fn();
-const mockRedisGet = vi.fn();
-const mockRedisEval = vi.fn();
-
-let mockRedisClient: RedisClientType | null = null;
-
-function createMockRedis() {
-  return {
-    get: mockRedisGet,
-    set: mockRedisSet,
-    del: vi.fn(),
-    eval: mockRedisEval,
-    exists: vi.fn(),
-    scan: vi.fn(),
-    incr: vi.fn(),
-    expire: vi.fn(),
-    setEx: vi.fn(),
-    ping: vi.fn(),
-  } as unknown as RedisClientType;
-}
-
-vi.mock('../../../core/services/redis-cache.js', () => ({
-  getRedisClient: () => mockRedisClient,
-  recordAttachmentFailure: vi.fn(),
-  getAttachmentFailureCount: vi.fn().mockResolvedValue(0),
-  clearAttachmentFailures: vi.fn(),
-  MAX_ATTACHMENT_FAILURES: 3,
-}));
-
-// Now import the module under test
-import { syncUser } from './sync-service.js';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../../test-db-helper.js';
+import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
-import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { ConfluenceError } from './confluence-client.js';
+import { setRedisClient } from '../../../core/services/redis-cache.js';
+import {
+  _resetWebhookEmitHookForTests,
+  setWebhookEmitHook,
+  type WebhookEvent,
+} from '../../../core/services/webhook-emit-hook.js';
+import { encryptPat } from '../../../core/utils/crypto.js';
+import { getSyncStatus, syncUser } from './sync-service.js';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
-/**
- * Configure mocks for a single-space full-sync run.
- *
- * @param confluencePages — pages reported by Confluence for the space
- * @param dbPages         — confluence_ids already in the local DB
- */
-function setupSyncMocks(opts: {
-  confluencePages: Array<{ id: string; title: string; version?: number }>;
-  dbPages?: string[];
-}) {
-  const { confluencePages, dbPages = [] } = opts;
-  const liveIds = new Set(confluencePages.map((p) => p.id));
+interface RemotePage {
+  id: string;
+  title: string;
+  status: 'current';
+  type: 'page';
+  version: {
+    number: number;
+    when: string;
+    by: { displayName: string };
+  };
+  body: { storage: { value: string } };
+  ancestors: Array<{ id: string; title: string }>;
+  metadata: { labels: { results: Array<{ name: string }> } };
+}
 
-  mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([
-    { key: 'TEST', name: 'Test Space', homepage: null },
-  ]);
-  mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue(
-    confluencePages.map((p) => ({ id: p.id, title: p.title, status: 'current' })),
-  );
-  // Authoritative live-id listing used by deletion reconciliation (#706).
-  mockConfluenceClientInstance.getAllPageIds.mockResolvedValue(liveIds);
-  mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
-  mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
-    const summary = confluencePages.find((p) => p.id === id);
-    // A page absent from the live listing is confirmed gone with a 404 (the
-    // reconciler's per-candidate confirmation fetch); live pages resolve.
-    if (!summary) {
-      return Promise.reject(new ConfluenceError('Resource not found', 404));
-    }
-    return Promise.resolve({
-      id,
-      title: summary.title,
-      body: { storage: { value: '<p>content</p>' } },
-      version: {
-        number: summary.version ?? 1,
-        when: '2025-01-01T00:00:00Z',
-        by: { displayName: 'Author' },
-      },
-      metadata: { labels: { results: [] } },
-      ancestors: [],
-    });
-  });
-  mockConfluenceClientInstance.getPageAttachments.mockResolvedValue({ results: [] });
+interface FixtureSpace {
+  name: string;
+  pages: Map<string, RemotePage>;
+}
 
-  vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
+interface SyncCompletedPayload {
+  spaceKey: string;
+  pagesCreated: number;
+  pagesUpdated: number;
+  pagesDeleted: number;
+  durationMs: number;
+  completedAt: string;
+}
 
-  vi.mocked(query).mockImplementation(async (sql: string, _params?: unknown[]) => {
-    const sqlStr = typeof sql === 'string' ? sql : '';
-    const empty = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
+interface DeliveredWebhook {
+  type: string;
+  data: SyncCompletedPayload;
+}
 
-    if (sqlStr.includes('confluence_url') && sqlStr.includes('user_settings')) {
-      return {
-        rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'enc' }],
-        rowCount: 1, command: '', oid: 0, fields: [],
-      } as QueryResult;
-    }
-    if (sqlStr.includes('INSERT INTO spaces')) return empty as QueryResult;
-    if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
-      // null → forces full sync (so detectDeletedPages runs)
-      return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
-    }
-    // syncPage: SELECT version, title, body_html, body_text FROM pages WHERE confluence_id = $1
-    if (sqlStr.includes('SELECT version') && sqlStr.includes('FROM pages')) {
-      return empty as QueryResult; // fresh create for every page in confluencePages
-    }
-    if (sqlStr.includes('INSERT INTO pages')) return empty as QueryResult;
-    // detectDeletedPages: existing pages in DB, in cursor order
-    if (sqlStr.includes('SELECT p.id, p.confluence_id') && sqlStr.includes('p.deleted_at IS NULL')) {
-      return {
-        rows: dbPages.map((id, index) => ({ id: index + 1, confluence_id: id })),
-        rowCount: dbPages.length, command: '', oid: 0, fields: [],
-      } as QueryResult;
-    }
-    // detectDeletedPages: soft-delete UPDATE
-    if (sqlStr.includes('UPDATE pages SET deleted_at = NOW()')) {
-      return { rows: [], rowCount: 1, command: 'UPDATE', oid: 0, fields: [] } as QueryResult;
-    }
-    // purgeDeletedPages: DELETE old soft-deleted
-    if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-      return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
-    }
-    if (sqlStr.includes('UPDATE spaces SET last_synced')) return empty as QueryResult;
-    return empty as QueryResult;
+interface PersistedPage {
+  confluence_id: string;
+  source: string;
+  space_key: string;
+  title: string;
+  version: number;
+  deleted_at: Date | null;
+}
+
+const spaces = new Map<string, FixtureSpace>();
+const rejectPageFetch = new Set<string>();
+const requestedPaths: string[] = [];
+const receivedWebhooks: DeliveredWebhook[] = [];
+const pendingDeliveries: Promise<void>[] = [];
+
+let fixtureBaseUrl = '';
+let attachmentRoot = '';
+let redis: RedisClientType;
+let originalAttachmentRoot: string | undefined;
+let originalPatEncryptionKey: string | undefined;
+
+function page(id: string, title: string, version = 1): RemotePage {
+  return {
+    id,
+    title,
+    status: 'current',
+    type: 'page',
+    version: {
+      number: version,
+      when: `2026-09-${String(version).padStart(2, '0')}T12:00:00.000Z`,
+      by: { displayName: 'Fixture Author' },
+    },
+    body: { storage: { value: `<p>${title} body</p>` } },
+    ancestors: [],
+    metadata: { labels: { results: [] } },
+  };
+}
+
+function addSpace(spaceKey: string, name: string, remotePages: RemotePage[]): void {
+  spaces.set(spaceKey, {
+    name,
+    pages: new Map(remotePages.map((remotePage) => [remotePage.id, remotePage])),
   });
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+function json(response: ServerResponse, statusCode: number, body: unknown): void {
+  response.statusCode = statusCode;
+  response.setHeader('content-type', 'application/json');
+  response.end(JSON.stringify(body));
+}
 
-describe('sync-service webhook emit call-sites', () => {
-  beforeEach(() => {
-    mockRedisClient = createMockRedis();
-    mockRedisSet.mockResolvedValue('OK');
-    mockRedisGet.mockResolvedValue(null);
-    mockRedisEval.mockResolvedValue(1);
-    mockEmitWebhookEvent.mockReset();
-  });
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
+}
 
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
+function findPage(id: string): RemotePage | undefined {
+  for (const fixtureSpace of spaces.values()) {
+    const found = fixtureSpace.pages.get(id);
+    if (found) return found;
+  }
+  return undefined;
+}
 
-  it('emits sync.completed once per space with aggregate counts', async () => {
-    setupSyncMocks({
-      confluencePages: [
-        { id: 'p1', title: 'Page 1' },
-        { id: 'p2', title: 'Page 2' },
-      ],
-      dbPages: [], // both pages are fresh creates
+const fixture = createServer(async (request, response) => {
+  const url = new URL(request.url ?? '/', 'http://fixture.test');
+  requestedPaths.push(`${request.method ?? 'GET'} ${url.pathname}${url.search}`);
+
+  if (request.method === 'POST' && url.pathname === '/webhooks') {
+    const body = await readRequestBody(request);
+    const delivered: DeliveredWebhook = JSON.parse(body);
+    receivedWebhooks.push(delivered);
+    json(response, 202, { accepted: true });
+    return;
+  }
+
+  if (request.method !== 'GET') {
+    json(response, 405, { message: 'Method not allowed' });
+    return;
+  }
+
+  if (url.pathname === '/rest/api/space') {
+    const results = Array.from(spaces, ([key, fixtureSpace]) => ({
+      key,
+      name: fixtureSpace.name,
+      type: 'global',
+      status: 'current',
+    }));
+    json(response, 200, {
+      results,
+      start: 0,
+      limit: 100,
+      size: results.length,
+      _links: {},
     });
+    return;
+  }
 
-    await syncUser('user-1');
-
-    const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
-      (c) => c[0]?.eventType === 'sync.completed',
-    );
-    expect(completedCalls).toHaveLength(1);
-
-    const event = completedCalls[0]![0];
-    expect(event.payload).toMatchObject({
-      spaceKey: 'TEST',
-      pagesCreated: 2,
-      pagesUpdated: 0,
-      pagesDeleted: 0,
+  if (url.pathname === '/rest/api/content') {
+    const spaceKey = url.searchParams.get('spaceKey');
+    const fixtureSpace = spaceKey ? spaces.get(spaceKey) : undefined;
+    if (!spaceKey || !fixtureSpace) {
+      json(response, 404, { message: 'Unknown space' });
+      return;
+    }
+    const results = Array.from(fixtureSpace.pages.values());
+    json(response, 200, {
+      results,
+      start: 0,
+      limit: Number(url.searchParams.get('limit') ?? results.length),
+      size: results.length,
+      _links: {},
     });
-    expect(typeof event.payload.durationMs).toBe('number');
-    expect(event.payload.durationMs).toBeGreaterThanOrEqual(0);
-    expect(typeof event.payload.completedAt).toBe('string');
-  });
+    return;
+  }
 
-  it('counts soft-deletes from detectDeletedPages in pagesDeleted', async () => {
-    // DB has p1 + p2; Confluence reports only p1 → p2 must be soft-deleted.
-    setupSyncMocks({
-      confluencePages: [{ id: 'p1', title: 'Page 1' }],
-      dbPages: ['p1', 'p2'],
-    });
+  const contentPrefix = '/rest/api/content/';
+  if (url.pathname.startsWith(contentPrefix)) {
+    const contentPath = url.pathname.slice(contentPrefix.length);
+    const attachmentSuffix = '/child/attachment';
+    if (contentPath.endsWith(attachmentSuffix)) {
+      json(response, 200, {
+        results: [],
+        start: 0,
+        limit: 100,
+        size: 0,
+        _links: {},
+      });
+      return;
+    }
 
-    await syncUser('user-1');
+    const pageId = decodeURIComponent(contentPath);
+    if (rejectPageFetch.has(pageId)) {
+      json(response, 401, { message: 'PAT rejected during page fetch' });
+      return;
+    }
+    const remotePage = findPage(pageId);
+    if (remotePage) json(response, 200, remotePage);
+    else json(response, 404, { message: 'Page not found' });
+    return;
+  }
 
-    const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
-      (c) => c[0]?.eventType === 'sync.completed',
-    );
-    expect(completedCalls).toHaveLength(1);
-
-    expect(completedCalls[0]![0].payload).toMatchObject({
-      spaceKey: 'TEST',
-      pagesCreated: 1, // p1 was a fresh create
-      pagesDeleted: 1, // p2 was soft-deleted
-    });
-  });
-
-  it('does NOT emit per-page page.created/updated/deleted from sync (one event per run)', async () => {
-    setupSyncMocks({
-      confluencePages: [{ id: 'p1', title: 'Page 1' }],
-      dbPages: ['p1', 'p2'],
-    });
-
-    await syncUser('user-1');
-
-    // Only sync.completed should be emitted; per-page events would
-    // double-fire alongside the aggregate counters.
-    const types = mockEmitWebhookEvent.mock.calls.map((c) => c[0]?.eventType);
-    expect(types.every((t) => t === 'sync.completed')).toBe(true);
-    expect(types).not.toContain('page.created');
-    expect(types).not.toContain('page.updated');
-    expect(types).not.toContain('page.deleted');
-  });
-
-  it('does NOT emit sync.completed when getAllSpaces throws before syncSpace finalises', async () => {
-    setupSyncMocks({ confluencePages: [] });
-    mockConfluenceClientInstance.getAllSpaces.mockRejectedValue(new Error('Confluence down'));
-
-    await expect(syncUser('user-1')).rejects.toThrow('Confluence down');
-
-    expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it('does NOT emit sync.completed when no spaces are accessible (sync skipped)', async () => {
-    setupSyncMocks({ confluencePages: [] });
-    vi.mocked(getUserAccessibleSpaces).mockResolvedValue([]);
-
-    await syncUser('user-1');
-
-    expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-  });
+  json(response, 404, { message: 'Fixture route not found' });
 });
+
+async function listen(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once('error', onError);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
+}
+
+async function close(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+    server.closeAllConnections();
+  });
+}
+
+function deliverThroughHttp(event: WebhookEvent): Promise<void> {
+  const delivery = fetch(`${fixtureBaseUrl}/webhooks`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-compendiq-event': event.eventType,
+    },
+    body: JSON.stringify({ type: event.eventType, data: event.payload }),
+  }).then((response) => {
+    if (!response.ok) throw new Error(`Webhook receiver answered ${response.status}`);
+  });
+  pendingDeliveries.push(delivery);
+  return delivery;
+}
+
+async function seedUser(accessibleSpaces: string[]): Promise<string> {
+  const user = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ($1, 'unused', 'user')
+     RETURNING id`,
+    [`sync-webhook-${randomUUID()}`],
+  );
+  const userId = user.rows[0]!.id;
+  await query(
+    `INSERT INTO user_settings
+       (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, TRUE)`,
+    [userId, fixtureBaseUrl, encryptPat('fixture-pat')],
+  );
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ($1, 'Sync webhook reader', ARRAY['read'])
+     RETURNING id`,
+    [`sync-webhook-reader-${randomUUID()}`],
+  );
+  const roleId = role.rows[0]!.id;
+
+  for (const [spaceKey, fixtureSpace] of spaces) {
+    await query(
+      `INSERT INTO spaces (space_key, space_name)
+       VALUES ($1, $2)`,
+      [spaceKey, fixtureSpace.name],
+    );
+  }
+  for (const spaceKey of accessibleSpaces) {
+    await query(
+      `INSERT INTO space_role_assignments
+         (space_key, principal_type, principal_id, role_id)
+       VALUES ($1, 'user', $2, $3)`,
+      [spaceKey, userId, roleId],
+    );
+  }
+  return userId;
+}
+
+async function seedExistingPage(
+  userId: string,
+  spaceKey: string,
+  confluenceId: string,
+  title: string,
+): Promise<void> {
+  await query(
+    `INSERT INTO pages
+       (source, confluence_id, space_key, title, body_storage, body_html,
+        body_text, version, visibility, created_by_user_id, embedding_dirty)
+     VALUES
+       ('confluence', $1, $2, $3, '<p>old body</p>', '<p>old body</p>',
+        'old body', 1, 'shared', $4, FALSE)`,
+    [confluenceId, spaceKey, title, userId],
+  );
+}
+
+async function waitForEmbeddingToSettle(userId: string): Promise<void> {
+  await vi.waitFor(async () => {
+    const status = await getSyncStatus(userId);
+    expect(status.status).toBe('idle');
+  }, { timeout: 10_000 });
+}
+
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'sync-service webhook delivery — real PostgreSQL, Redis, and HTTP',
+  () => {
+    beforeAll(async () => {
+      originalAttachmentRoot = process.env.ATTACHMENTS_DIR;
+      originalPatEncryptionKey = process.env.PAT_ENCRYPTION_KEY;
+      process.env.PAT_ENCRYPTION_KEY = 'sync-webhook-test-key-at-least-32-bytes';
+      attachmentRoot = await mkdtemp(join(tmpdir(), 'sync-webhook-'));
+      process.env.ATTACHMENTS_DIR = attachmentRoot;
+
+      await setupTestDb();
+      await listen(fixture);
+      const address = fixture.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Webhook/Confluence fixture did not bind TCP');
+      }
+      fixtureBaseUrl = `http://127.0.0.1:${address.port}`;
+
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
+    }, 30_000);
+
+    beforeEach(async () => {
+      await Promise.allSettled(pendingDeliveries);
+      pendingDeliveries.length = 0;
+      _resetWebhookEmitHookForTests();
+      spaces.clear();
+      rejectPageFetch.clear();
+      requestedPaths.length = 0;
+      receivedWebhooks.length = 0;
+      await truncateAllTables();
+      await redis.flushDb();
+      setWebhookEmitHook(deliverThroughHttp);
+    });
+
+    afterAll(async () => {
+      await Promise.allSettled(pendingDeliveries);
+      _resetWebhookEmitHookForTests();
+      setRedisClient(null);
+      if (redis.isOpen) await redis.quit();
+      await close(fixture);
+      await teardownTestDb();
+      await rm(attachmentRoot, { recursive: true, force: true });
+
+      if (originalAttachmentRoot === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentRoot;
+      if (originalPatEncryptionKey === undefined) delete process.env.PAT_ENCRYPTION_KEY;
+      else process.env.PAT_ENCRYPTION_KEY = originalPatEncryptionKey;
+    });
+
+    it('delivers one aggregate completion per accessible space from the rows actually created, updated, and deleted', async () => {
+      addSpace('ALPHA', 'Alpha', [
+        page('alpha-new', 'Alpha new'),
+        page('alpha-updated', 'Alpha updated', 2),
+      ]);
+      addSpace('BETA', 'Beta', [page('beta-new', 'Beta new')]);
+      addSpace('HIDDEN', 'Hidden', [page('hidden-new', 'Hidden new')]);
+      const userId = await seedUser(['ALPHA', 'BETA']);
+      await seedExistingPage(userId, 'ALPHA', 'alpha-updated', 'Alpha old');
+      await seedExistingPage(userId, 'ALPHA', 'alpha-gone', 'Alpha gone');
+
+      await syncUser(userId);
+
+      await vi.waitFor(() => expect(receivedWebhooks).toHaveLength(2));
+      await Promise.allSettled(pendingDeliveries);
+      await waitForEmbeddingToSettle(userId);
+
+      const completions = [...receivedWebhooks].sort(
+        (left, right) => left.data.spaceKey.localeCompare(right.data.spaceKey),
+      );
+      expect(completions.map((event) => ({ type: event.type, ...event.data }))).toEqual([
+        expect.objectContaining({
+          type: 'sync.completed',
+          spaceKey: 'ALPHA',
+          pagesCreated: 1,
+          pagesUpdated: 1,
+          pagesDeleted: 1,
+        }),
+        expect.objectContaining({
+          type: 'sync.completed',
+          spaceKey: 'BETA',
+          pagesCreated: 1,
+          pagesUpdated: 0,
+          pagesDeleted: 0,
+        }),
+      ]);
+      for (const completion of completions) {
+        expect(completion.data.durationMs).toBeGreaterThanOrEqual(0);
+        expect(Number.isNaN(Date.parse(completion.data.completedAt))).toBe(false);
+      }
+
+      const persisted = await query<PersistedPage>(
+        `SELECT confluence_id, source, space_key, title, version, deleted_at
+           FROM pages
+          ORDER BY confluence_id`,
+      );
+      expect(persisted.rows.map((row) => ({
+        confluenceId: row.confluence_id,
+        source: row.source,
+        spaceKey: row.space_key,
+        title: row.title,
+        version: row.version,
+        deleted: row.deleted_at !== null,
+      }))).toEqual([
+        {
+          confluenceId: 'alpha-gone', source: 'confluence', spaceKey: 'ALPHA',
+          title: 'Alpha gone', version: 1, deleted: true,
+        },
+        {
+          confluenceId: 'alpha-new', source: 'confluence', spaceKey: 'ALPHA',
+          title: 'Alpha new', version: 1, deleted: false,
+        },
+        {
+          confluenceId: 'alpha-updated', source: 'confluence', spaceKey: 'ALPHA',
+          title: 'Alpha updated', version: 2, deleted: false,
+        },
+        {
+          confluenceId: 'beta-new', source: 'confluence', spaceKey: 'BETA',
+          title: 'Beta new', version: 1, deleted: false,
+        },
+      ]);
+      expect(receivedWebhooks.every((event) => event.type === 'sync.completed')).toBe(true);
+    });
+
+    it('does not tell the receiver a space completed when a fatal page fetch follows a real insert', async () => {
+      addSpace('FAIL', 'Failure boundary', [
+        page('partially-created', 'Partially created'),
+        page('fatal-page', 'Fatal page'),
+      ]);
+      rejectPageFetch.add('fatal-page');
+      const userId = await seedUser(['FAIL']);
+
+      await expect(syncUser(userId)).rejects.toThrow('Invalid or expired PAT');
+      await Promise.allSettled(pendingDeliveries);
+
+      const inserted = await query<{ confluence_id: string }>(
+        `SELECT confluence_id FROM pages WHERE confluence_id = 'partially-created'`,
+      );
+      const syncStamp = await query<{ last_synced: Date | null }>(
+        `SELECT last_synced FROM spaces WHERE space_key = 'FAIL'`,
+      );
+      expect(inserted.rows).toEqual([{ confluence_id: 'partially-created' }]);
+      expect(syncStamp.rows[0]!.last_synced).toBeNull();
+      expect(receivedWebhooks).toEqual([]);
+    });
+
+    it('does not contact Confluence or deliver a completion when real RBAC grants no spaces', async () => {
+      addSpace('UNASSIGNED', 'Unassigned', [page('never-read', 'Never read')]);
+      const userId = await seedUser([]);
+
+      await syncUser(userId);
+      await Promise.allSettled(pendingDeliveries);
+
+      const upstreamRequests = requestedPaths.filter((path) => path.includes('/rest/api/'));
+      const persisted = await query<{ confluence_id: string }>(
+        `SELECT confluence_id FROM pages WHERE confluence_id = 'never-read'`,
+      );
+      expect(upstreamRequests).toEqual([]);
+      expect(persisted.rows).toEqual([]);
+      expect(receivedWebhooks).toEqual([]);
+    });
+  },
+);

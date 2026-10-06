@@ -12,7 +12,7 @@ import {
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
 import { chooseLexicalParser } from '../../../core/utils/lexical-query.js';
-import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { ragRetrievalPagesPredicate } from '../../../core/services/page-visibility.js';
 import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
 import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
@@ -32,15 +32,19 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
+import { getRetainedImageAnalysisIdentity } from './image-analysis-provider.js';
+import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
+import { readDerivedProvenance, type DerivedProvenance } from './derived-provenance.js';
 import {
-  searchImageLeg,
-  imageRawLimit,
-  type ImageHit,
-  type ImageLegOutcome,
-  type ImageLegPage,
-} from './image-leg-search.js';
+  bestChunkLateralSql,
+  derivedRankArmSql,
+  lexicalChunkUnusableSql,
+  lexicalTsQuery,
+  resolveLexicalChunk,
+  type BestChunkColumns,
+} from './lexical-chunk-resolution.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
@@ -118,12 +122,8 @@ interface SearchResult {
    * is: a page's vector contribution is its best chunk's reciprocal rank only
    * (per-chunk summing measurably crushed the head — see
    * reciprocalRankFusion), so `rrfWorstCase(true)` ≈ 0.0328 bounds those paths
-   * at every fetch width, rerank pool and raw chunk window alike. Where
-   * #1115 P3's image leg also runs — a deployment with an `image_embedding`
-   * assignment and a non-empty index — the bound is one leg higher,
-   * `rrfWorstCase(true, 60, true)` = 3/61 ≈ 0.0492, and it is still
-   * width-invariant. A test pins both figures rather than leaving them as
-   * prose.
+   * at every fetch width, rerank pool and raw chunk window alike. A test pins
+   * that figure rather than leaving it as prose.
    *
    * The straddle caveat runs the other way now: `max_score` analytics rows
    * written BEFORE the #1106 deploy carry the old summed scale — up to
@@ -160,14 +160,43 @@ interface SearchResult {
    */
   keywordRank: number | null;
   /**
-   * The best chunk's `chunk_index` (document position) when this record's
-   * representative text came from the vector leg; absent for keyword-only
-   * rows. #1106 PR 2's sibling assembly anchors its contiguous window here.
-   * Document order but NOT contiguous — embedding batches skipped on a
-   * context-length 400 leave holes, so consumers order by it, never do
-   * arithmetic on it.
+   * The best chunk's `chunk_index` (document position). #1106 PR 2's sibling
+   * assembly anchors its contiguous window here. Document order but NOT
+   * contiguous — embedding batches skipped on a context-length 400 leave
+   * holes, so consumers order by it, never do arithmetic on it.
+   *
+   * **Present on keyword and pinned rows since #1617** (ADR-027 D10): both
+   * now resolve a page hit to the CHUNK that matched, so both carry an
+   * anchor. It is still ABSENT in three cases, and each one is a claim: the
+   * page has no `page_embeddings` rows at all (the `substring(body_text,1,500)`
+   * fallback, the only surviving use of that prefix); the pin declined the
+   * swap because no chunk matched the identifier (erratum #1617/Q1, so the
+   * row is a budget-sized lede rather than something retrieval picked); or
+   * the row came from the legacy image leg, which reaches a page without
+   * matching any of its text. Sibling assembly reads this as "retrieval
+   * measured this position", so a row that measured nothing must not carry
+   * one.
    */
   chunkIndex?: number;
+  /**
+   * ADR-027 D11 (#1617) — provenance of the IMAGE this chunk's text was
+   * derived from, read from `page_embeddings.metadata` and present only on a
+   * derived chunk (`metadata.source = 'image_analysis'`).
+   *
+   * Set by every leg that can return one: the vector leg, the lexical leg's
+   * derived arm and the #1107 pin. It describes THIS row's `chunkText` and
+   * nothing else — a page found by both legs keeps the vector chunk
+   * (`reciprocalRankFusion`'s never-replace rule), so a row that lost its
+   * derived chunk to a better authored one correctly carries no provenance
+   * and cites no image.
+   *
+   * Two consumers, one shape: `llm-ask.ts` appends a D12 `kind: 'image'`
+   * citation per distinct `(pageId, attachmentSource, attachmentKey)`, and
+   * `retrieved-images.ts` selects answer-time bytes from the same set. Both
+   * go through `derived-provenance.ts`; neither reads `metadata` itself, and
+   * nothing joins `page_image_analyses` at query time.
+   */
+  derived?: DerivedProvenance;
   /**
    * #1106 PR 2 — the assembled sibling window for the LLM context, present
    * only when `assembleContext` ran and this page had fetchable siblings.
@@ -214,52 +243,6 @@ interface SearchResult {
    * universal constant.
    */
   rerankScore?: number | null;
-  /**
-   * #1115 P3 — the images on THIS page that the image leg matched, best-first
-   * and capped at `MAX_IMAGE_HITS_PER_PAGE`. Absent when the leg did not reach
-   * this page (which is every page when the leg is off).
-   *
-   * Present on a page the text legs found too: the leg contributes a rank to
-   * the fusion, and the hits ride along on whichever row won the merge, so
-   * `/llm/ask` can list the pictures and P4 can choose which bytes to send.
-   * The per-hit `similarity` is a CROSS-MODAL cosine and orders images within
-   * this leg only — it never becomes `vectorScore`, never reaches
-   * `computeRetrievalConfidence`, and is never put on the wire (ADR-025 §8's
-   * calibration warning).
-   */
-  imageHits?: ImageHit[];
-  /**
-   * #1115 P3 — this page was reached ONLY by the image leg, so its
-   * `chunkText` is a stand-in rather than something retrieval matched: chunk 0
-   * of the page, or (see {@link SearchResult.imageTextSynthesized}) its title.
-   *
-   * Read by `computeRetrievalConfidence`, which excludes these rows from the
-   * confidence SAMPLE entirely — see the argument there.
-   */
-  imageOnly?: true;
-  /**
-   * #1115 P3 — set with `imageOnly` when the page had no `chunk_index 0` row
-   * at all (an image-only page below `MIN_EMBEDDABLE_TEXT_CHARS`, which is
-   * invisible to both text legs today) and `chunkText` is therefore the page
-   * TITLE, synthesised here.
-   *
-   * Its own flag rather than an inference, because "the row came from chunk 0"
-   * and "the row is a title we made up" are different claims about the text a
-   * cross-encoder is about to score, and only the second one is text the page
-   * does not contain.
-   */
-  imageTextSynthesized?: true;
-  /**
-   * #1115 P3 — where this page's best image sat in the image leg's RAW row
-   * stream ({@link ImageLegPage.bestRawIndex}). Internal to fusion: it is read
-   * only by {@link fuseWithStableHead}'s narrow reconstruction and never
-   * reaches a wire shape (`/api/search` and `/llm/ask` both map explicitly).
-   *
-   * Absent on every row the two text legs produced, and absent on an image row
-   * a test builds by hand — the reconstruction then falls back to the row's
-   * array position, which is what an uncrowded raw window would give.
-   */
-  imageRawIndex?: number;
 }
 
 /**
@@ -357,7 +340,7 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * `admin_settings.rag_ef_search` (default 100), resolved by `efSearchFor`.
  *
  * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
- * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
+ * as an additional predicate ALONGSIDE `ragRetrievalPagesPredicate` — it can only
  * ever shrink the ACL-visible set, never widen it. Standalone pages carry no
  * `space_key` (NULL), so scoping excludes them, matching the keyword-mode
  * filter `routes/knowledge/search.ts` has always applied. Optional and
@@ -375,7 +358,7 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * `halfvec`, and `<=>` resolves the untyped parameter from the column's own
  * type — a `::vector` cast would break exactly the halfvec case the shadow
  * tiering exists for. Everything but the column identifier — the fan-out, the
- * ef_search coverage, `visiblePagesPredicate` — is shared by construction.
+ * ef_search coverage, `ragRetrievalPagesPredicate` — is shared by construction.
  */
 export type VectorSearchColumn = 'embedding' | 'embedding_next';
 
@@ -461,6 +444,9 @@ export async function vectorSearch(
           chunk_index: number;
           // `space_key` is NULL for locally-created (standalone) pages, same as
           // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
+          // `metadata` also carries ADR-027 D9.4 provenance on a derived
+          // chunk; `readDerivedProvenance` is the only thing that reads those
+          // keys, so they are not restated here.
           metadata: { page_title: string; section_title: string; space_key: string | null };
           // Nullable BY DECLARATION, not by accident: `pe.<column> <=> $2` is
           // NULL whenever the vector is (a #1116 swap window on the live
@@ -475,7 +461,7 @@ export async function vectorSearch(
                   pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
-           WHERE ${visiblePagesPredicate(1, 4)}
+           WHERE ${ragRetrievalPagesPredicate(1, 4)}
            AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
            ORDER BY pe.${column} <=> $2
            LIMIT $3`,
@@ -509,18 +495,25 @@ export async function vectorSearch(
               (row): row is typeof row & { distance: number } =>
                 row.distance !== null && row.distance !== undefined,
             )
-            .map((row) => ({
-              pageId: row.page_id,
-              confluenceId: row.confluence_id,
-              chunkText: row.chunk_text,
-              chunkIndex: row.chunk_index,
-              pageTitle: row.metadata.page_title,
-              sectionTitle: row.metadata.section_title,
-              spaceKey: row.metadata.space_key,
-              score: 1 - row.distance, // Convert distance to similarity
-              vectorScore: 1 - row.distance,
-              keywordRank: null,
-            })),
+            .map((row) => {
+              // ADR-027 D11: a derived chunk is an ORDINARY result — same
+              // score, same window, same MMR — plus the provenance its
+              // citation and its answer-time bytes are keyed on.
+              const derived = readDerivedProvenance(row.metadata);
+              return {
+                pageId: row.page_id,
+                confluenceId: row.confluence_id,
+                chunkText: row.chunk_text,
+                chunkIndex: row.chunk_index,
+                pageTitle: row.metadata.page_title,
+                sectionTitle: row.metadata.section_title,
+                spaceKey: row.metadata.space_key,
+                score: 1 - row.distance, // Convert distance to similarity
+                vectorScore: 1 - row.distance,
+                keywordRank: null,
+                ...(derived ? { derived } : {}),
+              };
+            }),
           Number(limit),
         );
         // `rag.hits` counts kept CHUNK rows (post-truncation, up to ~fanout x
@@ -548,7 +541,14 @@ export async function vectorSearch(
 }
 
 /**
- * Keyword search: PostgreSQL full-text search on pages.
+ * Keyword search: PostgreSQL full-text search over `pages.tsv` UNION the
+ * DERIVED per-chunk documents (`page_embeddings.chunk_tsv` where
+ * `metadata.source = 'image_analysis'`), page rank `GREATEST` of the two, and
+ * every surviving page resolved to the CHUNK that matched (ADR-027 D10,
+ * #1617). A fact that exists only inside a screenshot is therefore findable
+ * lexically, and an authored hit deep in a long page now cites that passage
+ * rather than the page's first 500 characters.
+ *
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
  *
@@ -597,6 +597,35 @@ export async function keywordSearch(
       const spaceKey = opts?.spaceKey;
 
       const kwSpaces = await getUserAccessibleSpaces(userId);
+      // ADR-027 D10 (#1617). The leg is now two queries' worth of work in
+      // one statement, and the three parts are deliberately separate:
+      //
+      //  - `cand` is the page CANDIDATE UNION: pages whose `pages.tsv`
+      //    matches (unchanged, index-driven, and the ONLY contributor of an
+      //    authored rank) plus pages holding a matching DERIVED chunk. Both
+      //    arms carry `ragRetrievalPagesPredicate` and the space narrowing at the
+      //    same parameter indexes — the derived arm reads derived TEXT, so
+      //    D14 must hold inside the query, not over its output.
+      //  - `ranked` collapses the union with `MAX(rank) GROUP BY page_id`,
+      //    which IS the ADR's `GREATEST(ts_rank(pages.tsv,q),
+      //    MAX(ts_rank(derived.chunk_tsv,q)))`, and is what keeps a page with
+      //    five matching images at ONE candidate and ONE vote. The LIMIT
+      //    stays on pages, so the leg's width semantics are unchanged.
+      //  - the outer `LATERAL` resolves each surviving page to the chunk that
+      //    matched, authored or derived. This replaces
+      //    `substring(body_text,1,500)` for EVERY keyword hit — the measured
+      //    change the issue's scope note names (rerank input and the
+      //    `/api/search` hybrid snippet move with it). The prefix survives
+      //    only for a page with no usable chunk row — and since review r1 it
+      //    is only SELECTED for those rows, instead of costing 500 bytes on
+      //    every row for a value the mapper discards.
+      //
+      // `pages.tsv` itself is untouched (ADR `:4265-4267`): an authored-only
+      // page's rank is the same `ts_rank` value it was before this change, so
+      // arm C's lexical numbers stand beside the historical ones.
+      const tsq = lexicalTsQuery(parser, ftsLang, 2);
+      const visibility = ragRetrievalPagesPredicate(1, 4);
+      const spaceFilter = spaceKey ? ' AND cp.space_key = $5' : '';
       const result = await query<{
         page_id: number;
         confluence_id: string | null;
@@ -604,30 +633,60 @@ export async function keywordSearch(
         space_key: string | null;
         body_text: string;
         rank: number;
-      }>(
-        `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
-                ts_rank(cp.tsv, ${parser}('${ftsLang}', $2)) AS rank
-         FROM pages cp
-         WHERE cp.tsv @@ ${parser}('${ftsLang}', $2)
-           AND ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
-         ORDER BY rank DESC
-         LIMIT $3`,
+      } & BestChunkColumns>(
+        `WITH cand AS (
+           SELECT cp.id AS page_id, ts_rank(cp.tsv, ${tsq}) AS rank
+             FROM pages cp
+            WHERE cp.tsv @@ ${tsq}
+              AND ${visibility}
+              AND cp.deleted_at IS NULL${spaceFilter}
+           UNION ALL
+           ${derivedRankArmSql(tsq, visibility, spaceFilter)}
+         ), ranked AS (
+           SELECT page_id, MAX(rank) AS rank
+             FROM cand
+            GROUP BY page_id
+            ORDER BY rank DESC
+            LIMIT $3
+         )
+         SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                -- Only for a row the chunk resolution cannot answer (review
+                -- r1 finding 6). The prefix was selected for EVERY keyword
+                -- row while the mapper discards it on the common path, at up
+                -- to 500 bytes per row per query. The condition is not
+                -- restated here: lexicalChunkUnusableSql is the SQL half of
+                -- the same 'usable' rule resolveLexicalChunk applies below.
+                CASE WHEN ${lexicalChunkUnusableSql()}
+                     THEN substring(coalesce(cp.body_text, ''), 1, 500)
+                     ELSE '' END AS body_text,
+                ranked.rank AS rank,
+                best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
+           FROM ranked
+           JOIN pages cp ON cp.id = ranked.page_id
+           ${bestChunkLateralSql(tsq)}
+          ORDER BY rank DESC`,
         spaceKey ? [kwSpaces, trimmed, limit, userId, spaceKey] : [kwSpaces, trimmed, limit, userId],
       );
 
-      const mapped = result.rows.map((row) => ({
-        pageId: row.page_id,
-        confluenceId: row.confluence_id,
-        chunkText: row.body_text,
-        pageTitle: row.title,
-        sectionTitle: row.title,
-        spaceKey: row.space_key,
-        score: row.rank,
-        vectorScore: null,
-        keywordRank: row.rank,
-      }));
+      const mapped = result.rows.map((row) => {
+        const resolved = resolveLexicalChunk(row, {
+          text: row.body_text,
+          sectionTitle: row.title,
+        });
+        return {
+          pageId: row.page_id,
+          confluenceId: row.confluence_id,
+          chunkText: resolved.chunkText,
+          pageTitle: row.title,
+          sectionTitle: resolved.sectionTitle,
+          spaceKey: row.space_key,
+          score: row.rank,
+          vectorScore: null,
+          keywordRank: row.rank,
+          ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
+          ...(resolved.derived ? { derived: resolved.derived } : {}),
+        };
+      });
       span?.setAttribute('rag.hits', mapped.length);
       recordHistogram(
         RETRIEVAL_STAGE_DURATION_METRIC,
@@ -643,42 +702,34 @@ export async function keywordSearch(
 
 /**
  * Largest RRF score a single page can reach: its best vector chunk at leg
- * rank 1, optionally plus the top keyword slot and (#1115 P3) the top image
- * slot — 1/(k+1) per leg. So **2/61 ≈ 0.0328 with the two text legs, and
- * 3/61 ≈ 0.0492 where the image leg also participates**.
+ * rank 1, optionally plus the top keyword slot — 1/(k+1) per leg. So
+ * **2/61 ≈ 0.0328 with the two legs**.
  *
- * The ceiling is WIDTH-INVARIANT either way, which is the property #1106's
+ * The ceiling is WIDTH-INVARIANT, which is the property #1106's
  * best-chunk-only rule bought: per-chunk summing is gone (see
- * reciprocalRankFusion) and the image leg is page-denominated from the start,
- * so neither the fetch width, the rerank pool, nor the raw chunk window moves
- * it. What moves it is the LEG COUNT, and only that.
+ * reciprocalRankFusion), so neither the fetch width, the rerank pool, nor the
+ * raw chunk window moves it. What moves it is the LEG COUNT, and only that.
  *
  * Exported for the test that pins `SearchResult.score`'s documented bounds.
  * The prose version of this has been wrong three times, in both directions,
  * while the per-CHUNK vector leg let one page's contributions sum — the
  * history matters for analytics: `max_score` rows written before the #1106
  * deploy carry the old SUMMED scale (up to ~0.17 chat / ~0.42 with a rerank
- * pool assigned) and are only loosely comparable with new bounded ones. Rows
- * straddling the moment a VL model is first assigned are the same loose class
- * one band lower, between the 2/61 and 3/61 ceilings.
+ * pool assigned) and are only loosely comparable with new bounded ones.
+ * #1618 stage 2 retired ADR-025's image leg, so rows written while it was
+ * live are the same loose class one band higher, up to its 3/61 ceiling.
  */
-function rrfWorstCase(withKeywordHit = false, k = 60, withImageHit = false): number {
-  // #1115 P3 added the third term. It is OPTIONAL and defaults false so every
-  // existing caller (and the test that pins the two-leg figure) is unchanged:
-  // the image leg does not exist on a deployment with no `image_embedding`
-  // assignment.
-  return (1 + (withKeywordHit ? 1 : 0) + (withImageHit ? 1 : 0)) / (k + 1);
+function rrfWorstCase(withKeywordHit = false, k = 60): number {
+  return (1 + (withKeywordHit ? 1 : 0)) / (k + 1);
 }
 
 /**
- * Reciprocal Rank Fusion (RRF) — combines the vector, keyword and (#1115 P3)
- * image legs. RRF score = sum(1 / (k + rank_i)) over the legs a page appears
- * in.
+ * Reciprocal Rank Fusion (RRF) — combines the vector and keyword legs. RRF
+ * score = sum(1 / (k + rank_i)) over the legs a page appears in.
  */
 function reciprocalRankFusion(
   vectorResults: SearchResult[],
   keywordResults: SearchResult[],
-  imageResults: SearchResult[] = [],
   k = 60,
 ): SearchResult[] {
   // The per-leg raw values are taken from WHICH ARGUMENT a result arrived in,
@@ -693,7 +744,6 @@ function reciprocalRankFusion(
       score: number;
       vectorScore: number | null;
       keywordRank: number | null;
-      imageHits: ImageHit[] | undefined;
     }
   >();
 
@@ -731,10 +781,7 @@ function reciprocalRankFusion(
         existing.vectorScore = result.score;
       }
     } else {
-      scoreMap.set(key, {
-        result, score: rrf, vectorScore: result.score, keywordRank: null,
-        imageHits: result.imageHits,
-      });
+      scoreMap.set(key, { result, score: rrf, vectorScore: result.score, keywordRank: null });
       vectorPagesSeen++;
     }
   });
@@ -760,41 +807,7 @@ function reciprocalRankFusion(
         existing.keywordRank = result.score;
       }
     } else {
-      scoreMap.set(key, {
-        result, score: rrf, vectorScore: null, keywordRank: result.score,
-        imageHits: result.imageHits,
-      });
-    }
-  });
-
-  // Score from the image leg (#1115 P3). It arrives already PAGE-DENOMINATED
-  // and rank-ordered (`groupByPage`), so the array index IS the rank and one
-  // page can only ever contribute once — the third leg's version of the
-  // best-chunk-only rule, and the reason a page carrying five near-identical
-  // screenshots cannot out-score a page whose single image matches better.
-  //
-  // It runs LAST of the three, which decides the tie-break the same way the
-  // keyword loop's position does: at equal scores the Map's insertion order
-  // plus the stable sort keep a vector-led page ahead of a keyword-led one and
-  // both ahead of an image-only one. That ordering is load-bearing for #1105 —
-  // `computeRetrievalConfidence` reads the SIMILARITY basis off `results[0]`,
-  // and an image-only row must not be able to displace a measured vector row
-  // from the head and turn a measurable set into an unmeasurable one.
-  //
-  // The row OBJECT is never replaced: a page found by both legs keeps the
-  // vector chunk (purpose-built for LLM context) and only GAINS its hits.
-  imageResults.forEach((result, rank) => {
-    const key = String(result.pageId);
-    const existing = scoreMap.get(key);
-    const rrf = 1 / (k + rank + 1);
-    if (existing) {
-      existing.score += rrf;
-      existing.imageHits = result.imageHits;
-    } else {
-      scoreMap.set(key, {
-        result, score: rrf, vectorScore: null, keywordRank: null,
-        imageHits: result.imageHits,
-      });
+      scoreMap.set(key, { result, score: rrf, vectorScore: null, keywordRank: result.score });
     }
   });
 
@@ -808,7 +821,6 @@ function reciprocalRankFusion(
       score: entry.score,
       vectorScore: entry.vectorScore,
       keywordRank: entry.keywordRank,
-      ...(entry.imageHits ? { imageHits: entry.imageHits } : {}),
     }));
 }
 
@@ -857,7 +869,6 @@ export function fuseWithStableHead(
   vectorResults: SearchResult[],
   keywordResults: SearchResult[],
   rankWidth: number,
-  imageResults: SearchResult[] = [],
 ): SearchResult[] {
   // ONE construction (#1269 re-verification): the head is ALWAYS what a
   // narrower request (stage limit = rankWidth) would have fetched, built by
@@ -881,29 +892,14 @@ export function fuseWithStableHead(
   // residual is graph-walk noise, not a reordering rule.
   const narrowV = truncateAtDistinctPages(vectorResults.slice(0, vectorRawLimit(rankWidth)), rankWidth);
   const narrowK = truncateAtDistinctPages(keywordResults, rankWidth);
-  // #1115 P3: the image leg arrives one row per page, but it was DENOMINATED
-  // that way from a raw stream of image rows — so a plain prefix is NOT what a
-  // narrow request would have had, for exactly the reason the vector leg redoes
-  // its own raw-window arithmetic one line above. A narrow request reads
-  // `imageRawLimit(rankWidth)` raw rows (40 at the default width), and two
-  // pages carrying `rag_images_per_page_max` pictures each fill that window
-  // between them — so its leg would report two pages where `slice(0, rankWidth)`
-  // reports ten, and the eight extras dilute the head #1103 measured. The page
-  // cap is reapplied after the window, because `groupByPage(rows, rankWidth)`
-  // applies both.
-  const imageNarrowRaw = imageRawLimit(rankWidth);
-  const narrowI = imageResults
-    .filter((r, i) => (r.imageRawIndex ?? i) < imageNarrowRaw)
-    .slice(0, rankWidth);
   if (
     narrowV.length === vectorResults.length
     && narrowK.length === keywordResults.length
-    && narrowI.length === imageResults.length
   ) {
-    return reciprocalRankFusion(vectorResults, keywordResults, imageResults);
+    return reciprocalRankFusion(vectorResults, keywordResults);
   }
-  const head = reciprocalRankFusion(narrowV, narrowK, narrowI);
-  const wide = reciprocalRankFusion(vectorResults, keywordResults, imageResults);
+  const head = reciprocalRankFusion(narrowV, narrowK);
+  const wide = reciprocalRankFusion(vectorResults, keywordResults);
   // Head pages are found from prefixes of the same legs, so head ⊆ wide.
   const wideById = new Map(wide.map((r) => [r.pageId, r]));
   const headIds = new Set(head.map((r) => r.pageId));
@@ -955,19 +951,16 @@ export type SearchAnalyticsType =
  * and on every row written before migration 088, where NULL means
  * "not recorded", not "healthy".
  *
- * `image_leg_unavailable` (#1115 P3) is the odd one out and deliberately so:
- * the other three are all facts about the VECTOR leg, which is the one that
- * decides whether an answer is grounded at all. An image-leg bypass changes
- * which pages come back — which is why it is recorded rather than left silent
- * like a rerank bypass — but a text-side reason always describes a worse
- * outage, and there is one column. See `deriveDegradedReason` for the
- * precedence and why it is not a second column.
+ * Every member is a fact about the VECTOR leg, which is the one that decides
+ * whether an answer is grounded at all. #1618 stage 2 retired ADR-025's image
+ * leg and with it the fourth member, `image_leg_unavailable`: historical
+ * `search_analytics` rows still carry that text, so a reader matching on it is
+ * matching on history, not on a reason this release can write.
  */
 export type DegradedReason =
   | 'no_embeddings'
   | 'partial_embeddings'
-  | 'embedding_failed'
-  | 'image_leg_unavailable';
+  | 'embedding_failed';
 
 import {
   computeRetrievalConfidence,
@@ -1066,6 +1059,12 @@ export const DEGRADED_COVERAGE_THRESHOLD = 0.95;
 
 export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCoverage> {
   const covSpaces = await getUserAccessibleSpaces(userId);
+  // ADR-027 D9.5: an image-only page with a currently valid analysis is
+  // embeddable, so the denominator counts it beside the prose pages, under
+  // the same validity predicate composition uses. With nothing retained the
+  // predicate is unsatisfiable, so the count is what it was before ADR-027.
+  const retained = await getRetainedImageAnalysisIdentity();
+  const analyzedClause = ` OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = cp.id AND ${validitySql('a', 3, 4, 5)})`;
   const result = await query<{ embedded: number; total: number }>(
     `SELECT
        COUNT(*) FILTER (WHERE EXISTS (
@@ -1073,12 +1072,12 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
        ))::int AS embedded,
        COUNT(*)::int AS total
      FROM pages cp
-     WHERE ${visiblePagesPredicate(1, 2)}
+     WHERE ${ragRetrievalPagesPredicate(1, 2)}
        AND cp.deleted_at IS NULL
        AND COALESCE(cp.page_type, 'page') != 'folder'
        AND cp.body_html IS NOT NULL
-       AND char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}`,
-    [covSpaces, userId],
+       AND (char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}${analyzedClause})`,
+    [covSpaces, userId, ...validityParamValues({ identityHash: retained?.identityHash ?? null })],
   );
   const embedded = result.rows[0]?.embedded ?? 0;
   const total = result.rows[0]?.total ?? 0;
@@ -1095,26 +1094,17 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
  * missing *entirely*, whatever the corpus looks like — and the measured
  * coverage still travels separately on the analytics row.
  *
- * #1115 P3 adds `image_leg_unavailable` at the BOTTOM of that ladder: it is
- * recorded only when the text side is healthy. `search_analytics` has one
- * `degraded_reason` column and the value that belongs in it is the one that
- * hurt the answer most — during an embedding outage an operator needs to see
- * `embedding_failed`, and an image leg that also fell over in the same second
- * is a footnote to it, not a competing headline. The alternative (a second
- * column, or a comma-joined value) buys a fact nobody has asked a question
- * about at the cost of every existing reader's `=` predicate.
  */
 export function deriveDegradedReason(
   embeddingFailed: boolean,
   coverage: EmbeddingCoverage | null,
-  imageLegFailed = false,
 ): DegradedReason | null {
   if (embeddingFailed) return 'embedding_failed';
   if (coverage) {
     if (coverage.totalPages > 0 && coverage.embeddedPages === 0) return 'no_embeddings';
     if (coverage.coverage < DEGRADED_COVERAGE_THRESHOLD) return 'partial_embeddings';
   }
-  return imageLegFailed ? 'image_leg_unavailable' : null;
+  return null;
 }
 
 /**
@@ -1316,25 +1306,6 @@ export interface HybridSearchOptions {
    * branch is the only caller today.
    */
   spaceKey?: string;
-  /**
-   * #1115 P3 — force the image leg on or off for THIS request, bypassing
-   * `admin_settings.rag_image_leg_enabled`. `undefined` (every caller today
-   * except the two below) follows the setting.
-   *
-   * `false` is the meaningful direction and has two users: deep search's
-   * PARAPHRASE legs (the original question's image hits are the only ones
-   * worth having — see `multi-query-search.ts` for why feeding them to all
-   * three legs would multiply the image evidence by the leg weights), and
-   * P5b's paired eval, which measures leg-on against leg-off inside one
-   * process. Flipping the admin setting for that measurement would change
-   * what every other request on the instance retrieves for the duration of
-   * the run.
-   *
-   * `true` forces past the SETTING only. It cannot conjure a leg that has no
-   * assigned model or no rows to search — those are facts about the
-   * deployment, not preferences.
-   */
-  imageLeg?: boolean;
 }
 
 export async function hybridSearch(
@@ -1503,11 +1474,47 @@ async function lookupIdentifier(
   // 0/off falls back to the old fixed lede rather than to nothing.
   const budget = await getRagContextCharsPerPage();
   const excerptChars = budget > 0 ? budget : PIN_EXCERPT_FALLBACK_CHARS;
-  const select = `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                         substring(cp.body_text, 1, $5) AS excerpt
-                  FROM pages cp
-                  WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
-  type Row = { page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null };
+  // ADR-027 D10 gives the pin the same chunk resolution as the keyword leg,
+  // over a tsquery built from the IDENTIFIER — which is what makes an
+  // OCR-only `INC-2203` cite the description that contains it instead of the
+  // page's opening prose.
+  //
+  // **Erratum #1617/Q1 (owner decision).** The swap happens ONLY when a
+  // chunk really matches (`best.chunk_matched`). Read literally, ADR
+  // `:4276` ("a title-only match therefore yields chunk 0") would replace
+  // this stage's `rag_context_chars_per_page`-sized lede with one ~1-2k
+  // chunk on every "find the page called X" pin — and this is the one row
+  // sibling assembly cannot reach (it runs before this stage, so the row can
+  // never grow a window back), which is exactly why #1273 F9 widened the
+  // excerpt to the per-page budget in the first place. So a bare identifier
+  // pin keeps its budget lede, and only a real `chunk_tsv @@ q` hit is
+  // better evidence than it.
+  //
+  // `chooseLexicalParser` guards the same failure the keyword leg guards: a
+  // `title` identifier is an arbitrary page title, and websearch_to_tsquery
+  // ERRORS on punctuation shapes plainto merely flattens. A pin must never
+  // fail the search.
+  const ftsLang = await getFtsLanguage();
+  const identParser = chooseLexicalParser(ident.value);
+  // The excerpt parameter is $5 in every branch; the identifier tsquery text
+  // goes LAST because each branch numbers its own tail differently (an
+  // UNREFERENCED parameter cannot type-infer and kills the statement).
+  const selectWith = (tsqTextParam: number): string => {
+    const tsq = lexicalTsQuery(identParser, ftsLang, tsqTextParam);
+    return `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                   substring(cp.body_text, 1, $5) AS excerpt,
+                   best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
+            FROM pages cp
+            ${bestChunkLateralSql(tsq)}
+            WHERE ${ragRetrievalPagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+  };
+  type Row = {
+    page_id: number;
+    confluence_id: string | null;
+    title: string;
+    space_key: string | null;
+    excerpt: string | null;
+  } & BestChunkColumns;
   const limit = IDENTIFIER_LOOKUP_CANDIDATES;
   let rows: Row[] = [];
   if (ident.kind === 'pageId') {
@@ -1523,13 +1530,13 @@ async function lookupIdentifier(
     // preference this ORDER BY exists to state.
     const r = fitsInt4
       ? await query<Row>(
-          `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
+          `${selectWith(7)} AND (cp.confluence_id = $2 OR cp.id = $4)
            ORDER BY (cp.confluence_id = $2) DESC NULLS LAST, cp.id ASC LIMIT $6`,
-          [spaces, ident.value, userId, n, excerptChars, limit],
+          [spaces, ident.value, userId, n, excerptChars, limit, ident.value],
         )
       : await query<Row>(
-          `${select} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
-          [spaces, ident.value, userId, limit, excerptChars],
+          `${selectWith(6)} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
+          [spaces, ident.value, userId, limit, excerptChars, ident.value],
         );
     rows = r.rows;
   } else if (ident.kind === 'issueKey') {
@@ -1561,9 +1568,9 @@ async function lookupIdentifier(
     const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}${boundary}`;
     const startsWithKey = `^${ident.value}${boundary}`;
     const titled = await query<Row>(
-      `${select} AND cp.title ~* $2
+      `${selectWith(7)} AND cp.title ~* $2
        ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
-      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit],
+      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit, ident.value],
     );
     rows = titled.rows;
   } else if (ident.kind === 'title') {
@@ -1576,10 +1583,10 @@ async function lookupIdentifier(
     // the two cannot drift; translate() runs before the \s+ collapse
     // because Postgres's \s is ASCII-only.
     const r = await query<Row>(
-      `${select} AND cp.title % $2
+      `${selectWith(8)} AND cp.title % $2
        AND ${NORMALIZED_TITLE('cp.title', '$6', '$7')} = ${NORMALIZED_TITLE('$2', '$6', '$7')}
        ORDER BY cp.id ASC LIMIT $4`,
-      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN],
+      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN, ident.value],
     );
     rows = r.rows;
   } else {
@@ -1601,164 +1608,34 @@ async function lookupIdentifier(
     // collection, and this stage returns pages.
     return [];
   }
-  return rows.map((row) => ({
-    pageId: row.page_id,
-    confluenceId: row.confluence_id,
-    // Head-of-body excerpt — deliberately NOT sibling-assembled (assembly
-    // ran before this stage; #1273 review M7 records the scope line): for
-    // "find page X" the lede is the honest context, and an empty
-    // body_text yields an empty excerpt under a real title.
-    chunkText: row.excerpt ?? '',
-    pageTitle: row.title,
-    sectionTitle: row.title,
-    spaceKey: row.space_key,
-    // Ordering-only, like every other producer's score; pinned rows lead
-    // by ARRAY position and consumers never re-sort.
-    score: 0,
-    vectorScore: null,
-    keywordRank: null,
-    pinned: true as const,
-  }));
-}
-
-interface ImageLegRows {
-  results: SearchResult[];
-  /**
-   * The lede fetch threw, so every image-ONLY page was dropped.
-   *
-   * It is OR'd into `deriveDegradedReason`'s image argument by the caller,
-   * under this leg's own criterion: a bypass is recorded when it changes
-   * which PAGES come back, and this one deletes exactly the pages the leg
-   * exists to make retrievable. The leg still ran, so the pages the text legs
-   * also found keep both their rank contribution and their `imageHits` — it
-   * is a PARTIAL bypass, and `image_leg_unavailable` is the honest value for
-   * it because the column has one slot and no finer vocabulary.
-   */
-  textFetchFailed: boolean;
-}
-
-/**
- * #1115 P3 — turn the image leg's page list into `SearchResult`s so the fusion
- * has one shape to work with.
- *
- * A page the text legs already found reuses THEIR row and only gains
- * `imageHits`: it has a measured `vectorScore` or `keywordRank`, a real
- * chunk, and an anchor for sibling assembly, and replacing any of that with a
- * synthetic row would trade evidence for nothing.
- *
- * A page reached ONLY by the image leg has no row at all, and every stage
- * after fusion reads `chunkText` — so without one it could not be reranked,
- * could not be diffed by MMR, and could not be put in front of the model. It
- * gets its `chunk_index 0` row: the page's own opening prose, which is the
- * honest lede for "this page contains the picture you asked about", and which
- * is text the page actually contains.
- *
- * When the page has NO chunk 0 — an image-only page under
- * `MIN_EMBEDDABLE_TEXT_CHARS`, invisible to both text legs today and the whole
- * reason this leg makes anything newly retrievable — `chunkText` is the TITLE,
- * flagged `imageTextSynthesized`. **P3 owns the consequence** (ADR-025 §5):
- * that text is what the cross-encoder scores and what MMR diffs, so a
- * title-only row will rank poorly under rerank and will look maximally
- * distinct under MMR. Both are acceptable and neither is silent: the row still
- * carries the page, the picture and a title a person can read, and it is
- * excluded from the confidence sample precisely because its "relevance" is a
- * measurement of a title we wrote rather than of the evidence that found it.
- *
- * ONE batched query for all image-only pages, on the main pool — a btree
- * lookup, like sibling assembly's, not a similarity scan.
- *
- * Visibility is NOT re-applied: these ids came out of `imageKnn`, which ran
- * `visiblePagesPredicate` in the same request, and the EE per-page ACL filter
- * runs over the fused set below exactly as it does for the text legs. Adding a
- * second predicate here would be a second place for the rule to drift.
- */
-async function buildImageLegResults(
-  pages: ImageLegPage[],
-  vectorResults: SearchResult[],
-  keywordResults: SearchResult[],
-): Promise<ImageLegRows> {
-  if (pages.length === 0) return { results: [], textFetchFailed: false };
-  // Vector rows first — they arrive distance-ordered, so a page's first
-  // occurrence is its best chunk, and a purpose-built chunk beats a keyword
-  // body excerpt (the preference `reciprocalRankFusion` already states).
-  // Keyword rows then fill only the pages the vector leg did not reach.
-  const byPage = new Map<number, SearchResult>();
-  for (const r of vectorResults) if (!byPage.has(r.pageId)) byPage.set(r.pageId, r);
-  for (const r of keywordResults) if (!byPage.has(r.pageId)) byPage.set(r.pageId, r);
-
-  const missing = pages.filter((p) => !byPage.has(p.pageId)).map((p) => p.pageId);
-  const synthesized = new Map<number, SearchResult>();
-  let textFetchFailed = false;
-  if (missing.length > 0) {
-    try {
-      const rows = await query<{
-        page_id: number;
-        confluence_id: string | null;
-        title: string;
-        space_key: string | null;
-        chunk_text: string | null;
-        section_title: string | null;
-      }>(
-        `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                pe.chunk_text,
-                pe.metadata->>'section_title' AS section_title
-           FROM pages cp
-           LEFT JOIN page_embeddings pe ON pe.page_id = cp.id AND pe.chunk_index = 0
-          WHERE cp.id = ANY($1::int[])`,
-        [missing],
-      );
-      for (const row of rows.rows) {
-        const fromChunk = row.chunk_text !== null && row.chunk_text.length > 0;
-        synthesized.set(row.page_id, {
-          pageId: row.page_id,
-          confluenceId: row.confluence_id,
-          chunkText: fromChunk ? row.chunk_text! : row.title,
-          pageTitle: row.title,
-          sectionTitle: (fromChunk ? row.section_title : null) ?? row.title,
-          spaceKey: row.space_key,
-          // Ordering-only, like every other producer's `score`: the fusion
-          // overwrites it, and nothing measured this page's text.
-          score: 0,
-          // Both null, and that is the point: an image hit establishes neither
-          // basis, so this row can never lift or lower #1105's confidence.
-          vectorScore: null,
-          keywordRank: null,
-          imageOnly: true as const,
-          // `chunkIndex` is deliberately left UNSET even for the chunk-0 case.
-          // Its contract is "the chunk the VECTOR leg matched", and it is the
-          // sibling-assembly anchor; an image-reached page has no matched
-          // chunk, so anchoring a window on an arbitrary chunk 0 would claim a
-          // measurement that was never taken.
-          ...(fromChunk ? {} : { imageTextSynthesized: true as const }),
-        });
-      }
-    } catch (err) {
-      // Soft-fail like every neighbouring stage — but note what it costs: the
-      // pages that DO have a text row still fuse, and only the image-only ones
-      // drop out. A retrieval is never worth failing over a lede fetch.
-      //
-      // It is REPORTED, though, and that is not the same call as soft-failing.
-      // Dropping the image-only pages changes which pages come back, which is
-      // the exact criterion this leg records a bypass on at all — leaving it
-      // silent wrote a healthy analytics row for a request that lost every
-      // newly-retrievable page.
-      textFetchFailed = true;
-      logger.warn(
-        { err },
-        'Image-only text fetch failed — those pages are dropped from the image leg (degraded_reason: image_leg_unavailable)',
-      );
-    }
-  }
-
-  const out: SearchResult[] = [];
-  for (const page of pages) {
-    const base = byPage.get(page.pageId) ?? synthesized.get(page.pageId);
-    if (!base) continue;
-    // `imageRawIndex` rides along for `fuseWithStableHead`'s narrow
-    // reconstruction alone; see its JSDoc on `SearchResult`.
-    out.push({ ...base, imageHits: page.hits, imageRawIndex: page.bestRawIndex });
-  }
-  return { results: out, textFetchFailed };
+  return rows.map((row) => {
+    // The matched chunk when one matched; otherwise the head-of-body excerpt,
+    // which is deliberately NOT sibling-assembled (assembly ran before this
+    // stage; #1273 review M7 records the scope line): for "find page X" the
+    // lede is the honest context, and an empty body_text yields an empty
+    // excerpt under a real title.
+    const resolved = resolveLexicalChunk(
+      row,
+      { text: row.excerpt ?? '', sectionTitle: row.title },
+      'on-match',
+    );
+    return {
+      pageId: row.page_id,
+      confluenceId: row.confluence_id,
+      chunkText: resolved.chunkText,
+      pageTitle: row.title,
+      sectionTitle: resolved.sectionTitle,
+      spaceKey: row.space_key,
+      // Ordering-only, like every other producer's score; pinned rows lead
+      // by ARRAY position and consumers never re-sort.
+      score: 0,
+      vectorScore: null,
+      keywordRank: null,
+      pinned: true as const,
+      ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
+      ...(resolved.derived ? { derived: resolved.derived } : {}),
+    };
+  });
 }
 
 async function hybridSearchInner(
@@ -1842,46 +1719,6 @@ async function hybridSearchInner(
   // result — the await at the end still throws/propagates in the normal path.
   keywordPromise.catch(() => {});
 
-  // ── Image leg (#1115 P3) ───────────────────────────────────────────────
-  // Started HERE, beside the keyword leg and before the text embed, so its
-  // one VL request overlaps the two text legs instead of adding to them: the
-  // cost a question pays is `max(text, image) - text`, not the image leg's
-  // whole latency. BOTH of its stages carry a budget, and they are separate
-  // numbers rather than one — `IMAGE_LEG_TIMEOUT_MS` (3s) on the embed and
-  // `IMAGE_LEG_KNN_TIMEOUT_MS` (2s, a `SET LOCAL statement_timeout`) on the
-  // kNN, which compose to a ~5s worst case for this await. The kNN needs its
-  // own because it is not always cheap: above 4000 dimensions the index is
-  // deliberately absent and the scan is sequential. The gate inside it means
-  // a deployment with no VL model spends one cached boolean and one indexed
-  // assignment lookup on this line — the non-empty-index EXISTS is BEHIND
-  // that lookup and is never reached until a model is assigned (see the
-  // gate's own header for the order and why).
-  //
-  // What it also spends, on every hybrid search that reaches the kNN, is a
-  // SECOND concurrent connection from the vector pool (`PG_VECTOR_POOL_MAX`,
-  // default 5) — the leg is started HERE precisely so its transaction overlaps
-  // `vectorSearch`'s. That halves the pool's effective per-request headroom,
-  // and the two legs are not equally forgiving about losing the race: a
-  // connect timeout inside the image leg is a bypass, while one inside the try
-  // below sets `embeddingFailed` and `/llm/ask` refuses the turn. Raise
-  // `PG_VECTOR_POOL_MAX` when enabling the leg on a busy instance (runbook §6).
-  //
-  // `searchImageLeg` never rejects — every failure is a bypass it reports on
-  // the outcome. The `.catch` covers the chain in FRONT of it (`stageLimit`
-  // resolves the width and the rerank assignment): a rejection there is a
-  // failure of the search proper, which the awaits below will surface, and
-  // this handler exists so it does so instead of becoming an unhandled
-  // rejection on a promise nobody has awaited yet.
-  const imageLegPromise: Promise<ImageLegOutcome> = stageLimitPromise
-    .then((stageLimit) =>
-      searchImageLeg(userId, question, {
-        limit: stageLimit,
-        spaceKey: opts?.spaceKey,
-        imageLeg: opts?.imageLeg,
-      }),
-    )
-    .catch(() => ({ ran: false, failed: false, pages: [] }));
-
   // Coverage probe for the degraded-retrieval signal (#1117), in parallel with
   // both legs. Best-effort: a probe failure degrades the *signal* to
   // "unmeasured" (null), never the search itself. `/api/search` hands its own
@@ -1942,20 +1779,7 @@ async function hybridSearchInner(
 
   const keywordResults = await keywordPromise;
   const coverage = await coveragePromise;
-  const imageLegOutcome = await imageLegPromise;
-  // The image leg's rows become SearchResults BEFORE fusion, so nothing
-  // downstream needs an image-specific branch (ADR-025 §5): rerank, the
-  // ranking prior, MMR, sibling assembly and the pin stage all keep scoring
-  // `chunkText` exactly as they do today.
-  const { results: imageResults, textFetchFailed } = await buildImageLegResults(
-    imageLegOutcome.pages, vectorResults, keywordResults,
-  );
-  // Two ways the leg can fail to deliver its pages, one column: the leg itself
-  // (embed, kNN or a gate read that threw) and the lede fetch that turns its
-  // image-only pages into rows. Both change which pages come back.
-  const degradedReason = deriveDegradedReason(
-    embeddingFailed, coverage, imageLegOutcome.failed || textFetchFailed,
-  );
+  const degradedReason = deriveDegradedReason(embeddingFailed, coverage);
   const analyticsExtras: SearchAnalyticsExtras = {
     degradedReason,
     embeddingCoverage: coverage?.coverage ?? null,
@@ -1972,13 +1796,6 @@ async function hybridSearchInner(
   span?.setAttribute('rag.vector_hits', vectorResults.length);
   span?.setAttribute('rag.vector_pages', countDistinctPages(vectorResults));
   span?.setAttribute('rag.keyword_hits', keywordResults.length);
-  // #1115 P3. Absence means the leg did not run at all (off, unassigned or an
-  // empty index) — a trace has to separate "the leg found nothing" from "there
-  // is no leg here", which is the distinction a zero would erase.
-  if (imageLegOutcome.ran) {
-    span?.setAttribute('rag.image_pages', imageResults.length);
-    span?.setAttribute('rag.image_only_pages', imageResults.filter((r) => r.imageOnly).length);
-  }
   span?.setAttribute('rag.search_type', searchType);
   // The one retrieval input that varies at runtime (admin knob + floors) —
   // without it, traces cannot be partitioned by width after a tuning change.
@@ -2004,7 +1821,7 @@ async function hybridSearchInner(
   // the same head dilution measured on CE, worst exactly where the pool was
   // widest, and the stable head now applies identically in both editions.
   const merged = fuseWithStableHead(
-    vectorResults, keywordResults, await fetchWidthPromise, imageResults,
+    vectorResults, keywordResults, await fetchWidthPromise,
   );
 
   // Per-page ACL post-filter: when enabled, drop candidates the caller can
@@ -2263,6 +2080,13 @@ async function hybridSearchInner(
              JOIN unnest($1::int[], $2::int[]) AS a(page_id, anchor)
                ON pe.page_id = a.page_id
              WHERE pe.chunk_index BETWEEN a.anchor - $3 AND a.anchor + $3
+               -- ADR-027 D2: sibling assembly never crosses the authored /
+               -- derived boundary. Derived rows (metadata.source =
+               -- 'image_analysis') are not siblings of anything, and a
+               -- derived ANCHOR is not expanded at all: its own row is
+               -- excluded here, the text check below then finds no anchor
+               -- and the result keeps its chunk text — itself, and only itself.
+               AND (pe.metadata->>'source') IS DISTINCT FROM 'image_analysis'
              ORDER BY pe.page_id, pe.chunk_index`,
             [anchored.map((r) => r.pageId), anchored.map((r) => r.chunkIndex!), SIBLING_FETCH_SPAN],
           );
@@ -2431,15 +2255,6 @@ async function hybridSearchInner(
   // health caveat the route's gate uses, so the two can never disagree.
   // `coverage === null` covers both a failed self-probe and a failed probe
   // handed over by /api/search (its `null` means "mine already failed").
-  // #1115 P3: `image_leg_unavailable` reaches this line like any other
-  // degraded reason, and shadows 'coverage_unknown' when the coverage probe
-  // ALSO failed. That is deliberate and inert: `computeRetrievalConfidence`
-  // reads this field only as null-vs-non-null (the empty-set branch), so the
-  // verdict is identical either way, and the coverage reading travels beside
-  // it on both the log line and the analytics row. What it must NOT become is
-  // a refusal input — the ask route special-cases `embedding_failed` alone,
-  // and an image leg that fell over is not an outage of the index the answer
-  // is grounded in.
   const healthCaveat: RetrievalHealthCaveat | null =
     degradedReason ?? (coverage === null ? 'coverage_unknown' : null);
   const confidence = computeRetrievalConfidence(topResults, healthCaveat);

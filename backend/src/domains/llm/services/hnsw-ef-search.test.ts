@@ -97,8 +97,9 @@ describe('efSearchFor — the callsite form', () => {
  * the checkout sits: between the resolve and the `SET LOCAL` that consumes
  * it. A runtime companion pins the same rule at the vector leg
  * (`rag-service.test.ts`), the callsite #1260 edits; this one is what reaches
- * `image-leg-search.ts`, whose only coverage is a real-Postgres integration
- * test with no pool to instrument.
+ * the callsites whose only coverage is a real-Postgres integration test with
+ * no pool to instrument. (#1618 retired `image-leg-search.ts`, the callsite
+ * that argument was first written about.)
  *
  * Review r3 — the first cut of this guard checked each listed file's FIRST
  * probe only, and read its file list off a hand-maintained array, so both
@@ -148,7 +149,6 @@ describe('efSearchFor — the callsite form', () => {
 describe('every kNN callsite resolves the floor before it checks a client out', () => {
   const CALLSITES: ReadonlyArray<readonly [string, string]> = [
     ['rag-service.ts (vector leg)', './rag-service.ts'],
-    ['image-leg-search.ts (image leg)', './image-leg-search.ts'],
     ['embedding-service.ts (page relationships)', './embedding-service.ts'],
     ['duplicate-detector.ts', '../../knowledge/services/duplicate-detector.ts'],
   ];

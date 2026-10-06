@@ -111,6 +111,9 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
  * Dispatch a raw-MouseEvent drag of the first sidebar row down past the last
  * one. Runs inside the page so the events are untrusted (no native pointer
  * events), which is precisely the pointerless environment the bridge targets.
+ *
+ * Release in the last row's BOTTOM band (below NEST_ZONE_BOTTOM 0.72). The
+ * midpoint is the nest zone — dropping there PUT /move instead of /reorder.
  */
 async function simulatePointerlessDrag(page: Page): Promise<void> {
   await page.evaluate(async () => {
@@ -127,7 +130,7 @@ async function simulatePointerlessDrag(page: Page): Promise<void> {
     const to = target.getBoundingClientRect();
     const startX = from.left + from.width / 2;
     const startY = from.top + from.height / 2;
-    const endY = to.top + to.height / 2 + 4;
+    const endY = to.top + to.height * 0.86;
 
     const fire = (el: Element, type: string, x: number, y: number, buttons: number) => {
       el.dispatchEvent(

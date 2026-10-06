@@ -318,31 +318,33 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const blocksMatch = /^\/v1\/blocks\/([^/]+)\/children$/.exec(path);
     if (method === 'GET' && blocksMatch) {
-      const errorStatus = state.blockChildrenErrors?.[blocksMatch[1]!];
-      if (errorStatus) {
-        send(res, errorStatus, {
-          object: 'error',
-          status: errorStatus,
-          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
-          message: 'upstream',
+      await runLookup(() => {
+        const errorStatus = state.blockChildrenErrors?.[blocksMatch[1]!];
+        if (errorStatus) {
+          send(res, errorStatus, {
+            object: 'error',
+            status: errorStatus,
+            code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+            message: 'upstream',
+          });
+          return;
+        }
+        const all = state.blockChildren?.[blocksMatch[1]!] ?? [];
+        const pageSize = Math.min(Number.parseInt(parsed.searchParams.get('page_size') ?? '100', 10) || 100, 100);
+        const start = parsed.searchParams.get('start_cursor')
+          ? Number.parseInt(parsed.searchParams.get('start_cursor')!, 10)
+          : 0;
+        const slice = all.slice(start, start + pageSize);
+        const next = start + slice.length;
+        const hasMore = next < all.length;
+        send(res, 200, {
+          object: 'list',
+          type: 'block',
+          block: {},
+          results: slice,
+          next_cursor: hasMore ? String(next) : null,
+          has_more: hasMore,
         });
-        return;
-      }
-      const all = state.blockChildren?.[blocksMatch[1]!] ?? [];
-      const pageSize = Math.min(Number.parseInt(parsed.searchParams.get('page_size') ?? '100', 10) || 100, 100);
-      const start = parsed.searchParams.get('start_cursor')
-        ? Number.parseInt(parsed.searchParams.get('start_cursor')!, 10)
-        : 0;
-      const slice = all.slice(start, start + pageSize);
-      const next = start + slice.length;
-      const hasMore = next < all.length;
-      send(res, 200, {
-        object: 'list',
-        type: 'block',
-        block: {},
-        results: slice,
-        next_cursor: hasMore ? String(next) : null,
-        has_more: hasMore,
       });
       return;
     }

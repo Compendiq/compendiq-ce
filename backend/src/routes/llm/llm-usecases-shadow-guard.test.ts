@@ -20,7 +20,7 @@ vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
     throw new Error('not configured');
   }),
   resolveRerankUsecase: vi.fn(async () => null),
-  resolveImageEmbeddingUsecase: vi.fn(async () => null),
+  resolveImageAnalysisUsecase: vi.fn(async () => null),
   resolveInlineCompletionUsecase: vi.fn(async () => null),
   // #1114 — the route reads the pair behind each confidence basis before and
   // after the save. Nothing is configured in this file, so it RESOLVES to no

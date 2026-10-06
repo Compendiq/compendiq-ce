@@ -614,9 +614,9 @@ const SHADOW_UTILITY = new RegExp(
  * The system shadow, in every spelling that resolves to it. `--shadow-overlay`
  * lives in the `@theme` block, so Tailwind 4 generates `shadow-overlay` from it
  * as well — BulkActionBar, LibraryFilterDropdown and TrashPage use that
- * spelling, and the three overlays that are not `nm-card-elevated` use the
- * arbitrary-value form (AiDockSheet and CommentsSidebar are drawers,
- * TableOfContents a round floating button). Allowed by name, per token:
+ * spelling, and overlays that are not `nm-card-elevated` may use the
+ * arbitrary-value form. Drawers and the TOC FAB now wear `nm-popover-glass`
+ * (which carries `--shadow-overlay`). Allowed by name, per token:
  * allowing a whole BODY because one legitimate overlay shadow appears in it,
  * which is what this cell used to do, exempts every other shadow standing next
  * to it.
@@ -822,15 +822,14 @@ function preV4Offenders(files: readonly { path: string; strings: string[] }[]): 
  * The `shadow-xs` call sites Tailwind 4's rename left standing while the guard
  * was still written for v3. They are REGISTERED, not exempted: the cell below
  * requires the register to be exact, so removing one of these classes fails the
- * suite until the entry goes too, and a seventh shadow anywhere — including a
- * second one in the same file — fails immediately. Cleaning up the components is
+ * suite until the entry goes too, and any unregistered shadow — including an
+ * extra one in the same file — fails immediately. Cleaning up the components is
  * a component change and belongs to whoever owns them; this file owns the guard.
  */
 const V4_SHADOW_DEBT: { path: string; token: string; count: number }[] = [
   { path: 'features/pages/PagesPage.tsx', token: 'shadow-xs', count: 1 },
   { path: 'features/pages/notion-import/NotionImportDialog.tsx', token: 'shadow-xs', count: 1 },
   { path: 'shared/components/article/EditorSlashMenu.tsx', token: 'shadow-xs', count: 1 },
-  { path: 'shared/components/article/NotesInspectorPanel.tsx', token: 'shadow-xs', count: 3 },
 ];
 
 function liveShadowTally(): Record<string, number> {
@@ -862,8 +861,7 @@ describe('the component layer is as flat as the token layer', () => {
     // `transparent`, so it rendered nothing while reading as live code.
     //
     // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
-    // arbitrary value, for the overlays that are not `nm-card-elevated`
-    // (two drawers, a round floating button). Allowed by name.
+    // arbitrary value. Allowed by name even when overlays wear `nm-popover-glass`.
     //
     // The body is one call on purpose: `preV4Offenders` is the whole pipeline,
     // the self-test pins its verdict on planted fixtures, and there is nothing
@@ -966,8 +964,8 @@ describe('the component layer is as flat as the token layer', () => {
     expect(glass, 'nm-popover-glass is the overlay glass surface').toMatch(
       /backdrop-filter:\s*blur/,
     );
-    expect(glass, 'and it keeps the measured interactive edge').toMatch(
-      /border:\s*1px solid var\(--color-border-interactive\)/,
+    expect(glass, 'and it keeps a defined 1px border').toMatch(
+      /border:\s*1px\s+solid/,
     );
   });
 

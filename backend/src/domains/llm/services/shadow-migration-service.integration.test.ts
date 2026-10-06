@@ -92,6 +92,7 @@ const {
 const { embedPage, enqueueReembedAll, reEmbedAll, assertNoShadowMigration, assertShadowRollbackWindowClear } = await import('./embedding-service.js');
 const { logger } = await import('../../../core/utils/logger.js');
 const { invalidateRagConfidenceThresholdCache } = await import('../../../core/services/admin-settings-service.js');
+const { computeIdentityHash, IMAGE_ANALYSIS_IDENTITY_KEY, IMAGE_ANALYSIS_PROMPT_VERSION, IMAGE_ANALYSIS_SCHEMA_VERSION } = await import('./image-analysis-provider.js');
 
 const dbAvailable = await isDbAvailable();
 
@@ -468,6 +469,77 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       );
       expect(row.rows[0]!.live).not.toBeNull();
       expect(row.rows[0]!.next).toBeNull();
+    });
+
+    it('dual-writes derived image-analysis rows, keeps them out of the shadow average, and a NULL derived shadow vector blocks it (ADR-027 D2)', async () => {
+      await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
+      const triple = { providerId: shadowProviderId, model: 'qwen3-vl', baseUrl: 'http://vision/v1' };
+      const identityHash = computeIdentityHash(triple);
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value) VALUES ($1, $2)`,
+        [IMAGE_ANALYSIS_IDENTITY_KEY, JSON.stringify({ ...triple, identityHash, assignedAt: '2026-09-15T00:00:00.000Z' })],
+      );
+      const body = '<p>fresh body text long enough to embed properly for the test</p><img src="/api/attachments/1/shot.png">';
+      const page = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, title, body_text, body_storage, body_html, page_type, visibility)
+         VALUES (gen_random_uuid()::text, 'standalone', 'Shot page', 'fresh body text long enough to embed', '', $1, 'page', 'shared')
+         RETURNING id`,
+        [body],
+      );
+      const pageId = page.rows[0]!.id;
+      await query(
+        `INSERT INTO page_image_analyses
+           (page_id, source, attachment_key, content_hash, format, status, payload, identity_hash, prompt_version, schema_version, analysis_version, provider_id, model, base_url)
+         VALUES ($1, 'confluence', 'shot.png', 'h1', 'png', 'analyzed', $2::jsonb, $3, $4, $5, 1, $6, 'qwen3-vl', 'http://vision/v1')`,
+        [
+          pageId,
+          JSON.stringify({ schemaVersion: 1, kind: 'screenshot', language: 'en', description: 'A dialog with an error code and a Retry button.', visibleText: 'Error 42', limitations: [] }),
+          identityHash,
+          IMAGE_ANALYSIS_PROMPT_VERSION,
+          IMAGE_ANALYSIS_SCHEMA_VERSION,
+          shadowProviderId,
+        ],
+      );
+
+      // Both models answer every text: the derived row is dual-written like any row.
+      const chunks = await embedPage(USER, pageId, 'Shot page', '', body);
+      expect(chunks).toBeGreaterThan(1);
+      const rows = await query<{ source: string | null; live: string | null; next: string | null }>(
+        `SELECT metadata->>'source' AS source, embedding::text AS live, embedding_next::text AS next
+           FROM page_embeddings WHERE page_id = $1 ORDER BY chunk_index`,
+        [pageId],
+      );
+      const derived = rows.rows.filter((r) => r.source === 'image_analysis');
+      expect(derived).toHaveLength(1);
+      expect(derived[0]!.next).not.toBeNull();
+      const avgNext = async (): Promise<number[] | null> => {
+        const r = await query<{ v: string | null }>(`SELECT page_avg_embedding_next::text AS v FROM pages WHERE id = $1`, [pageId]);
+        return r.rows[0]!.v ? (JSON.parse(r.rows[0]!.v) as number[]) : null;
+      };
+      // The shadow average is over AUTHORED rows only.
+      const authoredNext = rows.rows.filter((r) => r.source !== 'image_analysis').map((r) => JSON.parse(r.next!) as number[]);
+      const expected = Array.from({ length: SHADOW_DIMS }, (_, i) => authoredNext.reduce((s, v) => s + v[i]!, 0) / authoredNext.length);
+      const avg = await avgNext();
+      expect(avg).not.toBeNull();
+      for (let i = 0; i < SHADOW_DIMS; i++) expect(avg![i]).toBeCloseTo(expected[i]!, 6);
+
+      // The shadow provider answers one vector short — the derived text, which
+      // composes last, is the one left without: its embedding_next stays NULL
+      // and the guard blocks the average exactly as for an authored row.
+      generateEmbeddingMock.mockImplementation(async (_cfg: unknown, model: string, input: string | string[]) => {
+        const texts = Array.isArray(input) ? input : [input];
+        const dims = model === SHADOW_MODEL ? SHADOW_DIMS : 1024;
+        const short = model === SHADOW_MODEL && texts.some((t) => t.startsWith('[Image: shot.png'));
+        return texts.slice(0, short ? texts.length - 1 : texts.length).map((_, i) => Array.from({ length: dims }, (_2, j) => Math.sin((j + 1) * (i + 5)) * 0.01));
+      });
+      await embedPage(USER, pageId, 'Shot page', '', body);
+      const after = await query<{ source: string | null; next: string | null }>(
+        `SELECT metadata->>'source' AS source, embedding_next::text AS next FROM page_embeddings WHERE page_id = $1 ORDER BY chunk_index`,
+        [pageId],
+      );
+      expect(after.rows.find((r) => r.source === 'image_analysis')!.next).toBeNull();
+      expect(after.rows.filter((r) => r.source !== 'image_analysis').every((r) => r.next !== null)).toBe(true);
+      expect(await avgNext()).toBeNull();
     });
 
     it('an embedPage racing a swap aborts and re-dirties instead of writing stale-model vectors (review r1)', async () => {

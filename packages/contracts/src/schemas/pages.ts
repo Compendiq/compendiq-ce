@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { PageIconSchema } from './page-icon.js';
+import {
+  PageFreezeDetailFieldsSchema,
+  PageFreezeSummaryFieldsSchema,
+} from './page-baselines.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
@@ -110,12 +114,31 @@ export const PageSummarySchema = z.object({
   deletedAt: z.string().nullable().optional(),
   confluenceId: z.string().nullable().optional(),
   icon: PageIconSchema.nullable().optional(),
+  ...PageFreezeSummaryFieldsSchema.shape,
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
   bodyHtml: z.string(),
+  renderedBodyHtml: z.string().nullable(),
   bodyText: z.string(),
   hasChildren: z.boolean().default(false),
+  /**
+   * The descendants of this page that a trash by THE CALLING USER would move:
+   * live, `source = 'standalone'`, created by the caller, the page itself
+   * excluded (#1636). It carries every guard `DELETE /api/pages/:id`'s cascade
+   * carries, because a count that named rows the request leaves alone is the
+   * over-promise this field exists to prevent — Confluence owns a synced row's
+   * lifecycle, and another user's article inside the subtree is not the
+   * caller's to trash.
+   *
+   * It is NOT "the rows the tree shows": `hasChildren` is that question, and it
+   * can be true with a count of 0 (a Confluence-sourced or another user's
+   * subtree). Clients must READ this rather than derive a count from the page
+   * tree: the tree is space/visibility filtered, may be mid-load, and cannot
+   * know what the server will delete. Optional so a cached payload written
+   * before #1636 still parses; treat absent as unknown and promise nothing.
+   */
+  descendantCount: z.number().int().nonnegative().optional(),
   summaryHtml: z.string().nullable().optional(),
   summaryGeneratedAt: z.coerce.date().nullable().optional(),
   summaryModel: z.string().nullable().optional(),
@@ -124,6 +147,11 @@ export const PageDetailSchema = PageSummarySchema.extend({
   draftUpdatedAt: z.coerce.date().nullable().optional(),
   verifiedAt: z.coerce.date().nullable().optional(),
   collabSessionActive: z.boolean().optional(),
+  ...PageFreezeDetailFieldsSchema.omit({
+    isFrozen: true,
+    baselineId: true,
+    frozenVersion: true,
+  }).shape,
 });
 
 export const CreatePageSchema = z.object({
@@ -199,6 +227,7 @@ export const SearchResultItemSchema = z.object({
   excerpt: z.string(),
   score: z.number(),
   icon: PageIconSchema.nullable().optional(),
+  ...PageFreezeSummaryFieldsSchema.shape,
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
@@ -234,6 +263,7 @@ export const PageTreeItemSchema = z.object({
   labels: z.array(z.string()),
   lastModifiedAt: z.coerce.date().nullable(),
   icon: PageIconSchema.nullable().optional(),
+  ...PageFreezeSummaryFieldsSchema.shape,
 });
 
 export const PageTreeQuerySchema = z.object({

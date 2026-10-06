@@ -8,6 +8,7 @@ import {
   PROVIDER_PRESETS,
   type ProviderPreset,
   type ProviderPresetId,
+  matchPresetByUrl,
   presetById,
   presetWouldOverwrite,
 } from './provider-presets';
@@ -38,7 +39,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [authType, setAuthType] = useState<'bearer' | 'none'>(initial?.authType ?? 'bearer');
   const [verifySsl, setVerifySsl] = useState(initial?.verifySsl ?? true);
   const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? '');
-  const [presetId, setPresetId] = useState<ProviderPresetId>('custom');
+  const [presetId, setPresetId] = useState<ProviderPresetId>(() => matchPresetByUrl(initial?.baseUrl));
   const [pendingPresetId, setPendingPresetId] = useState<ProviderPresetId | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -54,7 +55,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const probeGen = useRef(0);
   // Empty until applyPreset — a stored edit-mode URL is operator-owned, not a fill.
   const lastFilled = useRef({ baseUrl: '', defaultModel: '' });
-  const appliedPresetId = useRef<ProviderPresetId>('custom');
+  const appliedPresetId = useRef<ProviderPresetId>(matchPresetByUrl(initial?.baseUrl));
   const activePreset = presetById(presetId) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1]!;
 
   function restorePresetFocusFromConfirm() {
@@ -91,8 +92,13 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
 
   function keepCurrentFields() {
     restorePresetFocusFromConfirm();
+    // Keep the preset the operator just picked. Reverting to Custom made a
+    // pasted embeddings URL look like the hosted fill was rejected.
+    if (pendingPresetId) {
+      appliedPresetId.current = pendingPresetId;
+      setPresetId(pendingPresetId);
+    }
     setPendingPresetId(null);
-    setPresetId(appliedPresetId.current);
   }
 
   useEffect(() => {
@@ -278,8 +284,10 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             {activePreset.id === 'custom' ? (
               <>
                 For local servers (LM Studio, vLLM) in Docker, use{' '}
-                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. For a hosted
-                API, pick a preset above.
+                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. The URL is
+                stored as typed — <code className="text-foreground">/embeddings</code> and{' '}
+                <code className="text-foreground">/rerank</code> are kept. <code className="text-foreground">/v1</code>{' '}
+                is added only to a bare host.
               </>
             ) : activePreset.id === 'azure-openai' ? (
               <>
@@ -287,7 +295,12 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
                 <code className="text-foreground">https://{'{resource}'}.openai.azure.com/openai/v1</code>.
               </>
             ) : (
-              activePreset.urlHelper
+              <>
+                {activePreset.urlHelper} The URL is stored as typed. Paste{' '}
+                <code className="text-foreground">…/v1/embeddings</code> or{' '}
+                <code className="text-foreground">…/v1/rerank</code> when this provider is that
+                endpoint.
+              </>
             )}
           </p>
         </div>
@@ -371,7 +384,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         {presetId !== 'custom' ? (
           <p className="text-[11px] text-muted-foreground">
             Saving does not assign use cases. Assign Chat after saving — do not assign a chat-only
-            host to Embedding, Rerank, or Image embedding.
+            host to Embedding, Rerank, or Image analysis.
           </p>
         ) : null}
         </div>

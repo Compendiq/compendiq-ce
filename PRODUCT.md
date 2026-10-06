@@ -76,7 +76,7 @@ Constraints that outlive any redesign:
 - Backend domain import boundaries are ESLint-enforced; the frontend is
   `features/` + `shared/` + `stores/` + `providers/`.
 - Roughly 20 routes across pages, AI, graph, spaces, settings, admin, setup and auth.
-- Version 0.8.0, pre-1.0, SemVer.
+- Version 0.9.0, pre-1.0, SemVer.
 
 Undecided / not established: no confirmed customer count, no published pricing, no
 benchmark numbers, no named reference customers. Future work must not invent them.
@@ -103,13 +103,13 @@ benchmark numbers, no named reference customers. Future work must not invent the
   reading typography.
 - **Default theme follows the OS**, with a manual override persisted per user. Neither light
   nor dark is a fallback; both are designed and tuned.
-- **Palette commitment (2026-08-20, amended 2026-08-30, 2026-09-07):** Graphite and Paper use the
+- **Palette commitment (2026-08-20, amended 2026-08-30, 2026-09-07, 2026-09-11, 2026-09-12, 2026-09-15):** Graphite and Paper use the
   eight-role ladder recorded in ADR-010 — v0.7 for the roles and Graphite, v0.8 for
-  Paper — with the desaturated Steel pair (`#86AEC8` dark / `#3F627C` light) as the
+  Paper — with the desaturated Steel pair (`#86AEC8` dark / `#31638A` light) as the
   single brand and interaction accent. Violet remains AI, amber warning, green success,
   and red failure; these semantic colors are not alternate accents. Graphite's document
-  pane stays off near-black to reduce long-session glare. **Paper's document pane, left navigation, and context rail are pure white (`#FFFFFF`)** (owner decisions, 2026-08-30, 2026-09-07):
-  the document, left navigation sidebar, and right context rail are `#FFFFFF`; the frame — top app header, left destination rail, and bottom rail — paints the light gray chassis tone (`#E8E8E8`).
+  pane stays off near-black to reduce long-session glare. **Paper's document pane and the attached inspector are pure white (`#FFFFFF`)** (owner decisions, 2026-08-30, 2026-09-07, 2026-09-11, 2026-09-12, 2026-09-15, 2026-09-28):
+  the document and the right-hand inspector inside the workspace card are `#FFFFFF`; the frame — top app header, the left navigation column, and the margins around the card — is one flat `#F5F5F5` (owner pin, 2026-09-28; it was `#E8ECF0`, Nordic Slate — Balanced Console, from 2026-09-15). The 2026-09-12 multi-grey wash is retired (2026-09-28): the navigation now sits on the frame, and the wash read as a tonal band around the card. The card carries a light resting shadow. Content panes stay flat.
 - **Colour is never the only channel for state** (2026-08-30, reaffirmed 2026-08-31 when embedding left the hue vocabulary and became body ink plus a progress affordance). Seven semantic hues cannot be mutually
   separated under colour-vision deficiency while every one clears WCAG AA on a white pane — that is
   arithmetic, not an oversight — so every status indicator also carries an icon, shape, or accessible

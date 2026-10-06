@@ -49,12 +49,79 @@ under `ATTACHMENTS_DIR`.
 
 ## Behaviour
 
-- Warm ghost text reads OPFS in the worker (same-origin ORT WASM, no jsDelivr).
-- Cold cache, missing GPU, or flags off equals #1417 (`POST /llm/inline-completion`).
+- Warm ghost text reads OPFS in the worker; runtime files also stay same-origin.
+- The editor checks local eligibility, not readiness, so a cached model can
+  start after a reload, hidden tab, or idle unload. The first request warms it;
+  the next pause or manual shortcut can use it once ready.
+- Cold cache, missing GPU, or flags off falls back to the assigned server
+  model. With no assignment, there is no server fallback.
 - ImprovePanel uses the worker when ready, otherwise `POST /llm/improve`.
 - Unassigned `inline_completion` plus “Use on-device suggestions when no
-  server model is assigned” (default on) allows local ghost text only when
-  the worker is ready.
+  server model is assigned” (default on) allows local ghost text. A server
+  provider being offline does not prevent ready local inference.
+- “Downloaded” reports browser storage, not GPU readiness. A worker load
+  failure during pre-download is reported as an error, not “ready”.
+
+## Local suggestions return no text
+
+Check the worker error, not only whether the model is downloaded:
+
+- **Blocked `blob:` module import:** Transformers v4's `useWasmCache` rewrites
+  the runtime factory into a blob. Keep this cache disabled; fingerprinted
+  runtime files use the normal HTTP cache. Do not relax CSP.
+- **Failed `.mjs` import:** nginx must serve it as `application/javascript`,
+  not `application/octet-stream`. Keep `nosniff`.
+- **`webgpuInit is not a function`:** the runtime pair is wrong. Transformers
+  v4's WebGPU backend needs `ort-wasm-simd-threaded.asyncify.mjs` and its
+  matching `.wasm`, not the older JSEP pair.
+- **Invalid model ID containing `--`:** `org--name` is Compendiq's asset ID,
+  not a Hub repository ID. Transformers 4.3 validates remote IDs before
+  fetching. Pass `/api/models/client-assets/<local-id>` to the pipeline with
+  local loading enabled and remote loading disabled. Keep the API and OPFS
+  identities unchanged; do not rename already-downloaded models.
+- **`std::bad_alloc` after returning to a tab:** unload must dispose the
+  pipeline before another load; dropping the JS reference retains its session.
+- **Empty/whitespace generation despite a ready worker:** use the installed
+  tokenizer's chat template with `enable_thinking: false`. A bare instruct
+  prompt on Qwen3 can start with a newline, so the one-line filter discards
+  its continuation. Keep the existing 8-token word / 48-token full budget.
+
+Deploy both the frontend bundle and nginx MIME configuration, then reload the
+page. Existing OPFS model weights do not need to be downloaded again.
+
+## Server suggestions return no text
+
+An assigned server model does not require WebGPU or an on-device download.
+Check Settings → AI Models → LLM providers → Inline completion against the
+provider's current `/v1/models` list. A stale model ID can be silently routed
+to a different loaded model by the server; a saved assignment alone does not
+prove which model actually ran.
+
+For chat-based inline completion, `message.content` must contain the visible
+continuation. Reasoning is not suggestion text: a reasoning-enabled server
+can hit the newline stop or spend the 8-token word / 48-token full budget
+before producing any content. The first request sends `think: false` and
+`chat_template_kwargs.enable_thinking: false` to tolerant providers. If that
+reply carries no visible text, the backend retries ONCE with
+`reasoning_effort: "none"` added — LM Studio can require it even when it
+accepts the first two. Strict OpenAI, Azure OpenAI, and hosted DeepSeek
+endpoints get neither hint and no retry.
+
+`reasoning_effort` is retry-only because tolerant hosts parse and validate
+it rather than ignore it: vLLM 0.10–0.12 reject `"none"` with a 400, and
+newer vLLM forwards it into the chat template, where a template that lists
+other values (Qwen3.x) raises and surfaces as a 500. On the retry both
+outcomes are swallowed — the author gets the empty first reply, and the
+failure does not count against the provider's circuit breaker. Diagnose it
+at `LOG_LEVEL=debug` (`inline completion: reasoning_effort retry failed`).
+On such a host every suggestion after an empty reply costs a second bounded
+request; upgrading vLLM, or assigning a model whose template does not
+validate the field, removes that cost.
+
+Do not remove the stop rules, expose reasoning as ghost text, increase the
+token budget, or move `reasoning_effort` onto the first request to work
+around this. Deploy the corrected backend and select a model the server
+actually serves; no frontend rebuild is needed for this fix.
 
 ## CSP
 
@@ -63,26 +130,26 @@ nginx grants `script-src 'wasm-unsafe-eval'` and `worker-src 'self'`.
 
 ## Native dependency security overrides
 
-The root manifest scopes two overrides to `@huggingface/transformers@4.2.0`:
+Transformers 4.3.0 admits the patched native dependencies without overrides.
+The lockfile resolves:
 
-- `sharp` 0.34.5 → 0.35.4, including its platform binaries and libheif 1.23.2,
+- `sharp` 0.35.4, including its platform binaries and libheif 1.23.2,
   addresses [GHSA-f88m-g3jw-g9cj](https://github.com/advisories/GHSA-f88m-g3jw-g9cj)
   and [GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
-- `onnxruntime-node@1.24.3` → `adm-zip` 0.5.18 → 0.6.0 addresses
-  [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85).
-  No patched release exists for [GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9)
-  (symlink-following overwrite, `<= 0.6.0`). ORT's installer extracts first-party
-  package libraries via `getEntry` + `extractEntryTo(..., false, true)` into
-  `node_modules`; it does not unpack untrusted archives. Keep 0.6.0 until
-  upstream ships `> 0.6.0` or Transformers admits a parent that does.
+- `onnxruntime-node` 1.30.0 admits `adm-zip ^0.6.0`; the lockfile selects 0.6.1,
+  addressing [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85),
+  [GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9)
+  (symlink-following overwrite), and
+  [GHSA-7q85-xj36-vmfc](https://github.com/advisories/GHSA-7q85-xj36-vmfc)
+  (uncontrolled allocation).
 
-As of 2026-09-10, Transformers 4.2.0 is the latest release and its dependency
-ranges exclude the patched sharp. Updating ORT to 1.29.0 still pulls
-`adm-zip ^0.6.0` and would override Transformers' exact native runtime version.
-The narrower archive override leaves ORT's native ABI and browser/WASM versions
-unchanged. Remove these overrides when a released Transformers parent admits
-the patched dependencies, after checking the resolved graph and the smoke
-steps below; do not carry them blindly onto another parent version.
+The old overrides scoped to `@huggingface/transformers@4.2.0` are removed:
+they no longer match the installed parent. Keep the native/browser runtime
+pair published by Transformers rather than overriding ORT independently.
+This parent upgrade also changes `onnxruntime-web` to
+`1.31.0-dev.20260914-8d85527a0`, so native/archive smoke checks alone do not
+establish browser inference compatibility. Exercise the worker and warm
+OPFS path below whenever the parent or runtime pair changes.
 
 Compatibility boundaries:
 
@@ -99,11 +166,12 @@ Compatibility boundaries:
   require Node >=14. The changed directory-extraction behaviour does not
   affect ORT's installer: it uses `getEntry(pathInPackage)` and
   `extractEntryTo(fileEntry, directory, false, true)` on individual libraries,
-  then copies the extracted basename. Native ORT remains 1.24.3 (Node-API 6);
-  skipping its CUDA download is not a native-runtime compatibility test.
+  then copies the extracted basename. Native ORT is 1.30.0; skipping its
+  CUDA download is not a native-runtime compatibility test.
 
-Before changing or removing the overrides, validate on Node 22 and on the
-frontend Docker builder for both `linux/amd64` and `linux/arm64`:
+Before changing the parent, lockfile resolutions, or security overrides,
+validate on Node 22 and the frontend Docker builder for both
+`linux/amd64` and `linux/arm64`:
 
 1. Run a clean root `ONNXRUNTIME_NODE_INSTALL=skip npm ci`, then inspect
    `npm ls @huggingface/transformers sharp adm-zip onnxruntime-node onnxruntime-web`.
@@ -117,6 +185,6 @@ frontend Docker builder for both `linux/amd64` and `linux/arm64`:
 3. Build `frontend/Dockerfile` separately for both target architectures and
    serve the resulting image. In a WebGPU-capable browser, follow **Enable**,
    load the worker, request a completion and a rewrite, and repeat from warm
-   OPFS. Confirm worker and `.jsep.mjs`/`.jsep.wasm` requests return 200 from
+   OPFS. Confirm worker and `.asyncify.mjs`/`.asyncify.wasm` requests return 200 from
    this origin, with no Hugging Face/CDN traffic or native-module requests.
    With WebGPU unavailable, confirm the documented server fallback.

@@ -554,7 +554,7 @@ describe('ConfirmDialog', () => {
    * trigger converted to `aria-disabled` + a refusing handler stays focusable
    * for its whole multi-minute run, so the single-shot restore lands on it
    * while the run is still going. Both cards this PR converts
-   * (`AttachmentStorageCard`, `ImageIndexCard`) are this shape.
+   * (`AttachmentStorageCard`, `ImageAnalysisProgressCard`) are this shape.
    *
    * jsdom implements no focus fixup, so this cell cannot see the defect
    * `mode="disabled"` describes — it is the regression pin for the converted

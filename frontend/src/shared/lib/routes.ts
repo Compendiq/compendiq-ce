@@ -47,3 +47,16 @@ export const AI_MODELS_SETTINGS_LABEL = 'AI Models';
  * settings-wayfinding.test.ts holds every mirror constant to a live path.
  */
 export const AI_MODELS_SETTINGS_PATH = '/settings/ai/models';
+
+/**
+ * Path of the Settings → Article baselines panel (#277): baseline activation,
+ * the per-space governance marker and — under Enterprise — the approval roles
+ * and their holders.
+ *
+ * A `shared/` component links into it (the article inspector's governed
+ * sign-off section points an admin at the policy that is refusing their
+ * direct freeze), so the literal lives here rather than crossing the
+ * `shared/` → `features/` boundary. Must match the path settings-nav.ts
+ * derives for the `governance/baselines` nav item.
+ */
+export const BASELINE_SETTINGS_PATH = '/settings/governance/baselines';

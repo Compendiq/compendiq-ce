@@ -128,6 +128,27 @@ describe('POST /api/notion/import background job', () => {
     expect(done.items).toEqual([{ notionPageId: 'notes', status: 'success', localPageId: 11 }]);
   });
 
+  it('invalidates every reader page cache after a successful private import', async () => {
+    mockGetToken.mockResolvedValue('ntn_test');
+    mockRunImport.mockResolvedValue([
+      { notionPageId: 'notes', status: 'success', localPageId: 11, updated: true },
+    ]);
+
+    const post = await app.inject({
+      method: 'POST',
+      url: '/api/notion/import',
+      payload: { pageIds: ['notes'], visibility: 'private', overwriteExisting: true },
+    });
+    expect(post.statusCode).toBe(202);
+
+    await vi.waitFor(async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/notion/import/status' });
+      expect(res.json()).toMatchObject({ status: 'complete' });
+    });
+    expect(mockInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+    expect(mockInvalidate).not.toHaveBeenCalledWith('test-user-id', 'pages');
+  });
+
   it('returns 400 when Notion is not connected without starting a job', async () => {
     mockGetToken.mockResolvedValue(null);
     const res = await app.inject({

@@ -43,8 +43,7 @@ const specPath = path.resolve(
 /**
  * #1450 review locks — these sentences are the contract later PRs implement.
  * A silent delete from the spec or from diagram 12 would reopen the BYTEA
- * stale-join hole, the empty-room 409 gap, the read-mode WS, or the
- * awareness API name mix-up.
+ * stale-join hole, the read-mode WS, or the awareness API name mix-up.
  */
 describe('collab design locks (#1443 / #1450 review)', () => {
   const spec = fs.readFileSync(specPath, 'utf8');
@@ -58,12 +57,6 @@ describe('collab design locks (#1443 / #1450 review)', () => {
     expect(arch).toMatch(/empty-room/);
   });
 
-  it('delays SREM of the last collab:active member until empty-room grace fires', () => {
-    expect(spec).toMatch(/Do \*\*not\*\* `SREM` the last `collab:active` member/);
-    expect(spec).toMatch(/assertNoLiveCollabRoom.*heap|heap.*assertNoLiveCollabRoom/s);
-    expect(arch).toMatch(/SREM/);
-    expect(arch).toMatch(/empty-room grace/);
-  });
 
   it('mounts the collab provider only in edit mode', () => {
     expect(spec).toMatch(/only in edit mode/);
