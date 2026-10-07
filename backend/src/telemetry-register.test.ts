@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 /**
  * OpenTelemetry preload invariants (issue #922).
  *
- * Auto-instrumentation can only monkey-patch http/fastify/pg/redis if the SDK
+ * Auto-instrumentation can only monkey-patch http/undici/pg/redis if the SDK
  * starts BEFORE those modules are first imported. Starting it from inside
  * index.ts (after the app module graph has already been evaluated) is too late
  * and the instrumentations silently never attach. The fix runs the SDK from a
