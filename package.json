@@ -1,6 +1,6 @@
 {
   "name": "compendiq",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "description": "Compendiq - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [
@@ -21,10 +21,10 @@
   },
   "//deps-note": "These mirror backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting versions from root devDep chains push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The OpenTelemetry runtime stack lives here for exactly that reason (#1117: the whole observability path silently no-ops in the shipped image when these nest). The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
   "dependencies": {
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-node": "^0.78.0",
-    "@opentelemetry/sdk-metrics": "2.9.0",
-    "@opentelemetry/sdk-node": "^0.220.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.79.0",
+    "@opentelemetry/sdk-metrics": "2.10.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
     "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
@@ -35,9 +35,8 @@
     "knip": "^6.3.0",
     "vitest": "^5.0.0"
   },
-  "//tooling-deps-note": "knip 6.14.1 admits smol-toml ^1.6.1; pin 1.8.0 for GHSA-7w5x-hrqm-74c2. lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor.",
+  "//tooling-deps-note": "lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor. @tailwindcss/typography (≤0.5.20) pins postcss-selector-parser 6.0.10 exactly (GHSA-rj75-hqrm-r3gf, fixed only in 7.1.6); mermaid (≤12.1.0) wants katex ^0.16 (GHSA-238p-pmpm-9mq7, fixed in 0.18.2). Drop those two overrides once the parents widen their ranges.",
   "overrides": {
-    "smol-toml": "1.8.0",
     "@puppeteer/browsers": "3.2.2",
     "vite": "^8.0.16",
     "@tiptap/core": "3.30.5",
@@ -56,12 +55,14 @@
     "ip-address": "^10.1.1",
     "js-yaml@3": "^3.15.1",
     "js-yaml@4": "^4.3.1",
-    "shell-quote": "^1.10.0",
+    "shell-quote": "^1.11.0",
     "tmp": "^0.2.6",
     "uuid": "^14.0.0",
-    "brace-expansion@5": "^5.0.6"
+    "brace-expansion@5": "^5.0.6",
+    "postcss-selector-parser": "^7.1.6",
+    "katex": "^0.18.2"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.13.0"
   }
 }

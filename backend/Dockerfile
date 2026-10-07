@@ -88,5 +88,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["dumb-init", "--"]
 # `--import` preloads the OTel SDK before the app module graph loads so
-# auto-instrumentation attaches to http/fastify/pg/redis (issue #922).
+# auto-instrumentation attaches to http/undici/pg/redis (issue #922).
 CMD ["node", "--import", "./dist/telemetry-register.js", "dist/index.js"]

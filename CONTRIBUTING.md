@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Compendiq! This guide will help y
 
 ## Prerequisites
 
-- **Node.js** >= 22.0.0 (24 recommended)
+- **Node.js** >= 22.13.0 (24 recommended)
 - **Docker** + **Docker Compose** (for PostgreSQL and Redis)
 - **Git**
 
