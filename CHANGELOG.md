@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`fast-copy` 4.0.x → 4.1.2** (stack exhaustion on deeply nested values),
+  pulled in by the dev-only `pino-pretty` in the backend and `mcp-docs`. Not
+  shipped in production images.
+
 - **`@modelcontextprotocol/sdk` 1.30.0 → 1.31.0** in the backend (root
   lockfile) and the `mcp-docs` sidecar (GHSA-6qxp-vccf-f47h: the OAuth client
   could send credentials to an authorization server chosen by the MCP server).
