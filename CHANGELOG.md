@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **OpenTelemetry database spans no longer carry the DB username**
+  (GHSA-qqmp-wf37-98f9). `@opentelemetry/auto-instrumentations-node`
+  0.78.0 → 0.79.0, `@opentelemetry/sdk-node` 0.220.0 → 0.221.0 and
+  `@opentelemetry/sdk-metrics` 2.9.0 → 2.10.0 (the OTel family moves
+  together), pulling `instrumentation-pg` 0.73.0 and the patched
+  knex/mysql/mysql2/mongoose/oracledb/tedious/cassandra-driver
+  instrumentations. With `OTEL_ENABLED=true` these releases emit only the
+  stable semantic conventions: dashboards or collector rules keyed on the old
+  attribute names (`db.system`, `db.statement`, `db.name`, `http.method`,
+  `http.status_code`, `net.peer.*`) must move to `db.system.name`,
+  `db.query.text`, `db.namespace`, `http.request.method`,
+  `http.response.status_code`, `server.*`.
+
 ## [0.9.0] - 2026-10-06
 
 > Minor: fixes for seven security advisories (GHSA-527x, -9v4v, -r652, -mvgq, -59q7, -v22g, -98hf), page restrictions on every read, Confluence as a per-user toggle (standalone mode), image analysis in retrieval (ADR-027), dependency security updates. **Every user signs in again once after upgrading.** 237 commits since v0.8.0.
