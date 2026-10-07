@@ -64,4 +64,21 @@ export interface EnterprisePlugin {
    * always returns null.
    */
   resolveUsecaseOverride?(usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
+
+  /**
+   * Article AI policy creation default (SPEC-CORE-001). The CE noop returns
+   * `'all'`; creation still applies the stricter of this value and labels.
+   * An unrecognised value is treated as `'none'` (fail closed).
+   */
+  resolveAiPolicyCreationDefault?(ctx: { userId: string; spaceKey: string | null }): Promise<'all' | 'local_only' | 'none'>;
+
+  /**
+   * True only when EE workers enforce `local_only`/`none`. Absent or false
+   * (foundation-only deployment) means restrictive policies cannot be
+   * activated.
+   */
+  aiPolicyEnforcementAvailable?(): boolean;
+
+  /** Inert observation sink for policy admission/block/change events. */
+  onAiPolicyEvent?(event: import('./ai-policy-hooks.js').AiPolicyEvent): void;
 }

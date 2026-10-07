@@ -55,6 +55,7 @@ import {
   userCanAccessPage,
 } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { pageAiPolicyRoutes } from './page-ai-policy.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema, type PageLifecycleState } from '@compendiq/contracts';
 import { z } from 'zod';
@@ -4454,4 +4455,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.internalServerError('Failed to save imported image');
     }
   });
+
+  // SPEC-CORE-003: article AI policy mutation endpoints.
+  await pageAiPolicyRoutes(fastify);
 }

@@ -155,6 +155,80 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
   return r.rows[0] ? rowToDto(r.rows[0]) : null;
 }
 
+export interface ProviderLocalityState {
+  providerId: string;
+  locality: 'local' | 'external';
+  configRevision: number;
+  /** True only when `local` was declared against the current configuration. */
+  localConfirmed: boolean;
+  declaredBy: string | null;
+  declaredAt: string | null;
+}
+
+interface LocalityRow {
+  id: string;
+  locality: 'local' | 'external';
+  config_revision: string;
+  locality_config_revision: string | null;
+  locality_declared_by: string | null;
+  locality_declared_at: Date | null;
+}
+
+function localityRowToState(r: LocalityRow): ProviderLocalityState {
+  const configRevision = Number(r.config_revision);
+  return {
+    providerId: r.id,
+    locality: r.locality,
+    configRevision,
+    localConfirmed: r.locality === 'local'
+      && r.locality_config_revision !== null
+      && Number(r.locality_config_revision) === configRevision,
+    declaredBy: r.locality_declared_by,
+    declaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
+  };
+}
+
+export async function getProviderLocality(id: string): Promise<ProviderLocalityState | null> {
+  const r = await query<LocalityRow>(
+    `SELECT id, locality, config_revision, locality_config_revision, locality_declared_by, locality_declared_at
+       FROM llm_providers WHERE id = $1`,
+    [id],
+  );
+  return r.rows[0] ? localityRowToState(r.rows[0]) : null;
+}
+
+/**
+ * Declare (or reconfirm) a provider's locality against the configuration
+ * revision the administrator inspected. A stale revision — the endpoint was
+ * edited meanwhile — is refused, so a declaration can never attach to an
+ * endpoint nobody looked at. Endpoint edits reset locality to `external` in
+ * the database trigger installed by migration 135.
+ */
+export async function declareProviderLocality(
+  id: string,
+  locality: 'local' | 'external',
+  expectedConfigRevision: number,
+  actorId: string,
+): Promise<{ ok: true; state: ProviderLocalityState } | { ok: false; reason: 'not_found' | 'stale_config_revision' }> {
+  const r = await query<LocalityRow>(
+    `UPDATE llm_providers
+        SET locality = $2,
+            locality_declared_by = $4,
+            locality_declared_at = clock_timestamp(),
+            locality_config_revision = config_revision,
+            updated_at = NOW()
+      WHERE id = $1 AND config_revision = $3
+      RETURNING id, locality, config_revision, locality_config_revision, locality_declared_by, locality_declared_at`,
+    [id, locality, expectedConfigRevision, actorId],
+  );
+  if (!r.rows[0]) {
+    const exists = await query(`SELECT 1 FROM llm_providers WHERE id = $1`, [id]);
+    return { ok: false, reason: exists.rowCount ? 'stale_config_revision' : 'not_found' };
+  }
+  await bumpProviderCacheVersion();
+  return { ok: true, state: localityRowToState(r.rows[0]) };
+}
+
 export async function deleteProvider(id: string): Promise<void> {
   const row = await query<{ is_default: boolean }>(`SELECT is_default FROM llm_providers WHERE id=$1`, [id]);
   if (!row.rows[0]) return;
