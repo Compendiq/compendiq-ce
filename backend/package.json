@@ -28,7 +28,7 @@
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^6.1.1",
     "@fastify/websocket": "^11.3.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-node": "^0.79.0",
     "@opentelemetry/sdk-metrics": "2.10.0",
