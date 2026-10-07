@@ -1369,6 +1369,8 @@ SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Ba
 
 Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `package.json`s (root, backend, frontend, packages/contracts, mcp-docs), merge, tag `vX.Y.Z`. Patch = bug, minor = feature or pre-1.0 breaking, major = `1.0.0` when production-ready.
 
+Release images: the `v*` tag push runs `.github/workflows/docker-build.yml`, which builds each image natively per architecture (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; never QEMU — emulated arm64 `npm ci` hangs or dies with `Illegal instruction`), pushes by digest and merges one multi-arch index via the reusable `docker-image.yml`. Branch pushes (`dev`, `main`) stay amd64-only. To republish an existing release without moving its tag: `gh workflow run docker-build.yml --ref dev -f tag=vX.Y.Z -f images=all` (or e.g. `images=mcp-docs`); a rebuild only moves `latest` if it is the newest stable tag.
+
 ## Dependencies
 
 - `npm install` from repo root only — workspaces require a single root lockfile.

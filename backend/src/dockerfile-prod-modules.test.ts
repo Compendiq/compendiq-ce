@@ -42,11 +42,11 @@ function runtimeStage(text: string): string {
   return match![0];
 }
 
+// The backend job passes its smoke script to the reusable docker-image.yml
+// as the `smoke_test` input; capture that block up to the next job key.
 function smokeStep(workflow: string): string {
-  const match = workflow.match(
-    /name:\s*Smoke-test runtime module resolution[\s\S]*?(?=\n {2}[a-z]|\njobs:|$)/,
-  );
-  expect(match, 'Smoke-test runtime module resolution step not found').not.toBeNull();
+  const match = workflow.match(/\n\s+smoke_test:\s*\|[\s\S]*?(?=\n {2}[a-z]|$)/);
+  expect(match, 'backend smoke_test input not found').not.toBeNull();
   return match![0];
 }
 
