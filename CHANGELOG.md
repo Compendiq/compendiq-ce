@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`@modelcontextprotocol/sdk` 1.30.0 → 1.31.0** in the backend (root
+  lockfile) and the `mcp-docs` sidecar (GHSA-6qxp-vccf-f47h: the OAuth client
+  could send credentials to an authorization server chosen by the MCP server).
+  Neither side uses the SDK's OAuth support, so no code changes; the sidecar
+  now also rejects JSON-RPC batches of more than 100 messages.
 - **OpenTelemetry database spans no longer carry the DB username**
   (GHSA-qqmp-wf37-98f9). `@opentelemetry/auto-instrumentations-node`
   0.78.0 → 0.79.0, `@opentelemetry/sdk-node` 0.220.0 → 0.221.0 and
