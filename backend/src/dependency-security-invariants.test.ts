@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Lockfile floors for open Dependabot advisories that we close with npm
- * overrides rather than parent upgrades. A reintroduced vulnerable version
+ * Lockfile floors for Dependabot advisories on transitive packages. Their
+ * parents' ranges still admit (or pin) vulnerable versions, so only the
+ * lockfile or a root override keeps the fix. A reintroduced vulnerable version
  * is a consumer-visible install, not an implementation detail of package.json.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -25,13 +26,39 @@ function installed(packages: LockPackages, name: string): string[] {
     .filter((version): version is string => typeof version === 'string');
 }
 
+function versionAtLeast(version: string, floor: string): boolean {
+  const [a, b] = [version, floor].map((v) => v.split('-')[0]!.split('.').map(Number));
+  for (let i = 0; i < 3; i++) {
+    if (a[i]! !== b[i]!) return a[i]! > b[i]!;
+  }
+  return true;
+}
+
+function belowFloor(name: string, floor: string): string[] {
+  const versions = installed(lockPackages(), name);
+  expect(versions.length).toBeGreaterThan(0);
+  return versions.filter((version) => !versionAtLeast(version, floor));
+}
+
 describe('npm advisory floors', () => {
-  it('resolves smol-toml past the infinite-loop parse (GHSA-7w5x-hrqm-74c2)', () => {
-    expect(installed(lockPackages(), 'smol-toml')).toEqual(['1.8.0']);
+  it('resolves smol-toml past the quadratic parseKey scan (GHSA-r4xh-jqrq-34v2)', () => {
+    expect(belowFloor('smol-toml', '1.9.0')).toEqual([]);
   });
 
-  it('resolves sharp past the libheif advisories (GHSA-rgj7-g3m4-5g8c)', () => {
-    expect(installed(lockPackages(), 'sharp')).toEqual(['0.35.4']);
+  it('resolves sharp to a build bundling librsvg 2.63.2 (GHSA-wq5f-xc86-pv6w)', () => {
+    expect(belowFloor('sharp', '0.35.5')).toEqual([]);
+  });
+
+  it('resolves shell-quote past the quote() comment injection (GHSA-pqg4-j6r4-53mv)', () => {
+    expect(belowFloor('shell-quote', '1.11.0')).toEqual([]);
+  });
+
+  it('resolves postcss-selector-parser past the quadratic flat-selector parse (GHSA-rj75-hqrm-r3gf)', () => {
+    expect(belowFloor('postcss-selector-parser', '7.1.6')).toEqual([]);
+  });
+
+  it('resolves katex past the inherited-trust prototype gadget (GHSA-238p-pmpm-9mq7)', () => {
+    expect(belowFloor('katex', '0.18.2')).toEqual([]);
   });
 
   it('does not install extract-zip (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv)', () => {
