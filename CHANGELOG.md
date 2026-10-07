@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-07
+
+> Patch: dependency security updates — `@modelcontextprotocol/sdk` 1.31.0, OpenTelemetry spans without the DB username (attribute and HTTP metric names change, see below), `katex`, `sharp`, `shell-quote` and others. Node.js floor 22.13.0 for source installs. 20 commits since v0.9.0.
+
 ### Security
 
 - **`fast-copy` 4.0.x → 4.1.2** (GHSA-jggr-w7fw-pc2j: stack exhaustion on
