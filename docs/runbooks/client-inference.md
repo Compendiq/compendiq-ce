@@ -133,9 +133,11 @@ nginx grants `script-src 'wasm-unsafe-eval'` and `worker-src 'self'`.
 Transformers 4.3.0 admits the patched native dependencies without overrides.
 The lockfile resolves:
 
-- `sharp` 0.35.4, including its platform binaries and libheif 1.23.2,
-  addresses [GHSA-f88m-g3jw-g9cj](https://github.com/advisories/GHSA-f88m-g3jw-g9cj)
-  and [GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
+- `sharp` 0.35.5 with its `@img/sharp-libvips-*` 1.3.4 platform binaries
+  (librsvg 2.63.2, libheif 1.23.5) addresses
+  [GHSA-f88m-g3jw-g9cj](https://github.com/advisories/GHSA-f88m-g3jw-g9cj),
+  [GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c)
+  and [GHSA-wq5f-xc86-pv6w](https://github.com/advisories/GHSA-wq5f-xc86-pv6w).
 - `onnxruntime-node` 1.30.0 admits `adm-zip ^0.6.0`; the lockfile selects 0.6.1,
   addressing [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85),
   [GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9)

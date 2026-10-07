@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **`fast-copy` 4.0.x → 4.1.2** (stack exhaustion on deeply nested values),
-  pulled in by the dev-only `pino-pretty` in the backend and `mcp-docs`. Not
-  shipped in production images.
+- **`fast-copy` 4.0.x → 4.1.2** (GHSA-jggr-w7fw-pc2j: stack exhaustion on
+  deeply nested values), pulled in by the dev-only `pino-pretty` in the
+  backend and `mcp-docs`. Not shipped in production images.
 
 - **`@modelcontextprotocol/sdk` 1.30.0 → 1.31.0** in the backend (root
   lockfile) and the `mcp-docs` sidecar (GHSA-6qxp-vccf-f47h: the OAuth client
@@ -29,14 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute names (`db.system`, `db.statement`, `db.name`, `http.method`,
   `http.status_code`, `net.peer.*`) must move to `db.system.name`,
   `db.query.text`, `db.namespace`, `http.request.method`,
-  `http.response.status_code`, `server.*`.
+  `http.response.status_code`, `server.*`. The HTTP duration histograms are
+  renamed **and change unit**: `http.server.duration` / `http.client.duration`
+  (milliseconds) become `http.server.request.duration` /
+  `http.client.request.duration` (seconds). Panels on the old names go empty,
+  and a plain rename leaves latency thresholds off by 1000× — divide them by
+  1000. See *ADMIN-GUIDE → OpenTelemetry*.
 - **Transitive dependency security updates.** `katex` 0.16.47 → 0.18.10
-  (lazy-loaded by mermaid for `$$…$$` diagram labels; prototype-pollution
-  `trust` bypass), `sharp` 0.35.4 → 0.35.5 (bundled librsvg 2.63.2), and the
-  build/dev-only `shell-quote` 1.10.0 → 1.12.0, `postcss-selector-parser`
-  6.0.10 → 7.1.6 and `smol-toml` 1.8.0 → 1.9.0. `sprintf-js` 1.0.3 stays: no
-  patched release exists, and it is reachable only through mammoth's
-  command-line entry point, which the backend never loads.
+  (GHSA-238p-pmpm-9mq7: lazy-loaded by mermaid for `$$…$$` diagram labels;
+  prototype-pollution `trust` bypass), `sharp` 0.35.4 → 0.35.5
+  (GHSA-wq5f-xc86-pv6w: bundled librsvg 2.63.2), and the build/dev-only
+  `shell-quote` 1.10.0 → 1.12.0 (GHSA-pqg4-j6r4-53mv),
+  `postcss-selector-parser` 6.0.10 → 7.1.6 (GHSA-rj75-hqrm-r3gf) and
+  `smol-toml` 1.8.0 → 1.9.0 (GHSA-r4xh-jqrq-34v2). `sprintf-js` 1.0.3 stays
+  (GHSA-hp3w-g68c-fv3c): no patched release exists, and it is reachable only
+  through mammoth's command-line entry point, which the backend never loads.
+
+### Changed
+
+- **Node.js floor is now 22.13.0** (`engines.node`; `mcp-docs` 22.12.0). With
+  `engine-strict=true` the locked tree already refused older Node 22 releases
+  (jsdom 28 and isomorphic-dompurify need ^22.13.0, vitest 5 and vite 8 need
+  `>=22.12.0`), so the old `>=22.0.0` promised installs that failed with
+  `EBADENGINE`.
 
 ## [0.9.0] - 2026-10-06
 
