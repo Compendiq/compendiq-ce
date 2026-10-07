@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could send credentials to an authorization server chosen by the MCP server).
   Neither side uses the SDK's OAuth support, so no code changes; the sidecar
   now also rejects JSON-RPC batches of more than 100 messages.
+- **Transitive dependency security updates.** `katex` 0.16.47 → 0.18.10
+  (lazy-loaded by mermaid for `$$…$$` diagram labels; prototype-pollution
+  `trust` bypass), `sharp` 0.35.4 → 0.35.5 (bundled librsvg 2.63.2), and the
+  build/dev-only `shell-quote` 1.10.0 → 1.12.0, `postcss-selector-parser`
+  6.0.10 → 7.1.6 and `smol-toml` 1.8.0 → 1.9.0. `sprintf-js` 1.0.3 stays: no
+  patched release exists, and it is reachable only through mammoth's
+  command-line entry point, which the backend never loads.
 
 ## [0.9.0] - 2026-10-06
 
