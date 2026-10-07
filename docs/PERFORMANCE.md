@@ -218,8 +218,12 @@ npm run dev
 # View traces at http://localhost:16686
 ```
 
-In addition to the HTTP/Fastify/pg/Redis auto-instrumentation, the backend
-emits custom spans around every outbound LLM call
+The HTTP/undici/pg/Redis auto-instrumentation (Fastify requests appear as HTTP
+server spans; there is no Fastify route instrumentation) follows the stable
+semantic conventions — e.g. `http.server.request.duration` is in **seconds** —
+see [ADMIN-GUIDE → OpenTelemetry](ADMIN-GUIDE.md#opentelemetry) for the
+renamed attributes and metrics. In addition, the backend emits custom spans
+around every outbound LLM call
 (`backend/src/domains/llm/services/openai-compatible-client.ts`):
 
 | Span | Covers | Attributes |

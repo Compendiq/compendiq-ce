@@ -3,7 +3,7 @@
  *
  * The SDK is started from `telemetry-register.ts`, which is loaded via Node's
  * `--import` preload hook BEFORE the application module graph — that ordering
- * is what lets auto-instrumentation monkey-patch http/fastify/pg/redis before
+ * is what lets auto-instrumentation monkey-patch http/undici/pg/redis before
  * those modules are first imported (issue #922). The started SDK and tracer are
  * stashed on `globalThis` so `getTracer`/`shutdownTelemetry` can reach them
  * regardless of which entrypoint started the SDK.
@@ -85,7 +85,8 @@ export async function startTelemetry(): Promise<void> {
       serviceName,
       instrumentations: [
         getNodeAutoInstrumentations({
-          // Instrument HTTP, Fastify, pg, Redis automatically
+          // HTTP, undici, pg and Redis are instrumented automatically. No Fastify
+          // instrumentation is installed: requests appear as HTTP server spans.
           '@opentelemetry/instrumentation-fs': { enabled: false }, // too noisy
         }),
       ],

@@ -1943,6 +1943,33 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://your-collector:4318
 
 This exports traces to any OTLP-compatible collector (Jaeger, Grafana Tempo, Datadog, etc.).
 
+The backend auto-instruments HTTP (including incoming Fastify requests, as HTTP
+server spans), undici, `pg` and Redis. There is no Fastify-specific route
+instrumentation.
+
+#### Stable semantic conventions (since the 0.221 OTel release)
+
+The OpenTelemetry instrumentations now emit **only** the stable semantic
+conventions; there is no opt-out back to the old names. Collector rules,
+dashboards and alerts keyed on the old names stop matching after the upgrade:
+
+| Old | New |
+|-----|-----|
+| span attribute `db.system` | `db.system.name` |
+| span attribute `db.statement` | `db.query.text` |
+| span attribute `db.name` | `db.namespace` |
+| span attribute `http.method` | `http.request.method` |
+| span attribute `http.status_code` | `http.response.status_code` |
+| span attributes `net.peer.name` / `net.peer.port` | `server.address` / `server.port` |
+| metric `http.server.duration` (histogram, **ms**) | `http.server.request.duration` (histogram, **s**) |
+| metric `http.client.duration` (histogram, **ms**) | `http.client.request.duration` (histogram, **s**) |
+
+The HTTP duration metrics changed **unit** as well as name: renaming a query
+is not enough — latency thresholds and panel units must move from
+milliseconds to seconds (a 500 ms alert threshold becomes `0.5`), otherwise
+they are off by a factor of 1000. Database spans no longer carry `db.user`
+or `db.connection_string` (GHSA-qqmp-wf37-98f9).
+
 ### Audit Logging
 
 Compendiq logs user actions and system events. Query audit logs via the admin API: `GET /api/admin/audit-log` (admin-authenticated, supports pagination/filtering). Logs are stored in PostgreSQL and include:
