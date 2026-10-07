@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Release images build `linux/arm64` on native arm64 runners** instead of
+  QEMU emulation, merged with the amd64 build into one multi-arch index.
+  Emulated arm64 `npm ci` hung the v0.9.1 `mcp-docs` build for hours on two
+  attempts before a third got through. The Docker workflow's
+  manual run gains a `tag` input (plus `images`) that rebuilds an existing
+  release tag without moving it. Branch images (`:dev`, `:latest`) stay
+  amd64-only.
+
 ## [0.9.1] - 2026-10-07
 
 > Patch: dependency security updates — `@modelcontextprotocol/sdk` 1.31.0, OpenTelemetry spans without the DB username (attribute and HTTP metric names change, see below), `katex`, `sharp`, `shell-quote` and others. Node.js floor 22.13.0 for source installs. 20 commits since v0.9.0.
