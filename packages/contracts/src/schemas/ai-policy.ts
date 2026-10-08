@@ -66,6 +66,36 @@ export const AiPolicyConflictSchema = z.object({
 });
 export type AiPolicyConflict = z.infer<typeof AiPolicyConflictSchema>;
 
+/**
+ * Receiving stages that each apply article AI policy independently
+ * (SPEC-RAG-001). Locality is evaluated per stage, never inherited.
+ */
+export const AI_POLICY_STAGES = [
+  'embedding', 'shadow_embedding', 'rerank', 'vision', 'chat', 'summary', 'quality', 'auto_tagging',
+] as const;
+export const AiPolicyStageSchema = z.enum(AI_POLICY_STAGES);
+export type AiPolicyStage = z.infer<typeof AiPolicyStageSchema>;
+
+/** Refusal error codes for continuation / cache reuse (SPEC-RAG-002). */
+export const AI_POLICY_REFUSAL_CODES = ['ai_history_not_replayable', 'ai_policy_unavailable'] as const;
+export const AiPolicyRefusalCodeSchema = z.enum(AI_POLICY_REFUSAL_CODES);
+export type AiPolicyRefusalCode = z.infer<typeof AiPolicyRefusalCodeSchema>;
+
+export const AiPolicyRefusalSchema = z.object({
+  error: AiPolicyRefusalCodeSchema,
+  stage: AiPolicyStageSchema.optional(),
+}).strict();
+export type AiPolicyRefusal = z.infer<typeof AiPolicyRefusalSchema>;
+
+/** Authenticated browser policy handshake response. */
+export const AiPolicyHandshakeSchema = z.object({
+  pageId: z.number().int().positive(),
+  policy: AiPolicySchema,
+  revision: z.number().int().nonnegative(),
+  provenanceVersion: z.literal(AI_POLICY_PROVENANCE_VERSION),
+}).strict();
+export type AiPolicyHandshake = z.infer<typeof AiPolicyHandshakeSchema>;
+
 /** PUT /api/admin/llm-providers/:id/locality */
 export const DeclareProviderLocalitySchema = z.object({
   locality: ProviderLocalitySchema,
