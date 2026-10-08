@@ -40,6 +40,7 @@ import {
   lockPageWrites,
 } from '../../../core/services/page-write-admission.js';
 import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+import { resolveIngestionAiPolicy, TIGHTEN_ONLY_POLICY_SQL } from '../../../core/services/ai-policy-ingestion.js';
 
 interface SyncStatus {
   userId: string;
@@ -824,6 +825,10 @@ async function syncPage(
   // deleted_at = NULL restores pages that were previously soft-deleted
   // (e.g. page was restored from Confluence trash)
   const wasFreshCreate = existing.rows.length === 0;
+  // SPEC-WORK-002: a fresh row takes the stricter of the creation-default
+  // hook and the incoming labels; an existing row only ever tightens (the
+  // ON CONFLICT branch below consults labels and never relaxes).
+  const creationPolicy = await resolveIngestionAiPolicy({ userId, spaceKey, labels });
   const upsert = await query(
     // ADR-027 D4 — `image_analysis_dirty` rides along with `embedding_dirty`
     // here and ONLY here in this statement: a new page version can move,
@@ -835,10 +840,11 @@ async function syncPage(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
-        image_analysis_dirty, summary_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending')
+        image_analysis_dirty, summary_status, ai_policy)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending', $12)
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
+       ai_policy = ${TIGHTEN_ONLY_POLICY_SQL('pages.ai_policy', 'EXCLUDED.labels')},
        body_storage = EXCLUDED.body_storage,
        body_html = EXCLUDED.body_html,
        body_text = EXCLUDED.body_text,
@@ -858,7 +864,7 @@ async function syncPage(
        deleted_at = NULL
      WHERE pages.source = 'confluence'`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
-     page.version.number, parentId, labels, author, lastModified],
+     page.version.number, parentId, labels, author, lastModified, creationPolicy],
   );
   if ((upsert.rowCount ?? 0) === 0) return;
   if (wasFreshCreate) {
@@ -1092,6 +1098,7 @@ async function applyConflictPolicyForExistingPage(
            body_text = $5,
            parent_id = $6,
            labels = $7,
+           ai_policy = ${TIGHTEN_ONLY_POLICY_SQL('ai_policy', '$7::text[]')},
            author = $8,
            last_modified_at = $9,
            last_synced = NOW(),
