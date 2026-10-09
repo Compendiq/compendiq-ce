@@ -1327,3 +1327,36 @@ together, which matters most for #1114's query-side prefix.
   and persists them, so steady-state reads do zero XHTML parsing. NULL means
   "recompute"; an empty array means "computed, no assets". This trigger is
   independent of the migration 060 `local_modified` trigger (disjoint columns).
+
+## Enterprise article AI policy governance (EE migration 930, SPEC-EE-001)
+
+```mermaid
+erDiagram
+    spaces ||--o{ pages : "default seeds new pages while entitled"
+    pages ||--o{ ai_policy_enforcement_events : "recorded decisions; no FK, no content"
+
+    spaces {
+        text default_ai_policy "EE; NULL | all | local_only | none"
+    }
+
+    ai_policy_enforcement_events {
+        bigint id PK
+        timestamptz occurred_at
+        text event_type "admitted | blocked | policy_changed | cascade_committed"
+        int page_id "deliberately no FK"
+        text user_id
+        text usecase
+        text provider_id "destination actually named"
+        text reason
+        text policy
+        text from_policy
+        text to_policy
+        bigint revision
+        bigint config_revision
+    }
+```
+
+The EE-only overlay migration is idempotent and lives in the reserved 9xx
+range. Cascade events are inserted in the same transaction as the page rows
+they describe. The table carries identifiers and policies only, never page
+content, prompts or completions.

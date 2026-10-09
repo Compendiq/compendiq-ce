@@ -201,3 +201,28 @@ The shared `ReportId` contract and `ComplianceReportsTab` include
 `model_governance`; the live backend's `available` list controls generation.
 There is no EE frontend overlay. The EE report states retained audit coverage
 and ships CSV plus an unsigned checksum PDF cover in a ZIP.
+
+## Article AI policy enterprise extension points (SPEC-EE-001)
+
+```mermaid
+flowchart LR
+    create["CE page creation"] --> hook["resolveAiPolicyCreationDefault"]
+    hook -->|CE noop| all["all"]
+    hook -->|EE, org_llm_policy entitled| spaceDefault["spaces.default_ai_policy<br/>NULL means all"]
+    hook -->|EE, not entitled| all
+    spaceDefault --> stricter["stricter of default and labels"]
+    all --> stricter
+    preview["POST cascade/preview<br/>owner-scoped subtree"] --> commit["POST cascade<br/>exact ids and revisions"]
+    commit -->|stale, ambiguous or foreign| conflict["409, no row changed"]
+    commit -->|agrees| write["one transaction:<br/>pages.ai_policy + cascade_committed events"]
+    observer["CE onAiPolicyEvent"] --> events["ai_policy_enforcement_events<br/>ids, policy, provider, no content"]
+    write --> events
+    events --> report["Model Governance Evidence<br/>recorded decisions only"]
+```
+
+The EE hook is wired into the plugin only; CE routes and ingestion keep
+calling `resolveCreationAiPolicy`. Losing the license makes the hook answer
+`all` for new pages but never rewrites stored page restrictions. Event
+recording is an observer of a decision already taken: an audit failure is
+logged and never turns a denied dispatch into an admitted one. There is no
+live inheritance resolver; a cascade writes each owned row once.
