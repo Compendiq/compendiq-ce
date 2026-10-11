@@ -90,6 +90,18 @@ vi.mock('./shadow-migration-service.js', () => ({
   shadowEpochFromClient: vi.fn().mockResolvedValue('none'),
 }));
 
+// Article AI policy admission (SPEC-WORK-001) is inert here: every page is
+// `all`. The block path runs against real Postgres in
+// `ai-policy-worker-admission.integration.test.ts`. Plain functions, for the
+// same `vi.resetAllMocks()` reason as the compose seam above. The recheck
+// predicate is a literal so the scripted SELECT/COUNT text keeps parsing.
+vi.mock('./ai-policy-admission.js', () => {
+  const admit = async (pageId: number, _usecase: string, providerId = 'p1', model = 'bge-m3') => ({
+    admitted: true, pageId, policy: 'all', policyRevision: 0, providerId, configRevision: 1, locality: 'local', model,
+  });
+  return { admitPageForUsecase: admit, admitPageForProvider: admit, RECHECKABLE_BLOCK_SQL: 'FALSE' };
+});
+
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: mocks.htmlToEmbeddingText,
   // embedPage's short-markdown fallback (#1265 review M1) imports this too.

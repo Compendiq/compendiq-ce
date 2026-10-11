@@ -14,6 +14,7 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from './llm-provider-resolver.js';
+import { admitPageForProvider } from './ai-policy-admission.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -104,6 +105,12 @@ export interface ShadowMigrationStatus extends ShadowMigrationState {
   backfilledPages: number;
   stragglerPages: number;
   indexReady: boolean;
+  /**
+   * Of `stragglerPages`, those the article AI policy keeps away from the
+   * candidate provider (SPEC-WORK-001). Absent when zero; the swap gate
+   * names it so the refusal reads as policy, not as a provider failure.
+   */
+  policyBlockedPages?: number;
 }
 
 export async function getShadowMigrationState(): Promise<ShadowMigrationState | null> {
@@ -340,6 +347,32 @@ async function countStragglerPages(): Promise<number> {
   return r.rows[0]?.n ?? 0;
 }
 
+/**
+ * Stragglers the article AI policy will never let the CANDIDATE provider
+ * fill (SPEC-WORK-001): `local_only` pages while the candidate's locality is
+ * not `local` at its current configuration revision, plus any `none` page
+ * still holding rows. Reported apart from provider failures so an operator
+ * can see that a swap is refused by policy, not by an endpoint — and that
+ * declaring the candidate local (or changing the pages' policy) is the fix.
+ */
+async function countPolicyBlockedStragglers(state: ShadowMigrationState): Promise<number> {
+  const prov = await query<{ local: boolean }>(
+    `SELECT (locality = 'local' AND locality_config_revision IS NOT NULL
+             AND locality_config_revision = config_revision) AS local
+       FROM llm_providers WHERE id::text = $1`,
+    [state.providerId],
+  );
+  const candidateLocal = prov.rows[0]?.local === true;
+  const r = await query<{ n: number }>(
+    `SELECT COUNT(DISTINCT pe.page_id)::int AS n
+       FROM page_embeddings pe JOIN pages p ON p.id = pe.page_id
+      WHERE pe.embedding_next IS NULL
+        AND (p.ai_policy = 'none' OR (p.ai_policy = 'local_only' AND NOT $1::boolean))`,
+    [candidateLocal],
+  );
+  return r.rows[0]?.n ?? 0;
+}
+
 async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean> {
   if (!state.indexed) return true;
   // BOTH shadow indexes (review r4): a crash between the two CREATE INDEX
@@ -394,6 +427,7 @@ async function readShadowMigrationStatus(): Promise<ShadowMigrationStatus | null
   const totalPages = await countBackfillPages();
   const stragglerPages = await countStragglerPages();
   const indexReady = await shadowIndexesReady(state);
+  const policyBlockedPages = stragglerPages > 0 ? await countPolicyBlockedStragglers(state) : 0;
   return {
     ...state,
     phase: stragglerPages === 0 && indexReady ? 'ready' : 'backfilling',
@@ -401,6 +435,7 @@ async function readShadowMigrationStatus(): Promise<ShadowMigrationStatus | null
     backfilledPages: totalPages - stragglerPages,
     stragglerPages,
     indexReady,
+    ...(policyBlockedPages > 0 ? { policyBlockedPages } : {}),
   };
 }
 
@@ -431,7 +466,7 @@ async function abortedOutFromUnder(err: unknown): Promise<boolean> {
  */
 export async function runShadowBackfillJob(job?: {
   updateProgress?: (p: number | object) => Promise<void>;
-}): Promise<{ processed: number; failed: number } | 'no-active-migration' | 'aborted'> {
+}): Promise<{ processed: number; failed: number; blocked?: number } | 'no-active-migration' | 'aborted'> {
   let state = await getShadowMigrationState();
   if (!state || state.status !== 'active') return 'no-active-migration';
 
@@ -444,14 +479,20 @@ export async function runShadowBackfillJob(job?: {
   const total = await countBackfillPages();
   let processed = 0;
   let failed = 0;
+  let blocked = 0;
   // Pages that failed THIS run are excluded from every later batch SELECT, so
   // a poison page cannot be re-selected forever (review r1, blocking): the
   // loop ends when every remaining NULL page is in this set. Values come from
   // the DB's integer PK column and are re-validated before interpolation.
   const failedPages = new Set<number>();
+  // Pages the article AI policy does not admit to the CANDIDATE provider
+  // (SPEC-WORK-001): no call is made, nothing is written, the page stays a
+  // straggler the swap gate reports apart from failures. Excluded from later
+  // batches of this run for the same reason as `failedPages`.
+  const blockedPages = new Set<number>();
 
   for (;;) {
-    const exclude = [...failedPages].filter((n) => Number.isInteger(n));
+    const exclude = [...failedPages, ...blockedPages].filter((n) => Number.isInteger(n));
     let batch: { rows: Array<{ page_id: number }> };
     try {
       batch = await query<{ page_id: number }>(
@@ -472,6 +513,13 @@ export async function runShadowBackfillJob(job?: {
       // inside a large batch (review r1).
       state = await getShadowMigrationState();
       if (!state || state.status !== 'active') return 'aborted';
+      const admission = await admitPageForProvider(page_id, 'embedding', state.providerId, state.model);
+      if (!admission.admitted) {
+        blocked++;
+        blockedPages.add(page_id);
+        logger.info({ pageId: page_id, reason: admission.reason }, 'Shadow backfill skipped page — article AI policy does not admit the candidate provider');
+        continue;
+      }
       try {
         await shadowEmbedExistingRows(page_id, cfg, state.model);
         processed++;
@@ -496,7 +544,7 @@ export async function runShadowBackfillJob(job?: {
     throw err;
   }
 
-  return { processed, failed };
+  return blocked > 0 ? { processed, failed, blocked } : { processed, failed };
 }
 
 /** Embed one page's existing chunk rows with the shadow model and fill embedding_next. */
@@ -680,8 +728,17 @@ export async function performShadowSwap(opts?: {
     throw new Error('No active shadow migration to swap');
   }
   if (status.phase !== 'ready') {
+    // A policy straggler is a `local_only` (or `none`) page the candidate
+    // provider may not embed: swapping would leave it searchable by vectors
+    // the new model never produced, or drop it from search. Re-running the
+    // backfill cannot change that — only the candidate's locality or the
+    // pages' policy can (SPEC-WORK-001).
+    const policy = status.policyBlockedPages ?? 0;
+    const remedy = policy > 0
+      ? ` (${policy} blocked by article AI policy — declare the candidate provider local or change those pages' policy; a re-run cannot fill them)`
+      : ' — re-run the backfill';
     throw new Error(
-      `Shadow migration not ready to swap: ${status.stragglerPages} straggler pages${status.indexReady ? '' : ', shadow index missing'} — re-run the backfill`,
+      `Shadow migration not ready to swap: ${status.stragglerPages} straggler pages${status.indexReady ? '' : ', shadow index missing'}${remedy}`,
     );
   }
 

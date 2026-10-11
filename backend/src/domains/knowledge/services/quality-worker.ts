@@ -34,6 +34,7 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import { admitPageForProvider, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -165,10 +166,25 @@ async function analyzePageQuality(
   bodyHtml: string,
   bodyText: string,
   currentRetryCount: number = 0,
-): Promise<'processed' | 'failed'> {
-  // Mark as analyzing
+): Promise<'processed' | 'failed' | 'blocked'> {
+  // Article AI policy (SPEC-WORK-001): admitted against the provider the
+  // call would use, before the row is claimed and before any call.
+  const admission = await admitPageForProvider(pageId, 'quality', assignment.config.providerId, assignment.model);
+  if (!admission.admitted) {
+    if (admission.reason === 'not_found') return 'blocked';
+    await query(
+      `UPDATE pages SET quality_status = 'policy_blocked', quality_error = NULL, ai_policy_block_reason = $2
+        WHERE id = $1`,
+      [pageId, admission.reason],
+    );
+    logger.info({ pageId, reason: admission.reason, providerId: assignment.config.providerId }, 'Quality analysis blocked by article AI policy');
+    return 'blocked';
+  }
+
+  // Mark as analyzing. Admission just succeeded, so a block reason left by
+  // an earlier pass (provider since declared local) is stale.
   await query(
-    `UPDATE pages SET quality_status = 'analyzing' WHERE id = $1`,
+    `UPDATE pages SET quality_status = 'analyzing', ai_policy_block_reason = NULL WHERE id = $1`,
     [pageId],
   );
 
@@ -392,6 +408,32 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
     pages = [...pages, ...failedResult.rows];
   }
 
+  // Priority 4: policy-blocked pages whose block was a fact about the
+  // provider (`provider_not_local`) — re-admitted each pass in case a
+  // locality declaration or reassignment lifted it (SPEC-WORK-001). A
+  // `policy_none` block is lifted only by the policy write itself.
+  if (pages.length < batchSize) {
+    const remaining = batchSize - pages.length;
+    const recheckResult = await query<{
+      id: number;
+      body_html: string;
+      body_text: string;
+      quality_retry_count: number;
+    }>(
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+       FROM pages
+       WHERE quality_status = 'policy_blocked'
+         AND ${RECHECKABLE_BLOCK_SQL}
+         AND deleted_at IS NULL
+         AND COALESCE(page_type, 'page') != 'folder'
+         AND (body_text IS NOT NULL AND body_text != '')
+       ORDER BY last_modified_at DESC
+       LIMIT $1`,
+      [remaining],
+    );
+    pages = [...pages, ...recheckResult.rows];
+  }
+
   // Skip empty body_text pages
   const skippedResult = await query(
     `UPDATE pages
@@ -410,8 +452,9 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
     await assertLockHeld();
     try {
       const outcome = await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.quality_retry_count);
+      // 'blocked' (article AI policy) is neither a success nor a failure.
       if (outcome === 'failed') result.errors++;
-      else result.processed++;
+      else if (outcome === 'processed') result.processed++;
     } catch (err) {
       // Persistence and other unexpected page failures must not abandon the
       // remaining candidates or turn the failed page into a processed success.
@@ -537,7 +580,8 @@ export function stopQualityWorker(): void {
  */
 export async function forceQualityRescan(): Promise<number> {
   const result = await query(
-    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL`,
+    // A `none` page stays parked (SPEC-WORK-001): only a policy change lifts it.
+    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL AND ai_policy <> 'none'`,
   );
   const count = result.rowCount ?? 0;
   logger.info({ count }, 'Forced quality rescan — all pages reset to pending');
@@ -557,6 +601,8 @@ export async function getQualityStatus(userId: string): Promise<{
   pendingPages: number;
   failedPages: number;
   skippedPages: number;
+  /** Parked by the article AI policy — neither pending nor failed (SPEC-WORK-001). */
+  policyBlockedPages: number;
   averageScore: number | null;
   isProcessing: boolean;
   lastRunAt: string | null;
@@ -572,6 +618,7 @@ export async function getQualityStatus(userId: string): Promise<{
       pending: string;
       failed: string;
       skipped: string;
+      policy_blocked: string;
       avg_score: string | null;
     }>(
       `SELECT
@@ -581,6 +628,7 @@ export async function getQualityStatus(userId: string): Promise<{
          COUNT(*) FILTER (WHERE quality_status = 'pending') AS pending,
          COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
          COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
+         COUNT(*) FILTER (WHERE quality_status = 'policy_blocked') AS policy_blocked,
          ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
        FROM pages cp
        WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}`,
@@ -600,6 +648,7 @@ export async function getQualityStatus(userId: string): Promise<{
     pendingPages: parseInt(row.pending, 10),
     failedPages: parseInt(row.failed, 10),
     skippedPages: parseInt(row.skipped, 10),
+    policyBlockedPages: parseInt(row.policy_blocked, 10),
     averageScore: row.avg_score ? parseInt(row.avg_score, 10) : null,
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,

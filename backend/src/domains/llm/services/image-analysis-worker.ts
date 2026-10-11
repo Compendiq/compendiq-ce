@@ -76,6 +76,7 @@ import {
 import { intakePageImage, mimeTypeForImageFormat } from './image-intake.js';
 import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { assertNoShadowMigration, REEMBED_ALL_LOCK_USER } from './embedding-service.js';
+import { admitPageForProvider } from './ai-policy-admission.js';
 import type { ImageAnalysisBatchReason } from '@compendiq/contracts';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -168,6 +169,12 @@ export interface ImageAnalysisBatchResult {
   unreadableRefs: number;
   /** Another process holds the worker lock; this call did nothing. */
   alreadyRunning?: boolean;
+  /**
+   * Rows the article AI policy parked as `policy_blocked` in this batch
+   * (SPEC-WORK-001): neither processed nor failed, no call spent. Present
+   * only when non-zero.
+   */
+  policyBlocked?: number;
 }
 
 function emptyResult(): ImageAnalysisBatchResult {
@@ -429,6 +436,19 @@ async function runInvalidationSweep(
     [maxOutputTokens],
   );
 
+  await assertLockHeld();
+  // Article AI policy (SPEC-WORK-001): a `provider_not_local` block was a
+  // fact about the provider, so it is re-checked every batch — the row goes
+  // back to `pending` and the analyze step re-admits it. A `policy_none`
+  // block is lifted only by the policy write.
+  await query(
+    `UPDATE page_image_analyses a
+        SET status = 'pending', ai_policy_block_reason = NULL, updated_at = NOW()
+       FROM pages p
+      WHERE a.page_id = p.id AND a.status = 'policy_blocked'
+        AND a.ai_policy_block_reason = 'provider_not_local' AND p.ai_policy <> 'none'`,
+  );
+
   return {
     repended: repended.rows[0]?.n ?? 0,
     reused: reused.rows[0]?.n ?? 0,
@@ -481,6 +501,27 @@ async function analyzeWorkRows(
 
   for (const row of work.rows) {
     await assertLockHeld();
+
+    // Article AI policy (SPEC-WORK-001): admitted against the RETAINED
+    // identity — the exact provider the call below names — before the bytes
+    // are even read. A block parks the row with its reason, spends no attempt
+    // and no call, and is neither a success nor a failure. The commit
+    // predicate keeps a concurrent reconcile's rewrite intact.
+    const admission = await admitPageForProvider(row.page_id, 'image_analysis', retained.providerId, retained.model);
+    if (!admission.admitted) {
+      if (admission.reason !== 'not_found') {
+        await query(
+          `UPDATE page_image_analyses a
+              SET status = 'policy_blocked', ai_policy_block_reason = $3, payload = NULL,
+                  next_attempt_at = NULL, error = NULL, updated_at = NOW()
+            WHERE a.id = $1 AND a.content_hash = $2`,
+          [row.id, row.content_hash, admission.reason],
+        );
+        result.policyBlocked = (result.policyBlocked ?? 0) + 1;
+        logger.info({ rowId: row.id, pageId: row.page_id, reason: admission.reason }, 'Image analysis blocked by article AI policy');
+      }
+      continue;
+    }
 
     const intake = await intakePageImage(
       { id: row.page_id, confluence_id: row.confluence_id, source: row.page_source },

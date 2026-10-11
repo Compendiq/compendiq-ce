@@ -1028,3 +1028,61 @@ server, and `backup-restore.ts` exclusively owns its on-disk stage/validation
 and commit/rollback phases. It reuses the archive implementation and calls
 `core/db/postgres.ts` only after `pg_restore` succeeds so shipped migrations
 run from the same standalone process.
+
+## Article AI policy in workers (SPEC-WORK-001)
+
+`pages.ai_policy` (`all` | `local_only` | `none`, migration 135) is the single
+authority; every background worker that would send an article's content to a
+model admits the page first, against the **concrete provider it is about to
+call** — never through the use-case resolver when dispatch holds a different
+provider.
+
+```mermaid
+flowchart LR
+    subgraph admission["domains/llm/services/ai-policy-admission.ts"]
+        A["admitPageForProvider(pageId, usecase, providerId, model)"]
+        D["decideAiPolicyAdmission(policy, provider locality)"]
+        A --> D
+    end
+    E[embedding-service: embedPage + shadow dual-write] --> A
+    S[summary-worker: summarizePage] --> A
+    Q[quality-worker: analyzePageQuality] --> A
+    I[image-analysis-worker: analyze step] --> A
+    M[shadow-migration-service: backfill] --> A
+    D -- admit --> Call[provider call]
+    D -- policy_none / provider_not_local --> B["status = 'policy_blocked'
+    ai_policy_block_reason = reason
+    no call, no attempt, no error"]
+    subgraph policy["core/services/ai-policy-service.ts"]
+        W[updatePageAiPolicies] --> P["purgeDerivedAiState (→ none):
+        vectors, averages, summary, quality, image payloads"]
+        W --> R["requeueDerivedAiState (relax / all→local_only):
+        clear block, re-pend, raise dirty flags"]
+    end
+    Sync[confluence sync-service upsert landing on none] --> PP[purgeDerivedAiStateForPages] --> P
+```
+
+Rules the diagram encodes:
+
+- **Blocked is a third outcome.** A policy-blocked page is counted neither as
+  `processed` nor as an error; the `{processed, errors}` batch results are
+  unchanged and the block is visible through the status columns
+  (`*_status = 'policy_blocked'`, `ai_policy_block_reason`) and the status
+  endpoints' `policyBlockedPages` / `policyBlocked` counts.
+- **`policy_none` is lifted only by a policy write.** `provider_not_local` is
+  re-checked every pass (`RECHECKABLE_BLOCK_SQL`): declaring the provider local
+  at its current configuration revision is enough, no policy write needed.
+  Admission clears a stale reason on success.
+- **Unknown locality never authorizes `local_only`** — an unknown provider id,
+  a provider table without locality columns, or a declaration against an older
+  configuration revision all read as external.
+- **`none` purges in the policy write's transaction** under the same per-page
+  advisory lock the shared admission read takes, so a worker mid-batch cannot
+  commit a derived row after the policy flipped. The body, attachments, versions
+  and FTS stay.
+- **Ingestion** (`sync-service.ts`, `notion-import-service.ts`) can only
+  tighten through labels (`TIGHTEN_ONLY_POLICY_SQL`); a page that lands on
+  `none` through a label is purged through `purgeDerivedAiStateForPages`.
+- **Shadow re-embed**: the dual-write and backfill admit against the
+  candidate model separately from the live one; the swap refuses while
+  policy-blocked stragglers remain (`docs/runbooks/shadow-reembed.md`).

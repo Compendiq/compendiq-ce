@@ -37,6 +37,7 @@ import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import { admitPageForProvider, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -79,6 +80,8 @@ interface SummaryStatus {
   pendingPages: number;
   failedPages: number;
   skippedPages: number;
+  /** Parked by the article AI policy — neither pending nor failed (SPEC-WORK-001). */
+  policyBlockedPages: number;
   isProcessing: boolean;
   lastRunAt: string | null;
   intervalMinutes: number;
@@ -118,6 +121,7 @@ export async function getSummaryStatus(userId: string): Promise<SummaryStatus> {
       pending: string;
       failed: string;
       skipped: string;
+      policy_blocked: string;
     }>(`
       SELECT
         COUNT(*)                                                 AS total,
@@ -125,7 +129,8 @@ export async function getSummaryStatus(userId: string): Promise<SummaryStatus> {
         COUNT(*) FILTER (WHERE summary_status = 'summarizing')   AS summarizing,
         COUNT(*) FILTER (WHERE summary_status = 'pending')       AS pending,
         COUNT(*) FILTER (WHERE summary_status = 'failed')        AS failed,
-        COUNT(*) FILTER (WHERE summary_status = 'skipped')       AS skipped
+        COUNT(*) FILTER (WHERE summary_status = 'skipped')       AS skipped,
+        COUNT(*) FILTER (WHERE summary_status = 'policy_blocked') AS policy_blocked
       FROM pages cp
       WHERE cp.deleted_at IS NULL AND ${visiblePagesPredicate(1, 2)}
     `, [spaces, userId]),
@@ -141,6 +146,7 @@ export async function getSummaryStatus(userId: string): Promise<SummaryStatus> {
     pendingPages: parseInt(row.pending, 10),
     failedPages: parseInt(row.failed, 10),
     skippedPages: parseInt(row.skipped, 10),
+    policyBlockedPages: parseInt(row.policy_blocked, 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     intervalMinutes: SUMMARY_CHECK_INTERVAL_MINUTES,
@@ -250,12 +256,13 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   const result = await query<SummaryCandidate>(
     `SELECT id, body_text, summary_content_hash, summary_retry_count, title
      FROM pages
-     WHERE summary_status IN ('pending', 'failed')
+     WHERE (summary_status IN ('pending', 'failed')
+            OR (summary_status = 'policy_blocked' AND ${RECHECKABLE_BLOCK_SQL}))
        AND deleted_at IS NULL
        AND COALESCE(page_type, 'page') != 'folder'
-       AND (summary_status = 'pending' OR summary_retry_count < $1)
+       AND (summary_status <> 'failed' OR summary_retry_count < $1)
      ORDER BY
-       CASE summary_status WHEN 'pending' THEN 0 ELSE 1 END,
+       CASE summary_status WHEN 'pending' THEN 0 WHEN 'policy_blocked' THEN 2 ELSE 1 END,
        last_modified_at DESC NULLS LAST
      LIMIT $2`,
     [MAX_RETRIES, batchSize],
@@ -264,6 +271,14 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
 }
 
 const SUMMARIZE_LENGTH_INSTRUCTION_SHORT = 'Provide a brief 2-3 sentence summary.';
+
+/** Thrown by `summarizePage` for a page the article AI policy parks: not an error, not a success. */
+class SummaryPolicyBlocked extends Error {
+  constructor(public readonly pageId: number, public readonly reason: string) {
+    super(`Summary blocked by article AI policy (${reason})`);
+    this.name = 'SummaryPolicyBlocked';
+  }
+}
 
 /**
  * Process a single page: generate summary, convert to HTML, store in DB.
@@ -275,12 +290,28 @@ async function summarizePage(
   const { id, body_text, title } = candidate;
   const { config, model } = assignment;
 
-  // Skip empty/short content
+  // Article AI policy (SPEC-WORK-001): admitted against the provider the
+  // call below would use, before any state is touched and before any call.
+  const admission = await admitPageForProvider(id, 'summary', config.providerId, model);
+  if (!admission.admitted) {
+    if (admission.reason === 'not_found') throw new SummaryPolicyBlocked(id, 'not_found');
+    await query(
+      `UPDATE pages SET summary_status = 'policy_blocked', summary_error = NULL, ai_policy_block_reason = $2
+        WHERE id = $1`,
+      [id, admission.reason],
+    );
+    logger.info({ pageId: id, reason: admission.reason, providerId: config.providerId }, 'Summary blocked by article AI policy');
+    throw new SummaryPolicyBlocked(id, admission.reason);
+  }
+
+  // Skip empty/short content. Admission succeeded, so any block reason left
+  // by an earlier pass (provider since declared local) is stale.
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
     await query(
       `UPDATE pages
        SET summary_status = 'skipped',
-           summary_error = 'Content too short for summarization'
+           summary_error = 'Content too short for summarization',
+           ai_policy_block_reason = NULL
        WHERE id = $1`,
       [id],
     );
@@ -292,7 +323,7 @@ async function summarizePage(
 
   // Mark as summarizing
   await query(
-    `UPDATE pages SET summary_status = 'summarizing' WHERE id = $1`,
+    `UPDATE pages SET summary_status = 'summarizing', ai_policy_block_reason = NULL WHERE id = $1`,
     [id],
   );
 
@@ -499,6 +530,8 @@ export async function runSummaryBatch(
         await summarizePage(candidate, effectiveAssignment);
         processed++;
       } catch (err) {
+        // A policy block is neither a success nor a provider failure.
+        if (err instanceof SummaryPolicyBlocked) continue;
         errors++;
         logger.error({ err, pageId: candidate.id }, 'Error in summary batch');
       }
@@ -583,13 +616,15 @@ export async function rescanAllSummaries(): Promise<number> {
          summary_retry_count = 0
      WHERE deleted_at IS NULL
        AND (summary_status != 'skipped' OR summary_error IS NULL)
+       AND ai_policy <> 'none'
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;
 }
 
 /**
- * Trigger re-summarization for a single page.
+ * Trigger re-summarization for a single page. A `none` page is left parked:
+ * its block is lifted only by a policy change (SPEC-WORK-001).
  */
 export async function regenerateSummary(pageId: number): Promise<void> {
   await query(
@@ -598,7 +633,7 @@ export async function regenerateSummary(pageId: number): Promise<void> {
          summary_content_hash = NULL,
          summary_retry_count = 0,
          summary_error = NULL
-     WHERE id = $1`,
+     WHERE id = $1 AND ai_policy <> 'none'`,
     [pageId],
   );
 }

@@ -29,7 +29,36 @@ import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.j
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { planDerivedChunks, type DerivedChunkMetadata } from './image-analysis-compose.js';
+import { admitPageForProvider, RECHECKABLE_BLOCK_SQL, type AiPolicyBlockReason } from './ai-policy-admission.js';
 import pgvector from 'pgvector';
+
+/**
+ * Article AI policy (SPEC-WORK-001): the dirty-page scan skips rows parked
+ * `policy_blocked`, except a `provider_not_local` block, which is a fact
+ * about the provider and is re-checked each pass (a locality declaration or
+ * reassignment may have lifted it). A `policy_none` block is lifted only by
+ * the policy write, which clears the status itself.
+ */
+export const EMBED_WORK_POLICY_SQL =
+  `(embedding_status IS DISTINCT FROM 'policy_blocked' OR (${RECHECKABLE_BLOCK_SQL}))`;
+
+/**
+ * Pages `embedPage` parked in the current `processDirtyPages` run. A blocked
+ * page is neither processed nor an error (the invariant the status counters
+ * and the SSE stream must keep), so the loop consults this set to charge the
+ * page to neither bucket. Module-level because `embedPage`'s public return
+ * (`number` of chunks) is shared with the sync, route and test callers.
+ */
+const policyBlockedInRun = new Set<number>();
+
+async function markEmbeddingPolicyBlocked(pageId: number, reason: AiPolicyBlockReason): Promise<void> {
+  policyBlockedInRun.add(pageId);
+  await query(
+    `UPDATE pages SET embedding_status = 'policy_blocked', embedding_error = NULL, ai_policy_block_reason = $2
+      WHERE id = $1`,
+    [pageId, reason],
+  );
+}
 
 /**
  * The dimension the live `embedding` column accepts, or `null` when it cannot
@@ -624,6 +653,20 @@ export async function embedPage(
   // keeps all chunks of one page consistent.
   const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
 
+  // Article AI policy (SPEC-WORK-001): admit the page against the provider
+  // dispatch is about to use, BEFORE the first vector is requested. A block
+  // is neither a success nor a provider failure: the page is parked as
+  // `policy_blocked` with the reason recorded, its existing vectors are left
+  // untouched (a `none` page was already purged by the policy write), it
+  // stays dirty for the next admitted pass, and no HTTP call is made.
+  const admission = await admitPageForProvider(pageId, 'embedding', embedConfig.providerId, embedModel);
+  if (!admission.admitted) {
+    if (admission.reason === 'not_found') return 0;
+    await markEmbeddingPolicyBlocked(pageId, admission.reason);
+    logger.info({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding blocked by article AI policy');
+    return 0;
+  }
+
   // #1114 pre-flight: the width the live `embedding` column will actually
   // accept. Without this, a model whose vectors are the wrong length is only
   // caught by pgvector at the Phase 2 INSERT — after every chunk of the page
@@ -727,7 +770,19 @@ export async function embedPage(
   // would let a swap landing during the live-generate window go unnoticed.
   const shadowTarget = shadowStateBefore?.status === 'active' ? await getActiveShadowTarget() : null;
   let shadowEmbeddings: Array<number[] | null> | null = null;
-  if (shadowTarget && allEmbeddings.length > 0) {
+  // The candidate provider is admitted SEPARATELY (SPEC-WORK-001): a
+  // `local_only` page whose live provider is local must not be sent to an
+  // external candidate just because a migration is running. A shadow block
+  // leaves the row's `embedding_next` NULL — the swap gate reports it as a
+  // policy straggler, apart from provider failures — and never fails the
+  // live embed.
+  const shadowAdmitted = shadowTarget
+    ? (await admitPageForProvider(pageId, 'embedding', shadowTarget.cfg.providerId, shadowTarget.model)).admitted
+    : false;
+  if (shadowTarget && !shadowAdmitted) {
+    logger.info({ pageId, providerId: shadowTarget.cfg.providerId }, 'Shadow dual-write skipped — article AI policy does not admit the candidate provider');
+  }
+  if (shadowTarget && shadowAdmitted && allEmbeddings.length > 0) {
     try {
       shadowEmbeddings = [];
       const shadowBatchSize = 10;
@@ -1011,7 +1066,7 @@ export async function processDirtyPages(
     // Get total count for logging purposes (global, not per-user)
     // Exclude folder-type pages which have no content to embed
     const countResult = await query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'",
+      `SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder' AND ${EMBED_WORK_POLICY_SQL}`,
     );
     const countRow = countResult.rows[0];
     if (!countRow) throw new Error('Expected a row from COUNT query');
@@ -1089,6 +1144,7 @@ export async function processDirtyPages(
          FROM pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
            AND COALESCE(page_type, 'page') != 'folder'
+           AND ${EMBED_WORK_POLICY_SQL}
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],
@@ -1148,7 +1204,17 @@ export async function processDirtyPages(
 
         try {
 
+          policyBlockedInRun.delete(page.id);
           const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+          if (policyBlockedInRun.has(page.id)) {
+            // Parked by the article AI policy: not a success, not a failure.
+            // The row left the work predicate (or is re-checked next pass),
+            // so the window advances past it exactly as for a still-dirty page.
+            policyBlockedInRun.delete(page.id);
+            batchRemainingDirty++;
+            pagesProcessedSinceGuardCheck++;
+            continue;
+          }
           // embedPage returns 0 without throwing when every chunk-batch was
           // skipped for exceeding the context window — the page stays
           // embedding_dirty = TRUE, so it must be skipped past or the same
@@ -1209,7 +1275,15 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
+                policyBlockedInRun.delete(page.id);
                 const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+                if (policyBlockedInRun.has(page.id)) {
+                  policyBlockedInRun.delete(page.id);
+                  batchRemainingDirty++;
+                  pagesProcessedSinceGuardCheck++;
+                  cbSuccess = true;
+                  break;
+                }
                 // See the note on the initial embedPage call: a 0 return means
                 // every chunk-batch was skipped, leaving the page dirty.
                 if (embeddedChunks === 0) batchRemainingDirty++;
@@ -1624,7 +1698,10 @@ export async function reEmbedAll(): Promise<void> {
   // A blanket `DELETE FROM page_embeddings` here would black out search for the
   // entire multi-hour run. This mirrors `runReembedAllJob`, which also relies
   // on per-page replacement rather than an up-front delete.
-  await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
+  // A `none` page has nothing to re-embed and must not be re-queued (its
+  // status stays `policy_blocked`); admission would refuse it anyway, but
+  // re-selecting it every run would be churn the status surfaces miscount.
+  await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL WHERE ai_policy <> 'none'`);
   logger.info('All pages marked dirty for incremental re-embedding');
 
   // Use a system user ID for provider selection (pick any active user with settings)

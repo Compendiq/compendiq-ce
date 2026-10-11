@@ -131,6 +131,18 @@ export async function updatePageAiPolicies(
         WHERE id = ANY($1::int[]) RETURNING id, ai_policy, ai_policy_revision`,
       [ids, policy],
     );
+    if (policy === 'none') {
+      await purgeDerivedAiState(client, ids);
+    } else {
+      const relaxed = ids.filter((id) => RANK[byId.get(id)!.ai_policy] > RANK[policy]);
+      const tightened = ids.filter((id) => RANK[byId.get(id)!.ai_policy] < RANK[policy]);
+      if (relaxed.length) await requeueDerivedAiState(client, relaxed);
+      // all → local_only: existing derived state may have come from an
+      // external provider. Nothing is purged (the policy forbids future
+      // external calls, not past results — SPEC-CORE-003), but every stage
+      // is re-queued so the next pass is admitted against the new rule.
+      if (tightened.length) await requeueDerivedAiState(client, tightened);
+    }
     await client.query('COMMIT');
     const rows = updated.rows
       .map((r) => ({ pageId: r.id, policy: r.ai_policy, revision: Number(r.ai_policy_revision) }))
@@ -152,6 +164,108 @@ export async function updatePageAiPolicies(
   } finally {
     client.release();
   }
+}
+
+/**
+ * SPEC-WORK-001 — a page set to `none` keeps its authored content (body,
+ * attachments, versions, FTS) and loses every AI-derived artefact in the
+ * SAME transaction as the policy write: vectors (live and shadow), the
+ * materialized averages, summary, quality scores and image-analysis
+ * payloads. Each stage is left `policy_blocked` with `policy_none` recorded,
+ * so no worker re-queues it and status surfaces count it apart from work and
+ * from failure. The dirty flags are left raised on purpose: relaxation only
+ * has to clear the block for the next pass to pick the page up.
+ */
+export async function purgeDerivedAiState(client: PoolClient, ids: number[]): Promise<void> {
+  await client.query(`DELETE FROM page_embeddings WHERE page_id = ANY($1::int[])`, [ids]);
+  // Similarity edges are a persisted derivative of the vectors just deleted;
+  // label/link edges are authored facts and stay.
+  await client.query(
+    `DELETE FROM page_relationships
+      WHERE relationship_type = 'embedding_similarity'
+        AND (page_id_1 = ANY($1::int[]) OR page_id_2 = ANY($1::int[]))`,
+    [ids],
+  );
+  const shadow = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'page_avg_embedding_next'
+     ) AS present`,
+  );
+  const shadowSet = shadow.rows[0]?.present ? `, page_avg_embedding_next = NULL` : '';
+  await client.query(
+    `UPDATE pages
+        SET page_avg_embedding = NULL${shadowSet},
+            embedding_status = 'policy_blocked', embedding_error = NULL, embedded_at = NULL,
+            summary_text = NULL, summary_html = NULL, summary_status = 'policy_blocked',
+            summary_error = NULL, summary_content_hash = NULL, summary_generated_at = NULL,
+            summary_model = NULL, summary_retry_count = 0,
+            quality_score = NULL, quality_completeness = NULL, quality_clarity = NULL,
+            quality_structure = NULL, quality_accuracy = NULL, quality_readability = NULL,
+            quality_summary = NULL, quality_status = 'policy_blocked', quality_error = NULL,
+            quality_retry_count = 0, quality_analyzed_at = NULL,
+            ai_policy_block_reason = 'policy_none',
+            image_analysis_revision = image_analysis_revision + 1
+      WHERE id = ANY($1::int[])`,
+    [ids],
+  );
+  await client.query(
+    `UPDATE page_image_analyses
+        SET status = 'policy_blocked', payload = NULL, attempts = 0, next_attempt_at = NULL,
+            error = NULL, ai_policy_block_reason = 'policy_none', updated_at = NOW()
+      WHERE page_id = ANY($1::int[])`,
+    [ids],
+  );
+}
+
+/**
+ * `purgeDerivedAiState` in its own transaction, for an ingestion path whose
+ * label-driven tighten landed a page on `none` outside `updatePageAiPolicies`
+ * (Confluence sync's upsert). Takes the same exclusive per-page lock the
+ * policy write takes, so a worker's shared admission read cannot interleave.
+ */
+export async function purgeDerivedAiStateForPages(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    for (const id of ids) {
+      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [AI_POLICY_LOCK_NAMESPACE, id]);
+    }
+    await purgeDerivedAiState(client, ids);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Relaxation (or a tightening that still permits SOME provider): clear every
+ * block, flip the blocked stages back to their queued state and raise the
+ * dirty flags so each worker re-admits the page against the new policy on
+ * its next pass. Nothing is generated here — admission at dispatch decides.
+ */
+export async function requeueDerivedAiState(client: PoolClient, ids: number[]): Promise<void> {
+  await client.query(
+    `UPDATE pages
+        SET ai_policy_block_reason = NULL,
+            embedding_dirty = TRUE,
+            embedding_status = CASE WHEN embedding_status = 'policy_blocked' THEN 'not_embedded' ELSE embedding_status END,
+            summary_status = CASE WHEN summary_status = 'policy_blocked' THEN 'pending' ELSE summary_status END,
+            quality_status = CASE WHEN quality_status = 'policy_blocked' THEN 'pending' ELSE quality_status END,
+            image_analysis_dirty = TRUE
+      WHERE id = ANY($1::int[])`,
+    [ids],
+  );
+  await client.query(
+    `UPDATE page_image_analyses
+        SET status = 'pending', ai_policy_block_reason = NULL, updated_at = NOW()
+      WHERE page_id = ANY($1::int[]) AND status = 'policy_blocked'`,
+    [ids],
+  );
 }
 
 /**

@@ -27,6 +27,7 @@ import type { PoolClient } from 'pg';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
+import { resolveIngestionAiPolicy, TIGHTEN_ONLY_POLICY_SQL } from '../../../core/services/ai-policy-ingestion.js';
 import {
   LocalAttachmentError,
   putLocalAttachments,
@@ -1106,12 +1107,15 @@ async function persistStandalonePage(opts: {
 
   if (opts.reuse) {
     await rehomePage(opts.id, opts.parentId, opts.userId, protectedPageIds, client);
+    // Article AI policy (SPEC-WORK-002): an existing row is tighten-only —
+    // re-import may raise its policy from the incoming labels, never lower it.
     const updated = await client.query<RevisionRow>(
       `UPDATE pages
           SET title = $2, body_html = $3, body_text = $4, space_key = $5, parent_id = $6,
               visibility = $7, path = $8, depth = $9, labels = $10,
               author = COALESCE($11, author),
               verified_at = COALESCE($12, verified_at),
+              ai_policy = ${TIGHTEN_ONLY_POLICY_SQL('ai_policy', '$10::text[]')},
               embedding_dirty = TRUE, image_analysis_dirty = TRUE,
               content_revision = content_revision + 1
         WHERE id = $1 AND deleted_at IS NULL
@@ -1125,21 +1129,28 @@ async function persistStandalonePage(opts: {
     return pageRevisionFromRow(updated.rows[0]);
   }
 
+  // Article AI policy (SPEC-WORK-002): a NEW row takes the stricter of the
+  // creation default (EE/CE hook) and the policy its incoming labels name.
+  const aiPolicy = await resolveIngestionAiPolicy({
+    userId: opts.userId,
+    spaceKey: opts.spaceKey,
+    labels: opts.labels,
+  });
   const inserted = await client.query<RevisionRow>(
     `INSERT INTO pages
        (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
         page_type, embedding_dirty, image_analysis_dirty, embedding_status,
-        last_synced, labels, author, verified_at, notion_page_id, path, depth)
+        last_synced, labels, author, verified_at, notion_page_id, path, depth, ai_policy)
      VALUES ($1, $2, $3, $4, NULL, 'standalone', $5, $6, 1, $7, NULL, $8,
              'page', TRUE, TRUE, 'not_embedded',
-             NOW(), $9, $10, $11, $12, $13, $14)
+             NOW(), $9, $10, $11, $12, $13, $14, $15)
      RETURNING content_revision::text, lifecycle_revision::text`,
     [
       opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,
       opts.visibility, opts.spaceKey, opts.parentId,
       opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
-      opts.notionPageId, newPath, depth,
+      opts.notionPageId, newPath, depth, aiPolicy,
     ],
   );
   return pageRevisionFromRow(inserted.rows[0]);

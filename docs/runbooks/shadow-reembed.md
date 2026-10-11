@@ -773,6 +773,29 @@ re-check closes, leaving only the instant between the delete's own guard read
 and its commit) parks the migration at `backfilling` with every page a
 straggler — abort it and start again.
 
+## Article AI policy and the shadow index (SPEC-WORK-001)
+
+The backfill admits every page against the **candidate** provider/model
+(`admitPageForProvider`), not against the live one. A page the policy refuses
+is skipped — no shadow vector is written, the page is not counted as a
+straggler failure, and the job result carries a separate `blocked` count. The
+live path's dual-write is gated the same way, separately per target: an
+article that is `local_only` under an external candidate gets its live vector
+and no shadow vector.
+
+- `ai_policy = 'none'`: the page has no vectors at all (they were purged when
+  the policy was written) and never will under any model.
+- `ai_policy = 'local_only'` with a candidate that is not declared local at
+  its current configuration revision: `provider_not_local`. The status card's
+  `policyBlockedPages` counts these.
+
+**The swap refuses** while policy-blocked stragglers remain, with a message
+naming the count. The remedy is never "wait": either declare the candidate
+provider local (Settings → AI Models) and let the next backfill batch admit
+those pages, or accept that `local_only` articles cannot move to an external
+model and abort. A page whose policy is `none` is not a straggler the swap
+cares about — it has no live vector to lose.
+
 ## Revert procedure
 
 - Before swap: **Abort** — drops the shadow columns, nothing else changed.

@@ -839,3 +839,25 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/core/db/advisory-locks.ts` — `PAGE_MOVE_ADVISORY_LOCK_ID`, shared with `PUT /pages/:id/move`
 - `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
 - `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard
+- `backend/src/core/services/ai-policy-ingestion.ts` — `resolveIngestionAiPolicy` / `TIGHTEN_ONLY_POLICY_SQL` (SPEC-WORK-001)
+- `backend/src/core/services/ai-policy-service.ts` — `purgeDerivedAiStateForPages`, called by the upsert when a page lands on `none`
+
+## Article AI policy at ingestion (SPEC-WORK-001)
+
+The page upsert resolves `pages.ai_policy` with `TIGHTEN_ONLY_POLICY_SQL`:
+Confluence labels (`ai-none`, `ai-local-only`, …) can only make an existing
+page STRICTER, never relax a policy an editor set, and are never consulted
+again after that write. The downstream marks are policy-aware:
+
+- `summary_status` is re-pended on every content change EXCEPT for a page
+  parked by `none` — its `policy_blocked` stays, because only a policy write
+  lifts a `policy_none` block. `embedding_dirty` / `image_analysis_dirty` are
+  raised as before; the workers' selects exclude `policy_none` rows and
+  re-check `provider_not_local` ones every pass.
+- When the upsert's `RETURNING ai_policy` is `none` (a label tightened it),
+  the sync calls `purgeDerivedAiStateForPages([id])` — the same purge the
+  interactive policy write performs, in its own transaction under the per-page
+  advisory lock — so no vector, summary, score or image payload outlives the
+  policy. Body, attachments and versions are kept.
+- The Notion importer (`notion-import-service.ts`) uses the same helpers on
+  insert and on reuse.

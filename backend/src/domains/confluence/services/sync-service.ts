@@ -41,6 +41,7 @@ import {
 } from '../../../core/services/page-write-admission.js';
 import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { resolveIngestionAiPolicy, TIGHTEN_ONLY_POLICY_SQL } from '../../../core/services/ai-policy-ingestion.js';
+import { purgeDerivedAiStateForPages } from '../../../core/services/ai-policy-service.js';
 
 interface SyncStatus {
   userId: string;
@@ -856,17 +857,27 @@ async function syncPage(
        last_synced = NOW(),
        embedding_dirty = TRUE,
        image_analysis_dirty = TRUE,
-       summary_status = 'pending',
+       -- SPEC-WORK-001: a page parked by a 'none' policy stays parked; the
+       -- policy write is the only thing that lifts a policy_none block.
+       summary_status = CASE WHEN pages.ai_policy = 'none' THEN pages.summary_status ELSE 'pending' END,
        -- Clear local-edit markers (#305) — see matching note in the
        -- version-mismatch branch above.
        local_modified_at = NULL,
        local_modified_by = NULL,
        deleted_at = NULL
-     WHERE pages.source = 'confluence'`,
+     WHERE pages.source = 'confluence'
+     RETURNING id, ai_policy, (xmax <> 0) AS was_update`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified, creationPolicy],
   );
   if ((upsert.rowCount ?? 0) === 0) return;
+  const upserted = upsert.rows[0] as { id: number; ai_policy: string; was_update: boolean } | undefined;
+  if (upserted?.ai_policy === 'none') {
+    // SPEC-WORK-001: a label that tightened an existing page to `none`
+    // (or a fresh `none` page) must not keep — or be queued for — any
+    // AI-derived artefact. Same purge the policy write performs.
+    await purgeDerivedAiStateForPages([upserted.id]);
+  }
   if (wasFreshCreate) {
     counts.pagesCreated++;
   } else {
