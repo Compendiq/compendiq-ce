@@ -282,6 +282,54 @@ enters the viewport, not on ordinary re-renders or background refetches.
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
+## Article AI policy surfaces (#283)
+
+The shared CE bundle carries the article AI policy UI (`all` / `local_only` /
+`none`) and provider locality (`local` / `external`); there is no EE
+frontend overlay. The logic lives in `shared/lib/article-ai-policy.ts`, the
+chips in `shared/components/badges/AiPolicyChips.tsx`.
+
+- **Policy and locality are categories, not statuses.** `AiPolicyChip`
+  (with a `compact` header form) and `LocalityChip` are neutral ink plus a
+  glyph, like `FrozenBadge`: the glyph survives `forced-colors` and colour
+  blindness. No Steel fill, no green seal, no amber, and the words never say
+  "verified" — locality is an administrator *declaration* that Compendiq does
+  not independently verify (`LOCALITY_HELP_TEXT`).
+- **The selector is capability-gated by the server**
+  (`canShowPolicySelector` requires `page.ai_policy.update`); read access or
+  shared visibility alone never shows it, and an unknown capability is not
+  `all`. `selectorReducer` is never optimistic: `saved` follows only a
+  server success, a 409 keeps the draft with `conflict`, and the reload the
+  conflict offers adopts the committed policy/revision, keeps the draft for
+  review and clears the stale-revision conflict.
+- **`no_ai` confirmation names the real effect** (`NO_AI_CONFIRMATION`):
+  vectors, image analyses, summaries and quality results are removed;
+  authored content, attachments, versions and keyword search remain; history
+  is retained but may no longer replay; sent work cannot be recalled.
+- **Editor gating is one verdict for mouse, keyboard and programmatic
+  paths** (`isEditorAiAllowed`, failing closed on unknown policy) with an
+  accessible prose reason (`editorAiUnavailableReason`); ghost text is
+  reconciled against the policy/revision snapshot it was generated under and
+  dropped on any change (`reconcileGhostText`).
+- **History refusal** (`handleChatRefusal`) keeps the draft:
+  `ai_history_not_replayable` offers New chat, `ai_policy_unavailable`
+  offers retry without reclassifying the history; both say nothing was sent.
+- **Locality is never auto-selected.** `LocalityDeclaration` starts null, an
+  endpoint edit clears it, and `localityToSubmit` sends `local` only when
+  Local was explicitly chosen for exactly the endpoint being saved —
+  otherwise External. Connection or vision probes never touch it.
+- **Worker states** `policy_blocked` and `recovering` render as their own
+  tones in `WorkerStatusBadge`, never as success or failure, with the block
+  reason as visible text wired by `aria-describedby`, not a `title`.
+- The Library filter helpers (`pagesQueryKey` / `pagesSearchParams`) put
+  `aiPolicy` on the real list query key and request; "All articles" is the
+  absence of a filter, not the `all` value.
+
+These helpers and chips are the shared vocabulary; mounting them into the
+inspector Details section, the article header, the Library filter row, the
+editor menus, the dock and the provider editor is tracked against #283 and is
+not yet wired in this tree.
+
 ## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →

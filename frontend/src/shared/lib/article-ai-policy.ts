@@ -6,10 +6,18 @@ import type { AiPolicy, ProviderLocality, AiPolicyBlockReason } from '@compendiq
  * what the server said, refusing locally where a request would be refused.
  */
 
+/** Issue wording: a category, never a connection state or a trust seal. */
 export const AI_POLICY_CHIP_LABEL: Record<AiPolicy, string> = {
-  all: 'AI: all providers',
-  local_only: 'AI: local providers only',
-  none: 'AI: no processing',
+  all: 'All AI allowed',
+  local_only: 'Local AI only',
+  none: 'No AI allowed',
+};
+
+/** Concise Details explanation beside each policy. */
+export const AI_POLICY_EXPLANATION: Record<AiPolicy, string> = {
+  all: 'Any configured provider may process this article, subject to existing permissions and provider policy.',
+  local_only: 'Only a provider an administrator declared local, or the supported local browser inference path, may process this article.',
+  none: 'No embedding, vision analysis, summary, quality analysis, auto-tagging, rewrite, completion or AI prompt context is derived from this article.',
 };
 
 /** Neutral locality wording; never "verified" or "secure". */
@@ -17,6 +25,12 @@ export const LOCALITY_CHIP_LABEL: Record<ProviderLocality, string> = {
   local: 'Declared local',
   external: 'External',
 };
+
+/** Help copy mandated by the issue for the provider editor's locality control. */
+export const LOCALITY_HELP_TEXT =
+  'Local is an administrator declaration about this endpoint and any upstream forwarding; '
+  + 'Compendiq does not independently verify residency. '
+  + 'Declaring a provider Local authorizes it to process articles whose policy is Local AI only.';
 
 /** Library filter: the query param and cache key are the real API ones. */
 export type AiPolicyFilter = AiPolicy | 'any';
@@ -38,6 +52,32 @@ export function requiresConfirmation(from: AiPolicy, to: AiPolicy): boolean {
   return to === 'none' && from !== 'none';
 }
 
+/**
+ * The `no_ai` confirmation names the actual atomic effect and its limits. It
+ * promises neither global erasure nor instant cancellation of in-flight work.
+ */
+export const NO_AI_CONFIRMATION = {
+  title: 'Set this article to No AI allowed?',
+  removes: [
+    'generated vectors (live and shadow embeddings)',
+    'stored image analyses',
+    'generated summaries',
+    'quality analysis results',
+  ],
+  remains: [
+    'authored content and titles',
+    'original attachments',
+    'version history',
+    'ordinary keyword search',
+  ],
+  limits: [
+    'Historical conversations are not erased; they may no longer be replayable as AI context.',
+    'Work already admitted or sent to a provider cannot be recalled.',
+    'New AI work is refused from the moment the change is committed; nothing is promised about requests already in flight.',
+  ],
+  confirmLabel: 'Set No AI allowed',
+} as const;
+
 export interface SelectorState {
   saved: AiPolicy;
   draft: AiPolicy;
@@ -54,7 +94,12 @@ export type SelectorEvent =
   | { type: 'error' }
   | { type: 'reload'; policy: AiPolicy; revision: number };
 
-/** No optimistic update: `saved` changes only when the server confirms. A 409 keeps the draft. */
+/**
+ * No optimistic update: `saved` changes only when the server confirms. A 409
+ * keeps the draft; a reload (the refresh/review the conflict offers) adopts
+ * the server's committed policy and revision, keeps the draft for review, and
+ * clears the stale-revision conflict because the revision is now current.
+ */
 export function selectorReducer(state: SelectorState, event: SelectorEvent): SelectorState {
   switch (event.type) {
     case 'choose':
@@ -68,7 +113,7 @@ export function selectorReducer(state: SelectorState, event: SelectorEvent): Sel
     case 'error':
       return { ...state, pending: false };
     case 'reload':
-      return { ...state, saved: event.policy, revision: event.revision, pending: false };
+      return { ...state, saved: event.policy, revision: event.revision, conflict: false, pending: false };
   }
 }
 
@@ -78,6 +123,13 @@ export function isEditorAiAllowed(policy: AiPolicy | undefined, trigger: EditorA
   // Every trigger is gated identically; unknown policy fails closed.
   void trigger;
   return policy === 'all' || policy === 'local_only';
+}
+
+/** Accessible reason for an unavailable editor action; prose, never a tooltip alone. */
+export function editorAiUnavailableReason(policy: AiPolicy | undefined): string | null {
+  if (policy === 'none') return 'Unavailable: this article\u2019s AI policy is No AI allowed.';
+  if (policy === undefined) return 'Unavailable: this article\u2019s AI policy could not be read.';
+  return null;
 }
 
 /** Ghost text must be cleared when its policy/revision snapshot is invalidated. */
@@ -92,20 +144,36 @@ export function reconcileGhostText(
   return ghost;
 }
 
-/** History refusal keeps the draft and offers a fresh conversation. */
-export interface ChatSendOutcome { draft: string; offerNewChat: boolean; message: string | null }
+/**
+ * History refusal keeps the draft and offers a fresh conversation. A
+ * transient policy read failure offers retry instead, without reclassifying
+ * the history as safe. Neither outcome sent anything.
+ */
+export interface ChatSendOutcome {
+  draft: string;
+  offerNewChat: boolean;
+  offerRetry: boolean;
+  message: string | null;
+}
 export function handleChatRefusal(draft: string, errorCode: string | undefined): ChatSendOutcome {
   if (errorCode === 'ai_history_not_replayable') {
     return {
       draft,
       offerNewChat: true,
-      message: 'This conversation includes content that can no longer be sent under the current article AI policy. Start a new chat to continue.',
+      offerRetry: false,
+      message: 'Nothing was sent. This conversation\u2019s history cannot be sent under the current article AI policy. '
+        + 'Your draft is kept; start a new chat to continue without that history.',
     };
   }
   if (errorCode === 'ai_policy_unavailable') {
-    return { draft, offerNewChat: false, message: 'Article AI policy could not be checked. Try again later.' };
+    return {
+      draft,
+      offerNewChat: false,
+      offerRetry: true,
+      message: 'Nothing was sent. The article AI policy could not be checked right now. Your draft is kept; try again.',
+    };
   }
-  return { draft, offerNewChat: false, message: null };
+  return { draft, offerNewChat: false, offerRetry: false, message: null };
 }
 
 /** Provider locality declaration: never auto-selected; endpoint change resets it. */
@@ -125,6 +193,14 @@ export function needsLocalityConfirmation(state: LocalityDeclaration, endpoint: 
 export function onEndpointChange(state: LocalityDeclaration, endpoint: string): LocalityDeclaration {
   return state.confirmedForEndpoint === endpoint ? state : { locality: null, confirmedForEndpoint: null };
 }
+/**
+ * What a provider save submits for locality: `local` only when Local was
+ * explicitly chosen for exactly this endpoint in the current draft; anything
+ * else — no choice, a choice for a previous endpoint — saves External.
+ */
+export function localityToSubmit(state: LocalityDeclaration, endpoint: string): ProviderLocality {
+  return state.locality === 'local' && state.confirmedForEndpoint === endpoint ? 'local' : 'external';
+}
 
 /** Worker statuses (SPEC-WORK-001). Policy states are neither success nor failure. */
 export type WorkerStatusTone = 'success' | 'failure' | 'policy' | 'recovering' | 'neutral';
@@ -138,7 +214,7 @@ export function workerStatusTone(status: string): WorkerStatusTone {
   }
 }
 export const BLOCK_REASON_LABEL: Record<AiPolicyBlockReason, string> = {
-  policy_none: 'Skipped: article AI policy is "no processing"',
-  provider_not_local: 'Skipped: provider is not declared local',
-  policy_changed: 'Skipped: article AI policy changed',
+  policy_none: 'Blocked by policy: this article is No AI allowed',
+  provider_not_local: 'Blocked by policy: the assigned provider is not declared local',
+  policy_changed: 'Blocked by policy: the article AI policy changed before this work was published',
 };
