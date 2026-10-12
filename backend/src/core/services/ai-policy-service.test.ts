@@ -79,7 +79,7 @@ describe('planLabelPolicyChange (#281)', () => {
     expect(() => planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'ai-local-only'] }))
       .toThrowError(PageWriteError);
     try {
-      planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'all-ai'] });
+      planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'all-ai'] });
       expect.unreachable();
     } catch (err) {
       expect(err).toMatchObject({ statusCode: 422, reason: 'ai_policy_label_conflict' });
@@ -145,9 +145,22 @@ describe('planLabelPolicyChange (#281)', () => {
     });
     expect(kept).toEqual({ labels: ['AI_None', 'y'], policy: 'none', kind: 'unchanged', restoredLabel: null });
 
-    // A NEW policy next to a carried one is still contradictory.
+    // A single NEW policy next to a carried one is NOT contradictory: the
+    // carried label is not a command. The fresh policy wins and the carried
+    // label is normalized onto the one canonical label.
+    expect(planLabelPolicyChange({
+      currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'ai-local-only', 'ordinary'],
+    })).toEqual({ labels: ['ai-local-only', 'ordinary'], policy: 'local_only', kind: 'tighten', restoredLabel: null });
+    expect(planLabelPolicyChange({
+      currentPolicy: 'local_only', currentLabels: ['ai-local-only'], targetLabels: ['ai-local-only', 'no-ai'],
+    })).toEqual({ labels: ['no-ai'], policy: 'none', kind: 'tighten', restoredLabel: null });
+    // A fresh looser policy beside a carried stricter label is an explicit relaxation.
+    expect(planLabelPolicyChange({
+      currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'all-ai'],
+    })).toMatchObject({ labels: ['all-ai'], policy: 'all', kind: 'relax' });
+    // Two genuinely NEW distinct policies still conflict.
     expect(() => planLabelPolicyChange({
-      currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'ai-local-only'],
+      currentPolicy: 'all', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'ai-local-only'],
     })).toThrowError(PageWriteError);
   });
 

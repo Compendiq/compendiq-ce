@@ -113,11 +113,15 @@ export function planLabelPolicyChange(input: {
       if (!currentNamed.has(p)) newlyNamed.add(p);
     }
   }
-  if (newlyNamed.size > 1 || (newlyNamed.size === 1 && named.size > 1)) {
+  // Only TWO NEW distinct policy identities contradict. A carried label is
+  // not a command: one fresh policy next to a carried reserved label is that
+  // fresh policy, and the carried label is normalized onto its canonical
+  // spelling (the single reserved slot) below.
+  if (newlyNamed.size > 1) {
     throw new PageWriteError(
       422,
       'ai_policy_label_conflict',
-      `Labels name contradictory AI policies: ${[...named].map(canonicalAiPolicyLabel).join(', ')}`,
+      `Labels name contradictory AI policies: ${[...newlyNamed].map(canonicalAiPolicyLabel).join(', ')}`,
     );
   }
   const labelPolicy = newlyNamed.size === 1 ? [...newlyNamed][0]! : null;

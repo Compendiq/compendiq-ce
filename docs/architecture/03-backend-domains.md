@@ -69,10 +69,15 @@ runs on the transaction it already holds:
   policy endpoint is never re-tightened by an unrelated label edit. Dropping
   the canonical label of the current restrictive policy restores it. A
   contradiction (422 `ai_policy_label_conflict`) is judged only among
-  **newly stated** policies: a row whose stored labels already disagree
-  (relaxed to `all` with `no-ai` and `ai-local-only` left behind) stays
-  writable for an ordinary tag — carried labels collapse onto the one naming
-  the current policy and are never a 422 on their own.
+  **newly stated** policies — two *new* distinct identities in one write
+  (`no-ai` + `ai-local-only` on a page carrying neither). A carried label is
+  not a command: one fresh reserved label beside a carried one is that fresh
+  policy (`all` + carried `no-ai` + fresh `ai-local-only` ⇒ `local_only`;
+  `local_only` + carried `ai-local-only` + fresh `no-ai` ⇒ `none`), and the
+  carried label collapses onto the fresh canonical label. A row whose stored
+  labels already disagree (relaxed to `all` with `no-ai` and `ai-local-only`
+  left behind) stays writable for an ordinary tag and is never a 422 on its
+  own.
   Remote-backed routes plan from the admitted row **before** the provider
   call, so neither a contradiction nor an unauthorized relaxation reaches
   Confluence, and the *planned* set is what Confluence receives. Bulk routes
@@ -91,6 +96,22 @@ runs on the transaction it already holds:
   through `initialPolicyFromEffect` (409 `intent_recovery_metadata_invalid`
   when malformed; never looser than the labels it names), so neither an
   undispatched label step nor a replayed create leaves the page at `all`.
+  When the row already exists (a replay, or the sync walker imported the
+  acknowledged page before the creator's local publication — the labels
+  step runs *after* publication, so such a sync-first row lands at the
+  ingestion default), identity (source, space, parent, title, storage,
+  body, version) must match **exactly** or the publication is refused with
+  409 `intent_local_identity_changed` and nothing moves. An exact match
+  that is *stricter* than `initialPolicy` is a later authoritative tighten
+  and is accepted untouched; an exact match that is *looser* is tightened
+  to `initialPolicy` through `applyAiPolicyOnClient` (attributed to the
+  creator, with the canonical label stored and the derived purge/re-queue
+  in the same transaction). The change records are handed back via
+  `onPolicyChanges`; `POST /pages` emits them after its publication
+  transaction has committed and the create reconciler returns them as
+  `afterCommit`. This closes the sync-first window at publication and at
+  recovery; the window itself (sync between remote acknowledgement and
+  local publication) is not otherwise prevented.
 - **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
   `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
   → `pages` row `FOR UPDATE`. Callers that lock the row themselves

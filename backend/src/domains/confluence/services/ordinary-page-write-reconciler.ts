@@ -14,10 +14,14 @@ import {
 } from '../../../core/services/standalone-attachment-cleanup.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
+  applyAiPolicyOnClient,
   applyPageLabelsOnClient,
+  canonicalAiPolicyLabel,
   emitAiPolicyChanges,
   isAiPolicy,
+  lockAiPolicyForPages,
   planLabelPolicyChange,
+  reservedAiPolicyLabel,
   stricterPolicy,
   type AiPolicy,
   type AiPolicyChangeRecord,
@@ -137,6 +141,14 @@ export interface CreatedConfluencePagePublication {
    */
   initialPolicy?: AiPolicy;
   initialLabels?: readonly string[];
+  /**
+   * The creating actor. Required only when an exact matching row (sync-first
+   * import) must be tightened to `initialPolicy`: the tighten is attributed
+   * to the creator and its change records are handed to `onPolicyChanges`
+   * so the caller emits them strictly after its COMMIT.
+   */
+  actorId?: string;
+  onPolicyChanges?: (changes: AiPolicyChangeRecord[]) => void;
 }
 
 export interface PublishedConfluencePage {
@@ -212,6 +224,18 @@ export async function publishCreatedConfluencePage(
     ],
   );
   if (inserted.rows[0]) return inserted.rows[0];
+  // The row already exists (a re-run after an acknowledgement loss, or the
+  // sync walker imported the acknowledged page first). Identity equality and
+  // policy strictness are different checks: identity is compared on the
+  // locked row below; a matching row that is LOOSER than the trusted initial
+  // policy is ours and is tightened, never refused and never left at `all`.
+  // Lock order: AI-policy advisory lock BEFORE the row lock.
+  const located = await client.query<{ id: number }>(
+    `SELECT id FROM pages WHERE confluence_id = $1`,
+    [publication.confluenceId],
+  );
+  const locatedId = located.rows[0]?.id;
+  if (locatedId !== undefined) await lockAiPolicyForPages(client, [locatedId]);
   const existing = await client.query<PublishedConfluencePage & {
     spaceKey: string | null;
     parentId: string | null;
@@ -221,19 +245,23 @@ export async function publishCreatedConfluencePage(
     bodyText: string | null;
     version: number;
     source: string;
+    deletedAt: Date | null;
   }>(
     `SELECT id, labels, ai_policy AS "aiPolicy", content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision",
             space_key AS "spaceKey", parent_id AS "parentId", title,
             body_storage AS storage, body_html AS "bodyHtml",
-            body_text AS "bodyText", version, source
+            body_text AS "bodyText", version, source, deleted_at AS "deletedAt"
        FROM pages
-      WHERE confluence_id = $1`,
+      WHERE confluence_id = $1
+      FOR UPDATE`,
     [publication.confluenceId],
   );
   const row = existing.rows[0];
   if (
     !row ||
+    row.id !== locatedId ||
+    row.deletedAt !== null ||
     row.source !== 'confluence' ||
     row.spaceKey !== publication.spaceKey ||
     row.parentId !== publication.parentConfluenceId ||
@@ -241,11 +269,7 @@ export async function publishCreatedConfluencePage(
     row.bodyText !== bodyText ||
     row.title !== publication.title ||
     row.storage !== publication.storage ||
-    row.version !== publication.version ||
-    // A re-run must find the policy it stated (or stricter — a later
-    // authoritative tighten is not a collision); a looser row is not ours.
-    (publication.initialPolicy !== undefined
-      && stricterPolicy(row.aiPolicy, publication.initialPolicy) !== row.aiPolicy)
+    row.version !== publication.version
   ) {
     throw new PageWriteError(
       409,
@@ -253,7 +277,55 @@ export async function publishCreatedConfluencePage(
       'The acknowledged Confluence page conflicts with an existing local row',
     );
   }
-  return row;
+  if (
+    publication.initialPolicy === undefined
+    || stricterPolicy(row.aiPolicy, publication.initialPolicy) === row.aiPolicy
+  ) {
+    // The row already holds the stated policy or a later authoritative
+    // tighten: nothing to move, the revision stays.
+    return { id: row.id, labels: row.labels, aiPolicy: row.aiPolicy,
+      contentRevision: row.contentRevision, lifecycleRevision: row.lifecycleRevision };
+  }
+  // Exact matching row published looser than the durable creation authority
+  // (sync-first import before the creator's labels reached Confluence).
+  // Tighten it to the initial policy through the policy primitive: policy,
+  // revision, canonical labels and the purge of anything derived under the
+  // former policy commit with this publication. A tighten needs no
+  // mutation authority (the same rule ingestion applies).
+  if (!publication.actorId) {
+    throw new PageWriteError(
+      409,
+      'intent_local_identity_changed',
+      'The acknowledged Confluence page exists locally with a looser AI policy and no actor to attribute its tightening to',
+    );
+  }
+  const finalPolicy = publication.initialPolicy;
+  const mergedLabels: string[] = [];
+  for (const label of [...(row.labels ?? []), ...initialLabels]) {
+    if (reservedAiPolicyLabel(label) !== null || mergedLabels.includes(label)) continue;
+    mergedLabels.push(label);
+  }
+  // One canonical reserved label naming the policy the row now holds.
+  mergedLabels.push(canonicalAiPolicyLabel(finalPolicy));
+  const applied = await applyAiPolicyOnClient(client, {
+    userId: publication.actorId,
+    items: [{ pageId: row.id, policy: finalPolicy }],
+  });
+  if (!applied.ok) {
+    throw new PageWriteError(409, applied.reason, 'The initial AI policy could not be applied to the published row');
+  }
+  const relabeled = await client.query<{ labels: string[] | null }>(
+    `UPDATE pages SET labels = $2 WHERE id = $1 RETURNING labels`,
+    [row.id, mergedLabels],
+  );
+  publication.onPolicyChanges?.(applied.changes);
+  return {
+    id: row.id,
+    labels: relabeled.rows[0]?.labels ?? mergedLabels,
+    aiPolicy: applied.rows[0]!.policy,
+    contentRevision: row.contentRevision,
+    lifecycleRevision: row.lifecycleRevision,
+  };
 }
 
 const LABEL_KINDS = [
@@ -433,6 +505,7 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
       'The acknowledged Confluence child differs from the requested publication',
     );
   }
+  const createChanges: AiPolicyChangeRecord[] = [];
   const published = await publishCreatedConfluencePage(client, {
     confluenceId: terminal.confluenceId,
     spaceKey,
@@ -441,6 +514,8 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
     storage,
     version: observed.version.number,
     ...initialPolicyFromEffect(intent.effect),
+    actorId,
+    onPolicyChanges: (changes) => { createChanges.push(...changes); },
   });
   await enqueuePageWriteInvalidation(client, intent.id);
   return {
@@ -452,6 +527,9 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
       details: { remoteEffectsCompleted: true, terminalEvidence: storageDigest },
     },
     result: { pageId: published.id, confluenceId: terminal.confluenceId },
+    // A sync-first row tightened here is a real transition: emitted by the
+    // recovery driver strictly after its COMMIT (#281).
+    afterCommit: createChanges.length > 0 ? () => emitAiPolicyChanges(createChanges) : undefined,
   };
 };
 

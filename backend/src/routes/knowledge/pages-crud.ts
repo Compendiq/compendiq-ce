@@ -103,6 +103,7 @@ import {
   planLabelPolicyChange,
   resolveCreationAiPolicy,
   type AiPolicy,
+  type AiPolicyChangeRecord,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
 import {
@@ -2018,6 +2019,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         'The acknowledged Confluence child differs from the requested publication',
       );
     }
+    // A sync walker may import the acknowledged page before this local
+    // publication (sync-first). `publishCreatedConfluencePage` then tightens
+    // that exact row to the admitted initial policy; its change records are
+    // emitted only after the publication transaction has committed.
+    const createPolicyChanges: AiPolicyChangeRecord[] = [];
     const publication = {
       confluenceId: page.id,
       spaceKey: body.spaceKey!,
@@ -2027,6 +2033,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       version: page.version.number,
       initialPolicy,
       initialLabels,
+      actorId: userId,
+      onPolicyChanges: (changes: AiPolicyChangeRecord[]) => { createPolicyChanges.push(...changes); },
     };
     let createdPageState: PublishedConfluencePage;
     if (createIntent) {
@@ -2061,6 +2069,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       createdPageState = await withPageWriteTransaction([], (writeClient) =>
         publishCreatedConfluencePage(writeClient, publication));
     }
+    // Both branches above have COMMITTED (a thrown publication never reaches
+    // here), so a sync-first tighten is now a durable transition.
+    emitAiPolicyChanges(createPolicyChanges);
     const localPageId = createdPageState.id;
 
     // A new Confluence page is visible to every user with space access (#893),
