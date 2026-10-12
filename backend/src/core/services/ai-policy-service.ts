@@ -3,6 +3,7 @@ import { getPool } from '../db/postgres.js';
 import { isSystemAdmin, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
 import { emitAiPolicyEvent } from '../enterprise/ai-policy-hooks.js';
+import { PageWriteError } from './page-write-admission.js';
 
 /**
  * Article AI policy (SPEC-CORE-001/003). `pages.ai_policy` is the single
@@ -20,12 +21,144 @@ export function stricterPolicy(a: AiPolicy, b: AiPolicy): AiPolicy {
   return RANK[a] >= RANK[b] ? a : b;
 }
 
+/** `a` is strictly more restrictive than `b`. */
+export function isStricterPolicy(a: AiPolicy, b: AiPolicy): boolean {
+  return RANK[a] > RANK[b];
+}
+
 /** Mirrors SQL `ai_policy_from_labels` in migration 135. */
 export function normalizeAiPolicyLabel(label: string): AiPolicy | null {
   const key = label.trim().toLowerCase().replace(/[\s_:]+/g, '-');
   if (key === 'ai-none' || key === 'no-ai') return 'none';
   if (key === 'ai-local-only' || key === 'ai-local') return 'local_only';
   return null;
+}
+
+/**
+ * The reserved policy labels a label WRITER understands. A superset of the
+ * ingestion normalizer: `all-ai`/`ai-all` name the `all` policy so that a
+ * label edit can state an explicit relaxation (which, unlike a tighten, needs
+ * policy authority). The SQL creation trigger never sees `all-ai` because it
+ * only ever tightens, so the two stay consistent.
+ */
+export function reservedAiPolicyLabel(label: string): AiPolicy | null {
+  const key = label.trim().toLowerCase().replace(/[\s_:]+/g, '-');
+  if (key === 'all-ai' || key === 'ai-all') return 'all';
+  return normalizeAiPolicyLabel(label);
+}
+
+/** One canonical label per policy; a newly stated policy is stored as this. */
+export function canonicalAiPolicyLabel(policy: AiPolicy): string {
+  if (policy === 'none') return 'no-ai';
+  if (policy === 'local_only') return 'ai-local-only';
+  return 'all-ai';
+}
+
+export type LabelPolicyPlan = {
+  /** The label set to store (and, for a remote page, to publish). */
+  labels: string[];
+  /** The policy the page must hold once these labels are stored. */
+  policy: AiPolicy;
+  /** How the policy moves relative to the row the plan was made from. */
+  kind: 'unchanged' | 'tighten' | 'relax';
+  /** A canonical label the caller tried to drop was put back. */
+  restoredLabel: string | null;
+};
+
+/**
+ * Decide what a label mutation means for `pages.ai_policy`. Pure; the caller
+ * supplies the row it locked.
+ *
+ *   * The target set naming two different policies (`no-ai` + `ai-local-only`,
+ *     `all-ai` + `no-ai`) is contradictory → 422 `ai_policy_label_conflict`.
+ *     Callers check this before any remote call, so no provider is touched.
+ *   * Only a reserved label that is NEWLY ADDED (no current label names the
+ *     same policy) expresses policy intent. A label carried over from the
+ *     current set is inert: it never re-tightens a page whose policy was
+ *     relaxed after the label was stored, and never bumps the revision.
+ *   * A newly added restrictive label tightens (no authority needed — the rule
+ *     ingestion applies). A newly added looser label is an explicit relaxation
+ *     (`kind: 'relax'`) that `applyAiPolicyOnClient` subjects to the policy
+ *     setter's authority.
+ *   * Dropping the label that names the current restrictive policy does NOT
+ *     relax it: the policy stays and the canonical label is restored, so the
+ *     stored labels keep telling the truth.
+ *   * At most one reserved label is stored; synonyms collapse onto it.
+ */
+export function planLabelPolicyChange(input: {
+  currentPolicy: AiPolicy;
+  currentLabels: readonly string[] | null | undefined;
+  targetLabels: readonly string[];
+}): LabelPolicyPlan {
+  const current = input.currentLabels ?? [];
+  const named = new Set<AiPolicy>();
+  let firstReservedSpelling: string | null = null;
+  for (const label of input.targetLabels) {
+    const p = reservedAiPolicyLabel(label);
+    if (p) {
+      named.add(p);
+      if (firstReservedSpelling === null) firstReservedSpelling = label;
+    }
+  }
+  if (named.size > 1) {
+    throw new PageWriteError(
+      422,
+      'ai_policy_label_conflict',
+      `Labels name contradictory AI policies: ${[...named].map(canonicalAiPolicyLabel).join(', ')}`,
+    );
+  }
+  const labelPolicy = named.size === 1 ? [...named][0]! : null;
+  const currentNamed = new Set<AiPolicy>();
+  for (const label of current) {
+    const p = reservedAiPolicyLabel(label);
+    if (p) currentNamed.add(p);
+  }
+  const currentLabelsNameCurrentPolicy = input.currentPolicy !== 'all' && currentNamed.has(input.currentPolicy);
+
+  let policy = input.currentPolicy;
+  let kind: LabelPolicyPlan['kind'] = 'unchanged';
+  let restoredLabel: string | null = null;
+  let keepLabel: string | null = null;
+
+  if (labelPolicy !== null && !currentNamed.has(labelPolicy)) {
+    // Newly stated: this is the caller's policy intent.
+    keepLabel = canonicalAiPolicyLabel(labelPolicy);
+    if (isStricterPolicy(labelPolicy, input.currentPolicy)) {
+      policy = labelPolicy;
+      kind = 'tighten';
+    } else if (isStricterPolicy(input.currentPolicy, labelPolicy)) {
+      policy = labelPolicy;
+      kind = 'relax';
+    }
+  } else if (labelPolicy !== null) {
+    // Carried over: inert. Keep its spelling so a remote mirror sees no churn,
+    // unless the caller dropped the label naming the (stricter) current
+    // policy — that one is restored and wins the single reserved slot.
+    keepLabel = firstReservedSpelling;
+    if (currentLabelsNameCurrentPolicy && labelPolicy !== input.currentPolicy) {
+      keepLabel = canonicalAiPolicyLabel(input.currentPolicy);
+      restoredLabel = keepLabel;
+    }
+  } else if (currentLabelsNameCurrentPolicy) {
+    // Removing the policy label cannot relax; put the canonical one back.
+    keepLabel = canonicalAiPolicyLabel(input.currentPolicy);
+    restoredLabel = keepLabel;
+  }
+
+  const labels: string[] = [];
+  let placed = false;
+  for (const label of input.targetLabels) {
+    if (reservedAiPolicyLabel(label) !== null) {
+      if (keepLabel !== null && !placed) {
+        labels.push(keepLabel);
+        placed = true;
+      }
+      continue;
+    }
+    if (!labels.includes(label)) labels.push(label);
+  }
+  if (keepLabel !== null && !placed) labels.push(keepLabel);
+  return { labels, policy, kind, restoredLabel };
 }
 
 export function policyFromLabels(labels: readonly string[] | null | undefined): AiPolicy {
@@ -39,6 +172,20 @@ export function policyFromLabels(labels: readonly string[] | null | undefined): 
 
 /** Advisory-lock namespace shared by policy mutations and admission. */
 export const AI_POLICY_LOCK_NAMESPACE = 0x41_49_50; // 'AIP'
+
+/**
+ * Lock order (SPEC-CORE-003): runtime epoch → hierarchy SHARE → per-page
+ * lifecycle → AI-policy advisory lock → `pages` row lock. A transaction that
+ * will (or may) move `pages.ai_policy` takes this BEFORE its first
+ * `FOR UPDATE` on the row, so it can never wait on the policy lock while
+ * holding the row another policy writer waits for. Ids are taken in order.
+ */
+export async function lockAiPolicyForPages(client: PoolClient, pageIds: readonly number[]): Promise<void> {
+  const ids = [...new Set(pageIds)].sort((a, b) => a - b);
+  for (const id of ids) {
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', [AI_POLICY_LOCK_NAMESPACE, id]);
+  }
+}
 
 /**
  * Permissions that confer policy authority on a Confluence-backed page.
@@ -86,6 +233,162 @@ export type AiPolicyMutationResult =
   | { ok: true; rows: Array<{ pageId: number; policy: AiPolicy; revision: number }> }
   | { ok: false; reason: 'stale_revision' | 'not_authorized' | 'not_found' | 'enforcement_unavailable'; pageIds: number[] };
 
+/** Deferred `policy_changed` events: emitted by the caller only after COMMIT. */
+export type AiPolicyChangeRecord = {
+  pageId: number;
+  userId: string;
+  from: AiPolicy;
+  to: AiPolicy;
+  revision: number;
+};
+
+export function emitAiPolicyChanges(changes: readonly AiPolicyChangeRecord[]): void {
+  for (const change of changes) {
+    emitAiPolicyEvent({ type: 'policy_changed', ...change });
+  }
+}
+
+/**
+ * THE policy mutation primitive (SPEC-CORE-003). Every writer that moves
+ * `pages.ai_policy` — the policy endpoints, every label writer, and the
+ * Confluence recovery reconciler — goes through this on the transaction it
+ * already holds, so policy, revision and derived-state invalidation always
+ * land in one commit with the caller's other row changes.
+ *
+ * Takes the AI-policy advisory lock (see `lockAiPolicyForPages`) and then
+ * the row lock. A caller that locked the row earlier in the same transaction
+ * must have taken the policy lock first.
+ *
+ * Authority: a relaxation (any move to a looser policy) requires
+ * `canMutateAiPolicy`; a tighten does not (labels may tighten under
+ * content-edit rights, exactly as ingestion does). `requireAuthority` forces
+ * the check for every direction — the explicit policy endpoints use it.
+ *
+ * Returns the rows as they will be once committed plus the events the caller
+ * must emit after its COMMIT. Failures are reported, never thrown, so a
+ * caller may roll back and answer with its own status.
+ */
+export async function applyAiPolicyOnClient(
+  client: PoolClient,
+  input: {
+    userId: string;
+    items: ReadonlyArray<{ pageId: number; policy: AiPolicy; expectedRevision?: number }>;
+    requireAuthority?: boolean;
+  },
+): Promise<
+  | { ok: true; rows: Array<{ pageId: number; policy: AiPolicy; revision: number }>; changes: AiPolicyChangeRecord[] }
+  | { ok: false; reason: 'stale_revision' | 'not_authorized' | 'not_found'; pageIds: number[] }
+> {
+  const sorted = [...input.items].sort((a, b) => a.pageId - b.pageId);
+  const ids = sorted.map((i) => i.pageId);
+  if (ids.length === 0) return { ok: true, rows: [], changes: [] };
+  await lockAiPolicyForPages(client, ids);
+  const locked = await client.query<{ id: number; ai_policy: AiPolicy; ai_policy_revision: string }>(
+    `SELECT id, ai_policy, ai_policy_revision FROM pages
+      WHERE id = ANY($1::int[]) AND deleted_at IS NULL ORDER BY id FOR UPDATE`,
+    [ids],
+  );
+  const byId = new Map(locked.rows.map((r) => [r.id, r]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length) return { ok: false, reason: 'not_found', pageIds: missing };
+  const denied: number[] = [];
+  for (const item of sorted) {
+    const current = byId.get(item.pageId)!.ai_policy;
+    const relaxes = isStricterPolicy(current, item.policy);
+    if ((input.requireAuthority || relaxes) && !(await canMutateAiPolicy(input.userId, item.pageId, client))) {
+      denied.push(item.pageId);
+    }
+  }
+  if (denied.length) return { ok: false, reason: 'not_authorized', pageIds: denied };
+  const stale = sorted
+    .filter((i) => i.expectedRevision !== undefined
+      && Number(byId.get(i.pageId)!.ai_policy_revision) !== i.expectedRevision)
+    .map((i) => i.pageId);
+  if (stale.length) return { ok: false, reason: 'stale_revision', pageIds: stale };
+
+  const rows: Array<{ pageId: number; policy: AiPolicy; revision: number }> = [];
+  const changes: AiPolicyChangeRecord[] = [];
+  const purge: number[] = [];
+  const requeue: number[] = [];
+  for (const item of sorted) {
+    const before = byId.get(item.pageId)!;
+    if (before.ai_policy === item.policy && !input.requireAuthority) {
+      // Label-driven: nothing moved, so the revision (and every worker's
+      // admitted binding to it) stays put.
+      rows.push({ pageId: item.pageId, policy: before.ai_policy, revision: Number(before.ai_policy_revision) });
+      continue;
+    }
+    const updated = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string }>(
+      `UPDATE pages SET ai_policy = $2, ai_policy_revision = ai_policy_revision + 1
+        WHERE id = $1 RETURNING ai_policy, ai_policy_revision`,
+      [item.pageId, item.policy],
+    );
+    const row = updated.rows[0]!;
+    const revision = Number(row.ai_policy_revision);
+    rows.push({ pageId: item.pageId, policy: row.ai_policy, revision });
+    changes.push({ pageId: item.pageId, userId: input.userId, from: before.ai_policy, to: row.ai_policy, revision });
+    // Explicit re-assertion of `none` purges again; any other move
+    // (relaxation, or all → local_only) re-queues: nothing is purged for a
+    // tighten that still permits SOME provider (the policy forbids future
+    // external calls, not past results — SPEC-CORE-003), but every stage is
+    // re-queued so the next pass is admitted against the new rule.
+    if (item.policy === 'none') purge.push(item.pageId);
+    else requeue.push(item.pageId);
+  }
+  if (purge.length) await purgeDerivedAiState(client, purge);
+  if (requeue.length) await requeueDerivedAiState(client, requeue);
+  return { ok: true, rows, changes };
+}
+
+/**
+ * Label-driven policy publication on a held client: plan the label/policy
+ * outcome from the LOCKED row (never from a stale pre-read), then store the
+ * labels and apply the policy through `applyAiPolicyOnClient` in the same
+ * statement sequence. A relaxation the actor may not perform is refused as
+ * 403 `ai_policy_not_authorized`; nothing is written in that case.
+ *
+ * Callers that talk to a provider must run `planLabelPolicyChange` on their
+ * admitted row BEFORE the remote call too (so a contradiction never reaches
+ * the provider, and an unauthorized relaxation is refused before egress);
+ * this function re-plans from the row it locks so a policy change between
+ * admission and commit cannot be bypassed.
+ */
+export async function applyPageLabelsOnClient(
+  client: PoolClient,
+  input: { userId: string; pageId: number; targetLabels: readonly string[] },
+): Promise<{ labels: string[]; policy: AiPolicy; revision: number; plan: LabelPolicyPlan; changes: AiPolicyChangeRecord[] }> {
+  await lockAiPolicyForPages(client, [input.pageId]);
+  const locked = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string; labels: string[] | null }>(
+    `SELECT ai_policy, ai_policy_revision, labels FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [input.pageId],
+  );
+  const row = locked.rows[0];
+  if (!row) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  const plan = planLabelPolicyChange({
+    currentPolicy: row.ai_policy,
+    currentLabels: row.labels,
+    targetLabels: input.targetLabels,
+  });
+  const applied = await applyAiPolicyOnClient(client, {
+    userId: input.userId,
+    items: [{ pageId: input.pageId, policy: plan.policy }],
+  });
+  if (!applied.ok) {
+    if (applied.reason === 'not_authorized') {
+      throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
+    }
+    throw new PageWriteError(409, applied.reason, 'The page AI policy could not be applied');
+  }
+  await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [input.pageId, plan.labels]);
+  return {
+    labels: plan.labels,
+    policy: applied.rows[0]!.policy,
+    revision: applied.rows[0]!.revision,
+    plan,
+    changes: applied.changes,
+  };
+}
+
 /**
  * All-or-nothing update of one or more pages. Rows are locked in id order;
  * any missing, unauthorized or stale row rolls the whole request back.
@@ -98,66 +401,21 @@ export async function updatePageAiPolicies(
   if (policy !== 'all' && !isAiPolicyEnforcementAvailable()) {
     return { ok: false, reason: 'enforcement_unavailable', pageIds: items.map((i) => i.pageId) };
   }
-  const sorted = [...items].sort((a, b) => a.pageId - b.pageId);
-  const ids = sorted.map((i) => i.pageId);
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    for (const id of ids) {
-      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [AI_POLICY_LOCK_NAMESPACE, id]);
-    }
-    const locked = await client.query<{ id: number; ai_policy: AiPolicy; ai_policy_revision: string }>(
-      `SELECT id, ai_policy, ai_policy_revision FROM pages
-        WHERE id = ANY($1::int[]) AND deleted_at IS NULL ORDER BY id FOR UPDATE`,
-      [ids],
-    );
-    const byId = new Map(locked.rows.map((r) => [r.id, r]));
-    const fail = async (reason: 'stale_revision' | 'not_authorized' | 'not_found', pageIds: number[]) => {
+    const result = await applyAiPolicyOnClient(client, {
+      userId,
+      items: items.map((i) => ({ pageId: i.pageId, policy, expectedRevision: i.expectedRevision })),
+      requireAuthority: true,
+    });
+    if (!result.ok) {
       await client.query('ROLLBACK');
-      return { ok: false as const, reason, pageIds };
-    };
-    const missing = ids.filter((id) => !byId.has(id));
-    if (missing.length) return await fail('not_found', missing);
-    const denied: number[] = [];
-    for (const id of ids) if (!(await canMutateAiPolicy(userId, id, client))) denied.push(id);
-    if (denied.length) return await fail('not_authorized', denied);
-    const stale = sorted
-      .filter((i) => Number(byId.get(i.pageId)!.ai_policy_revision) !== i.expectedRevision)
-      .map((i) => i.pageId);
-    if (stale.length) return await fail('stale_revision', stale);
-
-    const updated = await client.query<{ id: number; ai_policy: AiPolicy; ai_policy_revision: string }>(
-      `UPDATE pages SET ai_policy = $2, ai_policy_revision = ai_policy_revision + 1
-        WHERE id = ANY($1::int[]) RETURNING id, ai_policy, ai_policy_revision`,
-      [ids, policy],
-    );
-    if (policy === 'none') {
-      await purgeDerivedAiState(client, ids);
-    } else {
-      const relaxed = ids.filter((id) => RANK[byId.get(id)!.ai_policy] > RANK[policy]);
-      const tightened = ids.filter((id) => RANK[byId.get(id)!.ai_policy] < RANK[policy]);
-      if (relaxed.length) await requeueDerivedAiState(client, relaxed);
-      // all → local_only: existing derived state may have come from an
-      // external provider. Nothing is purged (the policy forbids future
-      // external calls, not past results — SPEC-CORE-003), but every stage
-      // is re-queued so the next pass is admitted against the new rule.
-      if (tightened.length) await requeueDerivedAiState(client, tightened);
+      return result;
     }
     await client.query('COMMIT');
-    const rows = updated.rows
-      .map((r) => ({ pageId: r.id, policy: r.ai_policy, revision: Number(r.ai_policy_revision) }))
-      .sort((a, b) => a.pageId - b.pageId);
-    for (const row of rows) {
-      emitAiPolicyEvent({
-        type: 'policy_changed',
-        pageId: row.pageId,
-        userId,
-        from: byId.get(row.pageId)!.ai_policy,
-        to: row.policy,
-        revision: row.revision,
-      });
-    }
-    return { ok: true, rows };
+    emitAiPolicyChanges(result.changes);
+    return { ok: true, rows: result.rows };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
@@ -229,9 +487,7 @@ export async function purgeDerivedAiStateForPages(ids: number[]): Promise<void> 
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    for (const id of ids) {
-      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [AI_POLICY_LOCK_NAMESPACE, id]);
-    }
+    await lockAiPolicyForPages(client, ids);
     await purgeDerivedAiState(client, ids);
     await client.query('COMMIT');
   } catch (err) {

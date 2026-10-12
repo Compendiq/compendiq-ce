@@ -13,6 +13,12 @@ import {
   deletedStandaloneNamespacesAbsent,
 } from '../../../core/services/standalone-attachment-cleanup.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
+import { getPool } from '../../../core/db/postgres.js';
+import {
+  applyPageLabelsOnClient,
+  emitAiPolicyChanges,
+  type AiPolicyChangeRecord,
+} from '../../../core/services/ai-policy-service.js';
 import {
   PageWriteError,
   advancePageWriteIntent,
@@ -397,6 +403,40 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
   };
 };
 
+/**
+ * Article AI policy (#281): the reconciler runs inside the recovery
+ * transaction and has no post-commit hook, so `policy_changed` events are
+ * parked here and emitted only once the intent row is durably
+ * `reconciled_applied` — never from inside the transaction, where a later
+ * rollback would make the event a lie. A rollback drops the parked records.
+ */
+const parkedPolicyChanges = new Map<string, AiPolicyChangeRecord[]>();
+const PARKED_EMIT_ATTEMPTS = 40;
+const PARKED_EMIT_INTERVAL_MS = 50;
+
+function emitParkedPolicyChangesOnceSettled(intentId: string): void {
+  const attempt = async (remaining: number): Promise<void> => {
+    const records = parkedPolicyChanges.get(intentId);
+    if (!records) return;
+    const settled = await getPool().query<{ status: string }>(
+      'SELECT status FROM page_write_intents WHERE id = $1',
+      [intentId],
+    );
+    const status = settled.rows[0]?.status;
+    if (status === 'reconciled_applied') {
+      parkedPolicyChanges.delete(intentId);
+      emitAiPolicyChanges(records);
+      return;
+    }
+    if (status !== 'pending' || remaining <= 0) {
+      parkedPolicyChanges.delete(intentId);
+      return;
+    }
+    setTimeout(() => { void attempt(remaining - 1); }, PARKED_EMIT_INTERVAL_MS).unref?.();
+  };
+  setImmediate(() => { void attempt(PARKED_EMIT_ATTEMPTS); });
+}
+
 const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   const pageId = intent.pageIds[0];
   if (pageId === undefined || intent.pageIds.length !== 1) {
@@ -406,6 +446,11 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   const confluenceId = stringValue(intent.effect.confluenceId, 'confluenceId');
   const desired = exactLabels(intent.effect.targetLabels);
   if (intent.remoteEffectStartedAt === null) {
+    // Settling an undispatched intent restores the labels as they were. The
+    // prior set is NOT re-read as a policy command: nothing reached the
+    // provider, the policy row was never part of this intent, and
+    // reinterpreting a restored label would move `ai_policy` without a
+    // writer having asked for it.
     const prior = exactLabels(intent.effect.priorLabels);
     await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [pageId, prior]);
     await enqueuePageWriteInvalidation(client, intent.id);
@@ -426,8 +471,17 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
       'Confluence labels no longer match the terminal mutation; the intent remains pending',
     );
   }
-  await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [pageId, desired]);
+  // The provider holds the intended set; the local row now takes it through
+  // the policy primitive so `ai_policy`, its revision and the label set land
+  // in this same recovery transaction — exactly as the original writer would
+  // have committed them. The policy lock precedes the row lock the
+  // primitive takes; recovery holds no earlier `FOR UPDATE` on `pages`.
+  const applied = await applyPageLabelsOnClient(client, { userId: actorId, pageId, targetLabels: desired });
   await enqueuePageWriteInvalidation(client, intent.id);
+  if (applied.changes.length > 0) {
+    parkedPolicyChanges.set(intent.id, applied.changes);
+    emitParkedPolicyChangesOnceSettled(intent.id);
+  }
   const digest = createHash('sha256').update(JSON.stringify(desired)).digest('hex');
   return {
     outcome: 'applied',
@@ -437,7 +491,7 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
       reference: `confluence-labels:${confluenceId}:${digest}`,
       details: { remoteEffectsCompleted: true, terminalEvidence: digest },
     },
-    result: desired,
+    result: applied.labels,
   };
 };
 

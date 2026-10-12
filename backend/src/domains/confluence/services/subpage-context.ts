@@ -5,6 +5,17 @@
  * then concatenates them with clear page boundary markers for LLM consumption.
  *
  * Content length limits prevent exceeding LLM context windows.
+ *
+ * Article AI policy (SPEC-WORK-001, #281): a caller that will send the
+ * assembled text to a provider passes a `policyContext` naming the provider
+ * it was admitted for, at the configuration revision it was admitted at.
+ * Every descendant is then decided against its own `pages.ai_policy` — read
+ * from the same row as its body — BEFORE its title or body is formatted, and
+ * the result names exactly which page ids (with policy and policy revision)
+ * were included so the caller can record provenance it can trust. A
+ * descendant's exclusion is never visible in the prompt text. Without a
+ * `policyContext` the walk is unfiltered: display-only routes keep their
+ * behaviour, and no provider-bound caller may omit it.
  */
 
 import { query } from '../../../core/db/postgres.js';
@@ -13,6 +24,8 @@ import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getUserAccessibleSpacesMemoized } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { isAiPolicy, type AiPolicy } from '../../../core/services/ai-policy-service.js';
+import { decideAiPolicyAdmission } from '../../llm/services/ai-policy-admission.js';
 
 /** Maximum combined context size in characters (approx 60K tokens for most LLMs). */
 const MAX_COMBINED_CONTEXT_CHARS = 200_000;
@@ -20,14 +33,69 @@ const MAX_COMBINED_CONTEXT_CHARS = 200_000;
 /** Maximum depth for recursive sub-page fetching (prevent runaway recursion). */
 const MAX_DEPTH = 5;
 
-/** Maximum number of sub-pages to include (prevent huge page trees). */
+/**
+ * Maximum number of sub-pages the walk CONSIDERS. A considered page counts
+ * whether it was included or excluded by policy, so a tree padded with
+ * `none` pages cannot force the walk past the bound (SPEC-WORK-001 review).
+ */
 const MAX_SUB_PAGES = 50;
 
-interface PageContent {
-  confluenceId: string;
+export interface PageContent {
+  /** Local page id — the trustworthy identity for provenance. */
+  id: number;
+  confluenceId: string | null;
   title: string;
   bodyHtml: string;
   depth: number;
+  /** Policy and revision read from the SAME row as the body. */
+  policy: AiPolicy;
+  policyRevision: number;
+}
+
+/** A descendant the policy context refused; nothing of it was formatted. */
+export interface ExcludedPage {
+  id: number;
+  policy: AiPolicy;
+  policyRevision: number;
+  reason: 'policy_none' | 'provider_not_local';
+}
+
+/**
+ * The caller's dispatch binding. The provider is read once per walk and
+ * must still be at `expectedConfigRevision`: a provider reconfigured since
+ * the caller's admission (locality flipped, say) fails the walk closed
+ * rather than deciding descendants against a binding nobody admitted.
+ */
+export interface SubPagePolicyContext {
+  providerId: string;
+  /** Use case the caller is assembling for (logged with exclusions). */
+  usecase: string;
+  /** `configRevision` the caller's own admission bound it to. */
+  expectedConfigRevision: number;
+}
+
+export class SubPagePolicyError extends Error {
+  constructor(
+    public readonly reason: 'ai_policy_provider_revision_mismatch',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SubPagePolicyError';
+  }
+}
+
+export interface SubPageFetchResult {
+  pages: PageContent[];
+  excluded: ExcludedPage[];
+}
+
+export interface IncludedPageRef {
+  id: number;
+  confluenceId: string | null;
+  title: string;
+  policy: AiPolicy;
+  policyRevision: number;
+  truncated: boolean;
 }
 
 interface AssembledContext {
@@ -39,23 +107,95 @@ interface AssembledContext {
   wasTruncated: boolean;
   /** List of page titles included, for reference. */
   includedPages: string[];
+  /**
+   * Provenance: every SUB-page whose text is in `markdown`, by local id with
+   * the policy/revision its body was read under. The parent is the caller's
+   * (it already holds its own admission) and is not listed here.
+   */
+  includedPageRefs: IncludedPageRef[];
+  /** Descendants refused by the policy context; none of their text is present. */
+  excludedByPolicy: ExcludedPage[];
   /** Injection-pattern detections from the per-page-body sanitization
    * (#1270 review F1) — the caller folds these into its attestation trail,
    * mirroring fetchWebSources. */
   injectionWarnings: string[];
 }
 
+type ProviderLocality = { locality: string; localityConfigRevision: number | null; configRevision: number };
+
+/**
+ * Read the provider's locality binding once. An unknown provider (or a
+ * schema without locality columns) reads as external at revision -1 —
+ * unknown locality never authorizes `local_only`, and -1 never matches a
+ * caller's admitted revision.
+ */
+async function loadProviderLocality(providerId: string): Promise<ProviderLocality> {
+  try {
+    const result = await query<{ locality: string; locality_config_revision: string | null; config_revision: string }>(
+      `SELECT locality, locality_config_revision, config_revision FROM llm_providers WHERE id::text = $1`,
+      [providerId],
+    );
+    const row = result.rows[0];
+    if (!row) return { locality: 'external', localityConfigRevision: null, configRevision: -1 };
+    return {
+      locality: row.locality,
+      localityConfigRevision: row.locality_config_revision === null ? null : Number(row.locality_config_revision),
+      configRevision: Number(row.config_revision),
+    };
+  } catch (err) {
+    if ((err as { code?: string }).code !== '42703') throw err;
+    return { locality: 'external', localityConfigRevision: null, configRevision: -1 };
+  }
+}
+
+async function bindProvider(policyContext: SubPagePolicyContext): Promise<ProviderLocality> {
+  const provider = await loadProviderLocality(policyContext.providerId);
+  if (provider.configRevision !== policyContext.expectedConfigRevision) {
+    throw new SubPagePolicyError(
+      'ai_policy_provider_revision_mismatch',
+      `Provider ${policyContext.providerId} is at configuration revision ${provider.configRevision}, `
+        + `the caller was admitted at ${policyContext.expectedConfigRevision}`,
+    );
+  }
+  return provider;
+}
+
+/** An unknown stored policy is never read as `all`. */
+function storedPolicy(value: string): AiPolicy {
+  return isAiPolicy(value) ? value : 'none';
+}
+
 /**
  * Fetch all sub-pages recursively for a given parent page.
  * Returns pages in breadth-first order.
+ *
+ * With a `policyContext`, each descendant is decided BEFORE it is pushed to
+ * the result; an excluded page's title and body are dropped, but its
+ * children are still walked (a `none` folder does not hide an `all` child)
+ * and it still counts toward `MAX_SUB_PAGES`.
  */
 export async function fetchSubPages(
   userId: string,
   parentId: string,
+  policyContext?: SubPagePolicyContext,
 ): Promise<PageContent[]> {
+  return (await fetchAdmittedSubPages(userId, parentId, policyContext)).pages;
+}
+
+export async function fetchAdmittedSubPages(
+  userId: string,
+  parentId: string,
+  policyContext?: SubPagePolicyContext,
+): Promise<SubPageFetchResult> {
   const subPages: PageContent[] = [];
+  const excluded: ExcludedPage[] = [];
   const queue: Array<{ id: string; depth: number }> = [{ id: parentId, depth: 1 }];
   const visited = new Set<string>();
+  let considered = 0;
+
+  // The provider binding is resolved once, before any row is read, so every
+  // descendant is decided against the same (verified) binding.
+  const provider = policyContext ? await bindProvider(policyContext) : null;
 
   // #814: gate every descendant through the non-RAG list predicate, so a
   // caller can never pull a sub-page from a space they lack RBAC access to,
@@ -63,34 +203,33 @@ export async function fetchSubPages(
   // ACE for into the LLM prompt. Soft-deleted children are excluded via `deleted_at IS NULL`.
   const spaces = await getUserAccessibleSpacesMemoized(userId);
 
-  while (queue.length > 0 && subPages.length < MAX_SUB_PAGES) {
+  while (queue.length > 0 && considered < MAX_SUB_PAGES) {
     const current = queue.shift()!;
     if (current.depth > MAX_DEPTH || visited.has(current.id)) continue;
     visited.add(current.id);
 
     const result = await query<{
       id: number;
-      confluence_id: string;
+      confluence_id: string | null;
       title: string;
-      body_html: string;
+      body_html: string | null;
+      ai_policy: string;
+      ai_policy_revision: string;
     }>(
-      `SELECT id, confluence_id, title, body_html
+      `SELECT id, confluence_id, title, body_html, ai_policy, ai_policy_revision::text
        FROM pages
        WHERE parent_id = $1
          AND deleted_at IS NULL
-         AND ${visiblePagesPredicate(2, 3, 'pages')}`,
+         AND ${visiblePagesPredicate(2, 3, 'pages')}
+       ORDER BY id`,
       [current.id, spaces, userId],
     );
 
     for (const row of result.rows) {
-      if (subPages.length >= MAX_SUB_PAGES) break;
-
-      subPages.push({
-        confluenceId: row.confluence_id,
-        title: row.title,
-        bodyHtml: row.body_html || '',
-        depth: current.depth,
-      });
+      if (considered >= MAX_SUB_PAGES) break;
+      considered += 1;
+      const policy = storedPolicy(row.ai_policy);
+      const policyRevision = Number(row.ai_policy_revision);
 
       // Queue children for next depth level. Standalone (local-space) pages have
       // a NULL confluence_id and are keyed on `parent_id = <parent DB id as text>`,
@@ -98,10 +237,32 @@ export async function fetchSubPages(
       // in pages-crud.ts (#886). Without this, standalone descendants below depth
       // 1 are dropped (WHERE parent_id = NULL matches nothing).
       queue.push({ id: row.confluence_id ?? String(row.id), depth: current.depth + 1 });
+
+      if (provider) {
+        const decision = decideAiPolicyAdmission(policy, provider);
+        if (decision !== 'admit') {
+          excluded.push({ id: row.id, policy, policyRevision, reason: decision });
+          logger.debug(
+            { pageId: row.id, policy, reason: decision, providerId: policyContext!.providerId, usecase: policyContext!.usecase },
+            'Sub-page excluded by article AI policy',
+          );
+          continue;
+        }
+      }
+
+      subPages.push({
+        id: row.id,
+        confluenceId: row.confluence_id,
+        title: row.title,
+        bodyHtml: row.body_html || '',
+        depth: current.depth,
+        policy,
+        policyRevision,
+      });
     }
   }
 
-  return subPages;
+  return { pages: subPages, excluded };
 }
 
 /**
@@ -156,6 +317,8 @@ export async function assembleSubPageContext(
      * truncation only ever affects sub-pages, the parent always goes first).
      */
     parentLayoutTokens?: boolean;
+    /** Provider binding for the descendant walk (see `SubPagePolicyContext`). */
+    policyContext?: SubPagePolicyContext;
   },
 ): Promise<AssembledContext> {
   // Convert parent page to markdown
@@ -163,6 +326,7 @@ export async function assembleSubPageContext(
     ? htmlToMarkdown(parentHtml, { layoutTokens: true })
     : htmlToMarkdown(parentHtml);
   const includedPages: string[] = [parentTitle];
+  const includedPageRefs: IncludedPageRef[] = [];
   let wasTruncated = false;
   // #1270 review F1: per-page-BODY sanitization, before the attribution
   // markers wrap the text. Sanitizing the assembled string at the route ate
@@ -193,8 +357,10 @@ export async function assembleSubPageContext(
   // Start with the parent page
   let combined = `--- Page: "${sanitizeTitle(parentTitle)}" (Main Page) ---\n\n${sanitizeBody(parentMarkdown)}`;
 
-  // Fetch sub-pages
-  const subPages = await fetchSubPages(userId, parentPageId);
+  // Fetch sub-pages — already policy-filtered when a context is given, so no
+  // excluded page's title or body reaches the sanitizer or the markdown.
+  const { pages: subPages, excluded: excludedByPolicy } =
+    await fetchAdmittedSubPages(userId, parentPageId, opts?.policyContext);
 
   if (subPages.length === 0) {
     return {
@@ -202,12 +368,14 @@ export async function assembleSubPageContext(
       pageCount: 1,
       wasTruncated: false,
       includedPages,
+      includedPageRefs,
+      excludedByPolicy,
       injectionWarnings,
     };
   }
 
   logger.debug(
-    { parentPageId, subPageCount: subPages.length },
+    { parentPageId, subPageCount: subPages.length, excludedByPolicy: excludedByPolicy.length },
     'Assembling sub-page context',
   );
 
@@ -215,6 +383,13 @@ export async function assembleSubPageContext(
     const subMarkdown = sanitizeBody(htmlToMarkdown(subPage.bodyHtml));
     const separator = `\n\n--- Page: "${sanitizeTitle(subPage.title)}" (Sub-page, depth ${subPage.depth}) ---\n\n`;
     const section = separator + subMarkdown;
+    const ref = {
+      id: subPage.id,
+      confluenceId: subPage.confluenceId,
+      title: subPage.title,
+      policy: subPage.policy,
+      policyRevision: subPage.policyRevision,
+    };
 
     // Check if adding this page would exceed the limit
     if (combined.length + section.length > maxChars) {
@@ -223,6 +398,7 @@ export async function assembleSubPageContext(
       if (remaining > 200) {
         combined += separator + subMarkdown.slice(0, remaining) + '\n\n[Content truncated due to length limits]';
         includedPages.push(subPage.title + ' (truncated)');
+        includedPageRefs.push({ ...ref, truncated: true });
       }
       wasTruncated = true;
       logger.debug(
@@ -234,6 +410,7 @@ export async function assembleSubPageContext(
 
     combined += section;
     includedPages.push(subPage.title);
+    includedPageRefs.push({ ...ref, truncated: false });
   }
 
   return {
@@ -241,6 +418,8 @@ export async function assembleSubPageContext(
     pageCount: includedPages.length,
     wasTruncated,
     includedPages,
+    includedPageRefs,
+    excludedByPolicy,
     injectionWarnings,
   };
 }

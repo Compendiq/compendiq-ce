@@ -51,6 +51,45 @@ flowchart LR
     dK --> dC
 ```
 
+### Article AI policy — label writers, lock order, sub-page provenance (#281)
+
+`pages.ai_policy` has one mutation primitive, `applyAiPolicyOnClient`
+(`core/services/ai-policy-service.ts`), and every writer that can move it
+runs on the transaction it already holds:
+
+- **Label writers** (`PUT /labels`, `apply-tags`, `/pages/bulk/tag`,
+  `/pages/bulk/replace-tags`, `pages.create.labels`, the auto-tagger and the
+  Confluence `page.labels` recovery reconciler) call
+  `applyPageLabelsOnClient`, which re-plans the label/policy outcome from the
+  **locked** row via `planLabelPolicyChange`. Only a reserved label that is
+  *newly added* (no current label names the same policy) expresses intent: a
+  restrictive one tightens, `all-ai` (or a looser label) is an explicit
+  relaxation that needs `canMutateAiPolicy` (403 `ai_policy_not_authorized`).
+  A label carried over from the current set is inert, so a page relaxed by the
+  policy endpoint is never re-tightened by an unrelated label edit. Dropping
+  the canonical label of the current restrictive policy restores it; two
+  reserved labels naming different policies are 422 `ai_policy_label_conflict`.
+  Remote-backed routes plan from the admitted row **before** the provider
+  call, so neither a contradiction nor an unauthorized relaxation reaches
+  Confluence, and the *planned* set is what Confluence receives.
+- **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
+  `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
+  → `pages` row `FOR UPDATE`. Callers that lock the row themselves
+  (`loadAuthorizedContentWriteState`) take the policy lock first.
+- **Events** (`policy_changed`) are returned as `changes` and emitted only
+  after COMMIT. The recovery reconciler has no post-commit hook, so it parks
+  its records and emits once the intent row reads `reconciled_applied`.
+  An undispatched label intent is settled by restoring `priorLabels` only;
+  prior labels are never reinterpreted as a policy command.
+- **Sub-page context** (`domains/confluence/services/subpage-context.ts`):
+  a provider-bound caller passes `policyContext { providerId, usecase,
+  expectedConfigRevision }`. The walk binds the provider once, fails closed
+  (`SubPagePolicyError` `ai_policy_provider_revision_mismatch`) if its
+  `config_revision` moved since the caller's admission, decides each
+  descendant with `decideAiPolicyAdmission` from the same row that supplied
+  the body, and reports `includedPageRefs` (id, policy, policy revision) and
+  `excludedByPolicy`. Excluded pages still count toward `MAX_SUB_PAGES`.
+
 ### Quality and summary batch execution
 
 ```mermaid

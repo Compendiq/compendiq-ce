@@ -51,6 +51,15 @@ async function concealLabelWriteDenial<T>(fastify: FastifyInstance, write: Promi
     if (err instanceof PageWriteError && err.reason === LABEL_WRITE_DENIED_REASON) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    // Article AI policy (#281): a label set naming two policies is a client
+    // error; a relaxation label without policy authority is forbidden. The
+    // caller already passed `assertPageAccess`, so neither leaks existence.
+    if (err instanceof PageWriteError && err.reason === 'ai_policy_label_conflict') {
+      throw fastify.httpErrors.unprocessableEntity(err.message);
+    }
+    if (err instanceof PageWriteError && err.reason === 'ai_policy_not_authorized') {
+      throw fastify.httpErrors.forbidden(err.message);
+    }
     throw err;
   }
 }

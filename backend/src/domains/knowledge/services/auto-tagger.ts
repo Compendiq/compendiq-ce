@@ -18,6 +18,13 @@ import {
   withPageWriteTransaction,
 } from '../../../core/services/page-write-admission.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
+import {
+  applyPageLabelsOnClient,
+  canMutateAiPolicy,
+  emitAiPolicyChanges,
+  planLabelPolicyChange,
+  type AiPolicy,
+} from '../../../core/services/ai-policy-service.js';
 
 export const ALLOWED_TAGS = [
   'architecture',
@@ -186,13 +193,38 @@ interface TagPage {
   source: string;
   space_key: string | null;
   labels: string[];
+  ai_policy: AiPolicy;
   content_revision: string;
   lifecycle_revision: string;
 }
 
+const TAG_PAGE_COLUMNS = `id, confluence_id, source, space_key, labels, ai_policy,
+                          content_revision::text, lifecycle_revision::text`;
+
 function mergeLabels(current: readonly string[], add: readonly string[], remove: readonly string[]): string[] {
   const removed = new Set(remove);
   return Array.from(new Set([...current.filter((label) => !removed.has(label)), ...add]));
+}
+
+function sameLabelSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = [...new Set(a)].sort();
+  const sb = [...new Set(b)].sort();
+  return sa.length === sb.length && sa.every((label, i) => label === sb[i]);
+}
+
+/**
+ * The remote delta that realises `target` from `current` on Confluence. The
+ * planned set (not the caller's raw add/remove lists) is what is published:
+ * a restored canonical label is re-added, a collapsed synonym removed, so
+ * the mirror and the authority never disagree.
+ */
+function remoteLabelDelta(current: readonly string[], target: readonly string[]): { add: string[]; remove: string[] } {
+  const currentSet = new Set(current);
+  const targetSet = new Set(target);
+  return {
+    add: target.filter((label) => !currentSet.has(label)),
+    remove: current.filter((label) => !targetSet.has(label)),
+  };
 }
 
 /**
@@ -227,8 +259,7 @@ export async function applyLabelChanges(
 ): Promise<string[]> {
   const isNumericId = /^\d+$/.test(pageId);
   const params = [isNumericId ? parseInt(pageId, 10) : pageId];
-  const lookup = `SELECT id, confluence_id, source, space_key, labels,
-                         content_revision::text, lifecycle_revision::text
+  const lookup = `SELECT ${TAG_PAGE_COLUMNS}
                     FROM pages
                    WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}
                      AND deleted_at IS NULL`;
@@ -236,17 +267,24 @@ export async function applyLabelChanges(
   const initial = existing.rows[0];
   if (!initial) throw new Error(`Page not found: ${pageId}`);
 
+  // A contradictory request (two reserved labels naming different policies)
+  // is refused here, before any lock, intent or provider call. The plan is
+  // re-made from the locked row below; this pass only rejects nonsense early.
+  const initialPlan = planLabelPolicyChange({
+    currentPolicy: initial.ai_policy,
+    currentLabels: initial.labels ?? [],
+    targetLabels: mergeLabels(initial.labels ?? [], changes.add, changes.remove ?? []),
+  });
+
   if (await pageWriteStaysLocal(userId, initial.source)) {
     // Checked before the fence so a denied caller learns nothing about the
     // page's lifecycle (e.g. a 423 for a frozen page), then again under it.
     if (!(await canWriteLabelsLocally(userId, initial))) {
       throw new PageWriteError(404, LABEL_WRITE_DENIED_REASON, 'Page not found');
     }
-    return withPageWriteTransaction([initial.id], async (client) => {
+    const committed = await withPageWriteTransaction([initial.id], async (client) => {
       const fresh = await client.query<TagPage>(
-        `SELECT id, confluence_id, source, space_key, labels,
-                content_revision::text, lifecycle_revision::text
-           FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        `SELECT ${TAG_PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
         [initial.id],
       );
       const page = fresh.rows[0];
@@ -258,10 +296,16 @@ export async function applyLabelChanges(
       if (actor.rowCount !== 1 || !(await canWriteLabelsLocally(userId, page, client))) {
         throw new PageWriteError(404, LABEL_WRITE_DENIED_REASON, 'Page not found');
       }
-      const labels = mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []);
-      await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, labels]);
-      return labels;
+      // Policy authority (an explicit relaxation) and the policy/label write
+      // itself are decided by the primitive on this same transaction.
+      return applyPageLabelsOnClient(client, {
+        userId,
+        pageId: page.id,
+        targetLabels: mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []),
+      });
     });
+    emitAiPolicyChanges(committed.changes);
+    return committed.labels;
   }
 
   if (!initial.confluence_id) throw new Error(`Page is missing confluence_id: ${pageId}`);
@@ -283,11 +327,11 @@ export async function applyLabelChanges(
       add: [...changes.add],
       remove: [...(changes.remove ?? [])],
       priorLabels: initial.labels ?? [],
-      targetLabels: mergeLabels(initial.labels ?? [], changes.add, changes.remove ?? []),
+      targetLabels: initialPlan.labels,
     },
   });
 
-  let admitted: { page: TagPage; confluence: ConfluenceClient };
+  let admitted: { page: TagPage; confluence: ConfluenceClient; labels: string[] };
   try {
     admitted = await withPageWriteTransaction(
       [initial.id],
@@ -300,13 +344,13 @@ export async function applyLabelChanges(
           throw new PageWriteError(403, 'intent_actor_inactive', 'The original actor is no longer active');
         }
 
+        // Read-only admission: no row lock here (the policy lock is taken
+        // by the primitive at completion, ahead of its own FOR UPDATE).
         const fresh = await client.query<TagPage>(
-          `SELECT id, confluence_id, source, space_key, labels,
-                  content_revision::text, lifecycle_revision::text
+          `SELECT ${TAG_PAGE_COLUMNS}
              FROM pages
             WHERE id = $1
-              AND deleted_at IS NULL
-            FOR UPDATE`,
+              AND deleted_at IS NULL`,
           [initial.id],
         );
         const page = fresh.rows[0];
@@ -342,6 +386,25 @@ export async function applyLabelChanges(
           );
         }
 
+        // The policy consequence is decided from the admitted row BEFORE any
+        // provider call: a contradiction never reaches Confluence, and a
+        // relaxation the actor may not perform is refused before egress.
+        const plan = planLabelPolicyChange({
+          currentPolicy: page.ai_policy,
+          currentLabels: page.labels ?? [],
+          targetLabels: mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []),
+        });
+        if (!sameLabelSet(plan.labels, initialPlan.labels)) {
+          throw new PageWriteError(
+            409,
+            'stale_content_revision',
+            'The page labels changed after label admission',
+          );
+        }
+        if (plan.kind === 'relax' && !(await canMutateAiPolicy(userId, page.id, client))) {
+          throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
+        }
+
         const confluence = await getClientForUser(userId, client);
         if (!confluence) {
           throw new PageWriteError(
@@ -350,7 +413,7 @@ export async function applyLabelChanges(
             'The original actor no longer has an active Confluence connection',
           );
         }
-        return { page, confluence };
+        return { page, confluence, labels: plan.labels };
       },
       { intent },
     );
@@ -360,9 +423,7 @@ export async function applyLabelChanges(
   }
 
   const current = admitted.page.labels ?? [];
-  const labels = mergeLabels(current, changes.add, changes.remove ?? []);
-  const add = changes.add.filter((label) => !current.includes(label));
-  const remove = (changes.remove ?? []).filter((label) => current.includes(label));
+  const { add, remove } = remoteLabelDelta(current, admitted.labels);
 
   // Every call below is idempotent at the provider boundary. A rejection or
   // timeout after a call begins leaves the intent unresolved; reconciliation
@@ -374,11 +435,17 @@ export async function applyLabelChanges(
     }
   });
 
-  return completePageWriteIntent(intent, async (client) => {
-    await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [initial.id, labels]);
+  const committed = await completePageWriteIntent(intent, async (client) => {
+    const applied = await applyPageLabelsOnClient(client, {
+      userId,
+      pageId: initial.id,
+      targetLabels: admitted.labels,
+    });
     await enqueuePageWriteInvalidation(client, intent.id);
-    return labels;
+    return applied;
   });
+  emitAiPolicyChanges(committed.changes);
+  return committed.labels;
 }
 
 /**
