@@ -91,28 +91,36 @@ export function planLabelPolicyChange(input: {
   targetLabels: readonly string[];
 }): LabelPolicyPlan {
   const current = input.currentLabels ?? [];
+  const currentNamed = new Set<AiPolicy>();
+  for (const label of current) {
+    const p = reservedAiPolicyLabel(label);
+    if (p) currentNamed.add(p);
+  }
+  // Reserved labels in the target, split into those the row already carries
+  // (inert) and those NEWLY stated (the caller's policy intent). Only the
+  // newly stated ones may contradict: a row whose stored labels already
+  // disagree (e.g. relaxed to `all` with `no-ai` and `ai-local-only` left
+  // behind) must stay writable for an ordinary tag, so carried labels are
+  // never a 422 on their own.
   const named = new Set<AiPolicy>();
-  let firstReservedSpelling: string | null = null;
+  const newlyNamed = new Set<AiPolicy>();
+  const spellingOf = new Map<AiPolicy, string>();
   for (const label of input.targetLabels) {
     const p = reservedAiPolicyLabel(label);
     if (p) {
       named.add(p);
-      if (firstReservedSpelling === null) firstReservedSpelling = label;
+      if (!spellingOf.has(p)) spellingOf.set(p, label);
+      if (!currentNamed.has(p)) newlyNamed.add(p);
     }
   }
-  if (named.size > 1) {
+  if (newlyNamed.size > 1 || (newlyNamed.size === 1 && named.size > 1)) {
     throw new PageWriteError(
       422,
       'ai_policy_label_conflict',
       `Labels name contradictory AI policies: ${[...named].map(canonicalAiPolicyLabel).join(', ')}`,
     );
   }
-  const labelPolicy = named.size === 1 ? [...named][0]! : null;
-  const currentNamed = new Set<AiPolicy>();
-  for (const label of current) {
-    const p = reservedAiPolicyLabel(label);
-    if (p) currentNamed.add(p);
-  }
+  const labelPolicy = newlyNamed.size === 1 ? [...newlyNamed][0]! : null;
   const currentLabelsNameCurrentPolicy = input.currentPolicy !== 'all' && currentNamed.has(input.currentPolicy);
 
   let policy = input.currentPolicy;
@@ -120,7 +128,7 @@ export function planLabelPolicyChange(input: {
   let restoredLabel: string | null = null;
   let keepLabel: string | null = null;
 
-  if (labelPolicy !== null && !currentNamed.has(labelPolicy)) {
+  if (labelPolicy !== null) {
     // Newly stated: this is the caller's policy intent.
     keepLabel = canonicalAiPolicyLabel(labelPolicy);
     if (isStricterPolicy(labelPolicy, input.currentPolicy)) {
@@ -130,14 +138,19 @@ export function planLabelPolicyChange(input: {
       policy = labelPolicy;
       kind = 'relax';
     }
-  } else if (labelPolicy !== null) {
-    // Carried over: inert. Keep its spelling so a remote mirror sees no churn,
-    // unless the caller dropped the label naming the (stricter) current
-    // policy — that one is restored and wins the single reserved slot.
-    keepLabel = firstReservedSpelling;
-    if (currentLabelsNameCurrentPolicy && labelPolicy !== input.currentPolicy) {
+  } else if (named.size > 0) {
+    // Carried over only: inert. Keep the spelling of the carried label that
+    // names the current policy (no churn on a remote mirror); several
+    // carried labels collapse onto that one. If the caller dropped the label
+    // naming the (stricter) current policy, it is restored and wins the
+    // single reserved slot.
+    if (input.currentPolicy !== 'all' && named.has(input.currentPolicy)) {
+      keepLabel = spellingOf.get(input.currentPolicy)!;
+    } else if (currentLabelsNameCurrentPolicy) {
       keepLabel = canonicalAiPolicyLabel(input.currentPolicy);
       restoredLabel = keepLabel;
+    } else {
+      keepLabel = [...spellingOf.values()][0]!;
     }
   } else if (currentLabelsNameCurrentPolicy) {
     // Removing the policy label cannot relax; put the canonical one back.
@@ -327,13 +340,16 @@ export async function applyAiPolicyOnClient(
     const revision = Number(row.ai_policy_revision);
     rows.push({ pageId: item.pageId, policy: row.ai_policy, revision });
     changes.push({ pageId: item.pageId, userId: input.userId, from: before.ai_policy, to: row.ai_policy, revision });
-    // Explicit re-assertion of `none` purges again; any other move
+    // Explicit re-assertion of `none` purges again; any other MOVE
     // (relaxation, or all → local_only) re-queues: nothing is purged for a
     // tighten that still permits SOME provider (the policy forbids future
     // external calls, not past results — SPEC-CORE-003), but every stage is
-    // re-queued so the next pass is admitted against the new rule.
+    // re-queued so the next pass is admitted against the new rule. An
+    // explicit re-assertion of `all`/`local_only` (requireAuthority with the
+    // same policy) bumps the revision only: finished derived state stays
+    // valid under an unchanged rule, so nothing is re-queued.
     if (item.policy === 'none') purge.push(item.pageId);
-    else requeue.push(item.pageId);
+    else if (before.ai_policy !== item.policy) requeue.push(item.pageId);
   }
   if (purge.length) await purgeDerivedAiState(client, purge);
   if (requeue.length) await requeueDerivedAiState(client, requeue);

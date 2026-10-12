@@ -66,6 +66,7 @@ import {
   confirmPagePublication,
   pagePublicationReceipt,
   publishCreatedConfluencePage,
+  sameLabelSet,
   type PublishedConfluencePage,
 } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import {
@@ -100,6 +101,7 @@ import {
   isAiPolicy,
   lockAiPolicyForPages,
   planLabelPolicyChange,
+  resolveCreationAiPolicy,
   type AiPolicy,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
@@ -327,6 +329,29 @@ async function planAuthorizedLabelWrite(
     throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
   }
   return plan;
+}
+
+/**
+ * #281 review: the label set a Confluence writer reserved (and published
+ * upstream) must still be the set the local row admits. At admission the
+ * re-plan against the fresh row is compared with the durable target; at
+ * completion the locally applied set is compared with what was published.
+ * Any divergence (a concurrent policy write, a restored canonical label) is
+ * a bounded 409 — the later authoritative policy stands and the mirror is
+ * never claimed. Nothing forces the remote set back.
+ */
+function assertPublishedLabelsMirrored(
+  applied: readonly string[],
+  published: readonly string[],
+  reason: 'stale_content_revision' | 'ai_policy_label_diverged' = 'ai_policy_label_diverged',
+): void {
+  if (!sameLabelSet(applied, published)) {
+    throw new PageWriteError(
+      409,
+      reason,
+      'The page AI policy changed while its labels were being published; the label write was not mirrored',
+    );
+  }
 }
 
 /** The remote delta that realises the planned set from the admitted labels. */
@@ -1755,9 +1780,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Article AI policy (#281): a label set naming two different policies is
     // refused before anything is created — locally or upstream. A new page
     // has no prior labels, so this is purely a contradiction check (422).
-    if (body.labels?.length) {
-      planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: body.labels });
-    }
+    // The planned (canonical, deduplicated) set and the resulting first
+    // publication policy — stricter of the creation default and the labels —
+    // are decided HERE, before any remote effect, and carried through the
+    // create (as part of the durable intent effect) so the local row is never
+    // first published looser than the creator stated (#281 review).
+    const initialLabels = body.labels?.length
+      ? planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: body.labels }).labels
+      : [];
+    const initialPolicy = await resolveCreationAiPolicy({
+      userId,
+      spaceKey: body.spaceKey && body.spaceKey !== '__local__' ? body.spaceKey : null,
+      labels: initialLabels,
+    });
 
     // Explicit source takes precedence over auto-detection
     let isStandalone: boolean;
@@ -1945,6 +1980,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             spaceKey: body.spaceKey!,
             titleSha256: createHash('sha256').update(body.title).digest('hex'),
             storageSha256: createHash('sha256').update(storageBody).digest('hex'),
+            initialPolicy,
+            initialLabels,
           },
         });
       });
@@ -1988,6 +2025,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       title: page.title,
       storage: publishedStorage,
       version: page.version.number,
+      initialPolicy,
+      initialLabels,
     };
     let createdPageState: PublishedConfluencePage;
     if (createIntent) {
@@ -2078,7 +2117,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           await cancelPageWriteIntentBeforeEffect(admittedLabelsIntent);
           throw error;
         }
-        const { add: remoteAdd } = remoteLabelDelta(createdPageState.labels ?? [], targetLabels);
+        // The local row was published WITH its labels (#281 review: first
+        // publication is never looser than stated); the freshly created
+        // Confluence page holds none yet, so the remote delta is against the
+        // empty remote set, not against the local mirror.
+        const { add: remoteAdd } = remoteLabelDelta([], targetLabels);
         await runPageWriteIntentEffect(
           labelsIntent,
           { kind: 'remote', completesRemoteWork: true },
@@ -2096,6 +2139,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           const applied = await applyPageLabelsOnClient(writeClient, {
             userId, pageId: localPageId, targetLabels,
           });
+          assertPublishedLabelsMirrored(applied.labels, targetLabels);
           await enqueuePageWriteInvalidation(writeClient, labelsIntentId);
           return applied;
         });
@@ -3970,7 +4014,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                   const confluence = await loadCurrentConfluenceWriteClient(
                     writeClient, tagIntent, numericPageId, userId, pageInfo.confluenceId!,
                   );
-                  await planAuthorizedLabelWrite(writeClient, numericPageId, userId, labels);
+                  const replan = await planAuthorizedLabelWrite(writeClient, numericPageId, userId, labels);
+                  assertPublishedLabelsMirrored(replan.labels, targetLabels, 'stale_content_revision');
                   return confluence;
                 },
                 { intent: tagIntent },
@@ -4000,6 +4045,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               const applied = await applyPageLabelsOnClient(writeClient, {
                 userId, pageId: numericPageId, targetLabels,
               });
+              assertPublishedLabelsMirrored(applied.labels, targetLabels);
               await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
               return applied;
             });
@@ -4167,7 +4213,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                     const confluence = await loadCurrentConfluenceWriteClient(
                       writeClient, tagIntent, page.id, userId, page.confluenceId!,
                     );
-                    await planAuthorizedLabelWrite(writeClient, page.id, userId, normTags);
+                    const replan = await planAuthorizedLabelWrite(writeClient, page.id, userId, normTags);
+                    assertPublishedLabelsMirrored(replan.labels, targetLabels, 'stale_content_revision');
                     return confluence;
                   },
                   { intent: tagIntent },
@@ -4195,6 +4242,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                 const applied = await applyPageLabelsOnClient(writeClient, {
                   userId, pageId: page.id, targetLabels,
                 });
+                assertPublishedLabelsMirrored(applied.labels, targetLabels);
                 await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
                 return applied;
               });

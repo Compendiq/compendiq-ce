@@ -441,6 +441,17 @@ export async function applyLabelChanges(
       pageId: initial.id,
       targetLabels: admitted.labels,
     });
+    // Confluence now holds `admitted.labels`. If the locked row's policy
+    // changed meanwhile (an authoritative policy write between admission and
+    // completion) the local plan diverges from the published set; the later
+    // policy stands and this write is NOT claimed as a mirror (#281 review).
+    if (!sameLabelSet(applied.labels, admitted.labels)) {
+      throw new PageWriteError(
+        409,
+        'ai_policy_label_diverged',
+        'The page AI policy changed while its labels were being published; the label write was not mirrored',
+      );
+    }
     await enqueuePageWriteInvalidation(client, intent.id);
     return applied;
   });

@@ -130,6 +130,27 @@ describe('planLabelPolicyChange (#281)', () => {
     expect(plan).toEqual({ labels: ['no-ai'], policy: 'none', kind: 'unchanged', restoredLabel: 'no-ai' });
   });
 
+  it('carried-over contradictory labels never block an ordinary tag (only NEW policies may contradict)', () => {
+    // The row was relaxed to `all` by the policy endpoint; both reserved
+    // labels stayed behind. Adding an ordinary tag must not be a 422.
+    const plan = planLabelPolicyChange({
+      currentPolicy: 'all', currentLabels: ['no-ai', 'ai-local-only'], targetLabels: ['no-ai', 'ai-local-only', 'x'],
+    });
+    expect(plan).toEqual({ labels: ['no-ai', 'x'], policy: 'all', kind: 'unchanged', restoredLabel: null });
+
+    // Current policy `none` with both labels carried: the one naming the
+    // current policy keeps its spelling and wins the single slot.
+    const kept = planLabelPolicyChange({
+      currentPolicy: 'none', currentLabels: ['ai-local-only', 'AI_None'], targetLabels: ['ai-local-only', 'AI_None', 'y'],
+    });
+    expect(kept).toEqual({ labels: ['AI_None', 'y'], policy: 'none', kind: 'unchanged', restoredLabel: null });
+
+    // A NEW policy next to a carried one is still contradictory.
+    expect(() => planLabelPolicyChange({
+      currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'ai-local-only'],
+    })).toThrowError(PageWriteError);
+  });
+
   it('deduplicates ordinary labels and keeps order', () => {
     const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['b', 'a', 'b'] });
     expect(plan.labels).toEqual(['b', 'a']);

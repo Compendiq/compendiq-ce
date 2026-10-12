@@ -62,9 +62,13 @@ export interface ExcludedPage {
 
 /**
  * The caller's dispatch binding. The provider is read once per walk and
- * must still be at `expectedConfigRevision`: a provider reconfigured since
- * the caller's admission (locality flipped, say) fails the walk closed
- * rather than deciding descendants against a binding nobody admitted.
+ * must still be at `expectedConfigRevision` AND at the EFFECTIVE locality
+ * the caller was admitted with. A locality declaration
+ * (`declareProviderLocality`) does not move `config_revision`, so the
+ * revision alone cannot see an `external → local` (or back) flip between the
+ * caller's admission and the walk; the walk fails closed on either
+ * mismatch rather than deciding descendants against a binding nobody
+ * admitted.
  */
 export interface SubPagePolicyContext {
   providerId: string;
@@ -72,11 +76,17 @@ export interface SubPagePolicyContext {
   usecase: string;
   /** `configRevision` the caller's own admission bound it to. */
   expectedConfigRevision: number;
+  /**
+   * The effective locality the caller's admission decided against
+   * (`AiPolicyAdmission.locality`): `local` only when declared against the
+   * current configuration revision, otherwise `external`.
+   */
+  expectedLocality: 'local' | 'external';
 }
 
 export class SubPagePolicyError extends Error {
   constructor(
-    public readonly reason: 'ai_policy_provider_revision_mismatch',
+    public readonly reason: 'ai_policy_provider_revision_mismatch' | 'ai_policy_provider_locality_mismatch',
     message: string,
   ) {
     super(message);
@@ -126,8 +136,10 @@ type ProviderLocality = { locality: string; localityConfigRevision: number | nul
 /**
  * Read the provider's locality binding once. An unknown provider (or a
  * schema without locality columns) reads as external at revision -1 —
- * unknown locality never authorizes `local_only`, and -1 never matches a
- * caller's admitted revision.
+ * unknown locality never authorizes `local_only`. (-1 is the same sentinel
+ * `admitPageForProvider` reports for an unknown provider, so a caller
+ * admitted against a missing provider can match here; it is then bound to
+ * `external`, which admits only `all`.)
  */
 async function loadProviderLocality(providerId: string): Promise<ProviderLocality> {
   try {
@@ -155,6 +167,21 @@ async function bindProvider(policyContext: SubPagePolicyContext): Promise<Provid
       'ai_policy_provider_revision_mismatch',
       `Provider ${policyContext.providerId} is at configuration revision ${provider.configRevision}, `
         + `the caller was admitted at ${policyContext.expectedConfigRevision}`,
+    );
+  }
+  // Effective locality, by the same rule admission applies: `local` only
+  // when declared against the current configuration revision.
+  const effectiveLocality: 'local' | 'external' =
+    provider.locality === 'local'
+      && provider.localityConfigRevision !== null
+      && provider.localityConfigRevision === provider.configRevision
+      ? 'local'
+      : 'external';
+  if (effectiveLocality !== policyContext.expectedLocality) {
+    throw new SubPagePolicyError(
+      'ai_policy_provider_locality_mismatch',
+      `Provider ${policyContext.providerId} is now ${effectiveLocality}, `
+        + `the caller was admitted against a ${policyContext.expectedLocality} provider`,
     );
   }
   return provider;

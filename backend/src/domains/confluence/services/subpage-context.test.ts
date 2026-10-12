@@ -10,6 +10,8 @@ import {
   getMultiPagePromptSuffix,
   hasSubPages,
 } from './subpage-context.js';
+import { admitPageForProvider } from '../../llm/services/ai-policy-admission.js';
+import { declareProviderLocality } from '../../llm/services/llm-provider-service.js';
 
 const dbAvailable = await isDbAvailable();
 let seq = 0;
@@ -132,7 +134,7 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
 
     const toMarkdown = vi.spyOn(converter, 'htmlToMarkdown');
     const ctx = await assembleSubPageContext(owner, String(parent), '<p>root</p>', 'Root', 200_000, {
-      policyContext: { providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision },
+      policyContext: { providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision, expectedLocality: 'external' },
     });
     expect(ctx.includedPageRefs).toEqual([
       { id: open, confluenceId: null, title: 'Open', policy: 'all', policyRevision: 0, truncated: false },
@@ -157,7 +159,7 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
     const parent = await page({ owner, title: 'Root' });
     const localOnly = await page({ owner, title: 'Local only', parentId: String(parent), policy: 'local_only' });
     const none = await page({ owner, title: 'No AI', parentId: String(parent), policy: 'none' });
-    const ctx = { providerId: local.id, usecase: 'chat', expectedConfigRevision: local.configRevision };
+    const ctx = { providerId: local.id, usecase: 'chat', expectedConfigRevision: local.configRevision, expectedLocality: 'local' };
     const { pages, excluded } = await fetchAdmittedSubPages(owner, String(parent), ctx);
     expect(pages.map((p) => p.id)).toEqual([localOnly]);
     expect(excluded).toEqual([{ id: none, policy: 'none', policyRevision: 0, reason: 'policy_none' }]);
@@ -169,7 +171,7 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
     const parent = await page({ owner, title: 'Root' });
     await page({ owner, title: 'Open', parentId: String(parent) });
     await query(`UPDATE llm_providers SET base_url = 'http://moved.invalid' WHERE id::text = $1`, [local.id]);
-    const stale = { providerId: local.id, usecase: 'chat', expectedConfigRevision: local.configRevision };
+    const stale = { providerId: local.id, usecase: 'chat', expectedConfigRevision: local.configRevision, expectedLocality: 'local' };
     await expect(fetchAdmittedSubPages(owner, String(parent), stale)).rejects.toBeInstanceOf(SubPagePolicyError);
     await expect(fetchAdmittedSubPages(owner, String(parent), stale))
       .rejects.toMatchObject({ reason: 'ai_policy_provider_revision_mismatch' });
@@ -182,8 +184,54 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
     const parent = await page({ owner, title: 'Root' });
     await page({ owner, title: 'Open', parentId: String(parent) });
     await expect(
-      fetchAdmittedSubPages(owner, String(parent), { providerId: 'nope', usecase: 'chat', expectedConfigRevision: 1 }),
+      fetchAdmittedSubPages(owner, String(parent), {
+        providerId: 'nope', usecase: 'chat', expectedConfigRevision: 1, expectedLocality: 'external',
+      }),
     ).rejects.toBeInstanceOf(SubPagePolicyError);
+  });
+
+  it('a locality declaration between the caller\'s admission and the walk fails closed (#281 review)', async () => {
+    const owner = await user();
+    const external = await provider(false);
+    const parent = await page({ owner, title: 'Root' });
+    const localOnly = await page({ owner, title: 'Local only', parentId: String(parent), policy: 'local_only' });
+
+    // The caller was admitted against an EXTERNAL provider. A declaration
+    // does not move config_revision, so the revision check alone cannot see it.
+    const admission = await admitPageForProvider(parent, 'chat', external.id, 'm');
+    expect(admission).toMatchObject({ admitted: true, locality: 'external', configRevision: external.configRevision });
+    if (!admission.admitted) throw new Error('unreachable');
+    const ctx = {
+      providerId: admission.providerId,
+      usecase: 'chat',
+      expectedConfigRevision: admission.configRevision,
+      expectedLocality: admission.locality,
+    };
+    const declared = await declareProviderLocality(external.id, 'local', external.configRevision, owner);
+    expect(declared).toMatchObject({ ok: true, state: { localConfirmed: true, configRevision: external.configRevision } });
+
+    await expect(fetchAdmittedSubPages(owner, String(parent), ctx))
+      .rejects.toMatchObject({ reason: 'ai_policy_provider_locality_mismatch' });
+    await expect(assembleSubPageContext(owner, String(parent), '<p>r</p>', 'Root', 200_000, { policyContext: ctx }))
+      .rejects.toBeInstanceOf(SubPagePolicyError);
+
+    // Re-admitted against the now-local provider, the walk binds to `local`
+    // and a local_only descendant is admitted.
+    const fresh = await admitPageForProvider(parent, 'chat', external.id, 'm');
+    if (!fresh.admitted) throw new Error('unreachable');
+    expect(fresh.locality).toBe('local');
+    const { pages } = await fetchAdmittedSubPages(owner, String(parent), {
+      providerId: fresh.providerId, usecase: 'chat',
+      expectedConfigRevision: fresh.configRevision, expectedLocality: fresh.locality,
+    });
+    expect(pages.map((p) => p.id)).toEqual([localOnly]);
+
+    // And the reverse flip (local → external) is caught the same way.
+    await declareProviderLocality(external.id, 'external', external.configRevision, owner);
+    await expect(fetchAdmittedSubPages(owner, String(parent), {
+      providerId: fresh.providerId, usecase: 'chat',
+      expectedConfigRevision: fresh.configRevision, expectedLocality: 'local',
+    })).rejects.toMatchObject({ reason: 'ai_policy_provider_locality_mismatch' });
   });
 
   it('excluded pages still count toward the walk bound (a padded tree cannot force unbounded scanning)', async () => {
@@ -195,7 +243,7 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
     }
     const open = await page({ owner, title: 'Open last', parentId: String(parent) });
     const { pages, excluded } = await fetchAdmittedSubPages(owner, String(parent), {
-      providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision,
+      providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision, expectedLocality: 'external',
     });
     expect(excluded).toHaveLength(50);
     expect(pages.map((p) => p.id)).not.toContain(open);
@@ -209,7 +257,7 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
     await page({ owner, title: 'Private child', parentId: String(parent) });
     const shared = await page({ owner, title: 'Shared child', parentId: String(parent), visibility: 'shared' });
     const { pages } = await fetchAdmittedSubPages(stranger, String(parent), {
-      providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision,
+      providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision, expectedLocality: 'external',
     });
     expect(pages.map((p) => p.id)).toEqual([shared]);
   });

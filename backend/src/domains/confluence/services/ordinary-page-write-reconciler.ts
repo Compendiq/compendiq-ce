@@ -13,10 +13,13 @@ import {
   deletedStandaloneNamespacesAbsent,
 } from '../../../core/services/standalone-attachment-cleanup.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
-import { getPool } from '../../../core/db/postgres.js';
 import {
   applyPageLabelsOnClient,
   emitAiPolicyChanges,
+  isAiPolicy,
+  planLabelPolicyChange,
+  stricterPolicy,
+  type AiPolicy,
   type AiPolicyChangeRecord,
 } from '../../../core/services/ai-policy-service.js';
 import {
@@ -121,13 +124,52 @@ export interface CreatedConfluencePagePublication {
   title: string;
   storage: string;
   version: number;
+  /**
+   * Article AI policy (#281): the creator's admitted first publication. The
+   * labels are the planned (contradiction-free, canonical) set and the
+   * policy the stricter of the creation default, the explicit choice and
+   * those labels — decided BEFORE the remote create was dispatched and
+   * carried in the durable intent effect, so first publication (and its
+   * recovery) never inserts a looser policy than the creator stated, and a
+   * failed or undispatched label step cannot leave the page at `all`.
+   * Absent on legacy intents: the row then inserts with the defaults (the
+   * database trigger still tightens from labels).
+   */
+  initialPolicy?: AiPolicy;
+  initialLabels?: readonly string[];
 }
 
 export interface PublishedConfluencePage {
   id: number;
   labels: string[] | null;
+  aiPolicy: AiPolicy;
   contentRevision: string;
   lifecycleRevision: string;
+}
+
+/**
+ * Read the admitted first-publication policy from a durable create effect.
+ * Malformed values are refused (409) rather than defaulted: a create whose
+ * policy statement cannot be trusted is not published at `all`.
+ */
+export function initialPolicyFromEffect(effect: Record<string, unknown>): {
+  initialPolicy: AiPolicy | undefined;
+  initialLabels: string[] | undefined;
+} {
+  const rawPolicy = effect.initialPolicy;
+  const rawLabels = effect.initialLabels;
+  if (rawPolicy === undefined && rawLabels === undefined) {
+    return { initialPolicy: undefined, initialLabels: undefined };
+  }
+  if (!isAiPolicy(rawPolicy)) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The initial AI policy is invalid');
+  }
+  if (!Array.isArray(rawLabels) || rawLabels.some((label) => typeof label !== 'string')) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The initial labels are invalid');
+  }
+  // Never looser than its own labels, even if the effect was edited.
+  const planned = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: rawLabels });
+  return { initialPolicy: stricterPolicy(rawPolicy, planned.policy), initialLabels: planned.labels };
 }
 
 /**
@@ -145,13 +187,16 @@ export async function publishCreatedConfluencePage(
     publication.spaceKey,
   );
   const bodyText = htmlToText(bodyHtml);
+  const initialLabels = [...(publication.initialLabels ?? [])];
+  const initialPolicy: AiPolicy = publication.initialPolicy ?? 'all';
   const inserted = await client.query<PublishedConfluencePage>(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
-        version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
+        version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status,
+        labels, ai_policy)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded', $9, $10)
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO NOTHING
-     RETURNING id, labels, content_revision::text AS "contentRevision",
+     RETURNING id, labels, ai_policy AS "aiPolicy", content_revision::text AS "contentRevision",
                lifecycle_revision::text AS "lifecycleRevision"`,
     [
       publication.confluenceId,
@@ -162,6 +207,8 @@ export async function publishCreatedConfluencePage(
       bodyText,
       publication.version,
       publication.parentConfluenceId,
+      initialLabels,
+      initialPolicy,
     ],
   );
   if (inserted.rows[0]) return inserted.rows[0];
@@ -175,7 +222,7 @@ export async function publishCreatedConfluencePage(
     version: number;
     source: string;
   }>(
-    `SELECT id, labels, content_revision::text AS "contentRevision",
+    `SELECT id, labels, ai_policy AS "aiPolicy", content_revision::text AS "contentRevision",
             lifecycle_revision::text AS "lifecycleRevision",
             space_key AS "spaceKey", parent_id AS "parentId", title,
             body_storage AS storage, body_html AS "bodyHtml",
@@ -194,7 +241,11 @@ export async function publishCreatedConfluencePage(
     row.bodyText !== bodyText ||
     row.title !== publication.title ||
     row.storage !== publication.storage ||
-    row.version !== publication.version
+    row.version !== publication.version ||
+    // A re-run must find the policy it stated (or stricter — a later
+    // authoritative tighten is not a collision); a looser row is not ours.
+    (publication.initialPolicy !== undefined
+      && stricterPolicy(row.aiPolicy, publication.initialPolicy) !== row.aiPolicy)
   ) {
     throw new PageWriteError(
       409,
@@ -389,6 +440,7 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
     title: observed.title,
     storage,
     version: observed.version.number,
+    ...initialPolicyFromEffect(intent.effect),
   });
   await enqueuePageWriteInvalidation(client, intent.id);
   return {
@@ -402,40 +454,6 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
     result: { pageId: published.id, confluenceId: terminal.confluenceId },
   };
 };
-
-/**
- * Article AI policy (#281): the reconciler runs inside the recovery
- * transaction and has no post-commit hook, so `policy_changed` events are
- * parked here and emitted only once the intent row is durably
- * `reconciled_applied` — never from inside the transaction, where a later
- * rollback would make the event a lie. A rollback drops the parked records.
- */
-const parkedPolicyChanges = new Map<string, AiPolicyChangeRecord[]>();
-const PARKED_EMIT_ATTEMPTS = 40;
-const PARKED_EMIT_INTERVAL_MS = 50;
-
-function emitParkedPolicyChangesOnceSettled(intentId: string): void {
-  const attempt = async (remaining: number): Promise<void> => {
-    const records = parkedPolicyChanges.get(intentId);
-    if (!records) return;
-    const settled = await getPool().query<{ status: string }>(
-      'SELECT status FROM page_write_intents WHERE id = $1',
-      [intentId],
-    );
-    const status = settled.rows[0]?.status;
-    if (status === 'reconciled_applied') {
-      parkedPolicyChanges.delete(intentId);
-      emitAiPolicyChanges(records);
-      return;
-    }
-    if (status !== 'pending' || remaining <= 0) {
-      parkedPolicyChanges.delete(intentId);
-      return;
-    }
-    setTimeout(() => { void attempt(remaining - 1); }, PARKED_EMIT_INTERVAL_MS).unref?.();
-  };
-  setImmediate(() => { void attempt(PARKED_EMIT_ATTEMPTS); });
-}
 
 const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   const pageId = intent.pageIds[0];
@@ -477,11 +495,21 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   // have committed them. The policy lock precedes the row lock the
   // primitive takes; recovery holds no earlier `FOR UPDATE` on `pages`.
   const applied = await applyPageLabelsOnClient(client, { userId: actorId, pageId, targetLabels: desired });
-  await enqueuePageWriteInvalidation(client, intent.id);
-  if (applied.changes.length > 0) {
-    parkedPolicyChanges.set(intent.id, applied.changes);
-    emitParkedPolicyChangesOnceSettled(intent.id);
+  // The local plan is re-made from the row as it is NOW. If a later,
+  // authoritative policy write (e.g. the policy endpoint relaxed the page
+  // and the canonical label is restored, or a stricter policy landed) makes
+  // the local set diverge from what the provider holds, the mirror and the
+  // authority would disagree: that is never claimed as an applied mirror.
+  // The intent stays pending (the transaction rolls back) for the operator.
+  if (!sameLabelSet(applied.labels, desired)) {
+    throw new PageWriteError(
+      409,
+      'intent_terminal_evidence_mismatch',
+      'The local AI policy no longer admits the labels Confluence holds; the intent remains pending',
+    );
   }
+  await enqueuePageWriteInvalidation(client, intent.id);
+  const changes: AiPolicyChangeRecord[] = applied.changes;
   const digest = createHash('sha256').update(JSON.stringify(desired)).digest('hex');
   return {
     outcome: 'applied',
@@ -492,8 +520,16 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
       details: { remoteEffectsCompleted: true, terminalEvidence: digest },
     },
     result: applied.labels,
+    // Emitted by the recovery driver strictly after its COMMIT (#281).
+    afterCommit: changes.length > 0 ? () => emitAiPolicyChanges(changes) : undefined,
   };
 };
+
+export function sameLabelSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = [...new Set(a)].sort();
+  const sb = [...new Set(b)].sort();
+  return sa.length === sb.length && sa.every((label, i) => label === sb[i]);
+}
 
 const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
   const pageId = intent.pageIds[0];

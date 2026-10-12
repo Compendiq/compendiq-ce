@@ -271,6 +271,14 @@ export type PageWriteIntentReconciler = (
       outcome: 'applied' | 'not_applied';
       proof: PageWriteReconciliationProof;
       result: unknown;
+      /**
+       * Side effects that must only become visible once the recovery
+       * transaction has COMMITTED (e.g. `policy_changed` events for a policy
+       * row the verifier moved). Invoked exactly once by
+       * `reconcilePageWriteIntent` after the settlement is durable; never
+       * invoked when the transaction rolls back or the settlement is refused.
+       */
+      afterCommit?: () => void;
     }
   | {
       outcome: 'repair_required';
@@ -2188,11 +2196,15 @@ export async function reconcilePageWriteIntent(
         kind: 'settled' as const,
         result: { intentId: durable.id, status },
         invalidationPending: settled.rows[0]?.cache_invalidation_pending === true,
+        afterCommit: reconciled.afterCommit,
       };
     });
   
     const inspected = await verifyAndSettle(recoveryToken);
     if (inspected.kind === 'settled') {
+      // `inTransaction` has resolved: the settlement is COMMITTED. Only now
+      // may the verifier's deferred side effects (policy events) fire.
+      inspected.afterCommit?.();
       localIntentEffects.delete(recoveryToken.id);
       localIntentRecoveryModes.delete(recoveryToken.id);
       localIntentFailedRemotePhases.delete(recoveryToken.id);
@@ -2230,6 +2242,7 @@ export async function reconcilePageWriteIntent(
         'The trusted repair did not produce an exactly verifiable terminal state',
       );
     }
+    repaired.afterCommit?.();
     localIntentEffects.delete(recoveryToken.id);
     localIntentRecoveryModes.delete(recoveryToken.id);
     localIntentFailedRemotePhases.delete(recoveryToken.id);

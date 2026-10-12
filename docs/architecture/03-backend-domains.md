@@ -67,28 +67,60 @@ runs on the transaction it already holds:
   relaxation that needs `canMutateAiPolicy` (403 `ai_policy_not_authorized`).
   A label carried over from the current set is inert, so a page relaxed by the
   policy endpoint is never re-tightened by an unrelated label edit. Dropping
-  the canonical label of the current restrictive policy restores it; two
-  reserved labels naming different policies are 422 `ai_policy_label_conflict`.
+  the canonical label of the current restrictive policy restores it. A
+  contradiction (422 `ai_policy_label_conflict`) is judged only among
+  **newly stated** policies: a row whose stored labels already disagree
+  (relaxed to `all` with `no-ai` and `ai-local-only` left behind) stays
+  writable for an ordinary tag — carried labels collapse onto the one naming
+  the current policy and are never a 422 on their own.
   Remote-backed routes plan from the admitted row **before** the provider
   call, so neither a contradiction nor an unauthorized relaxation reaches
-  Confluence, and the *planned* set is what Confluence receives.
+  Confluence, and the *planned* set is what Confluence receives. Bulk routes
+  re-plan on admission and refuse (409 `stale_content_revision`) if the
+  plan moved; on completion every Confluence-backed writer compares the
+  set the primitive stored with the set it published and answers 409
+  `ai_policy_label_diverged` if a concurrent authoritative policy write
+  made them differ. The later policy stands; the mirror is never rewritten
+  remotely to match and is never claimed as applied.
+- **First publication** of a created Confluence page carries the creator's
+  admitted policy: `POST /pages` resolves `initialLabels` (planned) and
+  `initialPolicy` (`resolveCreationAiPolicy`, stricter of default, choice
+  and labels) **before** any effect, stores both in the
+  `pages.create.confluence` intent effect, and `publishCreatedConfluencePage`
+  inserts `labels` and `ai_policy` in the same INSERT. Recovery reads them
+  through `initialPolicyFromEffect` (409 `intent_recovery_metadata_invalid`
+  when malformed; never looser than the labels it names), so neither an
+  undispatched label step nor a replayed create leaves the page at `all`.
 - **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
   `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
   → `pages` row `FOR UPDATE`. Callers that lock the row themselves
   (`loadAuthorizedContentWriteState`) take the policy lock first.
 - **Events** (`policy_changed`) are returned as `changes` and emitted only
-  after COMMIT. The recovery reconciler has no post-commit hook, so it parks
-  its records and emits once the intent row reads `reconciled_applied`.
+  after COMMIT. A reconciler's applied/not-applied result may carry an
+  `afterCommit` closure; `reconcilePageWriteIntent` invokes it strictly
+  after its settlement transaction resolves and never on rollback — the
+  `page.labels` reconciler uses it to emit its records (no polling of the
+  intent row). An explicit re-assertion of the same `all`/`local_only`
+  policy bumps the revision and emits, but re-queues no derived work; only
+  a real move re-queues, and `none` always purges.
   An undispatched label intent is settled by restoring `priorLabels` only;
-  prior labels are never reinterpreted as a policy command.
+  prior labels are never reinterpreted as a policy command. A dispatched one
+  re-plans from the row as it is **now**; if that plan no longer matches the
+  labels Confluence holds, recovery answers 409
+  `intent_terminal_evidence_mismatch` and the intent stays pending.
 - **Sub-page context** (`domains/confluence/services/subpage-context.ts`):
   a provider-bound caller passes `policyContext { providerId, usecase,
-  expectedConfigRevision }`. The walk binds the provider once, fails closed
-  (`SubPagePolicyError` `ai_policy_provider_revision_mismatch`) if its
-  `config_revision` moved since the caller's admission, decides each
-  descendant with `decideAiPolicyAdmission` from the same row that supplied
-  the body, and reports `includedPageRefs` (id, policy, policy revision) and
-  `excludedByPolicy`. Excluded pages still count toward `MAX_SUB_PAGES`.
+  expectedConfigRevision, expectedLocality }` — the last two straight from
+  its own `AiPolicyAdmission`. The walk binds the provider once and fails
+  closed (`SubPagePolicyError`) if its `config_revision` moved
+  (`ai_policy_provider_revision_mismatch`) **or** its effective locality
+  (local only when declared against the current revision) differs from the
+  admitted one (`ai_policy_provider_locality_mismatch` — a locality
+  declaration does not move `config_revision`, so the revision alone cannot
+  see it). Each descendant is decided with `decideAiPolicyAdmission` from
+  the same row that supplied the body; the walk reports `includedPageRefs`
+  (id, policy, policy revision) and `excludedByPolicy`. Excluded pages still
+  count toward `MAX_SUB_PAGES`.
 
 ### Quality and summary batch execution
 
