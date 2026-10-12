@@ -330,6 +330,38 @@ inspector Details section, the article header, the Library filter row, the
 editor menus, the dock and the provider editor is tracked against #283 and is
 not yet wired in this tree.
 
+## Frontend test determinism
+
+The Vitest suite runs at normal concurrency on a loaded CI runner, so a test
+that passes only when the machine is idle is a defect in the test. Four
+conventions keep the suite honest without inflating timeouts, adding retries
+or skipping cases:
+
+- **Assert consumer behaviour, not a mock's echo.** A test pins what a
+  consumer can observe through the public contract (conversation contents,
+  readiness, mode, draft, thread isolation). It does not assert a value that
+  only proves a mock answered — the server resolves chat centrally and
+  ignores the request body's `model`, so `AiContext.threads.test.tsx` does not
+  wait for a literal default-model string.
+- **Await an independent source only when it is the subject.** Two queries
+  that nothing orders (conversation hydration and the default-model lookup,
+  for instance) may settle in either order. A test that asserts one must not
+  silently depend on the other having finished first.
+- **Use direct state setup for tests unrelated to typing.** `PagesPage`
+  reads search, mode, space, filters and page from the URL, so a test about
+  banner copy, pagination names or row provenance renders straight at the
+  supported deep link (`/?mode=semantic&search=…`) instead of typing through
+  the 300 ms search debounce and switching modes through unrelated controls.
+  Only the tests whose subject *is* the debounce or the gesture drive it.
+- **Scope expensive DOM queries.** `getByRole` computes an accessible name
+  for every candidate; against the 600+ button icon grid a page-wide query
+  for a colour swatch is the slowest step of the test. `within(...)` the
+  smallest container that holds the target (`page-icon-color-row`).
+- **Shims install once per test.** `installVirtualizerRectShim` runs in
+  `beforeEach` and its restore in `afterEach`; a second installation inside a
+  test captures the shimmed function as the "original", so the real
+  `getBoundingClientRect` is never restored for the tests that follow.
+
 ## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →

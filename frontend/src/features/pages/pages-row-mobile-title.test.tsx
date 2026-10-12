@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { PageSource } from '@compendiq/contracts';
 import { PagesPage } from './PagesPage';
-import { FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
 
 /**
@@ -344,17 +343,13 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     restoreRects();
   });
 
-  /** Render, switch to semantic mode, type a query, and wait for the row. */
+  /** Render at the supported semantic deep link and wait for the row. */
   async function renderSearchRow(): Promise<HTMLElement> {
-    render(<PagesPage />, { wrapper: createWrapper() });
     // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
     // whole search-results section — keyword mode never renders this row.
-    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
-      target: { value: 'postgres' },
-    });
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.click(screen.getByTestId('search-mode-semantic'));
-    // useSearch debounces 300ms before fetching.
+    // The row's layout is under test, not the typing gesture, so the state
+    // comes from the URL rather than through the 300ms search debounce.
+    render(<PagesPage />, { wrapper: createWrapper(['/?mode=semantic&search=postgres']) });
     return await screen.findByText(searchTitle, undefined, { timeout: 2000 });
   }
 
@@ -421,19 +416,16 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
   });
 
   it('renders canonical Local provenance even in a named space', async () => {
+    // Only the fetch mock is swapped here; the virtualizer rect shim from
+    // `beforeEach` stays installed (installing it twice would leave the
+    // original getBoundingClientRect unrestorable in `afterEach`).
     vi.restoreAllMocks();
-    restoreRects = installVirtualizerRectShim();
     const localTitle = 'Draft: connection pool notes';
     mockFetchWithSearch({ id: 'sr-local', title: localTitle, spaceKey: 'DEV', source: 'standalone' });
 
-    render(<PagesPage />, { wrapper: createWrapper() });
-    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
-      target: { value: 'postgres' },
-    });
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.click(screen.getByTestId('search-mode-semantic'));
-    // Same budget as `renderSearchRow`: the 300ms debounce plus two fetches
-    // overran findByRole's 1s default on a loaded CI runner.
+    // Provenance is the thing under test, not the typing gesture: render at
+    // the supported semantic deep link rather than through the 300ms debounce.
+    render(<PagesPage />, { wrapper: createWrapper(['/?mode=semantic&search=postgres']) });
     const row = await screen.findByRole('button', { name: new RegExp(localTitle) }, { timeout: 2000 });
     expect(row).toHaveTextContent('Local');
     expect(row).not.toHaveTextContent('Confluence');
