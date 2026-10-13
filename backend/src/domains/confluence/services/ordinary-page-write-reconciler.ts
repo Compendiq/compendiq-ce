@@ -413,53 +413,73 @@ function remoteNotStarted(reference: string, result: unknown) {
 
 
 const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) => {
-  const parentPageId = intent.pageIds[0];
-  if (parentPageId === undefined || intent.pageIds.length !== 1) {
-    throw new PageWriteError(
-      409,
-      'intent_recovery_metadata_invalid',
-      'A Confluence child create must reference one local parent',
-    );
-  }
-  if (positiveInteger(intent.effect.parentPageId, 'parentPageId') !== parentPageId) {
-    throw new PageWriteError(
-      409,
-      'intent_recovery_metadata_invalid',
-      'The referenced parent does not match the durable target',
-    );
-  }
-  const actorId = await assertPageAccess(client, intent, parentPageId);
-  const rawParentConfluenceId = intent.effect.parentConfluenceId;
-  if (
-    rawParentConfluenceId !== null &&
-    (typeof rawParentConfluenceId !== 'string' || rawParentConfluenceId.length === 0)
-  ) {
-    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Missing parentConfluenceId');
-  }
-  const parentConfluenceId = rawParentConfluenceId as string | null;
-  const parentSource = parentConfluenceId === null ? 'standalone' : 'confluence';
-  const parentReferenceId = parentConfluenceId ?? String(parentPageId);
   const spaceKey = stringValue(intent.effect.spaceKey, 'spaceKey');
   const expectedTitleDigest = sha256Value(intent.effect.titleSha256, 'titleSha256');
   const expectedStorageDigest = sha256Value(intent.effect.storageSha256, 'storageSha256');
-  const parent = await client.query(
-    `SELECT 1 FROM pages
-      WHERE id = $1 AND source = $2
-        AND ($3::text IS NULL OR confluence_id = $3)
-        AND space_key = $4 AND deleted_at IS NULL`,
-    [parentPageId, parentSource, parentConfluenceId, spaceKey],
-  );
-  if (parent.rowCount !== 1) {
-    throw new PageWriteError(
-      409,
-      'intent_parent_identity_changed',
-      'The referenced parent is no longer available',
+  let actorId: string;
+  let parentReferenceId: string | null;
+  if (intent.pageIds.length === 0) {
+    // Explicit ROOT shape (migration 137, #280/#281): no local target, null
+    // parent references. Only this exact shape is admitted as a root; a
+    // malformed or other-kind empty target is still metadata-invalid.
+    if (intent.effect.parentPageId !== null || intent.effect.parentConfluenceId !== null) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'A Confluence root create must carry null parent references',
+      );
+    }
+    actorId = await assertActorActive(client, intent);
+    if (!(await getUserAccessibleSpaces(actorId, client)).includes(spaceKey)) {
+      throw new PageWriteError(403, 'intent_access_changed', 'The original actor no longer has space access');
+    }
+    parentReferenceId = null;
+  } else {
+    const parentPageId = intent.pageIds[0];
+    if (parentPageId === undefined || intent.pageIds.length !== 1) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'A Confluence child create must reference one local parent',
+      );
+    }
+    if (positiveInteger(intent.effect.parentPageId, 'parentPageId') !== parentPageId) {
+      throw new PageWriteError(
+        409,
+        'intent_recovery_metadata_invalid',
+        'The referenced parent does not match the durable target',
+      );
+    }
+    actorId = await assertPageAccess(client, intent, parentPageId);
+    const rawParentConfluenceId = intent.effect.parentConfluenceId;
+    if (
+      rawParentConfluenceId !== null &&
+      (typeof rawParentConfluenceId !== 'string' || rawParentConfluenceId.length === 0)
+    ) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Missing parentConfluenceId');
+    }
+    const parentConfluenceId = rawParentConfluenceId as string | null;
+    const parentSource = parentConfluenceId === null ? 'standalone' : 'confluence';
+    parentReferenceId = parentConfluenceId ?? String(parentPageId);
+    const parent = await client.query(
+      `SELECT 1 FROM pages
+        WHERE id = $1 AND source = $2
+          AND ($3::text IS NULL OR confluence_id = $3)
+          AND space_key = $4 AND deleted_at IS NULL`,
+      [parentPageId, parentSource, parentConfluenceId, spaceKey],
     );
+    if (parent.rowCount !== 1) {
+      throw new PageWriteError(
+        409,
+        'intent_parent_identity_changed',
+        'The referenced parent is no longer available',
+      );
+    }
   }
   if (intent.remoteEffectStartedAt === null) {
     return remoteNotStarted(
-      `confluence-page-create:${parentReferenceId}:not-dispatched`,
-      { parentPageId },
+      `confluence-page-create:${parentReferenceId ?? `root:${spaceKey}`}:not-dispatched`,
+      { parentPageId: intent.pageIds[0] ?? null },
     );
   }
   if (intent.remoteEffectsCompletedAt === null) {

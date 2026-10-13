@@ -78,6 +78,11 @@ export function isRootCreateEffect(effect: Record<string, unknown>): boolean {
   return effect.parentPageId === null;
 }
 
+/** The durable root-create row: the only pending intent with no target page. */
+function isRootCreateIntent(row: { kind: string; page_ids: readonly number[]; effect: Record<string, unknown> }): boolean {
+  return row.kind === 'pages.create.confluence' && row.page_ids.length === 0 && isRootCreateEffect(row.effect);
+}
+
 function policyForIntent(kind: string, effect: Record<string, unknown>): IntentPolicy {
   if (!KIND_PATTERN.test(kind)) {
     throw new PageWriteError(400, 'invalid_intent_kind', 'Intent kind must be a stable namespaced identifier');
@@ -712,8 +717,12 @@ async function loadPageStates(
   client: PoolClient,
   pageIds: readonly number[],
   allowDurablyDeleted = false,
+  allowEmpty = false,
 ): Promise<PageStateRow[]> {
-  const ids = normalizePageIds(pageIds);
+  // `allowEmpty` is for recovery of the one empty-target intent shape (the
+  // root Confluence create, migration 137); every admission path still
+  // requires at least one page id.
+  const ids = normalizePageIds(pageIds, allowEmpty);
   const result = await client.query<PageStateRow>(
     `SELECT id, content_revision::text, lifecycle_revision::text, baseline_id
        FROM pages
@@ -1944,7 +1953,7 @@ export async function reconcilePageWriteIntent(
       }
       await lockPageLifecycle(client, token.pageIds);
       const durable = await loadPendingIntentForUpdate(client, token);
-      const rows = await loadPageStates(client, durable.page_ids, true);
+      const rows = await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable));
       const liveIds = new Set(rows.map((row) => row.id));
       const missingIds = durable.page_ids
         .filter((pageId) => !liveIds.has(pageId))
@@ -2060,7 +2069,7 @@ export async function reconcilePageWriteIntent(
       }
       await lockPageLifecycle(client, attemptToken.pageIds);
       const durable = await loadPendingIntentForUpdate(client, attemptToken);
-      const rows = await loadPageStates(client, durable.page_ids, true);
+      const rows = await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable));
       const liveIds = new Set(rows.map((row) => row.id));
       const missingIds = durable.page_ids
         .filter((pageId) => !liveIds.has(pageId))
@@ -2083,7 +2092,10 @@ export async function reconcilePageWriteIntent(
   
       const reconciled = await verifier(client, recoveryIntentFromRow(durable));
       if (policyForIntent(durable.kind, durable.effect).targetMode === 'hierarchy_reference') {
-        assertHierarchyReferenceUnchanged(await loadPageStates(client, durable.page_ids, true), durable);
+        assertHierarchyReferenceUnchanged(
+          await loadPageStates(client, durable.page_ids, true, isRootCreateIntent(durable)),
+          durable,
+        );
       }
       if (reconciled.outcome === 'repair_required') {
         if (durable.recovery_mode !== 'local_verified') {

@@ -7,6 +7,8 @@ vi.mock('../enterprise/loader.js', () => ({
 }));
 
 import {
+  boundConfluenceId,
+  FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
   resolveIngestionAiPolicy,
   tightenExistingAiPolicy,
   TIGHTEN_ONLY_POLICY_SQL,
@@ -44,6 +46,25 @@ describe('ingestion AI policy (SPEC-WORK-002)', () => {
     // Spellings outside the frozen table are ordinary labels.
     expect(tightenExistingAiPolicy('all', ['ai-local-only'])).toBe('all');
     expect(tightenExistingAiPolicy('local_only', ['no-ai'])).toBe('none');
+  });
+
+  it('a binding is a VALIDATED receipt with a durable completion, never a bare id (#281)', () => {
+    const now = new Date();
+    expect(boundConfluenceId({ confluenceId: 'cf', accepted: true, expectedVersion: 1 }, now)).toBe('cf');
+    expect(boundConfluenceId({ confluenceId: 'cf', accepted: true, expectedVersion: 1 }, null)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf' }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf', accepted: false, expectedVersion: 0 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf', accepted: true, expectedVersion: 1, observedConfluenceId: 'other' }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf', accepted: true, expectedVersion: 1, version: 2 }, now)).toBeNull();
+  });
+
+  it('the cursor fence decodes labels with the frozen synonym table, not a looser SQL normalizer', () => {
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`'local-ai-only'`);
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`'no-ai'`);
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).not.toContain(`'all-ai'`);
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).not.toContain('ai_policy_from_labels');
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`'expectedVersion'`);
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain('remote_effects_completed_at IS NOT NULL');
   });
 
   it('SQL fragment never relaxes (uses rank comparison)', () => {

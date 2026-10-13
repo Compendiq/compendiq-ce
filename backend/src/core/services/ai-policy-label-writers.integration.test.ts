@@ -501,6 +501,58 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
       expect(seams.events).toEqual([]);
     });
 
+    it('recovery of an acknowledged ROOT create (empty targets, null parent) publishes the admitted policy', async () => {
+      const owner = await user('admin');
+      const admin = await user('admin');
+      seq += 1;
+      const confluenceId = `created-root-${seq}`;
+      // Space access for a root create is checked against the space itself.
+      await query(
+        `INSERT INTO spaces (space_key, space_name) VALUES ('LW', 'Label writers') ON CONFLICT (space_key) DO NOTHING`,
+      );
+      seams.remotePage = {
+        id: confluenceId, title: 'Root', version: { number: 1 }, body: { storage: { value: '<p>r</p>' } }, status: 'current',
+      };
+      // Exactly the shape `pages-crud.ts` reserves for a parentless create
+      // (migration 137): no target page, null parent references.
+      const runtimeId = `origin-${randomUUID()}`;
+      const ack = randomUUID();
+      const intentId = randomUUID();
+      await query(
+        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, quiesced_at, quiescence_ack, enforcement_version)
+         VALUES ($1, $2::jsonb, NOW(), $3, $4)`,
+        [runtimeId, JSON.stringify({ host: 'labels-origin', pid: 8, startedAt: new Date().toISOString() }), ack, PAGE_WRITER_ENFORCEMENT_VERSION],
+      );
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+            effect_started_at, remote_effect_started_at, remote_effects_completed_at, remote_terminal_result)
+         VALUES ($1, $2, 'pages.create.confluence', $3, ARRAY[]::integer[], '{}'::jsonb, 'remote_terminal_only', $4::jsonb,
+                 NOW(), NOW(), NOW(), $5::jsonb)`,
+        [
+          intentId, runtimeId, owner,
+          JSON.stringify({
+            effectClass: 'remote', parentPageId: null, parentConfluenceId: null, spaceKey: 'LW',
+            titleSha256: sha('Root'), storageSha256: sha('<p>r</p>'), initialPolicy: 'none', initialLabels: ['no-ai'],
+          }),
+          JSON.stringify({ accepted: true, confluenceId, expectedVersion: 1 }),
+        ],
+      );
+      await fencePageWriterRuntime({
+        mode: 'owner_ack', runtimeId, acknowledgmentId: ack, actorId: admin,
+        reason: 'The origin runtime acknowledged quiescence before recovery',
+      });
+      await expect(reconcilePageWriteIntent(intentId, { actorId: admin, reason: 'Recover the acknowledged root page creation' }))
+        .resolves.toEqual({ intentId, status: 'reconciled_applied' });
+      const created = await query<{ id: number; parent_id: string | null }>(
+        `SELECT id, parent_id FROM pages WHERE confluence_id = $1`, [confluenceId],
+      );
+      expect(created.rows[0]!.parent_id).toBeNull();
+      expect(await state(created.rows[0]!.id)).toMatchObject({ labels: ['no-ai'], ai_policy: 'none', ai_policy_revision: '0' });
+      expect(await intentStatus(intentId)).toBe('reconciled_applied');
+      expect(seams.events).toEqual([]);
+    });
+
     it('recovery tightens a sync-first row that beat the publication and announces it after COMMIT', async () => {
       const owner = await user('admin');
       const admin = await user('admin');
@@ -658,6 +710,7 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     const owner = await user();
     const id = await page({ owner, labels: ['one'] });
     const client = await getPool().connect();
+    let committed = false;
     try {
       await client.query('BEGIN');
       const applied = await applyPageLabelsOnClient(client, { userId: owner, pageId: id, targetLabels: ['one', 'AI:None'] });
@@ -665,7 +718,11 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
       expect(applied.changes).toEqual([{ pageId: id, userId: owner, from: 'all', to: 'none', revision: 1 }]);
       expect((await state(id)).ai_policy).toBe('all'); // invisible until COMMIT
       await client.query('COMMIT');
+      committed = true;
     } finally {
+      // A failed assertion or query must not leave the transaction (and its
+      // AI-policy/row locks) open on a pooled client.
+      if (!committed) await client.query('ROLLBACK').catch(() => undefined);
       client.release();
     }
     expect(await state(id)).toMatchObject({

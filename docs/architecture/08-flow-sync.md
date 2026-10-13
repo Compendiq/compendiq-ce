@@ -876,18 +876,31 @@ the author's stated `none`/`local_only` until recovery caught up.
 `admitFreshConfluencePublication` (`core/services/ai-policy-ingestion.ts`)
 runs on the INSERT transaction of every fresh Confluence row:
 
-- **Bound intents** (the exact `confluenceId` matches) seed the row with the
-  stated policy, its canonical label merged into the remote label set, and
-  the derived marks the policy implies. A pending intent acknowledged as a
-  DIFFERENT id is inert for this row.
-- **Unbound intents** (dispatched, no terminal result, or a NULL
-  `remote_terminal_result`) are a GLOBAL fence: a fresh import whose resolved
-  policy is WEAKER than any unbound statement is deferred in EVERY space and
-  for EVERY principal. Space or title heuristics are deliberately not used —
-  the acknowledged page may have been moved or renamed before the reply was
-  lost, so only the exact id can clear it. An unbound create that stated
-  `all` fences nothing; an import already at least as strict as every
-  unbound statement passes.
+- **Bound intents** seed the row with the stated policy, its canonical label
+  merged into the remote label set, and the derived marks the policy
+  implies. A pending intent acknowledged as a DIFFERENT id is inert for this
+  row. "Bound" means a **validated** receipt — `boundConfluenceId` and its SQL
+  twin `BOUND_CONFLUENCE_ID_SQL` apply the same rules the create reconciler's
+  `confirmPagePublication` applies before it trusts a terminal result:
+  `remote_effects_completed_at` set, non-empty string `confluenceId`,
+  `accepted: true`, a safe integer `expectedVersion ≥ 1`, and any
+  `observedConfluenceId` / `version` present agreeing with them. A bare id
+  with `accepted: false`, `expectedVersion: 0`, a conflicting observed id or
+  no completion timestamp is NOT a binding — such metadata can name an
+  unrelated existing page and must never release the fence for it.
+- **Unbound intents** (dispatched, no terminal result, a NULL
+  `remote_terminal_result`, or a receipt that fails the validation above)
+  are a GLOBAL fence: a fresh import whose resolved policy is WEAKER than
+  any unbound statement is deferred in EVERY space and for EVERY principal.
+  Space or title heuristics are deliberately not used — the acknowledged
+  page may have been moved or renamed before the reply was lost, so only the
+  exact id can clear it. The statement's strength is decoded exactly as
+  `initialPolicyFromEffect` decodes it, in TypeScript and in the cursor
+  SQL alike: `initialPolicy: 'all'` beside a restrictive label from the
+  frozen synonym table (`no-ai`, `local-ai-only`, …) is a restrictive
+  statement, and absent or malformed metadata is treated as `none`. Only a
+  valid explicit `all` with no restrictive label fences nothing; an import
+  already at least as strict as every unbound statement passes.
 - A deferral is `FreshPublicationDeferredError`: `syncSpace` counts it in
   `pagesDeferred` (apart from `pagesFailed`), skips the row and continues
   the walk. The space cursor (`spaces.last_synced`) is NOT advanced while any
@@ -897,8 +910,11 @@ runs on the INSERT transaction of every fresh Confluence row:
   The next walk re-attempts the row; once the operator settles or recovery
   binds the intent, the import proceeds with the bound statement.
 
-**Availability cost, by design:** a lost acknowledgment holds every weaker
-fresh import across all spaces until the pending intent is settled — the
-lost reply stays `pending` indefinitely and no scheduler, journal or
-migration expires it. The operator runbook is the only way out
-(`docs/runbooks/page-write-intents.md`).
+**Availability cost, by design:** a lost OR invalid acknowledgment holds
+every weaker fresh import across all spaces until the pending intent is
+settled — the reply stays `pending` indefinitely and no scheduler, journal
+or migration expires it. Recovery (`reconcilePageWriteIntent`) accepts both
+intent shapes `pages-crud.ts` reserves: a child create (one parent target)
+and a ROOT create (empty targets, `parentPageId`/`parentConfluenceId` null;
+space access re-checked for the original actor). The operator runbook is the
+only other way out (`docs/runbooks/page-write-intents.md`).

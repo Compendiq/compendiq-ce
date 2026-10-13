@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { AI_POLICY_LABEL_SYNONYMS } from '@compendiq/contracts';
 import {
   isAiPolicy,
   isStricterPolicy,
@@ -97,11 +98,84 @@ function fencePolicyOfEffect(effect: Record<string, unknown>): { policy: AiPolic
   }
 }
 
-/** A usable acknowledged identity: a non-empty `confluenceId` string. */
-function boundConfluenceId(terminal: Record<string, unknown> | null): string | null {
-  const id = terminal?.confluenceId;
-  return typeof id === 'string' && id.length > 0 ? id : null;
+/**
+ * A usable, VALIDATED acknowledged identity. Mirrors the receipt rules the
+ * create reconciler enforces before it trusts a terminal result
+ * (`confirmPagePublication` in the ordinary reconciler, which this module
+ * cannot import without a cycle): the remote phase must be durably
+ * completed, the receipt must be an explicit acceptance carrying a
+ * verifiable version, and any observed identity/version it carries must
+ * agree with the command identity. A non-empty id with `accepted: false`,
+ * `expectedVersion: 0`, a conflicting observed id or no completion
+ * timestamp is NOT a binding: such metadata stays globally unbound so the
+ * fence keeps holding, exactly as recovery would refuse it (#281).
+ */
+export function boundConfluenceId(
+  terminal: Record<string, unknown> | null | undefined,
+  remoteEffectsCompletedAt: Date | string | null | undefined,
+): string | null {
+  if (remoteEffectsCompletedAt === null || remoteEffectsCompletedAt === undefined) return null;
+  if (!terminal || typeof terminal !== 'object') return null;
+  const id = terminal.confluenceId;
+  if (typeof id !== 'string' || id.length === 0) return null;
+  if (terminal.accepted !== true) return null;
+  const expectedVersion = terminal.expectedVersion;
+  if (typeof expectedVersion !== 'number' || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+    return null;
+  }
+  if (terminal.observedConfluenceId !== undefined && terminal.observedConfluenceId !== id) return null;
+  if (terminal.version !== undefined && terminal.version !== expectedVersion) return null;
+  return id;
 }
+
+/**
+ * SQL form of `boundConfluenceId` for a `page_write_intents` row aliased `i`.
+ * TRUE only for a validated binding; NULL/malformed receipts coalesce to
+ * FALSE so three-valued logic can never drop an unbound row from the fence.
+ */
+const BOUND_CONFLUENCE_ID_SQL = `COALESCE(
+  i.remote_effects_completed_at IS NOT NULL
+  AND jsonb_typeof(i.remote_terminal_result -> 'confluenceId') = 'string'
+  AND length(i.remote_terminal_result ->> 'confluenceId') > 0
+  AND i.remote_terminal_result -> 'accepted' = 'true'::jsonb
+  AND jsonb_typeof(i.remote_terminal_result -> 'expectedVersion') = 'number'
+  AND (i.remote_terminal_result ->> 'expectedVersion') ~ '^[0-9]+$'
+  AND (i.remote_terminal_result ->> 'expectedVersion')::numeric >= 1
+  AND (i.remote_terminal_result ->> 'expectedVersion')::numeric <= 9007199254740991
+  AND (i.remote_terminal_result -> 'observedConfluenceId' IS NULL
+       OR i.remote_terminal_result ->> 'observedConfluenceId' = i.remote_terminal_result ->> 'confluenceId')
+  AND (i.remote_terminal_result -> 'version' IS NULL
+       OR (jsonb_typeof(i.remote_terminal_result -> 'version') = 'number'
+           AND i.remote_terminal_result -> 'version' = i.remote_terminal_result -> 'expectedVersion')),
+  FALSE
+)`;
+
+/**
+ * SQL form of `fencePolicyOfEffect(effect).policy = 'all'` for a row aliased
+ * `i`: an effect is inert for the fence ONLY when its policy is a valid
+ * explicit `all` AND its labels are a valid string array naming no
+ * restrictive policy. The restrictive spellings are the frozen TS synonym
+ * table (`AI_POLICY_LABEL_SYNONYMS`, lowercase + trim only) — NOT
+ * `ai_policy_from_labels`, whose regex normalizer admits a different set —
+ * so the cursor predicate decodes exactly as `initialPolicyFromEffect`.
+ * Anything else (absent, malformed, restrictive labels next to `all`)
+ * holds the fence, exactly as fresh-row admission would.
+ */
+const RESTRICTIVE_LABEL_SPELLINGS_SQL = Object.entries(AI_POLICY_LABEL_SYNONYMS)
+  .filter(([, policy]) => policy !== 'all')
+  .map(([label]) => `'${label.replace(/'/g, "''")}'`)
+  .join(', ');
+
+const EFFECT_STATES_ALL_SQL = `COALESCE(
+  i.effect ->> 'initialPolicy' = 'all'
+  AND jsonb_typeof(i.effect -> 'initialLabels') = 'array'
+  AND NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(i.effect -> 'initialLabels') AS l
+     WHERE jsonb_typeof(l) <> 'string'
+        OR lower(btrim(l #>> '{}')) IN (${RESTRICTIVE_LABEL_SPELLINGS_SQL})
+  ),
+  FALSE
+)`;
 
 /**
  * SQL predicate (no parameters) that is TRUE while a GLOBAL unknown-identity
@@ -127,14 +201,13 @@ export const FRESH_PUBLICATION_FENCE_ACTIVE_SQL = `(
      WHERE i.status = 'pending'
        AND i.kind = 'pages.create.confluence'
        AND i.remote_effect_started_at IS NOT NULL
-       -- NULL terminal result (reply never arrived) must count as UNBOUND:
-       -- coalesce so three-valued logic cannot drop the row.
-       AND NOT COALESCE(
-         jsonb_typeof(i.remote_terminal_result -> 'confluenceId') = 'string'
-         AND length(i.remote_terminal_result ->> 'confluenceId') > 0,
-         FALSE
-       )
-       AND COALESCE(i.effect ->> 'initialPolicy', '') <> 'all'
+       -- Unbound = no VALIDATED receipt (same rules as boundConfluenceId /
+       -- the create reconciler): a lost reply, a non-accepted or
+       -- version-less receipt or a conflicting observed id all hold.
+       AND NOT ${BOUND_CONFLUENCE_ID_SQL}
+       -- Inert only for a valid explicit 'all' with no restrictive label
+       -- (same decoding as initialPolicyFromEffect / fencePolicyOfEffect).
+       AND NOT ${EFFECT_STATES_ALL_SQL}
   )
   OR EXISTS (
     SELECT 1 FROM page_write_intents i
@@ -209,8 +282,9 @@ export async function admitFreshConfluencePublication(
   const creates = await client.query<{
     effect: Record<string, unknown>;
     remote_terminal_result: Record<string, unknown> | null;
+    remote_effects_completed_at: Date | null;
   }>(
-    `SELECT effect, remote_terminal_result
+    `SELECT effect, remote_terminal_result, remote_effects_completed_at
        FROM page_write_intents
       WHERE status = 'pending'
         AND kind = 'pages.create.confluence'
@@ -219,7 +293,7 @@ export async function admitFreshConfluencePublication(
   let policy = input.resolvedPolicy;
   const labels = [...input.labels];
   for (const row of creates.rows) {
-    const bound = boundConfluenceId(row.remote_terminal_result);
+    const bound = boundConfluenceId(row.remote_terminal_result, row.remote_effects_completed_at);
     const stated = fencePolicyOfEffect(row.effect);
     if (bound === null) {
       if (isStricterPolicy(stated.policy, input.resolvedPolicy)) {

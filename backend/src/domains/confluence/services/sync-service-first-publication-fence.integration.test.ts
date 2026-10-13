@@ -22,7 +22,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from '../../../core/services/page-baseline-governance.js';
-import { FreshPublicationDeferredError, resolveIngestionAiPolicy } from '../../../core/services/ai-policy-ingestion.js';
+import {
+  boundConfluenceId,
+  FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
+  FreshPublicationDeferredError,
+  resolveIngestionAiPolicy,
+} from '../../../core/services/ai-policy-ingestion.js';
 import type { ConfluenceClient, ConfluencePage } from './confluence-client.js';
 import { __internal } from './sync-service.js';
 
@@ -56,7 +61,7 @@ async function pendingRootCreate(input: {
         effect_started_at, remote_effect_started_at, remote_effects_completed_at, remote_terminal_result)
      VALUES ($1, $2, 'pages.create.confluence', $3, ARRAY[]::integer[], '{}'::jsonb, 'remote_terminal_only', $4::jsonb,
              NOW(), NOW(), CASE WHEN $5::text IS NULL THEN NULL ELSE NOW() END,
-             CASE WHEN $5::text IS NULL THEN NULL ELSE jsonb_build_object('confluenceId', $5::text, 'accepted', TRUE) END)`,
+             CASE WHEN $5::text IS NULL THEN NULL ELSE jsonb_build_object('confluenceId', $5::text, 'accepted', TRUE, 'expectedVersion', 1) END)`,
     [
       id, runtimeId, input.actor,
       JSON.stringify({
@@ -74,10 +79,34 @@ async function bindAcknowledgment(intentId: string, confluenceId: string): Promi
   await query(
     `UPDATE page_write_intents
         SET remote_effects_completed_at = NOW(),
-            remote_terminal_result = jsonb_build_object('confluenceId', $2::text, 'accepted', TRUE)
+            remote_terminal_result = jsonb_build_object('confluenceId', $2::text, 'accepted', TRUE, 'expectedVersion', 1)
       WHERE id = $1`,
     [intentId, confluenceId],
   );
+}
+
+/** Malformed-journal fault injection: schema-valid but INVALID terminal metadata. */
+async function injectInvalidReceipt(intentId: string, terminal: Record<string, unknown>): Promise<void> {
+  await query(
+    `UPDATE page_write_intents
+        SET remote_effects_completed_at = NOW(), remote_terminal_result = $2::jsonb
+      WHERE id = $1`,
+    [intentId, JSON.stringify(terminal)],
+  );
+}
+
+async function setEffectPolicy(intentId: string, initialPolicy: string, initialLabels: string[]): Promise<void> {
+  await query(
+    `UPDATE page_write_intents
+        SET effect = effect || jsonb_build_object('initialPolicy', $2::text, 'initialLabels', $3::jsonb)
+      WHERE id = $1`,
+    [intentId, initialPolicy, JSON.stringify(initialLabels)],
+  );
+}
+
+async function fenceActive(): Promise<boolean> {
+  const r = await query<{ active: boolean }>(`SELECT ${FRESH_PUBLICATION_FENCE_ACTIVE_SQL} AS active`);
+  return r.rows[0]!.active;
 }
 
 function remotePage(input: { id: string; title: string; storage: string; labels?: string[] }): ConfluencePage {
@@ -177,6 +206,95 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     const seeded = await row('cf-1');
     expect(seeded).toMatchObject({ ai_policy: 'none', embedding_status: 'policy_blocked' });
     expect([...seeded!.labels].sort()).toEqual(['no-ai', 'ops', 'team']);
+  });
+
+  it('boundConfluenceId accepts only a validated receipt (positive control + invalid shapes)', () => {
+    const now = new Date();
+    expect(boundConfluenceId({ confluenceId: 'cf-ok', accepted: true, expectedVersion: 1 }, now)).toBe('cf-ok');
+    expect(boundConfluenceId(
+      { confluenceId: 'cf-ok', accepted: true, expectedVersion: 1, observedConfluenceId: 'cf-ok', version: 1 }, now,
+    )).toBe('cf-ok');
+    // No completion timestamp: never bound regardless of the receipt body.
+    expect(boundConfluenceId({ confluenceId: 'cf-ok', accepted: true, expectedVersion: 1 }, null)).toBeNull();
+    expect(boundConfluenceId(null, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: '' , accepted: true, expectedVersion: 1 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', accepted: false, expectedVersion: 0 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', expectedVersion: 1 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', accepted: true, expectedVersion: 0 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', accepted: true, expectedVersion: 1.5 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', accepted: true, expectedVersion: 1, observedConfluenceId: 'cf-y' }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: 'cf-x', accepted: true, expectedVersion: 1, version: 2 }, now)).toBeNull();
+  });
+
+  it('invalid terminal metadata naming another existing page does NOT bind: the global fence and the cursor hold', async () => {
+    const creator = await user();
+    const other = await user();
+    // An unrelated page that genuinely exists and is already imported.
+    await walkOne(other, 'OTHER', remotePage({ id: 'cf-existing', title: 'Existing', storage: '<p>e</p>' }));
+    expect(await row('cf-existing')).toBeDefined();
+
+    const intentId = await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Secret plan', storage: '<p>r</p>',
+      initialPolicy: 'none', initialLabels: ['no-ai'],
+    });
+    // Malformed-journal fault injection: schema-valid, invalid acknowledgment
+    // (not accepted, version 0) pointing at the other page, with a completion
+    // timestamp so migration-120 CHECK 5 admits it.
+    await injectInvalidReceipt(intentId, { confluenceId: 'cf-existing', accepted: false, expectedVersion: 0 });
+    expect(await fenceActive()).toBe(true);
+
+    // Fresh-row admission: a weaker import is still deferred everywhere.
+    const page = remotePage({ id: 'cf-new', title: 'Secret plan', storage: '<p>r</p>' });
+    await expect(walkOne(creator, 'FP', page)).rejects.toBeInstanceOf(FreshPublicationDeferredError);
+    expect(await row('cf-new')).toBeUndefined();
+
+    // Cursor admission: another principal's EMPTY listing cannot advance.
+    await __internal.syncSpace(stubClient([]), other, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await lastSynced('FP')).toBeNull();
+
+    // The unrelated page keeps its own policy: the invalid receipt is inert for it.
+    const ingestionDefault = await resolveIngestionAiPolicy({ userId: other, spaceKey: 'OTHER', labels: [] });
+    expect(await row('cf-existing')).toMatchObject({ ai_policy: ingestionDefault });
+
+    // Positive control: a VALID receipt binds the exact id and releases the fence.
+    await bindAcknowledgment(intentId, 'cf-new');
+    expect(await fenceActive()).toBe(false);
+    await __internal.syncSpace(stubClient([page]), creator, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await row('cf-new')).toMatchObject({ ai_policy: 'none', labels: ['no-ai'] });
+    expect(await lastSynced('FP')).not.toBeNull();
+  });
+
+  it('initialPolicy=all with a restrictive label is a restrictive statement for BOTH cursor and fresh-row admission', async () => {
+    const creator = await user();
+    const other = await user();
+    const intentId = await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Plan', storage: '<p>r</p>',
+      initialPolicy: 'all', initialLabels: ['no-ai'],
+    });
+    expect(await fenceActive()).toBe(true);
+    const page = remotePage({ id: 'cf-all-noai', title: 'Plan', storage: '<p>r</p>' });
+    await expect(walkOne(creator, 'FP', page)).rejects.toBeInstanceOf(FreshPublicationDeferredError);
+    await __internal.syncSpace(stubClient([]), other, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await lastSynced('FP')).toBeNull();
+
+    // Non-string labels cannot exist durably: migration 137's
+    // `page_write_intents_effect_policy_check` refuses them at the write.
+    await expect(query(
+      `UPDATE page_write_intents SET effect = effect || '{"initialPolicy":"all","initialLabels":[1]}'::jsonb WHERE id = $1`,
+      [intentId],
+    )).rejects.toMatchObject({ constraint: 'page_write_intents_effect_policy_check' });
+    expect(await fenceActive()).toBe(true);
+
+    // The frozen TS spelling `local-ai-only` (not in ai_policy_from_labels'
+    // regex set) is restrictive for the cursor too.
+    await setEffectPolicy(intentId, 'all', ['Local-AI-Only ']);
+    expect(await fenceActive()).toBe(true);
+
+    // A genuine `all` statement with no restrictive label is inert.
+    await setEffectPolicy(intentId, 'all', ['ops']);
+    expect(await fenceActive()).toBe(false);
+    await __internal.syncSpace(stubClient([]), other, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await lastSynced('FP')).not.toBeNull();
   });
 
   it('a page with no pending create is seeded by the ingestion rule alone', async () => {
