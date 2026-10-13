@@ -47,6 +47,19 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     }
   });
 
+  it('folds ASCII case only: a non-ASCII letter never matches a reserved label (locale-independent, twin of toLowerCase)', async () => {
+    // U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE folds to `i` under some
+    // locales' lower(); JavaScript folds it to `i̇` and matches nothing.
+    const r = await query<{ a: string | null; b: string | null; c: string | null; d: string | null }>(
+      `SELECT ai_policy_label_value(U&'NO-A\\0130') AS a,
+              ai_policy_label_value(U&'A\\0130:LOCAL') AS b,
+              ai_policy_label_value('NO-AI') AS c,
+              ai_policy_label_value('AI:LOCAL') AS d`,
+    );
+    expect(r.rows[0]).toEqual({ a: null, b: null, c: 'none', d: 'local_only' });
+    expect(['NO-A\u0130', 'A\u0130:LOCAL'].map((l) => l.trim().toLowerCase())).toEqual(['no-ai\u0307', 'ai\u0307:local']);
+  });
+
   it('ai_policy_from_labels takes the strictest restrictive label and ignores all-ai', async () => {
     const r = await query<{ a: string; b: string; c: string; d: string }>(
       `SELECT ai_policy_from_labels(ARRAY['x','ai:local','no_ai']) AS a,
@@ -105,6 +118,21 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     expect(after.rows[0]!.ai_policy_revision).toBe(before.rows[0]!.ai_policy_revision);
     const deduped = await query<{ labels: string[] }>(`SELECT labels FROM pages WHERE id = $1`, [dup]);
     expect(deduped.rows[0]!.labels).toEqual(['local-ai-only', 'x']);
+  });
+
+  it('leaves every spelling the frozen table already recognises exactly as stored (only unrecognised legacy forms are mapped)', async () => {
+    const id = await insertPage('recognised', ['x'], 'none');
+    await query(`UPDATE pages SET labels = ARRAY['ai:none','AI:Local','ai:all','NO_AI','ai-none','x'] WHERE id = $1`, [id]);
+    await query(sql);
+    const after = await query<{ labels: string[]; ai_policy: string }>(`SELECT labels, ai_policy FROM pages WHERE id = $1`, [id]);
+    // `ai-none` (unrecognised) → `no-ai`; everything else untouched, order kept.
+    expect(after.rows[0]!.labels).toEqual(['ai:none', 'AI:Local', 'ai:all', 'NO_AI', 'no-ai', 'x']);
+    expect(after.rows[0]!.ai_policy).toBe('none');
+    const untouched = await insertPage('untouched', ['x'], 'none');
+    await query(`UPDATE pages SET labels = ARRAY['ai:none','AI:Local'] WHERE id = $1`, [untouched]);
+    await query(sql);
+    const same = await query<{ labels: string[] }>(`SELECT labels FROM pages WHERE id = $1`, [untouched]);
+    expect(same.rows[0]!.labels).toEqual(['ai:none', 'AI:Local']);
   });
 
   it('applies on an upgrade with FROZEN pages carrying legacy spellings (labels are protected; the row is skipped, the policy stays)', async () => {

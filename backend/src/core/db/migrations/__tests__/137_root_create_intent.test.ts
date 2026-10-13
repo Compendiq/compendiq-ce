@@ -89,40 +89,18 @@ describe.skipIf(!dbAvailable)('Migration 137 — root pages.create.confluence in
     expect(bad).toMatchObject({ ok: false, code: '23514' });
   });
 
-  it('upgrades a constraint produced by the first revision (no element rule) in place', async () => {
-    await query(sql);
-    // Reproduce the first revision's constraint: 125's expression OR the
-    // old root branch (array + length only).
-    const current = await query<{ condef: string }>(
-      `SELECT pg_get_constraintdef(oid) AS condef FROM pg_constraint
-        WHERE conrelid = 'page_write_intents'::regclass AND conname = 'page_write_intents_effect_policy_check'`,
-    );
-    expect(current.rows[0]!.condef).toContain('page_write_intent_initial_labels_valid');
-    const oldDef = current.rows[0]!.condef.replace(
-      /page_write_intent_initial_labels_valid\(([^)]*\))\)/,
-      "(jsonb_typeof($1) = 'array'::text AND jsonb_array_length($1) <= 50)",
-    );
-    expect(oldDef).not.toContain('page_write_intent_initial_labels_valid');
-    await query('ALTER TABLE page_write_intents DROP CONSTRAINT page_write_intents_effect_policy_check');
-    await query(`ALTER TABLE page_write_intents ADD CONSTRAINT page_write_intents_effect_policy_check ${oldDef}`);
-    // Old revision admits a non-string label element…
+  it('bounds every root label element exactly like CreatePageSchema (non-empty string, at most 100 chars)', async () => {
     expect(await tryInsert({
-      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: [7] }),
+      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: ['x'.repeat(100), 'y'] }),
     })).toEqual({ ok: true });
-    await query('DELETE FROM page_write_intents');
-    // …the re-run tightens it without touching the parented shape.
-    await query(sql);
-    expect(await tryInsert({
-      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: [7] }),
-    })).toMatchObject({ ok: false, code: '23514' });
-    expect(await tryInsert({ kind: 'pages.create.confluence', pageIds: [], effect: rootEffect() })).toEqual({ ok: true });
-    const parent = await insertPage();
-    expect(await tryInsert({
-      kind: 'pages.create.confluence',
-      pageIds: [parent],
-      revisions: { [parent]: { contentRevision: '1', lifecycleRevision: '1' } },
-      effect: rootEffect({ parentPageId: parent, parentConfluenceId: '123', initialLabels: [7] }),
-    })).toEqual({ ok: true });
+    for (const [label, labels] of [
+      ['empty label', ['', 'x']],
+      ['101-char label', ['y'.repeat(101)]],
+      ['non-string element', [1]],
+    ] as Array<[string, unknown[]]>) {
+      const r = await tryInsert({ kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: labels }) });
+      expect(r, label).toMatchObject({ ok: false, code: '23514' });
+    }
   });
 
   it('accepts the root create shape', async () => {

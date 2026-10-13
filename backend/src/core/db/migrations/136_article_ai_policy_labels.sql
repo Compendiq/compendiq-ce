@@ -15,13 +15,20 @@
 -- LineTerminator code points ECMA-262 strips (TAB, VT, FF, SP, NBSP, BOM,
 -- the Zs category, LF, CR, LS, PS). `btrim` strips ASCII space only, so a
 -- tab- or NBSP-padded label would be recognised by TypeScript but not here.
+--
+-- Case folding is ASCII-ONLY (`translate`, not `lower()`): every table entry
+-- is ASCII, and `lower()` is collation/locale dependent — under some
+-- locales U+0130 (İ) folds to `i`, so `NO-Aİ` would read as `no-ai` in SQL
+-- while `'NO-Aİ'.toLowerCase()` yields `no-ai̇` (with a combining dot) in
+-- JavaScript and matches nothing. A non-ASCII letter therefore never
+-- matches a reserved label on either side.
 CREATE OR REPLACE FUNCTION ai_policy_label_key(l TEXT) RETURNS TEXT
   LANGUAGE sql IMMUTABLE AS $$
-  SELECT lower(regexp_replace(
+  SELECT translate(regexp_replace(
     l,
     '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+'
     || '|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
-    '', 'g'))
+    '', 'g'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 $$;
 
 CREATE OR REPLACE FUNCTION ai_policy_label_value(l TEXT) RETURNS TEXT
@@ -74,7 +81,10 @@ $$;
 -- still says otherwise. Rewrite those spellings onto the canonical label of
 -- the policy they named, WITHOUT touching `ai_policy` or its revision: the
 -- policy is never relaxed and never tightened by this migration. Labels that
--- the frozen table already recognises are left as they are.
+-- the frozen table already recognises (`ai:none`, `AI:Local`, `ai:all`, …)
+-- are left EXACTLY as stored — only an UNRECOGNISED legacy spelling is
+-- mapped, so the migration never rewrites a label a Confluence mirror or a
+-- user already relies on.
 --
 -- Safety (#280 review):
 --   * FROZEN rows (`baseline_id IS NOT NULL`) are skipped: `pages.labels` is
@@ -90,12 +100,15 @@ UPDATE pages
        FROM (
          SELECT v, min(ord) AS first_ord
            FROM (
-             SELECT CASE regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
-                      WHEN 'ai-none' THEN 'no-ai'
-                      WHEN 'ai-local-only' THEN 'local-ai-only'
-                      WHEN 'ai-local' THEN 'local-ai-only'
-                      WHEN 'ai-all' THEN 'all-ai'
-                      ELSE l
+             SELECT CASE
+                      WHEN ai_policy_label_value(l) IS NOT NULL THEN l
+                      ELSE CASE regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
+                             WHEN 'ai-none' THEN 'no-ai'
+                             WHEN 'ai-local-only' THEN 'local-ai-only'
+                             WHEN 'ai-local' THEN 'local-ai-only'
+                             WHEN 'ai-all' THEN 'all-ai'
+                             ELSE l
+                           END
                     END AS v,
                     ord
                FROM unnest(pages.labels) WITH ORDINALITY AS u(l, ord)

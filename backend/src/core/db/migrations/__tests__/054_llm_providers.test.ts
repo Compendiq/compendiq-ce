@@ -50,9 +50,17 @@ async function repairSharedSchema(): Promise<void> {
   // columns and trigger (#280). Without them every later AI-policy admission
   // in this worker fails CLOSED as `policy_unavailable`, so summary/quality
   // workers leave pages `pending` for reasons unrelated to the file under
-  // test. 135 is idempotent; replay it too.
+  // test. 135 is idempotent; replay it too — and 136 AFTER it: 135 defines a
+  // regex-based `ai_policy_from_labels` that 136 replaces with the frozen
+  // synonym table, so replaying 135 alone would silently revert label
+  // semantics for every later suite in this worker (#280 review).
   await query(`DELETE FROM _migrations WHERE name = ANY($1::text[])`, [
-    ['087_llm_model_capabilities.sql', '135_article_ai_policy.sql', ...usecaseCheckMigrations()],
+    [
+      '087_llm_model_capabilities.sql',
+      '135_article_ai_policy.sql',
+      '136_article_ai_policy_labels.sql',
+      ...usecaseCheckMigrations(),
+    ],
   ]);
   await runMigrations();
 }
@@ -248,5 +256,21 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     await expect(
       query(`INSERT INTO llm_usecase_assignments (usecase) VALUES ('bogus')`),
     ).rejects.toThrow();
+  });
+
+  it('repairs the frozen AI policy label table (136) after replaying 135, not 135\'s regex reader', async () => {
+    // Replaying 135 alone re-installs its regex-based `ai_policy_from_labels`
+    // (which admits `ai-none`); the repair must end with 136's exact table.
+    const sql135 = fs.readFileSync(path.join(migrationsDir, '135_article_ai_policy.sql'), 'utf8');
+    await query(sql135);
+    const reverted = await query<{ p: string }>(`SELECT ai_policy_from_labels(ARRAY['ai-none']) AS p`);
+    expect(reverted.rows[0]!.p).toBe('none');
+
+    await repairSharedSchema();
+
+    const repaired = await query<{ fuzzy: string; exact: string }>(
+      `SELECT ai_policy_from_labels(ARRAY['ai-none']) AS fuzzy, ai_policy_from_labels(ARRAY['no-ai']) AS exact`,
+    );
+    expect(repaired.rows[0]).toEqual({ fuzzy: 'all', exact: 'none' });
   });
 });

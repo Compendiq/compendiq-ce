@@ -14,7 +14,7 @@ import {
   normalizeAiPolicyLabel,
   normalizeAiPolicyValue,
 } from './ai-policy.js';
-import { UpdatePageSchema } from './pages.js';
+import { UpdatePageSchema, isAiPolicyUpdatePaired } from './pages.js';
 
 describe('ai-policy contracts', () => {
   it('accepts only the closed label set', () => {
@@ -70,12 +70,17 @@ describe('ai-policy contracts', () => {
     expect(normalizeAiPolicyLabel('\u200bno-ai')).toBeNull();
   });
 
-  it('PUT /pages/:id carries aiPolicy only together with the frozen expectedRevision key', () => {
+  it('PUT /pages/:id uses the frozen expectedRevision key; the pairing rule is the route\'s 422, not a schema 400', () => {
     const base = { title: 't', bodyHtml: '<p/>' };
     expect(UpdatePageSchema.safeParse(base).success).toBe(true);
-    expect(UpdatePageSchema.safeParse({ ...base, aiPolicy: 'none' }).success).toBe(false);
-    expect(UpdatePageSchema.safeParse({ ...base, expectedRevision: 1 }).success).toBe(false);
-    expect(UpdatePageSchema.safeParse({ ...base, aiPolicy: 'none', expectedAiPolicyRevision: 1 }).success).toBe(false);
+    // Shape-valid: the route answers 422 `ai_policy_revision_required`.
+    expect(UpdatePageSchema.safeParse({ ...base, aiPolicy: 'none' }).success).toBe(true);
+    expect(isAiPolicyUpdatePaired(UpdatePageSchema.parse({ ...base, aiPolicy: 'none' }))).toBe(false);
+    expect(isAiPolicyUpdatePaired(UpdatePageSchema.parse({ ...base, expectedRevision: 1 }))).toBe(false);
+    expect(isAiPolicyUpdatePaired(UpdatePageSchema.parse(base))).toBe(true);
+    expect(isAiPolicyUpdatePaired(UpdatePageSchema.parse({ ...base, aiPolicy: 'none', expectedRevision: 1 }))).toBe(true);
+    // The obsolete key is not the pair.
+    expect(isAiPolicyUpdatePaired(UpdatePageSchema.parse({ ...base, aiPolicy: 'none', expectedAiPolicyRevision: 1 }))).toBe(false);
     expect(UpdatePageSchema.parse({ ...base, aiPolicy: 'no_ai', expectedRevision: 1 }))
       .toMatchObject({ aiPolicy: 'none', expectedRevision: 1 });
   });

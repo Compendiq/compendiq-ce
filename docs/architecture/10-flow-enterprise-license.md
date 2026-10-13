@@ -43,6 +43,17 @@ sequenceDiagram
     I->>F: listen()
 ```
 
+**The package's DEFAULT export is the plugin — nothing else is consulted.**
+`loader.ts` reads `mod.default` and accepts it only when it carries a
+`validateLicense` function; a package that exposes the plugin through named
+exports alone, or whose default export is some other object, is logged
+(`Enterprise package found but its default export is not a plugin`) and the
+noop plugin is used. There is no namespace-object fallback and no
+compatibility shim: the cutover to the default export is clean, so an EE
+build that forgets `export default plugin` fails visibly at boot (every EE
+feature, including `resolveAiPolicyCreationDefault` for #280, stays inert)
+rather than half-loading.
+
 ## Runtime license update (EE only)
 
 ```mermaid

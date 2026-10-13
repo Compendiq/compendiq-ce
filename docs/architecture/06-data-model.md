@@ -606,16 +606,25 @@ never satisfies `local_only`. Migration 136 freezes the label table —
 `ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`.
 "Trim" is `ai_policy_label_key`, a twin of JavaScript's
 `String.prototype.trim()` (TAB, VT, FF, NBSP, BOM, the Zs category and the
-line terminators — not `btrim`'s ASCII space alone), so SQL and
+line terminators — not `btrim`'s ASCII space alone), and "lowercase" is an
+ASCII-only `translate(... 'A'..'Z', 'a'..'z')`, never `lower()`: a locale
+fold such as `İ → i̇` (dotted capital I) would otherwise let SQL recognise a
+string JavaScript's `toLowerCase()` does not — or the reverse — so SQL and
 `normalizeAiPolicyLabel` recognise exactly the same strings. The migration
 also rewrites pre-freeze spellings in `pages.labels` to the canonical labels
 (`all-ai`, `local-ai-only`, `no-ai`) without touching the stored policy, which
 remains the authority (labels are consulted at creation only; removing a tag
-never relaxes a page). That repair collapses a rewrite onto a label the row
-already carries (first position wins, never a duplicate) and **skips frozen
-rows** (`baseline_id IS NOT NULL`): `labels` is a protected column under
-migration 121's trigger and the migration must not abort on a frozen page;
-such a row keeps its legacy spelling — cosmetic only — until it is thawed.
+never relaxes a page). The repair touches **only unrecognised spellings**: a
+label the frozen table already reads (`ai:none`, `NO_AI`, `AI:Local`, …) is
+kept verbatim, because the stored spelling is the user's and the frozen
+reader already agrees with it. That repair collapses a rewrite onto a label
+the row already carries (first position wins, never a duplicate) and **skips
+frozen rows** (`baseline_id IS NOT NULL`): `labels` is a protected column
+under migration 121's trigger and the migration must not abort on a frozen
+page; such a row keeps its legacy spelling — cosmetic only — until it is
+thawed. Test databases that replay 135 by hand must also replay 136 (the
+`054_llm_providers` `repairSharedSchema` helper deletes the `_migrations`
+rows for 087, 135 and 136 so the loader re-applies the frozen table).
 The same table lives in `@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`)
 and in `core/services/ai-policy-service.ts`. The canonical stored and wire
 value for "no AI" is `none`; `no_ai` is accepted as request input only.
@@ -627,10 +636,11 @@ catalog and extended rather than restated. The root branch validates every
 `initialLabels` element (non-empty string ≤ 100 chars, ≤ 50 entries) through
 the IMMUTABLE `page_write_intent_initial_labels_valid(jsonb)` — a CHECK may
 not hold a subquery — and its presence in the catalog definition is the
-idempotency marker: a database that already carries the first revision's
-root branch (array + length only) is tightened in place by AND-ing the
-element rule onto the existing expression for empty-target rows; a database
-that carries the upgraded branch is left untouched.
+single idempotency marker: a database whose constraint does not yet name the
+function has the constraint dropped and rebuilt with the root branch; one
+that does is left untouched. There is no in-place "upgrade" of an earlier
+root branch — 137 shipped once, with the element rule, so the only two
+catalog states are "no root branch" and "this root branch".
 
 **Immutable baseline foundation and enforcement (migrations 120–122,
 124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and

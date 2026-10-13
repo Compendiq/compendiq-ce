@@ -1,7 +1,7 @@
 import type { LlmUsecase } from '@compendiq/contracts';
 import type { PoolClient } from 'pg';
 import { getPool } from '../../../core/db/postgres.js';
-import { AI_POLICY_LOCK_NAMESPACE, type AiPolicy } from '../../../core/services/ai-policy-service.js';
+import { AI_POLICY_LOCK_NAMESPACE, isAiPolicy, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 import { emitAiPolicyEvent } from '../../../core/enterprise/ai-policy-hooks.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
@@ -83,7 +83,8 @@ export interface ProviderMetadata {
   declaredAt: Date | null;
 }
 
-function asRevision(v: unknown): number | null {
+/** A non-negative integer revision as PG returns it (bigint → string) or as a number; anything else is unprovable. */
+export function asRevision(v: unknown): number | null {
   if (typeof v === 'number') return Number.isInteger(v) && v >= 0 ? v : null;
   if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v);
   return null;
@@ -285,6 +286,18 @@ export async function admitPageForProvider(
     emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'not_found', policy: null });
     return refuse(pageId, null, 'not_found', providerId);
   }
+  // The page row is decoded with the same rigour as the provider row: a
+  // policy outside the closed set or a revision that is not a non-negative
+  // integer is UNPROVABLE state, refused as retryable — never coerced.
+  const policyRevision = asRevision(p.ai_policy_revision);
+  if (!isAiPolicy(p.ai_policy) || policyRevision === null) {
+    logger.warn(
+      { pageId, usecase, providerId, policy: p.ai_policy, revision: p.ai_policy_revision },
+      'AI policy admission: page policy state does not decode; refusing',
+    );
+    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_unavailable', policy: null });
+    return refuse(pageId, null, 'policy_unavailable', providerId);
+  }
   if (p.ai_policy === 'none') {
     // A fact about the article, not the provider: persistable, never retried
     // against a different provider state.
@@ -305,7 +318,6 @@ export async function admitPageForProvider(
     emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: decision, policy: p.ai_policy });
     return refuse(pageId, p.ai_policy, decision, providerId);
   }
-  const policyRevision = Number(p.ai_policy_revision);
   emitAiPolicyEvent({
     type: 'admitted', pageId, usecase, providerId,
     configRevision: provider.configRevision, policy: p.ai_policy, policyRevision,

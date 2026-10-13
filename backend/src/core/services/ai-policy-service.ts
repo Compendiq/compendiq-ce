@@ -117,11 +117,7 @@ export function planLabelPolicyChange(input: {
   // fresh policy, and the carried label is normalized onto its canonical
   // spelling (the single reserved slot) below.
   if (newlyNamed.size > 1) {
-    throw new PageWriteError(
-      422,
-      'ai_policy_label_conflict',
-      `Labels name contradictory AI policies: ${[...newlyNamed].map(canonicalAiPolicyLabel).join(', ')}`,
-    );
+    throw new AiPolicyLabelConflictError([...newlyNamed]);
   }
   const labelPolicy = newlyNamed.size === 1 ? [...newlyNamed][0]! : null;
   const currentLabelsNameCurrentPolicy = input.currentPolicy !== 'all' && currentNamed.has(input.currentPolicy);
@@ -278,6 +274,38 @@ export class AiPolicyRefusalError extends Error {
     this.statusCode = statusCode;
     this.body = body;
   }
+}
+
+/**
+ * 422 `ai_policy_label_conflict` (contracts `AiPolicyLabelConflictSchema`):
+ * a label set naming two different policies. Thrown by
+ * `planLabelPolicyChange`, so EVERY label writer — the page create/update
+ * routes, the label routes, the bulk taggers and the auto-tagger — refuses
+ * the same structured body. It stays a `PageWriteError` (422,
+ * `ai_policy_label_conflict`) so every existing writer and the generic
+ * serializer keep working, and carries the frozen `body` the page routes'
+ * refusal serializer (`sendAiPolicyRefusal`) answers verbatim.
+ */
+export class AiPolicyLabelConflictError extends PageWriteError {
+  readonly body: Extract<AiPolicyRefusalBody, { error: 'ai_policy_label_conflict' }>;
+  readonly policies: AiPolicy[];
+  constructor(policies: AiPolicy[]) {
+    super(
+      422,
+      'ai_policy_label_conflict',
+      `Labels name contradictory AI policies: ${policies.map(canonicalAiPolicyLabel).join(', ')}`,
+    );
+    this.name = 'AiPolicyLabelConflictError';
+    this.policies = [...policies];
+    this.body = { error: 'ai_policy_label_conflict', policies: [...policies] };
+  }
+}
+
+/** Anything a page route answers through `sendAiPolicyRefusal`. */
+export type AiPolicyRefusal = AiPolicyRefusalError | AiPolicyLabelConflictError;
+
+export function isAiPolicyRefusal(err: unknown): err is AiPolicyRefusal {
+  return err instanceof AiPolicyRefusalError || err instanceof AiPolicyLabelConflictError;
 }
 
 export function aiPolicyRefusalFromResult(

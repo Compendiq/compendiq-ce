@@ -24,10 +24,11 @@ vi.mock('../../../core/enterprise/ai-policy-hooks.js', async (importOriginal) =>
 const dbAvailable = await isDbAvailable();
 // Idempotent: guarantees the locality columns regardless of what an earlier
 // suite in the same worker did to `llm_providers`.
-const migration135 = fs.readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'core', 'db', 'migrations', '135_article_ai_policy.sql'),
-  'utf8',
-);
+const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'core', 'db', 'migrations');
+const migration135 = fs.readFileSync(path.join(migrationsDir, '135_article_ai_policy.sql'), 'utf8');
+// 136 replaces 135's regex label reader with the frozen table; replaying 135
+// alone would revert the label semantics for every later suite in this worker.
+const migration136 = fs.readFileSync(path.join(migrationsDir, '136_article_ai_policy_labels.sql'), 'utf8');
 
 async function insertPage(aiPolicy: 'all' | 'local_only' | 'none'): Promise<number> {
   const r = await query<{ id: number }>(
@@ -53,7 +54,7 @@ async function adminUser(): Promise<string> {
 const blockedEvents = () => seams.events.filter((e) => e.type === 'blocked');
 
 describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
-  beforeAll(async () => { await setupTestDb(); await query(migration135); });
+  beforeAll(async () => { await setupTestDb(); await query(migration135); await query(migration136); });
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => { await truncateAllTables(); seams.events.length = 0; });
 

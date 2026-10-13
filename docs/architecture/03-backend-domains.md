@@ -1329,3 +1329,42 @@ Rules the diagram encodes:
 - **Shadow re-embed**: the dual-write and backfill admit against the
   candidate model separately from the live one; the swap refuses while
   policy-blocked stragglers remain (`docs/runbooks/shadow-reembed.md`).
+- **An unreadable policy row is a block, not an admit.** `admitPageForProvider`
+  validates `ai_policy` / `ai_policy_revision` as read; a value outside the
+  enum or a non-numeric revision emits an early `blocked` event with reason
+  `policy_unavailable` and refuses. Likewise `llm-provider-service`'s
+  `rowToDto` never fabricates a locality: a provider row whose locality
+  metadata does not decode throws `ProviderMetadataUnreadableError` (503)
+  rather than answering `localConfirmed: false` with a made-up revision.
+
+### Policy refusals on the page write routes (#280)
+
+`routes/knowledge/page-ai-policy.ts` exports `sendAiPolicyRefusal`, the one
+serializer for every refusal body in `AiPolicyRefusalBody`. Three rules the
+routes in `pages-crud.ts` and `pages-tags.ts` follow:
+
+- **One label-conflict error for every writer.** `planLabelPolicyChange`
+  throws `AiPolicyLabelConflictError` — a `PageWriteError` (422,
+  `ai_policy_label_conflict`) carrying the frozen `{ error, policies }` body.
+  Page create, page update, `PUT /pages/:id/labels`, the bulk taggers and the
+  auto-tagger all go through the same planner, so a label set naming two
+  policies is refused identically wherever it is written. `isAiPolicyRefusal`
+  is the predicate the page routes use to route both refusal classes to the
+  serializer.
+- **`aiPolicy` ⇄ `expectedRevision` pairing is the ROUTE's 422.**
+  `UpdatePageSchema` accepts either field alone (shape-valid); `PUT /pages/:id`
+  answers 422 `ai_policy_revision_required` with `missing` naming the absent
+  half, using the contracts predicate `isAiPolicyUpdatePaired`. The global
+  schema 400 would hide a policy contract behind a shape error.
+- **Settlement after a Confluence publish.** A Confluence update's remote
+  effect is irreversible, so once the upstream write has been acknowledged the
+  route always commits the content row and the write-intent completion. If
+  the local authority reload then finds the caller no longer authorized
+  (403/404) or the explicit policy apply refuses (`AiPolicyRefusalError`, or a
+  concealed `page_not_found` 404), the content stays published, the single
+  post-commit block (collab invalidate, cache, audit with `aiPolicyRefused`
+  / `settledAfterPublish`, `page.updated` webhook) still runs once, and the
+  response is the refusal status with `published: true` so the client knows
+  the content landed while the policy did not. A 409 stale lifecycle/content
+  conflict still throws before commit — the ledger must see it. A concealed
+  404 reveals neither title nor version.

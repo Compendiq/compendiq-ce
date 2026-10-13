@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AiPolicyLabelConflictError,
   canonicalAiPolicyLabel,
   isAiPolicyEnforcementAvailable,
+  isAiPolicyRefusal,
   normalizeAiPolicyLabel,
   planLabelPolicyChange,
   policyFromLabels,
@@ -85,14 +87,20 @@ describe('planLabelPolicyChange (#281)', () => {
     expect(plan).toEqual({ labels: ['a', 'no-ai'], policy: 'none', kind: 'tighten', restoredLabel: null });
   });
 
-  it('two different reserved policies in one target set are a 422', () => {
+  it('two different reserved policies in one target set are a 422 carrying the frozen label-conflict body', () => {
     expect(() => planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'local-ai-only'] }))
       .toThrowError(PageWriteError);
     try {
       planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'all-ai'] });
       expect.unreachable();
     } catch (err) {
-      expect(err).toMatchObject({ statusCode: 422, reason: 'ai_policy_label_conflict' });
+      expect(err).toBeInstanceOf(AiPolicyLabelConflictError);
+      expect(isAiPolicyRefusal(err)).toBe(true);
+      expect(err).toMatchObject({
+        statusCode: 422,
+        reason: 'ai_policy_label_conflict',
+        body: { error: 'ai_policy_label_conflict', policies: ['none', 'all'] },
+      });
     }
   });
 

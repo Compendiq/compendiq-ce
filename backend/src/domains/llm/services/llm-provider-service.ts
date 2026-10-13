@@ -38,8 +38,28 @@ interface ProviderConfigRow {
   isDefault: boolean;
 }
 
+/**
+ * A provider row whose locality metadata does not decode (#280). The DTO is
+ * never fabricated from missing/invalid columns: an operator surface that
+ * showed `external` / revision 0 for a row the schema cannot describe would
+ * invite a declaration against a revision that does not exist.
+ */
+export class ProviderMetadataUnreadableError extends Error {
+  readonly statusCode = 503;
+  readonly providerId: string;
+  constructor(providerId: string) {
+    super('Provider locality metadata is unreadable; migration 135 may be missing or the row is corrupt');
+    this.name = 'ProviderMetadataUnreadableError';
+    this.providerId = providerId;
+  }
+}
+
 function rowToDto(r: ProviderRow): LlmProvider {
   const preview = r.api_key ? ('…' + (decryptSafe(r.api_key)?.slice(-4) ?? '')) : null;
+  // ONE decoder, shared with admission: the DTO reports exactly what
+  // admission would decide, or refuses when it cannot decide.
+  const meta = decodeProviderMetadata(r);
+  if (!meta) throw new ProviderMetadataUnreadableError(r.id);
   return {
     id: r.id,
     name: r.name,
@@ -52,14 +72,14 @@ function rowToDto(r: ProviderRow): LlmProvider {
     keyPreview: preview,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
-    // A schema without migration 135's columns reads as undeclared/external:
-    // unknown locality never confirms local.
-    locality: r.locality === 'local' ? 'local' : 'external',
-    configRevision: r.config_revision === undefined || r.config_revision === null ? 0 : Number(r.config_revision),
-    localityDeclaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
-    localityDeclaredBy: r.locality_declared_by ?? null,
-    // Same decoder as admission: a row that does not decode never confirms local.
-    localConfirmed: decodeProviderMetadata(r)?.effectiveLocality === 'local',
+    // The DECLARED locality (what the operator wrote) …
+    locality: r.locality,
+    configRevision: meta.configRevision,
+    localityDeclaredAt: meta.declaredAt ? meta.declaredAt.toISOString() : null,
+    localityDeclaredBy: meta.declaredBy,
+    // … and the EFFECTIVE one admission applies (declaration accountable,
+    // dated and made against the current config revision).
+    localConfirmed: meta.effectiveLocality === 'local',
   };
 }
 

@@ -52,11 +52,8 @@ DECLARE
      AND (effect ->> 'initialPolicy') IN ('all', 'local_only', 'none')
      AND page_write_intent_initial_labels_valid(effect -> 'initialLabels'))
   $root$;
-  -- The root branch of the FIRST revision of this migration (no per-element
-  -- label check) is recognised by its empty-array comparison; the upgraded
-  -- one by the validator function it calls.
-  stale_marker CONSTANT TEXT := '''{}''::integer[]';
-  upgraded_marker CONSTANT TEXT := 'page_write_intent_initial_labels_valid';
+  -- Idempotency: the root branch is recognised by the validator it calls.
+  root_marker CONSTANT TEXT := 'page_write_intent_initial_labels_valid';
 BEGIN
   IF to_regclass('page_write_intents') IS NULL THEN RETURN; END IF;
 
@@ -70,21 +67,11 @@ BEGIN
   END IF;
 
   -- pg_get_constraintdef yields `CHECK (<expr>)`; keep <expr> verbatim.
-  IF existing NOT LIKE '%' || stale_marker || '%' THEN
-    -- Fresh: migration 125's expression OR the (upgraded) root branch.
+  IF existing NOT LIKE '%' || root_marker || '%' THEN
+    -- Migration 125's expression OR the root branch.
     EXECUTE 'ALTER TABLE page_write_intents DROP CONSTRAINT page_write_intents_effect_policy_check';
     EXECUTE 'ALTER TABLE page_write_intents ADD CONSTRAINT page_write_intents_effect_policy_check '
          || 'CHECK (COALESCE(' || substring(existing FROM 7) || ' OR ' || root_branch || ', false))';
-  ELSIF existing NOT LIKE '%' || upgraded_marker || '%' THEN
-    -- The first revision of this migration ran (root branch without the
-    -- per-element label check). Tighten in place: the whole existing
-    -- expression is kept and AND-ed with the element rule for empty-target
-    -- rows, so nothing the old branch refused is admitted and the parented
-    -- shape (non-empty page_ids) is untouched.
-    EXECUTE 'ALTER TABLE page_write_intents DROP CONSTRAINT page_write_intents_effect_policy_check';
-    EXECUTE 'ALTER TABLE page_write_intents ADD CONSTRAINT page_write_intents_effect_policy_check '
-         || 'CHECK ((' || substring(existing FROM 7) || ') AND (cardinality(page_ids) > 0 '
-         || 'OR page_write_intent_initial_labels_valid(effect -> ''initialLabels'')))';
   END IF;
 
   -- `cardinality(page_ids) > 0` (migration 120) — admit the empty set only

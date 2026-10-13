@@ -3,6 +3,8 @@ import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { PageWriteError } from '../../core/services/page-write-admission.js';
+import { AiPolicyLabelConflictError } from '../../core/services/ai-policy-service.js';
+import { sendAiPolicyRefusal } from './page-ai-policy.js';
 import {
   autoTagPage,
   applyTags,
@@ -54,9 +56,9 @@ async function concealLabelWriteDenial<T>(fastify: FastifyInstance, write: Promi
     // Article AI policy (#281): a label set naming two policies is a client
     // error; a relaxation label without policy authority is forbidden. The
     // caller already passed `assertPageAccess`, so neither leaks existence.
-    if (err instanceof PageWriteError && err.reason === 'ai_policy_label_conflict') {
-      throw fastify.httpErrors.unprocessableEntity(err.message);
-    }
+    // A label conflict (`AiPolicyLabelConflictError`) is answered by the
+    // route with its frozen body, so it is rethrown untouched here.
+    if (err instanceof AiPolicyLabelConflictError) throw err;
     if (err instanceof PageWriteError && err.reason === 'ai_policy_not_authorized') {
       throw fastify.httpErrors.forbidden(err.message);
     }
@@ -161,7 +163,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/pages/:id/labels - add/remove labels on a single page
-  fastify.put('/pages/:id/labels', async (request) => {
+  fastify.put('/pages/:id/labels', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { addLabels, removeLabels } = UpdateLabelsBodySchema.parse(request.body);
@@ -174,10 +176,16 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     // effect. The service re-resolves the page, re-checks page-edit authority
     // for a local write, and performs the mutation under the lifecycle fence.
     await assertPageAccess(fastify, userId, id);
-    const labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
-      add: addLabels,
-      remove: removeLabels,
-    }));
+    let labels: string[];
+    try {
+      labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
+        add: addLabels,
+        remove: removeLabels,
+      }));
+    } catch (err) {
+      if (err instanceof AiPolicyLabelConflictError) return sendAiPolicyRefusal(reply, err);
+      throw err;
+    }
 
     await cache.invalidate(userId, 'pages');
     return { labels };

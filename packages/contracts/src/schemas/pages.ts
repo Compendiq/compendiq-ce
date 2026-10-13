@@ -194,19 +194,18 @@ export const UpdatePageSchema = z.object({
    * frozen compare-and-set key shared with `PUT /pages/:id/ai-policy`
    * (`aiPolicyRevision` from the page detail) and is REQUIRED whenever
    * `aiPolicy` is sent — a stale value is 409 `ai_policy_conflict`. Sending
-   * one without the other is a 422.
+   * one without the other is refused BY THE ROUTE as a 422
+   * `ai_policy_revision_required` (not a schema-shape 400), so the pairing
+   * is not enforced here; `isAiPolicyUpdatePaired` is the shared predicate.
    */
   aiPolicy: AiPolicyInputSchema.optional(),
   expectedRevision: z.number().int().nonnegative().optional(),
-}).superRefine((value, ctx) => {
-  if ((value.aiPolicy === undefined) !== (value.expectedRevision === undefined)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: [value.aiPolicy === undefined ? 'aiPolicy' : 'expectedRevision'],
-      message: 'aiPolicy and expectedRevision must be sent together',
-    });
-  }
 });
+
+/** True when `aiPolicy` and `expectedRevision` are both present or both absent. */
+export function isAiPolicyUpdatePaired(value: { aiPolicy?: unknown; expectedRevision?: unknown }): boolean {
+  return (value.aiPolicy === undefined) === (value.expectedRevision === undefined);
+}
 
 /**
  * Body for POST /api/pages/:id/versions/:version/restore.

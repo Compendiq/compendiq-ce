@@ -6,9 +6,9 @@ import {
   type PageAiPolicyResponse,
 } from '@compendiq/contracts';
 import {
-  AiPolicyRefusalError,
   updatePageAiPolicies,
   type AiPolicyMutationResult,
+  type AiPolicyRefusal,
 } from '../../core/services/ai-policy-service.js';
 
 const PageIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
@@ -22,7 +22,7 @@ function toResponse(row: { pageId: number; policy: string; revision: number }): 
  * routes too (they share this ONE serializer so the wire contract cannot
  * drift between `PUT /pages/:id/ai-policy` and `PUT /pages/:id`).
  */
-export function sendAiPolicyRefusal(reply: FastifyReply, err: AiPolicyRefusalError) {
+export function sendAiPolicyRefusal(reply: FastifyReply, err: AiPolicyRefusal) {
   const body: Record<string, unknown> = { ...err.body, message: err.message };
   return reply.status(err.statusCode).send(body);
 }

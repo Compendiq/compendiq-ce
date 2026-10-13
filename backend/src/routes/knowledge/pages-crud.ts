@@ -104,6 +104,7 @@ import {
   emitAiPolicyChanges,
   isAiPolicy,
   isAiPolicyEnforcementAvailable,
+  isAiPolicyRefusal,
   lockAiPolicyForPages,
   planLabelPolicyChange,
   resolveCreationAiPolicy,
@@ -111,7 +112,7 @@ import {
   type AiPolicyChangeRecord,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
-import { aiPolicyLabelConflict } from '@compendiq/contracts';
+import { aiPolicyLabelConflict, isAiPolicyUpdatePaired } from '@compendiq/contracts';
 import { sendAiPolicyRefusal } from './page-ai-policy.js';
 
 /**
@@ -147,9 +148,26 @@ async function withAiPolicyRefusals<T>(reply: FastifyReply, run: () => Promise<T
   try {
     return await run();
   } catch (err) {
-    if (err instanceof AiPolicyRefusalError) return sendAiPolicyRefusal(reply, err);
+    if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
     throw err;
   }
+}
+
+/**
+ * `aiPolicy` and `expectedRevision` on `PUT /pages/:id` are a pair (#280):
+ * the revision is the compare-and-set key for the policy change. One
+ * without the other is a request this route understands and REFUSES as its
+ * own 422 — not the global schema-validation 400, which would hide the
+ * policy contract behind a generic shape error.
+ */
+function assertAiPolicyPairing(reply: FastifyReply, body: { aiPolicy?: unknown; expectedRevision?: unknown }): FastifyReply | null {
+  if (isAiPolicyUpdatePaired(body)) return null;
+  const missing = body.aiPolicy === undefined ? 'aiPolicy' : 'expectedRevision';
+  return reply.status(422).send({
+    error: 'ai_policy_revision_required',
+    message: `aiPolicy and expectedRevision must be sent together (${missing} is missing)`,
+    missing,
+  });
 }
 import {
   imageAttachmentPageKey,
@@ -2296,6 +2314,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.put('/pages/:id', async (request, reply) => withAiPolicyRefusals(reply, async () => {
     const { id } = IdParamSchema.parse(request.params);
     const body = UpdatePageSchema.parse(request.body);
+    const unpaired = assertAiPolicyPairing(reply, body);
+    if (unpaired) return unpaired;
     const userId = request.userId;
 
     const isNumericId = /^\d+$/.test(id);
@@ -2680,13 +2700,33 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // remote version. The content commits; the policy refusal is settled
     // AFTER the commit as the frozen 409/403 body whose `published` field
     // tells the caller the content went through (#280 review).
-    const settlement: { refusal: AiPolicyRefusalError | null } = { refusal: null };
+    //
+    // The same holds for the authority reload itself: an actor deactivated,
+    // an access revoked or a page hidden between the acknowledged remote
+    // write and this commit is NOT a reason to leave the local mirror behind
+    // the remote version. The cache row is written (the lifecycle trigger
+    // still refuses a frozen row — that is a real 409 and propagates), the
+    // policy is left untouched, and the refusal is settled after the commit
+    // exactly like a policy refusal: 403 with `published`, or a CONCEALED
+    // 404 that carries no title/version (the caller may no longer see the
+    // page). The post-commit work — collab invalidation, cache, audit,
+    // `page.updated` webhook — runs ONCE on every settled path.
+    const settlement: { refusal: AiPolicyRefusalError | PageWriteError | null } = { refusal: null };
     const remotePolicyChanges = await completePageWriteIntent(writeIntent, async (writeClient) => {
       // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
       if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
-      await loadAuthorizedContentWriteState(
-        writeClient, existingPage.id, userId, writeIntent.revisions[existingPage.id]!,
-      );
+      let authorityLost: PageWriteError | null = null;
+      try {
+        await loadAuthorizedContentWriteState(
+          writeClient, existingPage.id, userId, writeIntent.revisions[existingPage.id]!,
+        );
+      } catch (err) {
+        // Only the authority/visibility outcomes are settled; a stale
+        // lifecycle or content revision (409) is an intent-level conflict
+        // the ledger must see, so it still propagates.
+        if (!(err instanceof PageWriteError) || (err.statusCode !== 403 && err.statusCode !== 404)) throw err;
+        authorityLost = err;
+      }
       await writeClient.query(
         `UPDATE pages SET
            title = $2, body_storage = $3, body_html = $4, body_text = $5,
@@ -2705,26 +2745,51 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          bodyHtml, bodyText, confPage.version.number],
       );
       await enqueuePageWriteInvalidation(writeClient, writeIntent.id);
+      if (authorityLost !== null) {
+        settlement.refusal = authorityLost;
+        return [] as AiPolicyChangeRecord[];
+      }
       if (body.aiPolicy === undefined) return [] as AiPolicyChangeRecord[];
       // Same transaction as the content cache write (#280) when it succeeds;
       // a refusal is captured, not thrown, so the content commit stands.
+      // `aiPolicyRefusalFromResult` answers a page the caller can no longer
+      // SEE as a `PageWriteError` 404 — settled the same way (concealed).
       try {
         return await applyRequestedAiPolicyOnClient(writeClient, {
           userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedRevision!,
         });
       } catch (err) {
-        if (!(err instanceof AiPolicyRefusalError)) throw err;
-        settlement.refusal = err;
-        return [] as AiPolicyChangeRecord[];
+        if (err instanceof AiPolicyRefusalError || (err instanceof PageWriteError && err.statusCode === 404)) {
+          settlement.refusal = err;
+          return [] as AiPolicyChangeRecord[];
+        }
+        throw err;
       }
     });
     emitAiPolicyChanges(remotePolicyChanges);
-    if (settlement.refusal !== null) {
-      const refusal = settlement.refusal;
-      await invalidateCollabDocAfterBodyWrite(existingPage.id);
-      await cache.invalidateAcrossUsers('pages');
-      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id),
-        { title: body.title, aiPolicyRefused: refusal.body.error }, request);
+
+    // Post-commit work, exactly once, on every settled path.
+    await invalidateCollabDocAfterBodyWrite(existingPage.id);
+    // Confluence pages are visible to every user with space access (#893), so
+    // clear every user's cached lists/trees, not just the editor's.
+    await cache.invalidateAcrossUsers('pages');
+    const refusal = settlement.refusal;
+    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), {
+      title: body.title,
+      ...(refusal instanceof AiPolicyRefusalError ? { aiPolicyRefused: refusal.body.error } : {}),
+      ...(refusal instanceof PageWriteError ? { settledAfterPublish: refusal.reason } : {}),
+    }, request);
+    emitWebhookEvent({
+      eventType: 'page.updated',
+      payload: {
+        pageId: existingPage.id,
+        title: body.title,
+        spaceKey: existingPage.space_key,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
+    if (refusal instanceof AiPolicyRefusalError) {
       logger.warn(
         { pageId: existingPage.id, userId, refusal: refusal.body },
         'Page content published to Confluence but the requested AI policy was refused after egress',
@@ -2735,24 +2800,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         published: { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' },
       });
     }
-
-    await invalidateCollabDocAfterBodyWrite(existingPage.id);
-
-    // Confluence pages are visible to every user with space access (#893), so
-    // clear every user's cached lists/trees, not just the editor's.
-    await cache.invalidateAcrossUsers('pages');
-
-    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { title: body.title }, request);
-
-    emitWebhookEvent({
-      eventType: 'page.updated',
-      payload: {
-        pageId: existingPage.id,
-        title: body.title,
-        spaceKey: existingPage.space_key,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    if (refusal !== null) {
+      logger.warn(
+        { pageId: existingPage.id, userId, reason: refusal.reason, statusCode: refusal.statusCode },
+        'Page content published to Confluence but the actor lost authority before the local commit',
+      );
+      if (refusal.statusCode === 404) {
+        // Concealed: the caller may no longer see the page, so the response
+        // confirms nothing about it — no title, no version, no `published`.
+        return reply.status(404).send({ error: 'page_not_found', reason: 'page_not_found', message: 'Page not found' });
+      }
+      return reply.status(refusal.statusCode).send({
+        error: refusal.reason,
+        reason: refusal.reason,
+        message: `${refusal.message}. The page content was published; the AI policy was not changed.`,
+        published: { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' },
+      });
+    }
 
     return { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' };
   }));

@@ -11,6 +11,7 @@ describe('Enterprise loader', () => {
   beforeEach(() => {
     _resetForTesting();
     vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.warn).mockClear();
   });
 
   describe('loadEnterprisePlugin', () => {
@@ -57,6 +58,59 @@ describe('Enterprise loader', () => {
         expect(logger.error).toHaveBeenCalledTimes(1);
         const [, message] = vi.mocked(logger.error).mock.calls[0];
         expect(String(message)).toContain('failed to load');
+      });
+    });
+
+    describe('when @compendiq/enterprise is present (production shim shape)', () => {
+      afterEach(() => {
+        vi.doUnmock('@compendiq/enterprise');
+        vi.resetModules();
+      });
+
+      it('uses the DEFAULT export as the plugin so the optional #280 hooks are reachable', async () => {
+        const resolveAiPolicyCreationDefault = vi.fn(async () => 'local_only');
+        const plugin = {
+          version: 'ee-test',
+          validateLicense: vi.fn(() => null),
+          isFeatureEnabled: vi.fn(() => true),
+          requireFeature: vi.fn(),
+          registerRoutes: vi.fn(async () => undefined),
+          resolveAiPolicyCreationDefault,
+          aiPolicyEnforcementAvailable: () => true,
+        };
+        // The shim re-exports the required members by name but NOT the
+        // optional hooks; only `default` carries the whole plugin.
+        vi.doMock('@compendiq/enterprise', () => ({
+          default: plugin,
+          validateLicense: plugin.validateLicense,
+          isFeatureEnabled: plugin.isFeatureEnabled,
+          requireFeature: plugin.requireFeature,
+          registerRoutes: plugin.registerRoutes,
+          version: plugin.version,
+        }));
+
+        _resetForTesting();
+        const loaded = await loadEnterprisePlugin();
+
+        expect(loaded).toBe(plugin);
+        expect(loaded.resolveAiPolicyCreationDefault).toBe(resolveAiPolicyCreationDefault);
+        expect(loaded.aiPolicyEnforcementAvailable?.()).toBe(true);
+        expect(getEnterprisePlugin()).toBe(plugin);
+        expect(logger.error).not.toHaveBeenCalled();
+      });
+
+      it('falls back to noop when only named exports exist (no default plugin object)', async () => {
+        vi.doMock('@compendiq/enterprise', () => ({
+          validateLicense: () => null,
+          isFeatureEnabled: () => true,
+          version: 'named-only',
+        }));
+
+        _resetForTesting();
+        const loaded = await loadEnterprisePlugin();
+
+        expect(loaded).toBe(noopPlugin);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
       });
     });
   });
