@@ -40,7 +40,13 @@ import {
   lockPageWrites,
 } from '../../../core/services/page-write-admission.js';
 import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
-import { resolveIngestionAiPolicy, TIGHTEN_ONLY_POLICY_SQL } from '../../../core/services/ai-policy-ingestion.js';
+import {
+  admitFreshConfluencePublication,
+  FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
+  FreshPublicationDeferredError,
+  resolveIngestionAiPolicy,
+  TIGHTEN_ONLY_POLICY_SQL,
+} from '../../../core/services/ai-policy-ingestion.js';
 import { purgeDerivedAiStateForPages } from '../../../core/services/ai-policy-service.js';
 
 interface SyncStatus {
@@ -435,6 +441,13 @@ interface SyncSpaceCounts {
   pagesCreated: number;
   pagesUpdated: number;
   pagesDeleted: number;
+  /**
+   * #281 first-publication fence: fresh imports withheld because a
+   * dispatched outbound creation has no durably bound identity yet. A
+   * deferral is not a success: the space cursor does not advance and no
+   * `sync.completed` is emitted for the run.
+   */
+  pagesDeferred?: number;
 }
 
 async function syncSpace(
@@ -516,6 +529,16 @@ async function syncSpace(
       if (err instanceof ConfluenceError && err.statusCode === 401) {
         throw err;
       }
+      if (err instanceof FreshPublicationDeferredError) {
+        // #281: not a failure and not a success — the page is re-walked on
+        // the next cycle once the outbound creation binds its identity.
+        counts.pagesDeferred = (counts.pagesDeferred ?? 0) + 1;
+        logger.info(
+          { userId, spaceKey, pageId: page.id, reason: err.reason },
+          'Fresh Confluence import deferred behind an unbound outbound publication (#281)',
+        );
+        continue;
+      }
       pagesFailed++;
       logger.warn(
         {
@@ -555,11 +578,31 @@ async function syncSpace(
   // each is still gone upstream first (purge is irreversible — #766 review).
   await purgeDeletedPages(client, spaceKey);
 
-  // Update space sync timestamp (shared table)
-  await query(
-    'UPDATE spaces SET last_synced = NOW() WHERE space_key = $1',
-    [spaceKey],
-  );
+  // Update space sync timestamp (shared table).
+  //
+  // #281 first-publication fence: the cursor is shared by every principal
+  // syncing this space, and an acknowledged page can be moved into ANY space
+  // before its lost acknowledgment is settled. The UPDATE therefore
+  // re-checks the global fence in the same statement (not the walker's
+  // earlier in-memory view): while any dispatched outbound creation is
+  // unbound, or when this run withheld an import, `last_synced` stays where
+  // it was so the next cycle re-walks the window. An empty listing seen by
+  // a user without access does not advance it either.
+  const deferred = counts.pagesDeferred ?? 0;
+  const cursor = deferred > 0
+    ? { rowCount: 0 }
+    : await query(
+      `UPDATE spaces SET last_synced = NOW()
+        WHERE space_key = $1 AND NOT ${FRESH_PUBLICATION_FENCE_ACTIVE_SQL}`,
+      [spaceKey],
+    );
+  if ((cursor.rowCount ?? 0) === 0) {
+    logger.warn(
+      { userId, spaceKey, pagesDeferred: deferred, pagesCreated: counts.pagesCreated },
+      'Space sync did not complete: an outbound Confluence publication is awaiting its identity, cursor held (#281)',
+    );
+    return;
+  }
 
   // Emit sync.completed webhook for this space (#114). Aggregate counters
   // mean receivers don't need per-page page.created/updated/deleted from
@@ -829,8 +872,33 @@ async function syncPage(
   // SPEC-WORK-002: a fresh row takes the stricter of the creation-default
   // hook and the incoming labels; an existing row only ever tightens (the
   // ON CONFLICT branch below consults labels and never relaxes).
-  const creationPolicy = await resolveIngestionAiPolicy({ userId, spaceKey, labels });
-  const upsert = await query(
+  const ingestionPolicy = await resolveIngestionAiPolicy({ userId, spaceKey, labels });
+  // #281 first-publication fence. Decided on the SAME transaction as the
+  // publication statement and AFTER the upstream snapshot: an outbound
+  // create whose remote phase has started is durable before its HTTP call,
+  // so any page this snapshot can contain is already visible as dispatched.
+  // Unbound → defer (global, every space); bound to this exact id → seed no
+  // looser than the creator's durable statement with its canonical labels.
+  // An existing row never reaches this: it is tighten-only via ON CONFLICT.
+  let creationPolicy = ingestionPolicy;
+  let seededLabels = labels;
+  const txClient = wasFreshCreate ? await getPool().connect() : null;
+  type UpsertRow = { id: number; ai_policy: string; was_update: boolean };
+  let upsert: { rowCount: number | null; rows: UpsertRow[] };
+  try {
+    if (txClient) {
+      await txClient.query('BEGIN');
+      const admitted = await admitFreshConfluencePublication(txClient, {
+        confluenceId: page.id,
+        resolvedPolicy: ingestionPolicy,
+        labels,
+      });
+      creationPolicy = admitted.policy;
+      seededLabels = admitted.labels;
+    }
+    const run = (sql: string, params: unknown[]) =>
+      txClient ? txClient.query<UpsertRow>(sql, params) : query<UpsertRow>(sql, params);
+  upsert = await run(
     // ADR-027 D4 — `image_analysis_dirty` rides along with `embedding_dirty`
     // here and ONLY here in this statement: a new page version can move,
     // remove or add an `<img>`, and the reconcile pass is what makes the
@@ -868,10 +936,17 @@ async function syncPage(
      WHERE pages.source = 'confluence'
      RETURNING id, ai_policy, (xmax <> 0) AS was_update`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
-     page.version.number, parentId, labels, author, lastModified, creationPolicy],
+     page.version.number, parentId, seededLabels, author, lastModified, creationPolicy],
   );
+    if (txClient) await txClient.query('COMMIT');
+  } catch (err) {
+    if (txClient) await txClient.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    txClient?.release();
+  }
   if ((upsert.rowCount ?? 0) === 0) return;
-  const upserted = upsert.rows[0] as { id: number; ai_policy: string; was_update: boolean } | undefined;
+  const upserted = upsert.rows[0];
   if (upserted?.ai_policy === 'none') {
     // SPEC-WORK-001: a label that tightened an existing page to `none`
     // (or a fresh `none` page) must not keep — or be queued for — any

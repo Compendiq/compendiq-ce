@@ -4,7 +4,7 @@ import { getPool } from '../db/postgres.js';
 import { isSystemAdmin, userCanAccessPage, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
 import { emitAiPolicyEvent } from '../enterprise/ai-policy-hooks.js';
-import { PageWriteError } from './page-write-admission.js';
+import { PageWriteError, withPageWriteTransaction } from './page-write-admission.js';
 
 /**
  * Article AI policy (SPEC-CORE-001/003). `pages.ai_policy` is the single
@@ -337,7 +337,26 @@ export function isAiPolicyEnforcementAvailable(): boolean {
 
 export type AiPolicyMutationResult =
   | { ok: true; rows: Array<{ pageId: number; policy: AiPolicy; revision: number }> }
-  | { ok: false; reason: 'stale_revision' | 'not_authorized' | 'not_found' | 'enforcement_unavailable'; pageIds: number[] };
+  | {
+      ok: false;
+      reason: 'stale_revision' | 'not_authorized' | 'not_found' | 'enforcement_unavailable'
+        | 'page_is_frozen' | 'page_write_busy';
+      pageIds: number[];
+    };
+
+/**
+ * Rewrite the reserved labels so exactly ONE canonical label spells the
+ * policy (`all` carries no label). Twin of SQL `ai_policy_apply_label`
+ * (migration 136): every reserved spelling is dropped, order of the ordinary
+ * labels is kept, and the canonical label (if any) is appended.
+ */
+export function applyCanonicalAiPolicyLabel(
+  labels: readonly string[] | null | undefined,
+  policy: AiPolicy,
+): string[] {
+  const kept = (labels ?? []).filter((label) => reservedAiPolicyLabel(label) === null);
+  return policy === 'all' ? kept : [...kept, canonicalAiPolicyLabel(policy)];
+}
 
 /** Deferred `policy_changed` events: emitted by the caller only after COMMIT. */
 export type AiPolicyChangeRecord = {
@@ -389,8 +408,8 @@ export async function applyAiPolicyOnClient(
   const ids = sorted.map((i) => i.pageId);
   if (ids.length === 0) return { ok: true, rows: [], changes: [] };
   await lockAiPolicyForPages(client, ids);
-  const locked = await client.query<{ id: number; ai_policy: AiPolicy; ai_policy_revision: string }>(
-    `SELECT id, ai_policy, ai_policy_revision FROM pages
+  const locked = await client.query<{ id: number; ai_policy: AiPolicy; ai_policy_revision: string; labels: string[] | null }>(
+    `SELECT id, ai_policy, ai_policy_revision, labels FROM pages
       WHERE id = ANY($1::int[]) AND deleted_at IS NULL ORDER BY id FOR UPDATE`,
     [ids],
   );
@@ -435,10 +454,19 @@ export async function applyAiPolicyOnClient(
       rows.push({ pageId: item.pageId, policy: before.ai_policy, revision: Number(before.ai_policy_revision) });
       continue;
     }
+    // ONE statement moves the policy, its revision AND the stored labels'
+    // reserved slot (#281 review: the direct setter is a label writer too —
+    // the stored labels must keep telling the truth about `ai_policy`, in
+    // the same commit, for every writer that reaches this primitive). Label
+    // writers that store a planned set afterwards store the same canonical
+    // spelling, so the two writes agree.
     const updated = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string }>(
-      `UPDATE pages SET ai_policy = $2, ai_policy_revision = ai_policy_revision + 1
+      `UPDATE pages
+          SET ai_policy = $2,
+              ai_policy_revision = ai_policy_revision + 1,
+              labels = $3::text[]
         WHERE id = $1 RETURNING ai_policy, ai_policy_revision`,
-      [item.pageId, item.policy],
+      [item.pageId, item.policy, applyCanonicalAiPolicyLabel(before.labels, item.policy)],
     );
     const row = updated.rows[0]!;
     const revision = Number(row.ai_policy_revision);
@@ -521,26 +549,64 @@ export async function updatePageAiPolicies(
   if (policy !== 'all' && !isAiPolicyEnforcementAvailable()) {
     return { ok: false, reason: 'enforcement_unavailable', pageIds: items.map((i) => i.pageId) };
   }
-  const client = await getPool().connect();
+  const ids = [...new Set(items.map((i) => i.pageId))].sort((a, b) => a - b);
+  if (ids.length === 0) return { ok: true, rows: [] };
+
+  // Hidden-404 precedence: a page the caller cannot see answers like a
+  // missing one BEFORE any lifecycle/intent state could leak as 423/409.
+  // The authoritative check is repeated under the lock by the primitive.
+  const live = await getPool().query<{ id: number }>(
+    'SELECT id FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL',
+    [ids],
+  );
+  const liveIds = new Set(live.rows.map((r) => r.id));
+  const hidden: number[] = [];
+  for (const id of ids) {
+    if (!liveIds.has(id) || !(await userCanAccessPage(userId, id))) hidden.push(id);
+  }
+  if (hidden.length) return { ok: false, reason: 'not_found', pageIds: hidden };
+
+  // #281 review (direct-setter authority): the explicit policy endpoints run
+  // under the SAME page-write fence as every other label writer
+  // (`withPageWriteTransaction`: runtime epoch → hierarchy SHARE → lifecycle
+  // locks → frozen check → no pending external intent on the row) BEFORE the
+  // AI-policy lock, so a row with an unresolved Confluence write answers 409
+  // `page_write_busy` and a frozen row 423 `page_is_frozen`, instead of a
+  // label mirror settling later that contradicts the new policy. The
+  // canonical label lands in the primitive's own UPDATE; `content_revision`
+  // moves so an admitted-but-unsettled content/label writer observes it.
   try {
-    await client.query('BEGIN');
-    const result = await applyAiPolicyOnClient(client, {
-      userId,
-      items: items.map((i) => ({ pageId: i.pageId, policy, expectedRevision: i.expectedRevision })),
-      requireAuthority: true,
-    });
-    if (!result.ok) {
-      await client.query('ROLLBACK');
+    const committed = await withPageWriteTransaction(ids, async (client) => {
+      const result = await applyAiPolicyOnClient(client, {
+        userId,
+        items: items.map((i) => ({ pageId: i.pageId, policy, expectedRevision: i.expectedRevision })),
+        requireAuthority: true,
+      });
+      if (!result.ok) throw new AiPolicyMutationRollback(result);
+      await client.query(
+        'UPDATE pages SET content_revision = content_revision + 1 WHERE id = ANY($1::int[])',
+        [ids],
+      );
       return result;
-    }
-    await client.query('COMMIT');
-    emitAiPolicyChanges(result.changes);
-    return { ok: true, rows: result.rows };
+    });
+    emitAiPolicyChanges(committed.changes);
+    return { ok: true, rows: committed.rows };
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    if (err instanceof AiPolicyMutationRollback) return err.result;
+    if (err instanceof PageWriteError) {
+      if (err.reason === 'page_is_frozen') return { ok: false, reason: 'page_is_frozen', pageIds: ids };
+      if (err.reason === 'page_write_busy') return { ok: false, reason: 'page_write_busy', pageIds: ids };
+      if (err.reason === 'page_not_found') return { ok: false, reason: 'not_found', pageIds: ids };
+    }
     throw err;
-  } finally {
-    client.release();
+  }
+}
+
+/** Internal: unwinds the write fence with a reported (not thrown) refusal. */
+class AiPolicyMutationRollback extends Error {
+  constructor(readonly result: Extract<AiPolicyMutationResult, { ok: false }>) {
+    super('ai policy mutation rolled back');
+    this.name = 'AiPolicyMutationRollback';
   }
 }
 

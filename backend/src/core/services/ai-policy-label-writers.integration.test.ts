@@ -412,19 +412,24 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
       await query(`CREATE TRIGGER lw_settlement_hook BEFORE UPDATE ON page_write_intents
         FOR EACH ROW WHEN (NEW.status = 'reconciled_applied') EXECUTE FUNCTION lw_hold_settlement()`);
       const holder = await getPool().connect();
+      let run: Promise<unknown> | undefined;
       try {
         await holder.query('SELECT pg_advisory_lock($1)', [HOLD_KEY]);
-        const run = reconcilePageWriteIntent(intentId, { actorId: admin, reason: 'Recover while settlement is held' });
+        run = reconcilePageWriteIntent(intentId, { actorId: admin, reason: 'Recover while settlement is held' });
         await waitFor(() => advisoryWaiter(0, HOLD_KEY), 'the settlement to block before COMMIT');
         // Transition applied inside the transaction, invisible and unannounced.
         expect(seams.events).toEqual([]);
         expect(await state(id)).toMatchObject({ labels: ['one'], ai_policy: 'all', ai_policy_revision: '0' });
         expect(await intentStatus(intentId)).toBe('pending');
-        await holder.query('SELECT pg_advisory_unlock($1)', [HOLD_KEY]);
-        await expect(run).resolves.toEqual({ intentId, status: 'reconciled_applied' });
       } finally {
+        // A failed assertion above must not leave the recovery blocked on a
+        // session-level lock (and the trigger's DROP in afterEach waiting on
+        // it): release unconditionally, then await the outstanding work.
+        await holder.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
         holder.release();
+        if (run) await run.catch(() => undefined);
       }
+      await expect(run).resolves.toEqual({ intentId, status: 'reconciled_applied' });
       expect(await state(id)).toMatchObject({ labels: ['no-ai', 'one'], ai_policy: 'none', ai_policy_revision: '1' });
       expect(await intentStatus(intentId)).toBe('reconciled_applied');
       expect(seams.events).toEqual([{ type: 'policy_changed', pageId: id, userId: owner, from: 'all', to: 'none', revision: 1 }]);
@@ -564,7 +569,8 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
       // The creation trigger tightened from the label; the policy endpoint relaxed it afterwards.
       await query(`UPDATE pages SET ai_policy = 'all', ai_policy_revision = 1 WHERE id = $1`, [id]);
       const writer = await getPool().connect();
-      let policyWrite: Promise<Awaited<ReturnType<typeof applyAiPolicyOnClient>>>;
+      let policyWrite: Promise<Awaited<ReturnType<typeof applyAiPolicyOnClient>>> | undefined;
+      let committed = false;
       try {
         await writer.query('BEGIN');
         const planned = await applyPageLabelsOnClient(writer, { userId: owner, pageId: id, targetLabels: ['x'] });
@@ -574,27 +580,35 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
         policyWrite = tx((c) => applyAiPolicyOnClient(c, { userId: owner, items: [{ pageId: id, policy: 'none' }], requireAuthority: true }));
         await waitFor(() => advisoryWaiter(AI_POLICY_LOCK_NAMESPACE, id), 'the policy write to queue behind the label writer');
         await writer.query('COMMIT');
+        committed = true;
       } finally {
+        // A failed assertion must not leave the row locked by an open
+        // transaction (the queued policy write would then hang the suite).
+        if (!committed) await writer.query('ROLLBACK').catch(() => undefined);
         writer.release();
+        if (policyWrite) await policyWrite.catch(() => undefined);
       }
       const written = await policyWrite!;
       expect(written.ok).toBe(true);
       if (written.ok) {
         expect(written.changes).toEqual([{ pageId: id, userId: owner, from: 'all', to: 'none', revision: 2 }]);
       }
-      // The later authoritative policy stands; the writer's set committed first.
-      expect(await state(id)).toMatchObject({ labels: ['x'], ai_policy: 'none', ai_policy_revision: '2' });
+      // The later authoritative policy stands over the writer's committed
+      // set, and it carries its canonical label: the stored labels never
+      // contradict `ai_policy` after a direct policy write (#281 review).
+      expect(await state(id)).toMatchObject({ labels: ['x', 'no-ai'], ai_policy: 'none', ai_policy_revision: '2' });
       // Recovering that same acknowledged write re-plans from the row as it
-      // is now: ['x'] is still what the row admits, so the mirror is claimed
-      // without touching the later policy or its revision, and nothing is
-      // announced (no transition happened in recovery).
+      // is now: a mirror of ['x'] would drop the canonical label the later
+      // `none` requires, so it is refused (409) and stays pending rather
+      // than being claimed against a policy it no longer agrees with.
       seams.remoteLabels = ['x'];
       const intentId = await fencedLabelIntent({
         kind: 'pages.create.labels', actor: owner, admin, pageId: id, confluenceId, priorLabels: ['no-ai', 'x'], targetLabels: ['x'],
       });
       await expect(reconcilePageWriteIntent(intentId, { actorId: admin, reason: 'Recover the first label step after a later tighten' }))
-        .resolves.toEqual({ intentId, status: 'reconciled_applied' });
-      expect(await state(id)).toMatchObject({ labels: ['x'], ai_policy: 'none', ai_policy_revision: '2' });
+        .rejects.toMatchObject({ statusCode: 409, reason: 'intent_terminal_evidence_mismatch' });
+      expect(await intentStatus(intentId)).toBe('pending');
+      expect(await state(id)).toMatchObject({ labels: ['x', 'no-ai'], ai_policy: 'none', ai_policy_revision: '2' });
       expect(seams.events).toEqual([]);
     });
 
@@ -738,24 +752,49 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     expect(await state(fresh)).toMatchObject({ labels: ['two'], ai_policy: 'all', ai_policy_revision: '0' });
   });
 
-  it('a carried reserved label beside one fresh command tightens to the fresh policy (relaxed row)', async () => {
+  it('the policy primitive rewrites the canonical label in the same statement (direct setter is a label writer, #281 review)', async () => {
     const owner = await user();
-    const id = await page({ owner, labels: ['no-ai'], policy: 'none' });
-    // Relax the way production does: explicit policy UPDATE leaves the label behind.
+    const id = await page({ owner, labels: ['no-ai', 'keep'], policy: 'none' });
+    // An explicit relaxation drops the reserved label: the stored labels
+    // never contradict `ai_policy` after a direct policy write.
     const relaxed = await tx((c) => applyAiPolicyOnClient(c, {
       userId: owner, items: [{ pageId: id, policy: 'all' }], requireAuthority: true,
     }));
     expect(relaxed.ok).toBe(true);
-    expect(await state(id)).toMatchObject({ labels: ['no-ai'], ai_policy: 'all', ai_policy_revision: '1' });
+    expect(await state(id)).toMatchObject({ labels: ['keep'], ai_policy: 'all', ai_policy_revision: '1' });
 
-    const applied = await tx((c) => applyPageLabelsOnClient(c, {
-      userId: owner, pageId: id, targetLabels: ['no-ai', 'local-ai-only', 'ordinary'],
+    // An explicit tighten appends exactly one canonical label.
+    const tightened = await tx((c) => applyAiPolicyOnClient(c, {
+      userId: owner, items: [{ pageId: id, policy: 'local_only' }], requireAuthority: true,
     }));
-    expect(applied).toMatchObject({ labels: ['local-ai-only', 'ordinary'], policy: 'local_only', revision: 2 });
+    expect(tightened.ok).toBe(true);
+    expect(await state(id)).toMatchObject({ labels: ['keep', 'local-ai-only'], ai_policy: 'local_only', ai_policy_revision: '2' });
+
+    // A carried reserved label beside ONE fresh command still tightens to the fresh policy.
+    const applied = await tx((c) => applyPageLabelsOnClient(c, {
+      userId: owner, pageId: id, targetLabels: ['local-ai-only', 'no-ai', 'ordinary'],
+    }));
+    expect(applied).toMatchObject({ labels: ['no-ai', 'ordinary'], policy: 'none', revision: 3 });
     expect(applied.plan.kind).toBe('tighten');
     expect(applied.changes).toHaveLength(1);
-    expect(await state(id)).toMatchObject({
-      labels: ['local-ai-only', 'ordinary'], ai_policy: 'local_only', ai_policy_revision: '2',
+    expect(await state(id)).toMatchObject({ labels: ['no-ai', 'ordinary'], ai_policy: 'none', ai_policy_revision: '3' });
+  });
+
+  it('the direct setter refuses a row with an unresolved external write (409 page_write_busy) and a frozen row (423)', async () => {
+    const owner = await user('admin');
+    const admin = await user('admin');
+    const { id, confluenceId } = await confluencePage({ owner, labels: ['one'] });
+    const intentId = await fencedLabelIntent({
+      actor: owner, admin, pageId: id, confluenceId, priorLabels: ['one'], targetLabels: ['one', 'no-ai'],
     });
+    expect(await updatePageAiPolicies(owner, 'all', [{ pageId: id, expectedRevision: 0 }]))
+      .toEqual({ ok: false, reason: 'page_write_busy', pageIds: [id] });
+    expect(await state(id)).toMatchObject({ labels: ['one'], ai_policy: 'all', ai_policy_revision: '0' });
+    expect(await intentStatus(intentId)).toBe('pending');
+    expect(seams.events).toEqual([]);
+    // A page the caller cannot see stays a 404 ahead of any fence state.
+    const stranger = await user();
+    expect(await updatePageAiPolicies(stranger, 'all', [{ pageId: id, expectedRevision: 0 }]))
+      .toEqual({ ok: false, reason: 'not_found', pageIds: [id] });
   });
 });

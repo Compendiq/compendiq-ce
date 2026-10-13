@@ -51,6 +51,23 @@ export const EMBED_WORK_POLICY_SQL =
  */
 const policyBlockedInRun = new Set<number>();
 
+/**
+ * Retryable admission refusal (`policy_unavailable` etc., #281 review): the
+ * deployment, not the article, declined. The page is neither processed nor
+ * failed in this run — it joins `policyBlockedInRun` so the loop charges it
+ * to neither bucket — and the batch-wide `embedding` in-progress status is
+ * reset so the row does not read as mid-flight between passes. No persistent
+ * block reason is written: the row stays plainly dirty for the next pass.
+ */
+async function markEmbeddingAdmissionDeferred(pageId: number): Promise<void> {
+  policyBlockedInRun.add(pageId);
+  await query(
+    `UPDATE pages SET embedding_status = 'not_embedded', embedding_error = NULL
+      WHERE id = $1 AND embedding_status = 'embedding'`,
+    [pageId],
+  );
+}
+
 async function markEmbeddingPolicyBlocked(pageId: number, reason: AiPolicyBlockReason): Promise<void> {
   policyBlockedInRun.add(pageId);
   await query(
@@ -665,6 +682,10 @@ export async function embedPage(
     if (!isPersistableBlockReason(admission.reason)) {
       // Fail-closed, retryable (#280): the deployment — not the article —
       // refused. The page stays dirty for the next pass; nothing is dispatched.
+      // Accounted like a policy park (#281 review): neither processed nor
+      // failed, and the batch's in-progress `embedding` status is handed
+      // back so no row is left mid-flight across passes.
+      await markEmbeddingAdmissionDeferred(pageId);
       logger.warn({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding admission unavailable; page left dirty');
       return 0;
     }

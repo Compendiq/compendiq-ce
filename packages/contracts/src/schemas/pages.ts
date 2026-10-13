@@ -9,13 +9,20 @@ import { AiPolicyInputSchema, PageAiPolicyDetailFieldsSchema } from './ai-policy
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
 
-export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
+/**
+ * Worker stage statuses. `policy_blocked` is the article-AI-policy outcome
+ * (#281, migration 135): the stage was refused by the page's `aiPolicy` or by
+ * provider locality and is NOT a failure to retry — the reason sits in
+ * `ai_policy_block_reason`. Every status CHECK on `pages` admits it, so the
+ * wire enums must too or a blocked page cannot be parsed at all.
+ */
+export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed', 'policy_blocked']);
 export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 
-export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']);
+export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped', 'policy_blocked']);
 export type PageQualityStatus = z.infer<typeof PageQualityStatusEnum>;
 
-export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped']);
+export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped', 'policy_blocked']);
 export type PageSummaryStatus = z.infer<typeof PageSummaryStatusEnum>;
 
 export const PageSourceEnum = z.enum(['confluence', 'standalone']);

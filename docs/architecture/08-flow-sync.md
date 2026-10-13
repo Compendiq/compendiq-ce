@@ -861,3 +861,44 @@ again after that write. The downstream marks are policy-aware:
   policy. Body, attachments and versions are kept.
 - The Notion importer (`notion-import-service.ts`) uses the same helpers on
   insert and on reuse.
+
+### First-publication fence (#281 review)
+
+An app-side Confluence create (`pages.create.confluence`) states the page's
+initial policy and canonical labels in its intent (`effect.initialPolicy` /
+`effect.initialLabels`) BEFORE the HTTP dispatch; the intent's
+`remote_terminal_result.confluenceId` binds that statement to the remote id
+once the acknowledgment lands. The sync walker must not seed a fresh row for
+that page from the walker's weaker ingestion default while the reply is
+still outstanding — the article would be embedded and summarised against
+the author's stated `none`/`local_only` until recovery caught up.
+
+`admitFreshConfluencePublication` (`core/services/ai-policy-ingestion.ts`)
+runs on the INSERT transaction of every fresh Confluence row:
+
+- **Bound intents** (the exact `confluenceId` matches) seed the row with the
+  stated policy, its canonical label merged into the remote label set, and
+  the derived marks the policy implies. A pending intent acknowledged as a
+  DIFFERENT id is inert for this row.
+- **Unbound intents** (dispatched, no terminal result, or a NULL
+  `remote_terminal_result`) are a GLOBAL fence: a fresh import whose resolved
+  policy is WEAKER than any unbound statement is deferred in EVERY space and
+  for EVERY principal. Space or title heuristics are deliberately not used —
+  the acknowledged page may have been moved or renamed before the reply was
+  lost, so only the exact id can clear it. An unbound create that stated
+  `all` fences nothing; an import already at least as strict as every
+  unbound statement passes.
+- A deferral is `FreshPublicationDeferredError`: `syncSpace` counts it in
+  `pagesDeferred` (apart from `pagesFailed`), skips the row and continues
+  the walk. The space cursor (`spaces.last_synced`) is NOT advanced while any
+  deferral happened, and the cursor UPDATE itself is guarded by
+  `FRESH_PUBLICATION_FENCE_ACTIVE_SQL` so an empty listing by another
+  principal cannot advance it either; the run does not emit `sync.completed`.
+  The next walk re-attempts the row; once the operator settles or recovery
+  binds the intent, the import proceeds with the bound statement.
+
+**Availability cost, by design:** a lost acknowledgment holds every weaker
+fresh import across all spaces until the pending intent is settled — the
+lost reply stays `pending` indefinitely and no scheduler, journal or
+migration expires it. The operator runbook is the only way out
+(`docs/runbooks/page-write-intents.md`).

@@ -15,17 +15,16 @@ import {
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
   applyAiPolicyOnClient,
+  applyCanonicalAiPolicyLabel,
   applyPageLabelsOnClient,
-  canonicalAiPolicyLabel,
   emitAiPolicyChanges,
-  isAiPolicy,
   lockAiPolicyForPages,
-  planLabelPolicyChange,
   reservedAiPolicyLabel,
   stricterPolicy,
   type AiPolicy,
   type AiPolicyChangeRecord,
 } from '../../../core/services/ai-policy-service.js';
+import { initialPolicyFromEffect } from '../../../core/services/ai-policy-ingestion.js';
 import {
   PageWriteError,
   advancePageWriteIntent,
@@ -160,29 +159,12 @@ export interface PublishedConfluencePage {
 }
 
 /**
- * Read the admitted first-publication policy from a durable create effect.
- * Malformed values are refused (409) rather than defaulted: a create whose
- * policy statement cannot be trusted is not published at `all`.
+ * The admitted first-publication policy of a durable create effect. ONE
+ * decoder is shared with the sync walker's first-publication fence
+ * (`ai-policy-ingestion.ts`) so recovery and ingestion cannot disagree on
+ * what a create stated (#281).
  */
-export function initialPolicyFromEffect(effect: Record<string, unknown>): {
-  initialPolicy: AiPolicy | undefined;
-  initialLabels: string[] | undefined;
-} {
-  const rawPolicy = effect.initialPolicy;
-  const rawLabels = effect.initialLabels;
-  if (rawPolicy === undefined && rawLabels === undefined) {
-    return { initialPolicy: undefined, initialLabels: undefined };
-  }
-  if (!isAiPolicy(rawPolicy)) {
-    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The initial AI policy is invalid');
-  }
-  if (!Array.isArray(rawLabels) || rawLabels.some((label) => typeof label !== 'string')) {
-    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'The initial labels are invalid');
-  }
-  // Never looser than its own labels, even if the effect was edited.
-  const planned = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: rawLabels });
-  return { initialPolicy: stricterPolicy(rawPolicy, planned.policy), initialLabels: planned.labels };
-}
+export { initialPolicyFromEffect };
 
 /**
  * Publish an acknowledged upstream create into the local corpus. Re-running
@@ -300,13 +282,15 @@ export async function publishCreatedConfluencePage(
     );
   }
   const finalPolicy = publication.initialPolicy;
+  // The creator's ordinary labels join the row's; the reserved slot is
+  // written by the policy primitive itself (one canonical label for the
+  // policy the row now holds), so no second label write can disagree.
   const mergedLabels: string[] = [];
   for (const label of [...(row.labels ?? []), ...initialLabels]) {
     if (reservedAiPolicyLabel(label) !== null || mergedLabels.includes(label)) continue;
     mergedLabels.push(label);
   }
-  // One canonical reserved label naming the policy the row now holds.
-  mergedLabels.push(canonicalAiPolicyLabel(finalPolicy));
+  await client.query(`UPDATE pages SET labels = $2 WHERE id = $1`, [row.id, mergedLabels]);
   const applied = await applyAiPolicyOnClient(client, {
     userId: publication.actorId,
     items: [{ pageId: row.id, policy: finalPolicy }],
@@ -315,13 +299,13 @@ export async function publishCreatedConfluencePage(
     throw new PageWriteError(409, applied.reason, 'The initial AI policy could not be applied to the published row');
   }
   const relabeled = await client.query<{ labels: string[] | null }>(
-    `UPDATE pages SET labels = $2 WHERE id = $1 RETURNING labels`,
-    [row.id, mergedLabels],
+    `SELECT labels FROM pages WHERE id = $1`,
+    [row.id],
   );
   publication.onPolicyChanges?.(applied.changes);
   return {
     id: row.id,
-    labels: relabeled.rows[0]?.labels ?? mergedLabels,
+    labels: relabeled.rows[0]?.labels ?? applyCanonicalAiPolicyLabel(mergedLabels, finalPolicy),
     aiPolicy: applied.rows[0]!.policy,
     contentRevision: row.contentRevision,
     lifecycleRevision: row.lifecycleRevision,

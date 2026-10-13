@@ -46,6 +46,16 @@ export function sendAiPolicyFailure(reply: FastifyReply, result: Extract<AiPolic
       });
     case 'stale_revision':
       return reply.status(409).send({ error: 'ai_policy_conflict', reason: 'stale_revision', pageIds: result.pageIds });
+    // #281 review: the direct setter is a label writer and runs under the
+    // page-write fence, so it answers the fence's own refusals.
+    case 'page_is_frozen':
+      return reply.status(423).send({ error: 'page_is_frozen', pageIds: result.pageIds });
+    case 'page_write_busy':
+      return reply.status(409).send({
+        error: 'page_write_busy',
+        message: 'Another external page write is unresolved',
+        pageIds: result.pageIds,
+      });
   }
 }
 

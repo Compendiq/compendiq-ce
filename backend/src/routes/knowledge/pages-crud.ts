@@ -2678,12 +2678,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         };
       },
     );
-    const confPage = await withPageWriteTransaction([existingPage.id], async (writeClient) => {
-      const currentClient = await loadCurrentConfluenceWriteClient(
-        writeClient, writeIntent, existingPage.id, userId, existingPage.confluence_id!,
-      );
-      return confirmPagePublication(currentClient, publication.receipt, publication.confPage);
-    }, { intent: writeIntent });
+    // Confluence has acknowledged the write: from here on the local mirror
+    // must settle the KNOWN effect exactly once. The read-back of a compact
+    // acknowledgment is evidence gathering against the durable receipt, not
+    // a new remote write, so it rides the client that was admitted for the
+    // dispatch rather than renewing write authority (#281 review: an actor
+    // whose visibility/edit right/integration changed between the ack and
+    // this point must still reach the settlement below, which answers the
+    // concealed 404 / 403 / 409 AFTER the local row mirrors the remote
+    // version — re-admitting here would surface a bare 403/404 that names
+    // the page and leaves the intent pending with the mirror behind). A
+    // receipt the remote no longer matches is a real 409 that leaves the
+    // intent pending for recovery.
+    const confPage = await confirmPagePublication(admittedClient, publication.receipt, publication.confPage);
 
     // Update local cache
     const bodyHtml = confluenceToHtml(
@@ -2725,7 +2732,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // lifecycle or content revision (409) is an intent-level conflict
         // the ledger must see, so it still propagates.
         if (!(err instanceof PageWriteError) || (err.statusCode !== 403 && err.statusCode !== 404)) throw err;
-        authorityLost = err;
+        // A page the actor can no longer SEE (restriction/visibility change
+        // since the acknowledged write) is concealed as 404 regardless of
+        // which authority check tripped first; a visible page the actor may
+        // no longer EDIT stays a 403 that still reports the publication.
+        authorityLost = err.statusCode === 403 && !(await userCanAccessPage(userId, existingPage.id, writeClient))
+          ? new PageWriteError(404, 'page_not_found', 'Page not found')
+          : err;
       }
       await writeClient.query(
         `UPDATE pages SET
