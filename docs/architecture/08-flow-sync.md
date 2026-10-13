@@ -887,7 +887,11 @@ runs on the INSERT transaction of every fresh Confluence row:
   `observedConfluenceId` / `version` present agreeing with them. A bare id
   with `accepted: false`, `expectedVersion: 0`, a conflicting observed id or
   no completion timestamp is NOT a binding — such metadata can name an
-  unrelated existing page and must never release the fence for it.
+  unrelated existing page and must never release the fence for it. The SQL
+  twin checks JSON **type** before value, not `->>` text: an
+  `observedConfluenceId` that is a JSON number `880001` or JSON `null` does
+  not match the string command id `'880001'` (strict TS inequality), and
+  `version` must be a JSON number numerically equal to `expectedVersion`.
 - **Unbound intents** (dispatched, no terminal result, a NULL
   `remote_terminal_result`, or a receipt that fails the validation above)
   are a GLOBAL fence: a fresh import whose resolved policy is WEAKER than
@@ -900,7 +904,15 @@ runs on the INSERT transaction of every fresh Confluence row:
   frozen synonym table (`no-ai`, `local-ai-only`, …) is a restrictive
   statement, and absent or malformed metadata is treated as `none`. Only a
   valid explicit `all` with no restrictive label fences nothing; an import
-  already at least as strict as every unbound statement passes.
+  already at least as strict as every unbound statement passes. Label
+  trimming in the SQL uses the JavaScript `String.prototype.trim`
+  whitespace class (`JS_TRIM_SQL`, all 25 ECMA-262 WhiteSpace/LineTerminator
+  code points), not `btrim`'s space-only default, so `'no-ai\t'` or
+  `'\u00a0No-AI'` is restrictive on both sides. `createIntentHoldsFence` is
+  the exported TS form of the per-row cursor clause; the fence integration
+  suite runs it and `FRESH_PUBLICATION_FENCE_ACTIVE_SQL` over the same
+  stored rows (a decoder-parity table) and asserts both agree with the
+  walker's actual admission outcome.
 - A deferral is `FreshPublicationDeferredError`: `syncSpace` counts it in
   `pagesDeferred` (apart from `pagesFailed`), skips the row and continues
   the walk. The space cursor (`spaces.last_synced`) is NOT advanced while any

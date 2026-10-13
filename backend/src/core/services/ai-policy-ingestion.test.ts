@@ -8,7 +8,10 @@ vi.mock('../enterprise/loader.js', () => ({
 
 import {
   boundConfluenceId,
+  createIntentHoldsFence,
   FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
+  JS_TRIM_CODE_POINTS,
+  JS_TRIM_SQL,
   resolveIngestionAiPolicy,
   tightenExistingAiPolicy,
   TIGHTEN_ONLY_POLICY_SQL,
@@ -65,6 +68,31 @@ describe('ingestion AI policy (SPEC-WORK-002)', () => {
     expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).not.toContain('ai_policy_from_labels');
     expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`'expectedVersion'`);
     expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain('remote_effects_completed_at IS NOT NULL');
+  });
+
+  it('observedConfluenceId / version must be the right JSON TYPE, not merely the same text', () => {
+    const now = new Date();
+    // A JSON number spelling the same digits as the command id is NOT a match.
+    expect(boundConfluenceId({ confluenceId: '880001', accepted: true, expectedVersion: 1, observedConfluenceId: 880001 }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: '880001', accepted: true, expectedVersion: 1, observedConfluenceId: null }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: '880001', accepted: true, expectedVersion: 1, version: '1' }, now)).toBeNull();
+    expect(boundConfluenceId({ confluenceId: '880001', accepted: true, expectedVersion: '1' }, now)).toBeNull();
+    // Positive control.
+    expect(boundConfluenceId({ confluenceId: '880001', accepted: true, expectedVersion: 1, observedConfluenceId: '880001', version: 1 }, now)).toBe('880001');
+  });
+
+  it('the TS fence twin treats whitespace exactly as the shared normalizer (JS trim)', () => {
+    const base = { remote_terminal_result: null, remote_effects_completed_at: null };
+    expect(createIntentHoldsFence({ ...base, effect: { initialPolicy: 'all', initialLabels: ['no-ai\t'] } })).toBe(true);
+    expect(createIntentHoldsFence({ ...base, effect: { initialPolicy: 'all', initialLabels: ['\u00a0No-AI\u3000'] } })).toBe(true);
+    expect(createIntentHoldsFence({ ...base, effect: { initialPolicy: 'all', initialLabels: ['ops'] } })).toBe(false);
+    expect(createIntentHoldsFence({ ...base, effect: {} })).toBe(true);
+    // The SQL trim class is exactly what JS `trim` strips.
+    for (const cp of JS_TRIM_CODE_POINTS) expect(`${String.fromCodePoint(cp)}x${String.fromCodePoint(cp)}`.trim()).toBe('x');
+    expect(JS_TRIM_SQL('x')).toContain('\\u0009');
+    expect(JS_TRIM_SQL('x')).toContain('\\ufeff');
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).not.toContain('btrim');
+    expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`jsonb_typeof(i.remote_terminal_result -> 'observedConfluenceId') = 'string'`);
   });
 
   it('SQL fragment never relaxes (uses rank comparison)', () => {

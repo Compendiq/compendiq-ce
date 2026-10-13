@@ -88,7 +88,7 @@ export function initialPolicyFromEffect(effect: Record<string, unknown>): {
  * purposes. Unreadable/absent metadata is `none` (the strictest): an
  * unknown statement never infers `all`.
  */
-function fencePolicyOfEffect(effect: Record<string, unknown>): { policy: AiPolicy; labels: string[] } {
+export function fencePolicyOfEffect(effect: Record<string, unknown>): { policy: AiPolicy; labels: string[] } {
   try {
     const decoded = initialPolicyFromEffect(effect);
     if (decoded.initialPolicy === undefined) return { policy: 'none', labels: [] };
@@ -96,6 +96,21 @@ function fencePolicyOfEffect(effect: Record<string, unknown>): { policy: AiPolic
   } catch {
     return { policy: 'none', labels: [] };
   }
+}
+
+/**
+ * TS twin of the per-row create clause of `FRESH_PUBLICATION_FENCE_ACTIVE_SQL`:
+ * a dispatched pending create holds the global fence while its identity is
+ * not validly bound AND its durable statement is not a clean `all`. Tests
+ * run both forms over the same stored metadata to prove they agree.
+ */
+export function createIntentHoldsFence(row: {
+  effect: Record<string, unknown>;
+  remote_terminal_result: Record<string, unknown> | null;
+  remote_effects_completed_at: Date | string | null;
+}): boolean {
+  if (boundConfluenceId(row.remote_terminal_result, row.remote_effects_completed_at) !== null) return false;
+  return fencePolicyOfEffect(row.effect).policy !== 'all';
 }
 
 /**
@@ -138,17 +153,44 @@ const BOUND_CONFLUENCE_ID_SQL = `COALESCE(
   AND jsonb_typeof(i.remote_terminal_result -> 'confluenceId') = 'string'
   AND length(i.remote_terminal_result ->> 'confluenceId') > 0
   AND i.remote_terminal_result -> 'accepted' = 'true'::jsonb
+  -- expectedVersion: a JSON number that is a safe positive integer. Compared
+  -- numerically (never by text pattern) so "1.0"/"1e0" decode as TS does.
   AND jsonb_typeof(i.remote_terminal_result -> 'expectedVersion') = 'number'
-  AND (i.remote_terminal_result ->> 'expectedVersion') ~ '^[0-9]+$'
   AND (i.remote_terminal_result ->> 'expectedVersion')::numeric >= 1
   AND (i.remote_terminal_result ->> 'expectedVersion')::numeric <= 9007199254740991
+  AND (i.remote_terminal_result ->> 'expectedVersion')::numeric = trunc((i.remote_terminal_result ->> 'expectedVersion')::numeric)
+  -- observedConfluenceId: absent (missing key) or a JSON STRING equal to the
+  -- command id. JSON null, a number spelling the same digits, or any other
+  -- type is NOT a match (strict TS inequality), so it stays unbound.
   AND (i.remote_terminal_result -> 'observedConfluenceId' IS NULL
-       OR i.remote_terminal_result ->> 'observedConfluenceId' = i.remote_terminal_result ->> 'confluenceId')
+       OR (jsonb_typeof(i.remote_terminal_result -> 'observedConfluenceId') = 'string'
+           AND i.remote_terminal_result ->> 'observedConfluenceId' = i.remote_terminal_result ->> 'confluenceId'))
+  -- version: absent or a JSON NUMBER numerically equal to expectedVersion.
   AND (i.remote_terminal_result -> 'version' IS NULL
        OR (jsonb_typeof(i.remote_terminal_result -> 'version') = 'number'
-           AND i.remote_terminal_result -> 'version' = i.remote_terminal_result -> 'expectedVersion')),
+           AND (i.remote_terminal_result ->> 'version')::numeric = (i.remote_terminal_result ->> 'expectedVersion')::numeric)),
   FALSE
 )`;
+
+/**
+ * Every code point JavaScript's `String.prototype.trim` strips (WhiteSpace +
+ * LineTerminator, ECMA-262). SQL `btrim` strips only U+0020 by default, so
+ * the cursor predicate must trim with THIS class to decode a label exactly
+ * as the shared normalizer (`label.trim().toLowerCase()`) does.
+ */
+export const JS_TRIM_CODE_POINTS: readonly number[] = [
+  0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x00a0, 0x1680,
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff,
+];
+
+/** PostgreSQL `E'...'` literal holding the trim class as a regex bracket body. */
+const JS_TRIM_CLASS_SQL = `E'${JS_TRIM_CODE_POINTS.map((cp) => `\\u${cp.toString(16).padStart(4, '0')}`).join('')}'`;
+
+/** `regexp_replace(<expr>, ...)` that trims exactly the characters JS `trim` trims. */
+export function JS_TRIM_SQL(expr: string): string {
+  return `regexp_replace(${expr}, '^[' || ${JS_TRIM_CLASS_SQL} || ']+|[' || ${JS_TRIM_CLASS_SQL} || ']+$', '', 'g')`;
+}
 
 /**
  * SQL form of `fencePolicyOfEffect(effect).policy = 'all'` for a row aliased
@@ -158,6 +200,8 @@ const BOUND_CONFLUENCE_ID_SQL = `COALESCE(
  * table (`AI_POLICY_LABEL_SYNONYMS`, lowercase + trim only) — NOT
  * `ai_policy_from_labels`, whose regex normalizer admits a different set —
  * so the cursor predicate decodes exactly as `initialPolicyFromEffect`.
+ * Trimming uses the JS `trim` whitespace class (`JS_TRIM_SQL`), not SQL
+ * `btrim`'s space-only default: `'no-ai\t'` is restrictive for both.
  * Anything else (absent, malformed, restrictive labels next to `all`)
  * holds the fence, exactly as fresh-row admission would.
  */
@@ -172,7 +216,7 @@ const EFFECT_STATES_ALL_SQL = `COALESCE(
   AND NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements(i.effect -> 'initialLabels') AS l
      WHERE jsonb_typeof(l) <> 'string'
-        OR lower(btrim(l #>> '{}')) IN (${RESTRICTIVE_LABEL_SPELLINGS_SQL})
+        OR lower(${JS_TRIM_SQL(`l #>> '{}'`)}) IN (${RESTRICTIVE_LABEL_SPELLINGS_SQL})
   ),
   FALSE
 )`;

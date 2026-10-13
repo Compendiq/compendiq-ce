@@ -24,6 +24,7 @@ import { query } from '../../../core/db/postgres.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from '../../../core/services/page-baseline-governance.js';
 import {
   boundConfluenceId,
+  createIntentHoldsFence,
   FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
   FreshPublicationDeferredError,
   resolveIngestionAiPolicy,
@@ -295,6 +296,83 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     expect(await fenceActive()).toBe(false);
     await __internal.syncSpace(stubClient([]), other, 'FP', undefined, new Date(), new Map(), randomUUID());
     expect(await lastSynced('FP')).not.toBeNull();
+  });
+
+  it('SQL cursor predicate and TS fresh-row decoder agree on every stored receipt/label shape (decoder-parity table)', async () => {
+    const creator = await user();
+    const other = await user();
+    // 880001 is a genuinely existing, already-imported OTHER page.
+    await walkOne(other, 'OTHER', remotePage({ id: '880001', title: 'Other', storage: '<p>o</p>' }));
+    const intentId = await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Plan', storage: '<p>r</p>',
+      initialPolicy: 'none', initialLabels: ['no-ai'],
+    });
+
+    type Case = { name: string; terminal: Record<string, unknown> | null; policy: string; labels: unknown[]; holds: boolean };
+    const ok = { confluenceId: '880001', accepted: true, expectedVersion: 1 };
+    const table: Case[] = [
+      // Receipt identity: valid positive controls bind (fence released) …
+      { name: 'valid minimal receipt', terminal: ok, policy: 'none', labels: ['no-ai'], holds: false },
+      { name: 'valid full receipt', terminal: { ...ok, observedConfluenceId: '880001', version: 1 }, policy: 'none', labels: ['no-ai'], holds: false },
+      { name: 'valid receipt, numeric-looking expectedVersion 2', terminal: { ...ok, expectedVersion: 2, version: 2 }, policy: 'none', labels: ['no-ai'], holds: false },
+      // … malformed identities stay unbound.
+      { name: 'observedConfluenceId as JSON number', terminal: { ...ok, observedConfluenceId: 880001 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'observedConfluenceId as JSON null', terminal: { ...ok, observedConfluenceId: null }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'observedConfluenceId other page', terminal: { ...ok, observedConfluenceId: '880002' }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'version as JSON string', terminal: { ...ok, version: '1' }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'version mismatch', terminal: { ...ok, version: 2 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'expectedVersion as string', terminal: { ...ok, expectedVersion: '1' }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'expectedVersion 0', terminal: { ...ok, expectedVersion: 0 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'expectedVersion fractional', terminal: { ...ok, expectedVersion: 1.5 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'expectedVersion unsafe', terminal: { ...ok, expectedVersion: 9007199254740992 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'accepted false / version 0', terminal: { confluenceId: '880001', accepted: false, expectedVersion: 0 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'accepted as string', terminal: { ...ok, accepted: 'true' }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'confluenceId as number', terminal: { ...ok, confluenceId: 880001 }, policy: 'none', labels: ['no-ai'], holds: true },
+      { name: 'empty confluenceId', terminal: { ...ok, confluenceId: '' }, policy: 'none', labels: ['no-ai'], holds: true },
+      // Label decoding on an unbound intent: restrictive spelling with any JS-trimmed whitespace holds.
+      { name: 'all + no-ai', terminal: null, policy: 'all', labels: ['no-ai'], holds: true },
+      { name: 'all + trailing TAB', terminal: null, policy: 'all', labels: ['no-ai\t'], holds: true },
+      { name: 'all + leading NBSP + ideographic space', terminal: null, policy: 'all', labels: ['\u00a0No-AI\u3000'], holds: true },
+      { name: 'all + CRLF', terminal: null, policy: 'all', labels: ['ai:none\r\n'], holds: true },
+      { name: 'all + BOM', terminal: null, policy: 'all', labels: ['\ufefflocal_only'], holds: true },
+      { name: 'all + inner space is an ordinary label', terminal: null, policy: 'all', labels: ['no -ai'], holds: false },
+      { name: 'all + ordinary labels', terminal: null, policy: 'all', labels: ['ops', ' all-ai '], holds: false },
+      { name: 'all + empty labels', terminal: null, policy: 'all', labels: [], holds: false },
+      { name: 'local_only clean', terminal: null, policy: 'local_only', labels: [], holds: true },
+    ];
+
+    for (const c of table) {
+      await query(
+        `UPDATE page_write_intents
+            SET effect = effect || jsonb_build_object('initialPolicy', $2::text, 'initialLabels', $3::jsonb),
+                remote_terminal_result = $4::jsonb,
+                remote_effects_completed_at = CASE WHEN $4::jsonb IS NULL THEN NULL ELSE NOW() END
+          WHERE id = $1`,
+        [intentId, c.policy, JSON.stringify(c.labels), c.terminal === null ? null : JSON.stringify(c.terminal)],
+      );
+      const stored = await query<{
+        effect: Record<string, unknown>;
+        remote_terminal_result: Record<string, unknown> | null;
+        remote_effects_completed_at: Date | null;
+      }>('SELECT effect, remote_terminal_result, remote_effects_completed_at FROM page_write_intents WHERE id = $1', [intentId]);
+      const row0 = stored.rows[0]!;
+      expect({ name: c.name, sql: await fenceActive() }).toEqual({ name: c.name, sql: c.holds });
+      expect({ name: c.name, ts: createIntentHoldsFence(row0) }).toEqual({ name: c.name, ts: c.holds });
+      // Fresh-row admission (walker) agrees with the cursor: an unrelated
+      // weaker import is deferred iff the SQL predicate holds.
+      const fresh = walkOne(creator, 'FP', remotePage({ id: `cf-${table.indexOf(c)}`, title: 'Fresh', storage: '<p>f</p>' }));
+      if (c.holds) {
+        await expect(fresh).rejects.toBeInstanceOf(FreshPublicationDeferredError);
+        // Another principal's EMPTY listing cannot advance the shared cursor.
+        await __internal.syncSpace(stubClient([]), other, 'FP', undefined, new Date(), new Map(), randomUUID());
+        expect({ name: c.name, cursor: await lastSynced('FP') }).toEqual({ name: c.name, cursor: null });
+      } else {
+        await expect(fresh).resolves.toMatchObject({ pagesCreated: 1 });
+      }
+      // The unrelated existing page is never rewritten by any receipt shape.
+      const unrelated = await row('880001');
+      expect(unrelated!.ai_policy).toBe(await resolveIngestionAiPolicy({ userId: other, spaceKey: 'OTHER', labels: [] }));
+    }
   });
 
   it('a page with no pending create is seeded by the ingestion rule alone', async () => {
