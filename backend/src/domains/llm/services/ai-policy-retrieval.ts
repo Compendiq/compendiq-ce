@@ -107,51 +107,73 @@ export interface PagePolicyRow {
   pageId: number;
   policy: AiPolicy;
   policyRevision: number;
+  /** `pages.content_revision` — moves on every body write. */
+  contentRevision: number;
 }
 
 /**
- * Current policy of each page in `pageIds` that still exists AND decodes.
- * Deleted pages, and rows whose policy or revision does not decode, are
- * ABSENT from the result — a continuation or a cache hit treats absence as
- * "cannot prove admissible". Throws on a DB failure; never guesses.
+ * Current policy AND content revision of each page in `pageIds` that still
+ * exists AND decodes. Deleted pages, and rows whose policy or a revision
+ * does not decode, are ABSENT from the result — a continuation or a cache
+ * hit treats absence as "cannot prove admissible". Throws on a DB failure;
+ * never guesses.
  */
 export async function readPagePolicies(pageIds: readonly number[]): Promise<Map<number, PagePolicyRow>> {
   if (pageIds.length === 0) return new Map();
-  const { rows } = await query<{ id: number; ai_policy: unknown; ai_policy_revision: unknown }>(
-    `SELECT id, ai_policy, ai_policy_revision FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+  const { rows } = await query<{
+    id: number; ai_policy: unknown; ai_policy_revision: unknown; content_revision: unknown;
+  }>(
+    `SELECT id, ai_policy, ai_policy_revision, content_revision
+       FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
     [[...pageIds]],
   );
   const out = new Map<number, PagePolicyRow>();
   for (const r of rows) {
     const policyRevision = asRevision(r.ai_policy_revision);
-    if (!isAiPolicy(r.ai_policy) || policyRevision === null) continue;
-    out.set(r.id, { pageId: r.id, policy: r.ai_policy, policyRevision });
+    const contentRevision = asRevision(r.content_revision);
+    if (!isAiPolicy(r.ai_policy) || policyRevision === null || contentRevision === null) continue;
+    out.set(r.id, { pageId: r.id, policy: r.ai_policy, policyRevision, contentRevision });
   }
   return out;
 }
 
+/** The recorded reading of one grounded page, as re-proved by {@link provenancePagesStillAdmitted}. */
+export interface RecordedPageReading {
+  pageId: number;
+  policyRevision: number;
+  /** Optional on the type so a pre-content-revision record still TYPES; absence FAILS revalidation. */
+  contentRevision?: number | undefined;
+}
+
 /**
  * Re-check a recorded grounding set against the CURRENT rows: every page
- * must still exist, be at the SAME policy revision it was recorded under,
- * and be admitted for `locality`. Used by the continuation guard and by the
- * answer-cache revalidation — a cached answer or a replayed turn is page
- * text exactly as fresh retrieval is.
+ * must still exist, be at the SAME policy revision AND the SAME content
+ * revision it was recorded under, and be admitted for `locality`. Used by
+ * the continuation guard and by the answer-cache revalidation — a cached
+ * answer or a replayed turn is page text exactly as fresh retrieval is, so
+ * a body edit inside the TTL is as disqualifying as a policy change. A
+ * record without a content revision cannot be proved and is refused.
  */
 export async function provenancePagesStillAdmitted(
-  pages: ReadonlyArray<{ pageId: number; policyRevision: number }>,
+  pages: ReadonlyArray<RecordedPageReading>,
   locality: ProviderLocality,
 ): Promise<boolean> {
   if (pages.length === 0) return true;
-  const expected = new Map<number, number>();
+  const expected = new Map<number, { policyRevision: number; contentRevision: number }>();
   for (const p of pages) {
+    if (p.contentRevision === undefined || !Number.isInteger(p.contentRevision) || p.contentRevision < 0) return false;
     const prior = expected.get(p.pageId);
-    expected.set(p.pageId, prior === undefined ? p.policyRevision : Math.max(prior, p.policyRevision));
+    expected.set(p.pageId, {
+      policyRevision: prior === undefined ? p.policyRevision : Math.max(prior.policyRevision, p.policyRevision),
+      contentRevision: prior === undefined ? p.contentRevision : Math.max(prior.contentRevision, p.contentRevision),
+    });
   }
   const current = await readPagePolicies([...expected.keys()]);
-  for (const [pageId, revision] of expected) {
+  for (const [pageId, recorded] of expected) {
     const row = current.get(pageId);
     if (!row) return false;
-    if (row.policyRevision !== revision) return false;
+    if (row.policyRevision !== recorded.policyRevision) return false;
+    if (row.contentRevision !== recorded.contentRevision) return false;
     if (!pageAdmittedFor(row.policy, locality)) return false;
   }
   return true;

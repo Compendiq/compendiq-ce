@@ -197,10 +197,12 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
       .toEqual([pages.all, pages.local_only, pages.none].sort((a, b) => a - b));
     expect(ids(await keywordSearch(USER, 'gateway token', 10))).toEqual([pages.all]);
 
-    // Every row carries the policy columns its own query selected.
+    // Every row carries the policy + content-revision columns its own query selected.
     for (const r of local) {
       expect(['all', 'local_only']).toContain(r.aiPolicy);
       expect(r.aiPolicyRevision).toBe(0);
+      expect(Number.isInteger(r.contentRevision)).toBe(true);
+      expect(r.contentRevision!).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -342,12 +344,12 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
   it('a policy change bumps the revision; the revision moves the cache key and fails re-admission', async () => {
     const pageId = await seedPage('Keyed', 'text', 'all');
     const before = (await readPagePolicies([pageId])).get(pageId)!;
-    expect(before).toEqual({ pageId, policy: 'all', policyRevision: 0 });
+    expect(before).toEqual({ pageId, policy: 'all', policyRevision: 0, contentRevision: expect.any(Number) });
     expect(await provenancePagesStillAdmitted([before], 'external')).toBe(true);
 
     await query(`UPDATE pages SET ai_policy = 'local_only' WHERE id = $1`, [pageId]);
     const after = (await readPagePolicies([pageId])).get(pageId)!;
-    expect(after).toEqual({ pageId, policy: 'local_only', policyRevision: 1 });
+    expect(after).toEqual({ pageId, policy: 'local_only', policyRevision: 1, contentRevision: before.contentRevision });
     // Recorded at revision 0 → stale under any destination.
     expect(await provenancePagesStillAdmitted([before], 'local')).toBe(false);
     // Recorded at revision 1 → admitted locally, refused externally.
@@ -365,5 +367,39 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
     await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [pageId]);
     expect((await readPagePolicies([pageId])).size).toBe(0);
     expect(await provenancePagesStillAdmitted([after], 'local')).toBe(false);
+  });
+
+  it('a body edit moves the content revision; that moves the cache key and fails re-admission at the old reading', async () => {
+    const pageId = await seedPage('Edited', 'first body', 'all');
+    const before = (await readPagePolicies([pageId])).get(pageId)!;
+    expect(await provenancePagesStillAdmitted([before], 'external')).toBe(true);
+
+    // The body write path bumps `content_revision`; a direct column bump
+    // stands in for the route here because the subject is what retrieval
+    // and revalidation do with the column, not who increments it.
+    await query(
+      `UPDATE pages SET body_text = 'Second body about the gateway token.', body_html = '<p>Second body about the gateway token.</p>',
+              content_revision = content_revision + 1 WHERE id = $1`,
+      [pageId],
+    );
+    const after = (await readPagePolicies([pageId])).get(pageId)!;
+    expect(after.policyRevision).toBe(before.policyRevision);
+    expect(after.contentRevision).toBe(before.contentRevision + 1);
+    // Same policy, same policy revision — the content revision alone refuses.
+    expect(await provenancePagesStillAdmitted([before], 'external')).toBe(false);
+    expect(await provenancePagesStillAdmitted([after], 'external')).toBe(true);
+    // A record without a content revision cannot be proved and is refused.
+    expect(await provenancePagesStillAdmitted([{ pageId, policyRevision: after.policyRevision }], 'external')).toBe(false);
+
+    const base = { prompt: { system: 's', user: 'u' }, provider: 'p', providerConfigRevision: 1, providerLocality: 'external' };
+    const k1 = buildRagCacheKey('m', 'q', [String(pageId)], { ...base, policyRevisions: policyRevisionsCacheComponent([before]) });
+    const k2 = buildRagCacheKey('m', 'q', [String(pageId)], { ...base, policyRevisions: policyRevisionsCacheComponent([after]) });
+    expect(k1).not.toBe(k2);
+
+    // The retrieval legs carry the moved value.
+    await seedChunk(pageId, 0, 'Second body about the gateway token.');
+    const rows = await keywordSearch(USER, 'gateway token', 10, { aiPolicy: EXTERNAL });
+    expect(ids(rows)).toEqual([pageId]);
+    expect(rows[0]!.contentRevision).toBe(after.contentRevision);
   });
 });

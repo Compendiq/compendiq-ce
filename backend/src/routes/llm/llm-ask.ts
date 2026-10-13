@@ -35,7 +35,7 @@ import { LlmCache, buildRagCacheKey, policyRevisionsCacheComponent } from '../..
 // sub-page root is admitted through the accepted admission service, and the
 // grounding set's policy state is recorded per assistant turn and re-proved
 // on every continuation and cache hit.
-import { admitPageForUsecase, loadProviderMetadata, type ProviderMetadata } from '../../domains/llm/services/ai-policy-admission.js';
+import { admitPageForProvider, asRevision, loadProviderMetadata, type ProviderMetadata } from '../../domains/llm/services/ai-policy-admission.js';
 import {
   pageAdmittedFor,
   provenancePagesStillAdmitted,
@@ -43,7 +43,9 @@ import {
 } from '../../domains/llm/services/ai-policy-retrieval.js';
 import {
   AI_POLICY_PROVENANCE_VERSION,
+  ConversationTurnAiProvenanceSchema,
   type AiPolicyRefusal,
+  type AiPolicyRefusalCode,
   type ConversationTurnAiProvenance,
   type ConversationTurnAiProvenancePage,
 } from '@compendiq/contracts';
@@ -95,54 +97,145 @@ type StoredChatMessage = ChatMessage & {
  * see.
  */
 function provenancePagesFrom(
-  rows: ReadonlyArray<{ pageId: number; aiPolicy?: ConversationTurnAiProvenancePage['policy']; aiPolicyRevision?: number }>,
+  rows: ReadonlyArray<{
+    pageId: number;
+    aiPolicy?: ConversationTurnAiProvenancePage['policy'];
+    aiPolicyRevision?: number;
+    contentRevision?: number;
+  }>,
 ): ConversationTurnAiProvenancePage[] {
   const byPage = new Map<number, ConversationTurnAiProvenancePage>();
   for (const r of rows) {
     if (byPage.has(r.pageId)) continue;
-    byPage.set(r.pageId, r.aiPolicy !== undefined && r.aiPolicyRevision !== undefined
-      ? { pageId: r.pageId, policy: r.aiPolicy, policyRevision: r.aiPolicyRevision }
-      : { pageId: r.pageId, policy: 'local_only', policyRevision: 0 });
+    byPage.set(r.pageId, r.aiPolicy !== undefined && r.aiPolicyRevision !== undefined && r.contentRevision !== undefined
+      ? { pageId: r.pageId, policy: r.aiPolicy, policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision }
+      : { pageId: r.pageId, policy: 'local_only', policyRevision: 0, contentRevision: 0 });
   }
   return [...byPage.values()];
 }
 
 /**
- * #282 — whether a conversation's recorded history may be replayed to
- * `provider` for `userId`. Refuses (`false`) when the row was never marked
- * provenance-complete at the current version, when any non-refused
- * assistant turn lacks its record, or when any recorded page no longer
- * exists, moved policy revision, is no longer admitted for the provider's
- * effective locality, or is no longer readable by the caller. Throws on a
- * DB failure — the caller maps that to the retryable 503.
+ * #282 — the ONE destination a request is bound to: the chat provider the
+ * use case resolved, at the configuration revision and effective locality
+ * the request admitted it under. Every later step (the sub-page walk, the
+ * cache lookup, the dispatch) re-proves THIS binding rather than resolving
+ * its own.
+ */
+interface BoundDestination {
+  providerId: string;
+  configRevision: number;
+  locality: ProviderMetadata['effectiveLocality'];
+}
+
+/** The verdict of re-proving a {@link BoundDestination} against the current provider row. */
+type BindingVerdict =
+  | { ok: true }
+  | { ok: false; status: 503 | 409; code: AiPolicyRefusalCode };
+
+/**
+ * Re-read the bound provider's metadata and compare it with the binding:
+ * an unreadable or non-decoding row is the retryable 503; a moved
+ * `config_revision` is the revision mismatch; the SAME revision at a
+ * different effective locality (a declaration made or withdrawn under the
+ * request) is the locality mismatch. Precedence: unavailable → revision →
+ * locality, so a client is told the most specific thing that is provable.
+ */
+async function reproveBinding(bound: BoundDestination, context: string): Promise<BindingVerdict> {
+  let current: ProviderMetadata | null;
+  try {
+    current = await loadProviderMetadata({ query }, bound.providerId);
+  } catch (err) {
+    logger.warn({ err, providerId: bound.providerId, context }, 'Bound chat provider unreadable; refusing');
+    current = null;
+  }
+  if (!current) return { ok: false, status: 503, code: 'ai_policy_unavailable' };
+  if (current.configRevision !== bound.configRevision) {
+    logger.warn(
+      { providerId: bound.providerId, bound: bound.configRevision, current: current.configRevision, context },
+      'Bound chat provider configuration revision moved; refusing',
+    );
+    return { ok: false, status: 409, code: 'ai_policy_provider_revision_mismatch' };
+  }
+  if (current.effectiveLocality !== bound.locality) {
+    logger.warn(
+      { providerId: bound.providerId, bound: bound.locality, current: current.effectiveLocality, context },
+      'Bound chat provider locality moved at the same revision; refusing',
+    );
+    return { ok: false, status: 409, code: 'ai_policy_provider_locality_mismatch' };
+  }
+  return { ok: true };
+}
+
+/** Why a continuation cannot be replayed; `unavailable` is the retryable 503, `not_replayable` the 409. */
+type ReplayVerdict = 'replayable' | 'not_replayable' | 'unavailable';
+
+/**
+ * #282 — whether a conversation's recorded history may be replayed to the
+ * destination `bound` for `userId`.
+ *
+ * `not_replayable` when the row was never marked provenance-complete at
+ * the current version, when any non-refused assistant turn lacks a record
+ * that parses as the contracts schema (legacy, malformed), when the row's
+ * own `provider_config_revision` / `provider_locality` columns disagree
+ * with the newest turn, when any turn names a DIFFERENT provider, revision
+ * or locality than the one answering now, or when any recorded page no
+ * longer exists, moved policy OR content revision, is no longer admitted
+ * for the bound locality, or is no longer readable by the caller.
+ *
+ * `unavailable` when the bound provider itself cannot be re-read or no
+ * longer decodes — that is a fact about the deployment, not the thread.
+ * Throws on a page-policy DB failure; the caller maps that to the same 503.
  */
 async function historyReplayable(
   history: StoredChatMessage[],
-  rowComplete: boolean,
-  rowVersion: number | null,
-  provider: ProviderMetadata,
+  row: { complete: boolean; version: number | null; providerConfigRevision: unknown; providerLocality: unknown },
+  bound: BoundDestination,
   userId: string,
-): Promise<boolean> {
-  if (!rowComplete || rowVersion !== AI_POLICY_PROVENANCE_VERSION) return false;
-  const pages = new Map<number, number>();
+): Promise<ReplayVerdict> {
+  if (!row.complete || row.version !== AI_POLICY_PROVENANCE_VERSION) return 'not_replayable';
+  // The row-level columns summarise the LATEST turn; a row whose summary
+  // does not match the destination answering now was written under a
+  // different provider state and is not replayed on trust.
+  const rowRevision = asRevision(row.providerConfigRevision);
+  if (rowRevision === null || rowRevision !== bound.configRevision) return 'not_replayable';
+  if (row.providerLocality !== bound.locality) return 'not_replayable';
+
+  const pages = new Map<number, { policyRevision: number; contentRevision: number }>();
+  let recordedTurns = 0;
   for (const turn of history) {
     if (turn.role !== 'assistant' || turn.refused) continue;
-    const p = turn.aiProvenance;
-    if (!p || p.version !== AI_POLICY_PROVENANCE_VERSION) return false;
+    const parsed = ConversationTurnAiProvenanceSchema.safeParse(turn.aiProvenance);
+    if (!parsed.success) return 'not_replayable';
+    const p = parsed.data;
+    recordedTurns++;
+    if (p.providerId !== bound.providerId) return 'not_replayable';
+    if (p.configRevision !== bound.configRevision) return 'not_replayable';
+    if (p.locality !== bound.locality) return 'not_replayable';
     for (const page of p.pages) {
       const prior = pages.get(page.pageId);
-      pages.set(page.pageId, prior === undefined ? page.policyRevision : Math.max(prior, page.policyRevision));
+      pages.set(page.pageId, {
+        policyRevision: prior === undefined ? page.policyRevision : Math.max(prior.policyRevision, page.policyRevision),
+        contentRevision: prior === undefined ? page.contentRevision : Math.max(prior.contentRevision, page.contentRevision),
+      });
     }
   }
-  if (pages.size === 0) return true;
-  const current = await readPagePolicies([...pages.keys()]);
-  for (const [pageId, revision] of pages) {
-    const row = current.get(pageId);
-    if (!row || row.policyRevision !== revision) return false;
-    if (!pageAdmittedFor(row.policy, provider.effectiveLocality)) return false;
-    if (!(await userCanAccessPage(userId, pageId))) return false;
+  if (recordedTurns > 0) {
+    // The provider each turn named must still exist at exactly the state
+    // it was bound to. A missing or undecodable row is unavailable (503);
+    // a moved revision or locality is a history that cannot be replayed.
+    const verdict = await reproveBinding(bound, 'continuation');
+    if (!verdict.ok) return verdict.status === 503 ? 'unavailable' : 'not_replayable';
   }
-  return true;
+  if (pages.size === 0) return 'replayable';
+  const current = await readPagePolicies([...pages.keys()]);
+  for (const [pageId, recorded] of pages) {
+    const row = current.get(pageId);
+    if (!row || row.policyRevision !== recorded.policyRevision) return 'not_replayable';
+    if (row.contentRevision !== recorded.contentRevision) return 'not_replayable';
+    if (!pageAdmittedFor(row.policy, bound.locality)) return 'not_replayable';
+    if (!(await userCanAccessPage(userId, pageId))) return 'not_replayable';
+  }
+  return 'replayable';
 }
 
 /**
@@ -314,10 +407,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     let conversationHistory: StoredChatMessage[] = [];
     let convId: string | null | undefined = conversationId;
 
-    let historyRow: { complete: boolean; version: number | null } | null = null;
+    let historyRow: {
+      complete: boolean; version: number | null; providerConfigRevision: unknown; providerLocality: unknown;
+    } | null = null;
     if (convId) {
-      const conv = await query<{ messages: StoredChatMessage[]; ai_provenance_complete: boolean | null; ai_provenance_version: number | null }>(
-        'SELECT messages, ai_provenance_complete, ai_provenance_version FROM llm_conversations WHERE id = $1 AND user_id = $2',
+      const conv = await query<{
+        messages: StoredChatMessage[];
+        ai_provenance_complete: boolean | null;
+        ai_provenance_version: number | null;
+        provider_config_revision: unknown;
+        provider_locality: unknown;
+      }>(
+        'SELECT messages, provider_config_revision, provider_locality, ai_provenance_complete, ai_provenance_version FROM llm_conversations WHERE id = $1 AND user_id = $2',
         [convId, userId],
       );
       // #1361: a stale or foreign id is a 404 BEFORE retrieval and before any
@@ -330,6 +431,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       historyRow = {
         complete: conv.rows[0]!.ai_provenance_complete === true,
         version: conv.rows[0]!.ai_provenance_version ?? null,
+        providerConfigRevision: conv.rows[0]!.provider_config_revision,
+        providerLocality: conv.rows[0]!.provider_locality,
       };
     }
 
@@ -359,25 +462,35 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
     }
     const destinationLocality = chatProvider.effectiveLocality;
+    // The ONE binding this request runs under. The sub-page walk, the
+    // cache lookup and the dispatch all re-prove it; none resolves its own.
+    const bound: BoundDestination = {
+      providerId: chatConfig.providerId,
+      configRevision: chatProvider.configRevision,
+      locality: destinationLocality,
+    };
 
     // ── #282: continuation guard ─────────────────────────────────────────
     // A replayed turn is page text exactly as fresh retrieval is: every
     // page a prior turn was grounded in must still be admitted for the
-    // provider answering NOW, at the revision it was recorded under, and
-    // still readable by the caller. History written before provenance was
-    // recorded is never replayed on trust. 404 (above) outranks this guard
-    // so a foreign id still reveals nothing.
+    // provider answering NOW, at the policy AND content revision it was
+    // recorded under, and still readable by the caller; and every turn
+    // must name THIS provider at THIS revision and locality, which must
+    // still be provable. History written before provenance was recorded
+    // is never replayed on trust. 404 (above) outranks this guard so a
+    // foreign id still reveals nothing.
     if (convId) {
-      let replayable: boolean;
+      let verdict: ReplayVerdict;
       try {
-        replayable = await historyReplayable(
-          conversationHistory, historyRow!.complete, historyRow!.version, chatProvider, userId,
-        );
+        verdict = await historyReplayable(conversationHistory, historyRow!, bound, userId);
       } catch (err) {
         logger.warn({ err, conversationId: convId }, 'Continuation policy state unreadable; refusing');
         return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
       }
-      if (!replayable) {
+      if (verdict === 'unavailable') {
+        return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+      }
+      if (verdict === 'not_replayable') {
         return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
       }
     }
@@ -503,16 +616,37 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       resolvedPageRef = resolved;
       // #282: the ROOT is admitted for the `chat` use case through the
       // shared admission service (same lock, same decision, same events as
-      // every other stage); a refused root contributes no tree, exactly as
-      // an unreadable one does, and a retryable refusal (policy state
-      // unreadable) refuses the turn rather than silently dropping grounding
-      // the caller asked for. The walk then binds that admission's provider
-      // revision and locality and decides each descendant itself.
-      let rootAdmission: Awaited<ReturnType<typeof admitPageForUsecase>> | null = null;
+      // every other stage) — against the provider THIS request is already
+      // bound to, never a second resolution that could name a different
+      // row. A refused root contributes no tree, exactly as an unreadable
+      // one does, and a retryable refusal (policy state unreadable)
+      // refuses the turn rather than silently dropping grounding the
+      // caller asked for. An admission that comes back at a different
+      // configuration revision or locality than the binding means the
+      // provider moved between the top of the request and here: refused
+      // before any SSE header, never silently rebound. The walk then
+      // carries the SAME binding and decides each descendant itself.
+      let rootAdmission: Awaited<ReturnType<typeof admitPageForProvider>> | null = null;
       if (resolved && (await userCanAccessPage(userId, resolved.id))) {
-        rootAdmission = await admitPageForUsecase(resolved.id, 'chat');
+        rootAdmission = await admitPageForProvider(resolved.id, 'chat', bound.providerId, resolvedModel);
         if (!rootAdmission.admitted && rootAdmission.retryable) {
           return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
+        if (rootAdmission.admitted) {
+          if (rootAdmission.configRevision !== bound.configRevision) {
+            logger.warn(
+              { pageId: resolved.id, bound: bound.configRevision, admitted: rootAdmission.configRevision },
+              'Sub-page root admitted at a different provider revision than the request binding; refusing',
+            );
+            return refuse(409, { error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+          }
+          if (rootAdmission.locality !== bound.locality) {
+            logger.warn(
+              { pageId: resolved.id, bound: bound.locality, admitted: rootAdmission.locality },
+              'Sub-page root admitted at a different provider locality than the request binding; refusing',
+            );
+            return refuse(409, { error: 'ai_policy_provider_locality_mismatch', stage: 'chat' });
+          }
         }
       }
       if (resolved && rootAdmission?.admitted) {
@@ -531,28 +665,46 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             undefined,
             {
               policyContext: {
-                providerId: rootAdmission.providerId,
+                providerId: bound.providerId,
                 usecase: 'chat',
-                expectedConfigRevision: rootAdmission.configRevision,
-                expectedLocality: rootAdmission.locality,
+                expectedConfigRevision: bound.configRevision,
+                expectedLocality: bound.locality,
               },
             },
           );
         } catch (err) {
           // Before any SSE header: a provider the walk cannot describe is the
           // retryable 503; a provider whose revision or locality moved under
-          // the admission is a 409 the client must re-ask under.
+          // the binding is the matching 409 the client must re-ask under.
           if (err instanceof SubPagePolicyError) {
-            logger.warn({ err, pageId: resolved.id }, 'Sub-page policy refusal');
-            return err.retryable
-              ? refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' })
-              : refuse(409, { error: 'ai_policy_provider_mismatch', stage: 'chat' });
+            // The walk names which half of the binding moved on its error;
+            // read defensively so a walk that does not is still the
+            // revision mismatch (the more general of the two) rather than
+            // an unmapped 500.
+            const walkCode = (err as { code?: unknown }).code;
+            logger.warn({ err, code: walkCode, pageId: resolved.id }, 'Sub-page policy refusal');
+            if (err.retryable) return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+            return refuse(409, {
+              error: walkCode === 'ai_policy_provider_locality_mismatch'
+                ? 'ai_policy_provider_locality_mismatch'
+                : 'ai_policy_provider_revision_mismatch',
+              stage: 'chat',
+            });
           }
           throw err;
         }
-        includedSubPages = (assembled.includedPageRefs ?? []).map((p) => ({
-          pageId: p.id, policy: p.policy, policyRevision: p.policyRevision,
-        }));
+        // The walk's included refs carry policy + revision; their content
+        // revision is read back from the current rows so the cache key and
+        // the turn record bind the body the model actually saw. A ref the
+        // rows no longer describe is pinned at the strictest reading.
+        const refs = assembled.includedPageRefs ?? [];
+        const refRows = await readPagePolicies(refs.map((p) => p.id));
+        includedSubPages = refs.map((p) => {
+          const row = refRows.get(p.id);
+          return row && row.policyRevision === p.policyRevision
+            ? { pageId: p.id, policy: p.policy, policyRevision: p.policyRevision, contentRevision: row.contentRevision }
+            : { pageId: p.id, policy: 'local_only' as const, policyRevision: 0, contentRevision: 0 };
+        });
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
@@ -803,7 +955,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       locality: destinationLocality,
       pages: provenancePagesFrom([
         ...searchResults,
-        ...includedSubPages.map((p) => ({ pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision })),
+        ...includedSubPages.map((p) => ({
+          pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision, contentRevision: p.contentRevision,
+        })),
       ]),
     };
     const pageRefForInsert = async (): Promise<number | null> => {
@@ -1231,17 +1385,42 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       policyRevisions: policyRevisionsCacheComponent(turnProvenance.pages),
     });
 
+    // ── #282: the binding is re-proved at the cache/dispatch boundary ───
+    // Retrieval, the sub-page walk and prompt assembly all ran under
+    // `bound`; a provider row that moved under them (revision bumped, or a
+    // locality declaration made/withdrawn at the same revision) must refuse
+    // HERE — before a cached answer written under the old binding is
+    // served, and before any text reaches the provider — never silently
+    // continue against whatever the row says now.
+    const preCache = await reproveBinding(bound, 'cache');
+    if (!preCache.ok) return refuse(preCache.status, { error: preCache.code, stage: 'chat' });
+
     let ragLockToken: string | null = null;
     if (conversationHistory.length === 0) {
       const { cached, lockToken } = await checkCacheWithLock(llmCache, ragCacheKey);
       ragLockToken = lockToken;
 
       // #282: a hit is revalidated against the CURRENT page rows before it
-      // is served — the key moves with the recorded revisions, but a page
-      // whose policy tightened a moment ago must not be replayed from an
-      // entry written under the old one. A failed revalidation is a miss:
-      // the turn generates fresh (no lock is held on the hit path).
-      const hit = cached && (await provenancePagesStillAdmitted(turnProvenance.pages, destinationLocality));
+      // is served — the key moves with the recorded policy AND content
+      // revisions, but a page whose policy tightened or whose body changed
+      // a moment ago must not be replayed from an entry written under the
+      // old one, and neither may a page the caller can no longer read. A
+      // failed revalidation is a miss: the turn generates fresh (no lock is
+      // held on the hit path). An unreadable row is a miss too, not a 503 —
+      // the fresh path re-proves everything itself.
+      let hit = false;
+      if (cached) {
+        try {
+          hit = await provenancePagesStillAdmitted(turnProvenance.pages, destinationLocality);
+          for (const page of turnProvenance.pages) {
+            if (!hit) break;
+            if (!(await userCanAccessPage(userId, page.pageId))) hit = false;
+          }
+        } catch (err) {
+          logger.warn({ err, userId }, 'Cached answer could not be revalidated; regenerating');
+          hit = false;
+        }
+      }
       if (cached && !hit) {
         logger.info({ userId }, 'Cached answer no longer admissible under article AI policy; regenerating');
       }
@@ -1310,6 +1489,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           content: userContent,
         },
       ];
+
+      // #282: the LAST re-proof of the binding, immediately before the
+      // provider call and the SSE hijack — the cache lookup (and, on a
+      // miss, the lock wait) sits between the previous one and here. After
+      // `reply.hijack()` a refusal can no longer be a status code, so this
+      // is the final point at which a moved provider is still refusable.
+      const preDispatch = await reproveBinding(bound, 'dispatch');
+      // (The enclosing `finally` releases the cache lock on this return.)
+      if (!preDispatch.ok) return refuse(preDispatch.status, { error: preDispatch.code, stage: 'chat' });
 
       // Stream the response and collect full answer
       const controller = new AbortController();

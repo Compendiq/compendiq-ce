@@ -264,13 +264,32 @@ interface SearchResult {
    */
   aiPolicy?: AiPolicy;
   aiPolicyRevision?: number;
+  /**
+   * #282 — `pages.content_revision` AS THE ROW WAS RETRIEVED, selected
+   * beside the policy columns. A body write moves it, so the ask route's
+   * cache identity and its per-turn provenance can tell "the same page" from
+   * "the same page before it was edited". Absent together with the policy
+   * fields when the row did not decode.
+   */
+  contentRevision?: number;
 }
 
-/** Decode the policy columns a retrieval row selected; absent when unprovable. */
-function policyFields(row: { ai_policy?: unknown; ai_policy_revision?: unknown }): { aiPolicy: AiPolicy; aiPolicyRevision: number } | Record<string, never> {
+/**
+ * Decode the policy and content-revision columns a retrieval row selected;
+ * each reading is absent when unprovable. The two are decoded independently:
+ * the policy pair governs ADMISSION (the rerank bypass), the content
+ * revision governs IDENTITY (the ask route's cache key and provenance), and
+ * an undecodable content revision must not read as "policy unknown".
+ */
+function policyFields(
+  row: { ai_policy?: unknown; ai_policy_revision?: unknown; content_revision?: unknown },
+): { aiPolicy?: AiPolicy; aiPolicyRevision?: number; contentRevision?: number } {
   const revision = asRevision(row.ai_policy_revision);
-  if (!isAiPolicy(row.ai_policy) || revision === null) return {};
-  return { aiPolicy: row.ai_policy, aiPolicyRevision: revision };
+  const contentRevision = asRevision(row.content_revision);
+  return {
+    ...(isAiPolicy(row.ai_policy) && revision !== null ? { aiPolicy: row.ai_policy, aiPolicyRevision: revision } : {}),
+    ...(contentRevision !== null ? { contentRevision } : {}),
+  };
 }
 
 /**
@@ -495,9 +514,10 @@ export async function vectorSearch(
           distance: number | null;
           ai_policy: unknown;
           ai_policy_revision: unknown;
+          content_revision: unknown;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
-                  cp.ai_policy, cp.ai_policy_revision,
+                  cp.ai_policy, cp.ai_policy_revision, cp.content_revision,
                   pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
@@ -684,6 +704,7 @@ export async function keywordSearch(
         rank: number;
         ai_policy: unknown;
         ai_policy_revision: unknown;
+        content_revision: unknown;
       } & BestChunkColumns>(
         `WITH cand AS (
            SELECT cp.id AS page_id, ts_rank(cp.tsv, ${tsq}) AS rank
@@ -701,7 +722,7 @@ export async function keywordSearch(
             LIMIT $3
          )
          SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                cp.ai_policy, cp.ai_policy_revision,
+                cp.ai_policy, cp.ai_policy_revision, cp.content_revision,
                 -- Only for a row the chunk resolution cannot answer (review
                 -- r1 finding 6). The prefix was selected for EVERY keyword
                 -- row while the mapper discards it on the common path, at up
@@ -1570,7 +1591,7 @@ async function lookupIdentifier(
     // predicate sits INSIDE its statement — a parameterless fragment, so
     // the per-branch `$n` numbering above is untouched.
     return `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                   cp.ai_policy, cp.ai_policy_revision,
+                   cp.ai_policy, cp.ai_policy_revision, cp.content_revision,
                    substring(cp.body_text, 1, $5) AS excerpt,
                    best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
             FROM pages cp
@@ -1585,6 +1606,7 @@ async function lookupIdentifier(
     excerpt: string | null;
     ai_policy: unknown;
     ai_policy_revision: unknown;
+    content_revision: unknown;
   } & BestChunkColumns;
   const limit = IDENTIFIER_LOOKUP_CANDIDATES;
   let rows: Row[] = [];

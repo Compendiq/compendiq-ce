@@ -183,16 +183,20 @@ export function buildRagCacheKey(
 }
 
 /**
- * #282: one digest over the grounding set's `(pageId, policyRevision)`
- * pairs, order-independent, for `buildRagCacheKey.policyRevisions`. Empty
- * input yields `''` so a question with no grounding pages adds no suffix.
+ * #282: one digest over the grounding set's
+ * `(pageId, policyRevision, contentRevision)` triples, order-independent,
+ * for `buildRagCacheKey.policyRevisions`. The content revision is
+ * `pages.content_revision`: a body edit (PUT) moves it, so the identical
+ * question after an edit is a different key — the prompt hash alone cannot
+ * see an edit whose new text was not retrieved into the prompt. Empty input
+ * yields `''` so a question with no grounding pages adds no suffix.
  */
 export function policyRevisionsCacheComponent(
-  pages: ReadonlyArray<{ pageId: number; policyRevision: number }>,
+  pages: ReadonlyArray<{ pageId: number; policyRevision: number; contentRevision: number }>,
 ): string {
   if (pages.length === 0) return '';
   const parts = [...pages]
-    .map((p) => `${p.pageId}:${p.policyRevision}`)
+    .map((p) => `${p.pageId}:${p.policyRevision}:${p.contentRevision}`)
     .sort();
   return createHash('sha256').update(parts.join(',')).digest('hex');
 }

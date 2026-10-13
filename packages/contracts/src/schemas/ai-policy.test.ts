@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   AI_POLICY_CANONICAL_LABELS,
   AI_POLICY_LABEL_SYNONYMS,
+  AI_POLICY_REFUSAL_CODES,
   AiPolicyConflictSchema,
+  AiPolicyRefusalSchema,
+  ConversationTurnAiProvenancePageSchema,
   AiPolicySchema,
   AiPolicyInputSchema,
   BulkUpdatePageAiPolicySchema,
@@ -90,6 +93,24 @@ describe('ai-policy contracts', () => {
     expect(applyCanonicalAiPolicyLabel(['x', 'no_ai', 'ai:none'], 'none')).toEqual(['x', 'no-ai']);
     expect(applyCanonicalAiPolicyLabel(['x', 'no-ai'], 'all')).toEqual(['x']);
     expect(aiPolicyLabelConflict(['no-ai', 'ai:local', 'x']).sort()).toEqual(['local_only', 'none']);
+  });
+
+  it('refusal codes are the closed four — the obsolete generic provider mismatch is gone', () => {
+    expect([...AI_POLICY_REFUSAL_CODES].sort()).toEqual([
+      'ai_history_not_replayable',
+      'ai_policy_provider_locality_mismatch',
+      'ai_policy_provider_revision_mismatch',
+      'ai_policy_unavailable',
+    ]);
+    expect(AiPolicyRefusalSchema.safeParse({ error: 'ai_policy_provider_mismatch' }).success).toBe(false);
+    expect(AiPolicyRefusalSchema.safeParse({ error: 'ai_policy_provider_revision_mismatch' }).success).toBe(true);
+  });
+
+  it('turn provenance pages carry the content revision the model saw', () => {
+    const page = { pageId: 1, policy: 'all', policyRevision: 0 };
+    expect(ConversationTurnAiProvenancePageSchema.safeParse(page).success).toBe(false);
+    expect(ConversationTurnAiProvenancePageSchema.safeParse({ ...page, contentRevision: 4 }).success).toBe(true);
+    expect(ConversationTurnAiProvenancePageSchema.safeParse({ ...page, contentRevision: -1 }).success).toBe(false);
   });
 
   it('never accepts an unknown locality', () => {

@@ -219,11 +219,18 @@ export type AiPolicyStage = z.infer<typeof AiPolicyStageSchema>;
  * admissible for the provider that would answer now, or was never recorded.
  * `ai_policy_unavailable` (503): the policy or provider state could not be
  * read — retryable, never a statement about the article.
- * `ai_policy_provider_mismatch` (409): a sub-page traversal found the
- * provider's configuration revision or locality moved during the request.
+ * `ai_policy_provider_revision_mismatch` (409): the bound chat provider's
+ * `config_revision` moved between admission and dispatch (or during a
+ * sub-page traversal).
+ * `ai_policy_provider_locality_mismatch` (409): the provider's effective
+ * locality moved at the SAME configuration revision (a declaration was
+ * made or withdrawn underneath the request).
  */
 export const AI_POLICY_REFUSAL_CODES = [
-  'ai_history_not_replayable', 'ai_policy_unavailable', 'ai_policy_provider_mismatch',
+  'ai_history_not_replayable',
+  'ai_policy_unavailable',
+  'ai_policy_provider_revision_mismatch',
+  'ai_policy_provider_locality_mismatch',
 ] as const;
 export const AiPolicyRefusalCodeSchema = z.enum(AI_POLICY_REFUSAL_CODES);
 export type AiPolicyRefusalCode = z.infer<typeof AiPolicyRefusalCodeSchema>;
@@ -249,11 +256,15 @@ export type AiPolicyHandshake = z.infer<typeof AiPolicyHandshakeSchema>;
  * locality, saw WHICH pages at WHICH policy revision. A continuation
  * replays a turn only after every page here is re-admitted against the
  * provider answering now; a turn without this record is never replayed.
+ * `contentRevision` is `pages.content_revision` as the model saw it: a body
+ * edit moves it, so a cached answer or a replayed turn grounded on the old
+ * text is recognised as stale.
  */
 export const ConversationTurnAiProvenancePageSchema = z.object({
   pageId: z.number().int().positive(),
   policy: AiPolicySchema,
   policyRevision: z.number().int().nonnegative(),
+  contentRevision: z.number().int().nonnegative(),
 }).strict();
 export type ConversationTurnAiProvenancePage = z.infer<typeof ConversationTurnAiProvenancePageSchema>;
 

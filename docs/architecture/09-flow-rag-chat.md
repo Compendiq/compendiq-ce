@@ -90,13 +90,14 @@ sequenceDiagram
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
         RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
-        BE->>PG: admitPageForUsecase(rootPageId, 'chat') (#35;282)
-        PG-->>BE: admitted / refused (retryable refusal = 503, policy refusal = tree skipped)
-        BE->>SP: assembleSubPageContext(rootPageId, …, { policyContext:<br/>{ providerId, usecase:'chat', expectedConfigRevision, expectedLocality } })
+        BE->>PG: admitPageForProvider(rootPageId, 'chat', BOUND chat providerId, model) (#35;282)
+        PG-->>BE: admitted / refused (retryable refusal = 503, policy refusal = tree skipped)#59;<br/>admitted at another configRevision → 409 ai_policy_provider_revision_mismatch#59;<br/>same revision, another locality → 409 ai_policy_provider_locality_mismatch
+        BE->>SP: assembleSubPageContext(rootPageId, …, { policyContext:<br/>{ providerId, usecase:'chat', expectedConfigRevision, expectedLocality } — the<br/>request's ONE binding, never the admission's })
         SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
         SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC) AND admitted per page
         CF-->>SP: pages
-        SP-->>BE: tree context + includedPageRefs { id, policy, policyRevision }<br/>+ excludedByPolicy#59; SubPagePolicyError → 409 ai_policy_provider_mismatch<br/>(retryable → 503 ai_policy_unavailable)
+        SP-->>BE: tree context + includedPageRefs { id, policy, policyRevision }<br/>+ excludedByPolicy#59; SubPagePolicyError → 409 ai_policy_provider_revision_mismatch /<br/>ai_policy_provider_locality_mismatch by its code (retryable → 503 ai_policy_unavailable)
+        BE->>PG: readPagePolicies(included ids) — the content revision of each included page<br/>joins the turn's provenance beside the walk's policy reading
     end
     opt externalUrls provided
         BE->>MCP: fetch urls
@@ -120,16 +121,19 @@ sequenceDiagram
     note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL.<br/>#35;1115 P4 adds the ATTACHED-IMAGE identity for the same reason:<br/>the doc-id list cannot see whether the model could SEE those pages
     note right of BE: the key carries the PROMPT TEXT AS SENT (system + user),<br/>never the request's pageId: the page tree, custom prompt and<br/>fetched docs are assembled per caller, so a hit needs the<br/>same authorized text and never widens the caller's grounding
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
-    note right of BE: #35;282 adds three suffixes: prev:<chat configRevision>,<br/>loc:<chat locality>, pol:<pageId@policyRevision,…> — an endpoint edit,<br/>a locality change or ONE page's policy change is a different key
+    note right of BE: #35;282 adds three suffixes: prev:<chat configRevision>,<br/>loc:<chat locality>, pol:<pageId:policyRevision:contentRevision,…> — an endpoint<br/>edit, a locality change, ONE page's policy change or ONE page's BODY edit<br/>is a different key
+    BE->>PG: loadProviderMetadata(bound providerId) — re-prove the binding<br/>before the cache is consulted (#35;282)
+    PG-->>BE: unreadable → 503 ai_policy_unavailable#59; configRevision moved → 409<br/>ai_policy_provider_revision_mismatch#59; same revision, locality moved → 409<br/>ai_policy_provider_locality_mismatch
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
         CACHE-->>BE: answer
-        BE->>PG: provenancePagesStillAdmitted(turn pages, locality) (#35;282 — revalidate)
-        PG-->>BE: still admitted → serve#59; otherwise fall through to a fresh generation
+        BE->>PG: provenancePagesStillAdmitted(turn pages, locality) + userCanAccessPage per page (#35;282 — revalidate)
+        PG-->>BE: rows at the recorded policy AND content revision, admitted, readable → serve#59;<br/>otherwise (or unreadable) fall through to a fresh generation
         BE-->>FE: SSE { content, done:true, fromCache:true }
     else miss (stampede lock)
         BE->>CACHE: SET lock UUID NX EX 120
         CACHE-->>BE: unique acquisition token<br/>(SET NX EX)
+        BE->>PG: loadProviderMetadata(bound providerId) — LAST re-proof, immediately<br/>before the provider call and the SSE hijack (same 503/409 codes)
         BE->>PROV: streamChat(config, resolvedModel, messages)<br/>(the provider resolved at step 1 — no second resolution)
         loop chunks
             PROV-->>BE: delta
@@ -137,7 +141,7 @@ sequenceDiagram
         end
         PROV-->>BE: done
         BE->>CACHE: setCachedResponse(key, answer)<br/>(history-free asks only — a follow-up is<br/>grounded in the asker's own thread)
-        BE->>CONV: append user turn + answer + sources (atomic jsonb ||)<br/>assistant turn carries aiProvenance { version:1, providerId, configRevision,<br/>locality, pages[{pageId, policy, policyRevision}] } (#35;282)#59; row columns<br/>ai_provenance_complete=TRUE, ai_provenance_version, provider_config_revision, provider_locality
+        BE->>CONV: append user turn + answer + sources (atomic jsonb ||)<br/>assistant turn carries aiProvenance { version:1, providerId, configRevision,<br/>locality, pages[{pageId, policy, policyRevision, contentRevision}] } (#35;282)#59; row columns<br/>ai_provenance_complete=TRUE, ai_provenance_version, provider_config_revision, provider_locality
         BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
         BE-->>FE: SSE { done:true, conversationId, sources }
         BE->>CACHE: release with token<br/>(atomic compare-and-delete)
@@ -185,37 +189,63 @@ rules are few enough to state in full:
    order with `rag.rerank = 'policy_bypassed'` and
    `rag.rerank_policy_refused = <count>`; a trace can tell this apart from a
    provider fault (`'bypassed'`).
-5. **Sub-page trees are admitted page by page.** The root goes through
-   `admitPageForUsecase(rootId, 'chat')` (a retryable refusal is a 503, a
-   policy refusal skips the tree), then `assembleSubPageContext` receives a
-   `policyContext` binding `{ providerId, usecase, expectedConfigRevision,
-   expectedLocality }`. A `SubPagePolicyError` means the provider changed
-   underneath the traversal: 409 `ai_policy_provider_mismatch` (or 503 when
-   retryable). The included refs `{ id, policy, policyRevision }` join the
-   turn's provenance.
+5. **One binding per request, re-proved at every boundary.** The provider,
+   `configRevision` and effective locality decoded in point 1 are the
+   request's ONE destination (`bound`). Nothing downstream resolves its own:
+   the sub-page root is admitted through `admitPageForProvider(rootId,
+   'chat', bound.providerId, model)` (a retryable refusal is a 503, a policy
+   refusal skips the tree) and an admission that comes back at a different
+   `configRevision` is a 409 `ai_policy_provider_revision_mismatch`, at the
+   same revision but a different locality a 409
+   `ai_policy_provider_locality_mismatch`; `assembleSubPageContext` receives
+   the binding as its `policyContext` `{ providerId, usecase,
+   expectedConfigRevision, expectedLocality }`, and a `SubPagePolicyError`
+   maps by its `code` to the same two 409s (or 503 when retryable). The
+   binding is then re-read through `loadProviderMetadata` TWICE more —
+   immediately before the cache is consulted and immediately before
+   `streamChat` / the SSE hijack — with the same verdicts: unreadable or
+   non-decoding → 503 `ai_policy_unavailable`; revision moved → 409
+   revision mismatch; locality moved at the same revision → 409 locality
+   mismatch. A provider edited mid-request is refused with a status code,
+   never silently served against whatever the row says now. The included
+   refs `{ id, policy, policyRevision }` are joined with each page's current
+   `content_revision` (`readPagePolicies`) and recorded in the turn's
+   provenance.
 6. **Each assistant turn records what it was grounded on.** `aiProvenance`
    `{ version: 1, providerId, configRevision, locality, pages[{ pageId,
-   policy, policyRevision }] }` is stored on the turn (and summarised on the
-   row: `ai_provenance_complete`, `ai_provenance_version`,
-   `provider_config_revision`, `provider_locality`). A retrieval row that
-   arrived without decodable policy columns is pinned at `{ local_only, 0 }`
-   — the strictest reading, which the next step must then re-prove.
-   `selectReplayableHistory` strips turns to `{ role, content }`, so the
-   record never reaches the wire.
+   policy, policyRevision, contentRevision }] }` is stored on the turn (and
+   summarised on the row: `ai_provenance_complete`, `ai_provenance_version`,
+   `provider_config_revision`, `provider_locality`). Every retrieval row
+   selects `pages.content_revision` beside the policy columns; a row that
+   arrived without a decodable policy OR content revision is pinned at
+   `{ local_only, 0, 0 }` — the strictest reading, which revalidation then
+   refuses (no live row sits at content revision 0 after its first edit, and
+   `local_only` admits no external destination). `selectReplayableHistory`
+   strips turns to `{ role, content }`, so the record never reaches the wire.
 7. **A continuation replays history only if it can be re-proven.** Before
-   retrieval, every stored assistant turn must carry provenance (an
-   incomplete row — pre-#282 history — fails), name the SAME provider at the
-   SAME `configRevision` and locality as the one answering now, and every
-   recorded page must still exist at its recorded `ai_policy_revision` and be
-   admitted for that locality. Otherwise 409 `ai_history_not_replayable`
-   (the user starts a fresh conversation); a database failure during the
-   check is a 503 `ai_policy_unavailable`. The 404 for a conversation that
-   is not the caller's still comes first.
-8. **The answer cache cannot outlive a policy.** `buildRagCacheKey` folds in
-   `prev:<configRevision>`, `loc:<locality>` and `pol:<pageId@revision,…>`
-   (`policyRevisionsCacheComponent`), and a HIT is still revalidated with
-   `provenancePagesStillAdmitted` before it is served — a page deleted or
-   restricted inside the TTL falls through to a fresh generation.
+   retrieval, every stored assistant turn must carry provenance that parses
+   as `ConversationTurnAiProvenanceSchema` (an incomplete row — pre-#282
+   history — or a legacy/malformed record fails), the row's own
+   `provider_config_revision` / `provider_locality` columns must equal the
+   binding, every turn must name the SAME provider at the SAME
+   `configRevision` and locality as the one answering now, that provider
+   must still be readable at that state (unreadable → 503, moved → 409), and
+   every recorded page must still exist at its recorded
+   `ai_policy_revision` AND `content_revision`, be admitted for that
+   locality, and still be readable by the caller. Otherwise 409
+   `ai_history_not_replayable` (the user starts a fresh conversation); a
+   database failure during the check is a 503 `ai_policy_unavailable`. The
+   404 for a conversation that is not the caller's still comes first.
+8. **The answer cache cannot outlive a policy or a body.** `buildRagCacheKey`
+   folds in `prev:<configRevision>`, `loc:<locality>` and
+   `pol:<pageId:policyRevision:contentRevision,…>`
+   (`policyRevisionsCacheComponent`), so a page body PUT inside the TTL is a
+   different key. A HIT is still revalidated before it is served:
+   `provenancePagesStillAdmitted` (rows exist at the recorded policy AND
+   content revision, admitted for the locality) plus `userCanAccessPage` for
+   every recorded page — a page deleted, edited, restricted or taken out of
+   the caller's read set inside the TTL falls through to a fresh generation,
+   as does a revalidation the database could not answer.
 9. **Auto-title re-admits.** `generateConversationTitle` receives the turn's
    provenance; the page-derived answer is sent to the titling model only when
    the provider resolved at THAT moment decodes and every recorded page is
@@ -224,7 +254,10 @@ rules are few enough to state in full:
 
 Refusal codes are the contracts constant `AI_POLICY_REFUSAL_CODES`
 (`ai_history_not_replayable`, `ai_policy_unavailable`,
-`ai_policy_provider_mismatch`); the provenance shape is
+`ai_policy_provider_revision_mismatch`,
+`ai_policy_provider_locality_mismatch` — there is no generic
+`ai_policy_provider_mismatch`; a client is always told which of the two
+moved); the provenance shape is
 `ConversationTurnAiProvenanceSchema` (`@compendiq/contracts`, `ai-policy.ts`).
 The matrix — three policies × external / local / human, both legs, the pin,
 the sibling window, the rerank bypass, the revision bump and the cache key —
