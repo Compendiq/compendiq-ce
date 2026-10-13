@@ -1110,6 +1110,10 @@ describe('RAG Service', () => {
               chunk_text: `chunk text for page ${n}`,
               metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
               distance: 0.1 * n,
+              // #282: the leg selects the page's policy; a row WITHOUT one is
+              // never admitted to the rerank provider, so fixtures carry it.
+              ai_policy: 'all',
+              ai_policy_revision: 0,
             })),
           };
         }
@@ -2246,6 +2250,8 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
             chunk_index: n === 1 ? 2 : 0,
             metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
             distance: 0.1 * n,
+            ai_policy: 'all',
+            ai_policy_revision: 0,
           })),
         };
       }
@@ -2651,6 +2657,8 @@ describe('exact-identifier pin stage (#1107)', () => {
             chunk_index: 0,
             metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
             distance: 0.1 * n,
+            ai_policy: 'all',
+            ai_policy_revision: 0,
           })),
         };
       }

@@ -108,11 +108,19 @@ export function derivedRankArmSql(
  * pin adopts it only on a real `@@` hit (ADR-027 erratum #1617/Q1).
  */
 export function bestChunkLateralSql(tsQuery: string, alias = 'best', pageAlias = 'cp'): string {
+  // #282: a DERIVED chunk is AI output over the picture, so a `none` page's
+  // derived rows never resolve as the representative chunk — not even on a
+  // human-read surface whose authored arm carries no policy predicate. The
+  // page itself was already admitted by the caller's own predicate; this
+  // only decides WHICH of its chunks may answer. Spelled as positive
+  // membership so an unknown policy value never admits.
   return `LEFT JOIN LATERAL (
             SELECT pe.chunk_text, pe.chunk_index, pe.metadata,
                    pe.chunk_tsv @@ ${tsQuery} AS chunk_matched
               FROM page_embeddings pe
              WHERE pe.page_id = ${pageAlias}.id
+               AND ((pe.metadata->>'source') IS DISTINCT FROM '${IMAGE_ANALYSIS_CHUNK_SOURCE}'
+                    OR ${pageAlias}.ai_policy IN ('all', 'local_only'))
              ORDER BY (pe.chunk_tsv @@ ${tsQuery}) DESC,
                       ts_rank(pe.chunk_tsv, ${tsQuery}) DESC,
                       pe.chunk_index ASC

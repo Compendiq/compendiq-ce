@@ -3,6 +3,9 @@ import { logger } from '../../../core/utils/logger.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { chat, type ChatMessage } from './openai-compatible-client.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { loadProviderMetadata } from './ai-policy-admission.js';
+import { provenancePagesStillAdmitted } from './ai-policy-retrieval.js';
 
 /** Generated-title cap; the fallback may add `…`, while manual rename allows 200 chars. */
 export const CONVERSATION_TITLE_MAX = 80;
@@ -81,6 +84,17 @@ export interface GenerateConversationTitleOptions {
   question: string;
   answer: string;
   refused: boolean;
+  /**
+   * #282: the provenance of the turn whose answer is summarised. The title
+   * call is a SECOND model call over page-derived text, made later, so it
+   * is re-admitted against the provider resolved at THAT moment: every
+   * recorded page must still exist at its recorded policy revision and be
+   * admitted for that provider's effective locality, and the provider's
+   * metadata must decode. Otherwise the question-derived title stays.
+   * Absent provenance (a caller that recorded none) admits nothing: the
+   * answer is not shipped.
+   */
+  provenance?: ConversationTurnAiProvenance;
 }
 
 /** Compare-and-set the generated title without moving the conversation row. */
@@ -114,11 +128,33 @@ export async function generateConversationTitle({
   question,
   answer,
   refused,
+  provenance,
 }: GenerateConversationTitleOptions): Promise<void> {
   try {
     const { config, model } = await resolveUsecase('chat');
+    // #282: re-admission against the provider answering NOW. The answer
+    // (page-derived text) ships only when the provider's metadata decodes
+    // and every grounding page is still admitted for its effective
+    // locality at its recorded revision; the question alone is the user's
+    // own words and always may. A refused turn has no answer to ship.
+    let shipAnswer = !refused;
+    if (shipAnswer) {
+      if (!provenance) {
+        shipAnswer = false;
+      } else {
+        const provider = await loadProviderMetadata({ query }, config.providerId);
+        shipAnswer = provider !== null
+          && (await provenancePagesStillAdmitted(provenance.pages, provider.effectiveLocality));
+      }
+      if (!shipAnswer) {
+        logger.info(
+          { conversationId, providerId: config.providerId },
+          'Conversation auto-title: grounding not re-admitted under article AI policy; titling from the question only',
+        );
+      }
+    }
     const safeQuestion = sanitizeLlmInput(question.slice(0, TITLE_QUESTION_MAX_CHARS)).sanitized;
-    const safeAnswer = refused
+    const safeAnswer = !shipAnswer
       ? null
       : sanitizeLlmInput(answer.slice(0, TITLE_ANSWER_MAX_CHARS)).sanitized;
 

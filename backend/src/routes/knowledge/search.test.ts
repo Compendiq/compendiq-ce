@@ -542,7 +542,9 @@ describe('Search Routes', () => {
         'test-user-id',
         expect.any(Array),
         expect.any(Number),
-        { spaceKey: 'DEV' },
+        // #282: a human-read surface declares itself, so the authored-text
+        // predicate is skipped (derived chunks of `none` pages still hidden).
+        { spaceKey: 'DEV', aiPolicy: { purpose: 'human' } },
       );
     });
 
@@ -754,6 +756,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
       const body = response.json();
@@ -785,6 +788,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
     });
@@ -960,6 +964,7 @@ describe('Search Routes', () => {
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: expect.any(Function),
+          aiPolicy: { purpose: 'human' },
         },
       );
     });

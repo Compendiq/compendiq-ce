@@ -17,6 +17,16 @@ vi.mock('../../../core/db/postgres.js', () => ({
 vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: (input: string) => mockSanitize(input),
 }));
+// #282: the answer is page-derived text, so it ships to the titling model
+// only after re-admission against the provider answering NOW.
+const mockLoadProviderMetadata = vi.fn();
+const mockProvenanceStillAdmitted = vi.fn();
+vi.mock('./ai-policy-admission.js', () => ({
+  loadProviderMetadata: (...args: unknown[]) => mockLoadProviderMetadata(...args),
+}));
+vi.mock('./ai-policy-retrieval.js', () => ({
+  provenancePagesStillAdmitted: (...args: unknown[]) => mockProvenanceStillAdmitted(...args),
+}));
 
 import {
   CONVERSATION_TITLE_MAX,
@@ -33,6 +43,10 @@ beforeEach(() => {
   });
   mockChat.mockResolvedValue('Rotate Confluence Access Tokens');
   mockQuery.mockResolvedValue({ rows: [] });
+  mockLoadProviderMetadata.mockResolvedValue({
+    configRevision: 3, effectiveLocality: 'external', declaredBy: null, declaredAt: null,
+  });
+  mockProvenanceStillAdmitted.mockResolvedValue(true);
 });
 
 describe('initialTitleFromQuestion', () => {
@@ -101,7 +115,41 @@ describe('generateConversationTitle', () => {
     question: 'How do we rotate the PAT?',
     answer: 'Use the security settings page.',
     refused: false,
+    provenance: {
+      version: 1 as const,
+      providerId: 'p1',
+      configRevision: 3,
+      locality: 'external' as const,
+      pages: [{ pageId: 42, policy: 'all' as const, policyRevision: 0 }],
+    },
   };
+
+  it('re-admits the grounding set against the provider answering now before shipping the answer (#282)', async () => {
+    await generateConversationTitle(base);
+    expect(mockLoadProviderMetadata).toHaveBeenCalledWith(expect.anything(), 'p1');
+    expect(mockProvenanceStillAdmitted).toHaveBeenCalledWith(base.provenance.pages, 'external');
+    const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
+    expect(messages[1]!.content).toContain(`Answer:\n${base.answer}`);
+  });
+
+  it.each([
+    ['a page is no longer admitted', () => mockProvenanceStillAdmitted.mockResolvedValue(false)],
+    ['the provider metadata is unprovable', () => mockLoadProviderMetadata.mockResolvedValue(null)],
+  ])('titles from the question alone when %s (#282)', async (_name, arrange) => {
+    arrange();
+    await generateConversationTitle(base);
+    expect(mockSanitize).toHaveBeenCalledTimes(1);
+    const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
+    expect(messages[1]!.content).toBe(`Question:\n${base.question}`);
+    expect(messages[1]!.content).not.toContain(base.answer);
+  });
+
+  it('ships nothing page-derived when the caller recorded no provenance (#282)', async () => {
+    await generateConversationTitle({ ...base, provenance: undefined });
+    expect(mockProvenanceStillAdmitted).not.toHaveBeenCalled();
+    const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
+    expect(messages[1]!.content).not.toContain(base.answer);
+  });
 
   it('uses the chat assignment, sanitizes bounded inputs, and compare-and-sets the generated title', async () => {
     await generateConversationTitle({

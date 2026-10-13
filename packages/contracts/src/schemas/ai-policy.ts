@@ -213,8 +213,18 @@ export const AI_POLICY_STAGES = [
 export const AiPolicyStageSchema = z.enum(AI_POLICY_STAGES);
 export type AiPolicyStage = z.infer<typeof AiPolicyStageSchema>;
 
-/** Refusal error codes for continuation / cache reuse (SPEC-RAG-002). */
-export const AI_POLICY_REFUSAL_CODES = ['ai_history_not_replayable', 'ai_policy_unavailable'] as const;
+/**
+ * Refusal error codes for continuation / cache reuse (SPEC-RAG-002).
+ * `ai_history_not_replayable` (409): a prior turn's grounding is no longer
+ * admissible for the provider that would answer now, or was never recorded.
+ * `ai_policy_unavailable` (503): the policy or provider state could not be
+ * read — retryable, never a statement about the article.
+ * `ai_policy_provider_mismatch` (409): a sub-page traversal found the
+ * provider's configuration revision or locality moved during the request.
+ */
+export const AI_POLICY_REFUSAL_CODES = [
+  'ai_history_not_replayable', 'ai_policy_unavailable', 'ai_policy_provider_mismatch',
+] as const;
 export const AiPolicyRefusalCodeSchema = z.enum(AI_POLICY_REFUSAL_CODES);
 export type AiPolicyRefusalCode = z.infer<typeof AiPolicyRefusalCodeSchema>;
 
@@ -232,6 +242,29 @@ export const AiPolicyHandshakeSchema = z.object({
   provenanceVersion: z.literal(AI_POLICY_PROVENANCE_VERSION),
 }).strict();
 export type AiPolicyHandshake = z.infer<typeof AiPolicyHandshakeSchema>;
+
+/**
+ * Per-assistant-turn provenance persisted inside `llm_conversations.messages`
+ * (#282): WHICH provider, at WHICH configuration revision and effective
+ * locality, saw WHICH pages at WHICH policy revision. A continuation
+ * replays a turn only after every page here is re-admitted against the
+ * provider answering now; a turn without this record is never replayed.
+ */
+export const ConversationTurnAiProvenancePageSchema = z.object({
+  pageId: z.number().int().positive(),
+  policy: AiPolicySchema,
+  policyRevision: z.number().int().nonnegative(),
+}).strict();
+export type ConversationTurnAiProvenancePage = z.infer<typeof ConversationTurnAiProvenancePageSchema>;
+
+export const ConversationTurnAiProvenanceSchema = z.object({
+  version: z.literal(AI_POLICY_PROVENANCE_VERSION),
+  providerId: z.string().min(1),
+  configRevision: z.number().int().nonnegative(),
+  locality: ProviderLocalitySchema,
+  pages: z.array(ConversationTurnAiProvenancePageSchema),
+}).strict();
+export type ConversationTurnAiProvenance = z.infer<typeof ConversationTurnAiProvenanceSchema>;
 
 /** PUT /api/admin/llm-providers/:id/locality */
 export const DeclareProviderLocalitySchema = z.object({

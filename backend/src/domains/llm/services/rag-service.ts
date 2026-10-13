@@ -37,6 +37,16 @@ import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import { readDerivedProvenance, type DerivedProvenance } from './derived-provenance.js';
+import type { AiPolicy } from '@compendiq/contracts';
+import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
+import { asRevision, loadProviderMetadata } from './ai-policy-admission.js';
+import {
+  aiPolicyPredicate,
+  derivedArmPredicate,
+  rowAdmittedFor,
+  DEFAULT_RETRIEVAL_PURPOSE,
+  type RetrievalPurpose,
+} from './ai-policy-retrieval.js';
 import {
   bestChunkLateralSql,
   derivedRankArmSql,
@@ -243,6 +253,24 @@ interface SearchResult {
    * universal constant.
    */
   rerankScore?: number | null;
+  /**
+   * #282 — the page's article AI policy and its revision AS THE ROW WAS
+   * RETRIEVED, selected by the same query that applied the policy predicate.
+   * Absent only on a row a producer could not decode (a policy outside the
+   * closed set, a non-integer revision) — consumers treat absence as
+   * "unknown", never as `all`: the rerank bypass refuses to ship such a
+   * row externally, and the ask route's provenance record pins it at the
+   * strictest reading so the continuation guard must re-prove it.
+   */
+  aiPolicy?: AiPolicy;
+  aiPolicyRevision?: number;
+}
+
+/** Decode the policy columns a retrieval row selected; absent when unprovable. */
+function policyFields(row: { ai_policy?: unknown; ai_policy_revision?: unknown }): { aiPolicy: AiPolicy; aiPolicyRevision: number } | Record<string, never> {
+  const revision = asRevision(row.ai_policy_revision);
+  if (!isAiPolicy(row.ai_policy) || revision === null) return {};
+  return { aiPolicy: row.ai_policy, aiPolicyRevision: revision };
 }
 
 /**
@@ -366,13 +394,22 @@ export async function vectorSearch(
   userId: string,
   questionEmbedding: number[],
   limit = RAG_FETCH_WIDTH_DEFAULT,
-  opts?: { spaceKey?: string; column?: VectorSearchColumn },
+  opts?: { spaceKey?: string; column?: VectorSearchColumn; aiPolicy?: RetrievalPurpose },
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
       const started = performance.now();
       const spaceKey = opts?.spaceKey;
+      // #282: the article AI policy, applied INSIDE the candidate query for
+      // the destination the caller declared. No declaration = external, the
+      // strictest reading. A derived (image-analysis) chunk of a `none`
+      // page is excluded even on a human-read surface.
+      const purpose = opts?.aiPolicy ?? DEFAULT_RETRIEVAL_PURPOSE;
+      const policyFilter = aiPolicyPredicate(purpose);
+      // Page admission above decides the page; this decides whether one of
+      // its DERIVED rows may be the representative chunk (never for `none`).
+      const derivedFilter = ` AND ((pe.metadata->>'source') IS DISTINCT FROM 'image_analysis' OR cp.ai_policy IN ('all', 'local_only'))`;
       // Allow-listed identifier, re-narrowed at the boundary: anything but
       // the literal 'embedding_next' — including a value smuggled through a
       // type assertion — degrades to the live column rather than reaching
@@ -456,13 +493,16 @@ export async function vectorSearch(
           // delete; typing it `number | null` makes the guard load-bearing to
           // the compiler as well as at runtime (#1529).
           distance: number | null;
+          ai_policy: unknown;
+          ai_policy_revision: unknown;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
+                  cp.ai_policy, cp.ai_policy_revision,
                   pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${ragRetrievalPagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
+           AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}${policyFilter}${derivedFilter}
            ORDER BY pe.${column} <=> $2
            LIMIT $3`,
           spaceKey
@@ -512,6 +552,7 @@ export async function vectorSearch(
                 vectorScore: 1 - row.distance,
                 keywordRank: null,
                 ...(derived ? { derived } : {}),
+                ...policyFields(row),
               };
             }),
           Number(limit),
@@ -559,7 +600,7 @@ export async function keywordSearch(
   userId: string,
   questionText: string,
   limit = RAG_FETCH_WIDTH_DEFAULT,
-  opts?: { spaceKey?: string },
+  opts?: { spaceKey?: string; aiPolicy?: RetrievalPurpose },
 ): Promise<SearchResult[]> {
   // The lexical parser is CHOSEN per query (#1110, see lexical-query.ts).
   // Normally websearch_to_tsquery, so users get "quoted phrases" as real
@@ -626,6 +667,14 @@ export async function keywordSearch(
       const tsq = lexicalTsQuery(parser, ftsLang, 2);
       const visibility = ragRetrievalPagesPredicate(1, 4);
       const spaceFilter = spaceKey ? ' AND cp.space_key = $5' : '';
+      // #282: the article AI policy, inside BOTH arms of the candidate
+      // union. The authored arm carries the destination's predicate (none
+      // for a human reader); the derived arm additionally never admits a
+      // `none` page's image analysis, even to a human. No `$n` is added —
+      // the fragments are parameterless literals from the contracts enum.
+      const purpose = opts?.aiPolicy ?? DEFAULT_RETRIEVAL_PURPOSE;
+      const authoredPolicy = aiPolicyPredicate(purpose);
+      const derivedPolicy = derivedArmPredicate(purpose);
       const result = await query<{
         page_id: number;
         confluence_id: string | null;
@@ -633,15 +682,17 @@ export async function keywordSearch(
         space_key: string | null;
         body_text: string;
         rank: number;
+        ai_policy: unknown;
+        ai_policy_revision: unknown;
       } & BestChunkColumns>(
         `WITH cand AS (
            SELECT cp.id AS page_id, ts_rank(cp.tsv, ${tsq}) AS rank
              FROM pages cp
             WHERE cp.tsv @@ ${tsq}
               AND ${visibility}
-              AND cp.deleted_at IS NULL${spaceFilter}
+              AND cp.deleted_at IS NULL${spaceFilter}${authoredPolicy}
            UNION ALL
-           ${derivedRankArmSql(tsq, visibility, spaceFilter)}
+           ${derivedRankArmSql(tsq, visibility, spaceFilter + derivedPolicy)}
          ), ranked AS (
            SELECT page_id, MAX(rank) AS rank
              FROM cand
@@ -650,6 +701,7 @@ export async function keywordSearch(
             LIMIT $3
          )
          SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                cp.ai_policy, cp.ai_policy_revision,
                 -- Only for a row the chunk resolution cannot answer (review
                 -- r1 finding 6). The prefix was selected for EVERY keyword
                 -- row while the mapper discards it on the common path, at up
@@ -685,6 +737,7 @@ export async function keywordSearch(
           keywordRank: row.rank,
           ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
           ...(resolved.derived ? { derived: resolved.derived } : {}),
+          ...policyFields(row),
         };
       });
       span?.setAttribute('rag.hits', mapped.length);
@@ -1220,6 +1273,17 @@ export interface RetrievalMeta {
 export interface HybridSearchOptions {
   rerank?: boolean;
   /**
+   * #282 — the destination the retrieved text is for. `{ purpose: 'human' }`
+   * for a page-search surface a person reads; `{ purpose: 'ai',
+   * destinationLocality }` for a model, with the locality DECODED from the
+   * chat provider's current configuration revision by the caller
+   * (`loadProviderMetadata`). Absent = external, the strictest reading.
+   * Applied INSIDE every candidate query (both legs, the pin, the sibling
+   * window) and consulted by the rerank bypass, which never ships a page
+   * that is not `all` to a rerank provider that is not effectively local.
+   */
+  aiPolicy?: RetrievalPurpose;
+  /**
    * Invoked once per search with the retrieval health verdict (#1105 B1).
    * The confidence gate must distinguish "healthy retrieval genuinely found
    * nothing" (refusable) from "the vector leg is down / the corpus is not
@@ -1463,6 +1527,7 @@ async function lookupIdentifier(
   ident: DetectedIdentifier,
   spaces: string[],
   userId: string,
+  purpose: RetrievalPurpose = DEFAULT_RETRIEVAL_PURPOSE,
 ): Promise<SearchResult[]> {
   // The excerpt is sized to the SAME per-page budget assembled pages get
   // (#1273 fork F9). A new pin is the one row sibling assembly cannot
@@ -1501,12 +1566,16 @@ async function lookupIdentifier(
   // UNREFERENCED parameter cannot type-infer and kills the statement).
   const selectWith = (tsqTextParam: number): string => {
     const tsq = lexicalTsQuery(identParser, ftsLang, tsqTextParam);
+    // #282: the pin is a candidate producer like the legs, so the policy
+    // predicate sits INSIDE its statement — a parameterless fragment, so
+    // the per-branch `$n` numbering above is untouched.
     return `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                   cp.ai_policy, cp.ai_policy_revision,
                    substring(cp.body_text, 1, $5) AS excerpt,
                    best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
             FROM pages cp
             ${bestChunkLateralSql(tsq)}
-            WHERE ${ragRetrievalPagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+            WHERE ${ragRetrievalPagesPredicate(1, 3)} AND cp.deleted_at IS NULL${aiPolicyPredicate(purpose)}`;
   };
   type Row = {
     page_id: number;
@@ -1514,6 +1583,8 @@ async function lookupIdentifier(
     title: string;
     space_key: string | null;
     excerpt: string | null;
+    ai_policy: unknown;
+    ai_policy_revision: unknown;
   } & BestChunkColumns;
   const limit = IDENTIFIER_LOOKUP_CANDIDATES;
   let rows: Row[] = [];
@@ -1634,6 +1705,7 @@ async function lookupIdentifier(
       pinned: true as const,
       ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
       ...(resolved.derived ? { derived: resolved.derived } : {}),
+      ...policyFields(row),
     };
   });
 }
@@ -1710,8 +1782,13 @@ async function hybridSearchInner(
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
+  // #282: the one destination declaration for every producer in this
+  // pipeline — both legs, the pin and the sibling window read it.
+  const purpose: RetrievalPurpose = opts?.aiPolicy ?? DEFAULT_RETRIEVAL_PURPOSE;
+  span?.setAttribute('rag.ai_policy_purpose', purpose.purpose);
+  if (purpose.purpose === 'ai') span?.setAttribute('rag.ai_policy_destination', purpose.destinationLocality);
   const keywordPromise = stageLimitPromise.then((stageLimit) =>
-    keywordSearch(userId, question, stageLimit, { spaceKey: opts?.spaceKey }),
+    keywordSearch(userId, question, stageLimit, { spaceKey: opts?.spaceKey, aiPolicy: purpose }),
   );
   // Observe the promise so a rejection can never go unhandled if the embedding
   // path short-circuits (e.g. rethrowing CircuitBreakerOpenError) before the
@@ -1756,7 +1833,7 @@ async function hybridSearchInner(
       config, model, formatQueryForEmbedding(model, question),
     );
     const questionEmbedding = embeddings[0]!;
-    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise, { spaceKey: opts?.spaceKey });
+    vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise, { spaceKey: opts?.spaceKey, aiPolicy: purpose });
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
@@ -1926,6 +2003,26 @@ async function hybridSearchInner(
     const pool = candidates.slice(0, poolTarget);
     const rerankStarted = performance.now();
     try {
+      // #282: the rerank provider is a SECOND destination with its own
+      // locality, evaluated per stage and never inherited from chat. Every
+      // pooled row must be admitted for THAT locality — `local_only` text
+      // reaches an external reranker otherwise, and a row whose policy did
+      // not decode is never assumed `all`. The locality comes from the one
+      // shared decoder (`loadProviderMetadata`); an unprovable provider row
+      // reads as not-local. A refused pool keeps the fused order, labelled
+      // 'policy_bypassed' so a trace distinguishes it from a provider fault.
+      const rerankMeta = await loadProviderMetadata({ query }, rerankCfg.config.providerId);
+      const rerankLocality = rerankMeta?.effectiveLocality ?? 'external';
+      const refused = pool.filter((r) => !rowAdmittedFor(r, rerankLocality));
+      if (refused.length > 0) {
+        logger.info(
+          { providerId: rerankCfg.config.providerId, rerankLocality, refusedPages: refused.map((r) => r.pageId) },
+          'Rerank stage bypassed by article AI policy — serving the fused order',
+        );
+        span?.setAttribute('rag.rerank', 'policy_bypassed');
+        span?.setAttribute('rag.rerank_policy_refused', refused.length);
+        topResults = candidates.slice(0, Math.max(0, topK));
+      } else {
       // KB chunk text goes to the assigned rerank provider — same
       // prompt-injection guard the chat context gets (issue #1104's PII
       // note; the ADR-021 amendment records the egress decision).
@@ -1974,6 +2071,7 @@ async function hybridSearchInner(
         { stage: 'rerank' },
         STAGE_DURATION_OPTS,
       );
+      }
     } catch (err) {
       logger.warn({ err }, 'Rerank stage bypassed — serving the fused order');
       span?.setAttribute('rag.rerank', 'bypassed');
@@ -2079,6 +2177,11 @@ async function hybridSearchInner(
              FROM page_embeddings pe
              JOIN unnest($1::int[], $2::int[]) AS a(page_id, anchor)
                ON pe.page_id = a.page_id
+             -- #282: the window is MORE of the page's text, fetched in its
+             -- own statement up to a rerank budget after the candidate
+             -- query admitted the page; the policy is re-applied here so a
+             -- policy tightened in between never widens into the prompt.
+             JOIN pages cp ON cp.id = pe.page_id AND cp.deleted_at IS NULL${aiPolicyPredicate(purpose)}
              WHERE pe.chunk_index BETWEEN a.anchor - $3 AND a.anchor + $3
                -- ADR-027 D2: sibling assembly never crosses the authored /
                -- derived boundary. Derived rows (metadata.source =
@@ -2171,7 +2274,7 @@ async function hybridSearchInner(
         const lookedUp: SearchResult[][] = [];
         for (const ident of detected) {
           try {
-            lookedUp.push(await lookupIdentifier(ident, pinSpaces, userId));
+            lookedUp.push(await lookupIdentifier(ident, pinSpaces, userId, purpose));
           } catch (err) {
             logger.warn({ err, kind: ident.kind }, 'Identifier lookup failed — skipping this pin');
           }

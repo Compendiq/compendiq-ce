@@ -29,7 +29,24 @@ import { pickRetrievedImages, retrievedImagesCacheComponent } from '../../domain
 import { buildDerivedImageSources } from '../../domains/llm/services/derived-provenance.js';
 import { createPageIdentityReader } from '../../domains/llm/services/page-identity.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
-import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
+import { LlmCache, buildRagCacheKey, policyRevisionsCacheComponent } from '../../domains/llm/services/llm-cache.js';
+// #282: article AI policy at the chat boundary. The provider's effective
+// locality comes from the ONE shared decoder (`loadProviderMetadata`), the
+// sub-page root is admitted through the accepted admission service, and the
+// grounding set's policy state is recorded per assistant turn and re-proved
+// on every continuation and cache hit.
+import { admitPageForUsecase, loadProviderMetadata, type ProviderMetadata } from '../../domains/llm/services/ai-policy-admission.js';
+import {
+  pageAdmittedFor,
+  provenancePagesStillAdmitted,
+  readPagePolicies,
+} from '../../domains/llm/services/ai-policy-retrieval.js';
+import {
+  AI_POLICY_PROVENANCE_VERSION,
+  type AiPolicyRefusal,
+  type ConversationTurnAiProvenance,
+  type ConversationTurnAiProvenancePage,
+} from '@compendiq/contracts';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
@@ -38,7 +55,7 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
-import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix, SubPagePolicyError } from '../../domains/confluence/services/subpage-context.js';
 import {
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -62,7 +79,71 @@ import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
  * invites imitation) and excluded from the gate's history exemption (a
  * refusal turn grounds nothing).
  */
-type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedSource[] };
+type StoredChatMessage = ChatMessage & {
+  refused?: boolean;
+  sources?: PersistedSource[];
+  /** #282: recorded on every assistant turn this route writes; see `historyReplayable`. */
+  aiProvenance?: ConversationTurnAiProvenance;
+};
+
+/**
+ * #282 — the grounding pages of one turn, as the retrieval rows reported
+ * them. A row whose policy did not decode is pinned at the STRICTEST
+ * reading (`local_only`, revision 0): the continuation guard then has to
+ * re-prove it against the current row, and a revision mismatch refuses.
+ * Never `all`, never omitted — an omitted page is a page the guard cannot
+ * see.
+ */
+function provenancePagesFrom(
+  rows: ReadonlyArray<{ pageId: number; aiPolicy?: ConversationTurnAiProvenancePage['policy']; aiPolicyRevision?: number }>,
+): ConversationTurnAiProvenancePage[] {
+  const byPage = new Map<number, ConversationTurnAiProvenancePage>();
+  for (const r of rows) {
+    if (byPage.has(r.pageId)) continue;
+    byPage.set(r.pageId, r.aiPolicy !== undefined && r.aiPolicyRevision !== undefined
+      ? { pageId: r.pageId, policy: r.aiPolicy, policyRevision: r.aiPolicyRevision }
+      : { pageId: r.pageId, policy: 'local_only', policyRevision: 0 });
+  }
+  return [...byPage.values()];
+}
+
+/**
+ * #282 — whether a conversation's recorded history may be replayed to
+ * `provider` for `userId`. Refuses (`false`) when the row was never marked
+ * provenance-complete at the current version, when any non-refused
+ * assistant turn lacks its record, or when any recorded page no longer
+ * exists, moved policy revision, is no longer admitted for the provider's
+ * effective locality, or is no longer readable by the caller. Throws on a
+ * DB failure — the caller maps that to the retryable 503.
+ */
+async function historyReplayable(
+  history: StoredChatMessage[],
+  rowComplete: boolean,
+  rowVersion: number | null,
+  provider: ProviderMetadata,
+  userId: string,
+): Promise<boolean> {
+  if (!rowComplete || rowVersion !== AI_POLICY_PROVENANCE_VERSION) return false;
+  const pages = new Map<number, number>();
+  for (const turn of history) {
+    if (turn.role !== 'assistant' || turn.refused) continue;
+    const p = turn.aiProvenance;
+    if (!p || p.version !== AI_POLICY_PROVENANCE_VERSION) return false;
+    for (const page of p.pages) {
+      const prior = pages.get(page.pageId);
+      pages.set(page.pageId, prior === undefined ? page.policyRevision : Math.max(prior, page.policyRevision));
+    }
+  }
+  if (pages.size === 0) return true;
+  const current = await readPagePolicies([...pages.keys()]);
+  for (const [pageId, revision] of pages) {
+    const row = current.get(pageId);
+    if (!row || row.policyRevision !== revision) return false;
+    if (!pageAdmittedFor(row.policy, provider.effectiveLocality)) return false;
+    if (!(await userCanAccessPage(userId, pageId))) return false;
+  }
+  return true;
+}
 
 /**
  * Why the ask path declined to answer. Emitted as `refusalReason` on the
@@ -233,9 +314,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     let conversationHistory: StoredChatMessage[] = [];
     let convId: string | null | undefined = conversationId;
 
+    let historyRow: { complete: boolean; version: number | null } | null = null;
     if (convId) {
-      const conv = await query<{ messages: StoredChatMessage[] }>(
-        'SELECT messages FROM llm_conversations WHERE id = $1 AND user_id = $2',
+      const conv = await query<{ messages: StoredChatMessage[]; ai_provenance_complete: boolean | null; ai_provenance_version: number | null }>(
+        'SELECT messages, ai_provenance_complete, ai_provenance_version FROM llm_conversations WHERE id = $1 AND user_id = $2',
         [convId, userId],
       );
       // #1361: a stale or foreign id is a 404 BEFORE retrieval and before any
@@ -245,6 +327,59 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.notFound('Conversation not found');
       }
       conversationHistory = conv.rows[0]!.messages;
+      historyRow = {
+        complete: conv.rows[0]!.ai_provenance_complete === true,
+        version: conv.rows[0]!.ai_provenance_version ?? null,
+      };
+    }
+
+    // ── #282: the chat provider BEFORE retrieval ─────────────────────────
+    // Retrieval needs the destination's effective locality to apply the
+    // article AI policy inside its queries, so the `chat` use case is
+    // resolved here rather than after the context is built. Resolution is
+    // also what makes the cache key provider-specific (#217); the identity
+    // is reused unchanged below. The locality comes from the one shared
+    // decoder; a provider row it cannot describe refuses the turn with the
+    // retryable 503 — never an external-by-default guess, and never an
+    // SSE stream that has to carry the refusal.
+    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    logger.debug(
+      { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
+      'Resolved chat usecase assignment',
+    );
+    const refuse = (code: number, refusal: AiPolicyRefusal) => reply.code(code).send(refusal);
+    let chatProvider: ProviderMetadata | null;
+    try {
+      chatProvider = await loadProviderMetadata({ query }, chatConfig.providerId);
+    } catch (err) {
+      logger.warn({ err, providerId: chatConfig.providerId }, 'Chat provider metadata unreadable; refusing');
+      chatProvider = null;
+    }
+    if (!chatProvider) {
+      return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+    }
+    const destinationLocality = chatProvider.effectiveLocality;
+
+    // ── #282: continuation guard ─────────────────────────────────────────
+    // A replayed turn is page text exactly as fresh retrieval is: every
+    // page a prior turn was grounded in must still be admitted for the
+    // provider answering NOW, at the revision it was recorded under, and
+    // still readable by the caller. History written before provenance was
+    // recorded is never replayed on trust. 404 (above) outranks this guard
+    // so a foreign id still reveals nothing.
+    if (convId) {
+      let replayable: boolean;
+      try {
+        replayable = await historyReplayable(
+          conversationHistory, historyRow!.complete, historyRow!.version, chatProvider, userId,
+        );
+      } catch (err) {
+        logger.warn({ err, conversationId: convId }, 'Continuation policy state unreadable; refusing');
+        return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+      }
+      if (!replayable) {
+        return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+      }
     }
 
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
@@ -282,6 +417,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // next breaks the ordering the pages share.
       searchResults = await search(userId, question, 5, undefined, {
         rerank: true,
+        // #282: the destination this text is for — applied inside every
+        // candidate query and consulted by the rerank bypass.
+        aiPolicy: { purpose: 'ai', destinationLocality },
         // #1284: this is the surface the refuse gate is evaluated on, and
         // the only one whose rows the Retrieval panel's confidence readout
         // reads. Both retrieval entrypoints record the verdict they computed
@@ -352,6 +490,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // using the suffix as the proxy made the gate refuse over grounding that
     // was in the prompt while claiming the tree "could not be included".
     let subPageContextAssembled = false;
+    // #282: the pages the sub-page walk actually included, at the policy
+    // revision it saw them — recorded in the turn's provenance beside the
+    // retrieval rows so a continuation re-proves them too.
+    let includedSubPages: ConversationTurnAiProvenancePage[] = [];
     if (includeSubPages && body.pageId) {
       // #814: enforce the same access control as GET /pages/:id before pulling
       // the parent page (and its whole sub-tree) into the LLM prompt. Without
@@ -359,18 +501,58 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // extract the content of any page in a space they cannot access.
       const resolved = await resolvePageRef(body.pageId);
       resolvedPageRef = resolved;
+      // #282: the ROOT is admitted for the `chat` use case through the
+      // shared admission service (same lock, same decision, same events as
+      // every other stage); a refused root contributes no tree, exactly as
+      // an unreadable one does, and a retryable refusal (policy state
+      // unreadable) refuses the turn rather than silently dropping grounding
+      // the caller asked for. The walk then binds that admission's provider
+      // revision and locality and decides each descendant itself.
+      let rootAdmission: Awaited<ReturnType<typeof admitPageForUsecase>> | null = null;
       if (resolved && (await userCanAccessPage(userId, resolved.id))) {
+        rootAdmission = await admitPageForUsecase(resolved.id, 'chat');
+        if (!rootAdmission.admitted && rootAdmission.retryable) {
+          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
+      }
+      if (resolved && rootAdmission?.admitted) {
         const bodyResult = await query<{ body_html: string }>(
           'SELECT body_html FROM pages WHERE id = $1 AND deleted_at IS NULL',
           [resolved.id],
         );
         const parentHtml = bodyResult.rows[0]?.body_html || '';
-        const assembled = await assembleSubPageContext(
-          userId,
-          resolved.confluenceId ?? body.pageId,
-          parentHtml,
-          resolved.title,
-        );
+        let assembled: Awaited<ReturnType<typeof assembleSubPageContext>>;
+        try {
+          assembled = await assembleSubPageContext(
+            userId,
+            resolved.confluenceId ?? body.pageId,
+            parentHtml,
+            resolved.title,
+            undefined,
+            {
+              policyContext: {
+                providerId: rootAdmission.providerId,
+                usecase: 'chat',
+                expectedConfigRevision: rootAdmission.configRevision,
+                expectedLocality: rootAdmission.locality,
+              },
+            },
+          );
+        } catch (err) {
+          // Before any SSE header: a provider the walk cannot describe is the
+          // retryable 503; a provider whose revision or locality moved under
+          // the admission is a 409 the client must re-ask under.
+          if (err instanceof SubPagePolicyError) {
+            logger.warn({ err, pageId: resolved.id }, 'Sub-page policy refusal');
+            return err.retryable
+              ? refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' })
+              : refuse(409, { error: 'ai_policy_provider_mismatch', stage: 'chat' });
+          }
+          throw err;
+        }
+        includedSubPages = (assembled.includedPageRefs ?? []).map((p) => ({
+          pageId: p.id, policy: p.policy, policyRevision: p.policyRevision,
+        }));
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
@@ -457,16 +639,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Resolve the `chat` use-case to a concrete provider+model up-front so the
-    // cache key includes the resolved identity. Guarantees that admin flips of
-    // the chat assignment do not serve a stale cached response generated by a
-    // different provider. Queue + per-provider circuit breakers are wrapped
-    // inside `streamChat()` itself, so no per-call-site wrapping needed.
-    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
-    logger.debug(
-      { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
-      'Resolved chat usecase assignment',
-    );
+    // The `chat` use-case was resolved BEFORE retrieval (#282, above) so the
+    // destination's locality could shape the candidate queries; the same
+    // identity keys the cache (#217). Queue + per-provider circuit breakers
+    // are wrapped inside `streamChat()` itself, so no per-call-site wrapping.
 
     // #1154: gate and load before the cache lookup, so the key can include
     // the image and a refusal never costs a provider round-trip.
@@ -618,6 +794,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // Returns the id the final frame must carry (null when the row vanished
     // under us) and whether this call INSERTed (the auto-title trigger).
     const persistedSources = toPersistedSources(sources);
+    // #282: what this turn was grounded in, for the provider that answered
+    // it. Retrieval rows and the included sub-pages, deduplicated per page.
+    const turnProvenance: ConversationTurnAiProvenance = {
+      version: AI_POLICY_PROVENANCE_VERSION,
+      providerId: chatConfig.providerId,
+      configRevision: chatProvider.configRevision,
+      locality: destinationLocality,
+      pages: provenancePagesFrom([
+        ...searchResults,
+        ...includedSubPages.map((p) => ({ pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision })),
+      ]),
+    };
     const pageRefForInsert = async (): Promise<number | null> => {
       if (!body.pageId) return null;
       const resolved = resolvedPageRef ?? (await resolvePageRef(body.pageId));
@@ -633,6 +821,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         content: answer,
         ...(opts?.refused ? { refused: true } : {}),
         ...(persistedSources.length > 0 ? { sources: persistedSources } : {}),
+        // #282: every assistant turn carries its provenance, a refusal
+        // included (it grounds nothing, but the guard treats a turn without
+        // a record as unprovable rather than special-casing refusals).
+        aiProvenance: turnProvenance,
       };
       const newTurns: StoredChatMessage[] = [{ role: 'user', content: question }, assistantTurn];
 
@@ -641,12 +833,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // pair granularity, so history stays well-formed; the whole array is
         // never read-modify-written. 0 rows means the row was deleted since
         // the 404 check above — do not resurrect it.
+        // #282: the row-level provenance columns describe the LATEST turn;
+        // `ai_provenance_complete` stays true only because the guard above
+        // already proved every earlier turn replayable under this provider.
         const updated = await query<{ id: string }>(
           `UPDATE llm_conversations
-              SET messages = messages || $3::jsonb, updated_at = NOW()
+              SET messages = messages || $3::jsonb, updated_at = NOW(),
+                  ai_provenance_complete = TRUE, ai_provenance_version = $4,
+                  provider_config_revision = $5, provider_locality = $6
             WHERE id = $1 AND user_id = $2
             RETURNING id`,
-          [convId, userId, JSON.stringify(newTurns)],
+          [convId, userId, JSON.stringify(newTurns), AI_POLICY_PROVENANCE_VERSION, chatProvider.configRevision, destinationLocality],
         );
         if (updated.rows.length === 0) {
           logger.warn({ conversationId: convId, userId }, 'Conversation vanished mid-answer; exchange not persisted');
@@ -658,9 +855,14 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
       const pageRef = await pageRefForInsert();
       const insertResult = await query<{ id: string }>(
-        `INSERT INTO llm_conversations (user_id, model, title, messages, page_ref)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns), pageRef],
+        `INSERT INTO llm_conversations
+           (user_id, model, title, messages, page_ref,
+            ai_provenance_complete, ai_provenance_version, provider_config_revision, provider_locality)
+         VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8) RETURNING id`,
+        [
+          userId, resolvedModel, initialTitleFromQuestion(question), JSON.stringify(newTurns), pageRef,
+          AI_POLICY_PROVENANCE_VERSION, chatProvider.configRevision, destinationLocality,
+        ],
       );
       convId = insertResult.rows[0]!.id;
       return { id: convId, inserted: true };
@@ -681,6 +883,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         question,
         answer,
         refused,
+        // #282: the title call ships the answer — page text — to the chat
+        // provider again, later; the service re-admits the grounding set
+        // against the provider resolved THEN.
+        provenance: turnProvenance,
       });
     };
 
@@ -1017,6 +1223,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // ones are different inputs, and both belong in the key.
       retrievedImages: retrievedImagesCacheComponent(retrievedImages.used),
       referenceText: referenceForLlm,
+      // #282: an answer is specific to the provider's configuration
+      // revision and effective locality and to the policy revision of every
+      // grounding page — none of which the prompt text carries.
+      providerConfigRevision: chatProvider.configRevision,
+      providerLocality: destinationLocality,
+      policyRevisions: policyRevisionsCacheComponent(turnProvenance.pages),
     });
 
     let ragLockToken: string | null = null;
@@ -1024,7 +1236,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       const { cached, lockToken } = await checkCacheWithLock(llmCache, ragCacheKey);
       ragLockToken = lockToken;
 
-      if (cached) {
+      // #282: a hit is revalidated against the CURRENT page rows before it
+      // is served — the key moves with the recorded revisions, but a page
+      // whose policy tightened a moment ago must not be replayed from an
+      // entry written under the old one. A failed revalidation is a miss:
+      // the turn generates fresh (no lock is held on the hit path).
+      const hit = cached && (await provenancePagesStillAdmitted(turnProvenance.pages, destinationLocality));
+      if (cached && !hit) {
+        logger.info({ userId }, 'Cached answer no longer admissible under article AI policy; regenerating');
+      }
+      if (cached && hit) {
         const saved = await saveConversation(cached.content);
 
         sendCachedSSE(reply, cached.content, {

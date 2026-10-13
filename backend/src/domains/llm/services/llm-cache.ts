@@ -141,6 +141,19 @@ export function buildRagCacheKey(
     retrievedImages?: string;
     /** Sanitized/truncated attached document text; folded into the final hash. */
     referenceText?: string;
+    /**
+     * #282: the chat provider's CONFIGURATION revision and effective
+     * locality, and the policy revisions of every grounding page
+     * (`policyRevisionsCacheComponent`). A cached answer is page text
+     * exactly as fresh retrieval is: an endpoint edit (which resets
+     * locality to external), a locality re-declaration or a page's policy
+     * change must each move the key so no answer generated under a looser
+     * reading is replayed under a stricter one. The route additionally
+     * revalidates a hit against the current rows before serving it.
+     */
+    providerConfigRevision?: number;
+    providerLocality?: string;
+    policyRevisions?: string;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -163,7 +176,25 @@ export function buildRagCacheKey(
   const imageSuffix = options.imageHash ? `img:${options.imageHash}` : '';
   const retrievedImagesSuffix = options.retrievedImages ? `rimg:${options.retrievedImages}` : '';
   const referenceSuffix = options.referenceText ? `ref:${options.referenceText}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
+  const providerRevisionSuffix = options.providerConfigRevision !== undefined ? `prev:${options.providerConfigRevision}` : '';
+  const localitySuffix = options.providerLocality ? `loc:${options.providerLocality}` : '';
+  const policySuffix = options.policyRevisions ? `pol:${options.policyRevisions}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, promptSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix, providerRevisionSuffix, localitySuffix, policySuffix);
+}
+
+/**
+ * #282: one digest over the grounding set's `(pageId, policyRevision)`
+ * pairs, order-independent, for `buildRagCacheKey.policyRevisions`. Empty
+ * input yields `''` so a question with no grounding pages adds no suffix.
+ */
+export function policyRevisionsCacheComponent(
+  pages: ReadonlyArray<{ pageId: number; policyRevision: number }>,
+): string {
+  if (pages.length === 0) return '';
+  const parts = [...pages]
+    .map((p) => `${p.pageId}:${p.policyRevision}`)
+    .sort();
+  return createHash('sha256').update(parts.join(',')).digest('hex');
 }
 
 export class LlmCache {

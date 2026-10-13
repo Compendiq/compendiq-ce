@@ -135,8 +135,27 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
     LlmCache: MockLlmCache,
     buildLlmCacheKey: vi.fn().mockReturnValue('k'),
     buildRagCacheKey: vi.fn().mockReturnValue('k'),
+    policyRevisionsCacheComponent: vi.fn().mockReturnValue(''),
   };
 });
+
+// #282: the ask route resolves the chat provider's locality BEFORE retrieval
+// and refuses (503) when it cannot; this suite is about the stream limiter,
+// so the provider is provably external and every grounding page admitted.
+vi.mock('../../domains/llm/services/ai-policy-admission.js', () => ({
+  loadProviderMetadata: vi.fn(async () => ({
+    configRevision: 1, effectiveLocality: 'external', declaredBy: null, declaredAt: null,
+  })),
+  admitPageForUsecase: vi.fn(async (pageId: number) => ({
+    admitted: true, pageId, policy: 'all', policyRevision: 0,
+    providerId: 'p1', configRevision: 1, locality: 'external', model: 'm',
+  })),
+}));
+vi.mock('../../domains/llm/services/ai-policy-retrieval.js', () => ({
+  pageAdmittedFor: vi.fn(() => true),
+  provenancePagesStillAdmitted: vi.fn(async () => true),
+  readPagePolicies: vi.fn(async () => new Map()),
+}));
 
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
@@ -169,6 +188,7 @@ vi.mock('../../core/services/ai-safety-service.js', () => ({
 vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
   assembleSubPageContext: vi.fn().mockResolvedValue({ markdown: '', pageCount: 0 }),
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
+  SubPagePolicyError: class SubPagePolicyError extends Error {},
 }));
 
 vi.mock('../../core/utils/rbac-guards.js', () => ({
