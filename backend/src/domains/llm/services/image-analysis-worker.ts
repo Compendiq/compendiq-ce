@@ -76,7 +76,7 @@ import {
 import { intakePageImage, mimeTypeForImageFormat } from './image-intake.js';
 import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { assertNoShadowMigration, REEMBED_ALL_LOCK_USER } from './embedding-service.js';
-import { admitPageForProvider } from './ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason } from './ai-policy-admission.js';
 import type { ImageAnalysisBatchReason } from '@compendiq/contracts';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -509,6 +509,13 @@ async function analyzeWorkRows(
     // predicate keeps a concurrent reconcile's rewrite intact.
     const admission = await admitPageForProvider(row.page_id, 'image_analysis', retained.providerId, retained.model);
     if (!admission.admitted) {
+      if (admission.reason !== 'not_found' && !isPersistableBlockReason(admission.reason)) {
+        // Retryable (deployment, not article): the row keeps its state and
+        // attempt budget for the next due batch; nothing is written or called.
+        logger.warn({ rowId: row.id, pageId: row.page_id, reason: admission.reason }, 'Image analysis admission unavailable; row left for the next batch');
+        result.skipped++;
+        continue;
+      }
       if (admission.reason !== 'not_found') {
         await query(
           `UPDATE page_image_analyses a

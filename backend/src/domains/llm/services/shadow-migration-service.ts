@@ -14,7 +14,7 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from './llm-provider-resolver.js';
-import { admitPageForProvider } from './ai-policy-admission.js';
+import { admitPageForProvider, loadProviderMetadata } from './ai-policy-admission.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -356,13 +356,10 @@ async function countStragglerPages(): Promise<number> {
  * declaring the candidate local (or changing the pages' policy) is the fix.
  */
 async function countPolicyBlockedStragglers(state: ShadowMigrationState): Promise<number> {
-  const prov = await query<{ local: boolean }>(
-    `SELECT (locality = 'local' AND locality_config_revision IS NOT NULL
-             AND locality_config_revision = config_revision) AS local
-       FROM llm_providers WHERE id::text = $1`,
-    [state.providerId],
-  );
-  const candidateLocal = prov.rows[0]?.local === true;
+  // The SAME effective-locality decoder admission uses — a candidate whose
+  // metadata is missing or does not decode is never counted as local.
+  const candidate = await loadProviderMetadata({ query }, state.providerId);
+  const candidateLocal = candidate?.effectiveLocality === 'local';
   const r = await query<{ n: number }>(
     `SELECT COUNT(DISTINCT pe.page_id)::int AS n
        FROM page_embeddings pe JOIN pages p ON p.id = pe.page_id

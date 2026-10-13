@@ -37,7 +37,7 @@ import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { admitPageForProvider, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -295,6 +295,12 @@ async function summarizePage(
   const admission = await admitPageForProvider(id, 'summary', config.providerId, model);
   if (!admission.admitted) {
     if (admission.reason === 'not_found') throw new SummaryPolicyBlocked(id, 'not_found');
+    if (!isPersistableBlockReason(admission.reason)) {
+      // Retryable (deployment, not article): the row keeps its current
+      // status for the next pass; nothing is persisted and nothing is called.
+      logger.warn({ pageId: id, reason: admission.reason, providerId: config.providerId }, 'Summary admission unavailable; page left for the next pass');
+      throw new SummaryPolicyBlocked(id, admission.reason);
+    }
     await query(
       `UPDATE pages SET summary_status = 'policy_blocked', summary_error = NULL, ai_policy_block_reason = $2
         WHERE id = $1`,

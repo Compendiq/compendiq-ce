@@ -40,15 +40,18 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
 }));
 
+// The resolver names a REAL provider row (inserted per test — article AI
+// policy admission fails closed on a provider it cannot read).
+const mocks = vi.hoisted(() => ({ providerId: '' }));
 vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockResolvedValue({
+  resolveUsecase: vi.fn().mockImplementation(async () => ({
     config: {
-      providerId: 'p1', id: 'p1', name: 'X',
+      providerId: mocks.providerId, id: mocks.providerId, name: 'X',
       baseUrl: 'http://x/v1', apiKey: null,
       authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
     },
     model: 'qwen3.5',
-  }),
+  })),
 }));
 
 // Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
@@ -221,6 +224,11 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   beforeEach(async () => {
     await truncateAllTables();
+
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url) VALUES ('X', 'http://x/v1') RETURNING id::text`,
+    );
+    mocks.providerId = provider.rows[0]!.id;
 
     // Re-seed system roles (truncateAllTables clears them)
     await query(

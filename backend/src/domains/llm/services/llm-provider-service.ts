@@ -3,6 +3,7 @@ import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
 import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
 import { invalidateProviderCapabilities } from './model-capabilities.js';
 import { PROVIDER_RESOURCE_SUFFIXES } from './provider-url.js';
+import { decodeProviderMetadata } from './ai-policy-admission.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -57,10 +58,8 @@ function rowToDto(r: ProviderRow): LlmProvider {
     configRevision: r.config_revision === undefined || r.config_revision === null ? 0 : Number(r.config_revision),
     localityDeclaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
     localityDeclaredBy: r.locality_declared_by ?? null,
-    localConfirmed: r.locality === 'local'
-      && r.locality_declared_by !== null && r.locality_declared_by !== undefined
-      && r.locality_config_revision !== null && r.locality_config_revision !== undefined
-      && Number(r.locality_config_revision) === Number(r.config_revision),
+    // Same decoder as admission: a row that does not decode never confirms local.
+    localConfirmed: decodeProviderMetadata(r)?.effectiveLocality === 'local',
   };
 }
 
@@ -246,17 +245,19 @@ interface LocalityRow {
 }
 
 function localityRowToState(r: LocalityRow): ProviderLocalityState {
-  const configRevision = Number(r.config_revision);
+  // ONE decoder for "local" (ai-policy-admission): the state an admin reads
+  // back is the state admission and the sub-page walk decide against.
+  const decoded = decodeProviderMetadata(r);
+  if (!decoded) {
+    throw new Error(`Provider ${r.id} locality metadata is invalid and cannot be reported`);
+  }
   return {
     providerId: r.id,
     locality: r.locality,
-    configRevision,
-    localConfirmed: r.locality === 'local'
-      && r.locality_declared_by !== null
-      && r.locality_config_revision !== null
-      && Number(r.locality_config_revision) === configRevision,
-    declaredBy: r.locality_declared_by,
-    declaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
+    configRevision: decoded.configRevision,
+    localConfirmed: decoded.effectiveLocality === 'local',
+    declaredBy: decoded.declaredBy,
+    declaredAt: decoded.declaredAt ? decoded.declaredAt.toISOString() : null,
   };
 }
 

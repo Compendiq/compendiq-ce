@@ -25,7 +25,11 @@ import { logger } from '../../../core/utils/logger.js';
 import { getUserAccessibleSpacesMemoized } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isAiPolicy, type AiPolicy } from '../../../core/services/ai-policy-service.js';
-import { decideAiPolicyAdmission } from '../../llm/services/ai-policy-admission.js';
+import {
+  decideAiPolicyAdmission,
+  loadProviderMetadata,
+  type ProviderMetadata,
+} from '../../llm/services/ai-policy-admission.js';
 
 /** Maximum combined context size in characters (approx 60K tokens for most LLMs). */
 const MAX_COMBINED_CONTEXT_CHARS = 200_000;
@@ -84,13 +88,33 @@ export interface SubPagePolicyContext {
   expectedLocality: 'local' | 'external';
 }
 
+/**
+ * Why a policy-bound walk refused before reading any descendant.
+ *
+ * - `ai_policy_provider_revision_mismatch` / `ai_policy_provider_locality_mismatch`:
+ *   the binding the caller was admitted with no longer describes the
+ *   provider — a conflict (#282 maps these to 409, before any stream opens).
+ * - `ai_policy_unavailable`: the provider's metadata could not be read or
+ *   does not decode (row deleted, DB failure, invalid columns). RETRYABLE —
+ *   a fact about the deployment, not the binding (#282 maps it to 503).
+ */
+export type SubPagePolicyErrorReason =
+  | 'ai_policy_provider_revision_mismatch'
+  | 'ai_policy_provider_locality_mismatch'
+  | 'ai_policy_unavailable';
+
 export class SubPagePolicyError extends Error {
   constructor(
-    public readonly reason: 'ai_policy_provider_revision_mismatch' | 'ai_policy_provider_locality_mismatch',
+    public readonly reason: SubPagePolicyErrorReason,
     message: string,
   ) {
     super(message);
     this.name = 'SubPagePolicyError';
+  }
+
+  /** True for refusals a caller may retry unchanged (`ai_policy_unavailable`). */
+  get retryable(): boolean {
+    return this.reason === 'ai_policy_unavailable';
   }
 }
 
@@ -131,37 +155,38 @@ interface AssembledContext {
   injectionWarnings: string[];
 }
 
-type ProviderLocality = { locality: string; localityConfigRevision: number | null; configRevision: number };
-
 /**
- * Read the provider's locality binding once. An unknown provider (or a
- * schema without locality columns) reads as external at revision -1 —
- * unknown locality never authorizes `local_only`. (-1 is the same sentinel
- * `admitPageForProvider` reports for an unknown provider, so a caller
- * admitted against a missing provider can match here; it is then bound to
- * `external`, which admits only `all`.)
+ * Read the provider's metadata once, through the SAME decoder admission
+ * uses (`decodeProviderMetadata`). A provider that cannot be read — no row
+ * (deleted since the caller's admission), a query failure, or metadata that
+ * does not decode — is `ai_policy_unavailable`: the walk fails closed and
+ * nothing is inferred (no default locality, no sentinel revision).
  */
-async function loadProviderLocality(providerId: string): Promise<ProviderLocality> {
+async function loadProviderMetadataOrThrow(policyContext: SubPagePolicyContext): Promise<ProviderMetadata> {
+  let provider: ProviderMetadata | null;
   try {
-    const result = await query<{ locality: string; locality_config_revision: string | null; config_revision: string }>(
-      `SELECT locality, locality_config_revision, config_revision FROM llm_providers WHERE id::text = $1`,
-      [providerId],
-    );
-    const row = result.rows[0];
-    if (!row) return { locality: 'external', localityConfigRevision: null, configRevision: -1 };
-    return {
-      locality: row.locality,
-      localityConfigRevision: row.locality_config_revision === null ? null : Number(row.locality_config_revision),
-      configRevision: Number(row.config_revision),
-    };
+    provider = await loadProviderMetadata({ query }, policyContext.providerId);
   } catch (err) {
-    if ((err as { code?: string }).code !== '42703') throw err;
-    return { locality: 'external', localityConfigRevision: null, configRevision: -1 };
+    logger.warn(
+      { err, providerId: policyContext.providerId, usecase: policyContext.usecase },
+      'Sub-page policy walk could not read provider metadata; refusing',
+    );
+    throw new SubPagePolicyError(
+      'ai_policy_unavailable',
+      `Provider ${policyContext.providerId} metadata could not be read`,
+    );
   }
+  if (!provider) {
+    throw new SubPagePolicyError(
+      'ai_policy_unavailable',
+      `Provider ${policyContext.providerId} has no readable metadata (deleted or invalid)`,
+    );
+  }
+  return provider;
 }
 
-async function bindProvider(policyContext: SubPagePolicyContext): Promise<ProviderLocality> {
-  const provider = await loadProviderLocality(policyContext.providerId);
+async function bindProvider(policyContext: SubPagePolicyContext): Promise<ProviderMetadata> {
+  const provider = await loadProviderMetadataOrThrow(policyContext);
   if (provider.configRevision !== policyContext.expectedConfigRevision) {
     throw new SubPagePolicyError(
       'ai_policy_provider_revision_mismatch',
@@ -169,18 +194,10 @@ async function bindProvider(policyContext: SubPagePolicyContext): Promise<Provid
         + `the caller was admitted at ${policyContext.expectedConfigRevision}`,
     );
   }
-  // Effective locality, by the same rule admission applies: `local` only
-  // when declared against the current configuration revision.
-  const effectiveLocality: 'local' | 'external' =
-    provider.locality === 'local'
-      && provider.localityConfigRevision !== null
-      && provider.localityConfigRevision === provider.configRevision
-      ? 'local'
-      : 'external';
-  if (effectiveLocality !== policyContext.expectedLocality) {
+  if (provider.effectiveLocality !== policyContext.expectedLocality) {
     throw new SubPagePolicyError(
       'ai_policy_provider_locality_mismatch',
-      `Provider ${policyContext.providerId} is now ${effectiveLocality}, `
+      `Provider ${policyContext.providerId} is now ${provider.effectiveLocality}, `
         + `the caller was admitted against a ${policyContext.expectedLocality} provider`,
     );
   }

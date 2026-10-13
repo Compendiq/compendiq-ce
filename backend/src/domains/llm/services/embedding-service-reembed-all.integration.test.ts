@@ -41,8 +41,10 @@ vi.mock('./openai-compatible-client.js', async () => {
 });
 
 // Provider resolver: skip the real DB lookup — the openai-compatible-client
-// mock ignores the config anyway, and bootstrapping llm_providers rows would
-// require extra seed work that's out of scope for this test.
+// mock ignores the config anyway. The provider id must still name a REAL
+// `llm_providers` row (seeded per test): article AI policy admission fails
+// closed on a provider it cannot read.
+const mocks = vi.hoisted(() => ({ providerId: '' }));
 vi.mock('./llm-provider-resolver.js', async () => {
   const actual = await vi.importActual<typeof import('./llm-provider-resolver.js')>(
     './llm-provider-resolver.js',
@@ -51,8 +53,8 @@ vi.mock('./llm-provider-resolver.js', async () => {
     ...actual,
     resolveUsecase: vi.fn(async () => ({
       config: {
-        providerId: 'test-provider',
-        id: 'test-provider',
+        providerId: mocks.providerId,
+        id: mocks.providerId,
         name: 'Test',
         baseUrl: 'http://localhost:0/v1',
         apiKey: null,
@@ -126,6 +128,10 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!canRun) return;
   await truncateAllTables();
+  const provider = await query<{ id: string }>(
+    `INSERT INTO llm_providers (name, base_url) VALUES ('Test', 'http://localhost:0/v1') RETURNING id::text`,
+  );
+  mocks.providerId = provider.rows[0]!.id;
   // Drop any lingering lock keys from prior runs (different test file may
   // have written them).
   await forceReleaseEmbeddingLock('__reembed_all__');

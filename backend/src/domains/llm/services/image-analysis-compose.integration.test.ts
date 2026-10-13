@@ -44,10 +44,12 @@ vi.mock('./llm-provider-resolver.js', async () => {
   const actual = await vi.importActual<typeof import('./llm-provider-resolver.js')>('./llm-provider-resolver.js');
   return {
     ...actual,
+    // Names the real `llm_providers` row seeded per test (article AI policy
+    // admission fails closed on a provider it cannot read).
     resolveUsecase: vi.fn(async () => ({
       config: {
-        providerId: 'test-provider',
-        id: 'test-provider',
+        providerId,
+        id: providerId,
         name: 'Test',
         baseUrl: 'http://localhost:0/v1',
         apiKey: null,

@@ -142,6 +142,40 @@ runs on the transaction it already holds:
   the same row that supplied the body; the walk reports `includedPageRefs`
   (id, policy, policy revision) and `excludedByPolicy`. Excluded pages still
   count toward `MAX_SUB_PAGES`.
+  A provider the walk cannot describe — no `llm_providers` row any more, a
+  read failure, or metadata that does not decode — is
+  `ai_policy_unavailable` (`SubPagePolicyError.retryable === true`): a fact
+  about the deployment, distinct from the two mismatches (#282 maps
+  mismatches to 409 and `ai_policy_unavailable` to 503, both before any SSE
+  stream opens). No default locality and no sentinel revision are ever
+  substituted.
+- **One effective-locality decoder** (`decodeProviderMetadata` /
+  `loadProviderMetadata` in `domains/llm/services/ai-policy-admission.ts`,
+  reading `PROVIDER_METADATA_COLUMNS`): `effectiveLocality` is `local` only
+  when the row says `local`, `locality_declared_by` still names an existing
+  administrator (the FK is `ON DELETE SET NULL` — a deleted declarer leaves
+  an unaccountable declaration, which reads `external`), the declaration is
+  dated, and `locality_config_revision = config_revision`. The decoder
+  returns `null` for a missing row or invalid metadata (non-integer
+  revision, unknown locality, `local` without its declaration columns).
+  `admitPageForProvider`, the admitted binding's `locality`, the provider
+  DTO's and `getProviderLocality`'s `localConfirmed`, the sub-page walk and
+  the shadow-migration policy-straggler count all consume it, so no two
+  surfaces can disagree about "local".
+- **Admission fails closed on provider metadata**: `admitPageForProvider`
+  refuses with the retryable `policy_unavailable` (one `blocked` event, no
+  provider call) when the policy/provider state cannot be read, when the
+  provider has no row, or when its metadata does not decode — under
+  **every** policy, `all` included. Precedence: unreadable state →
+  `policy_unavailable`; page gone → `not_found`; `none` → `policy_none`;
+  then the metadata decision. `admitPageForUsecase` maps a resolver that
+  throws (nothing configured, assignment pointing at a deleted provider,
+  undecryptable key) to the same `policy_unavailable`; a resolver answering
+  `null` for a dedicated stage stays `stage_disabled`. Neither retryable
+  reason is ever written to `*.ai_policy_block_reason` (the CHECK admits
+  only `policy_none` / `provider_not_local`): the summary, quality, image
+  and embedding workers leave such rows in their pending/dirty state for
+  the next pass.
 
 ### Article AI policy — schema, provider locality, core endpoints (#280)
 

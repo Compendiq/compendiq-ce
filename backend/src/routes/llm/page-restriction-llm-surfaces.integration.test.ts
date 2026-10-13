@@ -31,13 +31,15 @@ import { llmConversationRoutes } from './llm-conversations.js';
 import { llmEmbeddingRoutes } from './llm-embeddings.js';
 import { llmImproveRoutes } from './llm-improve.js';
 
-const provider = vi.hoisted(() => ({ prompts: [] as string[] }));
+// `providerId` names a REAL `llm_providers` row seeded per test: article AI
+// policy admission fails closed on a provider it cannot read.
+const provider = vi.hoisted(() => ({ prompts: [] as string[], providerId: '' }));
 
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', async (importActual) => ({
   ...(await importActual<typeof import('../../domains/llm/services/llm-provider-resolver.js')>()),
   resolveUsecase: async () => ({
     config: {
-      providerId: 'fixture-provider', id: 'fixture-provider', name: 'Fixture',
+      providerId: provider.providerId, id: provider.providerId, name: 'Fixture',
       baseUrl: 'http://127.0.0.1:9/v1', apiKey: null, authType: 'none',
       verifySsl: true, defaultModel: 'fixture-model',
     },
@@ -188,6 +190,10 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
     await flushRedis(redis);
     fx = await seedRestrictionFixture();
     provider.prompts.length = 0;
+    const row = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url) VALUES ('Fixture', 'http://127.0.0.1:9/v1') RETURNING id::text`,
+    );
+    provider.providerId = row.rows[0]!.id;
   }, 30_000);
 
   describe('embedding run SSE (POST /embeddings/process, /embeddings/retry-failed)', () => {

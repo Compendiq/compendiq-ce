@@ -46,6 +46,9 @@ vi.mock('./openai-compatible-client.js', async () => {
 });
 
 // Provider resolver: skip the real DB lookup — the client mock ignores config.
+// The id must still name a REAL `llm_providers` row (seeded per test):
+// article AI policy admission fails closed on a provider it cannot read.
+const mocks = vi.hoisted(() => ({ providerId: '' }));
 vi.mock('./llm-provider-resolver.js', async () => {
   const actual = await vi.importActual<typeof import('./llm-provider-resolver.js')>(
     './llm-provider-resolver.js',
@@ -54,8 +57,8 @@ vi.mock('./llm-provider-resolver.js', async () => {
     ...actual,
     resolveUsecase: vi.fn(async () => ({
       config: {
-        providerId: 'test-provider',
-        id: 'test-provider',
+        providerId: mocks.providerId,
+        id: mocks.providerId,
         name: 'Test',
         baseUrl: 'http://localhost:0/v1',
         apiKey: null,
@@ -112,6 +115,10 @@ describe.skipIf(!dbAvailable)('page_avg_embedding materialization + indexed kNN 
     await truncateAllTables();
     cap.vectors = [];
     cap.counter = 0;
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url) VALUES ('Test', 'http://localhost:0/v1') RETURNING id::text`,
+    );
+    mocks.providerId = provider.rows[0]!.id;
   });
 
   it('embedPage stores the elementwise average of the page chunk vectors', async () => {

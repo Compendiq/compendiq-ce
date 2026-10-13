@@ -89,7 +89,13 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
   beforeEach(async () => {
     await truncateAllTables();
     vi.mocked(streamChat).mockClear();
-    mocks.providerId = 'p1';
+    // The resolver names a REAL (undeclared, hence external) provider row:
+    // admission fails closed on a provider it cannot describe, so a
+    // fabricated id would admit nothing — not even `all` pages.
+    const external = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url) VALUES ('external-box', 'http://x/v1') RETURNING id::text`,
+    );
+    mocks.providerId = external.rows[0]!.id;
     await query(
       `INSERT INTO roles (name, display_name, is_system, permissions) VALUES
         ('system_admin', 'System Administrator', TRUE, ARRAY['read','comment','edit','delete','manage','admin']),
@@ -181,6 +187,25 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     expect(vi.mocked(streamChat)).toHaveBeenCalledTimes(1);
     row = await query('SELECT quality_status, ai_policy_block_reason FROM pages WHERE id = $1', [page]);
     expect(row.rows[0]).toEqual({ quality_status: 'analyzed', ai_policy_block_reason: null });
+  });
+
+  it('a resolver naming a provider with no row refuses every page (even `all`) retryably: no call, no persisted block, row stays pending', async () => {
+    const open = await insertPage('all-gone', 'all');
+    const lo = await insertPage('lo-gone', 'local_only');
+    await query(`DELETE FROM llm_providers WHERE id::text = $1`, [mocks.providerId]);
+
+    expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 0, errors: 0 });
+    expect(await processQualityBatch()).toEqual({ processed: 0, errors: 0 });
+    expect(vi.mocked(streamChat)).not.toHaveBeenCalled();
+
+    const rows = await query<{ id: number; summary_status: string; quality_status: string; ai_policy_block_reason: string | null }>(
+      'SELECT id, summary_status, quality_status, ai_policy_block_reason FROM pages ORDER BY id',
+    );
+    for (const id of [open, lo]) {
+      expect(rows.rows.find((r) => r.id === id)).toEqual({
+        id, summary_status: 'pending', quality_status: 'pending', ai_policy_block_reason: null,
+      });
+    }
   });
 
   it('policy write to `none` purges every derived artefact in the same transaction and keeps the body', async () => {

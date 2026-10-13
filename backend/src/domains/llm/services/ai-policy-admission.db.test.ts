@@ -57,21 +57,42 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => { await truncateAllTables(); seams.events.length = 0; });
 
-  it('a provider id with no row is undeclared external: provider_not_local under local_only, never inferred local; `none` never consults the provider', async () => {
+  it('a provider id with no row is policy_unavailable (retryable) under local_only AND all — nothing is fabricated; `none` never consults the provider', async () => {
     const pageId = await insertPage('local_only');
     const missing = await admitPageForProvider(pageId, 'embedding', randomUUID(), 'm');
-    expect(missing).toMatchObject({ admitted: false, reason: 'provider_not_local', retryable: false, policy: 'local_only' });
-    // A non-uuid id must read as "no such provider", not as a cast error (which would be policy_unavailable).
+    expect(missing).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: 'local_only' });
+    // A non-uuid id reads as "no such provider" (same refusal), not as a cast error.
     const notUuid = await admitPageForProvider(pageId, 'embedding', 'not-a-uuid', 'm');
-    expect(notUuid).toMatchObject({ admitted: false, reason: 'provider_not_local', retryable: false });
+    expect(notUuid).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: 'local_only' });
     // `none` is a policy decision and does not depend on the provider.
     const closed = await admitPageForProvider(await insertPage('none'), 'embedding', 'not-a-uuid', 'm');
     expect(closed).toMatchObject({ admitted: false, reason: 'policy_none', retryable: false });
-    // `all` admits regardless of locality; a rowless provider is undeclared external.
+    // `all` is NOT admitted against a provider the system cannot describe.
     const open = await admitPageForProvider(await insertPage('all'), 'embedding', 'not-a-uuid', 'm');
-    expect(open).toMatchObject({ admitted: true, locality: 'external', configRevision: 0 });
-    expect(blockedEvents().map((e) => e.reason)).toEqual(['provider_not_local', 'provider_not_local', 'policy_none']);
-    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(1);
+    expect(open).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: 'all' });
+    expect(blockedEvents().map((e) => e.reason)).toEqual(['policy_unavailable', 'policy_unavailable', 'policy_none', 'policy_unavailable']);
+    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(0);
+  });
+
+  it('a provider deleted after the resolver named it is policy_unavailable through admitPageForUsecase, with one blocked event', async () => {
+    const admin = await adminUser();
+    const provider = await createProvider(
+      { name: 'ext', baseUrl: 'http://127.0.0.1:1234/v1', authType: 'none', verifySsl: false },
+      admin,
+    );
+    await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('summary', $1, 'm')`, [provider.id]);
+    const pageId = await insertPage('all');
+    expect(await admitPageForUsecase(pageId, 'summary')).toMatchObject({ admitted: true, providerId: provider.id });
+    // Bypass deleteProvider's reference guard: the assignment now points at nothing.
+    await query(`DELETE FROM llm_usecase_assignments WHERE provider_id = $1`, [provider.id]);
+    await query(`DELETE FROM llm_providers WHERE id = $1`, [provider.id]);
+    const { bumpProviderCacheVersion } = await import('./cache-bus.js');
+    await bumpProviderCacheVersion();
+    seams.events.length = 0;
+    const result = await admitPageForUsecase(pageId, 'summary');
+    expect(result).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true });
+    expect(blockedEvents()).toEqual([expect.objectContaining({ reason: 'policy_unavailable', pageId })]);
+    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(0);
   });
 
   it('a provider row that exists (default external, undeclared) is admitted under `all` only', async () => {

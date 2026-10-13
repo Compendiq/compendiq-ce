@@ -47,15 +47,23 @@ async function page(input: {
   return r.rows[0]!.id;
 }
 
-async function provider(local: boolean): Promise<{ id: string; configRevision: number }> {
+/**
+ * A provider row. A `local` one is declared by a REAL administrator row
+ * (`locality_declared_by` → users.id, `ON DELETE SET NULL`), exactly as
+ * `declareProviderLocality` records it — a declaration nobody is
+ * accountable for is not local.
+ */
+async function provider(local: boolean, declaredBy?: string): Promise<{ id: string; configRevision: number; declaredBy: string | null }> {
   seq += 1;
+  const declarer = local ? (declaredBy ?? await user()) : null;
   const r = await query<{ id: string; config_revision: string }>(
-    `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, locality, locality_declared_at, locality_config_revision)
-     VALUES ($1, 'http://provider.invalid', 'k', 'bearer', TRUE, $2, $3, $4)
+    `INSERT INTO llm_providers
+       (name, base_url, api_key, auth_type, verify_ssl, locality, locality_declared_at, locality_config_revision, locality_declared_by)
+     VALUES ($1, 'http://provider.invalid', 'k', 'bearer', TRUE, $2, $3, $4, $5::uuid)
      RETURNING id::text, config_revision::text`,
-    [`p${seq}`, local ? 'local' : 'external', local ? new Date() : null, local ? 1 : null],
+    [`p${seq}`, local ? 'local' : 'external', local ? new Date() : null, local ? 1 : null, declarer],
   );
-  return { id: r.rows[0]!.id, configRevision: Number(r.rows[0]!.config_revision) };
+  return { id: r.rows[0]!.id, configRevision: Number(r.rows[0]!.config_revision), declaredBy: declarer };
 }
 
 describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real PostgreSQL', () => {
@@ -179,15 +187,70 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
       .rejects.toBeInstanceOf(SubPagePolicyError);
   });
 
-  it('an unknown provider never matches an admitted revision', async () => {
+  it('an unknown or deleted provider is ai_policy_unavailable (retryable), never a mismatch and never bound external', async () => {
     const owner = await user();
     const parent = await page({ owner, title: 'Root' });
     await page({ owner, title: 'Open', parentId: String(parent) });
-    await expect(
-      fetchAdmittedSubPages(owner, String(parent), {
-        providerId: 'nope', usecase: 'chat', expectedConfigRevision: 1, expectedLocality: 'external',
-      }),
-    ).rejects.toBeInstanceOf(SubPagePolicyError);
+    const unknown = fetchAdmittedSubPages(owner, String(parent), {
+      providerId: 'nope', usecase: 'chat', expectedConfigRevision: 1, expectedLocality: 'external',
+    });
+    await expect(unknown).rejects.toBeInstanceOf(SubPagePolicyError);
+    await expect(unknown).rejects.toMatchObject({ reason: 'ai_policy_unavailable', retryable: true });
+
+    // Admitted against a real external provider, then the provider is
+    // deleted before the walk: the binding cannot be verified any more.
+    const external = await provider(false);
+    const admission = await admitPageForProvider(parent, 'chat', external.id, 'm');
+    if (!admission.admitted) throw new Error('unreachable');
+    await query(`DELETE FROM llm_providers WHERE id::text = $1`, [external.id]);
+    await expect(fetchAdmittedSubPages(owner, String(parent), {
+      providerId: admission.providerId, usecase: 'chat',
+      expectedConfigRevision: admission.configRevision, expectedLocality: admission.locality,
+    })).rejects.toMatchObject({ reason: 'ai_policy_unavailable', retryable: true });
+
+    // And a fresh admission against the deleted provider refuses — under
+    // `all` too — with the retryable reason and no persistable block.
+    const after = await admitPageForProvider(parent, 'chat', external.id, 'm');
+    expect(after).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: 'all' });
+  });
+
+  it('a local declaration whose administrator was deleted is external for the parent admission AND the walk', async () => {
+    const owner = await user();
+    const admin = await user();
+    const local = await provider(true, admin);
+    const parent = await page({ owner, title: 'Root' });
+    const localOnly = await page({ owner, title: 'Local only', parentId: String(parent), policy: 'local_only' });
+    const open = await page({ owner, title: 'Open', parentId: String(parent) });
+
+    const before = await admitPageForProvider(localOnly, 'chat', local.id, 'm');
+    expect(before).toMatchObject({ admitted: true, locality: 'local' });
+
+    // FK `locality_declared_by … ON DELETE SET NULL`: the row still says
+    // `local`, but nobody is accountable for that declaration any more.
+    await query(`DELETE FROM users WHERE id = $1`, [admin]);
+    const row = await query<{ locality: string; locality_declared_by: string | null }>(
+      `SELECT locality, locality_declared_by FROM llm_providers WHERE id::text = $1`, [local.id],
+    );
+    expect(row.rows[0]).toEqual({ locality: 'local', locality_declared_by: null });
+
+    const parentAdmission = await admitPageForProvider(parent, 'chat', local.id, 'm');
+    expect(parentAdmission).toMatchObject({ admitted: true, locality: 'external', configRevision: local.configRevision });
+    if (!parentAdmission.admitted) throw new Error('unreachable');
+    expect(await admitPageForProvider(localOnly, 'chat', local.id, 'm'))
+      .toMatchObject({ admitted: false, reason: 'provider_not_local', retryable: false });
+
+    const { pages, excluded } = await fetchAdmittedSubPages(owner, String(parent), {
+      providerId: parentAdmission.providerId, usecase: 'chat',
+      expectedConfigRevision: parentAdmission.configRevision, expectedLocality: parentAdmission.locality,
+    });
+    expect(pages.map((p) => p.id)).toEqual([open]);
+    expect(excluded).toEqual([{ id: localOnly, policy: 'local_only', policyRevision: 0, reason: 'provider_not_local' }]);
+
+    // A caller still holding the pre-deletion `local` binding is refused as a
+    // locality mismatch (409), not as unavailable.
+    await expect(fetchAdmittedSubPages(owner, String(parent), {
+      providerId: local.id, usecase: 'chat', expectedConfigRevision: local.configRevision, expectedLocality: 'local',
+    })).rejects.toMatchObject({ reason: 'ai_policy_provider_locality_mismatch', retryable: false });
   });
 
   it('a locality declaration between the caller\'s admission and the walk fails closed (#281 review)', async () => {

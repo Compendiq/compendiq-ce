@@ -34,7 +34,7 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { admitPageForProvider, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -172,6 +172,12 @@ async function analyzePageQuality(
   const admission = await admitPageForProvider(pageId, 'quality', assignment.config.providerId, assignment.model);
   if (!admission.admitted) {
     if (admission.reason === 'not_found') return 'blocked';
+    if (!isPersistableBlockReason(admission.reason)) {
+      // Retryable (deployment, not article): the row keeps its current
+      // status for the next pass; nothing is persisted and nothing is called.
+      logger.warn({ pageId, reason: admission.reason, providerId: assignment.config.providerId }, 'Quality admission unavailable; page left for the next pass');
+      return 'blocked';
+    }
     await query(
       `UPDATE pages SET quality_status = 'policy_blocked', quality_error = NULL, ai_policy_block_reason = $2
         WHERE id = $1`,
