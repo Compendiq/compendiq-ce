@@ -4167,11 +4167,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (addTags.length === 0 && removeTags.length === 0) {
       throw fastify.httpErrors.badRequest('At least one of addTags or removeTags must be provided');
     }
-    // A request that itself names two AI policies is a 422 for the whole
-    // batch (#281), not a per-row failure line in the report.
+    // A request that itself names two AI policies is the frozen 422
+    // `ai_policy_label_conflict` body for the whole batch (#280/#281) — the
+    // same wire shape as every other label writer — not a per-row failure
+    // line in the report. Nothing is written.
     try {
       planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: addTags });
     } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
       if (err instanceof PageWriteError) throw fastify.httpErrors.unprocessableEntity(err.message);
       throw err;
     }
@@ -4381,10 +4384,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           .filter((t) => t.length > 0),
       ),
     );
-    // A replacement set naming two AI policies is a 422 for the batch (#281).
+    // A replacement set naming two AI policies is the frozen 422
+    // `ai_policy_label_conflict` body for the batch (#280/#281); nothing is
+    // written.
     try {
       planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: normTags });
     } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
       if (err instanceof PageWriteError) throw fastify.httpErrors.unprocessableEntity(err.message);
       throw err;
     }

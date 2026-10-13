@@ -108,6 +108,21 @@ describe.skipIf(!dbAvailable)('Migration 137 — root pages.create.confluence in
     expect(r).toEqual({ ok: true });
   });
 
+  it('accepts every stored policy value (all, local_only, none) on a root create, including `none` with `no-ai` and an empty label set', async () => {
+    const accepted: Array<[string, Record<string, unknown>]> = [
+      ['none + no-ai', { initialPolicy: 'none', initialLabels: ['no-ai'] }],
+      ['all + no labels', { initialPolicy: 'all', initialLabels: [] }],
+      ['all + ordinary label', { initialPolicy: 'all', initialLabels: ['runbook'] }],
+      ['local_only + local-ai-only', { initialPolicy: 'local_only', initialLabels: ['local-ai-only'] }],
+      ['local_only + empty labels', { initialPolicy: 'local_only', initialLabels: [] }],
+      ['none + empty labels', { initialPolicy: 'none', initialLabels: [] }],
+    ];
+    for (const [label, overrides] of accepted) {
+      const r = await tryInsert({ kind: 'pages.create.confluence', pageIds: [], effect: rootEffect(overrides) });
+      expect(r, label).toEqual({ ok: true });
+    }
+  });
+
   it('still accepts the parented create shape', async () => {
     const parent = await insertPage();
     const r = await tryInsert({

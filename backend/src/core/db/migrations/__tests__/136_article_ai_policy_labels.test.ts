@@ -135,6 +135,31 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     expect(same.rows[0]!.labels).toEqual(['ai:none', 'AI:Local']);
   });
 
+  it('rewrites exactly the 135 regex keys: `no ai`/`no:ai`/`no__ai` → no-ai; `ai-all`/`ai all` are ordinary labels and stay', async () => {
+    const noneRow = await insertPage('none-spellings', ['x'], 'none');
+    await query(`UPDATE pages SET labels = ARRAY['no ai','x','no:ai','no__ai','NO AI'] WHERE id = $1`, [noneRow]);
+    const allRow = await insertPage('all-spellings', ['x'], 'all');
+    await query(`UPDATE pages SET labels = ARRAY['ai-all','ai all','ai_all','x'] WHERE id = $1`, [allRow]);
+    const localRow = await insertPage('local-spellings', ['x'], 'local_only');
+    await query(`UPDATE pages SET labels = ARRAY['ai_local','AI LOCAL ONLY','y'] WHERE id = $1`, [localRow]);
+    const revisions = await query<{ id: number; ai_policy_revision: string }>(
+      `SELECT id, ai_policy_revision FROM pages WHERE id = ANY($1::int[]) ORDER BY id`, [[noneRow, allRow, localRow]],
+    );
+    await query(sql);
+    const rows = await query<{ id: number; labels: string[]; ai_policy: string; ai_policy_revision: string }>(
+      `SELECT id, labels, ai_policy, ai_policy_revision FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+      [[noneRow, allRow, localRow]],
+    );
+    expect(rows.rows.map((r) => ({ id: r.id, labels: r.labels, ai_policy: r.ai_policy }))).toEqual([
+      // All four `no ai` spellings collapse onto ONE canonical label (first position wins).
+      { id: noneRow, labels: ['no-ai', 'x'], ai_policy: 'none' },
+      // `ai-all` was never a 135 key: untouched, and the row is not even selected.
+      { id: allRow, labels: ['ai-all', 'ai all', 'ai_all', 'x'], ai_policy: 'all' },
+      { id: localRow, labels: ['local-ai-only', 'y'], ai_policy: 'local_only' },
+    ]);
+    expect(rows.rows.map((r) => r.ai_policy_revision)).toEqual(revisions.rows.map((r) => r.ai_policy_revision));
+  });
+
   it('applies on an upgrade with FROZEN pages carrying legacy spellings (labels are protected; the row is skipped, the policy stays)', async () => {
     const frozen = await insertPage('frozen', ['ai-local-only'], 'local_only');
     const live = await insertPage('live', ['ai-local-only'], 'local_only');

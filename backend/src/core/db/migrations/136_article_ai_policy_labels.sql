@@ -86,6 +86,12 @@ $$;
 -- mapped, so the migration never rewrites a label a Confluence mirror or a
 -- user already relies on.
 --
+-- The legacy keys are EXACTLY the ones migration 135's regex reader accepted
+-- (`[\s_:-]+` folded to `-`): `ai-none`, `no-ai`, `ai-local-only`, `ai-local`.
+-- Hence `no ai` / `no:ai` / `no__ai` → `no-ai`, `ai_local` → `local-ai-only`.
+-- `ai-all` was NEVER a 135 key (135 only tightened), so an `ai-all` / `ai all`
+-- label is an ordinary label and is left untouched.
+--
 -- Safety (#280 review):
 --   * FROZEN rows (`baseline_id IS NOT NULL`) are skipped: `pages.labels` is
 --     a protected column and `enforce_page_protected_write` would abort the
@@ -104,9 +110,9 @@ UPDATE pages
                       WHEN ai_policy_label_value(l) IS NOT NULL THEN l
                       ELSE CASE regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
                              WHEN 'ai-none' THEN 'no-ai'
+                             WHEN 'no-ai' THEN 'no-ai'
                              WHEN 'ai-local-only' THEN 'local-ai-only'
                              WHEN 'ai-local' THEN 'local-ai-only'
-                             WHEN 'ai-all' THEN 'all-ai'
                              ELSE l
                            END
                     END AS v,
@@ -122,5 +128,5 @@ UPDATE pages
      SELECT 1 FROM unnest(pages.labels) AS l
       WHERE ai_policy_label_value(l) IS NULL
         AND regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
-            IN ('ai-none', 'ai-local-only', 'ai-local', 'ai-all')
+            IN ('ai-none', 'no-ai', 'ai-local-only', 'ai-local')
    );

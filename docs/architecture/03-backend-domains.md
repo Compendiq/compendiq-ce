@@ -1318,7 +1318,26 @@ Rules the diagram encodes:
   Admission clears a stale reason on success.
 - **Unknown locality never authorizes `local_only`** — an unknown provider id,
   a provider table without locality columns, or a declaration against an older
-  configuration revision all read as external.
+  configuration revision all read as external or as unprovable; neither admits.
+- **ONE decoder, `decodeProviderMetadata`**, answers every consumer of a
+  provider's effective locality (admission, the admitted binding, the DTO's
+  `localConfirmed`, `getProviderLocality`, the sub-page walk and the shadow
+  straggler count), with three rules:
+  1. **Revisions are non-negative SAFE integers** (`asRevision`): a number
+     must satisfy `Number.isSafeInteger` (so `NaN`, `±Infinity`, negatives,
+     fractions and 2^53+ are refused); a PG bigint string is compared
+     textually against `Number.MAX_SAFE_INTEGER` before conversion, so
+     `'9007199254740993'` or a 400-digit string is unprovable rather than
+     rounded (or `Infinity`) into a false equality with the current revision.
+  2. **`undefined` ≠ `null`.** A declaration column that was not selected is
+     unprovable (`null` result → `policy_unavailable`); SQL NULL is a value.
+     An external row with NULL declaration columns is a legitimate undeclared
+     provider, and a `local` row whose declarer was deleted (`ON DELETE SET
+     NULL`) decodes as effective `external` — no longer accountable — not as
+     corrupt. A `local` row with NULL `locality_declared_at` or
+     `locality_config_revision` violates the schema invariant and is unprovable.
+  3. **Dates must be real**: a `Date` with NaN time or an unparseable string
+     is unprovable, never silently treated as undeclared.
 - **`none` purges in the policy write's transaction** under the same per-page
   advisory lock the shared admission read takes, so a worker mid-batch cannot
   commit a derived row after the policy flipped. The body, attachments, versions

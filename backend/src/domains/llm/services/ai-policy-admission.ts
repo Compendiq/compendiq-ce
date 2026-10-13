@@ -83,11 +83,61 @@ export interface ProviderMetadata {
   declaredAt: Date | null;
 }
 
-/** A non-negative integer revision as PG returns it (bigint → string) or as a number; anything else is unprovable. */
+const MAX_SAFE_REVISION_TEXT = String(Number.MAX_SAFE_INTEGER);
+
+/**
+ * A revision is a non-negative SAFE integer, as PG returns it (bigint →
+ * decimal string) or as a number. Anything else is unprovable (`null`):
+ * `NaN`/`±Infinity`, negatives, fractions, numbers above
+ * `Number.MAX_SAFE_INTEGER`, and digit strings that `Number()` could only
+ * represent by ROUNDING (a 2^53+1 revision must never compare equal to
+ * 2^53, and a 400-digit string must never read as `Infinity`). The string
+ * comparison is exact — no float conversion happens before the bound check.
+ */
 export function asRevision(v: unknown): number | null {
-  if (typeof v === 'number') return Number.isInteger(v) && v >= 0 ? v : null;
-  if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v);
+  if (typeof v === 'number') {
+    return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  }
+  if (typeof v === 'string' && /^\d+$/.test(v)) {
+    const digits = v.replace(/^0+(?=\d)/, '');
+    if (digits.length > MAX_SAFE_REVISION_TEXT.length) return null;
+    if (digits.length === MAX_SAFE_REVISION_TEXT.length && digits > MAX_SAFE_REVISION_TEXT) return null;
+    const n = Number(digits);
+    return Number.isSafeInteger(n) && String(n) === digits ? n : null;
+  }
   return null;
+}
+
+/**
+ * Decode one nullable column with THREE outcomes: `undefined` (the column was
+ * not selected — unprovable), `null` (SQL NULL — a legitimate value), or the
+ * decoded value. The `absent` sentinel keeps "omitted" apart from "NULL" so a
+ * SELECT that forgot a column can never read as a NULL declaration.
+ */
+const ABSENT = Symbol('absent');
+type Decoded<T> = T | null | typeof ABSENT | undefined;
+
+function decodeDeclaredBy(v: unknown): Decoded<string> {
+  if (v === undefined) return ABSENT;
+  if (v === null) return null;
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+function decodeDeclaredAt(v: unknown): Decoded<Date> {
+  if (v === undefined) return ABSENT;
+  if (v === null) return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? undefined : v;
+  if (typeof v === 'string') {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  }
+  return undefined;
+}
+
+function decodeLocalityRevision(v: unknown): Decoded<number> {
+  if (v === undefined) return ABSENT;
+  if (v === null) return null;
+  return asRevision(v) ?? undefined;
 }
 
 /**
@@ -97,11 +147,18 @@ export function asRevision(v: unknown): number | null {
  * them can disagree about what "local" means.
  *
  * Returns `null` when the row is UNPROVABLE — not a row at all, a revision
- * that is not a non-negative integer, a locality outside the declared set, or
- * a `local` declaration whose supporting columns contradict the schema
- * invariant (`llm_providers_local_declared_check`). An unprovable row never
- * admits and never reads as external by default: callers map it to the
- * retryable unavailable reason of their boundary.
+ * that is not a non-negative safe integer, a locality outside the declared
+ * set, a declaration column that was NOT SELECTED (`undefined` is "unknown",
+ * never "NULL"), an invalid date, or a `local` declaration whose supporting
+ * columns contradict the schema invariant
+ * (`llm_providers_local_declared_check`). An unprovable row never admits and
+ * never reads as external by default: callers map it to the retryable
+ * unavailable reason of their boundary.
+ *
+ * SQL NULL is a legitimate value: an undeclared `external` row carries NULL
+ * in all three declaration columns, and a `local` row whose declarer was
+ * deleted (`ON DELETE SET NULL`) decodes as effective `external` — the
+ * declaration is no longer accountable — rather than as unprovable.
  */
 export function decodeProviderMetadata(row: ProviderMetadataRow | null | undefined): ProviderMetadata | null {
   if (!row) return null;
@@ -109,22 +166,12 @@ export function decodeProviderMetadata(row: ProviderMetadataRow | null | undefin
   if (configRevision === null) return null;
   const locality = row.locality;
   if (locality !== 'local' && locality !== 'external') return null;
-  const declaredBy = typeof row.locality_declared_by === 'string' && row.locality_declared_by.length > 0
-    ? row.locality_declared_by
-    : row.locality_declared_by === null || row.locality_declared_by === undefined ? null : undefined;
-  if (declaredBy === undefined) return null;
-  let declaredAt: Date | null;
-  if (row.locality_declared_at === null || row.locality_declared_at === undefined) declaredAt = null;
-  else if (row.locality_declared_at instanceof Date) declaredAt = row.locality_declared_at;
-  else if (typeof row.locality_declared_at === 'string') {
-    const d = new Date(row.locality_declared_at);
-    if (Number.isNaN(d.getTime())) return null;
-    declaredAt = d;
-  } else return null;
-  const localityRevision = row.locality_config_revision === null || row.locality_config_revision === undefined
-    ? null
-    : asRevision(row.locality_config_revision);
-  if (row.locality_config_revision !== null && row.locality_config_revision !== undefined && localityRevision === null) return null;
+  const declaredBy = decodeDeclaredBy(row.locality_declared_by);
+  const declaredAt = decodeDeclaredAt(row.locality_declared_at);
+  const localityRevision = decodeLocalityRevision(row.locality_config_revision);
+  if (declaredBy === undefined || declaredBy === ABSENT) return null;
+  if (declaredAt === undefined || declaredAt === ABSENT) return null;
+  if (localityRevision === undefined || localityRevision === ABSENT) return null;
 
   if (locality === 'local') {
     // The schema requires a dated declaration at a revision for `local`; a

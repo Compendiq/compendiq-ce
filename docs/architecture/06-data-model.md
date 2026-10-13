@@ -611,13 +611,18 @@ ASCII-only `translate(... 'A'..'Z', 'a'..'z')`, never `lower()`: a locale
 fold such as `İ → i̇` (dotted capital I) would otherwise let SQL recognise a
 string JavaScript's `toLowerCase()` does not — or the reverse — so SQL and
 `normalizeAiPolicyLabel` recognise exactly the same strings. The migration
-also rewrites pre-freeze spellings in `pages.labels` to the canonical labels
-(`all-ai`, `local-ai-only`, `no-ai`) without touching the stored policy, which
-remains the authority (labels are consulted at creation only; removing a tag
-never relaxes a page). The repair touches **only unrecognised spellings**: a
-label the frozen table already reads (`ai:none`, `NO_AI`, `AI:Local`, …) is
-kept verbatim, because the stored spelling is the user's and the frozen
-reader already agrees with it. That repair collapses a rewrite onto a label
+also rewrites pre-freeze spellings in `pages.labels` to the canonical
+restrictive labels (`local-ai-only`, `no-ai`) without touching the stored
+policy, which remains the authority (labels are consulted at creation only;
+removing a tag never relaxes a page). The legacy keys are **exactly the four
+migration 135's regex reader accepted** after folding `[\s_:-]+` to `-`:
+`ai-none` and `no-ai` → `no-ai`, `ai-local-only` and `ai-local` →
+`local-ai-only`. So `no ai`, `no:ai`, `no__ai` and `ai_local` are repaired;
+`ai-all` / `ai all` were never 135 keys (135 only ever tightened) and are
+ordinary labels the migration does not select or rewrite. The repair touches
+**only unrecognised spellings**: a label the frozen table already reads
+(`ai:none`, `NO_AI`, `AI:Local`, …) is kept verbatim, because the stored
+spelling is the user's and the frozen reader already agrees with it. That repair collapses a rewrite onto a label
 the row already carries (first position wins, never a duplicate) and **skips
 frozen rows** (`baseline_id IS NOT NULL`): `labels` is a protected column
 under migration 121's trigger and the migration must not abort on a frozen

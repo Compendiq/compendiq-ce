@@ -161,4 +161,29 @@ describe.skipIf(!(dbAvailable && redisAvailable))('article AI policy — page ro
     expect([...response.json().policies].sort()).toEqual(['local_only', 'none']);
     expect(await labelsFor(pageId)).toEqual(['keep']);
   });
+
+  it('POST /pages/bulk/tag naming two policies is the frozen 422 body (not a generic 422) and writes nothing', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/tag',
+      payload: { ids: [String(pageId)], addTags: ['no-ai', 'local-ai-only'] },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: 'ai_policy_label_conflict' });
+    expect([...response.json().policies].sort()).toEqual(['local_only', 'none']);
+    expect(response.json()).not.toHaveProperty('succeeded');
+    expect(await labelsFor(pageId)).toEqual(['keep']);
+  });
+
+  it('POST /pages/bulk/replace-tags naming two policies is the frozen 422 body and writes nothing', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/replace-tags',
+      payload: { ids: [String(pageId)], tags: ['NO_AI', 'ai:local', 'x'] },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: 'ai_policy_label_conflict' });
+    expect([...response.json().policies].sort()).toEqual(['local_only', 'none']);
+    expect(await labelsFor(pageId)).toEqual(['keep']);
+  });
 });
