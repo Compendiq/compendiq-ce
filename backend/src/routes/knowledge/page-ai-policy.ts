@@ -5,7 +5,11 @@ import {
   UpdatePageAiPolicySchema,
   type PageAiPolicyResponse,
 } from '@compendiq/contracts';
-import { updatePageAiPolicies, type AiPolicyMutationResult } from '../../core/services/ai-policy-service.js';
+import {
+  AiPolicyRefusalError,
+  updatePageAiPolicies,
+  type AiPolicyMutationResult,
+} from '../../core/services/ai-policy-service.js';
 
 const PageIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 
@@ -14,11 +18,21 @@ function toResponse(row: { pageId: number; policy: string; revision: number }): 
 }
 
 /**
+ * The frozen policy refusal bodies, answered by the page create/update
+ * routes too (they share this ONE serializer so the wire contract cannot
+ * drift between `PUT /pages/:id/ai-policy` and `PUT /pages/:id`).
+ */
+export function sendAiPolicyRefusal(reply: FastifyReply, err: AiPolicyRefusalError) {
+  const body: Record<string, unknown> = { ...err.body, message: err.message };
+  return reply.status(err.statusCode).send(body);
+}
+
+/**
  * Frozen error shapes (#280): 404 for an inaccessible/missing page,
  * 403 `ai_policy_denied`, 409 `ai_policy_conflict` (stale revision),
  * 409 `ai_policy_enforcement_unavailable` (foundation-only deployment).
  */
-function sendFailure(reply: FastifyReply, result: Extract<AiPolicyMutationResult, { ok: false }>) {
+export function sendAiPolicyFailure(reply: FastifyReply, result: Extract<AiPolicyMutationResult, { ok: false }>) {
   switch (result.reason) {
     case 'not_found':
       return reply.status(404).send({ error: 'Page not found', pageIds: result.pageIds });
@@ -46,7 +60,7 @@ export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void
     const result = await updatePageAiPolicies(request.userId, body.aiPolicy, [
       { pageId: id, expectedRevision: body.expectedRevision },
     ]);
-    if (!result.ok) return sendFailure(reply, result);
+    if (!result.ok) return sendAiPolicyFailure(reply, result);
     return toResponse(result.rows[0]!);
   });
 
@@ -54,7 +68,7 @@ export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void
   fastify.post('/pages/bulk/ai-policy', async (request, reply) => {
     const body = BulkUpdatePageAiPolicySchema.parse(request.body);
     const result = await updatePageAiPolicies(request.userId, body.aiPolicy, body.items);
-    if (!result.ok) return sendFailure(reply, result);
+    if (!result.ok) return sendAiPolicyFailure(reply, result);
     return { items: result.rows.map(toResponse) };
   });
 }

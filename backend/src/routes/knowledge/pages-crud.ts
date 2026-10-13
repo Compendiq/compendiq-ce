@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { query, getPool } from '../../core/db/postgres.js';
@@ -95,38 +95,39 @@ import {
 } from '../../core/services/page-write-admission.js';
 import { enqueuePageWriteInvalidation } from '../../core/services/page-write-invalidation.js';
 import {
+  AiPolicyRefusalError,
+  aiPolicyRefusalFromResult,
   applyAiPolicyOnClient,
   applyPageLabelsOnClient,
+  canChoosePolicyAtCreation,
   canMutateAiPolicy,
   emitAiPolicyChanges,
   isAiPolicy,
   isAiPolicyEnforcementAvailable,
   lockAiPolicyForPages,
   planLabelPolicyChange,
-  policyFromLabels,
   resolveCreationAiPolicy,
   type AiPolicy,
   type AiPolicyChangeRecord,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
+import { aiPolicyLabelConflict } from '@compendiq/contracts';
+import { sendAiPolicyRefusal } from './page-ai-policy.js';
 
 /**
  * Apply an explicit `aiPolicy` from a content update on the SAME held
  * transaction as the content write (#280). The caller must have taken the
  * AI-policy advisory lock (`lockAiPolicyForPages`) before its row lock.
- * Failures map to the frozen error shapes; returns the deferred events the
- * caller emits after COMMIT.
+ * Failures are the frozen contract bodies (`AiPolicyRefusalError`), answered
+ * by the route through `sendAiPolicyRefusal`; returns the deferred events
+ * the caller emits after COMMIT.
  */
 async function applyRequestedAiPolicyOnClient(
   writeClient: PoolClient,
-  input: { userId: string; pageId: number; aiPolicy: AiPolicy; expectedRevision?: number },
+  input: { userId: string; pageId: number; aiPolicy: AiPolicy; expectedRevision: number },
 ): Promise<AiPolicyChangeRecord[]> {
   if (input.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
-    throw new PageWriteError(
-      409,
-      'ai_policy_enforcement_unavailable',
-      'Restrictive AI policies require the enterprise enforcement component.',
-    );
+    throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [input.pageId] });
   }
   const applied = await applyAiPolicyOnClient(writeClient, {
     userId: input.userId,
@@ -134,11 +135,21 @@ async function applyRequestedAiPolicyOnClient(
     requireAuthority: true,
   });
   if (applied.ok) return applied.changes;
-  if (applied.reason === 'not_found') throw new PageWriteError(404, 'page_not_found', 'Page not found');
-  if (applied.reason === 'not_authorized') {
-    throw new PageWriteError(403, 'ai_policy_denied', 'Not authorized to change this page\'s AI policy');
+  throw aiPolicyRefusalFromResult(applied);
+}
+
+/**
+ * Policy refusals raised inside a page route keep their frozen bodies: the
+ * generic `PageWriteError` serializer answers `{error, reason}` which is NOT
+ * the policy contract. Every create/update handler funnels through this.
+ */
+async function withAiPolicyRefusals<T>(reply: FastifyReply, run: () => Promise<T>): Promise<T | FastifyReply> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AiPolicyRefusalError) return sendAiPolicyRefusal(reply, err);
+    throw err;
   }
-  throw new PageWriteError(409, 'ai_policy_conflict', 'The page AI policy changed since you loaded it');
 }
 import {
   imageAttachmentPageKey,
@@ -1803,7 +1814,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages - create page (standalone local or Confluence + local cache)
-  fastify.post('/pages', async (request) => {
+  fastify.post('/pages', async (request, reply) => withAiPolicyRefusals(reply, async () => {
     const body = CreatePageSchema.parse(request.body);
     const pageType: 'page' | 'folder' = (body as Record<string, unknown>).pageType === 'folder' ? 'folder' : 'page';
     const userId = request.userId;
@@ -1839,30 +1850,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // caller stated two policies at once (#280). A restrictive explicit
     // choice on a foundation-only deployment is refused rather than silently
     // downgraded (409 `ai_policy_enforcement_unavailable`).
-    if (body.aiPolicy !== undefined) {
-      const labelPolicy = policyFromLabels(initialLabels);
-      if (labelPolicy !== 'all' && labelPolicy !== body.aiPolicy) {
-        throw new PageWriteError(
-          422,
-          'ai_policy_label_conflict',
-          `Explicit AI policy ${body.aiPolicy} contradicts the labels (${labelPolicy})`,
-        );
-      }
-      if (body.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
-        throw new PageWriteError(
-          409,
-          'ai_policy_enforcement_unavailable',
-          'Restrictive AI policies require the enterprise enforcement component.',
-        );
-      }
-    }
-    const initialPolicy = await resolveCreationAiPolicy({
-      userId,
-      spaceKey: body.spaceKey && body.spaceKey !== '__local__' ? body.spaceKey : null,
-      labels: initialLabels,
-      explicit: body.aiPolicy,
-    });
-
     // Explicit source takes precedence over auto-detection
     let isStandalone: boolean;
     if (body.source === 'standalone') {
@@ -1873,6 +1860,42 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Auto-detect from space source
       isStandalone = spaceSource !== 'confluence';
     }
+
+    if (body.aiPolicy !== undefined) {
+      // The labels are read with the FULL reserved table (`all-ai` included):
+      // `all-ai` + `aiPolicy: 'none'` is a contradiction just as `no-ai` +
+      // `aiPolicy: 'all'` is. `planLabelPolicyChange` already refused two
+      // different label policies, so at most one is named here.
+      const labelPolicies = aiPolicyLabelConflict(initialLabels);
+      if (labelPolicies.some((p) => p !== body.aiPolicy)) {
+        throw new AiPolicyRefusalError(
+          422,
+          { error: 'ai_policy_label_conflict', policies: [...new Set([body.aiPolicy, ...labelPolicies])] },
+          `Explicit AI policy ${body.aiPolicy} contradicts the labels (${labelPolicies.join(', ')})`,
+        );
+      }
+      if (body.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
+        throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [] });
+      }
+      // Choosing a policy for a Confluence page needs policy authority in the
+      // target space (read-only roles have none); a standalone creator is the
+      // owner and always may.
+      const mayChoose = await withPageWriteTransaction([], (c) => canChoosePolicyAtCreation(
+        userId,
+        {
+          source: isStandalone ? 'standalone' : 'confluence',
+          spaceKey: body.spaceKey && body.spaceKey !== '__local__' ? body.spaceKey : null,
+        },
+        c,
+      ));
+      if (!mayChoose) throw aiPolicyRefusalFromResult({ reason: 'not_authorized', pageIds: [] });
+    }
+    const initialPolicy = await resolveCreationAiPolicy({
+      userId,
+      spaceKey: body.spaceKey && body.spaceKey !== '__local__' ? body.spaceKey : null,
+      labels: initialLabels,
+      explicit: body.aiPolicy,
+    });
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
@@ -2266,11 +2289,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     });
 
     return { id: page.id, title: page.title, version: page.version.number, source: 'confluence' };
-  });
+  }));
 
   // PUT /api/pages/:id - update page (standalone local or Confluence + local cache)
   // Accepts integer page id (universal) or confluence_id string (backward compat)
-  fastify.put('/pages/:id', async (request) => {
+  fastify.put('/pages/:id', async (request, reply) => withAiPolicyRefusals(reply, async () => {
     const { id } = IdParamSchema.parse(request.params);
     const body = UpdatePageSchema.parse(request.body);
     const userId = request.userId;
@@ -2459,9 +2482,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           authoredContentChanged = true;
         }
         if (body.aiPolicy !== undefined) {
-          // Same transaction as the content write (#280).
+          // Same transaction as the content write (#280): a refused policy
+          // rolls the content back with it (local write, fully atomic).
           localPolicyChanges = await applyRequestedAiPolicyOnClient(writeClient, {
-            userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedAiPolicyRevision,
+            userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedRevision!,
           });
         }
         await writeClient.query('COMMIT');
@@ -2536,24 +2560,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // the binding write happens again on the publication transaction below.
     if (body.aiPolicy !== undefined) {
       if (body.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
-        throw new PageWriteError(
-          409, 'ai_policy_enforcement_unavailable',
-          'Restrictive AI policies require the enterprise enforcement component.',
-        );
+        throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [existingPage.id] });
       }
+      const expectedPolicyRevision = body.expectedRevision!;
       const authorized = await withPageWriteTransaction([], async (c) => {
         if (!(await canMutateAiPolicy(userId, existingPage.id, c))) return false;
-        if (body.expectedAiPolicyRevision === undefined) return true;
         const r = await c.query<{ ai_policy_revision: string }>(
           'SELECT ai_policy_revision FROM pages WHERE id = $1', [existingPage.id],
         );
-        if (Number(r.rows[0]?.ai_policy_revision) !== body.expectedAiPolicyRevision) {
-          throw new PageWriteError(409, 'ai_policy_conflict', 'The page AI policy changed since you loaded it');
+        if (Number(r.rows[0]?.ai_policy_revision) !== expectedPolicyRevision) {
+          throw aiPolicyRefusalFromResult({ reason: 'stale_revision', pageIds: [existingPage.id] });
         }
         return true;
       });
       if (!authorized) {
-        throw new PageWriteError(403, 'ai_policy_denied', 'Not authorized to change this page\'s AI policy');
+        throw aiPolicyRefusalFromResult({ reason: 'not_authorized', pageIds: [existingPage.id] });
       }
     }
 
@@ -2652,6 +2673,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     const bodyText = htmlToText(bodyHtml);
 
+    // Confluence has ALREADY accepted the content. A policy refusal found
+    // only now (the policy moved or authority was revoked between the
+    // pre-egress check and this commit) must NOT roll the content cache back
+    // — that would leave the local row disagreeing with the acknowledged
+    // remote version. The content commits; the policy refusal is settled
+    // AFTER the commit as the frozen 409/403 body whose `published` field
+    // tells the caller the content went through (#280 review).
+    const settlement: { refusal: AiPolicyRefusalError | null } = { refusal: null };
     const remotePolicyChanges = await completePageWriteIntent(writeIntent, async (writeClient) => {
       // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
       if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
@@ -2677,12 +2706,35 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       );
       await enqueuePageWriteInvalidation(writeClient, writeIntent.id);
       if (body.aiPolicy === undefined) return [] as AiPolicyChangeRecord[];
-      // Same transaction as the content cache write (#280).
-      return applyRequestedAiPolicyOnClient(writeClient, {
-        userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedAiPolicyRevision,
-      });
+      // Same transaction as the content cache write (#280) when it succeeds;
+      // a refusal is captured, not thrown, so the content commit stands.
+      try {
+        return await applyRequestedAiPolicyOnClient(writeClient, {
+          userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedRevision!,
+        });
+      } catch (err) {
+        if (!(err instanceof AiPolicyRefusalError)) throw err;
+        settlement.refusal = err;
+        return [] as AiPolicyChangeRecord[];
+      }
     });
     emitAiPolicyChanges(remotePolicyChanges);
+    if (settlement.refusal !== null) {
+      const refusal = settlement.refusal;
+      await invalidateCollabDocAfterBodyWrite(existingPage.id);
+      await cache.invalidateAcrossUsers('pages');
+      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id),
+        { title: body.title, aiPolicyRefused: refusal.body.error }, request);
+      logger.warn(
+        { pageId: existingPage.id, userId, refusal: refusal.body },
+        'Page content published to Confluence but the requested AI policy was refused after egress',
+      );
+      return reply.status(refusal.statusCode).send({
+        ...refusal.body,
+        message: `${refusal.message}. The page content was published; the AI policy was not changed.`,
+        published: { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' },
+      });
+    }
 
     await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
@@ -2703,7 +2755,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     });
 
     return { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' };
-  });
+  }));
 
   // DELETE /api/pages/:id
   // Accepts integer page id (universal) or confluence_id string (backward compat)

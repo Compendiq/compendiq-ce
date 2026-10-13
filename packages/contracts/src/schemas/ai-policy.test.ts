@@ -14,6 +14,7 @@ import {
   normalizeAiPolicyLabel,
   normalizeAiPolicyValue,
 } from './ai-policy.js';
+import { UpdatePageSchema } from './pages.js';
 
 describe('ai-policy contracts', () => {
   it('accepts only the closed label set', () => {
@@ -60,6 +61,23 @@ describe('ai-policy contracts', () => {
     expect(normalizeAiPolicyLabel('ai-none')).toBeNull();
     expect(normalizeAiPolicyLabel('ai local')).toBeNull();
     expect(normalizeAiPolicyLabel('ai-local-only')).toBeNull();
+    // Trim is JS `String.prototype.trim()`: TAB, NBSP, BOM, ideographic space.
+    // Migration 136's `ai_policy_label_key` mirrors exactly this set.
+    expect(normalizeAiPolicyLabel('\tno-ai\t')).toBe('none');
+    expect(normalizeAiPolicyLabel('\u00a0ai:local\u00a0')).toBe('local_only');
+    expect(normalizeAiPolicyLabel('\ufeffall-ai')).toBe('all');
+    expect(normalizeAiPolicyLabel('\u3000no_ai\u3000')).toBe('none');
+    expect(normalizeAiPolicyLabel('\u200bno-ai')).toBeNull();
+  });
+
+  it('PUT /pages/:id carries aiPolicy only together with the frozen expectedRevision key', () => {
+    const base = { title: 't', bodyHtml: '<p/>' };
+    expect(UpdatePageSchema.safeParse(base).success).toBe(true);
+    expect(UpdatePageSchema.safeParse({ ...base, aiPolicy: 'none' }).success).toBe(false);
+    expect(UpdatePageSchema.safeParse({ ...base, expectedRevision: 1 }).success).toBe(false);
+    expect(UpdatePageSchema.safeParse({ ...base, aiPolicy: 'none', expectedAiPolicyRevision: 1 }).success).toBe(false);
+    expect(UpdatePageSchema.parse({ ...base, aiPolicy: 'no_ai', expectedRevision: 1 }))
+      .toMatchObject({ aiPolicy: 'none', expectedRevision: 1 });
   });
 
   it('writes back exactly one canonical label', () => {

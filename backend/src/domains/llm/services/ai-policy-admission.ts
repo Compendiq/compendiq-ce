@@ -1,7 +1,9 @@
 import type { LlmUsecase } from '@compendiq/contracts';
+import type { PoolClient } from 'pg';
 import { getPool } from '../../../core/db/postgres.js';
 import { AI_POLICY_LOCK_NAMESPACE, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 import { emitAiPolicyEvent } from '../../../core/enterprise/ai-policy-hooks.js';
+import { logger } from '../../../core/utils/logger.js';
 import {
   resolveImageAnalysisUsecase,
   resolveInlineCompletionUsecase,
@@ -56,11 +58,13 @@ export function isPersistableBlockReason(reason: AiPolicyAdmissionBlockReason): 
  */
 export function decideAiPolicyAdmission(
   policy: AiPolicy,
-  provider: { locality: string; localityConfigRevision: number | null; configRevision: number },
+  provider: { locality: string; localityConfigRevision: number | null; configRevision: number; localityDeclaredBy?: string | null },
 ): 'admit' | 'policy_none' | 'provider_not_local' {
   if (policy === 'none') return 'policy_none';
   if (policy === 'local_only') {
+    // A declaration nobody is accountable for (declarer NULL) is no declaration.
     const local = provider.locality === 'local'
+      && (provider.localityDeclaredBy === undefined || provider.localityDeclaredBy !== null)
       && provider.localityConfigRevision !== null
       && provider.localityConfigRevision === provider.configRevision;
     return local ? 'admit' : 'provider_not_local';
@@ -109,7 +113,10 @@ export async function admitPageForUsecase(pageId: number, usecase: LlmUsecase): 
     default:
       resolved = await resolveUsecase(usecase);
   }
-  if (!resolved) return refuse(pageId, null, 'stage_disabled', null);
+  if (!resolved) {
+    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId: null, reason: 'stage_disabled', policy: null });
+    return refuse(pageId, null, 'stage_disabled', null);
+  }
   return admitPageForProvider(pageId, usecase, resolved.config.providerId, resolved.model);
 }
 
@@ -120,9 +127,14 @@ export async function admitPageForUsecase(pageId: number, usecase: LlmUsecase): 
  * events as `admitPageForUsecase`; a worker that holds a provider id must
  * never admit through the resolver, which could name a different one.
  *
- * A provider with no locality declaration (no row, or no locality columns)
- * is external at configuration revision 0: `provider_not_local` under
- * `local_only`, admitted under `all` — never read as local.
+ * FAIL CLOSED (#280 review): a provider table without the locality columns
+ * or any failure to connect/read the policy or provider state refuses with
+ * the retryable `policy_unavailable`. A provider id with no row carries no
+ * declaration and is treated as undeclared external: `provider_not_local`
+ * under `local_only` (persistable, lifted by the per-pass re-check once a
+ * declared-local provider is assigned), admitted under `all`. `none` is
+ * decided before the provider is consulted. Every refusal emits exactly one
+ * `blocked` event.
  */
 export async function admitPageForProvider(
   pageId: number,
@@ -130,8 +142,11 @@ export async function admitPageForProvider(
   providerId: string,
   model: string,
 ): Promise<AiPolicyAdmission> {
-  const client = await getPool().connect();
+  let client: PoolClient | null = null;
+  let p: { ai_policy: AiPolicy; ai_policy_revision: string } | undefined;
+  let row: { locality: string; locality_config_revision: string | null; config_revision: string; locality_declared_by: string | null } | undefined;
   try {
+    client = await getPool().connect();
     await client.query('BEGIN READ ONLY');
     await client.query('SELECT pg_advisory_xact_lock_shared($1, $2)', [AI_POLICY_LOCK_NAMESPACE, pageId]);
     const page = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string }>(
@@ -139,37 +154,51 @@ export async function admitPageForProvider(
       [pageId],
     );
     // `id::text`: the column is a uuid and an unknown or test-shaped id must
-    // read as "no such provider" rather than as a cast error that fails the
-    // worker's whole batch.
-    // No readable locality declaration — a provider table without migration
-    // 135's columns (42703) or no row for this id — IS a fact: the provider
-    // is undeclared, hence external at revision 0 (SPEC-WORK-001: an
-    // undeclared provider is `provider_not_local` under `local_only`, lifted
-    // by the per-pass re-check once a declaration exists). It is never read
-    // as local and never given a made-up revision.
-    await client.query('SAVEPOINT ai_policy_provider');
-    let prov: { rows: Array<{ locality: string; locality_config_revision: string | null; config_revision: string }> } | null;
-    try {
-      prov = await client.query<{ locality: string; locality_config_revision: string | null; config_revision: string }>(
-        `SELECT locality, locality_config_revision, config_revision FROM llm_providers WHERE id::text = $1`,
-        [providerId],
-      );
-    } catch (err) {
-      if ((err as { code?: string }).code !== '42703') throw err;
-      await client.query('ROLLBACK TO SAVEPOINT ai_policy_provider');
-      prov = null;
-    }
+    // read as "no such provider" (refused below) rather than as a cast error.
+    const prov = await client.query<{ locality: string; locality_config_revision: string | null; config_revision: string; locality_declared_by: string | null }>(
+      `SELECT locality, locality_config_revision, config_revision, locality_declared_by
+         FROM llm_providers WHERE id::text = $1`,
+      [providerId],
+    );
     await client.query('COMMIT');
-    const p = page.rows[0];
-    if (!p) return refuse(pageId, null, 'not_found', providerId);
-    const row = prov?.rows[0];
-    const provider = row
-      ? {
-          locality: row.locality,
-          localityConfigRevision: row.locality_config_revision === null ? null : Number(row.locality_config_revision),
-          configRevision: Number(row.config_revision),
-        }
-      : { locality: 'external', localityConfigRevision: null, configRevision: 0 };
+    p = page.rows[0];
+    row = prov.rows[0];
+  } catch (err) {
+    // Connection refused, missing columns, cancelled statement, …: the
+    // policy state is UNKNOWN, so nothing is admitted. Retryable.
+    if (client) await client.query('ROLLBACK').catch(() => undefined);
+    logger.warn({ err, pageId, usecase, providerId }, 'AI policy admission could not read policy state; refusing');
+    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_unavailable', policy: null });
+    return refuse(pageId, null, 'policy_unavailable', providerId);
+  } finally {
+    client?.release();
+  }
+  if (!p) {
+    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'not_found', policy: null });
+    return refuse(pageId, null, 'not_found', providerId);
+  }
+  if (p.ai_policy === 'none') {
+    // A fact about the article, not the provider: persistable, never retried
+    // against a different provider state.
+    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_none', policy: p.ai_policy });
+    return refuse(pageId, p.ai_policy, 'policy_none', providerId);
+  }
+  // A provider id with no row (deleted between resolution and admission, or
+  // a resolver-level assignment that is not a persisted provider) carries NO
+  // declaration, and an undeclared provider is external: `local_only`
+  // refuses it as `provider_not_local` — a persistable block that the
+  // per-pass re-check (`RECHECKABLE_BLOCK_SQL`) lifts once a declared-local
+  // provider is assigned — and `all` admits it as undeclared external at
+  // revision 0. Nothing is ever inferred local.
+  const provider = row
+    ? {
+        locality: row.locality,
+        localityConfigRevision: row.locality_config_revision === null ? null : Number(row.locality_config_revision),
+        configRevision: Number(row.config_revision),
+        localityDeclaredBy: row.locality_declared_by,
+      }
+    : { locality: 'external', localityConfigRevision: null, configRevision: 0, localityDeclaredBy: null };
+  {
     const decision = decideAiPolicyAdmission(p.ai_policy, provider);
     if (decision !== 'admit') {
       emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: decision, policy: p.ai_policy });
@@ -190,11 +219,6 @@ export async function admitPageForProvider(
       locality: provider.locality === 'local' ? 'local' : 'external',
       model,
     };
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
   }
 }
 

@@ -75,9 +75,26 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     expect(r.rows.map((x) => x.ai_policy)).toEqual(['local_only', 'all']);
   });
 
-  it('rewrites legacy spellings to canonical labels without moving the policy', async () => {
+  it('trims exactly what JavaScript trim() trims (tab, NBSP, BOM, ideographic space) — twin of normalizeAiPolicyLabel', async () => {
+    await query(sql);
+    const cases: Array<[string, string | null]> = [
+      ['\tno-ai\t', 'none'], ['\u00a0ai:local\u00a0', 'local_only'], ['\ufeffall-ai', 'all'],
+      ['\u3000no_ai\u3000', 'none'], ['\r\nai:none\n', 'none'], ['\u2003local_only\u2003', 'local_only'],
+      // Not whitespace to JS trim(): zero-width space, inner space.
+      ['\u200bno-ai', null], ['no ai', null],
+    ];
+    for (const [label, expected] of cases) {
+      const r = await query<{ v: string | null }>(`SELECT ai_policy_label_value($1) AS v`, [label]);
+      expect(r.rows[0]!.v, JSON.stringify(label)).toBe(expected);
+      expect(label.trim().toLowerCase() === label.toLowerCase().trim()).toBe(true);
+    }
+  });
+
+  it('rewrites legacy spellings to canonical labels without moving the policy, never duplicating a label', async () => {
     const id = await insertPage('legacy', ['keep', 'ai-local-only'], 'local_only');
     await query(`UPDATE pages SET labels = ARRAY['keep','ai-local-only'] WHERE id = $1`, [id]);
+    const dup = await insertPage('dup', ['x'], 'local_only');
+    await query(`UPDATE pages SET labels = ARRAY['ai-local-only','x','local-ai-only',' ai_local '] WHERE id = $1`, [dup]);
     const before = await query<{ ai_policy_revision: string }>(`SELECT ai_policy_revision FROM pages WHERE id = $1`, [id]);
     await query(sql);
     const after = await query<{ labels: string[]; ai_policy: string; ai_policy_revision: string }>(
@@ -86,5 +103,51 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     expect(after.rows[0]!.labels).toEqual(['keep', 'local-ai-only']);
     expect(after.rows[0]!.ai_policy).toBe('local_only');
     expect(after.rows[0]!.ai_policy_revision).toBe(before.rows[0]!.ai_policy_revision);
+    const deduped = await query<{ labels: string[] }>(`SELECT labels FROM pages WHERE id = $1`, [dup]);
+    expect(deduped.rows[0]!.labels).toEqual(['local-ai-only', 'x']);
+  });
+
+  it('applies on an upgrade with FROZEN pages carrying legacy spellings (labels are protected; the row is skipped, the policy stays)', async () => {
+    const frozen = await insertPage('frozen', ['ai-local-only'], 'local_only');
+    const live = await insertPage('live', ['ai-local-only'], 'local_only');
+    await query(`UPDATE pages SET labels = ARRAY['ai-local-only'] WHERE id = ANY($1::int[])`, [[frozen, live]]);
+    // A published baseline freezes the page (migration 121 shape).
+    await query(
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
+       VALUES ('rt-136', '{"test":true}'::jsonb, 1) ON CONFLICT (runtime_id) DO NOTHING`,
+    );
+    const intent = await query<{ id: string }>(
+      `INSERT INTO page_write_intents (runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)
+       VALUES ('rt-136', 'baseline.prepare', NULL, ARRAY[$1]::integer[], '{}'::jsonb, 'local_verified',
+               '{"effectClass":"local"}'::jsonb)
+       RETURNING id`,
+      [frozen],
+    );
+    const baseline = await query<{ id: string }>(
+      `INSERT INTO page_baselines
+         (id, page_id, original_page_id, page_identity, version, content_revision, lifecycle_revision,
+          manifest_digest, manifest, manifest_bytes, title, labels, total_bytes, reserved_bytes, status,
+          prepared_by_name, preparation_intent_id, published_by_name, published_at, provenance, freeze_reason)
+       VALUES (gen_random_uuid(), $1, $1, '[]'::jsonb, 1, 0, 0, repeat('a', 64), '[]'::jsonb, '\\x00'::bytea,
+               'frozen', ARRAY['ai-local-only'], 0, 0, 'published', 'tester', $2, 'tester', NOW(),
+               'manual_assertion', 'audit')
+       RETURNING id`,
+      [frozen, intent.rows[0]!.id],
+    );
+    await query(
+      `UPDATE pages SET baseline_id = $2, frozen_version = 1, frozen_at = NOW(), frozen_by_name = 'tester',
+              freeze_reason = 'audit', freeze_provenance = 'manual_assertion', freeze_reported_signatories = '[]'::jsonb
+        WHERE id = $1`,
+      [frozen, baseline.rows[0]!.id],
+    );
+
+    await expect(query(sql)).resolves.toBeDefined();
+    const rows = await query<{ id: number; labels: string[]; ai_policy: string }>(
+      `SELECT id, labels, ai_policy FROM pages WHERE id = ANY($1::int[]) ORDER BY id`, [[frozen, live]],
+    );
+    expect(rows.rows).toEqual([
+      { id: frozen, labels: ['ai-local-only'], ai_policy: 'local_only' },
+      { id: live, labels: ['local-ai-only'], ai_policy: 'local_only' },
+    ]);
   });
 });

@@ -11,9 +11,22 @@
 -- The TypeScript twin is `AI_POLICY_LABEL_SYNONYMS` in
 -- packages/contracts/src/schemas/ai-policy.ts; keep both in step.
 
+-- Twin of JavaScript `String.prototype.trim()`: the WhiteSpace and
+-- LineTerminator code points ECMA-262 strips (TAB, VT, FF, SP, NBSP, BOM,
+-- the Zs category, LF, CR, LS, PS). `btrim` strips ASCII space only, so a
+-- tab- or NBSP-padded label would be recognised by TypeScript but not here.
+CREATE OR REPLACE FUNCTION ai_policy_label_key(l TEXT) RETURNS TEXT
+  LANGUAGE sql IMMUTABLE AS $$
+  SELECT lower(regexp_replace(
+    l,
+    '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+'
+    || '|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
+    '', 'g'))
+$$;
+
 CREATE OR REPLACE FUNCTION ai_policy_label_value(l TEXT) RETURNS TEXT
   LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE lower(btrim(l))
+  SELECT CASE ai_policy_label_key(l)
            WHEN 'all-ai' THEN 'all'
            WHEN 'ai:all' THEN 'all'
            WHEN 'local-ai-only' THEN 'local_only'
@@ -62,22 +75,39 @@ $$;
 -- the policy they named, WITHOUT touching `ai_policy` or its revision: the
 -- policy is never relaxed and never tightened by this migration. Labels that
 -- the frozen table already recognises are left as they are.
+--
+-- Safety (#280 review):
+--   * FROZEN rows (`baseline_id IS NOT NULL`) are skipped: `pages.labels` is
+--     a protected column and `enforce_page_protected_write` would abort the
+--     whole migration. Their policy column is still authoritative; only the
+--     cosmetic spelling stays legacy until the page is unfrozen and relabelled.
+--   * A rewrite that collides with a label the row already carries (e.g.
+--     `ai-local-only` next to `local-ai-only`) keeps ONE copy, first
+--     position wins, so no row gains a duplicate label.
 UPDATE pages
    SET labels = (
-     SELECT COALESCE(array_agg(
-       CASE regexp_replace(lower(btrim(l)), '[\s_:]+', '-', 'g')
-         WHEN 'ai-none' THEN 'no-ai'
-         WHEN 'ai-local-only' THEN 'local-ai-only'
-         WHEN 'ai-local' THEN 'local-ai-only'
-         WHEN 'ai-all' THEN 'all-ai'
-         ELSE l
-       END ORDER BY ord), ARRAY[]::TEXT[])
-       FROM unnest(pages.labels) WITH ORDINALITY AS u(l, ord)
+     SELECT COALESCE(array_agg(v ORDER BY first_ord), ARRAY[]::TEXT[])
+       FROM (
+         SELECT v, min(ord) AS first_ord
+           FROM (
+             SELECT CASE regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
+                      WHEN 'ai-none' THEN 'no-ai'
+                      WHEN 'ai-local-only' THEN 'local-ai-only'
+                      WHEN 'ai-local' THEN 'local-ai-only'
+                      WHEN 'ai-all' THEN 'all-ai'
+                      ELSE l
+                    END AS v,
+                    ord
+               FROM unnest(pages.labels) WITH ORDINALITY AS u(l, ord)
+           ) mapped
+          GROUP BY v
+       ) deduped
    )
  WHERE labels IS NOT NULL
+   AND baseline_id IS NULL
    AND EXISTS (
      SELECT 1 FROM unnest(pages.labels) AS l
       WHERE ai_policy_label_value(l) IS NULL
-        AND regexp_replace(lower(btrim(l)), '[\s_:]+', '-', 'g')
+        AND regexp_replace(ai_policy_label_key(l), '[\s_:]+', '-', 'g')
             IN ('ai-none', 'ai-local-only', 'ai-local', 'ai-all')
    );

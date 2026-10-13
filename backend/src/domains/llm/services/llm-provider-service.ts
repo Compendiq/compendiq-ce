@@ -58,6 +58,7 @@ function rowToDto(r: ProviderRow): LlmProvider {
     localityDeclaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
     localityDeclaredBy: r.locality_declared_by ?? null,
     localConfirmed: r.locality === 'local'
+      && r.locality_declared_by !== null && r.locality_declared_by !== undefined
       && r.locality_config_revision !== null && r.locality_config_revision !== undefined
       && Number(r.locality_config_revision) === Number(r.config_revision),
   };
@@ -130,12 +131,36 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /**
- * `actorId` is the administrator declaring `input.locality` (#280). Omitted
- * locality means `external`; a `local` declaration is bound to the revision
- * the insert produces (`locality_config_revision = config_revision`), so the
- * row satisfies `llm_providers_local_declared_check` from the first commit.
+ * A locality declaration without an identified administrator is refused
+ * (#280 review): `locality_declared_by` is the accountability record every
+ * `local_only` admission ultimately rests on.
+ */
+export class LocalityActorRequiredError extends Error {
+  readonly statusCode = 401;
+  readonly reason = 'locality_actor_required';
+  constructor() {
+    super('A provider locality declaration must be made by an identified administrator');
+    this.name = 'LocalityActorRequiredError';
+  }
+}
+
+function requireDeclaringActor(locality: 'local' | 'external' | undefined, actorId: string | undefined): string | null {
+  if (locality === undefined) return null;
+  if (typeof actorId !== 'string' || actorId.length === 0) throw new LocalityActorRequiredError();
+  return actorId;
+}
+
+/**
+ * `actorId` is the administrator declaring `input.locality` (#280) and is
+ * REQUIRED whenever a locality is declared — `local` or `external` alike:
+ * both are recorded with declarer, time and the configuration revision they
+ * were made against. Omitted locality means the column default `external`
+ * with no declaration. A `local` declaration is bound to the revision the
+ * insert produces, so the row satisfies `llm_providers_local_declared_check`
+ * from the first commit.
  */
 export async function createProvider(input: LlmProviderInput, actorId?: string): Promise<LlmProvider> {
+  const declaringActor = requireDeclaringActor(input.locality, actorId);
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const apiKey = input.apiKey ? encryptPat(input.apiKey) : null;
   const base = [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null];
@@ -152,13 +177,9 @@ export async function createProvider(input: LlmProviderInput, actorId?: string):
         `INSERT INTO llm_providers
            (name, base_url, api_key, auth_type, verify_ssl, default_model,
             locality, locality_declared_by, locality_declared_at, locality_config_revision)
-         VALUES ($1,$2,$3,$4,$5,$6,
-                 $7,
-                 CASE WHEN $7 = 'local' THEN $8::uuid ELSE NULL END,
-                 CASE WHEN $7 = 'local' THEN clock_timestamp() ELSE NULL END,
-                 CASE WHEN $7 = 'local' THEN 1 ELSE NULL END)
+         VALUES ($1,$2,$3,$4,$5,$6, $7, $8::uuid, clock_timestamp(), 1)
          RETURNING *`,
-        [...base, input.locality, actorId ?? null],
+        [...base, input.locality, declaringActor],
       );
   await bumpProviderCacheVersion();
   return rowToDto(r.rows[0]!);
@@ -168,9 +189,10 @@ export async function createProvider(input: LlmProviderInput, actorId?: string):
  * A `locality` in the patch is declared in the SAME UPDATE as any endpoint
  * edit, so the migration-135 trigger sees a fresh `locality_declared_at` and
  * binds the declaration to the new configuration revision rather than
- * resetting it to `external`.
+ * resetting it to `external`. The declaring administrator is required.
  */
 export async function updateProvider(id: string, patch: LlmProviderUpdate, actorId?: string): Promise<LlmProvider | null> {
+  const declaringActor = requireDeclaringActor(patch.locality, actorId);
   const sets: string[] = [];
   const vals: unknown[] = [];
   let i = 1;
@@ -183,9 +205,9 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate, actor
   if (patch.defaultModel !== undefined) push('default_model', patch.defaultModel);
   if (patch.locality !== undefined) {
     push('locality', patch.locality);
-    push('locality_declared_by', patch.locality === 'local' ? (actorId ?? null) : null);
-    sets.push(`locality_declared_at = ${patch.locality === 'local' ? 'clock_timestamp()' : 'NULL'}`);
-    sets.push(`locality_config_revision = ${patch.locality === 'local' ? 'config_revision' : 'NULL'}`);
+    push('locality_declared_by', declaringActor);
+    sets.push('locality_declared_at = clock_timestamp()');
+    sets.push('locality_config_revision = config_revision');
   }
   if (sets.length === 0) {
     const row = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
@@ -230,6 +252,7 @@ function localityRowToState(r: LocalityRow): ProviderLocalityState {
     locality: r.locality,
     configRevision,
     localConfirmed: r.locality === 'local'
+      && r.locality_declared_by !== null
       && r.locality_config_revision !== null
       && Number(r.locality_config_revision) === configRevision,
     declaredBy: r.locality_declared_by,

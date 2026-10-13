@@ -10,7 +10,8 @@ export type AiPolicyEvent =
       providerId: string | null;
       /** Policy decisions plus the fail-closed outcomes of admission (#280). */
       reason: 'policy_none' | 'provider_not_local' | 'policy_changed' | 'not_found' | 'stage_disabled' | 'policy_unavailable';
-      policy: string;
+      /** `null` when the refusal happened before the policy could be read (fail closed). */
+      policy: string | null;
     }
   | { type: 'policy_changed'; pageId: number; userId: string; from: string; to: string; revision: number };
 

@@ -72,22 +72,57 @@ describe.skipIf(!dbAvailable)('Migration 137 — root pages.create.confluence in
     await ensureRuntime();
   });
 
-  it('is idempotent and keeps the constraint names', async () => {
+  it('is idempotent: after two runs the root and parented shapes are accepted and malformed labels refused', async () => {
     await query(sql);
     await query(sql);
-    const r = await query<{ conname: string; condef: string }>(
-      `SELECT conname, pg_get_constraintdef(oid) AS condef FROM pg_constraint
-        WHERE conrelid = 'page_write_intents'::regclass
-          AND conname IN ('page_write_intents_effect_policy_check', 'page_write_intents_page_ids_check')
-        ORDER BY conname`,
+    expect(await tryInsert({ kind: 'pages.create.confluence', pageIds: [], effect: rootEffect() })).toEqual({ ok: true });
+    const parent = await insertPage();
+    expect(await tryInsert({
+      kind: 'pages.create.confluence',
+      pageIds: [parent],
+      revisions: { [parent]: { contentRevision: '1', lifecycleRevision: '1' } },
+      effect: rootEffect({ parentPageId: parent, parentConfluenceId: '123' }),
+    })).toEqual({ ok: true });
+    const bad = await tryInsert({
+      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: [null, 7, { x: 1 }] }),
+    });
+    expect(bad).toMatchObject({ ok: false, code: '23514' });
+  });
+
+  it('upgrades a constraint produced by the first revision (no element rule) in place', async () => {
+    await query(sql);
+    // Reproduce the first revision's constraint: 125's expression OR the
+    // old root branch (array + length only).
+    const current = await query<{ condef: string }>(
+      `SELECT pg_get_constraintdef(oid) AS condef FROM pg_constraint
+        WHERE conrelid = 'page_write_intents'::regclass AND conname = 'page_write_intents_effect_policy_check'`,
     );
-    expect(r.rows.map((x) => x.conname)).toEqual([
-      'page_write_intents_effect_policy_check', 'page_write_intents_page_ids_check',
-    ]);
-    // Root branch present exactly once (no duplication on re-run).
-    const policy = r.rows[0]!.condef;
-    expect(policy.split(`'{}'::integer[]`).length - 1).toBe(1);
-    expect(policy.startsWith('CHECK (COALESCE(')).toBe(true);
+    expect(current.rows[0]!.condef).toContain('page_write_intent_initial_labels_valid');
+    const oldDef = current.rows[0]!.condef.replace(
+      /page_write_intent_initial_labels_valid\(([^)]*\))\)/,
+      "(jsonb_typeof($1) = 'array'::text AND jsonb_array_length($1) <= 50)",
+    );
+    expect(oldDef).not.toContain('page_write_intent_initial_labels_valid');
+    await query('ALTER TABLE page_write_intents DROP CONSTRAINT page_write_intents_effect_policy_check');
+    await query(`ALTER TABLE page_write_intents ADD CONSTRAINT page_write_intents_effect_policy_check ${oldDef}`);
+    // Old revision admits a non-string label element…
+    expect(await tryInsert({
+      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: [7] }),
+    })).toEqual({ ok: true });
+    await query('DELETE FROM page_write_intents');
+    // …the re-run tightens it without touching the parented shape.
+    await query(sql);
+    expect(await tryInsert({
+      kind: 'pages.create.confluence', pageIds: [], effect: rootEffect({ initialLabels: [7] }),
+    })).toMatchObject({ ok: false, code: '23514' });
+    expect(await tryInsert({ kind: 'pages.create.confluence', pageIds: [], effect: rootEffect() })).toEqual({ ok: true });
+    const parent = await insertPage();
+    expect(await tryInsert({
+      kind: 'pages.create.confluence',
+      pageIds: [parent],
+      revisions: { [parent]: { contentRevision: '1', lifecycleRevision: '1' } },
+      effect: rootEffect({ parentPageId: parent, parentConfluenceId: '123', initialLabels: [7] }),
+    })).toEqual({ ok: true });
   });
 
   it('accepts the root create shape', async () => {

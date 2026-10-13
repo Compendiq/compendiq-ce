@@ -603,19 +603,34 @@ locality columns above. No backfill ever infers `local`: unknown locality
 never satisfies `local_only`. Migration 136 freezes the label table —
 `all-ai | ai:all → all`, `local-ai-only | local_only | ai:local → local_only`,
 `no-ai | no_ai | ai:none → none`, lowercase + trim only, no regex — in
-`ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`,
-and rewrites pre-freeze spellings in `pages.labels` to the canonical labels
+`ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`.
+"Trim" is `ai_policy_label_key`, a twin of JavaScript's
+`String.prototype.trim()` (TAB, VT, FF, NBSP, BOM, the Zs category and the
+line terminators — not `btrim`'s ASCII space alone), so SQL and
+`normalizeAiPolicyLabel` recognise exactly the same strings. The migration
+also rewrites pre-freeze spellings in `pages.labels` to the canonical labels
 (`all-ai`, `local-ai-only`, `no-ai`) without touching the stored policy, which
 remains the authority (labels are consulted at creation only; removing a tag
-never relaxes a page). The same table lives in
-`@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`) and in
-`core/services/ai-policy-service.ts`. The canonical stored and wire value for
-"no AI" is `none`; `no_ai` is accepted as request input only. Migration 137
-lets a `pages.create.confluence` intent carry an EMPTY `page_ids` when its
-effect has `parentPageId: null` (a space-root create), so root creation goes
-through the same write-intent ledger as parented creation; the existing
-`page_write_intents_effect_policy_check` is re-read from the catalog and
-extended rather than restated.
+never relaxes a page). That repair collapses a rewrite onto a label the row
+already carries (first position wins, never a duplicate) and **skips frozen
+rows** (`baseline_id IS NOT NULL`): `labels` is a protected column under
+migration 121's trigger and the migration must not abort on a frozen page;
+such a row keeps its legacy spelling — cosmetic only — until it is thawed.
+The same table lives in `@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`)
+and in `core/services/ai-policy-service.ts`. The canonical stored and wire
+value for "no AI" is `none`; `no_ai` is accepted as request input only.
+Migration 137 lets a `pages.create.confluence` intent carry an EMPTY
+`page_ids` when its effect has `parentPageId: null` (a space-root create), so
+root creation goes through the same write-intent ledger as parented creation;
+the existing `page_write_intents_effect_policy_check` is re-read from the
+catalog and extended rather than restated. The root branch validates every
+`initialLabels` element (non-empty string ≤ 100 chars, ≤ 50 entries) through
+the IMMUTABLE `page_write_intent_initial_labels_valid(jsonb)` — a CHECK may
+not hold a subquery — and its presence in the catalog definition is the
+idempotency marker: a database that already carries the first revision's
+root branch (array + length only) is tightened in place by AND-ing the
+element rule onto the existing expression for empty-target rows; a database
+that carries the upgraded branch is left untouched.
 
 **Immutable baseline foundation and enforcement (migrations 120–122,
 124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and

@@ -190,11 +190,22 @@ export const UpdatePageSchema = z.object({
   visibility: PageVisibilityEnum.optional(),
   /**
    * Explicit article AI policy change applied in the same transaction as the
-   * content write (#280). Requires policy authority; `expectedAiPolicyRevision`
-   * is the optimistic guard (409 `ai_policy_conflict` when stale).
+   * content write (#280). Requires policy authority. `expectedRevision` is the
+   * frozen compare-and-set key shared with `PUT /pages/:id/ai-policy`
+   * (`aiPolicyRevision` from the page detail) and is REQUIRED whenever
+   * `aiPolicy` is sent — a stale value is 409 `ai_policy_conflict`. Sending
+   * one without the other is a 422.
    */
   aiPolicy: AiPolicyInputSchema.optional(),
-  expectedAiPolicyRevision: z.number().int().nonnegative().optional(),
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).superRefine((value, ctx) => {
+  if ((value.aiPolicy === undefined) !== (value.expectedRevision === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [value.aiPolicy === undefined ? 'aiPolicy' : 'expectedRevision'],
+      message: 'aiPolicy and expectedRevision must be sent together',
+    });
+  }
 });
 
 /**

@@ -1372,6 +1372,21 @@ every descendant query, so cross-space, page-restricted (no ACE for the
 caller, in both editions) or soft-deleted sub-pages never reach
 the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
 
+**Article AI policy admission on this path (#280/#281).** A page is only
+dispatched to a provider that `admitPageForUsecase` /
+`admitPageForProvider` (`domains/llm/services/ai-policy-admission.ts`)
+admitted for the resolved `(provider, model)`; a provider-bound sub-page walk
+passes its own admission as `policyContext` and fails closed on a provider
+revision or locality move (`03-backend-domains.md`). Admission **fails
+closed**: any failure to connect or to read the page/provider rows is
+`policy_unavailable` (retryable, logged, never an admission), `none` is
+decided from the page row before the provider is consulted, and a `local`
+declaration is honoured only when it was made *by an identified
+administrator* against the provider's current `config_revision`. Every
+refusal — `policy_none`, `provider_not_local`, `not_found`, `stage_disabled`,
+`policy_unavailable` — emits exactly one `blocked` event to the enterprise
+sink; only the first two are ever persisted as a block reason.
+
 ## Image input flow (#1154)
 
 `/api/llm/ask` does not accept an image — only `/api/llm/generate` and

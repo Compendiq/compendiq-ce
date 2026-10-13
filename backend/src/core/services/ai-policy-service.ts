@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { AI_POLICY_CANONICAL_LABELS, AI_POLICY_LABEL_SYNONYMS } from '@compendiq/contracts';
 import { getPool } from '../db/postgres.js';
-import { isSystemAdmin, userHasPermission } from './rbac-service.js';
+import { isSystemAdmin, userCanAccessPage, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
 import { emitAiPolicyEvent } from '../enterprise/ai-policy-hooks.js';
 import { PageWriteError } from './page-write-admission.js';
@@ -237,6 +237,68 @@ export async function canMutateAiPolicy(
 }
 
 /**
+ * Policy authority for an EXPLICIT policy stated at creation, before any row
+ * exists (#280 review): a standalone creator is the new owner (always
+ * allowed); a Confluence create needs an edit permission in the target
+ * space or system admin — a read-only role cannot choose a policy for a
+ * page it may not edit. Omitted explicit policy never consults this.
+ */
+export async function canChoosePolicyAtCreation(
+  userId: string,
+  target: { source: 'standalone' | 'confluence'; spaceKey: string | null },
+  client: PoolClient,
+): Promise<boolean> {
+  if (target.source === 'standalone') return true;
+  if (await isSystemAdmin(userId, client)) return true;
+  if (!target.spaceKey) return false;
+  for (const perm of POLICY_PERMISSIONS) {
+    if (await userHasPermission(userId, perm, target.spaceKey, undefined, client)) return true;
+  }
+  return false;
+}
+
+/**
+ * The frozen wire bodies of a policy refusal (contracts `AiPolicyDeniedSchema`,
+ * `AiPolicyConflictSchema`, `AiPolicyLabelConflictSchema`). Carried by
+ * `AiPolicyRefusalError` so a page route whose other failures go through the
+ * generic `PageWriteError` serializer can still answer the policy contract.
+ */
+export type AiPolicyRefusalBody =
+  | { error: 'ai_policy_denied'; pageIds: number[] }
+  | { error: 'ai_policy_conflict'; reason: 'stale_revision'; pageIds: number[] }
+  | { error: 'ai_policy_label_conflict'; policies: AiPolicy[] }
+  | { error: 'ai_policy_enforcement_unavailable'; pageIds: number[] };
+
+export class AiPolicyRefusalError extends Error {
+  readonly statusCode: number;
+  readonly body: AiPolicyRefusalBody;
+  constructor(statusCode: number, body: AiPolicyRefusalBody, message: string) {
+    super(message);
+    this.name = 'AiPolicyRefusalError';
+    this.statusCode = statusCode;
+    this.body = body;
+  }
+}
+
+export function aiPolicyRefusalFromResult(
+  result: { reason: 'stale_revision' | 'not_authorized' | 'not_found' | 'enforcement_unavailable'; pageIds: number[] },
+): AiPolicyRefusalError | PageWriteError {
+  switch (result.reason) {
+    case 'stale_revision':
+      return new AiPolicyRefusalError(409, { error: 'ai_policy_conflict', reason: 'stale_revision', pageIds: result.pageIds },
+        'The page AI policy changed since you loaded it');
+    case 'not_authorized':
+      return new AiPolicyRefusalError(403, { error: 'ai_policy_denied', pageIds: result.pageIds },
+        'Not authorized to change this page\'s AI policy');
+    case 'enforcement_unavailable':
+      return new AiPolicyRefusalError(409, { error: 'ai_policy_enforcement_unavailable', pageIds: result.pageIds },
+        'Restrictive AI policies require the enterprise enforcement component.');
+    default:
+      return new PageWriteError(404, 'page_not_found', 'Page not found');
+  }
+}
+
+/**
  * Foundation-only deployments (no EE enforcement hook) refuse to ACTIVATE a
  * restrictive policy: storing `local_only`/`none` without workers that honour
  * it would be a false promise. Relaxing back to `all` is always allowed.
@@ -306,7 +368,18 @@ export async function applyAiPolicyOnClient(
   );
   const byId = new Map(locked.rows.map((r) => [r.id, r]));
   const missing = ids.filter((id) => !byId.has(id));
-  if (missing.length) return { ok: false, reason: 'not_found', pageIds: missing };
+  // On the explicit policy endpoints (`requireAuthority`), a page the caller
+  // cannot SEE answers exactly like one that does not exist (404 convention):
+  // a 403 would confirm the hidden row's existence. Label writers and the
+  // create/recovery reconcilers run on a row their route already admitted
+  // (content-edit rights, or the creator's own publication), so they do not
+  // re-run the read predicate here.
+  if (input.requireAuthority) {
+    for (const id of ids) {
+      if (byId.has(id) && !(await userCanAccessPage(input.userId, id, client))) missing.push(id);
+    }
+  }
+  if (missing.length) return { ok: false, reason: 'not_found', pageIds: missing.sort((a, b) => a - b) };
   const denied: number[] = [];
   for (const item of sorted) {
     const current = byId.get(item.pageId)!.ai_policy;

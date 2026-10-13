@@ -15,6 +15,7 @@ import {
   updateProvider,
   deleteProvider,
   setDefaultProvider,
+  LocalityActorRequiredError,
 } from '../../domains/llm/services/llm-provider-service.js';
 import {
   listModels as clientListModels,
@@ -277,6 +278,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         // owns this origin. Prevents a concurrent successful sibling from
         // losing its allowlist.
         await revokeAllowlistIfUnused(input.baseUrl);
+        if (err instanceof LocalityActorRequiredError) {
+          return reply.code(err.statusCode).send({ error: err.reason, message: err.message });
+        }
         throw err;
       }
       emitLlmAudit({
@@ -325,6 +329,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         updated = await updateProvider(id, patch, request.userId);
       } catch (err) {
         if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
+        if (err instanceof LocalityActorRequiredError) {
+          return reply.code(err.statusCode).send({ error: err.reason, message: err.message });
+        }
         throw err;
       }
       if (!updated) {

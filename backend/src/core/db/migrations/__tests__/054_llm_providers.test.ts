@@ -46,8 +46,13 @@ async function repairSharedSchema(): Promise<void> {
   // aborts the replay. Content is not what this repairs, and every test file
   // seeds its own.
   await query(`TRUNCATE TABLE llm_usecase_assignments`);
+  // The recreated llm_providers also lacks 135's locality / config-revision
+  // columns and trigger (#280). Without them every later AI-policy admission
+  // in this worker fails CLOSED as `policy_unavailable`, so summary/quality
+  // workers leave pages `pending` for reasons unrelated to the file under
+  // test. 135 is idempotent; replay it too.
   await query(`DELETE FROM _migrations WHERE name = ANY($1::text[])`, [
-    ['087_llm_model_capabilities.sql', ...usecaseCheckMigrations()],
+    ['087_llm_model_capabilities.sql', '135_article_ai_policy.sql', ...usecaseCheckMigrations()],
   ]);
   await runMigrations();
 }

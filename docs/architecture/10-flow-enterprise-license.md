@@ -226,3 +226,16 @@ calling `resolveCreationAiPolicy`. Losing the license makes the hook answer
 recording is an observer of a decision already taken: an audit failure is
 logged and never turns a denied dispatch into an admitted one. There is no
 live inheritance resolver; a cascade writes each owned row once.
+
+The same `canMutateAiPolicy` hook that guards every later policy move also
+guards the **choice at creation** (`canChoosePolicyAtCreation`, #280): CE
+answers from ownership/edit rights, EE from its governance rules, and a
+creator the hook refuses cannot set a policy through `POST /pages` either
+(403 `ai_policy_denied` before any row or remote effect). The observer sees
+every admission refusal as one `blocked` event — `not_found`,
+`stage_disabled` and `policy_unavailable` included, with `policy: null`
+when the page row could not be read — so the evidence report never has a
+silent refusal. Provider locality declarations are actor-bound: `POST/PATCH
+/api/llm/providers` with a `locality` and no identified administrator is 401
+`locality_actor_required`, and a `local` declaration without a declarer is
+not local for admission purposes.
