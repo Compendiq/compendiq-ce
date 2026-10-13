@@ -1,19 +1,38 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { BulkUpdatePageAiPolicySchema, UpdatePageAiPolicySchema } from '@compendiq/contracts';
+import {
+  BulkUpdatePageAiPolicySchema,
+  UpdatePageAiPolicySchema,
+  type PageAiPolicyResponse,
+} from '@compendiq/contracts';
 import { updatePageAiPolicies, type AiPolicyMutationResult } from '../../core/services/ai-policy-service.js';
 
 const PageIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 
-function failureBody(result: Extract<AiPolicyMutationResult, { ok: false }>) {
-  if (result.reason === 'enforcement_unavailable') {
-    return {
-      error: 'ai_policy_enforcement_unavailable',
-      message: 'Restrictive AI policies require the enterprise enforcement component.',
-      pageIds: result.pageIds,
-    };
+function toResponse(row: { pageId: number; policy: string; revision: number }): PageAiPolicyResponse {
+  return { pageId: row.pageId, aiPolicy: row.policy as PageAiPolicyResponse['aiPolicy'], aiPolicyRevision: row.revision };
+}
+
+/**
+ * Frozen error shapes (#280): 404 for an inaccessible/missing page,
+ * 403 `ai_policy_denied`, 409 `ai_policy_conflict` (stale revision),
+ * 409 `ai_policy_enforcement_unavailable` (foundation-only deployment).
+ */
+function sendFailure(reply: FastifyReply, result: Extract<AiPolicyMutationResult, { ok: false }>) {
+  switch (result.reason) {
+    case 'not_found':
+      return reply.status(404).send({ error: 'Page not found', pageIds: result.pageIds });
+    case 'not_authorized':
+      return reply.status(403).send({ error: 'ai_policy_denied', pageIds: result.pageIds });
+    case 'enforcement_unavailable':
+      return reply.status(409).send({
+        error: 'ai_policy_enforcement_unavailable',
+        message: 'Restrictive AI policies require the enterprise enforcement component.',
+        pageIds: result.pageIds,
+      });
+    case 'stale_revision':
+      return reply.status(409).send({ error: 'ai_policy_conflict', reason: 'stale_revision', pageIds: result.pageIds });
   }
-  return { error: 'ai_policy_conflict', reason: result.reason, pageIds: result.pageIds };
 }
 
 /**
@@ -24,24 +43,18 @@ export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void
   fastify.put('/pages/:id/ai-policy', async (request, reply) => {
     const { id } = PageIdParamSchema.parse(request.params);
     const body = UpdatePageAiPolicySchema.parse(request.body);
-    const result = await updatePageAiPolicies(request.userId, body.policy, [
+    const result = await updatePageAiPolicies(request.userId, body.aiPolicy, [
       { pageId: id, expectedRevision: body.expectedRevision },
     ]);
-    if (!result.ok) {
-      if (result.reason === 'not_found') return reply.status(404).send({ error: 'Page not found' });
-      if (result.reason === 'not_authorized') {
-        return reply.status(403).send({ error: 'Not authorized to change this page\'s AI policy' });
-      }
-      return reply.status(409).send(failureBody(result));
-    }
-    return result.rows[0]!;
+    if (!result.ok) return sendFailure(reply, result);
+    return toResponse(result.rows[0]!);
   });
 
   // All-or-nothing: any stale, missing or unauthorized row leaves every row unchanged.
   fastify.post('/pages/bulk/ai-policy', async (request, reply) => {
     const body = BulkUpdatePageAiPolicySchema.parse(request.body);
-    const result = await updatePageAiPolicies(request.userId, body.policy, body.items);
-    if (!result.ok) return reply.status(409).send(failureBody(result));
-    return { items: result.rows };
+    const result = await updatePageAiPolicies(request.userId, body.aiPolicy, body.items);
+    if (!result.ok) return sendFailure(reply, result);
+    return { items: result.rows.map(toResponse) };
   });
 }

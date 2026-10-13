@@ -131,6 +131,9 @@ erDiagram
         text freeze_provenance "manual_assertion | authenticated_approval"
         jsonb freeze_reported_signatories "caller assertions, not authenticated approvals"
         text freeze_reported_reference
+        text ai_policy "migration 135 (#280): all | local_only | none; DEFAULT all; the stored authority, labels never consulted after creation"
+        bigint ai_policy_revision "migration 135: monotonic; bumped by trigger on every ai_policy change; PUT expectedRevision fences on it"
+        text ai_policy_block_reason "migration 135: policy_none | provider_not_local | policy_changed; persisted only for article-level blocks"
     }
 
     page_collaborative_docs {
@@ -550,6 +553,11 @@ erDiagram
         bool is_default
         timestamptz created_at
         timestamptz updated_at
+        text locality "migration 135 (#280): local | external; DEFAULT external; never inferred"
+        bigint config_revision "migration 135: DEFAULT 1; trigger bumps on base_url/api_key/auth_type/verify_ssl edits"
+        bigint locality_config_revision "revision a local declaration was made against; local admits ONLY when = config_revision"
+        uuid locality_declared_by FK "users; ON DELETE SET NULL"
+        timestamptz locality_declared_at "fresh value in the same UPDATE keeps a declaration across an endpoint edit; otherwise the trigger resets to external"
     }
 
     llm_usecase_assignments {
@@ -586,6 +594,28 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**Article AI policy foundation (migrations 135–137; #280).** Migration 135
+adds `pages.ai_policy` (`all | local_only | none`, default `all`), the
+monotonic `ai_policy_revision` (a trigger advances it on every policy change
+and refuses a decrease) and `ai_policy_block_reason`, plus the provider
+locality columns above. No backfill ever infers `local`: unknown locality
+never satisfies `local_only`. Migration 136 freezes the label table —
+`all-ai | ai:all → all`, `local-ai-only | local_only | ai:local → local_only`,
+`no-ai | no_ai | ai:none → none`, lowercase + trim only, no regex — in
+`ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`,
+and rewrites pre-freeze spellings in `pages.labels` to the canonical labels
+(`all-ai`, `local-ai-only`, `no-ai`) without touching the stored policy, which
+remains the authority (labels are consulted at creation only; removing a tag
+never relaxes a page). The same table lives in
+`@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`) and in
+`core/services/ai-policy-service.ts`. The canonical stored and wire value for
+"no AI" is `none`; `no_ai` is accepted as request input only. Migration 137
+lets a `pages.create.confluence` intent carry an EMPTY `page_ids` when its
+effect has `parentPageId: null` (a space-root create), so root creation goes
+through the same write-intent ledger as parented creation; the existing
+`page_write_intents_effect_policy_check` is re-read from the catalog and
+extended rather than restated.
 
 **Immutable baseline foundation and enforcement (migrations 120–122,
 124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and

@@ -17,6 +17,12 @@ interface ProviderRow {
   is_default: boolean;
   created_at: Date;
   updated_at: Date;
+  /** #280 — locality columns (migration 135). */
+  locality: 'local' | 'external';
+  config_revision: string;
+  locality_config_revision: string | null;
+  locality_declared_by: string | null;
+  locality_declared_at: Date | null;
 }
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
@@ -45,6 +51,15 @@ function rowToDto(r: ProviderRow): LlmProvider {
     keyPreview: preview,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
+    // A schema without migration 135's columns reads as undeclared/external:
+    // unknown locality never confirms local.
+    locality: r.locality === 'local' ? 'local' : 'external',
+    configRevision: r.config_revision === undefined || r.config_revision === null ? 0 : Number(r.config_revision),
+    localityDeclaredAt: r.locality_declared_at ? r.locality_declared_at.toISOString() : null,
+    localityDeclaredBy: r.locality_declared_by ?? null,
+    localConfirmed: r.locality === 'local'
+      && r.locality_config_revision !== null && r.locality_config_revision !== undefined
+      && Number(r.locality_config_revision) === Number(r.config_revision),
   };
 }
 
@@ -114,20 +129,48 @@ export function normalizeBaseUrl(raw: string): string {
   }
 }
 
-export async function createProvider(input: LlmProviderInput): Promise<LlmProvider> {
+/**
+ * `actorId` is the administrator declaring `input.locality` (#280). Omitted
+ * locality means `external`; a `local` declaration is bound to the revision
+ * the insert produces (`locality_config_revision = config_revision`), so the
+ * row satisfies `llm_providers_local_declared_check` from the first commit.
+ */
+export async function createProvider(input: LlmProviderInput, actorId?: string): Promise<LlmProvider> {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const apiKey = input.apiKey ? encryptPat(input.apiKey) : null;
-  const r = await query<ProviderRow>(
-    `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     RETURNING *`,
-    [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null],
-  );
+  const base = [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null];
+  // The locality columns are named only when a locality was declared, so the
+  // column default (`external`) answers for every other create.
+  const r = input.locality === undefined
+    ? await query<ProviderRow>(
+        `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING *`,
+        base,
+      )
+    : await query<ProviderRow>(
+        `INSERT INTO llm_providers
+           (name, base_url, api_key, auth_type, verify_ssl, default_model,
+            locality, locality_declared_by, locality_declared_at, locality_config_revision)
+         VALUES ($1,$2,$3,$4,$5,$6,
+                 $7,
+                 CASE WHEN $7 = 'local' THEN $8::uuid ELSE NULL END,
+                 CASE WHEN $7 = 'local' THEN clock_timestamp() ELSE NULL END,
+                 CASE WHEN $7 = 'local' THEN 1 ELSE NULL END)
+         RETURNING *`,
+        [...base, input.locality, actorId ?? null],
+      );
   await bumpProviderCacheVersion();
   return rowToDto(r.rows[0]!);
 }
 
-export async function updateProvider(id: string, patch: LlmProviderUpdate): Promise<LlmProvider | null> {
+/**
+ * A `locality` in the patch is declared in the SAME UPDATE as any endpoint
+ * edit, so the migration-135 trigger sees a fresh `locality_declared_at` and
+ * binds the declaration to the new configuration revision rather than
+ * resetting it to `external`.
+ */
+export async function updateProvider(id: string, patch: LlmProviderUpdate, actorId?: string): Promise<LlmProvider | null> {
   const sets: string[] = [];
   const vals: unknown[] = [];
   let i = 1;
@@ -138,6 +181,12 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
   if (patch.authType !== undefined)     push('auth_type', patch.authType);
   if (patch.verifySsl !== undefined)    push('verify_ssl', patch.verifySsl);
   if (patch.defaultModel !== undefined) push('default_model', patch.defaultModel);
+  if (patch.locality !== undefined) {
+    push('locality', patch.locality);
+    push('locality_declared_by', patch.locality === 'local' ? (actorId ?? null) : null);
+    sets.push(`locality_declared_at = ${patch.locality === 'local' ? 'clock_timestamp()' : 'NULL'}`);
+    sets.push(`locality_config_revision = ${patch.locality === 'local' ? 'config_revision' : 'NULL'}`);
+  }
   if (sets.length === 0) {
     const row = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
     return row.rows[0] ? rowToDto(row.rows[0]) : null;

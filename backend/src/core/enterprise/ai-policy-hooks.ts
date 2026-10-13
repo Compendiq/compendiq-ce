@@ -3,7 +3,15 @@ import { logger } from '../utils/logger.js';
 
 export type AiPolicyEvent =
   | { type: 'admitted'; pageId: number; usecase: string; providerId: string; configRevision: number; policy: string; policyRevision: number }
-  | { type: 'blocked'; pageId: number; usecase: string; providerId: string | null; reason: 'policy_none' | 'provider_not_local' | 'policy_changed'; policy: string }
+  | {
+      type: 'blocked';
+      pageId: number;
+      usecase: string;
+      providerId: string | null;
+      /** Policy decisions plus the fail-closed outcomes of admission (#280). */
+      reason: 'policy_none' | 'provider_not_local' | 'policy_changed' | 'not_found' | 'stage_disabled' | 'policy_unavailable';
+      policy: string;
+    }
   | { type: 'policy_changed'; pageId: number; userId: string; from: string; to: string; revision: number };
 
 /**

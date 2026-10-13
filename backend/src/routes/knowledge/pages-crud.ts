@@ -95,17 +95,51 @@ import {
 } from '../../core/services/page-write-admission.js';
 import { enqueuePageWriteInvalidation } from '../../core/services/page-write-invalidation.js';
 import {
+  applyAiPolicyOnClient,
   applyPageLabelsOnClient,
   canMutateAiPolicy,
   emitAiPolicyChanges,
   isAiPolicy,
+  isAiPolicyEnforcementAvailable,
   lockAiPolicyForPages,
   planLabelPolicyChange,
+  policyFromLabels,
   resolveCreationAiPolicy,
   type AiPolicy,
   type AiPolicyChangeRecord,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
+
+/**
+ * Apply an explicit `aiPolicy` from a content update on the SAME held
+ * transaction as the content write (#280). The caller must have taken the
+ * AI-policy advisory lock (`lockAiPolicyForPages`) before its row lock.
+ * Failures map to the frozen error shapes; returns the deferred events the
+ * caller emits after COMMIT.
+ */
+async function applyRequestedAiPolicyOnClient(
+  writeClient: PoolClient,
+  input: { userId: string; pageId: number; aiPolicy: AiPolicy; expectedRevision?: number },
+): Promise<AiPolicyChangeRecord[]> {
+  if (input.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
+    throw new PageWriteError(
+      409,
+      'ai_policy_enforcement_unavailable',
+      'Restrictive AI policies require the enterprise enforcement component.',
+    );
+  }
+  const applied = await applyAiPolicyOnClient(writeClient, {
+    userId: input.userId,
+    items: [{ pageId: input.pageId, policy: input.aiPolicy, expectedRevision: input.expectedRevision }],
+    requireAuthority: true,
+  });
+  if (applied.ok) return applied.changes;
+  if (applied.reason === 'not_found') throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  if (applied.reason === 'not_authorized') {
+    throw new PageWriteError(403, 'ai_policy_denied', 'Not authorized to change this page\'s AI policy');
+  }
+  throw new PageWriteError(409, 'ai_policy_conflict', 'The page AI policy changed since you loaded it');
+}
 import {
   imageAttachmentPageKey,
   loadAuthorizedImagePage,
@@ -1151,9 +1185,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_filled: boolean | null;
       baseline_id: string | null;
       frozen_version: number | null;
+      ai_policy: AiPolicy;
+      ai_policy_revision: string;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
+              cp.ai_policy, cp.ai_policy_revision::text,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
@@ -1234,10 +1271,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const lifecycleClient = await getPool().connect();
     let lifecycleState: PageLifecycleState;
     let renderedBodyHtml: string | null;
+    let canChangeAiPolicy: boolean;
     try {
       await lifecycleClient.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       lifecycleState = await getPageLifecycleState(lifecycleClient, row.id, userId);
       renderedBodyHtml = await renderedFrozenPageBodyHtml(lifecycleClient, row.id, userId);
+      canChangeAiPolicy = await canMutateAiPolicy(userId, row.id, lifecycleClient);
       await lifecycleClient.query('COMMIT');
     } catch (err) {
       await lifecycleClient.query('ROLLBACK').catch(() => undefined);
@@ -1297,6 +1336,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       verifiedAt: row.verified_at,
       icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       ...lifecycleState,
+      // Article AI policy (#280): the stored authority, its optimistic
+      // revision, whether THIS caller may change it, and whether enforcement
+      // is live or the deployment is foundation-only.
+      aiPolicy: row.ai_policy,
+      aiPolicyRevision: Number(row.ai_policy_revision),
+      canChangeAiPolicy,
+      aiPolicyActivation: isAiPolicyEnforcementAvailable() ? 'active' : 'foundation_only',
     };
   });
 
@@ -1789,10 +1835,32 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const initialLabels = body.labels?.length
       ? planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: body.labels }).labels
       : [];
+    // An explicit `aiPolicy` that disagrees with the labels is a 422: the
+    // caller stated two policies at once (#280). A restrictive explicit
+    // choice on a foundation-only deployment is refused rather than silently
+    // downgraded (409 `ai_policy_enforcement_unavailable`).
+    if (body.aiPolicy !== undefined) {
+      const labelPolicy = policyFromLabels(initialLabels);
+      if (labelPolicy !== 'all' && labelPolicy !== body.aiPolicy) {
+        throw new PageWriteError(
+          422,
+          'ai_policy_label_conflict',
+          `Explicit AI policy ${body.aiPolicy} contradicts the labels (${labelPolicy})`,
+        );
+      }
+      if (body.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
+        throw new PageWriteError(
+          409,
+          'ai_policy_enforcement_unavailable',
+          'Restrictive AI policies require the enterprise enforcement component.',
+        );
+      }
+    }
     const initialPolicy = await resolveCreationAiPolicy({
       userId,
       spaceKey: body.spaceKey && body.spaceKey !== '__local__' ? body.spaceKey : null,
       labels: initialLabels,
+      explicit: body.aiPolicy,
     });
 
     // Explicit source takes precedence over auto-detection
@@ -1840,17 +1908,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           parentPath = parent.path;
         }
 
+        // Policy and content land in ONE statement (#280): the row is never
+        // observable with its labels but without the policy they imply, and
+        // the stored labels are the planned canonical set, not the raw input.
         const result = await client.query<{ id: number; title: string; version: number }>(
           `INSERT INTO pages
              (title, body_html, body_text, body_storage, source, created_by_user_id,
               visibility, version, space_key, confluence_id, parent_id,
-              page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
+              page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels,
+              ai_policy)
            VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                   $8, $9, $9, 'not_embedded', NOW(), $10)
+                   $8, $9, $9, 'not_embedded', NOW(), $10, $11)
            RETURNING id, title, version`,
           [body.title, effectiveBodyHtml, bodyText, userId,
            visibility, spaceKey, body.parentId ?? null,
-           pageType, !isFolder, body.labels ?? []],
+           pageType, !isFolder, initialLabels, initialPolicy],
         );
         const created = result.rows[0]!;
         const newPath = parentPath ? `${parentPath}/${created.id}` : `/${created.id}`;
@@ -1986,28 +2058,46 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           },
         });
       });
+    } else {
+      // A root create (no parent) has no page row to reserve, but it is still
+      // a remote mutation with a trusted initial policy. Migration 137 admits
+      // exactly this shape (#280): empty targets, null parent, the policy and
+      // labels the publication will write in its own transaction.
+      createIntent = await withPageWriteTransaction([], (writeClient) =>
+        reservePageWriteIntentInTransaction(writeClient, {
+          pageIds: [],
+          kind: 'pages.create.confluence',
+          actorId: userId,
+          effect: {
+            effectClass: 'remote',
+            parentPageId: null,
+            parentConfluenceId: null,
+            spaceKey: body.spaceKey!,
+            titleSha256: createHash('sha256').update(body.title).digest('hex'),
+            storageSha256: createHash('sha256').update(storageBody).digest('hex'),
+            initialPolicy,
+            initialLabels,
+          },
+        }));
     }
 
-    const page = createIntent
-      ? await runPageWriteIntentEffect(
-          createIntent,
-          {
-            kind: 'remote',
-            completesRemoteWork: true,
-            terminalResult: (created) =>
-              pagePublicationReceipt(created.id, created.version.number, created),
-          },
-          () => client.createPage(
-            body.spaceKey!,
-            body.title,
-            storageBody,
-            remoteParentConfluenceId ?? undefined,
-          ),
-        )
-      : await client.createPage(body.spaceKey!, body.title, storageBody, undefined);
+    const page = await runPageWriteIntentEffect(
+      createIntent,
+      {
+        kind: 'remote',
+        completesRemoteWork: true,
+        terminalResult: (created) =>
+          pagePublicationReceipt(created.id, created.version.number, created),
+      },
+      () => client.createPage(
+        body.spaceKey!,
+        body.title,
+        storageBody,
+        remoteParentConfluenceId ?? undefined,
+      ),
+    );
     const publishedStorage = page.body?.storage?.value ?? storageBody;
     if (
-      createIntent &&
       (createHash('sha256').update(page.title).digest('hex') !==
         createHash('sha256').update(body.title).digest('hex') ||
         createHash('sha256').update(publishedStorage).digest('hex') !==
@@ -2036,40 +2126,37 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       actorId: userId,
       onPolicyChanges: (changes: AiPolicyChangeRecord[]) => { createPolicyChanges.push(...changes); },
     };
-    let createdPageState: PublishedConfluencePage;
-    if (createIntent) {
-      const admittedCreateIntent = createIntent;
-      createdPageState = await completePageWriteIntent(
-        admittedCreateIntent,
-        async (writeClient) => {
-          const actor = await writeClient.query<{ active: boolean }>(
-            'SELECT deactivated_at IS NULL AS active FROM users WHERE id = $1',
-            [userId],
+    const admittedCreateIntent = createIntent;
+    const createdPageState: PublishedConfluencePage = await completePageWriteIntent(
+      admittedCreateIntent,
+      async (writeClient) => {
+        const actor = await writeClient.query<{ active: boolean }>(
+          'SELECT deactivated_at IS NULL AS active FROM users WHERE id = $1',
+          [userId],
+        );
+        const parentId = admittedCreateIntent.pageIds[0];
+        if (
+          actor.rows[0]?.active !== true ||
+          (parentId !== undefined && !(await userCanAccessPage(userId, parentId, writeClient)))
+        ) {
+          throw new PageWriteError(
+            403,
+            'parent_access_changed',
+            'Access to the Confluence parent changed before local publication',
           );
-          if (
-            actor.rows[0]?.active !== true ||
-            !(await userCanAccessPage(
-              userId,
-              admittedCreateIntent.pageIds[0]!,
-              writeClient,
-            ))
-          ) {
-            throw new PageWriteError(
-              403,
-              'parent_access_changed',
-              'Access to the Confluence parent changed before local publication',
-            );
+        }
+        if (parentId === undefined) {
+          const accessibleSpaces = await getUserAccessibleSpaces(userId, writeClient);
+          if (!accessibleSpaces.includes(body.spaceKey!)) {
+            throw new PageWriteError(403, 'space_access_changed', 'Access to the space changed before local publication');
           }
-          const published = await publishCreatedConfluencePage(writeClient, publication);
-          await enqueuePageWriteInvalidation(writeClient, admittedCreateIntent.id);
-          return published;
-        },
-      );
-    } else {
-      createdPageState = await withPageWriteTransaction([], (writeClient) =>
-        publishCreatedConfluencePage(writeClient, publication));
-    }
-    // Both branches above have COMMITTED (a thrown publication never reaches
+        }
+        const published = await publishCreatedConfluencePage(writeClient, publication);
+        await enqueuePageWriteInvalidation(writeClient, admittedCreateIntent.id);
+        return published;
+      },
+    );
+    // The publication has COMMITTED (a thrown publication never reaches
     // here), so a sync-first tighten is now a durable transition.
     emitAiPolicyChanges(createPolicyChanges);
     const localPageId = createdPageState.id;
@@ -2250,6 +2337,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       let committedVisibility = existingPage.visibility;
       let committedSource = existingPage.source;
       let committedSpaceKey = existingPage.space_key;
+      let localPolicyChanges: AiPolicyChangeRecord[] = [];
       try {
         await writeClient.query('BEGIN');
         await lockPageWriterRuntime(writeClient, runtimeId);
@@ -2261,6 +2349,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         if (actor.rowCount !== 1) {
           throw new PageWriteError(403, 'not_authorized', 'Not authorized to edit this page');
         }
+        // Policy lock precedes the row lock (SPEC-CORE-003 lock order).
+        if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
         const locked = await writeClient.query<{
           title: string;
           body_html: string;
@@ -2368,6 +2458,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           }
           authoredContentChanged = true;
         }
+        if (body.aiPolicy !== undefined) {
+          // Same transaction as the content write (#280).
+          localPolicyChanges = await applyRequestedAiPolicyOnClient(writeClient, {
+            userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedAiPolicyRevision,
+          });
+        }
         await writeClient.query('COMMIT');
       } catch (err) {
         await writeClient.query('ROLLBACK').catch(() => undefined);
@@ -2375,6 +2471,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       } finally {
         writeClient.release();
       }
+      emitAiPolicyChanges(localPolicyChanges);
 
       if (authoredContentChanged) {
         await invalidateCollabDocAfterBodyWrite(existingPage.id);
@@ -2433,6 +2530,31 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Version conflict check
     if (body.version !== undefined && body.version < existingPage.version) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+    }
+
+    // A requested policy change is authorized BEFORE any remote egress (#280):
+    // the binding write happens again on the publication transaction below.
+    if (body.aiPolicy !== undefined) {
+      if (body.aiPolicy !== 'all' && !isAiPolicyEnforcementAvailable()) {
+        throw new PageWriteError(
+          409, 'ai_policy_enforcement_unavailable',
+          'Restrictive AI policies require the enterprise enforcement component.',
+        );
+      }
+      const authorized = await withPageWriteTransaction([], async (c) => {
+        if (!(await canMutateAiPolicy(userId, existingPage.id, c))) return false;
+        if (body.expectedAiPolicyRevision === undefined) return true;
+        const r = await c.query<{ ai_policy_revision: string }>(
+          'SELECT ai_policy_revision FROM pages WHERE id = $1', [existingPage.id],
+        );
+        if (Number(r.rows[0]?.ai_policy_revision) !== body.expectedAiPolicyRevision) {
+          throw new PageWriteError(409, 'ai_policy_conflict', 'The page AI policy changed since you loaded it');
+        }
+        return true;
+      });
+      if (!authorized) {
+        throw new PageWriteError(403, 'ai_policy_denied', 'Not authorized to change this page\'s AI policy');
+      }
     }
 
     // Upload locally-pasted images to Confluence before converting HTML.
@@ -2530,7 +2652,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     const bodyText = htmlToText(bodyHtml);
 
-    await completePageWriteIntent(writeIntent, async (writeClient) => {
+    const remotePolicyChanges = await completePageWriteIntent(writeIntent, async (writeClient) => {
+      // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
+      if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
       await loadAuthorizedContentWriteState(
         writeClient, existingPage.id, userId, writeIntent.revisions[existingPage.id]!,
       );
@@ -2552,7 +2676,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          bodyHtml, bodyText, confPage.version.number],
       );
       await enqueuePageWriteInvalidation(writeClient, writeIntent.id);
+      if (body.aiPolicy === undefined) return [] as AiPolicyChangeRecord[];
+      // Same transaction as the content cache write (#280).
+      return applyRequestedAiPolicyOnClient(writeClient, {
+        userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedAiPolicyRevision,
+      });
     });
+    emitAiPolicyChanges(remotePolicyChanges);
 
     await invalidateCollabDocAfterBodyWrite(existingPage.id);
 

@@ -4,6 +4,7 @@ import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
 } from './page-baselines.js';
+import { AiPolicyInputSchema, PageAiPolicyDetailFieldsSchema } from './ai-policy.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
@@ -152,6 +153,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
     baselineId: true,
     frozenVersion: true,
   }).shape,
+  /** Article AI policy (#280): `aiPolicy`, `aiPolicyRevision`, `canChangeAiPolicy`, `aiPolicyActivation`. */
+  ...PageAiPolicyDetailFieldsSchema.shape,
 });
 
 export const CreatePageSchema = z.object({
@@ -172,6 +175,12 @@ export const CreatePageSchema = z.object({
    * Bounds mirror the Markdown-import route the front-matter comes from.
    */
   labels: z.array(z.string().min(1).max(100)).max(50).optional(),
+  /**
+   * Explicit article AI policy at creation (#280). Stored in the same
+   * transaction as the row; never looser than what `labels` spell out.
+   * `no_ai` is accepted as an input alias of `none`.
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
 });
 
 export const UpdatePageSchema = z.object({
@@ -179,6 +188,13 @@ export const UpdatePageSchema = z.object({
   bodyHtml: z.string(),
   version: z.number().int().positive().optional(),
   visibility: PageVisibilityEnum.optional(),
+  /**
+   * Explicit article AI policy change applied in the same transaction as the
+   * content write (#280). Requires policy authority; `expectedAiPolicyRevision`
+   * is the optimistic guard (409 `ai_policy_conflict` when stale).
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
+  expectedAiPolicyRevision: z.number().int().nonnegative().optional(),
 });
 
 /**

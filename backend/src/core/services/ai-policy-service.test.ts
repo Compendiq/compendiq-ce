@@ -19,11 +19,18 @@ describe('ai-policy-service (pure)', () => {
     expect(stricterPolicy('all', 'all')).toBe('all');
   });
 
-  it('normalizes policy labels and ignores others', () => {
-    expect(normalizeAiPolicyLabel(' AI_None ')).toBe('none');
-    expect(normalizeAiPolicyLabel('ai:local-only')).toBe('local_only');
+  it('normalizes policy labels by the frozen table only (lowercase + trim, no regex)', () => {
+    expect(normalizeAiPolicyLabel(' NO_AI ')).toBe('none');
+    expect(normalizeAiPolicyLabel('ai:none')).toBe('none');
+    expect(normalizeAiPolicyLabel('AI:LOCAL')).toBe('local_only');
+    expect(normalizeAiPolicyLabel('local_only')).toBe('local_only');
+    expect(normalizeAiPolicyLabel('Local-AI-Only')).toBe('local_only');
     expect(normalizeAiPolicyLabel('runbook')).toBeNull();
-    expect(policyFromLabels(['ai-local', 'no-ai'])).toBe('none');
+    // Pre-freeze fuzzy spellings are NOT recognised.
+    expect(normalizeAiPolicyLabel('ai-none')).toBeNull();
+    expect(normalizeAiPolicyLabel('ai-local-only')).toBeNull();
+    expect(normalizeAiPolicyLabel('ai local')).toBeNull();
+    expect(policyFromLabels(['ai:local', 'no-ai'])).toBe('none');
     expect(policyFromLabels([])).toBe('all');
   });
 
@@ -36,13 +43,13 @@ describe('ai-policy-service (pure)', () => {
   });
 
   it('creation applies the stricter of hook default and labels', async () => {
-    await expect(resolveCreationAiPolicy({ userId: 'u', spaceKey: null, labels: ['ai-none'] })).resolves.toBe('none');
+    await expect(resolveCreationAiPolicy({ userId: 'u', spaceKey: null, labels: ['ai:none'] })).resolves.toBe('none');
     await expect(resolveCreationAiPolicy({ userId: 'u', spaceKey: null, labels: [] })).resolves.toBe('all');
   });
 
   it('an explicit choice never drops below the labels', async () => {
     await expect(
-      resolveCreationAiPolicy({ userId: 'u', spaceKey: null, labels: ['ai-local-only'], explicit: 'all' }),
+      resolveCreationAiPolicy({ userId: 'u', spaceKey: null, labels: ['local-ai-only'], explicit: 'all' }),
     ).resolves.toBe('local_only');
   });
 });
@@ -50,8 +57,8 @@ describe('ai-policy-service (pure)', () => {
 describe('reservedAiPolicyLabel (#281 label writers)', () => {
   it('recognises the ingestion spellings plus the explicit relaxation label', () => {
     expect(reservedAiPolicyLabel('no-ai')).toBe('none');
-    expect(reservedAiPolicyLabel('AI_None')).toBe('none');
-    expect(reservedAiPolicyLabel('ai-local')).toBe('local_only');
+    expect(reservedAiPolicyLabel('NO_AI')).toBe('none');
+    expect(reservedAiPolicyLabel('ai:local')).toBe('local_only');
     expect(reservedAiPolicyLabel('all-ai')).toBe('all');
     expect(reservedAiPolicyLabel('AI:ALL')).toBe('all');
     expect(reservedAiPolicyLabel('release-notes')).toBeNull();
@@ -63,6 +70,9 @@ describe('reservedAiPolicyLabel (#281 label writers)', () => {
   });
 
   it('canonical labels round-trip through the reserved parser', () => {
+    expect(canonicalAiPolicyLabel('all')).toBe('all-ai');
+    expect(canonicalAiPolicyLabel('local_only')).toBe('local-ai-only');
+    expect(canonicalAiPolicyLabel('none')).toBe('no-ai');
     for (const policy of ['all', 'local_only', 'none'] as const) {
       expect(reservedAiPolicyLabel(canonicalAiPolicyLabel(policy))).toBe(policy);
     }
@@ -71,12 +81,12 @@ describe('reservedAiPolicyLabel (#281 label writers)', () => {
 
 describe('planLabelPolicyChange (#281)', () => {
   it('a newly added restrictive label tightens and is stored canonically', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: ['a'], targetLabels: ['a', 'AI_None'] });
+    const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: ['a'], targetLabels: ['a', 'NO_AI'] });
     expect(plan).toEqual({ labels: ['a', 'no-ai'], policy: 'none', kind: 'tighten', restoredLabel: null });
   });
 
   it('two different reserved policies in one target set are a 422', () => {
-    expect(() => planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'ai-local-only'] }))
+    expect(() => planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'local-ai-only'] }))
       .toThrowError(PageWriteError);
     try {
       planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'all-ai'] });
@@ -87,25 +97,24 @@ describe('planLabelPolicyChange (#281)', () => {
   });
 
   it('synonyms of the same policy collapse without conflict', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'ai-none', 'x'] });
+    const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: ['no-ai', 'ai:none', 'x'] });
     expect(plan.labels).toEqual(['no-ai', 'x']);
     expect(plan.policy).toBe('none');
   });
 
   it('a carried-over reserved label is inert: it does not re-tighten a relaxed page', () => {
-    // The policy was explicitly relaxed to `all` while the label stayed behind.
     const plan = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'x'] });
     expect(plan).toEqual({ labels: ['no-ai', 'x'], policy: 'all', kind: 'unchanged', restoredLabel: null });
   });
 
   it('a carried-over label keeps its spelling and the policy unchanged', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['ai-none', 'a'], targetLabels: ['ai-none', 'a', 'b'] });
-    expect(plan).toEqual({ labels: ['ai-none', 'a', 'b'], policy: 'none', kind: 'unchanged', restoredLabel: null });
+    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['ai:none', 'a'], targetLabels: ['ai:none', 'a', 'b'] });
+    expect(plan).toEqual({ labels: ['ai:none', 'a', 'b'], policy: 'none', kind: 'unchanged', restoredLabel: null });
   });
 
   it('dropping the label that names the current restrictive policy restores it, no policy move', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'local_only', currentLabels: ['ai-local', 'a'], targetLabels: ['a'] });
-    expect(plan).toEqual({ labels: ['a', 'ai-local-only'], policy: 'local_only', kind: 'unchanged', restoredLabel: 'ai-local-only' });
+    const plan = planLabelPolicyChange({ currentPolicy: 'local_only', currentLabels: ['ai:local', 'a'], targetLabels: ['a'] });
+    expect(plan).toEqual({ labels: ['a', 'local-ai-only'], policy: 'local_only', kind: 'unchanged', restoredLabel: 'local-ai-only' });
   });
 
   it('dropping a label when the policy was set without one leaves nothing to restore', () => {
@@ -116,51 +125,42 @@ describe('planLabelPolicyChange (#281)', () => {
   it('a newly added looser label is an explicit relaxation', () => {
     const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['all-ai'] });
     expect(plan).toEqual({ labels: ['all-ai'], policy: 'all', kind: 'relax', restoredLabel: null });
-    const partial = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['ai-local-only'] });
-    expect(partial).toMatchObject({ labels: ['ai-local-only'], policy: 'local_only', kind: 'relax' });
+    const partial = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['local-ai-only'] });
+    expect(partial).toMatchObject({ labels: ['local-ai-only'], policy: 'local_only', kind: 'relax' });
   });
 
   it('a newly added label naming the current policy is a no-op stored canonically', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: [], targetLabels: ['ai-none'] });
+    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: [], targetLabels: ['ai:none'] });
     expect(plan).toEqual({ labels: ['no-ai'], policy: 'none', kind: 'unchanged', restoredLabel: null });
   });
 
   it('dropping the current-policy label while carrying a looser one restores the current one', () => {
-    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai', 'ai-local-only'], targetLabels: ['ai-local-only'] });
+    const plan = planLabelPolicyChange({ currentPolicy: 'none', currentLabels: ['no-ai', 'local-ai-only'], targetLabels: ['local-ai-only'] });
     expect(plan).toEqual({ labels: ['no-ai'], policy: 'none', kind: 'unchanged', restoredLabel: 'no-ai' });
   });
 
   it('carried-over contradictory labels never block an ordinary tag (only NEW policies may contradict)', () => {
-    // The row was relaxed to `all` by the policy endpoint; both reserved
-    // labels stayed behind. Adding an ordinary tag must not be a 422.
     const plan = planLabelPolicyChange({
-      currentPolicy: 'all', currentLabels: ['no-ai', 'ai-local-only'], targetLabels: ['no-ai', 'ai-local-only', 'x'],
+      currentPolicy: 'all', currentLabels: ['no-ai', 'local-ai-only'], targetLabels: ['no-ai', 'local-ai-only', 'x'],
     });
     expect(plan).toEqual({ labels: ['no-ai', 'x'], policy: 'all', kind: 'unchanged', restoredLabel: null });
 
-    // Current policy `none` with both labels carried: the one naming the
-    // current policy keeps its spelling and wins the single slot.
     const kept = planLabelPolicyChange({
-      currentPolicy: 'none', currentLabels: ['ai-local-only', 'AI_None'], targetLabels: ['ai-local-only', 'AI_None', 'y'],
+      currentPolicy: 'none', currentLabels: ['local-ai-only', 'NO_AI'], targetLabels: ['local-ai-only', 'NO_AI', 'y'],
     });
-    expect(kept).toEqual({ labels: ['AI_None', 'y'], policy: 'none', kind: 'unchanged', restoredLabel: null });
+    expect(kept).toEqual({ labels: ['NO_AI', 'y'], policy: 'none', kind: 'unchanged', restoredLabel: null });
 
-    // A single NEW policy next to a carried one is NOT contradictory: the
-    // carried label is not a command. The fresh policy wins and the carried
-    // label is normalized onto the one canonical label.
     expect(planLabelPolicyChange({
-      currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'ai-local-only', 'ordinary'],
-    })).toEqual({ labels: ['ai-local-only', 'ordinary'], policy: 'local_only', kind: 'tighten', restoredLabel: null });
+      currentPolicy: 'all', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'local-ai-only', 'ordinary'],
+    })).toEqual({ labels: ['local-ai-only', 'ordinary'], policy: 'local_only', kind: 'tighten', restoredLabel: null });
     expect(planLabelPolicyChange({
-      currentPolicy: 'local_only', currentLabels: ['ai-local-only'], targetLabels: ['ai-local-only', 'no-ai'],
+      currentPolicy: 'local_only', currentLabels: ['local-ai-only'], targetLabels: ['local-ai-only', 'no-ai'],
     })).toEqual({ labels: ['no-ai'], policy: 'none', kind: 'tighten', restoredLabel: null });
-    // A fresh looser policy beside a carried stricter label is an explicit relaxation.
     expect(planLabelPolicyChange({
       currentPolicy: 'none', currentLabels: ['no-ai'], targetLabels: ['no-ai', 'all-ai'],
     })).toMatchObject({ labels: ['all-ai'], policy: 'all', kind: 'relax' });
-    // Two genuinely NEW distinct policies still conflict.
     expect(() => planLabelPolicyChange({
-      currentPolicy: 'all', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'ai-local-only'],
+      currentPolicy: 'all', currentLabels: ['x'], targetLabels: ['x', 'no-ai', 'local-ai-only'],
     })).toThrowError(PageWriteError);
   });
 

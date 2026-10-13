@@ -40,7 +40,9 @@ describe('ingestion AI policy (SPEC-WORK-002)', () => {
   it('existing rows only tighten', () => {
     expect(tightenExistingAiPolicy('none', [])).toBe('none');
     expect(tightenExistingAiPolicy('local_only', ['other'])).toBe('local_only');
-    expect(tightenExistingAiPolicy('all', ['ai-local-only'])).toBe('local_only');
+    expect(tightenExistingAiPolicy('all', ['local-ai-only'])).toBe('local_only');
+    // Spellings outside the frozen table are ordinary labels.
+    expect(tightenExistingAiPolicy('all', ['ai-local-only'])).toBe('all');
     expect(tightenExistingAiPolicy('local_only', ['no-ai'])).toBe('none');
   });
 

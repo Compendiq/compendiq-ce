@@ -270,7 +270,7 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       }
       let provider;
       try {
-        provider = await createProvider(input);
+        provider = await createProvider(input, request.userId);
       } catch (err) {
         // DB write failed (e.g. unique-name violation) — revoke the
         // speculative allowlist entry only if no other provider already
@@ -322,7 +322,7 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       }
       let updated;
       try {
-        updated = await updateProvider(id, patch);
+        updated = await updateProvider(id, patch, request.userId);
       } catch (err) {
         if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
         throw err;

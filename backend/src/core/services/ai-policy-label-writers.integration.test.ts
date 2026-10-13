@@ -249,10 +249,10 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
 
   it('carried-over contradictory labels never block an ordinary tag (review B)', async () => {
     const owner = await user();
-    const id = await page({ owner, labels: ['no-ai', 'ai-local-only'] });
+    const id = await page({ owner, labels: ['no-ai', 'local-ai-only'] });
     await query(`UPDATE pages SET ai_policy = 'all' WHERE id = $1`, [id]);
     const before = await state(id);
-    const applied = await tx((c) => applyPageLabelsOnClient(c, { userId: owner, pageId: id, targetLabels: ['no-ai', 'ai-local-only', 'x'] }));
+    const applied = await tx((c) => applyPageLabelsOnClient(c, { userId: owner, pageId: id, targetLabels: ['no-ai', 'local-ai-only', 'x'] }));
     expect(applied).toMatchObject({ labels: ['no-ai', 'x'], policy: 'all', revision: Number(before.ai_policy_revision), changes: [] });
     expect(await state(id)).toMatchObject({ labels: ['no-ai', 'x'], ai_policy: 'all', ai_policy_revision: before.ai_policy_revision });
   });
@@ -275,7 +275,7 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     seq += 1;
     const publication = {
       confluenceId: `created-${seq}`, spaceKey: 'LW', parentConfluenceId: null, title: 'New', storage: '<p>n</p>', version: 1,
-      ...initialPolicyFromEffect({ initialPolicy: 'none', initialLabels: ['AI_None', 'tag'] }),
+      ...initialPolicyFromEffect({ initialPolicy: 'none', initialLabels: ['No-AI ', 'tag'] }),
     };
     expect(publication).toMatchObject({ initialPolicy: 'none', initialLabels: ['no-ai', 'tag'] });
     const published = await tx((c) => publishCreatedConfluencePage(c, publication));
@@ -506,11 +506,11 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
         confluenceId, title: 'Child', storage: '<p>c</p>', parentId: parent.confluenceId, policy: 'all', labels: [],
       });
       const intentId = await createIntent({
-        owner, admin, parent, confluenceId, title: 'Child', storage: '<p>c</p>', initialPolicy: 'local_only', initialLabels: ['ai-local-only'],
+        owner, admin, parent, confluenceId, title: 'Child', storage: '<p>c</p>', initialPolicy: 'local_only', initialLabels: ['local-ai-only'],
       });
       await expect(reconcilePageWriteIntent(intentId, { actorId: admin, reason: 'Recover a creation the walker imported first' }))
         .resolves.toEqual({ intentId, status: 'reconciled_applied' });
-      expect(await state(existing)).toMatchObject({ labels: ['ai-local-only'], ai_policy: 'local_only', ai_policy_revision: '1' });
+      expect(await state(existing)).toMatchObject({ labels: ['local-ai-only'], ai_policy: 'local_only', ai_policy_revision: '1' });
       expect(seams.events).toEqual([{ type: 'policy_changed', pageId: existing, userId: owner, from: 'all', to: 'local_only', revision: 1 }]);
     });
 
@@ -646,7 +646,7 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     const client = await getPool().connect();
     try {
       await client.query('BEGIN');
-      const applied = await applyPageLabelsOnClient(client, { userId: owner, pageId: id, targetLabels: ['one', 'AI_None'] });
+      const applied = await applyPageLabelsOnClient(client, { userId: owner, pageId: id, targetLabels: ['one', 'AI:None'] });
       expect(applied).toMatchObject({ labels: ['one', 'no-ai'], policy: 'none', revision: 1 });
       expect(applied.changes).toEqual([{ pageId: id, userId: owner, from: 'all', to: 'none', revision: 1 }]);
       expect((await state(id)).ai_policy).toBe('all'); // invisible until COMMIT
@@ -677,7 +677,7 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     const owner = await user();
     const id = await page({ owner, labels: ['one'] });
     await expect(
-      tx((c) => applyPageLabelsOnClient(c, { userId: owner, pageId: id, targetLabels: ['no-ai', 'ai-local-only'] })),
+      tx((c) => applyPageLabelsOnClient(c, { userId: owner, pageId: id, targetLabels: ['no-ai', 'local-ai-only'] })),
     ).rejects.toMatchObject({ statusCode: 422, reason: 'ai_policy_label_conflict' });
     expect(await state(id)).toMatchObject({ labels: ['one'], ai_policy: 'all', ai_policy_revision: '0' });
   });
@@ -717,10 +717,10 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
   it('applyLabelChanges (local branch) runs end to end through the primitive', async () => {
     const owner = await user();
     const id = await page({ owner, labels: ['one'] });
-    expect(await applyLabelChanges(owner, String(id), { add: ['ai-local'] })).toEqual(['one', 'ai-local-only']);
+    expect(await applyLabelChanges(owner, String(id), { add: ['ai:local'] })).toEqual(['one', 'local-ai-only']);
     expect(await state(id)).toMatchObject({ ai_policy: 'local_only', ai_policy_revision: '1', embedding_status: 'not_embedded' });
 
-    // A single fresh `no-ai` beside the carried `ai-local-only` is a tighten
+    // A single fresh `no-ai` beside the carried `local-ai-only` is a tighten
     // to `none`, not a conflict: the carried label collapses onto the one
     // fresh canonical label and the purge runs in the same commit.
     expect(await applyLabelChanges(owner, String(id), { add: ['no-ai'] })).toEqual(['one', 'no-ai']);
@@ -733,7 +733,7 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
 
     // Two genuinely new contradictory commands remain a 422 with nothing written.
     const fresh = await page({ owner, labels: ['two'] });
-    await expect(applyLabelChanges(owner, String(fresh), { add: ['no-ai', 'ai-local-only'] }))
+    await expect(applyLabelChanges(owner, String(fresh), { add: ['no-ai', 'local-ai-only'] }))
       .rejects.toMatchObject({ statusCode: 422, reason: 'ai_policy_label_conflict' });
     expect(await state(fresh)).toMatchObject({ labels: ['two'], ai_policy: 'all', ai_policy_revision: '0' });
   });
@@ -749,13 +749,13 @@ describe.skipIf(!dbAvailable)('label writers → applyPageLabelsOnClient (#281)'
     expect(await state(id)).toMatchObject({ labels: ['no-ai'], ai_policy: 'all', ai_policy_revision: '1' });
 
     const applied = await tx((c) => applyPageLabelsOnClient(c, {
-      userId: owner, pageId: id, targetLabels: ['no-ai', 'ai-local-only', 'ordinary'],
+      userId: owner, pageId: id, targetLabels: ['no-ai', 'local-ai-only', 'ordinary'],
     }));
-    expect(applied).toMatchObject({ labels: ['ai-local-only', 'ordinary'], policy: 'local_only', revision: 2 });
+    expect(applied).toMatchObject({ labels: ['local-ai-only', 'ordinary'], policy: 'local_only', revision: 2 });
     expect(applied.plan.kind).toBe('tighten');
     expect(applied.changes).toHaveLength(1);
     expect(await state(id)).toMatchObject({
-      labels: ['ai-local-only', 'ordinary'], ai_policy: 'local_only', ai_policy_revision: '2',
+      labels: ['local-ai-only', 'ordinary'], ai_policy: 'local_only', ai_policy_revision: '2',
     });
   });
 });

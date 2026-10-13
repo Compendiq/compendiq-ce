@@ -5,10 +5,95 @@ import { z } from 'zod';
  * `all` lets any authorized provider process the article, `local_only`
  * admits only providers whose locality was explicitly declared `local`, and
  * `none` admits no AI processing at all.
+ *
+ * `none` is the CANONICAL stored and wire value (operator waiver on #280 —
+ * the frontend chips, the EE governance service and the `pages.ai_policy`
+ * CHECK all carry `none`). The spec's `no_ai` spelling is accepted on INPUT
+ * only, via `AiPolicyInputSchema`, and normalised to `none` before anything
+ * is stored or returned.
  */
 export const AI_POLICY_LABELS = ['all', 'local_only', 'none'] as const;
 export const AiPolicySchema = z.enum(AI_POLICY_LABELS);
 export type AiPolicy = z.infer<typeof AiPolicySchema>;
+
+/** Input alias set: everything `AiPolicySchema` takes plus `no_ai`. */
+export const AI_POLICY_INPUT_ALIASES = { no_ai: 'none' } as const satisfies Record<string, AiPolicy>;
+
+export function normalizeAiPolicyValue(value: unknown): AiPolicy | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase();
+  if ((AI_POLICY_LABELS as readonly string[]).includes(v)) return v as AiPolicy;
+  const alias = (AI_POLICY_INPUT_ALIASES as Record<string, AiPolicy>)[v];
+  return alias ?? null;
+}
+
+/** Accepts `all | local_only | none | no_ai` and always yields a canonical `AiPolicy`. */
+export const AiPolicyInputSchema = z.enum(['all', 'local_only', 'none', 'no_ai'])
+  .transform((v): AiPolicy => normalizeAiPolicyValue(v) ?? 'none');
+
+/** Strictness rank: higher wins when two sources disagree. */
+export const AI_POLICY_RANK: Record<AiPolicy, number> = { all: 0, local_only: 1, none: 2 };
+
+export function strictestAiPolicy(...policies: ReadonlyArray<AiPolicy | null | undefined>): AiPolicy {
+  let result: AiPolicy = 'all';
+  for (const p of policies) {
+    if (p && AI_POLICY_RANK[p] > AI_POLICY_RANK[result]) result = p;
+  }
+  return result;
+}
+
+/**
+ * Exact label-synonym table (SPEC-CORE-002). Matching is lowercase + trim
+ * only — no regex, no fuzzy forms. The SQL twin lives in migration 136
+ * (`ai_policy_label_value`); keep both in step.
+ */
+export const AI_POLICY_LABEL_SYNONYMS: Readonly<Record<string, AiPolicy>> = {
+  'all-ai': 'all',
+  'ai:all': 'all',
+  'local-ai-only': 'local_only',
+  'local_only': 'local_only',
+  'ai:local': 'local_only',
+  'no-ai': 'none',
+  'no_ai': 'none',
+  'ai:none': 'none',
+};
+
+/** The one label written back to `pages.labels` for each canonical policy. */
+export const AI_POLICY_CANONICAL_LABELS: Record<AiPolicy, string> = {
+  all: 'all-ai',
+  local_only: 'local-ai-only',
+  none: 'no-ai',
+};
+
+export function normalizeAiPolicyLabel(label: unknown): AiPolicy | null {
+  if (typeof label !== 'string') return null;
+  return AI_POLICY_LABEL_SYNONYMS[label.trim().toLowerCase()] ?? null;
+}
+
+export function isReservedAiPolicyLabel(label: unknown): boolean {
+  return normalizeAiPolicyLabel(label) !== null;
+}
+
+/**
+ * Returns the set of distinct policies the labels spell out. More than one
+ * distinct value is a label conflict an interactive caller must resolve
+ * (422 `ai_policy_label_conflict`); ingestion instead takes the strictest.
+ */
+export function aiPolicyLabelConflict(labels: ReadonlyArray<string>): AiPolicy[] {
+  const found = new Set<AiPolicy>();
+  for (const l of labels) {
+    const p = normalizeAiPolicyLabel(l);
+    if (p) found.add(p);
+  }
+  return [...found];
+}
+
+/** Drops every reserved policy label and appends the canonical one for `policy`. */
+export function applyCanonicalAiPolicyLabel(labels: ReadonlyArray<string>, policy: AiPolicy): string[] {
+  const kept = labels.filter((l) => !isReservedAiPolicyLabel(l));
+  if (policy === 'all') return kept;
+  return [...kept, AI_POLICY_CANONICAL_LABELS[policy]];
+}
 
 /** Provider locality. Unknown is never `local`: the column defaults `external`. */
 export const PROVIDER_LOCALITIES = ['local', 'external'] as const;
@@ -20,6 +105,16 @@ export const AI_POLICY_BLOCK_REASONS = ['policy_none', 'provider_not_local', 'po
 export const AiPolicyBlockReasonSchema = z.enum(AI_POLICY_BLOCK_REASONS);
 export type AiPolicyBlockReason = z.infer<typeof AiPolicyBlockReasonSchema>;
 
+/**
+ * Reasons an interactive admission can refuse. The first two are the policy
+ * decisions proper; the rest are fail-closed outcomes — a missing page, a
+ * stage with no assignment, or an unreadable policy/provider never admits.
+ */
+export const AI_POLICY_ADMISSION_BLOCK_REASONS = [
+  'policy_none', 'provider_not_local', 'not_found', 'stage_disabled', 'policy_unavailable',
+] as const;
+export type AiPolicyAdmissionBlockReason = (typeof AI_POLICY_ADMISSION_BLOCK_REASONS)[number];
+
 /** Current provenance schema version written with exchanges and caches. */
 export const AI_POLICY_PROVENANCE_VERSION = 1;
 
@@ -28,14 +123,14 @@ const RevisionSchema = z.coerce.number().int().nonnegative();
 
 /** PUT /api/pages/:id/ai-policy */
 export const UpdatePageAiPolicySchema = z.object({
-  policy: AiPolicySchema,
+  aiPolicy: AiPolicyInputSchema,
   expectedRevision: RevisionSchema,
 }).strict();
 export type UpdatePageAiPolicyInput = z.infer<typeof UpdatePageAiPolicySchema>;
 
 /** POST /api/pages/bulk/ai-policy — all-or-nothing. */
 export const BulkUpdatePageAiPolicySchema = z.object({
-  policy: AiPolicySchema,
+  aiPolicy: AiPolicyInputSchema,
   items: z.array(z.object({
     pageId: PageIdSchema,
     expectedRevision: RevisionSchema,
@@ -53,18 +148,60 @@ export type BulkUpdatePageAiPolicyInput = z.infer<typeof BulkUpdatePageAiPolicyS
 
 export const PageAiPolicyResponseSchema = z.object({
   pageId: z.number().int().positive(),
-  policy: AiPolicySchema,
-  revision: z.number().int().nonnegative(),
+  aiPolicy: AiPolicySchema,
+  aiPolicyRevision: z.number().int().nonnegative(),
 });
 export type PageAiPolicyResponse = z.infer<typeof PageAiPolicyResponseSchema>;
 
-/** 409 body for a stale or mixed-unauthorized mutation; no row changed. */
+/**
+ * Policy fields carried by `GET /api/pages/:id`. All optional: a reader that
+ * cannot establish the value (policy column unreadable) omits them rather
+ * than inventing `all`. `aiPolicyActivation` reports whether the enforcing
+ * worker/provider path is live (`active`) or only the schema and writers
+ * exist (`foundation_only`).
+ */
+export const AI_POLICY_ACTIVATIONS = ['active', 'foundation_only'] as const;
+export const AiPolicyActivationSchema = z.enum(AI_POLICY_ACTIVATIONS);
+export type AiPolicyActivation = z.infer<typeof AiPolicyActivationSchema>;
+
+export const PageAiPolicyDetailFieldsSchema = z.object({
+  aiPolicy: AiPolicySchema.optional(),
+  aiPolicyRevision: z.number().int().nonnegative().optional(),
+  canChangeAiPolicy: z.boolean().optional(),
+  aiPolicyActivation: AiPolicyActivationSchema.optional(),
+});
+export type PageAiPolicyDetailFields = z.infer<typeof PageAiPolicyDetailFieldsSchema>;
+
+/** Error codes the policy routes answer with. */
+export const AI_POLICY_ERROR_CODES = {
+  denied: 'ai_policy_denied',                                  // 403
+  conflict: 'ai_policy_conflict',                              // 409 stale revision
+  labelConflict: 'ai_policy_label_conflict',                   // 422
+  enforcementUnavailable: 'ai_policy_enforcement_unavailable', // 409 foundation-only
+  unavailable: 'ai_policy_unavailable',                        // 503
+} as const;
+
+/** 403 body: the caller may not change policy on these pages; no row changed. */
+export const AiPolicyDeniedSchema = z.object({
+  error: z.literal('ai_policy_denied'),
+  pageIds: z.array(z.number().int().positive()),
+});
+export type AiPolicyDenied = z.infer<typeof AiPolicyDeniedSchema>;
+
+/** 409 body for a stale mutation; no row changed. */
 export const AiPolicyConflictSchema = z.object({
   error: z.literal('ai_policy_conflict'),
-  reason: z.enum(['stale_revision', 'not_authorized', 'not_found']),
+  reason: z.literal('stale_revision'),
   pageIds: z.array(z.number().int().positive()),
 });
 export type AiPolicyConflict = z.infer<typeof AiPolicyConflictSchema>;
+
+/** 422 body: explicit policy and labels disagree, or labels disagree among themselves. */
+export const AiPolicyLabelConflictSchema = z.object({
+  error: z.literal('ai_policy_label_conflict'),
+  policies: z.array(AiPolicySchema),
+});
+export type AiPolicyLabelConflict = z.infer<typeof AiPolicyLabelConflictSchema>;
 
 /**
  * Receiving stages that each apply article AI policy independently

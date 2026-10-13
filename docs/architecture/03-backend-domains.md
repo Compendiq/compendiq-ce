@@ -143,6 +143,83 @@ runs on the transaction it already holds:
   (id, policy, policy revision) and `excludedByPolicy`. Excluded pages still
   count toward `MAX_SUB_PAGES`.
 
+### Article AI policy — schema, provider locality, core endpoints (#280)
+
+```mermaid
+flowchart LR
+    subgraph wire["frozen wire contract (@compendiq/contracts ai-policy.ts)"]
+        direction TB
+        putOne["PUT /pages/:id/ai-policy<br/>{ aiPolicy, expectedRevision? }"]
+        putBulk["POST /pages/bulk/ai-policy<br/>{ aiPolicy, items[{ pageId, expectedRevision? }] }"]
+        crud["POST /pages { aiPolicy? }<br/>PUT /pages/:id { aiPolicy?, expectedAiPolicyRevision? }"]
+        detail["GET /pages/:id → aiPolicy, aiPolicyRevision,<br/>canChangeAiPolicy, aiPolicyActivation"]
+    end
+    subgraph svc["core/services/ai-policy-service.ts"]
+        direction TB
+        upd["updatePageAiPolicies<br/>(all-or-nothing)"]
+        prim["applyAiPolicyOnClient<br/>(single mutation primitive)"]
+        creation["resolveCreationAiPolicy<br/>stricter of hook default, choice, labels"]
+    end
+    subgraph adm["domains/llm/services/ai-policy-admission.ts"]
+        direction TB
+        byUsecase["admitPageForUsecase<br/>rerank / inline_completion / image_analysis use their<br/>dedicated resolvers; unassigned = stage_disabled"]
+        byProvider["admitPageForProvider<br/>missing page = not_found; unreadable provider = policy_unavailable"]
+        decide["decideAiPolicyAdmission (pure)"]
+    end
+    putOne --> upd
+    putBulk --> upd
+    crud --> prim
+    upd --> prim
+    crud --> creation
+    byUsecase --> byProvider --> decide
+    prim --> events["emitAiPolicyEvent (inert CE sink)"]
+    byProvider --> events
+```
+
+- **Values.** Stored and wire value: `all | local_only | none`. `no_ai` is
+  accepted as *input* (`AiPolicyInputSchema`) and normalised to `none`; it is
+  never stored or returned. Labels are consulted at creation only, by the
+  frozen table in migration 136 / `AI_POLICY_LABEL_SYNONYMS`.
+- **Responses** are `{ pageId, aiPolicy, aiPolicyRevision }` (bulk:
+  `{ items: [...] }`). **Errors**: 404 for a page the caller cannot see,
+  403 `ai_policy_denied`, 409 `ai_policy_conflict` with
+  `reason: 'stale_revision'`, 422 `ai_policy_label_conflict` (an explicit
+  `aiPolicy` on create contradicting a reserved label), 409
+  `ai_policy_enforcement_unavailable` (restrictive value on a
+  foundation-only deployment; the detail's `aiPolicyActivation` reports
+  `active | foundation_only`), 503 `ai_policy_unavailable`.
+- **Create/update carry policy.** `POST /pages` resolves an explicit
+  `aiPolicy` through `resolveCreationAiPolicy` and writes `labels` and
+  `ai_policy` in the creating INSERT for standalone pages and in the
+  `pages.create.confluence` intent effect for Confluence pages — including a
+  space-root create, which migration 137 lets through the intent ledger with
+  an empty target set and `parentPageId: null`. `PUT /pages/:id` with
+  `aiPolicy` takes the policy lock before the row lock and applies the change
+  on the **same** transaction as the content write (local branch) or as the
+  content-cache write of the completion transaction (Confluence branch,
+  authorised and revision-checked before any remote egress).
+  `GET /pages/:id` computes `canChangeAiPolicy` with `canMutateAiPolicy`
+  inside its read-only transaction.
+- **Provider locality** is settable where providers are managed:
+  `LlmProviderInputSchema.locality` on `POST/PATCH /api/llm/providers`
+  (`createProvider(input, actorId)` / `updateProvider(id, patch, actorId)`)
+  binds `locality_declared_by/at` and `locality_config_revision` in the same
+  statement as any endpoint edit, so the migration-135 trigger keeps the
+  declaration rather than resetting it; `declareProviderLocality` remains
+  the revision-fenced path. The DTO exposes `locality`, `configRevision`,
+  `localityDeclaredAt/By` and `localConfirmed` (local *at the current
+  revision*).
+- **Admission fails closed.** `admitPageForUsecase` routes `rerank`,
+  `inline_completion` and `image_analysis` through their non-inheriting
+  resolvers (ADR-021/027) — an unassigned stage is `stage_disabled`, never
+  an admission against the default provider. A provider row that cannot be
+  read is `policy_unavailable`; a missing page is `not_found`. Those three
+  are `retryable` deployment facts and are never persisted as an
+  `ai_policy_block_reason` (`isPersistableBlockReason`); only `policy_none`
+  and `provider_not_local` are. Every refusal is emitted as a `blocked`
+  event whose `reason` union (`core/enterprise/ai-policy-hooks.ts`) names
+  all of them.
+
 ### Quality and summary batch execution
 
 ```mermaid

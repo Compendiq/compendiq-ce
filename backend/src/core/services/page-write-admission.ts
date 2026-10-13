@@ -67,6 +67,17 @@ const INTENT_POLICIES = {
 
 export type IntentKind = keyof typeof INTENT_POLICIES;
 
+/**
+ * The ONE intent shape with an empty target set (#280, migration 137): a
+ * Confluence page created at the space root. It reserves no page row, so
+ * its shape is pinned by the kind, a `null` parent, and the trusted initial
+ * policy/labels it will write in the same transaction as the cache row.
+ * Mirrors `page_write_intents_effect_policy_check`'s root branch.
+ */
+export function isRootCreateEffect(effect: Record<string, unknown>): boolean {
+  return effect.parentPageId === null;
+}
+
 function policyForIntent(kind: string, effect: Record<string, unknown>): IntentPolicy {
   if (!KIND_PATTERN.test(kind)) {
     throw new PageWriteError(400, 'invalid_intent_kind', 'Intent kind must be a stable namespaced identifier');
@@ -87,9 +98,19 @@ function policyForIntent(kind: string, effect: Record<string, unknown>): IntentP
     );
   }
   if (policy.targetMode === 'hierarchy_reference' && (
-    typeof effect.parentPageId !== 'number' ||
-    !Number.isSafeInteger(effect.parentPageId) ||
-    effect.parentPageId <= 0 ||
+    (isRootCreateEffect(effect)
+      ? !(
+          effect.parentConfluenceId === null &&
+          (effect.initialPolicy === 'all' || effect.initialPolicy === 'local_only' || effect.initialPolicy === 'none') &&
+          Array.isArray(effect.initialLabels) &&
+          effect.initialLabels.length <= 50 &&
+          effect.initialLabels.every((l) => typeof l === 'string')
+        )
+      : (
+          typeof effect.parentPageId !== 'number' ||
+          !Number.isSafeInteger(effect.parentPageId) ||
+          effect.parentPageId <= 0
+        )) ||
     (effect.parentConfluenceId !== null &&
       (typeof effect.parentConfluenceId !== 'string' || effect.parentConfluenceId.length === 0)) ||
     typeof effect.spaceKey !== 'string' ||
@@ -468,8 +489,10 @@ function normalizePageIds(pageIds: readonly number[], allowEmpty = false): numbe
 }
 
 function samePageIds(left: readonly number[], right: readonly number[]): boolean {
-  const a = normalizePageIds(left);
-  const b = normalizePageIds(right);
+  // Both sides may be empty only for the root create intent (migration 137);
+  // the durable CHECK refuses an empty set for every other kind.
+  const a = normalizePageIds(left, true);
+  const b = normalizePageIds(right, true);
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
@@ -872,7 +895,7 @@ export async function lockPageWrites(
       finishLocalOperation();
     }
   }
-  if (ids.length === 0 && (options.intent || options.admission)) {
+  if (ids.length === 0 && options.admission) {
     throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
   }
   if (options.intent) await assertRuntimeActive(client, options.intent.runtimeId);
@@ -881,7 +904,17 @@ export async function lockPageWrites(
     await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_HIERARCHY_LOCK_ID]);
   }
   await lockPageLifecycle(client, ids);
-  if (ids.length === 0) return;
+  if (ids.length === 0) {
+    if (!options.intent) return;
+    // The only token with no page rows is the root create intent (#280,
+    // migration 137). Its durable row is still locked and validated so a
+    // forged empty token cannot pass as an arbitrary pending intent.
+    const durable = await loadPendingIntentForUpdate(client, options.intent);
+    if (durable.kind !== 'pages.create.confluence' || !isRootCreateEffect(durable.effect)) {
+      throw new PageWriteError(400, 'invalid_page_ids', 'An admission token cannot cover an empty page set');
+    }
+    return;
+  }
   if (options.intent) {
     const durable = await loadPendingIntentForUpdate(client, options.intent);
     const rows = await loadPageStates(client, ids, true);
@@ -991,11 +1024,19 @@ async function reservePageWriteIntentOnClient(
   input: PageWriteIntentInput,
   runtimeId: string,
 ): Promise<PageWriteIntent> {
-  const pageIds = normalizePageIds(input.pageIds);
   const effect = cloneBoundedObject(input.effect, 'intent_effect');
   const policy = policyForIntent(input.kind, effect);
   const hierarchyReference = policy.targetMode === 'hierarchy_reference';
-  if (hierarchyReference && (pageIds.length !== 1 || pageIds[0] !== effect.parentPageId)) {
+  const rootCreate = hierarchyReference && isRootCreateEffect(effect);
+  const pageIds = normalizePageIds(input.pageIds, rootCreate);
+  if (rootCreate && pageIds.length !== 0) {
+    throw new PageWriteError(
+      400,
+      'hierarchy_reference_mismatch',
+      'A root-creation intent reserves no page row',
+    );
+  }
+  if (hierarchyReference && !rootCreate && (pageIds.length !== 1 || pageIds[0] !== effect.parentPageId)) {
     throw new PageWriteError(
       400,
       'hierarchy_reference_mismatch',
@@ -1006,7 +1047,7 @@ async function reservePageWriteIntentOnClient(
   await assertRuntimeActive(client, runtimeId);
   if (hierarchyReference) await lockPageLifecycle(client, pageIds);
   else await lockPageWrites(client, pageIds);
-  const rows = await loadPageStates(client, pageIds);
+  const rows = rootCreate ? [] : await loadPageStates(client, pageIds);
   if (hierarchyReference) await assertNoCompetingIntent(client, pageIds);
   if (input.expectedRevisions) assertExpectedRevisions(rows, input.expectedRevisions);
   const revisions = revisionsForRows(rows);
@@ -1245,7 +1286,7 @@ export async function completePageWriteIntent<T>(
       const finalRows = await client.query<PageStateRow>(
         `SELECT id, content_revision::text, lifecycle_revision::text, baseline_id
            FROM pages WHERE id = ANY($1::integer[]) ORDER BY id`,
-        [normalizePageIds(intent.pageIds)],
+        [normalizePageIds(intent.pageIds, true)],
       );
       assertHierarchyReferenceUnchanged(finalRows.rows, durable);
       const settlementProof = effectClass === 'remote'

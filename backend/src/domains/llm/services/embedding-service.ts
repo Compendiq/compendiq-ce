@@ -29,7 +29,7 @@ import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.j
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { planDerivedChunks, type DerivedChunkMetadata } from './image-analysis-compose.js';
-import { admitPageForProvider, RECHECKABLE_BLOCK_SQL, type AiPolicyBlockReason } from './ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL, type AiPolicyBlockReason } from './ai-policy-admission.js';
 import pgvector from 'pgvector';
 
 /**
@@ -662,6 +662,12 @@ export async function embedPage(
   const admission = await admitPageForProvider(pageId, 'embedding', embedConfig.providerId, embedModel);
   if (!admission.admitted) {
     if (admission.reason === 'not_found') return 0;
+    if (!isPersistableBlockReason(admission.reason)) {
+      // Fail-closed, retryable (#280): the deployment — not the article —
+      // refused. The page stays dirty for the next pass; nothing is dispatched.
+      logger.warn({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding admission unavailable; page left dirty');
+      return 0;
+    }
     await markEmbeddingPolicyBlocked(pageId, admission.reason);
     logger.info({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding blocked by article AI policy');
     return 0;

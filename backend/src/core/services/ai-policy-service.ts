@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { AI_POLICY_CANONICAL_LABELS, AI_POLICY_LABEL_SYNONYMS } from '@compendiq/contracts';
 import { getPool } from '../db/postgres.js';
 import { isSystemAdmin, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
@@ -26,32 +27,30 @@ export function isStricterPolicy(a: AiPolicy, b: AiPolicy): boolean {
   return RANK[a] > RANK[b];
 }
 
-/** Mirrors SQL `ai_policy_from_labels` in migration 135. */
+/**
+ * The frozen label table (SPEC-CORE-002), shared with the contracts package
+ * and with SQL `ai_policy_label_value` (migration 136). Matching is
+ * lowercase + trim only — no regex, no fuzzy forms. The restrictive entries
+ * are what ingestion reads; `all` entries only matter to a label WRITER
+ * stating an explicit relaxation (which needs policy authority).
+ */
 export function normalizeAiPolicyLabel(label: string): AiPolicy | null {
-  const key = label.trim().toLowerCase().replace(/[\s_:]+/g, '-');
-  if (key === 'ai-none' || key === 'no-ai') return 'none';
-  if (key === 'ai-local-only' || key === 'ai-local') return 'local_only';
-  return null;
+  const key = label.trim().toLowerCase();
+  const policy = AI_POLICY_LABEL_SYNONYMS[key] ?? null;
+  return policy === 'all' ? null : policy;
 }
 
 /**
- * The reserved policy labels a label WRITER understands. A superset of the
- * ingestion normalizer: `all-ai`/`ai-all` name the `all` policy so that a
- * label edit can state an explicit relaxation (which, unlike a tighten, needs
- * policy authority). The SQL creation trigger never sees `all-ai` because it
- * only ever tightens, so the two stay consistent.
+ * The reserved policy labels a label WRITER understands: the ingestion table
+ * plus the `all` spellings (`all-ai`, `ai:all`).
  */
 export function reservedAiPolicyLabel(label: string): AiPolicy | null {
-  const key = label.trim().toLowerCase().replace(/[\s_:]+/g, '-');
-  if (key === 'all-ai' || key === 'ai-all') return 'all';
-  return normalizeAiPolicyLabel(label);
+  return AI_POLICY_LABEL_SYNONYMS[label.trim().toLowerCase()] ?? null;
 }
 
 /** One canonical label per policy; a newly stated policy is stored as this. */
 export function canonicalAiPolicyLabel(policy: AiPolicy): string {
-  if (policy === 'none') return 'no-ai';
-  if (policy === 'local_only') return 'ai-local-only';
-  return 'all-ai';
+  return AI_POLICY_CANONICAL_LABELS[policy];
 }
 
 export type LabelPolicyPlan = {
