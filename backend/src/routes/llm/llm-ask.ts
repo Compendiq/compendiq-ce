@@ -649,19 +649,44 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           }
         }
       }
-      if (resolved && rootAdmission?.admitted) {
-        const bodyResult = await query<{ body_html: string }>(
-          'SELECT body_html FROM pages WHERE id = $1 AND deleted_at IS NULL',
-          [resolved.id],
-        );
-        const parentHtml = bodyResult.rows[0]?.body_html || '';
+      if (!resolved || !rootAdmission?.admitted) {
+        return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+      }
+      if (resolved && rootAdmission.admitted) {
+        let root;
+        try {
+          const bodyResult = await query<{
+            body_html: string | null; title: string; ai_policy: string;
+            ai_policy_revision: unknown; content_revision: unknown;
+          }>(
+            'SELECT body_html, title, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [resolved.id],
+          );
+          root = bodyResult.rows[0];
+        } catch {
+          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
+        if (!root) return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+        const policyRevision = asRevision(root.ai_policy_revision);
+        const contentRevision = asRevision(root.content_revision);
+        if ((root.ai_policy !== 'all' && root.ai_policy !== 'local_only' && root.ai_policy !== 'none')
+          || policyRevision === null || contentRevision === null || typeof root.title !== 'string') {
+          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
+        if (!pageAdmittedFor(root.ai_policy, bound.locality)) {
+          return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+        }
+        const rootRef: ConversationTurnAiProvenancePage = {
+          pageId: resolved.id, policy: root.ai_policy, policyRevision, contentRevision,
+        };
+        const parentHtml = root.body_html || '';
         let assembled: Awaited<ReturnType<typeof assembleSubPageContext>>;
         try {
           assembled = await assembleSubPageContext(
             userId,
             resolved.confluenceId ?? body.pageId,
             parentHtml,
-            resolved.title,
+            root.title,
             undefined,
             {
               policyContext: {
@@ -693,18 +718,30 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           }
           throw err;
         }
-        // The walk's included refs carry policy + revision; their content
-        // revision is read back from the current rows so the cache key and
-        // the turn record bind the body the model actually saw. A ref the
-        // rows no longer describe is pinned at the strictest reading.
-        const refs = assembled.includedPageRefs ?? [];
-        const refRows = await readPagePolicies(refs.map((p) => p.id));
-        includedSubPages = refs.map((p) => {
-          const row = refRows.get(p.id);
-          return row && row.policyRevision === p.policyRevision
-            ? { pageId: p.id, policy: p.policy, policyRevision: p.policyRevision, contentRevision: row.contentRevision }
-            : { pageId: p.id, policy: 'local_only' as const, policyRevision: 0, contentRevision: 0 };
-        });
+        // Preserve the identity read with the bytes, never stamp newer metadata
+        // onto an older body. Include the root even when retrieval omitted it.
+        includedSubPages = [rootRef, ...assembled.includedPageRefs.map((p) => ({
+          pageId: p.id, policy: p.policy, policyRevision: p.policyRevision, contentRevision: p.contentRevision,
+        }))];
+        try {
+          const current = await readPagePolicies(includedSubPages.map((p) => p.pageId));
+          for (const p of includedSubPages) {
+            const row = current.get(p.pageId);
+            if (!row || row.policy !== p.policy || row.policyRevision !== p.policyRevision
+              || row.contentRevision !== p.contentRevision || !pageAdmittedFor(row.policy, bound.locality)
+              || !(await userCanAccessPage(userId, p.pageId))) {
+              return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+            }
+            for (const retrieved of searchResults.filter((r) => r.pageId === p.pageId)) {
+              if (retrieved.aiPolicy !== p.policy || retrieved.aiPolicyRevision !== p.policyRevision
+                || retrieved.contentRevision !== p.contentRevision) {
+                return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+              }
+            }
+          }
+        } catch {
+          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);

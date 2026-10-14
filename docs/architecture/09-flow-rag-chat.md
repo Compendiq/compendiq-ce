@@ -208,9 +208,15 @@ rules are few enough to state in full:
    revision mismatch; locality moved at the same revision → 409 locality
    mismatch. A provider edited mid-request is refused with a status code,
    never silently served against whatever the row says now. The included
-   refs `{ id, policy, policyRevision }` are joined with each page's current
-   `content_revision` (`readPagePolicies`) and recorded in the turn's
-   provenance.
+   refs `{ id, policy, policyRevision, contentRevision }` retain the exact
+   tuple selected with each descendant's title/body. A readback validates
+   that tuple; it never stamps a newer revision onto older bytes. The root
+   title/body/policy/revisions are selected together and its explicit ref is
+   recorded even when retrieval omitted the root. Conflicting root/retrieval
+   tuples refuse rather than deduplicating away evidence. Missing or denied
+   roots and stale tree tuples return pre-SSE 409 `ai_history_not_replayable`;
+   unreadable metadata returns 503 `ai_policy_unavailable`. This consumption
+   check does not replace the independent final-dispatch checks owned by #282.
 6. **Each assistant turn records what it was grounded on.** `aiProvenance`
    `{ version: 1, providerId, configRevision, locality, pages[{ pageId,
    policy, policyRevision, contentRevision }] }` is stored on the turn (and

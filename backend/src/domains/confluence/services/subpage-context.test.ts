@@ -145,8 +145,8 @@ describe.skipIf(!dbAvailable)('subpage-context (#281 provenance) — real Postgr
       policyContext: { providerId: external.id, usecase: 'chat', expectedConfigRevision: external.configRevision, expectedLocality: 'external' },
     });
     expect(ctx.includedPageRefs).toEqual([
-      { id: open, confluenceId: null, title: 'Open', policy: 'all', policyRevision: 0, truncated: false },
-      { id: underNone, confluenceId: null, title: 'Under', policy: 'all', policyRevision: 0, truncated: false },
+      { id: open, confluenceId: null, title: 'Open', policy: 'all', policyRevision: 0, contentRevision: 0, truncated: false },
+      { id: underNone, confluenceId: null, title: 'Under', policy: 'all', policyRevision: 0, contentRevision: 0, truncated: false },
     ]);
     expect(ctx.excludedByPolicy).toEqual([
       { id: localOnly, policy: 'local_only', policyRevision: 0, reason: 'provider_not_local' },

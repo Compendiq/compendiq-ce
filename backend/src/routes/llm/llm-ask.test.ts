@@ -1020,8 +1020,8 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'tree question', includeSubPages: true, pageId: '12345' },
       });
       expect(mockStreamChatClient).not.toHaveBeenCalled();
-      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
-      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
     });
 
     it('refusal NAMES requested grounding that failed to materialise — the remedy must point at the real failure', async () => {
@@ -1062,10 +1062,13 @@ describe('POST /api/llm/ask', () => {
       mockAssembleSubPageContext.mockResolvedValue({
         injectionWarnings: [],
         markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
+        includedPageRefs: [],
         pageCount: 1,
       });
       mockGetMultiPagePromptSuffix.mockReturnValue('');
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded in the open page.'));
+      mockQuery.mockResolvedValue({ rows: [{ id: 12345, title: 'Leaf', body_html: '<p>Leaf</p>', ai_policy: 'all', ai_policy_revision: 0, content_revision: 0 }] });
+      mockReadPagePolicies.mockResolvedValue(new Map([[12345, { pageId: 12345, policy: 'all', policyRevision: 0, contentRevision: 0 }]]));
 
       const response = await app.inject({
         method: 'POST', url: '/api/llm/ask',
@@ -3055,8 +3058,8 @@ describe('POST /api/llm/ask', () => {
         if (sql.includes('FROM pages WHERE confluence_id')) {
           return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] });
         }
-        if (sql.includes('body_html FROM pages WHERE id')) {
-          return Promise.resolve({ rows: [{ body_html: '<p>secret</p>' }] });
+        if (sql.includes('SELECT body_html, title, ai_policy')) {
+          return Promise.resolve({ rows: [{ body_html: '<p>secret</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 4, content_revision: 11 }] });
         }
         if (typeof sql === 'string' && sql.includes('INSERT INTO llm_conversations')) {
           return Promise.resolve({ rows: [{ id: 'test-conv-id' }] });
@@ -3078,6 +3081,9 @@ describe('POST /api/llm/ask', () => {
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
       mockGetMultiPagePromptSuffix.mockReturnValue('');
       seedPageQueries();
+      mockReadPagePolicies.mockResolvedValue(new Map([
+        [1, { pageId: 1, policy: 'all', policyRevision: 4, contentRevision: 11 }],
+      ]));
     });
 
     it('does NOT inject sub-page context when the user cannot access the page', async () => {
@@ -3094,11 +3100,13 @@ describe('POST /api/llm/ask', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(409);
       expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 1);
       // The RBAC gate must short-circuit before any tree assembly.
       expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
-      expect(userMessage()).not.toContain('Page tree context');
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
     it('injects sub-page context when the user CAN access the page', async () => {
@@ -3109,6 +3117,7 @@ describe('POST /api/llm/ask', () => {
         pageCount: 2,
         wasTruncated: false,
         includedPages: [],
+        includedPageRefs: [],
       });
 
       const response = await app.inject({
@@ -3149,9 +3158,11 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(409);
       expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
-      expect(userMessage()).not.toContain('Page tree context');
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
     it('refuses 503 before any SSE header when the root admission cannot read policy state (#282)', async () => {
@@ -3201,7 +3212,7 @@ describe('POST /api/llm/ask', () => {
       mockUserCanAccessPage.mockResolvedValue(true);
       mockAssembleSubPageContext.mockResolvedValue({
         injectionWarnings: [], markdown: 'TREE', pageCount: 2, wasTruncated: false,
-        includedPageRefs: [{ id: 1, policy: 'all', policyRevision: 4 }, { id: 9, policy: 'all', policyRevision: 2 }],
+        includedPageRefs: [{ id: 9, policy: 'all', policyRevision: 2, contentRevision: 5 }],
         excludedByPolicy: 1,
       });
       mockReadPagePolicies.mockResolvedValue(new Map([
@@ -3658,9 +3669,10 @@ describe('POST /api/llm/ask', () => {
     });
 
     function seedSubPageQueries() {
+      mockReadPagePolicies.mockResolvedValue(new Map([[1, { pageId: 1, policy: 'all', policyRevision: 1, contentRevision: 0 }]]));
       mockQuery.mockImplementation(async (sql: string) => {
         if (sql.includes('FROM pages WHERE confluence_id')) return { rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] };
-        if (sql.includes('body_html FROM pages WHERE id')) return { rows: [{ body_html: '<p>x</p>' }] };
+        if (sql.includes('SELECT body_html, title, ai_policy')) return { rows: [{ body_html: '<p>x</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 1, content_revision: 0 }] };
         return { rows: [{ id: 'test-conv-id' }] };
       });
     }

@@ -53,6 +53,17 @@ flowchart LR
 
 ### Article AI policy — label writers, lock order, sub-page provenance (#281)
 
+The sub-page producer requires `contentRevision` on both `PageContent` and
+`IncludedPageRef`, decoded with canonical `asRevision` from the same SELECT
+as title, body, policy and policy revision. Invalid metadata fails closed.
+Only formatted descendants contribute refs (including truncated bodies).
+`llm-ask` preserves those tuples and validates them at consumption, never
+replaces them with current revisions. It reads the root title/body and policy
+metadata coherently and adds the root ref even without a retrieval hit.
+Conflicting duplicate readings refuse pre-SSE; compatible duplicates may
+collapse. Root restrictions therefore invalidate history grounded on an
+unindexed root. See [RAG chat flow](09-flow-rag-chat.md) for refusal semantics.
+
 `pages.ai_policy` has one mutation primitive, `applyAiPolicyOnClient`
 (`core/services/ai-policy-service.ts`), and every writer that can move it
 runs on the transaction it already holds:

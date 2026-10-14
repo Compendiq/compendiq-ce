@@ -26,6 +26,7 @@ import { getUserAccessibleSpacesMemoized } from '../../../core/services/rbac-ser
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { isAiPolicy, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 import {
+  asRevision,
   decideAiPolicyAdmission,
   loadProviderMetadata,
   type ProviderMetadata,
@@ -54,6 +55,7 @@ export interface PageContent {
   /** Policy and revision read from the SAME row as the body. */
   policy: AiPolicy;
   policyRevision: number;
+  contentRevision: number;
 }
 
 /** A descendant the policy context refused; nothing of it was formatted. */
@@ -129,6 +131,7 @@ export interface IncludedPageRef {
   title: string;
   policy: AiPolicy;
   policyRevision: number;
+  contentRevision: number;
   truncated: boolean;
 }
 
@@ -259,8 +262,9 @@ export async function fetchAdmittedSubPages(
       body_html: string | null;
       ai_policy: string;
       ai_policy_revision: string;
+      content_revision: string;
     }>(
-      `SELECT id, confluence_id, title, body_html, ai_policy, ai_policy_revision::text
+      `SELECT id, confluence_id, title, body_html, ai_policy, ai_policy_revision::text, content_revision::text
        FROM pages
        WHERE parent_id = $1
          AND deleted_at IS NULL
@@ -273,7 +277,11 @@ export async function fetchAdmittedSubPages(
       if (considered >= MAX_SUB_PAGES) break;
       considered += 1;
       const policy = storedPolicy(row.ai_policy);
-      const policyRevision = Number(row.ai_policy_revision);
+      const policyRevision = asRevision(row.ai_policy_revision);
+      const contentRevision = asRevision(row.content_revision);
+      if (!isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null) {
+        throw new SubPagePolicyError('ai_policy_unavailable', 'Unreadable descendant metadata');
+      }
 
       // Queue children for next depth level. Standalone (local-space) pages have
       // a NULL confluence_id and are keyed on `parent_id = <parent DB id as text>`,
@@ -302,6 +310,7 @@ export async function fetchAdmittedSubPages(
         depth: current.depth,
         policy,
         policyRevision,
+        contentRevision,
       });
     }
   }
@@ -433,6 +442,7 @@ export async function assembleSubPageContext(
       title: subPage.title,
       policy: subPage.policy,
       policyRevision: subPage.policyRevision,
+      contentRevision: subPage.contentRevision,
     };
 
     // Check if adding this page would exceed the limit
