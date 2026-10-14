@@ -25,7 +25,7 @@ const POLICY_GLYPH: Record<AiPolicy, LucideIcon> = {
 
 interface AiPolicyChipProps {
   policy: AiPolicy;
-  /** Compact header form: glyph only, name still announced. */
+  /** Compact header form: visible words and glyph, without a pill border. */
   compact?: boolean;
   className?: string;
 }
@@ -36,13 +36,13 @@ export function AiPolicyChip({ policy, compact = false, className }: AiPolicyChi
   if (compact) {
     return (
       <span
-        className={cn('inline-flex shrink-0 items-center text-muted-foreground', className)}
+        className={cn('inline-flex shrink-0 items-center gap-1 text-muted-foreground', className)}
         data-testid="ai-policy-chip-compact"
         data-policy={policy}
         title={label}
       >
         <Glyph size={12} aria-hidden="true" />
-        <span className="sr-only">{label}</span>
+        <span className="text-xs">{label}</span>
       </span>
     );
   }

@@ -18,6 +18,7 @@ describe('AiPolicyChip', () => {
     render(<AiPolicyChip policy="none" compact />);
     const chip = screen.getByTestId('ai-policy-chip-compact');
     expect(chip).toHaveTextContent(/no ai allowed/i);
+    expect(screen.getByText('No AI allowed')).not.toHaveClass('sr-only');
     expect(chip.querySelector('svg')).not.toBeNull();
     expect(chip).not.toHaveAttribute('tabindex');
   });

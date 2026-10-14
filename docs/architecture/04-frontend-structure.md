@@ -333,7 +333,7 @@ not yet wired in this tree.
 ## Frontend test determinism
 
 The Vitest suite runs at normal concurrency on a loaded CI runner, so a test
-that passes only when the machine is idle is a defect in the test. Four
+that passes only when the machine is idle is a defect in the test. These
 conventions keep the suite honest without inflating timeouts, adding retries
 or skipping cases:
 
@@ -343,6 +343,13 @@ or skipping cases:
   only proves a mock answered — the server resolves chat centrally and
   ignores the request body's `model`, so `AiContext.threads.test.tsx` does not
   wait for a literal default-model string.
+- **Await stream completion before a second action.** A seeded user bubble
+  precedes the async SSE iterator finishing; it is not a readiness signal for
+  the disabled action selector. Sequential dock tests supply distinct answers
+  at the network boundary, await the completed answer plus removal of the
+  streaming indicator and enabled controls, then send the next action. Assert
+  both questions and answers remain in the same thread. Unmount in `finally`
+  and clear the render's query client so assertion failures also clean up.
 - **Await an independent source only when it is the subject.** Two queries
   that nothing orders (conversation hydration and the default-model lookup,
   for instance) may settle in either order. A test that asserts one must not
