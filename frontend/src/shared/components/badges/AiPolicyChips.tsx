@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { Ban, Cloud, Cpu, HardDrive, Sparkles, type LucideIcon } from 'lucide-react';
 import type { AiPolicy, ProviderLocality, AiPolicyBlockReason } from '@compendiq/contracts';
 import { cn } from '../../lib/cn';
@@ -95,9 +96,10 @@ export function WorkerStatusBadge({
   reason,
   id,
 }: { status: string; reason?: AiPolicyBlockReason | null; id?: string }) {
+  const generatedId = useId();
   const tone = workerStatusTone(status);
   const reasonText = tone === 'policy' && reason ? BLOCK_REASON_LABEL[reason] : null;
-  const reasonId = reasonText ? `${id ?? 'worker-status'}-reason` : undefined;
+  const reasonId = reasonText ? `${id ?? generatedId}-reason` : undefined;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <span

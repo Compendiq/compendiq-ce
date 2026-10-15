@@ -296,9 +296,11 @@ chips in `shared/components/badges/AiPolicyChips.tsx`.
   "verified" — locality is an administrator *declaration* that Compendiq does
   not independently verify (`LOCALITY_HELP_TEXT`).
 - **The selector is capability-gated by the server**
-  (`canShowPolicySelector` requires `page.ai_policy.update`); read access or
-  shared visibility alone never shows it, and an unknown capability is not
-  `all`. `selectorReducer` is never optimistic: `saved` follows only a
+  (`canShowPolicySelector` validates the page-detail contract and requires
+  `canChangeAiPolicy === true`, `aiPolicyActivation === 'active'`, a known
+  policy and its revision); read access or shared visibility alone never
+  shows it. Missing fields and foundation-only activation fail closed, not
+  as `all`. A capability-name array is not the server's wire contract. `selectorReducer` is never optimistic: `saved` follows only a
   server success, a 409 keeps the draft with `conflict`, and the reload the
   conflict offers adopts the committed policy/revision, keeps the draft for
   review and clears the stale-revision conflict.
@@ -321,6 +323,9 @@ chips in `shared/components/badges/AiPolicyChips.tsx`.
 - **Worker states** `policy_blocked` and `recovering` render as their own
   tones in `WorkerStatusBadge`, never as success or failure, with the block
   reason as visible text wired by `aria-describedby`, not a `title`.
+  Each instance generates a stable unique description ID when the caller
+  supplies none, so multiple blocked stages cannot announce another stage's
+  reason. Recovery removes the obsolete description association.
 - The Library filter helpers (`pagesQueryKey` / `pagesSearchParams`) put
   `aiPolicy` on the real list query key and request; "All articles" is the
   absence of a filter, not the `all` value.

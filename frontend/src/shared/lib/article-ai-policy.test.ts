@@ -24,10 +24,23 @@ import {
 } from './article-ai-policy';
 
 describe('article AI policy UI logic', () => {
-  it('shows selector only with server mutation capability', () => {
-    expect(canShowPolicySelector(undefined)).toBe(false);
-    expect(canShowPolicySelector([])).toBe(false);
-    expect(canShowPolicySelector(['page.ai_policy.update'])).toBe(true);
+  it('shows selector only with the active server page-detail capability and revision', () => {
+    const detail = {
+      canChangeAiPolicy: true, aiPolicyActivation: 'active',
+      aiPolicy: 'all', aiPolicyRevision: 0,
+    };
+    expect(canShowPolicySelector(detail)).toBe(true);
+    for (const unavailable of [
+      undefined, null, {}, [], ['page.ai_policy.update'],
+      { ...detail, canChangeAiPolicy: false },
+      { ...detail, canChangeAiPolicy: undefined },
+      { ...detail, aiPolicyActivation: 'foundation_only' },
+      { ...detail, aiPolicyActivation: undefined },
+      { ...detail, aiPolicy: undefined },
+      { ...detail, aiPolicy: 'unsupported' },
+      { ...detail, aiPolicyRevision: undefined },
+      { ...detail, aiPolicyRevision: -1 },
+    ]) expect(canShowPolicySelector(unavailable)).toBe(false);
   });
 
   it('requires confirmation only when moving to none', () => {

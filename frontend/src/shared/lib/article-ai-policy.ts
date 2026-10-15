@@ -1,4 +1,4 @@
-import type { AiPolicy, ProviderLocality, AiPolicyBlockReason } from '@compendiq/contracts';
+import { PageAiPolicyDetailFieldsSchema, type AiPolicy, type ProviderLocality, type AiPolicyBlockReason } from '@compendiq/contracts';
 
 /**
  * Client-side helpers for article AI policy (SPEC-UI-001). These never claim
@@ -42,9 +42,14 @@ export function pagesSearchParams(filter: AiPolicyFilter): Record<string, string
   return filter === 'any' ? {} : { aiPolicy: filter };
 }
 
-/** Selector is shown only when the server advertised the mutation capability. */
-export function canShowPolicySelector(capabilities: readonly string[] | undefined): boolean {
-  return Array.isArray(capabilities) && capabilities.includes('page.ai_policy.update');
+/** Selector uses the page-detail wire contract, never a locally invented capability. */
+export function canShowPolicySelector(detail: unknown): boolean {
+  const parsed = PageAiPolicyDetailFieldsSchema.safeParse(detail);
+  return parsed.success
+    && parsed.data.canChangeAiPolicy === true
+    && parsed.data.aiPolicyActivation === 'active'
+    && parsed.data.aiPolicy !== undefined
+    && parsed.data.aiPolicyRevision !== undefined;
 }
 
 /** Moving to `none` needs explicit confirmation. */

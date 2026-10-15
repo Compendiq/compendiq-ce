@@ -63,6 +63,24 @@ describe('WorkerStatusBadge', () => {
     expect(badge).not.toHaveAttribute('title');
   });
 
+  it('keeps descriptions distinct for multiple stages without caller-supplied IDs', () => {
+    const { rerender } = render(<>
+      <WorkerStatusBadge status="policy_blocked" reason="policy_none" />
+      <WorkerStatusBadge status="policy_blocked" reason="provider_not_local" />
+    </>);
+    const badges = screen.getAllByTestId('worker-status-badge');
+    const ids = badges.map((badge) => badge.getAttribute('aria-describedby'));
+    expect(new Set(ids).size).toBe(2);
+    expect(badges[0]).toHaveAccessibleDescription('Blocked by policy: this article is No AI allowed');
+    expect(badges[1]).toHaveAccessibleDescription('Blocked by policy: the assigned provider is not declared local');
+    rerender(<>
+      <WorkerStatusBadge status="recovering" />
+      <WorkerStatusBadge status="policy_blocked" reason="provider_not_local" />
+    </>);
+    expect(screen.getAllByTestId('worker-status-badge')[0]).not.toHaveAttribute('aria-describedby');
+    expect(screen.getAllByTestId('worker-status-badge')[1]).toHaveAttribute('aria-describedby', ids[1]);
+  });
+
   it('renders no reason for a non-policy status', () => {
     render(<WorkerStatusBadge status="completed" reason="policy_none" />);
     expect(screen.queryByTestId('worker-status-reason')).toBeNull();
