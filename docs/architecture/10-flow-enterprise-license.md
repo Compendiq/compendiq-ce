@@ -225,7 +225,10 @@ flowchart LR
     all --> stricter
     preview["POST cascade/preview<br/>owner-scoped subtree"] --> commit["POST cascade<br/>exact ids and revisions"]
     commit -->|stale, ambiguous or foreign| conflict["409, no row changed"]
-    commit -->|agrees| write["one transaction:<br/>pages.ai_policy + cascade_committed events"]
+    commit --> fence["runtime epoch then exclusive hierarchy fence<br/>re-expand exact owned set"]
+    fence --> locks["lifecycle locks then AIP then page rows<br/>pending writer 409 / frozen target 423"]
+    locks --> write["applyAiPolicyOnClient<br/>canonical labels + policy revisions + purge/requeue<br/>content revision + cascade_committed in one transaction"]
+    write --> committed["COMMIT then emitAiPolicyChanges<br/>best-effort policy_changed observer"]
     observer["CE onAiPolicyEvent"] --> events["ai_policy_enforcement_events<br/>ids, policy, provider, no content"]
     write --> events
     events --> report["Model Governance Evidence<br/>recorded decisions only"]

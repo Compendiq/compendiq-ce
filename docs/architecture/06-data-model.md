@@ -1418,5 +1418,13 @@ erDiagram
 
 The EE-only overlay migration is idempotent and lives in the reserved 9xx
 range. Cascade events are inserted in the same transaction as the page rows
-they describe. The table carries identifiers and policies only, never page
-content, prompts or completions.
+they describe. The shared `applyAiPolicyOnClient` owns labels, policy revisions
+and derived-state purge/requeue; the EE caller publishes content revisions on
+the same held transaction. Lifecycle locks protect pending writers and frozen
+rows before AI-policy locks. A refusal rolls back the entire owner target set.
+Normal `policy_changed` events are emitted after commit through a best-effort
+observer, not a durable outbox. The table carries identifiers and policies only,
+never page content, prompts or completions. Missing locality and blocked-event
+revisions remain unknown; current provider settings cannot reconstruct them.
+See [policy audit flow](./13-flow-ai-policy-audit.md) for delivery and reporting
+boundaries; these rows have no cryptographic tamper protection.

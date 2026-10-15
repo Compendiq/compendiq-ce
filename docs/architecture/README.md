@@ -22,6 +22,8 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 | 11 | Content Format Pipeline | [`11-content-pipeline.md`](./11-content-pipeline.md) | Confluence XHTML ↔ HTML ↔ Markdown ↔ Editor |
 | 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs gateway, durable room owners, correlated cross-process snapshots and BYTEA persistence |
 
+| 13 | Article AI Policy Audit | [`13-flow-ai-policy-audit.md`](./13-flow-ai-policy-audit.md) | Transactional cascade evidence, best-effort decision observers and report limitations |
+
 ## Runbooks
 
 Operational procedures live in [`../runbooks/`](../runbooks/) and are the place
