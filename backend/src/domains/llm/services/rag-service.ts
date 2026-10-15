@@ -40,6 +40,8 @@ import { readDerivedProvenance, type DerivedProvenance } from './derived-provena
 import type { AiPolicy } from '@compendiq/contracts';
 import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
 import { asRevision, loadProviderMetadata } from './ai-policy-admission.js';
+import { admitArticleStage } from './article-stage-admission.js';
+import { ConversationTurnAiProvenanceSchema } from '@compendiq/contracts';
 import {
   aiPolicyPredicate,
   derivedArmPredicate,
@@ -425,7 +427,7 @@ export async function vectorSearch(
       // strictest reading. A derived (image-analysis) chunk of a `none`
       // page is excluded even on a human-read surface.
       const purpose = opts?.aiPolicy ?? DEFAULT_RETRIEVAL_PURPOSE;
-      const policyFilter = aiPolicyPredicate(purpose);
+      const policyFilter = derivedArmPredicate(purpose);
       // Page admission above decides the page; this decides whether one of
       // its DERIVED rows may be the representative chunk (never for `none`).
       const derivedFilter = ` AND ((pe.metadata->>'source') IS DISTINCT FROM 'image_analysis' OR cp.ai_policy IN ('all', 'local_only'))`;
@@ -2034,7 +2036,11 @@ async function hybridSearchInner(
       // reads as not-local. A refused pool keeps the fused order, labelled
       // 'policy_bypassed' so a trace distinguishes it from a provider fault.
       const rerankMeta = await loadProviderMetadata({ query }, rerankCfg.config.providerId);
-      const rerankLocality = rerankMeta?.effectiveLocality ?? 'external';
+      if (!rerankMeta) throw new Error('Rerank policy authority unavailable');
+      if (rerankCfg.config.configRevision !== undefined && rerankCfg.config.configRevision !== rerankMeta.configRevision) {
+        throw new Error('Rerank transport revision changed');
+      }
+      const rerankLocality = rerankMeta.effectiveLocality;
       const refused = pool.filter((r) => !rowAdmittedFor(r, rerankLocality));
       if (refused.length > 0) {
         logger.info(
@@ -2058,8 +2064,16 @@ async function hybridSearchInner(
       // breaker failure — a persistently slow reranker now trips the breaker
       // and the stage self-disables for the cool-down instead of billing
       // full cost for bypassed results.
+      const provenance = ConversationTurnAiProvenanceSchema.parse({
+        version: 1, providerId: rerankCfg.config.providerId,
+        configRevision: rerankMeta.configRevision, locality: rerankLocality,
+        pages: pool.map((r) => ({ pageId: r.pageId, policy: r.aiPolicy,
+          policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision })),
+      });
+      const beforeDispatch = () => admitArticleStage(provenance, userId, 'rerank');
+      await beforeDispatch();
       const scored = await rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs, {
-        timeoutMs: RERANK_TIMEOUT_MS,
+        timeoutMs: RERANK_TIMEOUT_MS, beforeDispatch,
       });
       // An empty scored set means the provider answered 200 with nothing this
       // client could use (unrecognised keys, out-of-range indices, an empty

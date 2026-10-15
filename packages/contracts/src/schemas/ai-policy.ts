@@ -227,6 +227,8 @@ export type AiPolicyStage = z.infer<typeof AiPolicyStageSchema>;
  * made or withdrawn underneath the request).
  */
 export const AI_POLICY_REFUSAL_CODES = [
+  // 409: fresh grounding changed or cannot be proved; not a history refusal.
+  'ai_grounding_not_admissible',
   'ai_history_not_replayable',
   'ai_policy_unavailable',
   'ai_policy_provider_revision_mismatch',

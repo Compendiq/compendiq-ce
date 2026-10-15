@@ -72,7 +72,7 @@ sequenceDiagram
         note right of BE: prior = mean of present terms, in [0,1]#59;<br/>quality/100 and 2^(-ageDays/365), future dates clamped#59;<br/>NO signal = NO adjustment (unscored is NEUTRAL, never<br/>penalised — it correlates with recently synced)#59;<br/>score += weight x prior, stable sort — demote, never exclude#59;<br/>rag.ranking_prior: reordered | no_change | off | bypassed#59; soft-fail
     end
     opt rerank use case assigned (#35;1104)
-        BE->>PG: loadProviderMetadata(rerank providerId) (#35;282 — a SECOND destination,<br/>its own locality, never inherited from chat#59; unprovable = external)
+        BE->>PG: loadProviderMetadata(rerank providerId) (#35;282 — a SECOND destination,<br/>its own locality, never inherited from chat#59; unprovable = no call)
         note right of BE: any pooled row NOT admitted for the reranker's locality<br/>(local_only text + external reranker, or a row whose policy did not<br/>decode) = NO rerank call, fused order served,<br/>rag.rerank = 'policy_bypassed' + rag.rerank_policy_refused
         BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
         PROV2-->>BE: relevance scores [0,1]
@@ -89,9 +89,9 @@ sequenceDiagram
     end
     opt includeSubPages
         BE->>RBAC: userCanAccessPage(userId, parentPageId)
-        RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
+        RBAC-->>BE: allow / deny (deny → 409 ai_grounding_not_admissible)
         BE->>PG: admitPageForProvider(rootPageId, 'chat', BOUND chat providerId, model) (#35;282)
-        PG-->>BE: admitted / refused (retryable refusal = 503, policy refusal = tree skipped)#59;<br/>admitted at another configRevision → 409 ai_policy_provider_revision_mismatch#59;<br/>same revision, another locality → 409 ai_policy_provider_locality_mismatch
+        PG-->>BE: admitted / refused (retryable refusal = 503, policy refusal = 409 ai_grounding_not_admissible)#59;<br/>admitted at another configRevision → 409 ai_policy_provider_revision_mismatch#59;<br/>same revision, another locality → 409 ai_policy_provider_locality_mismatch
         BE->>SP: assembleSubPageContext(rootPageId, …, { policyContext:<br/>{ providerId, usecase:'chat', expectedConfigRevision, expectedLocality } — the<br/>request's ONE binding, never the admission's })
         SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
         SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC) AND admitted per page
@@ -128,7 +128,7 @@ sequenceDiagram
     alt cache hit
         CACHE-->>BE: answer
         BE->>PG: provenancePagesStillAdmitted(turn pages, locality) + userCanAccessPage per page (#35;282 — revalidate)
-        PG-->>BE: rows at the recorded policy AND content revision, admitted, readable → serve#59;<br/>otherwise (or unreadable) fall through to a fresh generation
+        PG-->>BE: rows at the recorded policy AND content revision, admitted, readable → serve#59;<br/>otherwise 409 ai_grounding_not_admissible#59; unreadable 503 ai_policy_unavailable#59; never regenerate stale prompt
         BE-->>FE: SSE { content, done:true, fromCache:true }
     else miss (stampede lock)
         BE->>CACHE: SET lock UUID NX EX 120
@@ -194,7 +194,7 @@ rules are few enough to state in full:
    request's ONE destination (`bound`). Nothing downstream resolves its own:
    the sub-page root is admitted through `admitPageForProvider(rootId,
    'chat', bound.providerId, model)` (a retryable refusal is a 503, a policy
-   refusal skips the tree) and an admission that comes back at a different
+   refusal returns 409 `ai_grounding_not_admissible`) and an admission that comes back at a different
    `configRevision` is a 409 `ai_policy_provider_revision_mismatch`, at the
    same revision but a different locality a 409
    `ai_policy_provider_locality_mismatch`; `assembleSubPageContext` receives
@@ -214,7 +214,7 @@ rules are few enough to state in full:
    title/body/policy/revisions are selected together and its explicit ref is
    recorded even when retrieval omitted the root. Conflicting root/retrieval
    tuples refuse rather than deduplicating away evidence. Missing or denied
-   roots and stale tree tuples return pre-SSE 409 `ai_history_not_replayable`;
+   roots and stale tree tuples return pre-SSE 409 `ai_grounding_not_admissible`;
    unreadable metadata returns 503 `ai_policy_unavailable`. This consumption
    check does not replace the independent final-dispatch checks owned by #282.
 6. **Each assistant turn records what it was grounded on.** `aiProvenance`
@@ -223,11 +223,12 @@ rules are few enough to state in full:
    summarised on the row: `ai_provenance_complete`, `ai_provenance_version`,
    `provider_config_revision`, `provider_locality`). Every retrieval row
    selects `pages.content_revision` beside the policy columns; a row that
-   arrived without a decodable policy OR content revision is pinned at
-   `{ local_only, 0, 0 }` — the strictest reading, which revalidation then
-   refuses (no live row sits at content revision 0 after its first edit, and
-   `local_only` admits no external destination). `selectReplayableHistory`
-   strips turns to `{ role, content }`, so the record never reaches the wire.
+   arrived without a decodable policy OR content revision refuses with
+   `409 ai_grounding_not_admissible`; revisions are never invented.
+   `selectReplayableHistory` returns selected source objects as well as stripped
+   wire messages. New provenance unions every selected assistant dependency
+   with fresh retrieval and explicit root/descendant tuples. Consistent
+   duplicates deduplicate; conflicting readings refuse.
 7. **A continuation replays history only if it can be re-proven.** Before
    retrieval, every stored assistant turn must carry provenance that parses
    as `ConversationTurnAiProvenanceSchema` (an incomplete row — pre-#282
@@ -250,16 +251,43 @@ rules are few enough to state in full:
    `provenancePagesStillAdmitted` (rows exist at the recorded policy AND
    content revision, admitted for the locality) plus `userCanAccessPage` for
    every recorded page — a page deleted, edited, restricted or taken out of
-   the caller's read set inside the TTL falls through to a fresh generation,
-   as does a revalidation the database could not answer.
+   the caller's read set inside the TTL refuses with 409
+   `ai_grounding_not_admissible`; unreadable authority returns 503
+   `ai_policy_unavailable`. Neither falls through to regeneration of a stale
+   prompt. Cache entries must also carry complete versioned provenance;
+   legacy or mismatching entries return `ai_history_not_replayable`.
 9. **Auto-title re-admits.** `generateConversationTitle` receives the turn's
    provenance; the page-derived answer is sent to the titling model only when
    the provider resolved at THAT moment decodes and every recorded page is
    still admitted for its locality. Otherwise (and when no provenance was
-   recorded) the title is generated from the user's own question alone.
+   recorded) the initial question-derived title stays, with no completion.
+   The independent title stage rechecks its actual destination and complete
+   source tuples after queue waits. After inference, it proves them again and
+   performs the manual-title compare-and-set on the same held PostgreSQL client.
+10. **Publication is guarded, not merely checked before inference.** Cached
+    replay persistence and post-stream publication take shared policy locks in
+    page-ID order, page row share locks, then the provider row share lock.
+    Grounding and ACL are re-proved using that held client; conversation writes
+    use that transaction, and cache writes occur while the locks are held.
+    A failed proof produces no reusable exchange/cache output and no secondary
+    title. Already delivered stream bytes cannot be recalled. This is not a
+    distributed transaction between Redis and PostgreSQL.
+
+All valid recorded providers are checked for availability before comparing
+history with the current destination. Missing recorded authority yields 503,
+including after an assignment switch. Row summaries bind the newest turn;
+conflicting per-turn page/provider readings refuse, never merge by maximum.
+Human vector search excludes every `none` vector, even stale authored vectors;
+human lexical search still returns readable authored prose without model calls.
+The resolver selects transport and configuration revision together; its cache
+cannot reuse a transport from another revision merely because a cache-bus
+notification has not arrived. Chat, title and rerank compare that transport
+revision with admission authority rather than silently selecting a new provider.
+These guarantees do not identify arbitrary pasted copies, attest a browser or
+provider's residency, or establish zero egress.
 
 Refusal codes are the contracts constant `AI_POLICY_REFUSAL_CODES`
-(`ai_history_not_replayable`, `ai_policy_unavailable`,
+(`ai_grounding_not_admissible`, `ai_history_not_replayable`, `ai_policy_unavailable`,
 `ai_policy_provider_revision_mismatch`,
 `ai_policy_provider_locality_mismatch` — there is no generic
 `ai_policy_provider_mismatch`; a client is always told which of the two
@@ -1508,8 +1536,8 @@ what raises the effective width.
 The `includeSubPages` branch (#814) is gated independently of the RAG
 retrieval filters, since it injects a caller-supplied page tree rather than
 retrieved chunks. Before assembly, `/llm/ask` enforces the same access check
-as `GET /pages/:id` on the parent (`userCanAccessPage`) and skips the branch
-on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
+as `GET /pages/:id` on the parent (`userCanAccessPage`) and refuses fresh
+grounding with 409 `ai_grounding_not_admissible` on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
 spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
 every descendant query, so cross-space, page-restricted (no ACE for the
 caller, in both editions) or soft-deleted sub-pages never reach
@@ -2148,8 +2176,9 @@ in order:
   answers title from the question alone. Since #282 the answer is also
   RE-ADMITTED first: the turn's provenance pages must still be admitted for the
   effective locality of the provider resolved at titling time (and that
-  provider must decode), else the title is generated from the question alone —
-  page-derived text never reaches a provider the policy would refuse.
+  provider must decode), else the initial question-derived title stays without
+  a completion. Authority is checked after the queue wait and after inference;
+  title persistence shares the final proof's held client and locks.
   `normalizeGeneratedTitle` reduces the
   reply to one unquoted, unformatted line of at most 80 characters. The update
   is a compare-and-set on `title_source = 'question'`, so a concurrent manual
@@ -2184,9 +2213,9 @@ deleting your own history is not model consumption, and a user stripped of
   or one grounding page's policy change is a different key.
 - Cache hit → answer returned from Redis **after** `provenancePagesStillAdmitted`
   confirms every grounding page still exists at its recorded revision and is
-  admitted for the current locality (#282); a failed revalidation falls
-  through to a fresh generation (a hit holds no lock, so there is nothing to
-  release).
+  admitted for the current locality (#282), with complete recorded provenance
+  and current ACL. Failed proof refuses rather than regenerating the stale
+  prompt; unreadable authority is a retryable 503.
 - Cache miss → Redis stores a unique token with `SET NX EX`; concurrent
   identical requests wait for the first writer and then read the fresh entry,
   avoiding duplicate LLM calls.

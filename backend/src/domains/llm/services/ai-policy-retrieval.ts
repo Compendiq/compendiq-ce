@@ -118,9 +118,9 @@ export interface PagePolicyRow {
  * hit treats absence as "cannot prove admissible". Throws on a DB failure;
  * never guesses.
  */
-export async function readPagePolicies(pageIds: readonly number[]): Promise<Map<number, PagePolicyRow>> {
+export async function readPagePolicies(pageIds: readonly number[], runQuery: typeof query = query): Promise<Map<number, PagePolicyRow>> {
   if (pageIds.length === 0) return new Map();
-  const { rows } = await query<{
+  const { rows } = await runQuery<{
     id: number; ai_policy: unknown; ai_policy_revision: unknown; content_revision: unknown;
   }>(
     `SELECT id, ai_policy, ai_policy_revision, content_revision
@@ -141,6 +141,7 @@ export async function readPagePolicies(pageIds: readonly number[]): Promise<Map<
 export interface RecordedPageReading {
   pageId: number;
   policyRevision: number;
+  policy?: AiPolicy;
   /** Optional on the type so a pre-content-revision record still TYPES; absence FAILS revalidation. */
   contentRevision?: number | undefined;
 }
@@ -157,21 +158,23 @@ export interface RecordedPageReading {
 export async function provenancePagesStillAdmitted(
   pages: ReadonlyArray<RecordedPageReading>,
   locality: ProviderLocality,
+  runQuery: typeof query = query,
 ): Promise<boolean> {
   if (pages.length === 0) return true;
-  const expected = new Map<number, { policyRevision: number; contentRevision: number }>();
+  const expected = new Map<number, RecordedPageReading>();
   for (const p of pages) {
-    if (p.contentRevision === undefined || !Number.isInteger(p.contentRevision) || p.contentRevision < 0) return false;
+    if (p.contentRevision === undefined || !Number.isSafeInteger(p.contentRevision) || p.contentRevision < 0) return false;
+    if (!Number.isSafeInteger(p.pageId) || p.pageId <= 0
+      || !Number.isSafeInteger(p.policyRevision) || p.policyRevision < 0) return false;
+    if (!isAiPolicy(p.policy)) return false;
     const prior = expected.get(p.pageId);
-    expected.set(p.pageId, {
-      policyRevision: prior === undefined ? p.policyRevision : Math.max(prior.policyRevision, p.policyRevision),
-      contentRevision: prior === undefined ? p.contentRevision : Math.max(prior.contentRevision, p.contentRevision),
-    });
+    if (prior && (prior.policy !== p.policy || prior.policyRevision !== p.policyRevision || prior.contentRevision !== p.contentRevision)) return false;
+    expected.set(p.pageId, p);
   }
-  const current = await readPagePolicies([...expected.keys()]);
+  const current = await readPagePolicies([...expected.keys()], runQuery);
   for (const [pageId, recorded] of expected) {
     const row = current.get(pageId);
-    if (!row) return false;
+    if (!row || row.policy !== recorded.policy) return false;
     if (row.policyRevision !== recorded.policyRevision) return false;
     if (row.contentRevision !== recorded.contentRevision) return false;
     if (!pageAdmittedFor(row.policy, locality)) return false;

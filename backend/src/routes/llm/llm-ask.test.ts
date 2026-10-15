@@ -48,6 +48,10 @@ const mockQuery = vi.fn().mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
 
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getPool: () => ({ connect: async () => ({
+    query: (...args: unknown[]) => mockQuery(...args),
+    release: vi.fn(),
+  }) }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -68,7 +72,10 @@ const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the k
 // list, not a spread.
 const mockTrackSearchAnalytics = vi.fn();
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
+  hybridSearch: async (...args: unknown[]) => {
+    const rows = await mockHybridSearch(...args);
+    return rows.map((row: Record<string, unknown>) => ({ aiPolicy: 'all', aiPolicyRevision: 1, contentRevision: 1, ...row }));
+  },
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
   trackSearchAnalytics: (...args: unknown[]) => mockTrackSearchAnalytics(...args),
 }));
@@ -178,6 +185,10 @@ vi.mock('../../domains/llm/services/ai-policy-retrieval.js', () => ({
 }));
 
 const EXTERNAL_PROVIDER = { configRevision: 3, effectiveLocality: 'external', declaredBy: null, declaredAt: null };
+function cachedAnswer(content: string, pageId: number, policyRevision = 1, contentRevision = 1) {
+  return { content, aiProvenance: { version: 1, providerId: 'p1', configRevision: 3, locality: 'external',
+    pages: [{ pageId, policy: 'all', policyRevision, contentRevision }] } };
+}
 const ROOT_ADMITTED = { admitted: true, providerId: 'p1', configRevision: 3, locality: 'external', policy: 'all', policyRevision: 1 };
 
 /** The SQL the #282 history load is recognised by. */
@@ -1021,7 +1032,7 @@ describe('POST /api/llm/ask', () => {
       });
       expect(mockStreamChatClient).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
     });
 
     it('refusal NAMES requested grounding that failed to materialise — the remedy must point at the real failure', async () => {
@@ -1272,7 +1283,7 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('persists sources on a cache-hit turn too', async () => {
-      mockGetCachedResponse.mockResolvedValueOnce({ content: 'cached answer' });
+      mockGetCachedResponse.mockResolvedValueOnce(cachedAnswer('cached answer', 7));
       mockHybridSearch.mockResolvedValue([{ pageId: 7, pageTitle: 'P', spaceKey: 'S', confluenceId: null, score: 0.5, vectorScore: 0.6, content: 'c' }]);
       mockBuildRagContext.mockReturnValue('ctx');
 
@@ -1499,14 +1510,14 @@ describe('POST /api/llm/ask', () => {
         // provider resolved at ITS moment, so it needs the turn's record.
         provenance: {
           version: 1, providerId: 'p1', configRevision: 3, locality: 'external',
-          pages: [{ pageId: 42, policy: 'local_only', policyRevision: 0, contentRevision: 0 }],
+          pages: [{ pageId: 42, policy: 'all', policyRevision: 1, contentRevision: 1 }],
         },
       });
     });
 
     it('titles a new conversation created from an answer-cache hit', async () => {
       mockHybridSearch.mockResolvedValue([groundedResult]);
-      mockGetCachedResponse.mockResolvedValue({ content: 'A cached answer.' });
+      mockGetCachedResponse.mockResolvedValue(cachedAnswer('A cached answer.', 42));
       mockGenerateConversationTitle.mockReturnValue(neverResolves);
 
       const response = await app.inject({
@@ -2627,7 +2638,8 @@ describe('POST /api/llm/ask', () => {
       // pass for the wrong reason.
       expect((sentUserContent() as Array<Record<string, unknown>>).filter((p) => p.type === 'image_url')).toHaveLength(1);
       expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
-      const identityReads = mockQuery.mock.calls.filter((c) => PAGE_IDENTITY_SQL.test(String(c[0])));
+      const identityReads = mockQuery.mock.calls.filter((c) =>
+        PAGE_IDENTITY_SQL.test(String(c[0])) && /confluence_id/.test(String(c[0])));
       expect(identityReads).toHaveLength(1);
     });
   });
@@ -2914,7 +2926,7 @@ describe('POST /api/llm/ask', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockGetCachedResponse.mockResolvedValue({ content: 'Go to Settings > Security > Reset Password.' });
+    mockGetCachedResponse.mockResolvedValue(cachedAnswer('Go to Settings > Security > Reset Password.', 77));
 
     // Act
     const response = await app.inject({
@@ -3105,7 +3117,7 @@ describe('POST /api/llm/ask', () => {
       // The RBAC gate must short-circuit before any tree assembly.
       expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
       expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
@@ -3161,7 +3173,7 @@ describe('POST /api/llm/ask', () => {
       expect(response.statusCode).toBe(409);
       expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
       expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
@@ -3286,19 +3298,13 @@ describe('POST /api/llm/ask', () => {
       });
     });
 
-    it('pins a retrieval row without a decodable policy/content reading at the strictest reading', async () => {
-      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7 }]);
-      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
-
-      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
-
-      const insert = mockQuery.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
-      )!;
-      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
-      expect((messages.find((m) => m.role === 'assistant')!.aiProvenance as { pages: unknown[] }).pages).toEqual([
-        { pageId: 42, policy: 'local_only', policyRevision: 0, contentRevision: 0 },
-      ]);
+    it('refuses an incomplete retrieval tuple without inventing provenance', async () => {
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: undefined }]);
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
 
     it('re-proves the bound provider before the cache lookup and before dispatch: 503 when it no longer decodes', async () => {
@@ -3566,7 +3572,7 @@ describe('POST /api/llm/ask', () => {
       });
       mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 2, contentRevision: 1 }]]));
       mockUserCanAccessPage.mockResolvedValue(true);
-      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicyRevision: 2 }]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
 
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
@@ -3607,6 +3613,32 @@ describe('POST /api/llm/ask', () => {
       expect(response.statusCode).toBe(404);
     });
 
+    it('reports missing recorded provider before an assignment mismatch', async () => {
+      mockLoadProviderMetadata.mockImplementation(async (_runner, id) => id === 'deleted-provider' ? null : EXTERNAL_PROVIDER);
+      mockQuery.mockImplementation(async (sql: string) => sql.includes(HISTORY_SQL)
+        ? { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }], [], { providerId: 'deleted-provider' })] }
+        : { rows: [] });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('does not publish or title a stream whose grounding changed during inference', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* () {
+        yield { content: 'answer', done: false };
+        mockProvenancePagesStillAdmitted.mockResolvedValue(false);
+        yield { content: '', done: true };
+      });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      expect(response.body).toContain('Stream error');
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
     it('keys the answer cache on provider revision, locality and page policy + content revisions', async () => {
       const { policyRevisionsCacheComponent } = await import('../../domains/llm/services/llm-cache.js');
       vi.mocked(policyRevisionsCacheComponent).mockReturnValue('pol-digest');
@@ -3620,7 +3652,7 @@ describe('POST /api/llm/ask', () => {
       expect(opts).toMatchObject({ providerConfigRevision: 3, providerLocality: 'external', policyRevisions: 'pol-digest' });
     });
 
-    it('treats a cache hit whose pages are no longer admitted (policy or content moved) as a miss and generates fresh', async () => {
+    it('refuses a stale cache proof without regenerating the stale prompt', async () => {
       mockGetCachedResponse.mockResolvedValue({ content: 'stale cached answer' });
       mockProvenancePagesStillAdmitted.mockResolvedValue(false);
       mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
@@ -3628,14 +3660,11 @@ describe('POST /api/llm/ask', () => {
 
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
 
-      expect(response.statusCode).toBe(200);
-      expect(mockProvenancePagesStillAdmitted).toHaveBeenCalledWith(
-        [{ pageId: 42, policy: 'all', policyRevision: 7, contentRevision: 5 }], 'external',
-      );
-      expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
-      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
-      expect(events.some((e) => e.content === 'stale cached answer')).toBe(false);
-      expect(events.some((e) => e.content === 'fresh answer')).toBe(true);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(response.body).not.toContain('stale cached answer');
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
 
     it('treats a cache hit over a page the caller can no longer read as a miss', async () => {
@@ -3647,15 +3676,15 @@ describe('POST /api/llm/ask', () => {
 
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
 
-      expect(response.statusCode).toBe(200);
-      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
-      expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
-      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
-      expect(events.some((e) => e.content === 'stale cached answer')).toBe(false);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42, undefined);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(response.body).not.toContain('stale cached answer');
     });
 
     it('serves a cache hit whose pages, policy and content revisions and ACL all still hold', async () => {
-      mockGetCachedResponse.mockResolvedValue({ content: 'still-good cached answer' });
+      mockGetCachedResponse.mockResolvedValue(cachedAnswer('still-good cached answer', 42, 7, 5));
       mockProvenancePagesStillAdmitted.mockResolvedValue(true);
       mockUserCanAccessPage.mockResolvedValue(true);
       mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);

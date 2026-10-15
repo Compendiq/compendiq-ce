@@ -277,9 +277,13 @@ describe.skipIf(!dbAvailable)('eval runner (#1102)', () => {
     const client = await import('../services/openai-compatible-client.js');
     vi.mocked(client.generateEmbedding).mockImplementation(async () => [topicVec(5)]);
 
+    // The stage proves authority against PostgreSQL before reaching the HTTP mock.
+    const rerankProvider = 'aaaaaaaa-1102-4000-8000-000000000002';
+    await query(`INSERT INTO llm_providers (id, name, base_url, auth_type, verify_ssl)
+      VALUES ($1::uuid, 'eval-rerank', 'http://localhost:1', 'none', TRUE)`, [rerankProvider]);
     const resolver = await import('../services/llm-provider-resolver.js');
     vi.mocked(resolver.resolveRerankUsecase).mockResolvedValue({ config: {
-      providerId: 'stub', id: 'stub', name: 'stub', baseUrl: '', apiKey: null,
+      providerId: rerankProvider, id: rerankProvider, name: 'stub', baseUrl: 'http://localhost:1', apiKey: null,
       authType: 'none', verifySsl: true, defaultModel: 'rr',
     }, model: 'rr' } as never);
     const rerankClient = await import('../services/rerank-client.js');

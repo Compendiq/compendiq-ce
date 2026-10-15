@@ -21,6 +21,8 @@ export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
 
 export interface ProviderConfig {
+  /** Revision read in the same SQL row as the resolved transport. */
+  configRevision?: number;
   providerId: string;
   baseUrl: string;           // OpenAI-compatible root (typically …/v1)
   apiKey: string | null;
@@ -264,6 +266,8 @@ export const __test_only__ = {
 };
 
 export interface StreamChatOptions {
+  /** Article authority recheck at the receiving stage, after queue waits. */
+  beforeDispatch?: () => Promise<void>;
   thinking?: boolean;
   /**
    * Caps the reply length, mapped straight to the standard `max_tokens`
@@ -501,6 +505,7 @@ export async function chatCompletion(
     'llm.chat',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
+        await opts?.beforeDispatch?.();
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
@@ -559,6 +564,7 @@ export async function* streamChat(
   const res = await withSpan(
     'llm.stream_chat.dispatch',
     () => getProviderBreaker(cfg.providerId).execute(async () => {
+      await opts?.beforeDispatch?.();
       const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),

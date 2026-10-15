@@ -142,7 +142,8 @@ async function expectDenied(user: User, payload: Record<string, unknown>): Promi
   const calls = stub.streamCalls;
   const response = await app.inject({ method: 'POST', url: '/api/llm/ask', headers: { authorization: `Bearer ${user.token}` }, payload });
   expect(response.statusCode, response.body).toBe(409);
-  expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+  expect(response.json()).toEqual({ error: payload.conversationId
+    ? 'ai_history_not_replayable' : 'ai_grounding_not_admissible', stage: 'chat' });
   expect(response.headers['content-type']).toContain('application/json');
   expect(stub.streamCalls).toBe(calls);
   expect(await persistedMessages(user.id)).toBe(before);

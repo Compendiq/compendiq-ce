@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 import type { RedisClientType } from 'redis';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -13,6 +14,7 @@ const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then retur
 export interface CachedLlmResponse {
   content: string;
   cachedAt: number;
+  aiProvenance?: ConversationTurnAiProvenance;
 }
 
 /**
@@ -225,11 +227,13 @@ export class LlmCache {
     cacheKey: string,
     content: string,
     ttl: number = LLM_CACHE_TTL,
+    aiProvenance?: ConversationTurnAiProvenance,
   ): Promise<void> {
     try {
       const cached: CachedLlmResponse = {
         content,
         cachedAt: Date.now(),
+        ...(aiProvenance ? { aiProvenance } : {}),
       };
       await this.redis.setEx(cacheKey, ttl, JSON.stringify(cached));
     } catch (err) {

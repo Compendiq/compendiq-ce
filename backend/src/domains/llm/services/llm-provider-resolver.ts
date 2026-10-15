@@ -21,6 +21,7 @@ interface ResolveRow {
   provider_verify_ssl: boolean;
   provider_default_model: string | null;
   provider_is_default: boolean;
+  provider_config_revision: number | string;
 }
 
 interface Resolved {
@@ -67,10 +68,13 @@ function loadProviderFromRow(
 ): ProviderConfig & { id: string; name: string; defaultModel: string | null } {
   const cacheKey = row.provider_id;
   let cached = configCache.get(cacheKey);
-  if (!cached || cached.version !== getProviderCacheVersion()) {
+  const revision = Number(row.provider_config_revision);
+  if (!cached || cached.version !== getProviderCacheVersion()
+    || cached.cfg.configRevision !== revision) {
     cached = {
       version: getProviderCacheVersion(),
       cfg: {
+        configRevision: revision,
         providerId: row.provider_id,
         id: row.provider_id,
         name: row.provider_name,
@@ -118,6 +122,7 @@ export async function loadProviderConfig(
        auth_type     AS provider_auth_type,
        verify_ssl    AS provider_verify_ssl,
        default_model AS provider_default_model,
+       config_revision AS provider_config_revision,
        is_default    AS provider_is_default
      FROM llm_providers WHERE id = $1`,
     [providerId],
@@ -194,6 +199,7 @@ async function resolveExplicitOnlyUsecase(
        p.auth_type    AS provider_auth_type,
        p.verify_ssl   AS provider_verify_ssl,
        p.default_model AS provider_default_model,
+       p.config_revision AS provider_config_revision,
        p.is_default   AS provider_is_default
      FROM llm_usecase_assignments a
      JOIN llm_providers p ON p.id = a.provider_id
@@ -246,7 +252,8 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
          auth_type     AS provider_auth_type,
          verify_ssl    AS provider_verify_ssl,
          default_model AS provider_default_model,
-         is_default    AS provider_is_default
+         config_revision AS provider_config_revision,
+       is_default    AS provider_is_default
        FROM llm_providers WHERE id = $1`,
       [override.providerId],
     );
@@ -291,6 +298,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
       t.auth_type   AS provider_auth_type,
       t.verify_ssl  AS provider_verify_ssl,
       t.default_model AS provider_default_model,
+      t.config_revision AS provider_config_revision,
       t.is_default  AS provider_is_default
     FROM target t
     LEFT JOIN assignment a ON TRUE

@@ -60,7 +60,6 @@ vi.mock('./llm-provider-resolver.js', async (importOriginal) => ({
 
 const { hybridSearch, keywordSearch, vectorSearch, flushSearchAnalytics } = await import('./rag-service.js');
 const {
-  aiPolicyPredicate, derivedArmPredicate, pageAdmittedFor, rowAdmittedFor,
   readPagePolicies, provenancePagesStillAdmitted,
 } = await import('./ai-policy-retrieval.js');
 const { loadProviderMetadata } = await import('./ai-policy-admission.js');
@@ -169,22 +168,6 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
 
   const ids = (rows: ReadonlyArray<{ pageId: number }>) => [...new Set(rows.map((r) => r.pageId))].sort((a, b) => a - b);
 
-  // ── Predicate fragments: a closed set, no parameters, positive membership ─
-
-  it('renders the purposes as parameter-free POSITIVE membership tests, failing closed by default', () => {
-    expect(aiPolicyPredicate(HUMAN)).toBe('');
-    expect(aiPolicyPredicate(LOCAL)).toBe(" AND cp.ai_policy IN ('all', 'local_only')");
-    expect(aiPolicyPredicate(EXTERNAL)).toBe(" AND cp.ai_policy IN ('all')");
-    expect(aiPolicyPredicate()).toBe(aiPolicyPredicate(EXTERNAL));
-    // Never `<> 'none'`: an unknown value is not admitted by accident.
-    expect(aiPolicyPredicate(LOCAL)).not.toContain('<>');
-    expect(derivedArmPredicate(HUMAN, 'x')).toBe(" AND x.ai_policy IN ('all', 'local_only')");
-    expect(pageAdmittedFor('local_only', 'external')).toBe(false);
-    expect(pageAdmittedFor('local_only', 'local')).toBe(true);
-    expect(pageAdmittedFor('none', 'local')).toBe(false);
-    expect(rowAdmittedFor({}, 'local')).toBe(false);
-  });
-
   // ── Keyword leg ───────────────────────────────────────────────────────────
 
   it('keyword leg: external sees `all`; local sees `all`+`local_only`; a human sees everything; omitted = external', async () => {
@@ -239,10 +222,10 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
     expect(ids(await vectorSearch(USER, fakeVec(7), 10, { aiPolicy: LOCAL })))
       .toEqual([pages.all, pages.local_only].sort((a, b) => a - b));
     expect(ids(await vectorSearch(USER, fakeVec(7), 10, { aiPolicy: HUMAN })))
-      .toEqual([pages.all, pages.local_only, pages.none].sort((a, b) => a - b));
+      .toEqual([pages.all, pages.local_only].sort((a, b) => a - b));
     expect(ids(await vectorSearch(USER, fakeVec(7), 10))).toEqual([pages.all]);
     const rows = await vectorSearch(USER, fakeVec(7), 10, { aiPolicy: HUMAN });
-    expect(rows.find((r) => r.pageId === pages.none)!.aiPolicy).toBe('none');
+    expect(rows.find((r) => r.pageId === pages.none)).toBeUndefined();
   });
 
   it('vector leg: a `none` page\'s derived chunk is excluded even for a human', async () => {
@@ -337,6 +320,70 @@ describe.skipIf(!dbAvailable)('#282 — article AI policy in retrieval (real Pos
     expect(after).toEqual(expect.objectContaining({ effectiveLocality: 'external', configRevision: 2 }));
     // Unknown provider: unprovable, never local.
     expect(await loadProviderMetadata({ query }, '44444444-4444-4444-4444-444444444444')).toBeNull();
+  });
+
+  it('rejects conflicting duplicate readings instead of merging their revisions', async () => {
+    const pageId = await seedPage('Conflict', 'body', 'all');
+    const current = (await readPagePolicies([pageId])).get(pageId)!;
+    const conflicting = { ...current, contentRevision: current.contentRevision + 1 };
+    expect(await provenancePagesStillAdmitted([current, current], 'external')).toBe(true);
+    expect(await provenancePagesStillAdmitted([current, conflicting], 'external')).toBe(false);
+    expect(await provenancePagesStillAdmitted([conflicting, current], 'external')).toBe(false);
+    expect(await provenancePagesStillAdmitted([{ ...current, policyRevision: Number.MAX_SAFE_INTEGER + 1 }], 'external')).toBe(false);
+  });
+
+  it('independently admits stage tuples and rejects a later restriction', async () => {
+    const { admitArticleStage } = await import('./article-stage-admission.js');
+    await seedProvider(RERANK_PROVIDER, 'external');
+    const pageId = await seedPage('Stage', 'stage text', 'all');
+    const page = (await readPagePolicies([pageId])).get(pageId)!;
+    const provider = (await loadProviderMetadata({ query }, RERANK_PROVIDER))!;
+    const provenance = { version: 1 as const, providerId: RERANK_PROVIDER,
+      configRevision: provider.configRevision, locality: provider.effectiveLocality, pages: [page] };
+    await expect(admitArticleStage(provenance, USER, 'rerank')).resolves.toBeUndefined();
+    await query(`UPDATE pages SET ai_policy = 'none' WHERE id = $1`, [pageId]);
+    await expect(admitArticleStage(provenance, USER, 'rerank')).rejects.toThrow();
+  });
+
+  it('rejects a different recorded policy value even when both policies admit the destination', async () => {
+    const pageId = await seedPage('Exact policy', 'body', 'all');
+    const page = (await readPagePolicies([pageId])).get(pageId)!;
+    expect(await provenancePagesStillAdmitted([page], 'local')).toBe(true);
+    expect(await provenancePagesStillAdmitted([{ ...page, policy: 'local_only' }], 'local')).toBe(false);
+  });
+
+  it('publishes titles on the admission transaction and rolls back failed publication', async () => {
+    const { admitArticleStage } = await import('./article-stage-admission.js');
+    const { persistGeneratedConversationTitle } = await import('./conversation-title.js');
+    await seedProvider(RERANK_PROVIDER, 'external');
+    const pageId = await seedPage('Publication', 'body', 'all');
+    const page = (await readPagePolicies([pageId])).get(pageId)!;
+    const provider = (await loadProviderMetadata({ query }, RERANK_PROVIDER))!;
+    const provenance = { version: 1 as const, providerId: RERANK_PROVIDER,
+      configRevision: provider.configRevision, locality: provider.effectiveLocality, pages: [page] };
+    const inserted = await query<{ id: string }>(
+      `INSERT INTO llm_conversations (user_id, model, title, title_source, messages)
+       VALUES ($1, 'model', 'Fallback', 'question', '[]') RETURNING id`, [USER],
+    );
+    const id = inserted.rows[0]!.id;
+    const title = async () => (await query<{ title: string }>(
+      'SELECT title FROM llm_conversations WHERE id = $1', [id],
+    )).rows[0]!.title;
+    await expect(admitArticleStage(provenance, USER, 'chat', async (client) => {
+      expect(await persistGeneratedConversationTitle(id, USER, 'Uncommitted', client.query.bind(client) as typeof query)).toBe(true);
+      // A different connection must still see the fallback until COMMIT.
+      expect(await title()).toBe('Fallback');
+      throw new Error('publication aborted');
+    })).rejects.toThrow('publication aborted');
+    expect(await title()).toBe('Fallback');
+    await admitArticleStage(provenance, USER, 'chat', async (client) => {
+      expect(await persistGeneratedConversationTitle(id, USER, 'Committed', client.query.bind(client) as typeof query)).toBe(true);
+    });
+    expect(await title()).toBe('Committed');
+    await query(`UPDATE pages SET ai_policy = 'none' WHERE id = $1`, [pageId]);
+    const publish = vi.fn();
+    await expect(admitArticleStage(provenance, USER, 'chat', publish)).rejects.toThrow();
+    expect(publish).not.toHaveBeenCalled();
   });
 
   // ── Revision, re-admission and the cache key ──────────────────────────────

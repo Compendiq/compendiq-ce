@@ -64,6 +64,8 @@ export function normalizeRerankScores(results: RerankResult[]): RerankResult[] {
 }
 
 export interface RerankOptions {
+  /** Re-prove article authority after the queue wait, before sending bytes. */
+  beforeDispatch?: () => Promise<void>;
   /** Defaults to all documents — rag-service wants every candidate scored. */
   topN?: number;
   /**
@@ -100,6 +102,7 @@ export async function rerank(
     () =>
       enqueue((signal) =>
         getProviderBreaker(cfg.providerId).execute(async () => {
+          await opts?.beforeDispatch?.();
           const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'rerank'), {
             method: 'POST',
             headers: providerRequestInfra.headers(cfg),

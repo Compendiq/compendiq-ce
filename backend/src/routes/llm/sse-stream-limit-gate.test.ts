@@ -77,6 +77,7 @@ vi.mock('../../domains/llm/services/rag-service.js', () => ({
       pageId: 1, confluenceId: 'p1', chunkText: 'grounded text',
       pageTitle: 'Doc', sectionTitle: 'Sec', spaceKey: 'DEV',
       score: 0.032, vectorScore: 0.9, keywordRank: null,
+      aiPolicy: 'all', aiPolicyRevision: 0, contentRevision: 1,
     },
   ]),
   buildRagContext: vi.fn().mockReturnValue('ctx'),
@@ -100,7 +101,15 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagAnswerMaxImages: vi.fn(async () => 0),
 }));
 
+vi.mock('../../core/services/rbac-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/services/rbac-service.js')>()),
+  userCanAccessPage: vi.fn(async () => true),
+}));
+
 vi.mock('../../core/db/postgres.js', () => ({
+  getPool: () => ({ connect: async () => ({
+    query: vi.fn(async () => ({ rows: [{ id: 'conversation' }] })), release: vi.fn(),
+  }) }),
   query: vi.fn().mockResolvedValue({ rows: [] }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
@@ -142,7 +151,8 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
 // #282: the ask route resolves the chat provider's locality BEFORE retrieval
 // and refuses (503) when it cannot; this suite is about the stream limiter,
 // so the provider is provably external and every grounding page admitted.
-vi.mock('../../domains/llm/services/ai-policy-admission.js', () => ({
+vi.mock('../../domains/llm/services/ai-policy-admission.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../domains/llm/services/ai-policy-admission.js')>()),
   loadProviderMetadata: vi.fn(async () => ({
     configRevision: 1, effectiveLocality: 'external', declaredBy: null, declaredAt: null,
   })),

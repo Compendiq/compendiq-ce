@@ -95,8 +95,11 @@ describe('ai-policy contracts', () => {
     expect(aiPolicyLabelConflict(['no-ai', 'ai:local', 'x']).sort()).toEqual(['local_only', 'none']);
   });
 
-  it('refusal codes are the closed four — the obsolete generic provider mismatch is gone', () => {
+  it('refusal codes distinguish fresh grounding from history and provider failures', () => {
+    expect(AiPolicyRefusalSchema.parse({ error: 'ai_grounding_not_admissible', stage: 'chat' }))
+      .toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
     expect([...AI_POLICY_REFUSAL_CODES].sort()).toEqual([
+      'ai_grounding_not_admissible',
       'ai_history_not_replayable',
       'ai_policy_provider_locality_mismatch',
       'ai_policy_provider_revision_mismatch',

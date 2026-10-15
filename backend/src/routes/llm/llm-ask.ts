@@ -1,5 +1,7 @@
 import { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
+import { query, getPool } from '../../core/db/postgres.js';
+import type { PoolClient } from 'pg';
+import { AI_POLICY_LOCK_NAMESPACE } from '../../core/services/ai-policy-service.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat, type ChatMessage, type ChatContentPart } from '../../domains/llm/services/openai-compatible-client.js';
 import type { PersistedSource } from '@compendiq/contracts';
@@ -90,11 +92,8 @@ type StoredChatMessage = ChatMessage & {
 
 /**
  * #282 — the grounding pages of one turn, as the retrieval rows reported
- * them. A row whose policy did not decode is pinned at the STRICTEST
- * reading (`local_only`, revision 0): the continuation guard then has to
- * re-prove it against the current row, and a revision mismatch refuses.
- * Never `all`, never omitted — an omitted page is a page the guard cannot
- * see.
+ * them. Missing or conflicting tuples refuse fresh grounding; no policy or
+ * revision is invented. Consistent duplicate contributions deduplicate.
  */
 function provenancePagesFrom(
   rows: ReadonlyArray<{
@@ -106,10 +105,16 @@ function provenancePagesFrom(
 ): ConversationTurnAiProvenancePage[] {
   const byPage = new Map<number, ConversationTurnAiProvenancePage>();
   for (const r of rows) {
-    if (byPage.has(r.pageId)) continue;
-    byPage.set(r.pageId, r.aiPolicy !== undefined && r.aiPolicyRevision !== undefined && r.contentRevision !== undefined
-      ? { pageId: r.pageId, policy: r.aiPolicy, policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision }
-      : { pageId: r.pageId, policy: 'local_only', policyRevision: 0, contentRevision: 0 });
+    if (!Number.isSafeInteger(r.pageId) || r.pageId <= 0
+      || (r.aiPolicy !== 'all' && r.aiPolicy !== 'local_only' && r.aiPolicy !== 'none')
+      || asRevision(r.aiPolicyRevision) === null || asRevision(r.contentRevision) === null) {
+      throw new Error('Unprovable grounding');
+    }
+    const reading = { pageId: r.pageId, policy: r.aiPolicy, policyRevision: r.aiPolicyRevision!, contentRevision: r.contentRevision! };
+    const prior = byPage.get(r.pageId);
+    if (prior && (prior.policy !== reading.policy || prior.policyRevision !== reading.policyRevision
+      || prior.contentRevision !== reading.contentRevision)) throw new Error('Conflicting grounding');
+    byPage.set(r.pageId, reading);
   }
   return [...byPage.values()];
 }
@@ -140,10 +145,10 @@ type BindingVerdict =
  * request) is the locality mismatch. Precedence: unavailable → revision →
  * locality, so a client is told the most specific thing that is provable.
  */
-async function reproveBinding(bound: BoundDestination, context: string): Promise<BindingVerdict> {
+async function reproveBinding(bound: BoundDestination, context: string, client?: PoolClient): Promise<BindingVerdict> {
   let current: ProviderMetadata | null;
   try {
-    current = await loadProviderMetadata({ query }, bound.providerId);
+    current = await loadProviderMetadata(client ?? { query }, bound.providerId);
   } catch (err) {
     logger.warn({ err, providerId: bound.providerId, context }, 'Bound chat provider unreadable; refusing');
     current = null;
@@ -164,6 +169,26 @@ async function reproveBinding(bound: BoundDestination, context: string): Promise
     return { ok: false, status: 409, code: 'ai_policy_provider_locality_mismatch' };
   }
   return { ok: true };
+}
+
+async function reproveGrounding(
+  pages: ConversationTurnAiProvenancePage[], bound: BoundDestination, userId: string, client?: PoolClient,
+): Promise<BindingVerdict> {
+  const binding = await reproveBinding(bound, 'grounding', client);
+  if (!binding.ok) return binding;
+  try {
+    if (!(await provenancePagesStillAdmitted(pages, bound.locality, client ? client.query.bind(client) as typeof query : query))) {
+      return { ok: false, status: 409, code: 'ai_grounding_not_admissible' };
+    }
+    for (const page of pages) {
+      if (!(await userCanAccessPage(userId, page.pageId, client))) {
+        return { ok: false, status: 409, code: 'ai_grounding_not_admissible' };
+      }
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, status: 503, code: 'ai_policy_unavailable' };
+  }
 }
 
 /** Why a continuation cannot be replayed; `unavailable` is the retryable 503, `not_replayable` the 409. */
@@ -193,33 +218,42 @@ async function historyReplayable(
   userId: string,
 ): Promise<ReplayVerdict> {
   if (!row.complete || row.version !== AI_POLICY_PROVENANCE_VERSION) return 'not_replayable';
-  // The row-level columns summarise the LATEST turn; a row whose summary
-  // does not match the destination answering now was written under a
-  // different provider state and is not replayed on trust.
   const rowRevision = asRevision(row.providerConfigRevision);
-  if (rowRevision === null || rowRevision !== bound.configRevision) return 'not_replayable';
-  if (row.providerLocality !== bound.locality) return 'not_replayable';
-
-  const pages = new Map<number, { policyRevision: number; contentRevision: number }>();
-  let recordedTurns = 0;
-  for (const turn of history) {
-    if (turn.role !== 'assistant' || turn.refused) continue;
+  if (rowRevision === null || (row.providerLocality !== 'local' && row.providerLocality !== 'external')) return 'not_replayable';
+  if (!Array.isArray(history) || history.length % 2 !== 0) return 'not_replayable';
+  const turns: ConversationTurnAiProvenance[] = [];
+  for (const [index, turn] of history.entries()) {
+    if (!turn || typeof turn !== 'object'
+      || turn.role !== (index % 2 === 0 ? 'user' : 'assistant')
+      || typeof turn.content !== 'string'
+      || (turn.refused !== undefined && typeof turn.refused !== 'boolean')) return 'not_replayable';
+    if (turn.role !== 'assistant' || turn.refused === true) continue;
     const parsed = ConversationTurnAiProvenanceSchema.safeParse(turn.aiProvenance);
     if (!parsed.success) return 'not_replayable';
-    const p = parsed.data;
-    recordedTurns++;
-    if (p.providerId !== bound.providerId) return 'not_replayable';
-    if (p.configRevision !== bound.configRevision) return 'not_replayable';
-    if (p.locality !== bound.locality) return 'not_replayable';
-    for (const page of p.pages) {
-      const prior = pages.get(page.pageId);
-      pages.set(page.pageId, {
-        policyRevision: prior === undefined ? page.policyRevision : Math.max(prior.policyRevision, page.policyRevision),
-        contentRevision: prior === undefined ? page.contentRevision : Math.max(prior.contentRevision, page.contentRevision),
-      });
+    turns.push(parsed.data);
+  }
+  // Establish all recorded authority before comparing with today's assignment.
+  for (const providerId of new Set(turns.map((turn) => turn.providerId))) {
+    try {
+      if (!(await loadProviderMetadata({ query }, providerId))) return 'unavailable';
+    } catch {
+      return 'unavailable';
     }
   }
-  if (recordedTurns > 0) {
+  const newest = turns.at(-1);
+  if (newest && (rowRevision !== newest.configRevision || row.providerLocality !== newest.locality)) return 'not_replayable';
+  const pages = new Map<number, ConversationTurnAiProvenancePage>();
+  for (const p of turns) {
+    if (p.providerId !== bound.providerId || p.configRevision !== bound.configRevision
+      || p.locality !== bound.locality) return 'not_replayable';
+    for (const page of p.pages) {
+      const prior = pages.get(page.pageId);
+      if (prior && (prior.policy !== page.policy || prior.policyRevision !== page.policyRevision
+        || prior.contentRevision !== page.contentRevision)) return 'not_replayable';
+      pages.set(page.pageId, page);
+    }
+  }
+  if (turns.length > 0) {
     // The provider each turn named must still exist at exactly the state
     // it was bound to. A missing or undecodable row is unavailable (503);
     // a moved revision or locality is a history that cannot be replayed.
@@ -230,7 +264,7 @@ async function historyReplayable(
   const current = await readPagePolicies([...pages.keys()]);
   for (const [pageId, recorded] of pages) {
     const row = current.get(pageId);
-    if (!row || row.policyRevision !== recorded.policyRevision) return 'not_replayable';
+    if (!row || row.policy !== recorded.policy || row.policyRevision !== recorded.policyRevision) return 'not_replayable';
     if (row.contentRevision !== recorded.contentRevision) return 'not_replayable';
     if (!pageAdmittedFor(row.policy, bound.locality)) return 'not_replayable';
     if (!(await userCanAccessPage(userId, pageId))) return 'not_replayable';
@@ -461,6 +495,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     if (!chatProvider) {
       return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
     }
+    if (chatConfig.configRevision !== undefined && chatConfig.configRevision !== chatProvider.configRevision) {
+      return refuse(409, { error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+    }
     const destinationLocality = chatProvider.effectiveLocality;
     // The ONE binding this request runs under. The sub-page walk, the
     // cache lookup and the dispatch all re-prove it; none resolves its own.
@@ -650,7 +687,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         }
       }
       if (!resolved || !rootAdmission?.admitted) {
-        return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+        return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
       }
       if (resolved && rootAdmission.admitted) {
         let root;
@@ -666,7 +703,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         } catch {
           return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
         }
-        if (!root) return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+        if (!root) return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
         const policyRevision = asRevision(root.ai_policy_revision);
         const contentRevision = asRevision(root.content_revision);
         if ((root.ai_policy !== 'all' && root.ai_policy !== 'local_only' && root.ai_policy !== 'none')
@@ -674,7 +711,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
         }
         if (!pageAdmittedFor(root.ai_policy, bound.locality)) {
-          return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+          return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
         }
         const rootRef: ConversationTurnAiProvenancePage = {
           pageId: resolved.id, policy: root.ai_policy, policyRevision, contentRevision,
@@ -730,12 +767,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             if (!row || row.policy !== p.policy || row.policyRevision !== p.policyRevision
               || row.contentRevision !== p.contentRevision || !pageAdmittedFor(row.policy, bound.locality)
               || !(await userCanAccessPage(userId, p.pageId))) {
-              return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+              return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
             }
             for (const retrieved of searchResults.filter((r) => r.pageId === p.pageId)) {
               if (retrieved.aiPolicy !== p.policy || retrieved.aiPolicyRevision !== p.policyRevision
                 || retrieved.contentRevision !== p.contentRevision) {
-                return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+                return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
               }
             }
           }
@@ -985,17 +1022,27 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const persistedSources = toPersistedSources(sources);
     // #282: what this turn was grounded in, for the provider that answered
     // it. Retrieval rows and the included sub-pages, deduplicated per page.
+    const historySelection = selectReplayableHistory(conversationHistory);
+    const historicalPages = (historySelection.selected as StoredChatMessage[])
+      .filter((turn) => turn.role === 'assistant')
+      .flatMap((turn) => ConversationTurnAiProvenanceSchema.parse(turn.aiProvenance).pages);
+    let provenancePages: ConversationTurnAiProvenancePage[];
+    try {
+      provenancePages = provenancePagesFrom([
+        ...searchResults,
+        ...[...includedSubPages, ...historicalPages].map((p) => ({
+          pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision, contentRevision: p.contentRevision,
+        })),
+      ]);
+    } catch {
+      return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
+    }
     const turnProvenance: ConversationTurnAiProvenance = {
       version: AI_POLICY_PROVENANCE_VERSION,
       providerId: chatConfig.providerId,
       configRevision: chatProvider.configRevision,
       locality: destinationLocality,
-      pages: provenancePagesFrom([
-        ...searchResults,
-        ...includedSubPages.map((p) => ({
-          pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision, contentRevision: p.contentRevision,
-        })),
-      ]),
+      pages: provenancePages,
     };
     const pageRefForInsert = async (): Promise<number | null> => {
       if (!body.pageId) return null;
@@ -1003,10 +1050,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       if (!resolved) return null;
       return (await userCanAccessPage(userId, resolved.id)) ? resolved.id : null;
     };
+    const insertPageRef = convId ? null : await pageRefForInsert();
     const saveConversation = async (
       answer: string,
       opts?: { refused?: boolean },
+      client?: PoolClient,
     ): Promise<{ id: string | null; inserted: boolean }> => {
+      const runQuery: typeof query = client ? client.query.bind(client) : query;
       const assistantTurn: StoredChatMessage = {
         role: 'assistant',
         content: answer,
@@ -1027,7 +1077,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // #282: the row-level provenance columns describe the LATEST turn;
         // `ai_provenance_complete` stays true only because the guard above
         // already proved every earlier turn replayable under this provider.
-        const updated = await query<{ id: string }>(
+        const updated = await runQuery<{ id: string }>(
           `UPDATE llm_conversations
               SET messages = messages || $3::jsonb, updated_at = NOW(),
                   ai_provenance_complete = TRUE, ai_provenance_version = $4,
@@ -1044,8 +1094,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         return { id: convId, inserted: false };
       }
 
-      const pageRef = await pageRefForInsert();
-      const insertResult = await query<{ id: string }>(
+      const pageRef = insertPageRef !== null && await userCanAccessPage(userId, insertPageRef, client) ? insertPageRef : null;
+      const insertResult = await runQuery<{ id: string }>(
         `INSERT INTO llm_conversations
            (user_id, model, title, messages, page_ref,
             ai_provenance_complete, ai_provenance_version, provider_config_revision, provider_locality)
@@ -1432,6 +1482,32 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const preCache = await reproveBinding(bound, 'cache');
     if (!preCache.ok) return refuse(preCache.status, { error: preCache.code, stage: 'chat' });
 
+    const publish = async (answer: string, cache: boolean) => {
+      const publication = await getPool().connect();
+      try {
+        await publication.query('BEGIN');
+        for (const page of [...turnProvenance.pages].sort((a, b) => a.pageId - b.pageId)) {
+          await publication.query('SELECT pg_advisory_xact_lock_shared($1, $2)', [AI_POLICY_LOCK_NAMESPACE, page.pageId]);
+        }
+        await publication.query('SELECT id FROM pages WHERE id = ANY($1::int[]) ORDER BY id FOR SHARE', [turnProvenance.pages.map((p) => p.pageId)]);
+        await publication.query('SELECT id FROM llm_providers WHERE id::text = $1 FOR SHARE', [bound.providerId]);
+        const proof = await reproveGrounding(turnProvenance.pages, bound, userId, publication);
+        const saved = proof.ok
+          ? await saveConversation(answer, undefined, publication)
+          : { id: null, inserted: false };
+        if (proof.ok && cache && answer && conversationHistory.length === 0) {
+          await llmCache.setCachedResponse(ragCacheKey, answer, undefined, turnProvenance);
+        }
+        await publication.query('COMMIT');
+        return { proof, saved };
+      } catch (err) {
+        await publication.query('ROLLBACK');
+        throw err;
+      } finally {
+        publication.release();
+      }
+    };
+
     let ragLockToken: string | null = null;
     if (conversationHistory.length === 0) {
       const { cached, lockToken } = await checkCacheWithLock(llmCache, ragCacheKey);
@@ -1442,27 +1518,26 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // revisions, but a page whose policy tightened or whose body changed
       // a moment ago must not be replayed from an entry written under the
       // old one, and neither may a page the caller can no longer read. A
-      // failed revalidation is a miss: the turn generates fresh (no lock is
-      // held on the hit path). An unreadable row is a miss too, not a 503 —
-      // the fresh path re-proves everything itself.
-      let hit = false;
+      // failed revalidation refuses; unreadable authority returns 503.
+      // Neither outcome regenerates from the already assembled prompt.
       if (cached) {
-        try {
-          hit = await provenancePagesStillAdmitted(turnProvenance.pages, destinationLocality);
-          for (const page of turnProvenance.pages) {
-            if (!hit) break;
-            if (!(await userCanAccessPage(userId, page.pageId))) hit = false;
-          }
-        } catch (err) {
-          logger.warn({ err, userId }, 'Cached answer could not be revalidated; regenerating');
-          hit = false;
+        const proof = await reproveGrounding(turnProvenance.pages, bound, userId);
+        if (!proof.ok) return refuse(proof.status, { error: proof.code, stage: 'chat' });
+        const recorded = ConversationTurnAiProvenanceSchema.safeParse(cached.aiProvenance);
+        if (!recorded.success || recorded.data.providerId !== bound.providerId
+          || recorded.data.configRevision !== bound.configRevision || recorded.data.locality !== bound.locality
+          || policyRevisionsCacheComponent(recorded.data.pages) !== policyRevisionsCacheComponent(turnProvenance.pages)) {
+          return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
         }
-      }
-      if (cached && !hit) {
-        logger.info({ userId }, 'Cached answer no longer admissible under article AI policy; regenerating');
-      }
-      if (cached && hit) {
-        const saved = await saveConversation(cached.content);
+        try {
+          if (!(await provenancePagesStillAdmitted(recorded.data.pages, bound.locality))) {
+            return refuse(409, { error: 'ai_history_not_replayable', stage: 'chat' });
+          }
+        } catch {
+          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        }
+        const { proof: publicationProof, saved } = await publish(cached.content, false);
+        if (!publicationProof.ok) return refuse(publicationProof.status, { error: publicationProof.code, stage: 'chat' });
 
         sendCachedSSE(reply, cached.content, {
           conversationId: convId ?? null,
@@ -1517,7 +1592,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // records), and neither do the `refused`/`sources` fields — the walk
       // strips both. `historyTruncated` rides the final frame so the client
       // can say older messages are no longer sent.
-      const { replay, truncated: historyTruncated } = selectReplayableHistory(conversationHistory);
+      const { replay, truncated: historyTruncated } = historySelection;
       const messages: ChatMessage[] = [
         { role: 'system', content: systemContent },
         ...replay,
@@ -1536,12 +1611,21 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // (The enclosing `finally` releases the cache lock on this return.)
       if (!preDispatch.ok) return refuse(preDispatch.status, { error: preDispatch.code, stage: 'chat' });
 
+      const grounding = await reproveGrounding(turnProvenance.pages, bound, userId);
+      if (!grounding.ok) return refuse(grounding.status, { error: grounding.code, stage: 'chat' });
+
       // Stream the response and collect full answer
       const controller = new AbortController();
       const onClose = () => controller.abort();
       request.raw.on('close', onClose);
 
-      const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal, { thinking: body.thinking });
+      const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal, {
+        thinking: body.thinking,
+        beforeDispatch: async () => {
+          const proof = await reproveGrounding(turnProvenance.pages, bound, userId);
+          if (!proof.ok) throw new Error(proof.code);
+        },
+      });
       let fullAnswer = '';
 
       reply.hijack();
@@ -1568,11 +1652,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           // caller's own earlier turns, which the key does not carry, so
           // writing it would serve that private thread to the next caller
           // who asks the same question fresh.
-          if (fullAnswer && conversationHistory.length === 0) {
-            await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
-          }
-
-          const saved = await saveConversation(fullAnswer);
+          const { proof, saved } = await publish(fullAnswer, true);
+          if (!proof.ok) throw new Error(proof.code);
 
           emitLlmAudit({
             userId,

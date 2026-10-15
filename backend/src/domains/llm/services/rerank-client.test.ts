@@ -57,6 +57,15 @@ function respondWith(results: Array<{ index: number; relevance_score: number }>)
 }
 
 describe('rerank-client (#1104)', () => {
+  it('does not send document bytes when post-queue admission refuses', async () => {
+    lastBody = {};
+    respondWith([{ index: 0, relevance_score: 0.9 }]);
+    await expect(rerank(cfg(), 'm', 'q', ['restricted bytes'], {
+      beforeDispatch: async () => { throw new Error('policy changed'); },
+    })).rejects.toThrow('policy changed');
+    expect(lastBody).toEqual({});
+  });
+
   it('POSTs the Cohere/Jina shape and maps results ordered by relevance', async () => {
     respondWith([
       { index: 0, relevance_score: 0.2 },

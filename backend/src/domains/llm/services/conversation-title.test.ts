@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockResolveUsecase = vi.fn();
 const mockChat = vi.fn();
+const mockAdmitStage = vi.fn();
+vi.mock('./article-stage-admission.js', () => ({
+  admitArticleStage: (...args: unknown[]) => mockAdmitStage(...args),
+}));
 const mockQuery = vi.fn();
 const mockSanitize = vi.fn((input: string) => ({ sanitized: input, wasModified: false, warnings: [] }));
 
@@ -37,6 +41,9 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAdmitStage.mockImplementation(async (_provenance, _userId, _usecase, publish) => {
+    if (publish) await publish({ query: mockQuery });
+  });
   mockResolveUsecase.mockResolvedValue({
     config: { providerId: 'p1', baseUrl: 'http://llm/v1', apiKey: null, authType: 'none', verifySsl: true },
     model: 'chat-model',
@@ -120,7 +127,7 @@ describe('generateConversationTitle', () => {
       providerId: 'p1',
       configRevision: 3,
       locality: 'external' as const,
-      pages: [{ pageId: 42, policy: 'all' as const, policyRevision: 0 }],
+      pages: [{ pageId: 42, policy: 'all' as const, policyRevision: 0, contentRevision: 1 }],
     },
   };
 
@@ -135,20 +142,17 @@ describe('generateConversationTitle', () => {
   it.each([
     ['a page is no longer admitted', () => mockProvenanceStillAdmitted.mockResolvedValue(false)],
     ['the provider metadata is unprovable', () => mockLoadProviderMetadata.mockResolvedValue(null)],
-  ])('titles from the question alone when %s (#282)', async (_name, arrange) => {
+  ])('keeps the question fallback without inference when %s (#282)', async (_name, arrange) => {
     arrange();
     await generateConversationTitle(base);
-    expect(mockSanitize).toHaveBeenCalledTimes(1);
-    const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
-    expect(messages[1]!.content).toBe(`Question:\n${base.question}`);
-    expect(messages[1]!.content).not.toContain(base.answer);
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('ships nothing page-derived when the caller recorded no provenance (#282)', async () => {
     await generateConversationTitle({ ...base, provenance: undefined });
     expect(mockProvenanceStillAdmitted).not.toHaveBeenCalled();
-    const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
-    expect(messages[1]!.content).not.toContain(base.answer);
+    expect(mockChat).not.toHaveBeenCalled();
   });
 
   it('uses the chat assignment, sanitizes bounded inputs, and compare-and-sets the generated title', async () => {
@@ -169,7 +173,7 @@ describe('generateConversationTitle', () => {
         expect.objectContaining({ role: 'system', content: expect.stringContaining('at most eight words') }),
         expect.objectContaining({ role: 'user', content: expect.stringContaining('Question:\n') }),
       ],
-      { maxTokens: 32, timeoutMs: 20_000 },
+      { maxTokens: 32, timeoutMs: 20_000, beforeDispatch: expect.any(Function) },
     );
     const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("title_source = 'generated'");
@@ -177,6 +181,16 @@ describe('generateConversationTitle', () => {
     expect(sql).toContain('RETURNING id');
     expect(sql).not.toContain('updated_at');
     expect(params).toEqual([base.conversationId, base.userId, 'Rotate Confluence Access Tokens']);
+  });
+
+  it('keeps the fallback when authority changes during title inference', async () => {
+    mockChat.mockImplementationOnce(async () => {
+      mockAdmitStage.mockRejectedValueOnce(new Error('policy changed'));
+      return 'Stale generated title';
+    });
+    await generateConversationTitle(base);
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('omits a refused answer from the model prompt and sanitizes only the question', async () => {
