@@ -168,7 +168,8 @@ That override is the only compose file that carries `build:` sections.
 
 
 Branch tags (`:dev`, `:latest`) are **linux/amd64 only** — the Docker
-workflow publishes `linux/arm64` solely for `v*` release tags. The four
+workflow publishes `linux/arm64` solely for `v*` release tags, built on
+native arm64 runners and merged with the amd64 build into one index. The four
 Compendiq services (`frontend`, `backend`, `mcp-docs`, `searxng`) therefore
 set `platform: linux/amd64` so `docker compose pull` on Apple Silicon
 requests the amd64 manifest and runs it under Rosetta, instead of 404ing

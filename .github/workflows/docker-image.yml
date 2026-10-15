@@ -1,0 +1,233 @@
+name: Docker Image (reusable)
+
+# Builds and pushes one ghcr.io/compendiq image. Called once per image by
+# docker-build.yml.
+#
+# Branch builds (release_tag == ''): one native linux/amd64 job pushes the
+# metadata tags directly — same single job as before.
+#
+# Release builds (release_tag set): each architecture builds NATIVELY on its
+# own runner (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm), pushes by
+# digest only, and the merge job assembles the multi-arch index and applies
+# the tags. This replaces QEMU emulation, under which arm64 `npm ci` hung or
+# crashed with `qemu: uncaught target signal 4 (Illegal instruction)`.
+# Pattern: https://docs.docker.com/build/ci/github-actions/multi-platform/
+# ("Distribute build across multiple runners").
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Package name under ghcr.io/compendiq (e.g. compendiq-ce-backend)
+        required: true
+        type: string
+      context:
+        required: true
+        type: string
+      file:
+        required: true
+        type: string
+      ref:
+        description: Git ref to check out ('' = the triggering commit)
+        type: string
+        default: ''
+      release_tag:
+        description: Release tag (vX.Y.Z) to build multi-arch and tag as; '' for branch builds
+        type: string
+        default: ''
+      latest:
+        description: metadata-action `flavor` latest value (auto/true/false)
+        type: string
+        default: auto
+      attest:
+        description: Attach SBOM + max provenance on release builds (false = buildx defaults)
+        type: boolean
+        default: false
+      stamp_build_info:
+        description: Stamp build-info.json with the checked-out commit before building
+        type: boolean
+        default: false
+      smoke_test:
+        description: Bash run against each pushed platform image (env IMAGE = image@digest)
+        type: string
+        default: ''
+
+env:
+  IMAGE: ghcr.io/compendiq/${{ inputs.image }}
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.release_tag != '' && '[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"arch":"amd64","runner":"ubuntu-latest"}]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Rebuilding a tag from another branch must label the image with the
+      # tag's commit, not the dispatching branch's github.sha.
+      - name: Resolve source revision
+        id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `value=` is empty on branch builds, so the semver tags are skipped
+      # there exactly as before; on release builds it pins them to the tag
+      # even when the run was dispatched from a branch.
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=${{ inputs.latest }}
+          labels: org.opencontainers.image.revision=${{ steps.src.outputs.sha }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.release_tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.release_tag }}
+            type=raw,value=latest,enable=${{ inputs.release_tag == '' && github.ref == 'refs/heads/main' }}
+            type=raw,value=dev,enable=${{ inputs.release_tag == '' && github.ref == 'refs/heads/dev' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Stamp the committed placeholder build-info.json (commit: "unknown")
+      # with the real CE commit. The frontend bundle bakes __APP_COMMIT__ at
+      # build time from this file (frontend/vite.config.ts), and the EE flow
+      # never rebuilds the frontend — both editions ship this same CE image —
+      # so "Frontend commit" in Settings → System can only be filled in here.
+      # Mirrors scripts/build-enterprise.sh (git rev-parse --short HEAD) and
+      # the placeholder's JSON shape so vite's `ceCommit ?? commit` resolves it.
+      - name: Stamp build-info.json with the CE commit
+        if: inputs.stamp_build_info
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          cat > build-info.json <<EOF
+          {
+            "edition": "community",
+            "commit": "${SHORT_SHA}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "Stamped build-info.json:"
+          cat build-info.json
+
+      # Release legs push untagged by digest (the merge job tags the index);
+      # branch builds push their tags directly. amd64 keeps the historical
+      # `buildcache` ref so branch builds stay warm; arm64 gets its own ref so
+      # the two native builders never overwrite each other's cache.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ inputs.release_tag != '' && env.IMAGE || steps.meta.outputs.tags }}
+          outputs: ${{ inputs.release_tag != '' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
+          push: ${{ inputs.release_tag == '' }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache${{ matrix.arch != 'amd64' && format('-{0}', matrix.arch) || '' }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache${{ matrix.arch != 'amd64' && format('-{0}', matrix.arch) || '' }},mode=max
+          sbom: ${{ inputs.attest && (inputs.release_tag != '' && 'true' || 'false') || '' }}
+          provenance: ${{ inputs.attest && (inputs.release_tag != '' && 'mode=max' || 'false') || '' }}
+
+      # Runs natively on every built architecture, against the exact digest
+      # that was pushed (and, on releases, that the merge job indexes).
+      - name: Smoke-test pushed image
+        if: inputs.smoke_test != ''
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SMOKE_TEST: ${{ inputs.smoke_test }}
+        run: |
+          docker pull "$IMAGE_REF"
+          IMAGE="$IMAGE_REF" bash -euo pipefail -c "$SMOKE_TEST"
+
+      - name: Export digest
+        if: inputs.release_tag != ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: inputs.release_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digests-${{ inputs.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge manifest
+    needs: build
+    if: inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ inputs.image }}-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=${{ inputs.latest }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.release_tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.release_tag }}
+
+      # The per-arch digests are indexes when attestations are on (image +
+      # attestation manifest); imagetools merges them, keeping the SBOM and
+      # provenance of each platform.
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          [ "${#tags[@]}" -gt 0 ] || { echo "::error::metadata produced no tags"; exit 1; }
+          args=()
+          for t in "${tags[@]}"; do args+=(-t "$t"); done
+          for d in *; do args+=("$IMAGE@sha256:$d"); done
+          docker buildx imagetools create "${args[@]}"
+
+      - name: Verify index platforms
+        env:
+          REF: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$REF"
+          platforms=$(docker buildx imagetools inspect --raw "$REF" | jq -c '[.manifests[]
+            | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")
+            | "\(.platform.os)/\(.platform.architecture)"] | sort')
+          echo "Index platforms: $platforms"
+          if [ "$platforms" != '["linux/amd64","linux/arm64"]' ]; then
+            echo "::error::$REF must contain exactly linux/amd64 and linux/arm64, got $platforms"
+            exit 1
+          fi
