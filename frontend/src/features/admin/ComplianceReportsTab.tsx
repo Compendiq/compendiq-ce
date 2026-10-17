@@ -113,7 +113,7 @@ const CATALOGUE: readonly CatalogueEntry[] = [
     id: 'model_governance',
     title: 'Model Governance Evidence',
     description:
-      'Recorded LLM audit entries and supplied artifact checksums compared with the current registry. Missing evidence stays unattested; browser execution and air-gap isolation are not certified. No plaintext prompts or responses.',
+      'Recorded policy decisions and changes, typed article associations, and separate LLM inference usage and artifact comparisons with the current registry. Current article policies are a snapshot. Missing evidence stays unknown; no execution or air-gap certification, prompts or responses.',
     controls: 'SOC 2 CC6.6 / CC6.7 · ISO 27001 A.8.15',
   },
   {
