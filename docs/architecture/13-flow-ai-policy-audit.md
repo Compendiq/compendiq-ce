@@ -3,45 +3,45 @@
 ```mermaid
 flowchart TD
     admission["CE authoritative article/provider admission"] --> decision{"admitted or blocked"}
-    decision --> hook["typed onAiPolicyEvent observer"]
+    decision --> typed["onAiDecision: one event per stage attempt"]
     decision --> dispatch["only admitted decisions may dispatch"]
-    cascade["EE exact owner-scoped cascade"] --> transaction["hierarchy/lifecycle/AIP transaction<br/>shared policy mutation + content revision"]
-    transaction --> evidence["cascade_committed from actual shared changes"]
-    evidence --> commit["COMMIT rows and evidence together"]
-    transaction -->|refusal| rollback["ROLLBACK all rows and evidence"]
-    commit --> changes["emitAiPolicyChanges after COMMIT"]
-    ordinary["ordinary committed CE policy changes"] --> changes
-    changes --> hook
-    hook --> writer["EE recordAiPolicyEvent"]
-    writer -->|success| events["ai_policy_enforcement_events"]
-    writer -->|failure| warning["warning; missing evidence<br/>never changes admission result"]
-    commit --> events
-    events --> report["Model Governance Evidence cover<br/>historical event-row counts"]
-    pages["current nondeleted pages"] --> snapshot["generation-time policy snapshot<br/>not historical reconstruction"]
+    typed --> writer["EE strict shared-schema writer"]
+    writer --> events["ai_governance_events v1<br/>complete JSON article associations"]
+    writer -->|failure| warning["CE observer warning; denial unchanged"]
+    cascade["EE owner-scoped cascade"] --> transaction["hierarchy/lifecycle/AIP transaction<br/>shared policy + labels + purge/requeue + revisions"]
+    transaction --> held["persistAiPolicyChange on held client<br/>old/new policies and revisions; operation/cascade ID"]
+    held --> events
+    held -->|failure| rollback["caller rolls back mutation and evidence"]
+    held --> commit["caller commits rows and evidence together"]
+    ordinary["CE producer follow-on: ordinary mutations"] -.-> held
+    legacy["Unmigrated onAiPolicyEvent producers"] --> old["ai_policy_enforcement_events<br/>legacy unknown operation/locality coverage"]
+    events --> report["historical operations and stage attempts<br/>full association JSON in CSV"]
+    old --> report
+    pages["current nondeleted pages"] --> snapshot["generation-time policy snapshot"]
     snapshot --> report
-    audit["retained llm_audit_log"] --> csv["existing escaped CSV<br/>single token/cost accounting"]
-    csv --> zip["ZIP: CSV + unsigned PDF cover<br/>CSV SHA-256 on cover"]
-    report --> zip
+    usage["llm_audit_log: usage counted once"] --> report
+    report --> zip["ZIP: escaped CSV + unsigned PDF cover<br/>CSV SHA-256 on cover"]
 ```
 
-The typed decision records store article/provider identifiers and available
-revisions, never titles, prompts, completions, attachment bytes, credentials
-or endpoint URLs. The policy observer does not create successful inference
-rows or charge usage. Provenance identifiers grant no page-read permission.
+Strict shared `AiDecisionEvent` and `AiPolicyChangeEvent` schemas contain no
+content, endpoint or usage fields. JSON arrays preserve every article association,
+including policy/content revisions. Captured locality is never reconstructed from
+current settings. Exact event replay is idempotent; reusing an ID for different
+evidence fails. The held-client sink never commits, opens another transaction,
+uses the pool or swallows failures. Cascade uses it now without duplicate legacy
+emission. Ordinary CE producer invocation is a separate #280 follow-on, not
+certified by the EE sink tests. Legacy producers remain explicitly legacy.
 
-Cascade records are transactional; normal policy/decision recording is a
-best-effort asynchronous observer, not a durable retry system. These are
-application records subject to database administration and retention, not
-immutable or cryptographically attested logs. Missing locality, blocked-event
-revisions, operation identities and complete mixed-article associations are
-unknown. Counts are event rows, not distinct requests. No browser execution
-observer exists. Retained gaps are not reconstructed from current settings.
-Unreadable event/page sections are explicitly unavailable, not zero.
-
-The report carries this exact limitation:
+Decision delivery is best effort with surfaced observer warnings; failed delivery
+never permits a denied dispatch. No automatic retention duration is configured
+for the new table. Database administration, manual deletion and restores can
+leave gaps. Schema installation and earliest retained rows are coverage bounds,
+not completeness proofs. There is no browser execution observer. Provenance IDs
+grant no page-read permission. Exported actor identifiers are pseudonymized.
 
 > This report summarizes recorded application policy decisions. Locality is administrator-declared. It does not attest model execution, upstream forwarding, or absence of unrecorded/external egress.
 
-See [enterprise hooks](./10-flow-enterprise-license.md) and
-[database schema](./06-data-model.md). CE hooks remain inert without EE; stored
-article restrictions remain enforced after license loss.
+See [enterprise hooks](./10-flow-enterprise-license.md),
+[database schema](./06-data-model.md), and
+[typed evidence schema](./14-ai-governance-evidence-schema.md).
+License loss disables EE management, not enforcement of stored restrictions.

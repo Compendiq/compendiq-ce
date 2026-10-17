@@ -24,6 +24,8 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 
 | 13 | Article AI Policy Audit | [`13-flow-ai-policy-audit.md`](./13-flow-ai-policy-audit.md) | Transactional cascade evidence, best-effort decision observers and report limitations |
 
+| 14 | Typed Governance Evidence Schema | [`14-ai-governance-evidence-schema.md`](./14-ai-governance-evidence-schema.md) | Canonical event envelopes, complete JSON article associations and legacy coverage |
+
 ## Runbooks
 
 Operational procedures live in [`../runbooks/`](../runbooks/) and are the place

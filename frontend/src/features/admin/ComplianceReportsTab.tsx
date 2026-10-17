@@ -42,6 +42,7 @@ import {
 import type { ReportId, ComplianceReportCatalogue } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
+import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
 import { ErrorState } from '../../shared/components/feedback/ErrorState';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
@@ -144,9 +145,10 @@ const CATALOGUE: readonly CatalogueEntry[] = [
 // (`ComplianceReportCatalogue`). The EE route's response is validated
 // against the same Zod schema, so wire drift surfaces at compile time.
 
-function useCatalogue() {
+function useCatalogue(enabled: boolean) {
   return useQuery<ComplianceReportCatalogue>({
-    queryKey: ['admin', 'compliance-reports', 'catalogue'],
+    enabled,
+    queryKey: ['admin', 'compliance-reports', 'catalogue', enabled],
     queryFn: () => apiFetch<ComplianceReportCatalogue>('/admin/compliance-reports'),
     staleTime: 60_000,
     retry: false,
@@ -345,6 +347,10 @@ function ReportCard({
       </div>
 
       <p className="text-xs leading-relaxed text-muted-foreground">{entry.description}</p>
+      {entry.id === 'model_governance' && <div className="text-xs space-y-2">
+        <p>This report summarizes recorded application policy decisions. Locality is administrator-declared. It does not attest model execution, upstream forwarding, or absence of unrecorded/external egress.</p>
+        <p>Current article counts are a generation-time snapshot, not historical policies. Recorded distinct operations and stage attempts are separate from inference usage. CSV includes all recorded article associations; legacy, missing, retained and truncated evidence is explicitly bounded. Empty records are not zero-egress evidence. Browser decisions do not prove execution. ZIP contains CSV and an unsigned PDF checksum cover.</p>
+      </div>}
 
       <div className="grid grid-cols-2 gap-3">
         <label className="flex flex-col gap-1 text-xs">
@@ -409,7 +415,10 @@ function ReportCard({
 // ── Tab root ───────────────────────────────────────────────────────────
 
 export function ComplianceReportsTab() {
-  const { data, isLoading, error, refetch } = useCatalogue();
+  const { hasFeature } = useEnterprise();
+  const entitled = hasFeature('compliance_reports');
+  const { data, isLoading, error, refetch } = useCatalogue(entitled);
+  if (!entitled) return <p role="status">Compliance reports require a live Enterprise compliance_reports entitlement.</p>;
 
   // The enterprise feature-gate is also enforced by the settings nav
   // (`requiresFeature: 'compliance_reports'`). Defence-in-depth:

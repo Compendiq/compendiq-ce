@@ -217,6 +217,9 @@ and ships CSV plus an unsigned checksum PDF cover in a ZIP.
 
 ```mermaid
 flowchart LR
+    settings["Shared local Space Settings"] --> readDefault["GET default-ai-policy<br/>visible space; saved/effective + capability + row revision"]
+    readDefault --> putDefault["PUT policy + expectedRevision<br/>live entitlement AND admin/scoped manage"]
+    putDefault --> cas["spaces xmin compare-and-swap<br/>stale 409; no article rewrite"]
     create["CE page creation"] --> hook["resolveAiPolicyCreationDefault"]
     hook -->|CE noop| all["all"]
     hook -->|EE, org_llm_policy entitled| spaceDefault["spaces.default_ai_policy<br/>NULL means all"]
@@ -227,9 +230,10 @@ flowchart LR
     commit -->|stale, ambiguous or foreign| conflict["409, no row changed"]
     commit --> fence["runtime epoch then exclusive hierarchy fence<br/>re-expand exact owned set"]
     fence --> locks["lifecycle locks then AIP then page rows<br/>pending writer 409 / frozen target 423"]
-    locks --> write["applyAiPolicyOnClient<br/>canonical labels + policy revisions + purge/requeue<br/>content revision + cascade_committed in one transaction"]
-    write --> committed["COMMIT then emitAiPolicyChanges<br/>best-effort policy_changed observer"]
-    observer["CE onAiPolicyEvent"] --> events["ai_policy_enforcement_events<br/>ids, policy, provider, no content"]
+    locks --> write["applyAiPolicyOnClient<br/>canonical labels + policy revisions + purge/requeue<br/>content revision + typed change in one transaction"]
+    write --> committed["persistAiPolicyChange held client<br/>COMMIT or rollback together"]
+    observer["CE onAiDecision"] --> events["ai_governance_events v1<br/>captured destination + complete associations"]
+    legacy["Unmigrated onAiPolicyEvent"] --> old["legacy events; incomplete evidence"]
     write --> events
     events --> report["Model Governance Evidence<br/>recorded decisions only"]
 ```
@@ -245,11 +249,11 @@ The same `canMutateAiPolicy` hook that guards every later policy move also
 guards the **choice at creation** (`canChoosePolicyAtCreation`, #280): CE
 answers from ownership/edit rights, EE from its governance rules, and a
 creator the hook refuses cannot set a policy through `POST /pages` either
-(403 `ai_policy_denied` before any row or remote effect). The observer sees
-every admission refusal as one `blocked` event — `not_found`,
-`stage_disabled` and `policy_unavailable` included, with `policy: null`
-when the page row could not be read — so the evidence report never has a
-silent refusal. Provider locality declarations are actor-bound: `POST/PATCH
+(403 `ai_policy_denied` before any row or remote effect). Typed producers can
+record complete blocked-stage evidence, including unknown policies. Legacy
+producer coverage remains incomplete; observer delivery failure leaves a gap,
+never permission to dispatch. See [audit flow](./13-flow-ai-policy-audit.md) and
+[typed data model](./14-ai-governance-evidence-schema.md). Provider locality declarations are actor-bound: `POST/PATCH
 /api/llm/providers` with a `locality` and no identified administrator is 401
 `locality_actor_required`, and a `local` declaration without a declarer is
 not local for admission purposes.

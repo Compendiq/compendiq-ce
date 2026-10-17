@@ -79,6 +79,13 @@ export interface EnterprisePlugin {
    */
   aiPolicyEnforcementAvailable?(): boolean;
 
-  /** Inert observation sink for policy admission/block/change events. */
+  /** Awaited on the mutation's transaction. Must use ONLY this client, never commit,
+   * perform network I/O, or swallow persistence failures. CE is a no-op. */
+  persistAiPolicyChange?(client: import('pg').PoolClient, event: import('@compendiq/contracts').AiPolicyChangeEvent): Promise<void>;
+
+  /** Complete stage decision captured at admission; never reconstruct from current settings. */
+  onAiDecision?(event: import('@compendiq/contracts').AiDecisionEvent): void | Promise<void>;
+
+  /** Legacy observation only, not a durable committed-change persistence seam. */
   onAiPolicyEvent?(event: import('./ai-policy-hooks.js').AiPolicyEvent): void;
 }
