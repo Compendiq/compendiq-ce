@@ -20,7 +20,8 @@ flowchart TD
     pages["current nondeleted pages"] --> snapshot["generation-time policy snapshot"]
     snapshot --> report
     usage["llm_audit_log: usage counted once"] --> report
-    report --> zip["ZIP: escaped CSV + unsigned PDF cover<br/>CSV SHA-256 on cover"]
+    report --> layout["Measured wrapping and paginated PDF<br/>all metadata and caveats; reserved footer band"]
+    layout --> zip["ZIP: escaped CSV + unsigned PDF cover<br/>full CSV SHA-256 and report identity visible"]
 ```
 
 Strict shared `AiDecisionEvent` and `AiPolicyChangeEvent` schemas contain no

@@ -28,7 +28,7 @@
  * handling, mirroring the export pattern in LlmAuditPage.
  */
 import { useCallback, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -225,6 +225,7 @@ function ReportCard({
   entry: CatalogueEntry;
   available: boolean;
 }) {
+  const queryClient = useQueryClient();
   const initial = useMemo(defaultRange, []);
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
@@ -262,6 +263,18 @@ function ReportCard({
           const body = (await res.json()) as { message?: string; error?: string };
           if (body.message) message = body.message;
           else if (body.error) message = body.error;
+          if (res.status === 403 && body.error === 'EnterpriseRequired') {
+            // The live guard overrides the cached catalogue, not unrelated
+            // capabilities. Refresh the real license rather than inventing one.
+            queryClient.setQueriesData<ComplianceReportCatalogue>(
+              { queryKey: ['admin', 'compliance-reports', 'catalogue'] },
+              (current) => current ? { ...current, available: [] } : current,
+            );
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['admin', 'license'] }),
+              queryClient.invalidateQueries({ queryKey: ['admin', 'compliance-reports', 'catalogue'] }),
+            ]);
+          }
         } catch {
           // Body wasn't JSON — keep the default message.
         }
@@ -309,7 +322,7 @@ function ReportCard({
     } finally {
       setBusy(false);
     }
-  }, [available, busy, validation.ok, from, to, entry.id]);
+  }, [available, busy, validation.ok, from, to, entry.id, queryClient]);
 
   return (
     <div
@@ -415,10 +428,15 @@ function ReportCard({
 // ── Tab root ───────────────────────────────────────────────────────────
 
 export function ComplianceReportsTab() {
+  const queryClient = useQueryClient();
   const { hasFeature } = useEnterprise();
   const entitled = hasFeature('compliance_reports');
   const { data, isLoading, error, refetch } = useCatalogue(entitled);
-  if (!entitled) return <p role="status">Compliance reports require a live Enterprise compliance_reports entitlement.</p>;
+  const refreshAccess = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['admin', 'license'] });
+    await queryClient.invalidateQueries({ queryKey: ['admin', 'compliance-reports', 'catalogue'] });
+  };
+  if (!entitled) return <div><p role="status">Compliance reports require a live Enterprise compliance_reports entitlement.</p><button type="button" onClick={() => void refreshAccess()}>Refresh report access</button></div>;
 
   // The enterprise feature-gate is also enforced by the settings nav
   // (`requiresFeature: 'compliance_reports'`). Defence-in-depth:
@@ -435,12 +453,13 @@ export function ComplianceReportsTab() {
           <div className="flex items-start gap-3">
             <ShieldCheck size={20} className="mt-0.5 text-action" />
             <div>
-              <h2 className="text-base font-medium">Compliance reports require an Enterprise license</h2>
+              <h2 className="text-base font-medium">Compliance reports are unavailable</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                The SOC 2 / ISO 27001 evidence-packet generator is part of the Compendiq
-                Enterprise tier. Configure a valid license in Settings → {SETTINGS_PANELS.license.label} to
-                enable compliance reports.
+                Reports require administrator authority and a live Enterprise entitlement.
+                Manage your license in Settings → {SETTINGS_PANELS.license.label}.
               </p>
+              <button type="button" onClick={() => void refreshAccess()}>Refresh report access</button>
             </div>
           </div>
         </m.div>
