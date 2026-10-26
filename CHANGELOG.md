@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pillow 13 image-corpus refresh (#1707):** regenerate the three affected
+  eval images from unchanged sources, revalidate their labels and update the
+  fixture's corpus identity. Pinned rebuilds now detect encoded-image byte
+  changes, including changes invisible to source hashes or file sizes.
+  The corpus builder requires Python 3.11 or newer; historical eval results
+  and text-axis baselines are unchanged.
 - **Release images build `linux/arm64` on native arm64 runners** instead of
   QEMU emulation, merged with the amd64 build into one multi-arch index.
   Emulated arm64 `npm ci` hung the v0.9.1 `mcp-docs` build for hours on two

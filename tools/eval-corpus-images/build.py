@@ -35,15 +35,11 @@ Three rules do the real work.
    the repository, both because a VL encoder needs raster and because SVG
    carries script/XXE risk.
 
-Determinism is not one pin but four checks, and the revision id is the pin they
-sit ON rather than one of them: `oldid` selects a wikitext revision and nothing
-else, and no branch below exits non-zero for it. The four are the page text
-against a recorded `textSha256`, each image against the upstream Commons `sha1`,
-the inventory against the committed manifest, and the total image budget — the
-same four, in the same words, as `docs/runbooks/retrieval-eval.md`. Revisions are
-pinned in the corpus's own MANIFEST.json and read back on a plain re-run (read
-BEFORE the output directory is wiped — that is a scar from the English vendoring
-script, whose first cut read the manifest afterwards and found nothing).
+Determinism uses five checks: the page text against `textSha256`, the upstream
+Commons image `sha1`, encoded image bytes against a SHA-256 snapshot of the
+committed files, the inventory against the manifest, and the total image
+budget. The revision id selects a wikitext revision; it is not a check itself.
+The manifest and image digests are read BEFORE the output directory is replaced.
 
 A revid does NOT pin the text. `action=parse&oldid=` renders that revision's
 wikitext through the CURRENT template set and the current parser, so a template
@@ -58,20 +54,23 @@ SVG re-drawn or a photograph re-cropped upstream changes a rebuild with nothing
 in the manifest to notice it. So each image records the upstream `sha1`, and a
 pinned run reports every file whose sha1 has moved and exits non-zero.
 
+The upstream sha1 does not pin Commons' thumbnail renderer or Pillow's output.
+A pinned run therefore also compares encoded image bytes with the committed
+files, even when source sha1, dimensions, format and byte count are unchanged.
+
 And nothing above covers whether a figure is still *usable*. Commons metadata is
 live, so a licence retagged, an author blanked or a thumbnail that stopped
 rendering quietly turns a 3-image page into a 2-image one, or drops it out of
 the corpus. So a pinned run also diffs its own inventory against the committed
 manifest and exits non-zero on anything it lost (`lost_since`).
 
-The fourth is not about reproduction at all: the corpus has a total image
+The fifth check is not about reproduction: the corpus has a total image
 budget, and a build over it exits non-zero whether or not it was pinned.
 
-In all three DRIFT branches the bytes ARE written, because a diff you can look
-at is more use than a refusal — the run simply stops claiming to have reproduced
-the corpus. `--update` deliberately moves to current revisions and skips all
-three, which obliges a re-label; the budget check is not one of the three and
-runs on every build.
+In all four DRIFT branches the bytes ARE written so the diff is inspectable;
+the run simply stops claiming to have reproduced the corpus. `--update`
+deliberately moves to current revisions and skips all four, which obliges a
+re-label. The budget check runs on every build.
 
 Nothing is written into the corpus directory until the whole run succeeds: the
 build stages into a sibling directory and swaps it in at the end. A run that
@@ -1128,6 +1127,42 @@ def lost_since(manifest: dict[str, Any], pages: list[dict[str, Any]]) -> list[st
     return lost
 
 
+def committed_image_digests(manifest: dict[str, Any], corpus_dir: Path) -> dict[str, str]:
+    """SHA-256 of every manifest-listed image as it sits in `corpus_dir` now.
+
+    Taken before the swap deletes the old files. The upstream sha1 does not pin
+    Commons' thumbnail renderer or Pillow's output, and byte count alone cannot
+    detect every change. Missing local files remain the corpus Vitest guard's
+    responsibility; there are no bytes to compare in that case.
+    """
+    digests: dict[str, str] = {}
+    for page in manifest.get("pages", []):
+        for image in page.get("images", []):
+            path = corpus_dir / image["file"]
+            if path.is_file():
+                digests[image["file"]] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digests
+
+
+def image_drift(committed: dict[str, str], pages: list[dict[str, Any]], out_dir: Path) -> list[str]:
+    """Built images whose bytes differ from the snapshot `committed_image_digests` took.
+
+    Only files present in both: an image this build no longer vendors is
+    `lost_since`'s to report, and one the snapshot never had (a first build, a
+    new page) has nothing to reproduce.
+    """
+    changed: list[str] = []
+    for page in pages:
+        for image in page.get("images", []):
+            before = committed.get(image["file"])
+            if before is None:
+                continue
+            after = hashlib.sha256((out_dir / image["file"]).read_bytes()).hexdigest()
+            if after != before:
+                changed.append(f"{image['file']} ({image.get('sourceTitle', '?')}): {before[:12]} -> {after[:12]}")
+    return changed
+
+
 def build_page(
     title: str,
     category: str,
@@ -1458,18 +1493,16 @@ score a win it did not earn. The captions still have to exist somewhere for the
 independent labeller (P5c) to write `expectedImages[]` against, and the manifest
 is where they live.
 
-## It is NOT wired into the eval runner
+## Eval identity
 
-This directory is deliberately absent from `CORPUS_DIRS` and from
-`corpusDirsForLanguage`. `computeCorpusManifestSha` hashes every directory in
-that list, so joining it would invalidate every recorded baseline the moment
-these bytes landed. **P5b** adds the `--images` axis and wires it in on purpose.
-`corpus-de-images.test.ts` fails if it happens by accident first.
-
-There is also no fixture here. Labels are **P5c**, written by an independent
-vision-capable agent on a different model from the implementer and blind to the
-retrieval code — the #1102 amendment. A corpus labelled by whoever is tuning the
-thing it scores measures the tuning.
+Only the `--images --arm B|C` axis reaches this corpus. It stays absent from
+`CORPUS_DIRS` and `corpusDirsForLanguage`, so image refreshes do not invalidate
+text-axis baselines. `fixture-de-images.json` pins this manifest's digest;
+inspect changed images and revalidate their labels before updating that pin.
+Its labels were written by independent, blind labellers on a different model
+from the implementer. Keep their authorship and query identities intact.
+Image-axis measurements from before a refresh are historical results, not
+baselines for the new corpus.
 
 ## Licensing
 
@@ -1483,7 +1516,7 @@ and per image, are in `LICENSE-ATTRIBUTION.md`.
 ```bash
 cd tools/eval-corpus-images
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python build.py            # reproduces THIS corpus, at the pinned revisions
+.venv/bin/python build.py            # rebuild pinned revisions; fail on detected drift
 .venv/bin/python build.py --update   # moves to current revisions — obliges a re-label
 ```
 
@@ -1496,17 +1529,22 @@ release moves the text of a page nobody edited. So each page also records a
 `textSha256` over the Markdown it produced, and a rebuild that renders different
 bytes names the page and exits non-zero.
 
-The images need a third pin, because Commons serves the current version of a
-file and an upstream re-draw would otherwise change a "pinned" rebuild silently:
-each image records the upstream `sha1`, and a run that finds one moved names the
-file and exits non-zero. A fourth check covers what none of them can — whether a
-figure is still *usable* — by diffing this build's inventory against the
-committed manifest.
+Commons serves current source files: each image records the upstream `sha1`,
+and a changed sha1 makes the build exit non-zero. The source hash does not pin
+the thumbnail renderer or the local encoder. A plain build also snapshots the
+committed image files' SHA-256 digests and compares the regenerated bytes,
+including changes that preserve dimensions, format and file size.
 
-Nothing here may be hand-edited. The builder regenerates the whole directory
-into a staging sibling and swaps it in only on success, and
-`corpus-de-images.test.ts` fails on a manifest that has drifted from the files
-beside it — including a page body whose sha256 no longer matches.
+The remaining checks detect lost pages/images and an exceeded image budget.
+`--update` skips the four drift checks, not the budget. Drifted output is still
+written for inspection; it is not a successful reproduction.
+
+Do not hand-edit generated data. The builder stages the complete directory
+before replacing it; fetch failures preserve the old corpus. For an encoder-only
+migration, follow the controlled refresh procedure in
+`tools/eval-corpus-images/README.md` rather than absorbing unrelated upstream
+changes with `--update`. `corpus-de-images.test.ts` checks the manifest against
+the files beside it, including page digests and encoded image sizes.
 
 ## What the licence filter rejected on this build
 
@@ -1560,6 +1598,10 @@ def main() -> int:
     manifest = read_manifest()
     pins = {} if args.update else read_pins(manifest)
     pinned_sha1 = {} if args.update else read_image_sha1s(manifest)
+    # Hashed now, while the committed images still exist: the swap below
+    # deletes them. `--update` means "move" and `--probe` writes nothing, so
+    # neither has anything to compare.
+    committed_images = {} if args.update or args.probe else committed_image_digests(manifest, CORPUS_DIR)
     stats = BuildStats()
 
     out_dir = STAGING_DIR
@@ -1720,6 +1762,23 @@ def main() -> int:
             print(
                 "! this rebuild is NOT a reproduction of the committed corpus. Commons metadata is "
                 "live: a licence, an author field or a thumbnail moved. Re-label before committing.",
+                file=sys.stderr,
+            )
+            exit_code = 1
+        reencoded = image_drift(committed_images, pages, CORPUS_DIR)
+        if reencoded:
+            # Same rule again, for the half neither the revid nor the sha1 can
+            # see: an unchanged source re-encoded to different bytes. Every
+            # recorded field — size, format, dimensions, upstream sha1 — can
+            # survive this unchanged.
+            print(file=sys.stderr)
+            print(f"! {len(reencoded)} image(s) encoded to different bytes than the committed ones:", file=sys.stderr)
+            for entry in reencoded:
+                print(f"!   {entry}", file=sys.stderr)
+            print(
+                "! this rebuild is NOT a reproduction of the committed images. Unless the upstream "
+                "sha1 moved (listed above), the Commons thumbnail renderer or the pinned encoder "
+                "(requirements.txt) changed the output. Inspect the images before committing.",
                 file=sys.stderr,
             )
             exit_code = 1

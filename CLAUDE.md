@@ -598,9 +598,14 @@ alt and no caption, and no query may restate a manifest caption — a page that
 captions its own figures is answerable from text alone, so a leg measured on it
 scores a win it did not earn. Each page pins a `textSha256` and each image the
 upstream Commons `sha1`, because a revision id renders through the CURRENT
-templates and never pinned the pictures at all. `corpus-de-images.test.ts` fails
-on the wiring, a leaked caption, a licence outside the allow-list, an unnamed or
-silently-cut author, a missing credit and a body whose sha no longer matches.
+templates and never pinned the pictures at all. Pinned rebuilds also compare
+encoded image SHA-256 digests against the committed files: source hashes do not
+pin thumbnail renderers or Pillow. Encoder upgrades require the controlled
+refresh in `tools/eval-corpus-images/README.md`, including image inspection and
+label revalidation before updating the fixture's manifest digest.
+`corpus-de-images.test.ts` fails on the wiring, a leaked caption, a licence
+outside the allow-list, an unnamed or silently-cut author, a missing credit and
+a body whose sha no longer matches.
 `fixture-de-images.json` is its own file with its own schema and loader (never a
 widened `FixtureSchema`): 309 labels over all 65 pages and 187 images, written
 by blind labellers on a different model from the implementer, in two styles —
