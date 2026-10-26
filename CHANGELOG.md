@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
+  Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
+  remains enabled; only its runner distribution is pinned.
 - **Pillow 13 image-corpus refresh (#1707):** regenerate the three affected
   eval images from unchanged sources, revalidate their labels and update the
   fixture's corpus identity. Pinned rebuilds now detect encoded-image byte
