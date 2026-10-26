@@ -223,7 +223,9 @@ jobs:
     needs: changes
     # Detection failures must not turn the browser gate green by omission.
     if: ${{ always() && !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.e2e != 'false') }}
-    runs-on: ubuntu-latest
+    # Playwright 1.60 does not support Ubuntu 26.04 (now ubuntu-latest).
+    # Keep browser installation and tests on a supported distribution.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
