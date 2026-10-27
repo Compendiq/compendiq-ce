@@ -40,7 +40,7 @@ run_case() {
     default) output="$(env -u INSTALL_DIR bash "$SCRIPT_DIR/install.sh" "$@" 2>&1)" ;;
   esac
   [ -f "$expected/.env" ] && [ -f "$expected/docker-compose.yml" ] || { echo "FAIL $name: missing generated files"; exit 1; }
-  physical="$(cd "$expected" && pwd -P)"
+  physical="$(cd -P "$expected" && pwd -P)"
   case "$output" in *"Install directory: $expected"*) ;; *) echo "FAIL $name: wrong reported install target"; exit 1 ;; esac
   grep -Fq "$physical|compose pull" "$DOCKER_LOG" || { echo "FAIL $name: pull cwd"; exit 1; }
   grep -Fq "$physical|compose up -d" "$DOCKER_LOG" || { echo "FAIL $name: up cwd"; exit 1; }
@@ -65,4 +65,11 @@ run_case absolute "$FIXTURE/work/absolute app" cli "$FIXTURE/work/absolute app"
 run_case environment './env app' env "$FIXTURE/work/./env app"
 run_case cli-precedence './flag app' cli "$FIXTURE/work/./flag app"
 run_case default '' default "$HOME/compendiq"
+mkdir -p "$FIXTURE/physical/child" "$FIXTURE/physical/collision" "$FIXTURE/work/collision"
+printf 'other installation\n' > "$FIXTURE/work/collision/sentinel"
+ln -s "$FIXTURE/physical/child" "$FIXTURE/work/link"
+run_case 'symlink parent traversal' './link/../collision' cli "$FIXTURE/work/./link/../collision"
+[ "$(cat "$FIXTURE/work/collision/sentinel")" = 'other installation' ] &&
+  [ ! -e "$FIXTURE/work/collision/.env" ] &&
+  [ ! -e "$FIXTURE/work/collision/docker-compose.yml" ] || { echo 'FAIL symlink parent traversal: alternate target changed'; exit 1; }
 printf 'All actual-script path fixtures passed.\n'

@@ -720,7 +720,8 @@ main() {
   # ---- Install directory (CLI flag > env var > default) ----
   info "Install directory: ${INSTALL_DIR}"
   mkdir -p "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
+  # Match filesystem traversal for paths containing symlinks followed by "..".
+  cd -P "$INSTALL_DIR"
 
   # ---- Generate config ----
   write_env "${INSTALL_DIR}/.env"

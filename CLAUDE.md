@@ -16,8 +16,9 @@ Source-of-truth docs:
 1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.
    Installer and uninstaller paths (`--dir` / `INSTALL_DIR`) are anchored to
    the invocation directory before any `cd`; validation, Compose, writes and
-   removal must use that same target. Exercise actual scripts with removal
-   intercepted in disposable fixtures (`scripts/install-path.test.sh`).
+   removal must use that same target, including symlink/`..` traversal (use
+   physical `cd` without dereferencing the removal operand). Exercise actual
+   scripts with removal intercepted (`scripts/install-path.test.sh`).
 2. **Branch model.** Branch from `dev` as `feature/<desc>`. PRs target `dev`. Only `dev → main` may target `main`. If a PR accidentally targets `main`, retarget before merging.
 3. **No secrets in commits.** No `.env`, PATs, API keys, JWT secrets, license keys.
 4. **Ask when ambiguous** — don't guess at intent.

@@ -128,7 +128,8 @@ main() {
 
   # ---- Stop containers ----
   info "Stopping containers..."
-  cd "$INSTALL_DIR"
+  # Match validation and removal's filesystem traversal through symlinks.
+  cd -P "$INSTALL_DIR"
 
   if docker compose ps --quiet 2>/dev/null | grep -q .; then
     docker compose down
