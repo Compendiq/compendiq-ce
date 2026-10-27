@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Installer-generated Compose selects amd64 for the four Compendiq `dev` and
+  mutable `latest` images, avoiding missing ARM manifests after branch
+  publications. Other tags retain native architecture selection; PostgreSQL
+  and Redis are unchanged. ARM requires working amd64 emulation for branch
+  tags.
+
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
   Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
   remains enabled; only its runner distribution is pinned.

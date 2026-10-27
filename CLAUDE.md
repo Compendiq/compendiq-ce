@@ -1376,6 +1376,12 @@ Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `pa
 
 Release images: the `v*` tag push runs `.github/workflows/docker-build.yml`, which builds each image natively per architecture (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; never QEMU — emulated arm64 `npm ci` hangs or dies with `Illegal instruction`), pushes by digest and merges one multi-arch index via the reusable `docker-image.yml`. Branch pushes (`dev`, `main`) stay amd64-only. To republish an existing release without moving its tag: `gh workflow run docker-build.yml --ref dev -f tag=vX.Y.Z -f images=all` (or e.g. `images=mcp-docs`); a rebuild only moves `latest` if it is the newest stable tag.
 
+Installer-generated Compose pins the four Compendiq images to amd64 for `dev`
+and mutable `latest` (a main build can replace a multi-arch latest). ARM needs
+working amd64 emulation for those tags. Other tags are unpinned for native
+selection; an older release without the daemon architecture still fails to pull.
+Postgres and Redis remain unpinned.
+
 ## Dependencies
 
 - `npm install` from repo root only — workspaces require a single root lockfile.
