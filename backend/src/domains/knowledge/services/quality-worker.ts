@@ -41,7 +41,8 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { admitPageForProvider, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason } from '../../llm/services/ai-policy-admission.js';
+import { recoverPolicyBlockedStage } from '../../llm/services/ai-policy-worker-recovery.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -350,6 +351,7 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
   }
 
   const batchSize = await getWorkerBatchSize('quality_batch_size');
+  if (assignment) await recoverPolicyBlockedStage('quality', assignment.config.providerId, batchSize);
 
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
@@ -430,34 +432,6 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
       [remaining, MAX_RETRIES],
     );
     pages = [...pages, ...failedResult.rows];
-  }
-
-  // Priority 4: policy-blocked pages whose block was a fact about the
-  // provider (`provider_not_local`) — re-admitted each pass in case a
-  // locality declaration or reassignment lifted it (SPEC-WORK-001). A
-  // `policy_none` block is lifted only by the policy write itself.
-  if (pages.length < batchSize) {
-    const remaining = batchSize - pages.length;
-    const recheckResult = await query<{
-      id: number;
-      body_html: string;
-      body_text: string;
-      quality_retry_count: number;
-    content_revision: string;
-    quality_ai_operation_id: string | null;
-    }>(
-      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count, content_revision::text, quality_ai_operation_id
-       FROM pages
-       WHERE quality_status = 'policy_blocked'
-         AND ${RECHECKABLE_BLOCK_SQL}
-         AND deleted_at IS NULL
-         AND COALESCE(page_type, 'page') != 'folder'
-         AND (body_text IS NOT NULL AND body_text != '')
-       ORDER BY last_modified_at DESC
-       LIMIT $1`,
-      [remaining],
-    );
-    pages = [...pages, ...recheckResult.rows];
   }
 
   // Skip empty body_text pages

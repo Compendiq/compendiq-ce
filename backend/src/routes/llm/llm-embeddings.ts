@@ -220,7 +220,12 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
             // Same admin chunk options the dirty-page worker passes — without
             // them the two paths chunk the same page differently, and the
             // admin setting looks intermittently broken (#1265 verification).
-            await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml, chunkOpts);
+            const chunks = await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml, chunkOpts);
+            if (chunks === 0) {
+              reply.raw.write(`data: ${JSON.stringify({ phase: 'embedding', total, completed, errors,
+                currentPage: page.title, warning: 'No new embeddings published (blocked, deferred, or no work)', done: false })}\n\n`);
+              continue;
+            }
           }
 
           completed++;

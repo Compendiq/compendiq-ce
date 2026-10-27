@@ -321,6 +321,8 @@ describe('embedding-service', () => {
       const status = await getEmbeddingStatus('user-1');
 
       expect(status).toEqual({
+        policyBlockedPages: 0,
+        policyBlockedReasons: { policy_none: 0, provider_not_local: 0, unknown: 0 },
         totalPages: 50,
         embeddedPages: 47,
         dirtyPages: 3,

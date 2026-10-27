@@ -688,13 +688,16 @@ export async function purgeDerivedAiState(client: PoolClient, ids: number[]): Pr
         AND (page_id_1 = ANY($1::int[]) OR page_id_2 = ANY($1::int[]))`,
     [ids],
   );
-  const shadow = await client.query<{ present: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'page_avg_embedding_next'
-     ) AS present`,
+  const shadow = await client.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'pages'
+        AND column_name IN ('page_avg_embedding_next', 'page_avg_embedding_prev')`,
   );
-  const shadowSet = shadow.rows[0]?.present ? `, page_avg_embedding_next = NULL` : '';
+  // Runtime shadow columns may exist before or after a swap. A retained
+  // rollback average is derived state too: rollback must not resurrect it.
+  const shadowSet = ['page_avg_embedding_next', 'page_avg_embedding_prev']
+    .filter((column) => shadow.rows.some((row) => row.column_name === column))
+    .map((column) => `, ${column} = NULL`).join('');
   await client.query(
     `UPDATE pages
         SET page_avg_embedding = NULL${shadowSet},

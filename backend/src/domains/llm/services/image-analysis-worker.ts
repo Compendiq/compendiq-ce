@@ -47,6 +47,7 @@
  * provider body (D14).
  */
 import { query } from '../../../core/db/postgres.js';
+import { recoverPolicyBlockedStage } from './ai-policy-worker-recovery.js';
 import { randomUUID } from 'node:crypto';
 import { emitAiDecision, newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
 import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
@@ -398,6 +399,8 @@ async function runBatchSteps(
   }
 
   const batchSize = await deps.getBatchSize();
+  await assertLockHeld();
+  await recoverPolicyBlockedStage('image_analysis', resolved.providerId, batchSize);
   await analyzeWorkRows(result, deps, assertLockHeld, retained, maxOutputTokens, batchSize);
 }
 
@@ -590,18 +593,6 @@ async function runInvalidationSweep(
     [maxOutputTokens],
   );
 
-  await assertLockHeld();
-  // Article AI policy (SPEC-WORK-001): a `provider_not_local` block was a
-  // fact about the provider, so it is re-checked every batch — the row goes
-  // back to `pending` and the analyze step re-admits it. A `policy_none`
-  // block is lifted only by the policy write.
-  await query(
-    `UPDATE page_image_analyses a
-        SET status = 'pending', ai_policy_block_reason = NULL, updated_at = NOW()
-       FROM pages p
-      WHERE a.page_id = p.id AND a.status = 'policy_blocked'
-        AND a.ai_policy_block_reason = 'provider_not_local' AND p.ai_policy <> 'none'`,
-  );
 
   return {
     repended: repended.rows[0]?.n ?? 0,
@@ -927,7 +918,7 @@ async function recordLastRun(result: ImageAnalysisBatchResult): Promise<void> {
   const didSomething =
     result.processed + result.reused + result.skipped + result.failed + result.repended +
       result.returned + result.reopened + result.reconciledPages + result.removed +
-      result.pagesFailed > 0;
+      result.pagesFailed + (result.policyBlocked ?? 0) > 0;
   const stopped = result.reason === 'provider_status' || result.reason === 'uniform_rejection';
   if (!didSomething && !stopped) return;
   const run: ImageAnalysisLastRun = { ...result, at: new Date().toISOString() };

@@ -480,7 +480,7 @@ describeDb('auto-tag article admission and publication', () => {
     if (change === 'provider') await query(`UPDATE llm_providers SET base_url = base_url || '/changed'`);
     if (change === 'model') await query(`UPDATE llm_usecase_assignments SET model = 'successor' WHERE usecase = 'auto_tag'`);
     release();
-    await expect(work).resolves.toEqual({ tagged: 0, errors: 1 });
+    await expect(work).resolves.toEqual({ tagged: 0, errors: 0, policyBlocked: 1 });
     expect(requests).toHaveLength(1);
     const result = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [id]);
     expect(result.rows[0]!.labels).not.toContain('architecture');

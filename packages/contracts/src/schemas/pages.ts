@@ -273,7 +273,7 @@ export const PageListQuerySchema = z.object({
   embeddingStatus: z.enum(['pending', 'done']).optional(),
   qualityMin: z.coerce.number().int().min(0).max(100).optional(),
   qualityMax: z.coerce.number().int().min(0).max(100).optional(),
-  qualityStatus: z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']).optional(),
+  qualityStatus: PageQualityStatusEnum.optional(),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional(),
   dateFrom: z.string().optional(), // ISO date string

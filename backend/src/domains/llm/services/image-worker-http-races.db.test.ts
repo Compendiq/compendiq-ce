@@ -37,6 +37,28 @@ describe.skipIf(!available)('image worker HTTP publication races', () => {
     await teardownTestDb();
   });
 
+  it('records a batch containing only policy-blocked images without calling the provider', async () => {
+    const baseUrl = 'http://blocked.test/v1';
+    const provider = await createProvider({ name: randomUUID(), baseUrl, authType: 'none', verifySsl: true });
+    const triple = { providerId: provider.id, model: 'vision', baseUrl };
+    const identity = { ...triple, identityHash: computeIdentityHash(triple), assignedAt: new Date().toISOString() };
+    const page = (await query(`INSERT INTO pages
+      (title, source, ai_policy, image_analysis_dirty) VALUES ('blocked', 'standalone', 'none', FALSE) RETURNING id`)).rows[0];
+    await query(`INSERT INTO page_image_analyses
+      (page_id, source, attachment_key, content_hash, format, status)
+      VALUES ($1, 'confluence', 'blocked.png', 'hash', 'png', 'pending')`, [page.id]);
+    let calls = 0;
+    const result = await runImageAnalysisBatch({ deps: {
+      resolveIdentity: async () => identity, getRetainedIdentity: async () => identity,
+      getVisionCapability: async () => true, getMaxOutputTokens: async () => 8192,
+      analyzeImage: async () => { calls++; throw new Error('Forbidden dispatch'); },
+    } });
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ processed: 0, failed: 0, policyBlocked: 1, reconciledPages: 0 });
+    const saved = (await query(`SELECT setting_value FROM admin_settings WHERE setting_key = 'image_analysis_last_run'`)).rows[0];
+    expect(JSON.parse(saved.setting_value)).toMatchObject({ processed: 0, failed: 0, policyBlocked: 1 });
+  });
+
   it.each(['allowed', 'none', 'local_only', 'endpoint'] as const)(
     're-admits retained payload reuse: %s', async (state) => {
       const baseUrl = 'http://retained.test/v1';

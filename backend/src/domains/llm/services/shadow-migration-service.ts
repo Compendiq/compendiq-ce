@@ -360,19 +360,34 @@ async function countStragglerPages(): Promise<number> {
  * can see that a swap is refused by policy, not by an endpoint — and that
  * declaring the candidate local (or changing the pages' policy) is the fix.
  */
-async function countPolicyBlockedStragglers(state: ShadowMigrationState): Promise<number> {
-  // The SAME effective-locality decoder admission uses — a candidate whose
-  // metadata is missing or does not decode is never counted as local.
-  const candidate = await loadProviderMetadata({ query }, state.providerId);
-  const candidateLocal = candidate?.effectiveLocality === 'local';
-  const r = await query<{ n: number }>(
-    `SELECT COUNT(DISTINCT pe.page_id)::int AS n
-       FROM page_embeddings pe JOIN pages p ON p.id = pe.page_id
-      WHERE pe.embedding_next IS NULL
-        AND (p.ai_policy = 'none' OR (p.ai_policy = 'local_only' AND NOT $1::boolean))`,
-    [candidateLocal],
+async function countPolicyBlockedStragglers(
+  state: Pick<ShadowMigrationState, 'providerId'>,
+  runner: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> } = { query },
+): Promise<number> {
+  const candidate = await loadProviderMetadata(runner, state.providerId);
+  const r = await runner.query(
+    `SELECT COUNT(*)::int AS n FROM pages p
+      WHERE p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'
+        AND p.ai_policy = 'local_only' AND NOT $1::boolean
+        AND (length(COALESCE(p.body_text, '')) >= 20
+          OR length(regexp_replace(COALESCE(p.body_html, ''), '<[^>]*>', '', 'g')) >= 20
+          OR EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+          OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = p.id))`,
+    [candidate?.effectiveLocality === 'local'],
   );
-  return r.rows[0]?.n ?? 0;
+  return (r.rows[0] as { n: number } | undefined)?.n ?? 0;
+}
+
+/** Called with the schema/page locks held: provider edits must also wait for
+ * this transaction. Neither already-filled vectors nor absent vectors waive
+ * current locality. This is a lifecycle gate, never a dispatch permit. */
+async function assertCandidatePolicyCoverage(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }, providerId: string): Promise<void> {
+  await client.query('SELECT id FROM llm_providers WHERE id::text = $1 FOR SHARE', [providerId]);
+  if (!(await loadProviderMetadata(client, providerId))) {
+    throw new Error('Candidate provider policy unavailable — migration refused');
+  }
+  const blocked = await countPolicyBlockedStragglers({ providerId }, client);
+  if (blocked > 0) throw new Error(`${blocked} pages blocked by article AI policy — select a permitted candidate or explicitly change article policy through its authorized flow`);
 }
 
 async function shadowIndexesReady(state: ShadowMigrationState): Promise<boolean> {
@@ -426,13 +441,33 @@ async function readShadowMigrationStatus(): Promise<ShadowMigrationStatus | null
     const totalPages = await countBackfillPages();
     return { ...state, phase: 'swapped', totalPages, backfilledPages: totalPages, stragglerPages: 0, indexReady: true };
   }
-  const totalPages = await countBackfillPages();
-  const stragglerPages = await countStragglerPages();
+  const candidate = await loadProviderMetadata({ query }, state.providerId);
+  const populations = await query<{ total: number; missing: number; complete: number }>(
+    `WITH population AS (
+       SELECT p.id,
+         EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id) AS has_vectors,
+         EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id AND pe.embedding_next IS NULL) AS missing,
+         (p.ai_policy = 'all' OR $1::boolean) AS allowed
+       FROM pages p WHERE p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'
+         AND p.ai_policy IN ('all', 'local_only')
+         AND (EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+           OR (p.ai_policy = 'local_only' AND NOT $1::boolean))
+         AND (length(COALESCE(p.body_text, '')) >= 20
+           OR length(regexp_replace(COALESCE(p.body_html, ''), '<[^>]*>', '', 'g')) >= 20
+           OR EXISTS (SELECT 1 FROM page_embeddings pe WHERE pe.page_id = p.id)
+           OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = p.id))
+     ) SELECT COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE NOT has_vectors OR missing OR NOT allowed)::int AS missing,
+       COUNT(*) FILTER (WHERE has_vectors AND NOT missing AND allowed)::int AS complete
+       FROM population`, [candidate?.effectiveLocality === 'local'],
+  );
+  const totalPages = populations.rows[0]?.total ?? 0;
+  const stragglerPages = populations.rows[0]?.missing ?? 0;
   const indexReady = await shadowIndexesReady(state);
-  const policyBlockedPages = stragglerPages > 0 ? await countPolicyBlockedStragglers(state) : 0;
+  const policyBlockedPages = await countPolicyBlockedStragglers(state);
   return {
     ...state,
-    phase: stragglerPages === 0 && indexReady ? 'ready' : 'backfilling',
+    phase: stragglerPages === 0 && policyBlockedPages === 0 && indexReady ? 'ready' : 'backfilling',
     totalPages,
     backfilledPages: totalPages - stragglerPages,
     stragglerPages,
@@ -851,6 +886,7 @@ export async function performShadowSwap(opts?: {
       if (!preState || preState.status !== 'active') {
         throw new Error(`Migration state changed mid-swap (now ${preState?.status ?? 'absent'}) — swap refused`);
       }
+      await assertCandidatePolicyCoverage(client, preState.providerId);
       const straggle = await client.query(
         `SELECT COUNT(DISTINCT page_id)::int AS n FROM page_embeddings WHERE embedding_next IS NULL`,
       );
@@ -1021,6 +1057,16 @@ export async function rollbackShadowMigration(opts?: {
       if (!revState || revState.status !== 'swapped') {
         throw new Error(`Migration state changed mid-rollback (now ${revState?.status ?? 'absent'}) — rollback refused`);
       }
+      // Lock the default-provider set too: an inherited previous assignment
+      // must not resolve to a different provider while the rename commits.
+      await client.query('LOCK TABLE llm_providers IN SHARE MODE');
+      const defaultProvider = (await client.query(
+        'SELECT id FROM llm_providers WHERE is_default = TRUE',
+      )).rows[0] as { id: string } | undefined;
+      const restoredProvider = revState.prev?.providerId ?? defaultProvider?.id;
+      if (!restoredProvider) throw new Error('Previous provider unavailable — rollback refused');
+      await assertCandidatePolicyCoverage(client, restoredProvider);
+      if (await embeddingPolicyOverride()) throw new Error(POLICY_OVERRIDE_MSG);
       revertedFrom = revState.model;
       revertedTo = revState.prev?.model ?? null;
       await client.query(`ALTER TABLE page_embeddings RENAME COLUMN embedding TO embedding_next`);

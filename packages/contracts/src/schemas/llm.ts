@@ -392,6 +392,12 @@ export const OllamaModelSchema = z.object({
 });
 
 export const EmbeddingStatusSchema = z.object({
+  policyBlockedPages: z.number().int().nonnegative().optional(),
+  policyBlockedReasons: z.object({
+    policy_none: z.number().int().nonnegative(),
+    provider_not_local: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative(),
+  }).optional(),
   totalPages: z.number(),
   dirtyPages: z.number(),
   totalEmbeddings: z.number(),

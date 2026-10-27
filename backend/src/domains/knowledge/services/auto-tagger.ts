@@ -3,7 +3,7 @@ import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { chat, type ArticleTransportStage } from '../../llm/services/openai-compatible-client.js';
 import { AI_POLICY_PROVENANCE_VERSION } from '@compendiq/contracts';
 import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
-import { asRevision, loadProviderMetadata } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider, asRevision, loadProviderMetadata } from '../../llm/services/ai-policy-admission.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../llm/services/article-stage-admission.js';
 import { validateAutoTagPublicationOnClient, type AutoTagPublicationStage } from '../../llm/services/auto-tag-publication.js';
 import { AiPolicyRefusalError, isAiPolicy, isAiPolicyRefusal } from '../../../core/services/ai-policy-service.js';
@@ -213,19 +213,26 @@ export async function autoTagPage(
   }
   const resolved = await resolveUsecase('auto_tag');
   const { config } = resolved;
+  const context = { operation: newAiOperation('auto_tag', { kind: 'user', id: userId }),
+    stage: 'auto_tag', attempt: 1,
+    modelSelection: modelOverride ? { kind: 'explicit' as const, model: modelOverride } : { kind: 'assigned' as const } };
+  const admission = await admitPageForProvider(row.id, 'auto_tag', config.providerId, modelOverride || resolved.model,
+    { ...context, preliminary: true });
+  if (!admission.admitted) {
+    if (admission.reason === 'policy_none' || admission.reason === 'provider_not_local') {
+      throw new AiPolicyRefusalError(403, { error: 'ai_policy_denied', pageIds: [row.id] }, 'Article policy forbids auto-tagging');
+    }
+    throw new ArticleStageRefusedError();
+  }
   const provider = await loadProviderMetadata({ query }, config.providerId);
   if (!provider || provider.configRevision !== config.configRevision) throw new ArticleStageRefusedError();
-  if (row.ai_policy === 'none' || (row.ai_policy === 'local_only' && provider.effectiveLocality !== 'local')) {
-    throw new AiPolicyRefusalError(403, { error: 'ai_policy_denied', pageIds: [row.id] }, 'Article policy forbids auto-tagging');
-  }
   const stage: AutoTagPublicationStage = {
     model: modelOverride || resolved.model,
     provenance: { version: AI_POLICY_PROVENANCE_VERSION, providerId: config.providerId,
       configRevision: provider.configRevision, locality: provider.effectiveLocality,
       pages: [{ pageId: row.id, policy: row.ai_policy, policyRevision, contentRevision }] },
     userId, usecase: 'auto_tag',
-    context: { operation: newAiOperation('auto_tag', { kind: 'user', id: userId }), stage: 'auto_tag', attempt: 1,
-      modelSelection: modelOverride ? { kind: 'explicit', model: modelOverride } : { kind: 'assigned' } },
+    context,
   };
   const suggestedTags = await autoTagContent(userId, body_html, { isHtml: true, modelOverride, articleStage: stage, resolved });
   await admitArticleStage(stage.provenance, userId, 'auto_tag', undefined, stage.context, config, stage.model);
@@ -566,7 +573,7 @@ export async function applyTags(
 export async function autoTagAllPages(
   userId: string,
   modelOverride?: string,
-): Promise<{ tagged: number; errors: number }> {
+): Promise<{ tagged: number; errors: number; policyBlocked?: number }> {
   // Include both Confluence pages (filtered by RBAC space access) and
   // standalone/local pages (space_key IS NULL) so locally-created pages
   // also get auto-tagged.
@@ -588,6 +595,7 @@ export async function autoTagAllPages(
 
   let tagged = 0;
   let errors = 0;
+  let policyBlocked = 0;
 
   for (const page of pages.rows) {
     try {
@@ -598,10 +606,14 @@ export async function autoTagAllPages(
         }
       });
     } catch (err) {
+      if (isAiPolicyRefusal(err) || err instanceof ArticleStageRefusedError) {
+        policyBlocked++;
+        continue;
+      }
       logger.error({ err, pageId: page.id }, 'Failed to auto-tag page');
       errors++;
     }
   }
 
-  return { tagged, errors };
+  return { tagged, errors, ...(policyBlocked > 0 ? { policyBlocked } : {}) };
 }

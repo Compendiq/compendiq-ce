@@ -36,7 +36,8 @@ import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.j
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { planDerivedChunks, type DerivedChunkMetadata } from './image-analysis-compose.js';
-import { admitPageForProvider, publishCurrentAiPolicyBlock, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL, type AiPolicyBlockReason } from './ai-policy-admission.js';
+import { admitPageForProvider, publishCurrentAiPolicyBlock, isPersistableBlockReason, type AiPolicyBlockReason } from './ai-policy-admission.js';
+import { recoverPolicyBlockedStage } from './ai-policy-worker-recovery.js';
 import pgvector from 'pgvector';
 
 /**
@@ -47,7 +48,7 @@ import pgvector from 'pgvector';
  * the policy write, which clears the status itself.
  */
 export const EMBED_WORK_POLICY_SQL =
-  `(embedding_status IS DISTINCT FROM 'policy_blocked' OR (${RECHECKABLE_BLOCK_SQL}))`;
+  `(embedding_status IS DISTINCT FROM 'policy_blocked')`;
 
 /**
  * Pages `embedPage` parked in the current `processDirtyPages` run. A blocked
@@ -150,6 +151,8 @@ interface ChunkMetadata {
 type PageChunkMetadata = ChunkMetadata | DerivedChunkMetadata;
 
 interface EmbeddingStatus {
+  policyBlockedPages: number;
+  policyBlockedReasons: { policy_none: number; provider_not_local: number; unknown: number };
   totalPages: number;
   embeddedPages: number;
   dirtyPages: number;
@@ -1207,6 +1210,8 @@ export async function processDirtyPages(
   try {
     // Fetch global chunk settings from admin_settings
     const chunkOpts = await getAdminChunkSettings();
+    const recoveryTarget = await resolveUsecase('embedding').catch(() => null);
+    if (recoveryTarget) await recoverPolicyBlockedStage('embedding', recoveryTarget.config.providerId, DIRTY_PAGE_BATCH_SIZE);
 
     // Get total count for logging purposes (global, not per-user)
     // Exclude folder-type pages which have no content to embed
@@ -1760,9 +1765,13 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   const visibleWhere = `${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
   const visibleParams = [statusSpaces, userId];
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
-    query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM pages cp
-       WHERE ${visibleWhere}`,
+    query<{ count: string; total: number; policy_none: number; provider_not_local: number; unknown: number }>(
+      `SELECT COUNT(*) as count,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked')::int AS total,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy = 'none')::int AS policy_none,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy = 'local_only')::int AS provider_not_local,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy NOT IN ('none','local_only'))::int AS unknown
+       FROM pages cp WHERE ${visibleWhere}`,
       visibleParams,
     ),
     query<{ count: string }>(
@@ -1789,6 +1798,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   ]);
 
   const totalRow = totalResult.rows[0];
+  const blockedRow = totalRow;
   const embeddedPagesRow = embeddedPagesResult.rows[0];
   const dirtyRow = dirtyResult.rows[0];
   const embeddingRow = embeddingResult.rows[0];
@@ -1797,6 +1807,9 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   }
 
   return {
+    policyBlockedPages: blockedRow?.total ?? 0,
+    policyBlockedReasons: { policy_none: blockedRow?.policy_none ?? 0,
+      provider_not_local: blockedRow?.provider_not_local ?? 0, unknown: blockedRow?.unknown ?? 0 },
     totalPages: parseInt(totalRow.count, 10),
     embeddedPages: parseInt(embeddedPagesRow.count, 10),
     dirtyPages: parseInt(dirtyRow.count, 10),

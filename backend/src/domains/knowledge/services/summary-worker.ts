@@ -42,7 +42,8 @@ import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { scanForPii } from '../../../core/services/pii-scan-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { admitPageForProvider, isPersistableBlockReason, RECHECKABLE_BLOCK_SQL } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider, isPersistableBlockReason } from '../../llm/services/ai-policy-admission.js';
+import { recoverPolicyBlockedStage } from '../../llm/services/ai-policy-worker-recovery.js';
 import {
   streamChat,
   type ProviderConfig,
@@ -263,8 +264,7 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   const result = await query<SummaryCandidate>(
     `SELECT id, body_text, summary_content_hash, summary_retry_count, title, content_revision::text, summary_ai_operation_id
      FROM pages
-     WHERE (summary_status IN ('pending', 'failed')
-            OR (summary_status = 'policy_blocked' AND ${RECHECKABLE_BLOCK_SQL}))
+     WHERE summary_status IN ('pending', 'failed')
        AND deleted_at IS NULL
        AND COALESCE(page_type, 'page') != 'folder'
        AND (summary_status <> 'failed' OR summary_retry_count < $1)
@@ -540,7 +540,9 @@ export async function runSummaryBatch(
       [MIN_BODY_LENGTH],
     );
 
-    const candidates = await findCandidates(await getWorkerBatchSize('summary_batch_size'));
+    const batchSize = await getWorkerBatchSize('summary_batch_size');
+    if (effectiveAssignment) await recoverPolicyBlockedStage('summary', effectiveAssignment.config.providerId, batchSize);
+    const candidates = await findCandidates(batchSize);
     let processed = 0;
     let errors = 0;
 
