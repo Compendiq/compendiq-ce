@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedding publication (#1782):** discard vectors generated from a page
+  revision that changed while the provider request was in flight, preserving
+  the prior chunks and leaving newer content dirty for the next pass.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

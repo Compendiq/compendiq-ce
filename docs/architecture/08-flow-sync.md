@@ -88,13 +88,17 @@ sequenceDiagram
     end
 
     Note over ES,OL: Embedding worker (separate loop)
-    ES->>DB: SELECT pages WHERE embedding_dirty = true LIMIT N
+    ES->>DB: SELECT dirty pages and content_revision LIMIT N
     loop per page
         ES->>ES: chunk(htmlToEmbeddingText(body_html))<br/>Markdown, fence-aware, section-packed (#35;1265)
         ES->>OL: POST /api/embeddings, resolved model<br/>bare chunk text, no query prefix (#35;1329)
         OL-->>ES: vector at the model's probed width
-        ES->>DB: INSERT page_embeddings
-        ES->>DB: UPDATE pages SET embedding_dirty = false
+        ES->>DB: Lock page and verify source content_revision
+        alt content revision still matches
+            ES->>DB: Replace page_embeddings and clear dirty if image revision matches
+        else content changed
+            ES->>DB: Roll back, retaining old chunks and newer dirty state
+        end
     end
 
     Note over IW,VL: Image analysis worker (#35;1616, ADR-027 D13) — its OWN repeatable job<br/>on the sync cadence, own worker lock, no-op when image_analysis is unassigned<br/>(#35;1618 stage 2 retired #35;1115 P2's image-EMBEDDING worker)

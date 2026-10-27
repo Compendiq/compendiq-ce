@@ -120,6 +120,7 @@ describe.skipIf(!dbAvailable)('page_avg_embedding materialization + indexed kNN 
     // Body large enough to produce several chunks (each ~1500 chars target).
     const para = '<p>' + 'Compendiq knowledge base content sentence. '.repeat(60) + '</p>';
     const bodyHtml = para.repeat(6);
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, bodyHtml]);
 
     const chunks = await embedPage('test-user', pageId, 'Averaged Page', 'DEV', bodyHtml);
 

@@ -1,6 +1,5 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings, getAdminChunkSettings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
@@ -192,8 +191,8 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
 
           if (storageXhtml) {
             // Try to get id, space_key and cached HTML from local DB first
-            const cachedRow = await query<{ id: number; space_key: string; body_html: string }>(
-              'SELECT id, space_key, body_html FROM pages WHERE confluence_id = $1',
+            const cachedRow = await query<{ id: number; title: string; space_key: string; body_html: string | null; content_revision: string }>(
+              'SELECT id, title, space_key, body_html, content_revision::text FROM pages WHERE confluence_id = $1',
               [page.id],
             );
 
@@ -214,13 +213,26 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
             }
 
             const resolvedSpaceKey = cachedRow.rows[0].space_key ?? '';
-            const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
-            const resolvedBodyHtml = cachedRow.rows[0].body_html ?? bodyHtml;
 
             // Same admin chunk options the dirty-page worker passes — without
             // them the two paths chunk the same page differently, and the
             // admin setting looks intermittently broken (#1265 verification).
-            await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml, chunkOpts);
+            if (cachedRow.rows[0].body_html !== null) {
+              await embedPage(userId, cachedRow.rows[0].id, cachedRow.rows[0].title, resolvedSpaceKey, cachedRow.rows[0].body_html, {
+                ...chunkOpts, contentRevision: cachedRow.rows[0].content_revision,
+              });
+            } else {
+              logger.warn({ confluenceId: page.id }, 'Page has no cached body, skipping embedding (sync first)');
+              reply.raw.write(`data: ${JSON.stringify({
+                phase: 'embedding',
+                total,
+                completed: completed + 1,
+                errors,
+                currentPage: page.title,
+                warning: 'Page has no cached body, skipping (sync first)',
+                done: false,
+              })}\n\n`);
+            }
           }
 
           completed++;
