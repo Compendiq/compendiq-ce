@@ -11,6 +11,7 @@ defines three networks that partition the deployment: the internet-facing
 ```mermaid
 flowchart LR
     host(["Host / reverse proxy"])
+    ca[("Optional host corporate CA PEM")]
 
     subgraph fe_net["frontend-net"]
         fe["<b>frontend</b><br/>:8081<br/>image: compendiq-ce-frontend"]
@@ -33,6 +34,7 @@ flowchart LR
     mcp -- "HTTP" --> searx
     be -- "SQL (data-net)" --> pg
     be -- "RESP (data-net)" --> rd
+    ca -. "opt-in read-only mount" .-> be
     mcp -- "RESP (backend-net)" --> rd
 
     classDef ext fill:#fff,stroke:#333
@@ -40,7 +42,7 @@ flowchart LR
     classDef svc fill:#eefbe8,stroke:#4caf50
     classDef data fill:#eef6ff,stroke:#4a90e2
     classDef side fill:#fff4e5,stroke:#e5a23c
-    class host ext
+    class host,ca ext
     class fe,be svc
     class mcp,searx side
     class pg,rd data
@@ -50,6 +52,11 @@ The `backend` is the only service that spans all three networks; it is drawn
 inside `backend-net` above, but it also joins `frontend-net` (so the frontend
 proxy can reach it) and `data-net` (so it can reach postgres/redis). The
 `frontend` joins `frontend-net` **only**.
+
+Base Compose retains the backend image trust store without a host CA mount.
+`docker-compose.corporate-ca.yml` optionally mounts a separate PEM and extends
+backend trust, with verification still enabled; see the
+[private-CA guide](../integrations/self-signed-tls/README.md).
 
 ## Network rules
 

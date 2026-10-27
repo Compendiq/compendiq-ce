@@ -1362,8 +1362,12 @@ for the full span reference.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOST_CA_BUNDLE_PATH` | `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` | Host path to CA bundle (bind-mounted into container) |
-| `CONTAINER_CA_BUNDLE_PATH` | `/etc/ssl/certs/ca-certificates.crt` | Container path for the CA bundle |
+| `HOST_CA_BUNDLE_PATH` | *(none)* | Existing host PEM file, required only with `docker/docker-compose.corporate-ca.yml`; see the [private-CA guide](integrations/self-signed-tls/README.md). |
+
+The base Compose deployment uses image trust without a host CA mount. Existing
+manual deployments using the former `HOST_CA_BUNDLE_PATH` and
+`CONTAINER_CA_BUNDLE_PATH` settings must opt into the override to retain private
+trust. The old container path setting is no longer used.
 
 ## Upgrade Procedure
 
@@ -2226,9 +2230,9 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 
 For self-signed certificates on Confluence or LLM servers:
 
-- Set `CONFLUENCE_VERIFY_SSL=false` or `LLM_VERIFY_SSL=false` to disable verification (not recommended for production).
-- Or provide a CA bundle via `NODE_EXTRA_CA_CERTS=/path/to/ca-bundle.pem`.
-- In Docker, mount the host CA bundle using `HOST_CA_BUNDLE_PATH` and `CONTAINER_CA_BUNDLE_PATH`.
+- Supply a CA PEM via `NODE_EXTRA_CA_CERTS` on bare metal, or the explicit
+  [corporate-CA Compose override](integrations/self-signed-tls/README.md) in Docker.
+  Restart the backend after changes; verification remains enabled.
 
 ### Embeddings are not being generated
 

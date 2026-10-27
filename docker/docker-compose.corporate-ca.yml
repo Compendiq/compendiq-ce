@@ -1,0 +1,13 @@
+# Opt in explicitly with -f docker/docker-compose.yml -f docker/docker-compose.corporate-ca.yml.
+# HOST_CA_BUNDLE_PATH must name an existing, readable PEM file on the Docker host.
+services:
+  backend:
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/compendiq/corporate-ca.pem
+    volumes:
+      - type: bind
+        source: ${HOST_CA_BUNDLE_PATH:?Set HOST_CA_BUNDLE_PATH to an existing PEM file}
+        target: /etc/compendiq/corporate-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false

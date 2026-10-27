@@ -1400,6 +1400,14 @@ Full reference is `.env.example`. Keys you must set:
 
 Tunable defaults (override only with reason): `EMBEDDING_DIMENSIONS=1024`, `USE_BULLMQ=true`, `SYNC_INTERVAL_MIN=15`, `LLM_CONCURRENCY=4`, `LLM_MAX_QUEUE_DEPTH=50`, `LLM_STREAM_TIMEOUT_MS=300000`, `LLM_CACHE_TTL=3600`, `QUALITY_CHECK_INTERVAL_MINUTES=60`, `SUMMARY_CHECK_INTERVAL_MINUTES=60`, `CONFLUENCE_RATE_LIMIT_RPM=60`, `SHUTDOWN_TIMEOUT_MS=50000` (keep below container stop grace period). TLS escape hatches: `LLM_VERIFY_SSL`, `CONFLUENCE_VERIFY_SSL`, `NODE_EXTRA_CA_CERTS`. Observability: `OTEL_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`. SMTP: `SMTP_*` (also configurable via admin UI).
 
+**Corporate CA trust (#1819).** Base Compose does not mount a host CA file.
+For private upstreams, layer `docker/docker-compose.corporate-ca.yml` and set
+`HOST_CA_BUNDLE_PATH` to an existing readable PEM. The backend adds that PEM
+to Node roots and the image system bundle; it must not replace public trust or
+disable certificate/hostname verification. Recreate the backend after changing
+the PEM or override. Existing deployments using the old automatic mount must
+explicitly opt in; `CONTAINER_CA_BUNDLE_PATH` is no longer used.
+
 Quality/Summary batch entrypoints own their local guard, Redis lease and
 `isProcessing` state for every caller, including BullMQ. Do not put locking
 back only in timer/manual wrappers: scheduled runs would reclaim live rows.

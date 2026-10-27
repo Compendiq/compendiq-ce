@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { rootCertificates } from 'tls';
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -90,7 +91,7 @@ describe('tls-config', () => {
     const { confluenceDispatcher } = await import('./tls-config.js');
     expect(confluenceDispatcher).toBe(composedDispatcher);
     expect(MockAgent).toHaveBeenCalledWith({
-      connect: { ca: fakeCert },
+      connect: { ca: [...rootCertificates, '', fakeCert].join('\n') },
     });
   });
 
@@ -165,7 +166,7 @@ describe('tls-config', () => {
     const calls = MockAgent.mock.calls;
     // Last call is from createTlsDispatcher
     const lastCall = calls[calls.length - 1];
-    expect(lastCall[0]).toEqual({ connect: { ca: fakeCert } });
+    expect(lastCall[0]).toEqual({ connect: { ca: [...rootCertificates, '', fakeCert].join('\n') } });
     // It should NOT have rejectUnauthorized: false
     expect(lastCall[0]?.connect?.rejectUnauthorized).toBeUndefined();
   });
