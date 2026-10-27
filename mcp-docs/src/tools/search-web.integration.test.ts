@@ -5,9 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { searchWeb } from './search-web.js';
 
 const redisUrl = process.env.MCP_DOCS_TEST_REDIS_URL;
-const integration = redisUrl ? describe : describe.skip;
+if (!redisUrl) {
+  throw new Error('MCP_DOCS_TEST_REDIS_URL must point to real Redis for the search cache regression');
+}
 
-integration('searchWeb cache width with real Redis and loopback SearXNG', () => {
+describe('searchWeb cache width with real Redis and loopback SearXNG', () => {
+
   let redis: RedisClientType | undefined;
   let server: Server | undefined;
   let serverUrl: string;

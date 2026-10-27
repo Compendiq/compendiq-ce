@@ -1373,6 +1373,11 @@ the sanitized query plus that effective width. Keep the width in cache
 identity because cached results are already truncated; a narrower request
 must not poison a later wider request, or vice versa.
 
+The MCP cache-width regression is mandatory in the sidecar test suite and uses
+real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
+PR Check sidecar job provisions Redis and sets this explicitly. Missing
+configuration fails the suite rather than skipping the regression.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
