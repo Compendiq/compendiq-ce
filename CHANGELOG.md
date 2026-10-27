@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Dependabot dependency compatibility (#1708):** keep backend Undici on
+  the intended 7.30.1 update, matching the workspace lockfile. Override
+  TipTap HTML's Happy DOM 20 peer to patched 21.0.4 so the vulnerable
+  transitive copy is not retained alongside the backend update; server
+  HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
+  `fast-uri` override to 3.1.9 and refresh its locked version.
+
 ### Changed
 
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
