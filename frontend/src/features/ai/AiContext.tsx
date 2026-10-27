@@ -1434,7 +1434,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
         const updated = [...prev];
         const lastMsg = updated[updated.length - 1];
         if (lastMsg && lastMsg.role === 'assistant') {
-          updated[updated.length - 1] = { ...lastMsg, content: text, isError: true };
+          updated[updated.length - 1] = {
+            ...lastMsg,
+            content: accumulated ? `${text}\n\nPartial output:\n${accumulated}` : text,
+            isError: true,
+          };
         }
         return updated;
       });
@@ -1442,11 +1446,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
     try {
       let streamError: string | null = null;
+      let completed = false;
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
         if (chunk.error) {
           streamError = chunk.error;
           break;
         }
+        if (chunk.done === true) completed = true;
         // Handle finalContent from output post-processing (cleaned content replaces accumulated)
         if ((chunk as Record<string, unknown>).finalContent) {
           accumulated = (chunk as Record<string, unknown>).finalContent as string;
@@ -1481,7 +1487,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
             });
           } else {
             frameConversationId = frameId;
-            writeOrigin(() => ({ conversationId: frameId }));
           }
         }
         if (chunk.final && chunk.sources) {
@@ -1516,6 +1521,18 @@ export function AiProvider({ children }: { children: ReactNode }) {
         toast.error(streamError);
         failLastMessage(streamError);
         return;
+      }
+      if (controller.signal.aborted && !completed) {
+        commitToMessages();
+        return;
+      }
+      if (!completed) {
+        const message = 'The response was interrupted before completion. Try again.';
+        failLastMessage(message);
+        return;
+      }
+      if (frameConversationId !== undefined) {
+        writeOrigin(() => ({ conversationId: frameConversationId }));
       }
       commitToMessages();
       // Promotion, the mirror and list invalidation — the NORMAL path only.

@@ -33,7 +33,7 @@ describe('useImproveStream', () => {
   });
 
   it('accumulates streamed content and ends in done', async () => {
-    streamSSE.mockReturnValue(gen([{ content: 'Hello ' }, { content: 'world' }]));
+    streamSSE.mockReturnValue(gen([{ content: 'Hello ' }, { content: 'world', done: true }]));
 
     const { result } = renderHook(() => useImproveStream());
     await act(async () => {
@@ -56,7 +56,7 @@ describe('useImproveStream', () => {
   });
 
   it('falls through to /llm/improve on a local miss without returning to idle', async () => {
-    streamSSE.mockReturnValue(gen([{ content: 'server' }]));
+    streamSSE.mockReturnValue(gen([{ content: 'server', done: true }]));
     const { result } = renderHook(() => useImproveStream());
     await act(async () => {
       await result.current.run('teh passage', 'grammar');
@@ -85,7 +85,7 @@ describe('useImproveStream', () => {
   });
 
   it('prefers finalContent (post-processed) over accumulated chunks', async () => {
-    streamSSE.mockReturnValue(gen([{ content: 'partial' }, { finalContent: 'clean final' }]));
+    streamSSE.mockReturnValue(gen([{ content: 'partial', done: true }, { finalContent: 'clean final' }]));
 
     const { result } = renderHook(() => useImproveStream());
     await act(async () => {
@@ -93,6 +93,15 @@ describe('useImproveStream', () => {
     });
 
     expect(result.current.output).toBe('clean final');
+  });
+
+  it('retains incomplete output without marking it done', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'partial' }]));
+    const { result } = renderHook(() => useImproveStream());
+    await act(async () => { await result.current.run('hi', 'grammar'); });
+    expect(result.current.output).toBe('partial');
+    expect(result.current.status).toBe('error');
+    expect(result.current.error).toMatch(/interrupted before completion/i);
   });
 
   it('surfaces an error chunk as error status', async () => {

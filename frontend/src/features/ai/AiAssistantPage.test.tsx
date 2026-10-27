@@ -883,6 +883,7 @@ describe('AiAssistantPage', () => {
       async function* fakeStream() {
         yield { content: 'Hello ' };
         yield { content: 'world' };
+        yield { done: true };
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
@@ -933,6 +934,7 @@ describe('AiAssistantPage', () => {
 
       async function* fakeStream() {
         yield { content: 'AI response text' };
+        yield { done: true };
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
@@ -988,6 +990,7 @@ describe('AiAssistantPage', () => {
         yield { content: 'Hello ' };
         yield { content: '**world**' };
         await gate;
+        yield { done: true };
       }
       streamSSEMock.mockReturnValue(gatedStream());
 
@@ -1034,6 +1037,7 @@ describe('AiAssistantPage', () => {
       async function* gatedStream() {
         yield { content: 'The answer.' };
         await gate;
+        yield { done: true };
       }
       streamSSEMock.mockReturnValue(gatedStream());
 
