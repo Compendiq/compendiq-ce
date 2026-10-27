@@ -57,7 +57,7 @@ function tokenJaccardSimilarity(a: string, b: string): number {
  */
 export async function findDuplicates(
   userId: string,
-  confluenceId: string,
+  pageId: string,
   options: {
     distanceThreshold?: number;
     limit?: number;
@@ -70,20 +70,20 @@ export async function findDuplicates(
   // rag-service retrieval filters).
   const accessibleSpaces = await getUserAccessibleSpaces(userId);
 
-  // Get the source page id and title for title similarity comparison.
-  // #733: a source page outside the caller's accessible spaces, or one the
-  // caller may not read under the shared list definition (including page
-  // restrictions), behaves exactly like a nonexistent one — no existence
-  // oracle, no neighbor leak.
+  // Resolve the canonical identifier for each source, within the same readable
+  // set used by the full scan. Historical Confluence IDs on standalone rows
+  // are metadata, not their identity.
   const sourcePageResult = await query<{ id: number; title: string }>(
     `SELECT cp.id, cp.title FROM pages cp
-      WHERE cp.confluence_id = $1
+      WHERE ((cp.source = 'confluence' AND cp.confluence_id = $1)
+          OR (cp.source = 'standalone' AND cp.id::text = $1))
         AND cp.deleted_at IS NULL
-        AND cp.space_key = ANY($2::text[])
         AND ${visiblePagesPredicate(2, 3)}`,
-    [confluenceId, accessibleSpaces, userId],
+    [pageId, accessibleSpaces, userId],
   );
-  if (sourcePageResult.rows.length === 0) {
+  // A visible identifier collision must not pick an arbitrary source; hidden
+  // rows cannot affect this decision or become an existence oracle.
+  if (sourcePageResult.rows.length !== 1) {
     return [];
   }
   const sourcePage = sourcePageResult.rows[0]!;

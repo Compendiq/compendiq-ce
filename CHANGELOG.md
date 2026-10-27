@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Per-page duplicate detection (#1798):** resolve standalone sources by
+  internal ID and Confluence sources by content ID under the same visibility
+  rules as the full scan, including restricted and private pages.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
