@@ -210,6 +210,11 @@ export function invalidateProviderBreaker(providerId: string): void {
   providerBreakers.delete(providerId);
 }
 
+/** Forget all provider breakers after a missed cluster invalidation. */
+export function invalidateAllProviderBreakers(): void {
+  providerBreakers.clear();
+}
+
 /**
  * Snapshot of a single live per-provider breaker used for health reporting.
  * `state` is lowercased to match the legacy health payload shape.

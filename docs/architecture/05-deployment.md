@@ -445,6 +445,9 @@ flowchart LR
    `redis-cache-bus` `onReconnect` hook cold-reloads cached settings
    after any disconnect, so a brief Redis blip costs a fan of
    uncached reads, not desync.
+   Provider reconnects also invalidate local provider configuration and all
+   per-provider dispatchers and breakers, including resources for providers
+   tested without a use-case assignment; the next resolution reads Postgres.
 
 4. **Postgres connection sizing.** Each replica opens its own pool;
    default size × replicas should stay below `max_connections` at the

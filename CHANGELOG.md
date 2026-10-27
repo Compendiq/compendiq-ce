@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
   `fast-uri` override to 3.1.9 and refresh its locked version.
 
+### Fixed
+
+- **Provider configuration after Redis reconnect (#1794):** a replica that
+  misses provider updates or deletions invalidates its local configuration
+  and provider client resources when its subscriber reconnects.
+
 ### Changed
 
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
