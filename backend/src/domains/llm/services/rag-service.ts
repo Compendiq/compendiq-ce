@@ -1854,7 +1854,7 @@ async function hybridSearchInner(
     // remember. Documents are embedded bare under every model, so the stored
     // corpus is identical either way and flipping this needs no re-embed.
     const embeddings = await generateEmbedding(
-      config, model, formatQueryForEmbedding(model, question),
+      config, model, formatQueryForEmbedding(model, question), { kind: 'non_article', purpose: 'user_query' },
     );
     const questionEmbedding = embeddings[0]!;
     vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise, { spaceKey: opts?.spaceKey, aiPolicy: purpose });

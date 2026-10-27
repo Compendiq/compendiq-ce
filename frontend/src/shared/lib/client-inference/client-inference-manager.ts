@@ -58,6 +58,7 @@ export interface ClientInferenceManagerOptions {
   accessToken?: () => string | null;
   now?: () => number;
   fetchOrgPolicy?: () => Promise<ClientInferenceOrgPolicy>;
+  fetchArticlePolicy?: (pageId: number, signal: AbortSignal) => Promise<unknown>;
 }
 
 let singleton: ClientInferenceManager | null = null;
@@ -163,6 +164,22 @@ export class ClientInferenceManager {
     return withoutServer && this.canUseGpu();
   }
 
+  async articleRevision(pageId: number | undefined, signal: AbortSignal): Promise<number | null> {
+    if (!Number.isSafeInteger(pageId) || !pageId || signal.aborted) return null;
+    try {
+      const value = await (this.opts.fetchArticlePolicy?.(pageId, signal)
+        ?? apiFetch<unknown>('/llm/inline-completion/browser-authorization', {
+          method: 'POST', body: JSON.stringify({ pageId }), signal, cache: 'no-store',
+        }));
+      if (!value || typeof value !== 'object' || signal.aborted) return null;
+      const row = value as { authorized?: unknown; pageId?: unknown; aiPolicy?: unknown; aiPolicyRevision?: unknown };
+      return row.authorized === true && row.pageId === pageId
+        && (row.aiPolicy === 'all' || row.aiPolicy === 'local_only')
+        && typeof row.aiPolicyRevision === 'number' && Number.isSafeInteger(row.aiPolicyRevision)
+        && row.aiPolicyRevision >= 0 ? row.aiPolicyRevision : null;
+    } catch { return null; }
+  }
+
   async decideComplete(args: {
     input: InlineCompletionRequest;
     signal: AbortSignal;
@@ -170,6 +187,7 @@ export class ClientInferenceManager {
     withoutServer: boolean;
     wordMode: boolean;
   }): Promise<CompleteDecision> {
+    if (!Number.isSafeInteger(args.input.pageId) || !args.input.pageId) return { kind: 'off' };
     await this.ensureOrgPolicy();
     const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
     const mandated = policy.active && policy.mode === 'mandated_offline_only';
@@ -187,6 +205,8 @@ export class ClientInferenceManager {
       void this.maybeStartLoad();
       return serverFallback();
     }
+    const revision = await this.articleRevision(args.input.pageId, args.signal);
+    if (revision === null || args.signal.aborted) return { kind: 'off' };
     const text = await this.requestWorker({
       id: this.nextId(),
       type: 'complete',
@@ -194,6 +214,8 @@ export class ClientInferenceManager {
       suffix: args.input.suffix,
       maxTokens: capMaxTokens(args.input.maxTokens ?? 48, args.wordMode),
     }, args.signal);
+    const currentRevision = await this.articleRevision(args.input.pageId, args.signal);
+    if (args.signal.aborted || currentRevision !== revision) return { kind: 'off' };
     if (text == null) return serverFallback();
     const completion = normalizeInlineCompletion(text);
     if (!completion) return serverFallback();

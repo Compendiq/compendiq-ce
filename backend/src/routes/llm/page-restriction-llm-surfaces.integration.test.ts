@@ -7,6 +7,12 @@
  * the LLM and embedding provider boundaries are replaced.
  */
 import type { FastifyInstance } from 'fastify';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
+import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
+import { assembleDirectArticleContext } from './_article-transport.js';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { query } from '../../core/db/postgres.js';
@@ -35,18 +41,6 @@ import { llmImproveRoutes } from './llm-improve.js';
 // policy admission fails closed on a provider it cannot read.
 const provider = vi.hoisted(() => ({ prompts: [] as string[], providerId: '' }));
 
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', async (importActual) => ({
-  ...(await importActual<typeof import('../../domains/llm/services/llm-provider-resolver.js')>()),
-  resolveUsecase: async () => ({
-    config: {
-      providerId: provider.providerId, id: provider.providerId, name: 'Fixture',
-      baseUrl: 'http://127.0.0.1:9/v1', apiKey: null, authType: 'none',
-      verifySsl: true, defaultModel: 'fixture-model',
-    },
-    model: 'fixture-model',
-  }),
-}));
-
 vi.mock('../../domains/llm/services/openai-compatible-client.js', async (importActual) => ({
   ...(await importActual<typeof import('../../domains/llm/services/openai-compatible-client.js')>()),
   // Every page the embedding worker touches fails, so each one lands in the
@@ -54,12 +48,7 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', async (importA
   generateEmbedding: async () => {
     throw new Error('embedding provider unreachable');
   },
-  streamChat: (_config: unknown, _model: string, messages: unknown) => {
-    provider.prompts.push(JSON.stringify(messages));
-    return (async function* () {
-      yield { content: 'Improved.', done: true };
-    })();
-  },
+
 }));
 
 const available = await isDbAvailable() && await isRedisAvailable();
@@ -89,6 +78,8 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
   let redis: RedisClientType;
   let currentUserId = '';
   let fx: RestrictionFixture;
+  let server: Server;
+  let baseUrl: string;
 
   async function request(
     userId: string,
@@ -127,6 +118,17 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
     return { prompt: provider.prompts[0]!, body };
   }
 
+  async function deniedImprove(userId: string, pageId: string) {
+    provider.prompts.length = 0;
+    const response = await request(userId, '/api/llm/improve', 'POST', {
+      content: '<p>Draft</p>', type: 'grammar', pageId, includeSubPages: true,
+    });
+    expect(response.statusCode).toBe(404);
+    expect(provider.prompts).toEqual([]);
+    expect(restrictedLeaks(response.body)).toEqual([]);
+    return response.body;
+  }
+
   async function insertConversation(ownerId: string, pageRef: number): Promise<string> {
     const result = await query<{ id: string }>(
       `INSERT INTO llm_conversations (user_id, model, title, title_source, page_ref, messages)
@@ -154,6 +156,17 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
 
   beforeAll(async () => {
     await setupTestDb();
+    server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        provider.prompts.push(raw);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end('data: {"choices":[{"delta":{"content":"Improved."}}]}\n\ndata: [DONE]\n\n');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     redis = createClient({
       url: process.env.REDIS_URL,
       socket: { reconnectStrategy: false, connectTimeout: 1_000 },
@@ -176,6 +189,7 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
 
   afterAll(async () => {
     await app?.close();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     if (redis?.isOpen) {
       await flushRedis(redis);
       await redis.quit();
@@ -191,9 +205,12 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
     fx = await seedRestrictionFixture();
     provider.prompts.length = 0;
     const row = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url) VALUES ('Fixture', 'http://127.0.0.1:9/v1') RETURNING id::text`,
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model, is_default)
+       VALUES ('Fixture', $1, 'none', 'fixture-model', TRUE) RETURNING id::text`, [baseUrl],
     );
     provider.providerId = row.rows[0]!.id;
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('chat', $1, 'fixture-model')", [provider.providerId]);
+    bumpProviderCacheVersion();
   }, 30_000);
 
   describe('embedding run SSE (POST /embeddings/process, /embeddings/retry-failed)', () => {
@@ -228,22 +245,19 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
   describe('LLM page context (resolvePageRef / assembleContextIfNeeded / improvement rows)', () => {
     it('does not put a restricted title or its sub-page tree into R\'s prompt', async () => {
       for (const ref of [String(fx.pages.hushedLeaf), String(fx.pages.hushedParent), 'c-hushed-parent']) {
-        const { prompt, body } = await improve(fx.readerId, ref);
-        expect(restrictedLeaks(prompt), ref).toEqual([]);
-        expect(restrictedLeaks(body), ref).toEqual([]);
-        // The restricted parent's hierarchy is not disclosed through its children.
-        expect(prompt, ref).not.toContain('Visible Child');
+        const body = await deniedImprove(fx.readerId, ref);
+        expect(body, ref).not.toContain('Visible Child');
       }
     });
 
     it('answers a restricted ref exactly like a page that does not exist', async () => {
-      const restricted = await improve(fx.readerId, String(fx.pages.hushedLeaf));
-      const missing = await improve(fx.readerId, '987654');
-      expect(restricted.prompt).toBe(missing.prompt);
+      const restricted = await deniedImprove(fx.readerId, String(fx.pages.hushedLeaf));
+      const missing = await deniedImprove(fx.readerId, '987654');
+      expect(restricted).toBe(missing);
     });
 
     it('records an improvement row only for a page the caller may read', async () => {
-      await improve(fx.readerId, String(fx.pages.hushedLeaf));
+      await deniedImprove(fx.readerId, String(fx.pages.hushedLeaf));
       await improve(fx.readerId, String(fx.pages.openRoot));
       const rows = await query<{ page_id: number }>(
         'SELECT page_id FROM llm_improvements WHERE user_id = $1',
@@ -266,6 +280,40 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
         expect(rows.rows.map((row) => row.page_id)).toEqual([fx.pages.hushedLeaf, fx.pages.hushedParent]);
       }
     });
+  });
+
+  describe('composed article dispatch binding', () => {
+    it('omits forbidden descendant titles and bodies before formatting', async () => {
+      await query("UPDATE pages SET ai_policy = 'none' WHERE id = $1", [fx.pages.visibleChild]);
+      const { prompt } = await improve(fx.groupReaderId, String(fx.pages.hushedParent));
+      expect(prompt).toContain('Hushed Parent');
+      expect(prompt).not.toContain('Visible Child');
+    });
+
+    it.each(['policy', 'content', 'acl', 'provider', 'assignment'] as const)(
+      'rejects a composed prompt when its %s changes before HTTP dispatch', async (change) => {
+        const target = await resolveUsecase('chat');
+        const composed = await assembleDirectArticleContext(fx.groupReaderId, String(fx.pages.hushedParent),
+          '<p>Draft</p>', true, target.config, 'chat', target.model);
+        expect(composed.markdown).toContain('Visible Child');
+        expect(composed.transportContext.kind).toBe('article');
+        if (composed.transportContext.kind !== 'article') throw new Error('Expected article');
+        expect(composed.transportContext.stage.provenance.pages.map((p) => p.pageId))
+          .toEqual(expect.arrayContaining([fx.pages.hushedParent, fx.pages.visibleChild]));
+        if (change === 'policy') await query("UPDATE pages SET ai_policy = 'none' WHERE id = $1", [fx.pages.visibleChild]);
+        if (change === 'content') await query('UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1', [fx.pages.visibleChild]);
+        if (change === 'acl') await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [fx.pages.visibleChild]);
+        if (change === 'provider') await query("UPDATE llm_providers SET base_url = base_url || '/changed' WHERE id = $1", [provider.providerId]);
+        if (change === 'assignment') await query("UPDATE llm_usecase_assignments SET model = 'changed' WHERE usecase = 'chat'");
+        provider.prompts.length = 0;
+        await expect((async () => {
+          for await (const chunk of streamChat(target.config, target.model,
+            [{ role: 'user', content: composed.markdown }], undefined,
+            { transportContext: composed.transportContext })) { void chunk; }
+        })()).rejects.toThrow();
+        expect(provider.prompts).toEqual([]);
+      },
+    );
   });
 
   describe('conversations and improvement history', () => {
@@ -410,7 +458,7 @@ describe.skipIf(!available)('page restrictions on LLM and worker-status surfaces
       confluenceId?: string;
     }>;
     expect(history.find((row) => row.id === improvementId)!.confluenceId).toBeUndefined();
-    expect(restrictedLeaks((await improve(fx.groupReaderId, String(fx.pages.hushedLeaf))).prompt)).toEqual([]);
+    await deniedImprove(fx.groupReaderId, String(fx.pages.hushedLeaf));
     expect(restrictedLeaks((await embeddingRun(fx.groupReaderId)).body)).toEqual([]);
     expect(restrictedLeaks(JSON.stringify(await getSyncOverview(fx.groupReaderId)))).toEqual([]);
     expect(JSON.parse(await ok(fx.groupReaderId, '/api/llm/quality-status'))).toMatchObject({ failedPages: 0 });

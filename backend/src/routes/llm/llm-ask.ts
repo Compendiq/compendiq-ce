@@ -1,3 +1,4 @@
+import { newAiOperation } from '../../core/enterprise/ai-policy-hooks.js';
 import { FastifyInstance } from 'fastify';
 import { query, getPool } from '../../core/db/postgres.js';
 import type { PoolClient } from 'pg';
@@ -393,6 +394,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const body = AskRequestSchema.parse(request.body);
     const { question, model, conversationId, includeSubPages, externalUrls, referenceText, imageHandle } = body;
     const userId = request.userId;
+    const operation = newAiOperation('ask', { kind: 'user', id: userId });
 
     if (question.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Question too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -665,7 +667,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       // carries the SAME binding and decides each descendant itself.
       let rootAdmission: Awaited<ReturnType<typeof admitPageForProvider>> | null = null;
       if (resolved && (await userCanAccessPage(userId, resolved.id))) {
-        rootAdmission = await admitPageForProvider(resolved.id, 'chat', bound.providerId, resolvedModel);
+        rootAdmission = await admitPageForProvider(resolved.id, 'chat', bound.providerId, resolvedModel,
+          { operation, stage: 'chat', attempt: 1, preliminary: true });
         if (!rootAdmission.admitted && rootAdmission.retryable) {
           return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
         }
@@ -1621,6 +1624,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
       const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal, {
         thinking: body.thinking,
+        transportContext: { kind: 'article', stage: { provenance: turnProvenance, userId, usecase: 'chat',
+          context: { operation, stage: 'chat', attempt: 1 } } },
         beforeDispatch: async () => {
           const proof = await reproveGrounding(turnProvenance.pages, bound, userId);
           if (!proof.ok) throw new Error(proof.code);

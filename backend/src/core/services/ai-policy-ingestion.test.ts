@@ -14,7 +14,7 @@ import {
   JS_TRIM_SQL,
   resolveIngestionAiPolicy,
   tightenExistingAiPolicy,
-  TIGHTEN_ONLY_POLICY_SQL,
+  admitAutomaticIngestionPolicy,
 } from './ai-policy-ingestion.js';
 
 describe('ingestion AI policy (SPEC-WORK-002)', () => {
@@ -95,9 +95,12 @@ describe('ingestion AI policy (SPEC-WORK-002)', () => {
     expect(FRESH_PUBLICATION_FENCE_ACTIVE_SQL).toContain(`jsonb_typeof(i.remote_terminal_result -> 'observedConfluenceId') = 'string'`);
   });
 
-  it('SQL fragment never relaxes (uses rank comparison)', () => {
-    const sql = TIGHTEN_ONLY_POLICY_SQL('pages.ai_policy', 'EXCLUDED.labels');
-    expect(sql).toContain('ai_policy_rank(ai_policy_from_labels(EXCLUDED.labels)) > ai_policy_rank(pages.ai_policy)');
-    expect(sql).toContain('ELSE pages.ai_policy');
+  it('planning never grants publication authority while rollout is closed', () => {
+    expect(() => admitAutomaticIngestionPolicy({ identity: 'p', currentPolicy: 'all', candidate: 'none' }))
+      .toThrow('ai_policy_enforcement_unavailable');
+    expect(() => admitAutomaticIngestionPolicy({ identity: 'p', currentPolicy: 'local_only', candidate: 'none' }))
+      .toThrow('ai_policy_enforcement_unavailable');
+    expect(admitAutomaticIngestionPolicy({ identity: 'p', currentPolicy: 'none', candidate: 'all' })).toBe('none');
+    expect(admitAutomaticIngestionPolicy({ identity: 'p', currentPolicy: 'all', candidate: 'all' })).toBe('all');
   });
 });

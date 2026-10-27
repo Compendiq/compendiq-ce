@@ -86,6 +86,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Details trust and draft continuity', () => {
+  it('cancels deferred notes scrolling when the inspector unmounts', async () => {
+    renderDetails();
+    await screen.findByText(noteFixture.body);
+    const scroll = vi.fn();
+    const section = screen.getByTestId('details-notes-section');
+    section.scrollIntoView = scroll;
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(window, { key: 'n', altKey: true });
+      cleanup();
+      // Keep an unrelated successor element with the same ID in the document:
+      // a stale callback must not navigate the newly mounted article either.
+      const successor = document.createElement('div');
+      successor.id = 'details-notes-section';
+      successor.scrollIntoView = scroll;
+      document.body.appendChild(successor);
+      try {
+        act(() => { vi.advanceTimersByTime(100); });
+        expect(scroll).not.toHaveBeenCalled();
+      } finally {
+        successor.remove();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not certify failed indexing when the error text is absent and a human verification exists', async () => {
     renderDetails({ embeddingStatus: 'failed', verifiedAt: '2026-09-02T12:00:00Z' });
     await waitFor(() => expect(screen.getByText('Search indexing failed')).toBeVisible());

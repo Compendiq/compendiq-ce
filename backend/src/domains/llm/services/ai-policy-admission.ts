@@ -2,7 +2,9 @@ import type { LlmUsecase } from '@compendiq/contracts';
 import type { PoolClient } from 'pg';
 import { getPool } from '../../../core/db/postgres.js';
 import { AI_POLICY_LOCK_NAMESPACE, isAiPolicy, type AiPolicy } from '../../../core/services/ai-policy-service.js';
-import { emitAiPolicyEvent } from '../../../core/enterprise/ai-policy-hooks.js';
+import { randomUUID } from 'node:crypto';
+import type { AiDecisionEvent, AiOperationContext } from '@compendiq/contracts';
+import { emitAiDecision } from '../../../core/enterprise/ai-policy-hooks.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
   resolveImageAnalysisUsecase,
@@ -251,7 +253,53 @@ function refuse(
  * refused as the retryable `policy_unavailable`, with its `blocked` event,
  * and no provider is ever called.
  */
-export async function admitPageForUsecase(pageId: number, usecase: LlmUsecase): Promise<AiPolicyAdmission> {
+export interface PolicyAdmissionContext {
+  operation: AiOperationContext;
+  stage: string;
+  attempt: number;
+  /** Preliminary allowed checks are not dispatch decisions. Refusals still emit. */
+  preliminary?: boolean;
+}
+
+type RefusalContext = Omit<PolicyAdmissionContext, 'attempt'> & { attempt: number | null };
+
+function decisionSnapshot(pageId: number, usecase: string, context: RefusalContext): AiDecisionEvent {
+  return { ...context.operation, eventId: randomUUID(), occurredAt: new Date().toISOString(),
+    type: 'decision', usecase, stage: context.stage, attempt: context.attempt,
+    articles: [{ pageId, policy: null, policyRevision: null, contentRevision: null }],
+    provider: null, decision: 'blocked', reason: 'policy_unavailable' };
+}
+
+export async function emitUnresolvedDecision(pageId: number, usecase: LlmUsecase, context: RefusalContext,
+  reason: 'policy_unavailable' | 'stage_disabled',
+  destination?: { providerId: string; model: string }): Promise<void> {
+  const snapshot = decisionSnapshot(pageId, usecase, context);
+  if (destination) {
+    snapshot.provider = { providerId: destination.providerId, model: destination.model,
+      configRevision: null, declaredLocality: null, effectiveLocality: null };
+    try {
+      const result = await getPool().query(`SELECT ${PROVIDER_METADATA_COLUMNS} FROM llm_providers WHERE id::text = $1`, [destination.providerId]);
+      const row = result.rows[0];
+      const metadata = decodeProviderMetadata(row);
+      snapshot.provider.configRevision = asRevision(row?.config_revision);
+      snapshot.provider.declaredLocality = row?.locality === 'local' || row?.locality === 'external' ? row.locality : null;
+      snapshot.provider.effectiveLocality = metadata?.effectiveLocality ?? null;
+    } catch {
+      // Destination identity is known, but its current configuration is not.
+    }
+  }
+  try {
+    const result = await getPool().query('SELECT ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL', [pageId]);
+    const row = result.rows[0];
+    snapshot.articles = [{ pageId, policy: isAiPolicy(row?.ai_policy) ? row.ai_policy : null,
+      policyRevision: asRevision(row?.ai_policy_revision), contentRevision: asRevision(row?.content_revision) }];
+  } catch {
+    // Unreadable authority remains explicitly unknown, never copied from input.
+  }
+  emitAiDecision({ ...snapshot, occurredAt: new Date().toISOString(), reason });
+}
+
+export async function admitPageForUsecase(pageId: number, usecase: LlmUsecase, context: PolicyAdmissionContext): Promise<AiPolicyAdmission> {
   let resolved: { config: { providerId: string }; model: string } | null;
   try {
     switch (usecase) {
@@ -269,14 +317,14 @@ export async function admitPageForUsecase(pageId: number, usecase: LlmUsecase): 
     }
   } catch (err) {
     logger.warn({ err, pageId, usecase }, 'AI policy admission could not resolve the provider; refusing');
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId: null, reason: 'policy_unavailable', policy: null });
+    await emitUnresolvedDecision(pageId, usecase, context, 'policy_unavailable');
     return refuse(pageId, null, 'policy_unavailable', null);
   }
   if (!resolved) {
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId: null, reason: 'stage_disabled', policy: null });
+    await emitUnresolvedDecision(pageId, usecase, context, 'stage_disabled');
     return refuse(pageId, null, 'stage_disabled', null);
   }
-  return admitPageForProvider(pageId, usecase, resolved.config.providerId, resolved.model);
+  return admitPageForProvider(pageId, usecase, resolved.config.providerId, resolved.model, context);
 }
 
 /**
@@ -300,16 +348,20 @@ export async function admitPageForProvider(
   usecase: LlmUsecase,
   providerId: string,
   model: string,
+  context: PolicyAdmissionContext,
 ): Promise<AiPolicyAdmission> {
+  let snapshot = decisionSnapshot(pageId, usecase, context);
+  snapshot.provider = { providerId, model: null, configRevision: null, declaredLocality: null, effectiveLocality: null };
+  const blocked = (reason: AiPolicyAdmissionBlockReason) => emitAiDecision({ ...snapshot, reason });
   let client: PoolClient | null = null;
-  let p: { ai_policy: AiPolicy; ai_policy_revision: string } | undefined;
+  let p: { ai_policy: AiPolicy; ai_policy_revision: string; content_revision: string } | undefined;
   let row: ProviderMetadataRow | undefined;
   try {
     client = await getPool().connect();
     await client.query('BEGIN READ ONLY');
     await client.query('SELECT pg_advisory_xact_lock_shared($1, $2)', [AI_POLICY_LOCK_NAMESPACE, pageId]);
-    const page = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string }>(
-      `SELECT ai_policy, ai_policy_revision FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+    const page = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string; content_revision: string }>(
+      `SELECT ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     const prov = await client.query<ProviderMetadataRow>(
@@ -319,18 +371,26 @@ export async function admitPageForProvider(
     await client.query('COMMIT');
     p = page.rows[0];
     row = prov.rows[0];
+    const metadata = decodeProviderMetadata(row);
+    snapshot = { ...snapshot,
+      articles: [{ pageId, policy: isAiPolicy(p?.ai_policy) ? p.ai_policy : null,
+        policyRevision: asRevision(p?.ai_policy_revision), contentRevision: asRevision(p?.content_revision) }],
+      provider: { providerId, model: metadata ? model : null, configRevision: asRevision(row?.config_revision),
+        declaredLocality: row?.locality === 'local' || row?.locality === 'external' ? row.locality : null,
+        effectiveLocality: metadata?.effectiveLocality ?? null },
+    };
   } catch (err) {
     // Connection refused, missing columns, cancelled statement, …: the
     // policy state is UNKNOWN, so nothing is admitted. Retryable.
     if (client) await client.query('ROLLBACK').catch(() => undefined);
     logger.warn({ err, pageId, usecase, providerId }, 'AI policy admission could not read policy state; refusing');
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_unavailable', policy: null });
+    blocked('policy_unavailable');
     return refuse(pageId, null, 'policy_unavailable', providerId);
   } finally {
     client?.release();
   }
   if (!p) {
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'not_found', policy: null });
+    blocked('not_found');
     return refuse(pageId, null, 'not_found', providerId);
   }
   // The page row is decoded with the same rigour as the provider row: a
@@ -342,13 +402,13 @@ export async function admitPageForProvider(
       { pageId, usecase, providerId, policy: p.ai_policy, revision: p.ai_policy_revision },
       'AI policy admission: page policy state does not decode; refusing',
     );
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_unavailable', policy: null });
+    blocked('policy_unavailable');
     return refuse(pageId, null, 'policy_unavailable', providerId);
   }
   if (p.ai_policy === 'none') {
     // A fact about the article, not the provider: persistable, never retried
     // against a different provider state.
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_none', policy: p.ai_policy });
+    blocked('policy_none');
     return refuse(pageId, p.ai_policy, 'policy_none', providerId);
   }
   const provider = decodeProviderMetadata(row);
@@ -357,18 +417,15 @@ export async function admitPageForProvider(
       { pageId, usecase, providerId, present: row !== undefined },
       'AI policy admission: provider metadata missing or invalid; refusing',
     );
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: 'policy_unavailable', policy: p.ai_policy });
+    blocked('policy_unavailable');
     return refuse(pageId, p.ai_policy, 'policy_unavailable', providerId);
   }
   const decision = decideAiPolicyAdmission(p.ai_policy, provider);
   if (decision !== 'admit') {
-    emitAiPolicyEvent({ type: 'blocked', pageId, usecase, providerId, reason: decision, policy: p.ai_policy });
+    blocked(decision);
     return refuse(pageId, p.ai_policy, decision, providerId);
   }
-  emitAiPolicyEvent({
-    type: 'admitted', pageId, usecase, providerId,
-    configRevision: provider.configRevision, policy: p.ai_policy, policyRevision,
-  });
+  if (!context.preliminary) emitAiDecision({ ...snapshot, decision: 'admitted', reason: 'allowed' });
   return {
     admitted: true,
     pageId,
@@ -379,6 +436,44 @@ export async function admitPageForProvider(
     locality: provider.effectiveLocality,
     model,
   };
+}
+
+/**
+ * An early denial is not a publication permit. Re-read the article and exact
+ * provider under the mutation/admission locks before parking work. A content
+ * edit, relaxation or endpoint/declaration change may have overtaken the
+ * preflight. The callback runs on this held client, never across inference.
+ */
+export async function publishCurrentAiPolicyBlock(
+  input: { pageId: number; providerId: string; contentRevision: string; reason: AiPolicyBlockReason },
+  publish: (client: PoolClient) => Promise<boolean>,
+): Promise<boolean> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock_shared($1, $2)', [AI_POLICY_LOCK_NAMESPACE, input.pageId]);
+    const pages = await client.query<{ ai_policy: unknown; content_revision: string }>(
+      `SELECT ai_policy, content_revision::text FROM pages
+        WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, [input.pageId],
+    );
+    const providers = await client.query<ProviderMetadataRow>(
+      `SELECT ${PROVIDER_METADATA_COLUMNS} FROM llm_providers WHERE id::text = $1 FOR SHARE`, [input.providerId],
+    );
+    const page = pages.rows[0];
+    const provider = decodeProviderMetadata(providers.rows[0]);
+    let published = false;
+    if (page && isAiPolicy(page.ai_policy) && page.content_revision === input.contentRevision
+      && provider && decideAiPolicyAdmission(page.ai_policy, provider) === input.reason) {
+      published = await publish(client);
+    }
+    await client.query('COMMIT');
+    return published;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**

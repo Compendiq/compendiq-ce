@@ -1,10 +1,11 @@
 import type { PoolClient } from 'pg';
-import { AI_POLICY_CANONICAL_LABELS, AI_POLICY_LABEL_SYNONYMS } from '@compendiq/contracts';
+import { createHash, randomUUID } from 'node:crypto';
+import { AI_POLICY_CANONICAL_LABELS, aiPolicyLabelConflict, applyCanonicalAiPolicyLabel as canonicalLabels, normalizeAiPolicyLabel as parseReservedAiPolicyLabel, type AiOperationContext, type AiPolicyChangeEvent } from '@compendiq/contracts';
 import { getPool } from '../db/postgres.js';
+import { exactAiPolicyRevision, safeAiPolicyRevision } from './ai-policy-revision.js';
 import { isSystemAdmin, userCanAccessPage, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
-import { emitAiPolicyEvent } from '../enterprise/ai-policy-hooks.js';
-import { PageWriteError, withPageWriteTransaction } from './page-write-admission.js';
+import { PageWriteError, withAiPolicyWriteTransaction } from './page-write-admission.js';
 
 /**
  * Article AI policy (SPEC-CORE-001/003). `pages.ai_policy` is the single
@@ -35,8 +36,7 @@ export function isStricterPolicy(a: AiPolicy, b: AiPolicy): boolean {
  * stating an explicit relaxation (which needs policy authority).
  */
 export function normalizeAiPolicyLabel(label: string): AiPolicy | null {
-  const key = label.trim().toLowerCase();
-  const policy = AI_POLICY_LABEL_SYNONYMS[key] ?? null;
+  const policy = parseReservedAiPolicyLabel(label);
   return policy === 'all' ? null : policy;
 }
 
@@ -45,7 +45,7 @@ export function normalizeAiPolicyLabel(label: string): AiPolicy | null {
  * plus the `all` spellings (`all-ai`, `ai:all`).
  */
 export function reservedAiPolicyLabel(label: string): AiPolicy | null {
-  return AI_POLICY_LABEL_SYNONYMS[label.trim().toLowerCase()] ?? null;
+  return parseReservedAiPolicyLabel(label);
 }
 
 /** One canonical label per policy; a newly stated policy is stored as this. */
@@ -65,111 +65,29 @@ export type LabelPolicyPlan = {
 };
 
 /**
- * Decide what a label mutation means for `pages.ai_policy`. Pure; the caller
- * supplies the row it locked.
- *
- *   * The target set naming two different policies (`no-ai` + `ai-local-only`,
- *     `all-ai` + `no-ai`) is contradictory → 422 `ai_policy_label_conflict`.
- *     Callers check this before any remote call, so no provider is touched.
- *   * Only a reserved label that is NEWLY ADDED (no current label names the
- *     same policy) expresses policy intent. A label carried over from the
- *     current set is inert: it never re-tightens a page whose policy was
- *     relaxed after the label was stored, and never bumps the revision.
- *   * A newly added restrictive label tightens (no authority needed — the rule
- *     ingestion applies). A newly added looser label is an explicit relaxation
- *     (`kind: 'relax'`) that `applyAiPolicyOnClient` subjects to the policy
- *     setter's authority.
- *   * Dropping the label that names the current restrictive policy does NOT
- *     relax it: the policy stays and the canonical label is restored, so the
- *     stored labels keep telling the truth.
- *   * At most one reserved label is stored; synonyms collapse onto it.
+ * Plan an interactive existing-row label write from its locked authority.
+ * Validate the entire target, including carried labels. A carried identity is
+ * not a fresh policy command, even when its spelling is stale; repair its
+ * reserved slot to the authoritative policy instead. Removal alone likewise
+ * preserves policy. Every actual move still goes through the shared mutation
+ * authority/revision/readiness checks. Ingestion uses its tighten-only planner.
  */
 export function planLabelPolicyChange(input: {
   currentPolicy: AiPolicy;
   currentLabels: readonly string[] | null | undefined;
   targetLabels: readonly string[];
 }): LabelPolicyPlan {
-  const current = input.currentLabels ?? [];
-  const currentNamed = new Set<AiPolicy>();
-  for (const label of current) {
-    const p = reservedAiPolicyLabel(label);
-    if (p) currentNamed.add(p);
-  }
-  // Reserved labels in the target, split into those the row already carries
-  // (inert) and those NEWLY stated (the caller's policy intent). Only the
-  // newly stated ones may contradict: a row whose stored labels already
-  // disagree (e.g. relaxed to `all` with `no-ai` and `ai-local-only` left
-  // behind) must stay writable for an ordinary tag, so carried labels are
-  // never a 422 on their own.
-  const named = new Set<AiPolicy>();
-  const newlyNamed = new Set<AiPolicy>();
-  const spellingOf = new Map<AiPolicy, string>();
-  for (const label of input.targetLabels) {
-    const p = reservedAiPolicyLabel(label);
-    if (p) {
-      named.add(p);
-      if (!spellingOf.has(p)) spellingOf.set(p, label);
-      if (!currentNamed.has(p)) newlyNamed.add(p);
-    }
-  }
-  // Only TWO NEW distinct policy identities contradict. A carried label is
-  // not a command: one fresh policy next to a carried reserved label is that
-  // fresh policy, and the carried label is normalized onto its canonical
-  // spelling (the single reserved slot) below.
-  if (newlyNamed.size > 1) {
-    throw new AiPolicyLabelConflictError([...newlyNamed]);
-  }
-  const labelPolicy = newlyNamed.size === 1 ? [...newlyNamed][0]! : null;
-  const currentLabelsNameCurrentPolicy = input.currentPolicy !== 'all' && currentNamed.has(input.currentPolicy);
-
-  let policy = input.currentPolicy;
-  let kind: LabelPolicyPlan['kind'] = 'unchanged';
-  let restoredLabel: string | null = null;
-  let keepLabel: string | null = null;
-
-  if (labelPolicy !== null) {
-    // Newly stated: this is the caller's policy intent.
-    keepLabel = canonicalAiPolicyLabel(labelPolicy);
-    if (isStricterPolicy(labelPolicy, input.currentPolicy)) {
-      policy = labelPolicy;
-      kind = 'tighten';
-    } else if (isStricterPolicy(input.currentPolicy, labelPolicy)) {
-      policy = labelPolicy;
-      kind = 'relax';
-    }
-  } else if (named.size > 0) {
-    // Carried over only: inert. Keep the spelling of the carried label that
-    // names the current policy (no churn on a remote mirror); several
-    // carried labels collapse onto that one. If the caller dropped the label
-    // naming the (stricter) current policy, it is restored and wins the
-    // single reserved slot.
-    if (input.currentPolicy !== 'all' && named.has(input.currentPolicy)) {
-      keepLabel = spellingOf.get(input.currentPolicy)!;
-    } else if (currentLabelsNameCurrentPolicy) {
-      keepLabel = canonicalAiPolicyLabel(input.currentPolicy);
-      restoredLabel = keepLabel;
-    } else {
-      keepLabel = [...spellingOf.values()][0]!;
-    }
-  } else if (currentLabelsNameCurrentPolicy) {
-    // Removing the policy label cannot relax; put the canonical one back.
-    keepLabel = canonicalAiPolicyLabel(input.currentPolicy);
-    restoredLabel = keepLabel;
-  }
-
-  const labels: string[] = [];
-  let placed = false;
-  for (const label of input.targetLabels) {
-    if (reservedAiPolicyLabel(label) !== null) {
-      if (keepLabel !== null && !placed) {
-        labels.push(keepLabel);
-        placed = true;
-      }
-      continue;
-    }
-    if (!labels.includes(label)) labels.push(label);
-  }
-  if (keepLabel !== null && !placed) labels.push(keepLabel);
+  const named = aiPolicyLabelConflict(input.targetLabels);
+  if (named.length > 1) throw new AiPolicyLabelConflictError(named);
+  const currentNamed = aiPolicyLabelConflict(input.currentLabels ?? []);
+  const command = named[0];
+  const policy = command !== undefined && !currentNamed.includes(command)
+    ? command : input.currentPolicy;
+  const kind = policy === input.currentPolicy ? 'unchanged'
+    : isStricterPolicy(policy, input.currentPolicy) ? 'tighten' : 'relax';
+  const canonical = canonicalAiPolicyLabel(policy);
+  const labels = canonicalLabels([...new Set(input.targetLabels)], policy);
+  const restoredLabel = kind === 'unchanged' && !named.includes(policy) ? canonical : null;
   return { labels, policy, kind, restoredLabel };
 }
 
@@ -200,15 +118,10 @@ export async function lockAiPolicyForPages(client: PoolClient, pageIds: readonly
 }
 
 /**
- * Permissions that confer policy authority on a Confluence-backed page.
- * Read-only roles carry none of them.
- */
-const POLICY_PERMISSIONS = ['edit', 'page:edit', 'edit:page', 'pages:edit'];
-
-/**
- * Policy authority. Standalone pages: the owner (or a system admin) only —
- * `visibility = 'shared'` grants editing content, never policy. Space pages:
- * an edit permission in the space (honouring page ACEs) or system admin.
+ * Policy authority is independent of ordinary content-edit authority. A live
+ * visible page permits its standalone owner, or an exact scoped `edit`
+ * permission (including page ACEs). Standalone nonowners are not excluded
+ * from the scoped-editor branch. Shared visibility alone grants nothing.
  */
 export async function canMutateAiPolicy(
   userId: string,
@@ -224,12 +137,10 @@ export async function canMutateAiPolicy(
   const page = r.rows[0];
   if (!page || page.deleted_at) return false;
   if (await isSystemAdmin(userId, client)) return true;
-  if (page.source === 'standalone') return page.created_by_user_id === userId;
+  if (!(await userCanAccessPage(userId, pageId, client))) return false;
+  if (page.source === 'standalone' && page.created_by_user_id === userId) return true;
   if (!page.space_key) return false;
-  for (const perm of POLICY_PERMISSIONS) {
-    if (await userHasPermission(userId, perm, page.space_key, pageId, client)) return true;
-  }
-  return false;
+  return userHasPermission(userId, 'edit', page.space_key, pageId, client);
 }
 
 /**
@@ -247,10 +158,7 @@ export async function canChoosePolicyAtCreation(
   if (target.source === 'standalone') return true;
   if (await isSystemAdmin(userId, client)) return true;
   if (!target.spaceKey) return false;
-  for (const perm of POLICY_PERMISSIONS) {
-    if (await userHasPermission(userId, perm, target.spaceKey, undefined, client)) return true;
-  }
-  return false;
+  return userHasPermission(userId, 'edit', target.spaceKey, undefined, client);
 }
 
 /**
@@ -261,6 +169,7 @@ export async function canChoosePolicyAtCreation(
  */
 export type AiPolicyRefusalBody =
   | { error: 'ai_policy_denied'; pageIds: number[] }
+  | { error: 'ai_policy_unavailable'; pageIds: number[] }
   | { error: 'ai_policy_conflict'; reason: 'stale_revision'; pageIds: number[] }
   | { error: 'ai_policy_label_conflict'; policies: AiPolicy[] }
   | { error: 'ai_policy_enforcement_unavailable'; pageIds: number[] };
@@ -274,6 +183,15 @@ export class AiPolicyRefusalError extends Error {
     this.statusCode = statusCode;
     this.body = body;
   }
+}
+
+function requireSafeAiPolicyRevision(value: unknown): number {
+  const revision = safeAiPolicyRevision(value);
+  if (revision === null) {
+    throw new AiPolicyRefusalError(503, { error: 'ai_policy_unavailable', pageIds: [] },
+      'The policy revision cannot be represented safely');
+  }
+  return revision;
 }
 
 /**
@@ -301,11 +219,22 @@ export class AiPolicyLabelConflictError extends PageWriteError {
   }
 }
 
+/** Keep lifecycle error compatibility while carrying the shared policy wire contract. */
+export class AiPolicyDeniedError extends PageWriteError {
+  readonly body: Extract<AiPolicyRefusalBody, { error: 'ai_policy_denied' }>;
+  constructor(pageIds: number[]) {
+    super(403, 'ai_policy_not_authorized', 'Not authorized to change this page\'s AI policy');
+    this.name = 'AiPolicyDeniedError';
+    this.body = { error: 'ai_policy_denied', pageIds: [...pageIds] };
+  }
+}
+
 /** Anything a page route answers through `sendAiPolicyRefusal`. */
-export type AiPolicyRefusal = AiPolicyRefusalError | AiPolicyLabelConflictError;
+export type AiPolicyRefusal = AiPolicyRefusalError | AiPolicyLabelConflictError | AiPolicyDeniedError;
 
 export function isAiPolicyRefusal(err: unknown): err is AiPolicyRefusal {
-  return err instanceof AiPolicyRefusalError || err instanceof AiPolicyLabelConflictError;
+  return err instanceof AiPolicyRefusalError || err instanceof AiPolicyLabelConflictError
+    || err instanceof AiPolicyDeniedError;
 }
 
 export function aiPolicyRefusalFromResult(
@@ -346,19 +275,17 @@ export type AiPolicyMutationResult =
 
 /**
  * Rewrite the reserved labels so exactly ONE canonical label spells the
- * policy (`all` carries no label). Twin of SQL `ai_policy_apply_label`
- * (migration 136): every reserved spelling is dropped, order of the ordinary
- * labels is kept, and the canonical label (if any) is appended.
+ * policy, including `all-ai`. The contracts helper and SQL
+ * `ai_policy_apply_label` share this vocabulary; ordinary labels retain order.
  */
 export function applyCanonicalAiPolicyLabel(
   labels: readonly string[] | null | undefined,
   policy: AiPolicy,
 ): string[] {
-  const kept = (labels ?? []).filter((label) => reservedAiPolicyLabel(label) === null);
-  return policy === 'all' ? kept : [...kept, canonicalAiPolicyLabel(policy)];
+  return canonicalLabels(labels ?? [], policy);
 }
 
-/** Deferred `policy_changed` events: emitted by the caller only after COMMIT. */
+/** Mutation result records; typed evidence is persisted on the held client before COMMIT. */
 export type AiPolicyChangeRecord = {
   pageId: number;
   userId: string;
@@ -366,12 +293,6 @@ export type AiPolicyChangeRecord = {
   to: AiPolicy;
   revision: number;
 };
-
-export function emitAiPolicyChanges(changes: readonly AiPolicyChangeRecord[]): void {
-  for (const change of changes) {
-    emitAiPolicyEvent({ type: 'policy_changed', ...change });
-  }
-}
 
 /**
  * THE policy mutation primitive (SPEC-CORE-003). Every writer that moves
@@ -384,14 +305,14 @@ export function emitAiPolicyChanges(changes: readonly AiPolicyChangeRecord[]): v
  * the row lock. A caller that locked the row earlier in the same transaction
  * must have taken the policy lock first.
  *
- * Authority: a relaxation (any move to a looser policy) requires
- * `canMutateAiPolicy`; a tighten does not (labels may tighten under
- * content-edit rights, exactly as ingestion does). `requireAuthority` forces
- * the check for every direction — the explicit policy endpoints use it.
+ * Authority: every actual policy move requires live visibility and
+ * `canMutateAiPolicy`, in both directions. An unchanged ordinary label save
+ * requires visibility only. `requireAuthority` additionally checks explicit
+ * re-assertions; it is never an authorization bypass for tightening.
  *
- * Returns the rows as they will be once committed plus the events the caller
- * must emit after its COMMIT. Failures are reported, never thrown, so a
- * caller may roll back and answer with its own status.
+ * Returns the prospective committed rows and change records. Typed evidence
+ * is persisted on this client; callers must not emit duplicate change events.
+ * Reported failures require rollback; readiness and sink failures may throw.
  */
 export async function applyAiPolicyOnClient(
   client: PoolClient,
@@ -399,6 +320,10 @@ export async function applyAiPolicyOnClient(
     userId: string;
     items: ReadonlyArray<{ pageId: number; policy: AiPolicy; expectedRevision?: number }>;
     requireAuthority?: boolean;
+    /** Server recovery only: verified against the durable journal, never a boolean bypass. */
+    recovery?: { intentId: string; targetLabels: readonly string[] };
+    /** Stable server-owned context shared by the entire mutation/cascade. */
+    operation?: AiOperationContext;
   },
 ): Promise<
   | { ok: true; rows: Array<{ pageId: number; policy: AiPolicy; revision: number }>; changes: AiPolicyChangeRecord[] }
@@ -415,32 +340,56 @@ export async function applyAiPolicyOnClient(
   );
   const byId = new Map(locked.rows.map((r) => [r.id, r]));
   const missing = ids.filter((id) => !byId.has(id));
-  // On the explicit policy endpoints (`requireAuthority`), a page the caller
-  // cannot SEE answers exactly like one that does not exist (404 convention):
-  // a 403 would confirm the hidden row's existence. Label writers and the
-  // create/recovery reconcilers run on a row their route already admitted
-  // (content-edit rights, or the creator's own publication), so they do not
-  // re-run the read predicate here.
-  if (input.requireAuthority) {
-    for (const id of ids) {
-      if (byId.has(id) && !(await userCanAccessPage(input.userId, id, client))) missing.push(id);
-    }
+  // Every caller must see the live row. Earlier content admission is not
+  // policy authority, and tightening is not an exception to hidden-404.
+  for (const id of ids) {
+    if (byId.has(id) && !(await userCanAccessPage(input.userId, id, client))) missing.push(id);
   }
   if (missing.length) return { ok: false, reason: 'not_found', pageIds: missing.sort((a, b) => a - b) };
   const denied: number[] = [];
   for (const item of sorted) {
     const current = byId.get(item.pageId)!.ai_policy;
-    const relaxes = isStricterPolicy(current, item.policy);
-    if ((input.requireAuthority || relaxes) && !(await canMutateAiPolicy(input.userId, item.pageId, client))) {
+    // An ordinary label/content save may preserve a restriction without
+    // policy-setter rights. Every actual policy move requires those rights.
+    if ((input.requireAuthority || current !== item.policy)
+      && !(await canMutateAiPolicy(input.userId, item.pageId, client))) {
       denied.push(item.pageId);
     }
   }
   if (denied.length) return { ok: false, reason: 'not_authorized', pageIds: denied };
+  // Validate every output revision, including the prospective increment,
+  // before any row or evidence is changed. Never round a bigint CAS token.
+  for (const item of sorted) {
+    const before = byId.get(item.pageId)!;
+    const revision = exactAiPolicyRevision(before.ai_policy_revision);
+    const increments = before.ai_policy !== item.policy || input.requireAuthority;
+    if (revision === null || safeAiPolicyRevision(revision + (increments ? 1n : 0n)) === null) {
+      throw new AiPolicyRefusalError(503, { error: 'ai_policy_unavailable', pageIds: [item.pageId] },
+        'The policy revision cannot be represented safely');
+    }
+  }
   const stale = sorted
     .filter((i) => i.expectedRevision !== undefined
-      && Number(byId.get(i.pageId)!.ai_policy_revision) !== i.expectedRevision)
+      && (safeAiPolicyRevision(i.expectedRevision) === null
+        || exactAiPolicyRevision(byId.get(i.pageId)!.ai_policy_revision) !== exactAiPolicyRevision(i.expectedRevision)))
     .map((i) => i.pageId);
   if (stale.length) return { ok: false, reason: 'stale_revision', pageIds: stale };
+  for (const item of sorted) {
+    const before = byId.get(item.pageId)!;
+    const kind = item.policy === before.ai_policy ? 'unchanged'
+      : isStricterPolicy(item.policy, before.ai_policy) ? 'tighten' : 'relax';
+    if (kind !== 'tighten' && !input.recovery) continue;
+    await assertLabelPolicyChangeOnClient(client, {
+      userId: input.userId, pageId: item.pageId,
+      plan: {
+        policy: item.policy, kind, restoredLabel: null,
+        labels: input.recovery?.targetLabels
+          ? [...input.recovery.targetLabels]
+          : applyCanonicalAiPolicyLabel(before.labels, item.policy),
+      },
+      recoveryIntentId: input.recovery?.intentId,
+    });
+  }
 
   const rows: Array<{ pageId: number; policy: AiPolicy; revision: number }> = [];
   const changes: AiPolicyChangeRecord[] = [];
@@ -451,7 +400,7 @@ export async function applyAiPolicyOnClient(
     if (before.ai_policy === item.policy && !input.requireAuthority) {
       // Label-driven: nothing moved, so the revision (and every worker's
       // admitted binding to it) stays put.
-      rows.push({ pageId: item.pageId, policy: before.ai_policy, revision: Number(before.ai_policy_revision) });
+      rows.push({ pageId: item.pageId, policy: before.ai_policy, revision: safeAiPolicyRevision(before.ai_policy_revision)! });
       continue;
     }
     // ONE statement moves the policy, its revision AND the stored labels'
@@ -469,7 +418,7 @@ export async function applyAiPolicyOnClient(
       [item.pageId, item.policy, applyCanonicalAiPolicyLabel(before.labels, item.policy)],
     );
     const row = updated.rows[0]!;
-    const revision = Number(row.ai_policy_revision);
+    const revision = requireSafeAiPolicyRevision(row.ai_policy_revision);
     rows.push({ pageId: item.pageId, policy: row.ai_policy, revision });
     changes.push({ pageId: item.pageId, userId: input.userId, from: before.ai_policy, to: row.ai_policy, revision });
     // Explicit re-assertion of `none` purges again; any other MOVE
@@ -485,6 +434,22 @@ export async function applyAiPolicyOnClient(
   }
   if (purge.length) await purgeDerivedAiState(client, purge);
   if (requeue.length) await requeueDerivedAiState(client, requeue);
+  if (changes.length) {
+    const event: AiPolicyChangeEvent = {
+      ...(input.operation ?? {
+        operationId: randomUUID(), actor: { kind: 'user', id: input.userId },
+        source: 'policy_mutation', cascadeId: null,
+      }),
+      eventId: randomUUID(), occurredAt: new Date().toISOString(), type: 'policy_change',
+      changes: changes.map((change) => ({
+        pageId: change.pageId, oldPolicy: change.from, newPolicy: change.to,
+        oldRevision: requireSafeAiPolicyRevision(byId.get(change.pageId)!.ai_policy_revision), newRevision: change.revision,
+      })),
+    };
+    // Failure must propagate to the transaction owner: policy and evidence
+    // must commit or roll back together on this exact client.
+    await getEnterprisePlugin().persistAiPolicyChange?.(client, event);
+  }
   return { ok: true, rows, changes };
 }
 
@@ -501,9 +466,103 @@ export async function applyAiPolicyOnClient(
  * this function re-plans from the row it locks so a policy change between
  * admission and commit cannot be bypassed.
  */
+export async function assertLabelPolicyChangeOnClient(
+  client: PoolClient,
+  input: { userId: string; pageId: number; plan: LabelPolicyPlan; recoveryIntentId?: string },
+): Promise<void> {
+  if (input.plan.kind === 'unchanged' && !input.recoveryIntentId) return;
+  if (!(await userCanAccessPage(input.userId, input.pageId, client))) {
+    throw new PageWriteError(404, 'page_not_found', 'Page not found');
+  }
+  // Content/tag permission is not policy permission, in EITHER direction.
+  if (input.plan.kind !== 'unchanged' && !(await canMutateAiPolicy(input.userId, input.pageId, client))) {
+    throw new AiPolicyDeniedError([input.pageId]);
+  }
+  if (!input.recoveryIntentId && (input.plan.kind !== 'tighten' || isAiPolicyEnforcementAvailable())) return;
+
+  // Recovery is not a caller-supplied boolean grant. Only a pending, durably
+  // acknowledged remote label operation at the original row revisions may
+  // finish while rollout is closed. Ordinary writers cannot create this
+  // receipt: they must pass this admission before making a remote call.
+  if (input.recoveryIntentId) {
+    const creation = await client.query<{
+      effect: Record<string, unknown>; title: string; body_storage: string;
+    }>(
+      `SELECT i.effect, p.title, p.body_storage
+         FROM page_write_intents i JOIN pages p ON p.id = $2
+        WHERE i.id = $1 AND i.actor_id = $3 AND i.status = 'pending'
+          AND i.kind = 'pages.create.confluence'
+          AND i.effect->>'effectClass' = 'remote'
+          AND i.remote_effect_started_at IS NOT NULL AND i.remote_effects_completed_at IS NOT NULL
+          AND i.remote_terminal_result->>'accepted' = 'true'
+          AND i.remote_terminal_result->>'confluenceId' = p.confluence_id
+          AND i.remote_terminal_result->>'expectedVersion' = p.version::text
+          AND i.effect->>'spaceKey' = p.space_key
+          AND i.effect->>'parentConfluenceId' IS NOT DISTINCT FROM p.parent_id
+          AND i.effect->>'initialPolicy' = $4
+          AND p.source = 'confluence' AND p.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest(i.page_ids) AS target(page_id)
+            LEFT JOIN pages referenced ON referenced.id = target.page_id
+            WHERE referenced.id IS NULL OR referenced.deleted_at IS NOT NULL
+               OR i.revisions->target.page_id::text->>'contentRevision' IS DISTINCT FROM referenced.content_revision::text
+               OR i.revisions->target.page_id::text->>'lifecycleRevision' IS DISTINCT FROM referenced.lifecycle_revision::text
+          ) FOR SHARE OF i`,
+      [input.recoveryIntentId, input.pageId, input.userId, input.plan.policy],
+    );
+    const created = creation.rows[0];
+    const sameLabels = (value: unknown): boolean => {
+      if (!Array.isArray(value) || value.some((label) => typeof label !== 'string')) return false;
+      const expected = [...new Set(value as string[])].sort();
+      const actual = [...new Set(input.plan.labels)].sort();
+      return expected.length === actual.length && expected.every((label, index) => label === actual[index]);
+    };
+    if (created && typeof created.body_storage === 'string'
+      && sameLabels(created.effect.initialLabels)
+      && created.effect.titleSha256 === createHash('sha256').update(created.title).digest('hex')
+      && created.effect.storageSha256 === createHash('sha256').update(created.body_storage).digest('hex')) return;
+    const receipt = await client.query<{ target_labels: unknown }>(
+      `SELECT i.effect->'targetLabels' AS target_labels
+         FROM page_write_intents i JOIN pages p ON p.id = $2
+        WHERE i.id = $1 AND i.actor_id = $3 AND i.status = 'pending'
+          AND i.kind = ANY($4::text[]) AND i.page_ids = ARRAY[$2]::integer[]
+          AND i.effect->>'effectClass' = 'remote'
+          AND i.effect->>'confluenceId' = p.confluence_id
+          AND i.remote_effect_started_at IS NOT NULL
+          AND i.remote_effects_completed_at IS NOT NULL
+          AND i.revisions->$2::text->>'contentRevision' = p.content_revision::text
+          AND i.revisions->$2::text->>'lifecycleRevision' = p.lifecycle_revision::text`,
+      [input.recoveryIntentId, input.pageId, input.userId,
+        ['page.labels', 'pages.bulk.replace_tags', 'pages.bulk.tags', 'pages.create.labels']],
+    );
+    const target = receipt.rows[0]?.target_labels;
+    if (Array.isArray(target) && target.every((label) => typeof label === 'string')) {
+      const expected = [...new Set(target)].sort();
+      const actual = [...new Set(input.plan.labels)].sort();
+      if (expected.length === actual.length && expected.every((label, index) => label === actual[index])) return;
+      const repair = await client.query<{ after: unknown }>(
+        `SELECT r.plan->'after' AS after FROM page_label_canonical_repairs r
+          JOIN page_write_intents i ON i.id = r.intent_id JOIN pages p ON p.id = $2
+         WHERE r.intent_id = $1 AND r.completed_at IS NOT NULL AND NOT r.in_flight
+           AND r.plan->'before' = to_jsonb(ARRAY(SELECT DISTINCT jsonb_array_elements_text(i.effect->'targetLabels') ORDER BY 1))
+           AND r.plan->>'policy' = p.ai_policy AND p.ai_policy = $3
+           AND r.plan->>'policyRevision' = p.ai_policy_revision::text
+           AND NOT (i.effect ? 'autoTagStage')`,
+        [input.recoveryIntentId, input.pageId, input.plan.policy]);
+      if (input.plan.kind === 'unchanged' && sameLabels(repair.rows[0]?.after)) return;
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'The label target no longer matches the policy publication');
+    }
+    if (input.plan.kind === 'tighten' && !isAiPolicyEnforcementAvailable()) {
+      throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [input.pageId] });
+    }
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Policy publication does not match its pending journal');
+  }
+  throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [input.pageId] });
+}
+
 export async function applyPageLabelsOnClient(
   client: PoolClient,
-  input: { userId: string; pageId: number; targetLabels: readonly string[] },
+  input: { userId: string; pageId: number; targetLabels: readonly string[]; recoveryIntentId?: string },
 ): Promise<{ labels: string[]; policy: AiPolicy; revision: number; plan: LabelPolicyPlan; changes: AiPolicyChangeRecord[] }> {
   await lockAiPolicyForPages(client, [input.pageId]);
   const locked = await client.query<{ ai_policy: AiPolicy; ai_policy_revision: string; labels: string[] | null }>(
@@ -517,15 +576,15 @@ export async function applyPageLabelsOnClient(
     currentLabels: row.labels,
     targetLabels: input.targetLabels,
   });
+  await assertLabelPolicyChangeOnClient(client, { ...input, plan });
   const applied = await applyAiPolicyOnClient(client, {
     userId: input.userId,
-    items: [{ pageId: input.pageId, policy: plan.policy }],
+    items: [{ pageId: input.pageId, policy: plan.policy, expectedRevision: requireSafeAiPolicyRevision(row.ai_policy_revision) }],
+    ...(input.recoveryIntentId ? { recovery: { intentId: input.recoveryIntentId, targetLabels: plan.labels } } : {}),
   });
   if (!applied.ok) {
-    if (applied.reason === 'not_authorized') {
-      throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
-    }
-    throw new PageWriteError(409, applied.reason, 'The page AI policy could not be applied');
+    if (applied.reason === 'not_authorized') throw new AiPolicyDeniedError(applied.pageIds);
+    throw aiPolicyRefusalFromResult(applied);
   }
   await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [input.pageId, plan.labels]);
   return {
@@ -568,7 +627,7 @@ export async function updatePageAiPolicies(
 
   // #281 review (direct-setter authority): the explicit policy endpoints run
   // under the SAME page-write fence as every other label writer
-  // (`withPageWriteTransaction`: runtime epoch → hierarchy SHARE → lifecycle
+  // (`withAiPolicyWriteTransaction`: runtime epoch → hierarchy SHARE → lifecycle
   // locks → frozen check → no pending external intent on the row) BEFORE the
   // AI-policy lock, so a row with an unresolved Confluence write answers 409
   // `page_write_busy` and a frozen row 423 `page_is_frozen`, instead of a
@@ -576,7 +635,7 @@ export async function updatePageAiPolicies(
   // canonical label lands in the primitive's own UPDATE; `content_revision`
   // moves so an admitted-but-unsettled content/label writer observes it.
   try {
-    const committed = await withPageWriteTransaction(ids, async (client) => {
+    const committed = await withAiPolicyWriteTransaction(ids, async (client) => {
       const result = await applyAiPolicyOnClient(client, {
         userId,
         items: items.map((i) => ({ pageId: i.pageId, policy, expectedRevision: i.expectedRevision })),
@@ -589,7 +648,6 @@ export async function updatePageAiPolicies(
       );
       return result;
     });
-    emitAiPolicyChanges(committed.changes);
     return { ok: true, rows: committed.rows };
   } catch (err) {
     if (err instanceof AiPolicyMutationRollback) return err.result;
@@ -721,16 +779,22 @@ export async function resolveCreationAiPolicy(input: {
   spaceKey: string | null;
   labels: readonly string[] | undefined;
   explicit?: AiPolicy;
+  /** Interactive creation must refuse a restriction before any local or remote effect.
+   * Ingestion resolves a tighten-only candidate separately from its publication fence. */
+  mode?: 'ingestion';
 }): Promise<AiPolicy> {
+  if (input.mode !== 'ingestion') {
+    const named = new Set((input.labels ?? []).map(reservedAiPolicyLabel).filter((p): p is AiPolicy => p !== null));
+    if (input.explicit !== undefined) named.add(input.explicit);
+    if (named.size > 1) throw new AiPolicyLabelConflictError([...named]);
+  }
   const hook = getEnterprisePlugin().resolveAiPolicyCreationDefault;
   const raw = hook ? await hook({ userId: input.userId, spaceKey: input.spaceKey }) : 'all';
   const hookDefault: AiPolicy = isAiPolicy(raw) ? raw : 'none';
   const fromLabels = policyFromLabels(input.labels);
-  if (input.explicit !== undefined) {
-    if (input.explicit !== 'all' && !isAiPolicyEnforcementAvailable()) {
-      return stricterPolicy(hookDefault, fromLabels);
-    }
-    return stricterPolicy(input.explicit, fromLabels);
+  const policy = stricterPolicy(input.explicit ?? hookDefault, fromLabels);
+  if (input.mode !== 'ingestion' && policy !== 'all' && !isAiPolicyEnforcementAvailable()) {
+    throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [] });
   }
-  return stricterPolicy(hookDefault, fromLabels);
+  return policy;
 }

@@ -1,3 +1,4 @@
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
@@ -181,6 +182,8 @@ export async function generateConversationTitle({
       maxTokens: TITLE_MAX_TOKENS,
       timeoutMs: TITLE_TIMEOUT_MS,
       beforeDispatch,
+      transportContext: { kind: 'article', stage: { provenance: titleProvenance, userId, usecase: 'chat',
+        context: { operation: newAiOperation('conversation_title', { kind: 'user', id: userId }), stage: 'chat', attempt: 1 } } },
     });
     const title = normalizeGeneratedTitle(rawTitle);
     if (!title) {

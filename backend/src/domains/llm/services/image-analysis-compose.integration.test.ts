@@ -25,6 +25,18 @@ vi.mock('../../../core/db/postgres.js', async () => {
   };
 });
 
+vi.mock('./embedding-article-stage.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./embedding-article-stage.js')>();
+  return {
+    ...actual,
+    settleEmbeddingArticle: async (...args: Parameters<typeof actual.settleEmbeddingArticle>) => {
+      // Commit the competing analysis before settlement acquires its row lock.
+      await cap.beforeQuery?.("embedding_status = 'not_embedded'");
+      return actual.settleEmbeddingArticle(...args);
+    },
+  };
+});
+
 vi.mock('./openai-compatible-client.js', async () => {
   const actual = await vi.importActual<typeof import('./openai-compatible-client.js')>('./openai-compatible-client.js');
   return {
@@ -184,6 +196,7 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
        VALUES ('vision-box', 'http://vision/v1', 'none', TRUE, 'qwen3-vl') RETURNING id`,
     );
     providerId = prov.rows[0]!.id;
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('embedding', $1, 'bge-m3')", [providerId]);
   });
 
   it('appends valid derived chunks after every authored index, with provenance in metadata.source, and they survive a re-embed', async () => {
@@ -356,8 +369,9 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
 
     const written = await embedPage(USER, pageId, 'Page', 'DEV', body);
 
-    expect(written).toBeGreaterThan(0);
-    expect(await pageRow(pageId)).toMatchObject({ status: 'embedded', dirty: true });
+    expect(written).toBe(0);
+    expect(await chunksFor(pageId)).toHaveLength(0);
+    expect(await pageRow(pageId)).toMatchObject({ status: 'not_embedded', dirty: true });
 
     await embedPage(USER, pageId, 'Page', 'DEV', body);
     expect(await pageRow(pageId)).toMatchObject({ status: 'embedded', dirty: false });
@@ -396,6 +410,7 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
     const before = await query<{ updated_at: Date; analysis_version: number }>(`SELECT updated_at, analysis_version FROM page_image_analyses WHERE page_id = $1`, [pageId]);
 
     const edited = '<img src="/api/attachments/1/a.png" alt="New caption"><p>Some prose on this page to embed.</p>';
+    await query('UPDATE pages SET title = $2, body_html = $3 WHERE id = $1', [pageId, 'New title', edited]);
     await embedPage(USER, pageId, 'New title', 'DEV', edited);
 
     const derived = (await chunksFor(pageId)).find((c) => c.metadata.source === 'image_analysis')!;

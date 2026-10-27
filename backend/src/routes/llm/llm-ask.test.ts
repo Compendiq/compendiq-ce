@@ -3155,7 +3155,12 @@ describe('POST /api/llm/ask', () => {
         undefined,
         { policyContext: { providerId: 'p1', usecase: 'chat', expectedConfigRevision: 3, expectedLocality: 'external' } },
       );
-      expect(mockAdmitPageForProvider).toHaveBeenCalledWith(1, 'chat', 'p1', 'm');
+      expect(mockAdmitPageForProvider).toHaveBeenCalledWith(1, 'chat', 'p1', 'm', expect.objectContaining({
+        stage: 'chat', attempt: 1, preliminary: true,
+        operation: expect.objectContaining({ source: 'ask', actor: { kind: 'user', id: 'test-user-123' } }),
+      }));
+      expect(mockStreamChatClient.mock.calls[0]![4].transportContext.stage.context.operation)
+        .toEqual(mockAdmitPageForProvider.mock.calls[0]![4].operation);
       const msg = userMessage();
       expect(msg).toContain('Page tree context');
       expect(msg).toContain('ASSEMBLED-TREE');

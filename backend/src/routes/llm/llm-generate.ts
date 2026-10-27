@@ -182,7 +182,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking });
+      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking, transportContext: { kind: 'non_article', purpose: 'user_query' } });
 
       const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
 

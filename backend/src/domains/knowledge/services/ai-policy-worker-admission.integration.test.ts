@@ -12,32 +12,34 @@ import { query } from '../../../core/db/postgres.js';
 import { runSummaryBatch, stopSummaryWorker, getSummaryStatus } from './summary-worker.js';
 import { processBatch as processQualityBatch, getQualityStatus, stopQualityWorker } from './quality-worker.js';
 import { updatePageAiPolicies, purgeDerivedAiStateForPages } from '../../../core/services/ai-policy-service.js';
-import { streamChat } from '../../llm/services/openai-compatible-client.js';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { loadEnterprisePlugin, _resetForTesting } from '../../../core/enterprise/loader.js';
+import { bumpProviderCacheVersion } from '../../llm/services/cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
+let providerId: string;
+let server: Server;
+let baseUrl: string;
+let calls = 0;
+let enterprise = false;
+const oldReadiness = process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT;
+import { generateKeyPairSync, sign } from 'node:crypto';
 
-const mocks = vi.hoisted(() => ({
-  providerId: 'p1',
-  enforcement: true,
-}));
-
-vi.mock('../../llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn().mockImplementation(() => {
-    async function* generator() {
-      yield {
-        content: `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`,
-        done: false,
-      };
-      yield { content: '', done: true };
-    }
-    return generator();
-  }),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
+// Resolve the genuine plugin into the same Vitest graph as its license service.
+// Variable paths keep this CE-owned test compilable without an EE overlay.
+vi.mock('@compendiq/enterprise', async () => {
+  const path = '../../../enterprise/plugin.js';
+  try { return await import(path); }
+  catch (error) {
+    const { existsSync } = await import('node:fs');
+    if (existsSync(new URL(path.replace('.js', '.ts'), import.meta.url))) throw error;
+    const { noopPlugin } = await import('../../../core/enterprise/noop.js');
+    return { default: noopPlugin };
+  }
+});
+const licensePath = '../../../enterprise/license-service.js';
+const keys = generateKeyPairSync('ed25519');
 
 vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn().mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
@@ -48,33 +50,9 @@ vi.mock('../../../core/services/content-converter.js', async (importOriginal) =>
   htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
 }));
 
-vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockImplementation(async () => ({
-    config: {
-      providerId: mocks.providerId, id: mocks.providerId, name: 'X',
-      baseUrl: 'http://x/v1', apiKey: null,
-      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
-    },
-    model: 'qwen3.5',
-  })),
-}));
-
 vi.mock('../../../core/services/webhook-emit-hook.js', () => ({
   emitWebhookEvent: vi.fn(),
 }));
-
-// The policy write refuses restrictive policies on a foundation-only
-// deployment; these tests ARE the enforcement, so the hook answers true.
-vi.mock('../../../core/enterprise/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../../core/enterprise/loader.js')>();
-  return {
-    ...original,
-    getEnterprisePlugin: () => ({
-      ...original.getEnterprisePlugin(),
-      aiPolicyEnforcementAvailable: () => mocks.enforcement,
-    }),
-  };
-});
 
 const LONG = 'Lorem ipsum dolor sit amet. '.repeat(20);
 
@@ -84,18 +62,42 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
 
   beforeAll(async () => {
     await setupTestDb();
+    server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        calls++;
+        const content = '## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.';
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    _resetForTesting();
+    enterprise = (await loadEnterprisePlugin()).version !== 'community';
   });
 
   beforeEach(async () => {
     await truncateAllTables();
-    vi.mocked(streamChat).mockClear();
-    // The resolver names a REAL (undeclared, hence external) provider row:
-    // admission fails closed on a provider it cannot describe, so a
-    // fabricated id would admit nothing — not even `all` pages.
+    if (enterprise) {
+      const license = await import(licensePath);
+      license._resetLicenseStateForTesting();
+      license._setVerificationKeyForTesting(keys.publicKey.export({ type: 'spki', format: 'pem' }));
+      const expiry = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10).replaceAll('-', '');
+      const issued = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+      const payload = `CQEE1-enterprise-200-${expiry}-CPQabcdef12-paid-${issued}`;
+      expect((await license.setLicenseKey(`${payload}.${sign(null, Buffer.from(payload), keys.privateKey).toString('base64url')}`)).isValid).toBe(true);
+    }
+    process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT = 'enabled';
+    calls = 0;
     const external = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url) VALUES ('external-box', 'http://x/v1') RETURNING id::text`,
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model, is_default)
+       VALUES ('external-box', $1, 'none', 'qwen3.5', TRUE) RETURNING id::text`, [baseUrl],
     );
-    mocks.providerId = external.rows[0]!.id;
+    providerId = external.rows[0]!.id;
+    await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+      VALUES ('summary', $1, 'qwen3.5'), ('quality', $1, 'qwen3.5')`, [providerId]);
+    bumpProviderCacheVersion();
     await query(
       `INSERT INTO roles (name, display_name, is_system, permissions) VALUES
         ('system_admin', 'System Administrator', TRUE, ARRAY['read','comment','edit','delete','manage','admin']),
@@ -118,8 +120,31 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
   afterAll(async () => {
     stopSummaryWorker();
     stopQualityWorker();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+    if (oldReadiness === undefined) delete process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT;
+    else process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT = oldReadiness;
+    if (enterprise) {
+      const license = await import(licensePath);
+      await license.clearLicenseKey();
+      license._resetLicenseStateForTesting();
+      license._resetVerificationKeyForTesting();
+    }
+    _resetForTesting();
     await teardownTestDb();
   });
+
+  async function restrictPage(page: number) {
+    const result = await updatePageAiPolicies(userId, 'none', [{ pageId: page, expectedRevision: 0 }]);
+    if (enterprise) {
+      expect(result.ok).toBe(true);
+    } else {
+      // Foundation-only CE refuses new activation. Seed an already-active
+      // restriction for worker/purge recovery, never fake an available hook.
+      expect(result).toMatchObject({ ok: false, reason: 'enforcement_unavailable' });
+      await query("UPDATE pages SET ai_policy = 'none' WHERE id = $1", [page]);
+      await purgeDerivedAiStateForPages([page]);
+    }
+  }
 
   async function insertPage(confluenceId: string, policy: 'all' | 'local_only' | 'none'): Promise<number> {
     const r = await query<{ id: number }>(
@@ -135,7 +160,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     const open = await insertPage('all1', 'all');
 
     expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 1, errors: 0 });
-    expect(vi.mocked(streamChat)).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(1);
 
     const rows = await query<{ id: number; summary_status: string; ai_policy_block_reason: string | null }>(
       'SELECT id, summary_status, ai_policy_block_reason FROM pages ORDER BY id',
@@ -150,16 +175,16 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     expect(status.failedPages).toBe(0);
 
     // Parked rows leave the work window: a second pass spends no call on them.
-    vi.mocked(streamChat).mockClear();
+    calls = 0;
     expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 0, errors: 0 });
-    expect(vi.mocked(streamChat)).not.toHaveBeenCalled();
+    expect(calls).toBe(0);
   });
 
   it('quality: a `local_only` page under an undeclared (external) provider is provider_not_local, re-checked once declared local', async () => {
     const page = await insertPage('lo1', 'local_only');
 
     expect(await processQualityBatch()).toEqual({ processed: 0, errors: 0 });
-    expect(vi.mocked(streamChat)).not.toHaveBeenCalled();
+    expect(calls).toBe(0);
     let row = await query<{ quality_status: string; ai_policy_block_reason: string | null }>(
       'SELECT quality_status, ai_policy_block_reason FROM pages WHERE id = $1', [page],
     );
@@ -169,7 +194,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     // Declare a real local provider at its current revision and point the
     // resolver at it: the per-pass re-check admits the page without a policy write.
     const prov = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url) VALUES ('local-box', 'http://local/v1') RETURNING id`,
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model) VALUES ('local-box', $1, 'none', 'qwen3.5') RETURNING id`, [baseUrl],
     );
     const providerId = prov.rows[0]!.id;
     // A declaration is only meaningful with its time and the revision it was
@@ -181,10 +206,11 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
         WHERE id = $1`,
       [providerId, userId],
     );
-    mocks.providerId = providerId;
+    await query("UPDATE llm_usecase_assignments SET provider_id = $1 WHERE usecase = 'quality'", [providerId]);
+    bumpProviderCacheVersion();
 
     expect(await processQualityBatch()).toEqual({ processed: 1, errors: 0 });
-    expect(vi.mocked(streamChat)).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(1);
     row = await query('SELECT quality_status, ai_policy_block_reason FROM pages WHERE id = $1', [page]);
     expect(row.rows[0]).toEqual({ quality_status: 'analyzed', ai_policy_block_reason: null });
   });
@@ -192,11 +218,30 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
   it('a resolver naming a provider with no row refuses every page (even `all`) retryably: no call, no persisted block, row stays pending', async () => {
     const open = await insertPage('all-gone', 'all');
     const lo = await insertPage('lo-gone', 'local_only');
-    await query(`DELETE FROM llm_providers WHERE id::text = $1`, [mocks.providerId]);
-
-    expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 0, errors: 0 });
-    expect(await processQualityBatch()).toEqual({ processed: 0, errors: 0 });
-    expect(vi.mocked(streamChat)).not.toHaveBeenCalled();
+    const { getPool } = await import('../../../core/db/postgres.js');
+    const { lockAiPolicyForPages } = await import('../../../core/services/ai-policy-service.js');
+    const holder = await getPool().connect();
+    await holder.query('BEGIN');
+    await lockAiPolicyForPages(holder, [open, lo]);
+    const summary = runSummaryBatch('qwen3.5');
+    const quality = processQualityBatch();
+    try {
+      // Both workers have resolved the saved assignment and are waiting at
+      // article admission, not merely queued before provider resolution.
+      await vi.waitFor(async () => {
+        const waiting = await query<{ count: number }>(`SELECT count(*)::int AS count FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event = 'advisory' AND pid <> pg_backend_pid()`);
+        expect(waiting.rows[0]!.count).toBeGreaterThanOrEqual(2);
+      }, { timeout: 10000 });
+      await query('DELETE FROM llm_usecase_assignments WHERE provider_id = $1', [providerId]);
+      await query(`DELETE FROM llm_providers WHERE id::text = $1`, [providerId]);
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+    expect(await summary).toEqual({ processed: 0, errors: 0 });
+    expect(await quality).toEqual({ processed: 0, errors: 0 });
+    expect(calls).toBe(0);
 
     const rows = await query<{ id: number; summary_status: string; quality_status: string; ai_policy_block_reason: string | null }>(
       'SELECT id, summary_status, quality_status, ai_policy_block_reason FROM pages ORDER BY id',
@@ -232,8 +277,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     expect(before.rows[0]!.summary_text).not.toBeNull();
     expect(before.rows[0]!.quality_score).not.toBeNull();
 
-    const res = await updatePageAiPolicies(userId, 'none', [{ pageId: page, expectedRevision: 0 }]);
-    expect(res.ok).toBe(true);
+    await restrictPage(page);
 
     const after = await query<Record<string, unknown>>(
       `SELECT body_html, summary_text, summary_html, summary_status, quality_score, quality_status,
@@ -260,15 +304,15 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     });
 
     // Nothing re-queues it: a pass over the corpus spends no call.
-    vi.mocked(streamChat).mockClear();
+    calls = 0;
     expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 0, errors: 0 });
     expect(await processQualityBatch()).toEqual({ processed: 0, errors: 0 });
-    expect(vi.mocked(streamChat)).not.toHaveBeenCalled();
+    expect(calls).toBe(0);
   });
 
   it('relaxing `none` → `all` re-queues every stage; the next pass regenerates', async () => {
     const page = await insertPage('relax1', 'all');
-    await updatePageAiPolicies(userId, 'none', [{ pageId: page, expectedRevision: 0 }]);
+    await restrictPage(page);
     const res = await updatePageAiPolicies(userId, 'all', [{ pageId: page, expectedRevision: 1 }]);
     expect(res.ok).toBe(true);
 
@@ -287,7 +331,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
 
     expect(await runSummaryBatch('qwen3.5')).toEqual({ processed: 1, errors: 0 });
     expect(await processQualityBatch()).toEqual({ processed: 1, errors: 0 });
-    expect(vi.mocked(streamChat)).toHaveBeenCalledTimes(2);
+    expect(calls).toBe(2);
   });
 
   it('ingestion purge entrypoint behaves like the policy write for a label-tightened page', async () => {

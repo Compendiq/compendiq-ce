@@ -17,6 +17,33 @@ import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import type { ChatMessage } from './prompts.js';
 import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { authorizeArticleDispatch, type ArticleStageContext } from './article-stage-admission.js';
+
+/** Server-derived article snapshot, retained across queue waits and retries. */
+export interface ArticleTransportStage {
+  provenance: ConversationTurnAiProvenance;
+  userId: string | null;
+  usecase: string;
+  context: ArticleStageContext;
+}
+
+export type TransportContext =
+  | { kind: 'article'; stage: ArticleTransportStage }
+  | { kind: 'non_article'; purpose: 'provider_probe' | 'user_query' | 'synthetic_evaluation' };
+
+async function authorizeTransport(cfg: ProviderConfig, model: string, context: TransportContext): Promise<void> {
+  if (!context || typeof context !== 'object') throw new Error('ai_policy_unavailable');
+  if (context.kind === 'non_article') {
+    if (!['provider_probe', 'user_query', 'synthetic_evaluation'].includes(context.purpose)) throw new Error('ai_policy_unavailable');
+    return;
+  }
+  if (context.kind !== 'article' || !context.stage?.provenance || !context.stage.context
+    || typeof context.stage.usecase !== 'string'
+    || (context.stage.userId !== null && typeof context.stage.userId !== 'string')) throw new Error('ai_policy_unavailable');
+  const stage = context.stage;
+  await authorizeArticleDispatch(cfg, stage.provenance, stage.userId, stage.usecase, stage.context, model);
+}
 export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
 
@@ -266,6 +293,7 @@ export const __test_only__ = {
 };
 
 export interface StreamChatOptions {
+  transportContext: TransportContext;
   /** Article authority recheck at the receiving stage, after queue waits. */
   beforeDispatch?: () => Promise<void>;
   thinking?: boolean;
@@ -491,7 +519,7 @@ export interface ChatCompletionOptions extends StreamChatOptions {
  * one, and the analysis path (D8) must not.
  */
 export async function chatCompletion(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: ChatCompletionOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: ChatCompletionOptions,
 ): Promise<ChatCompletionResult> {
   // Created BEFORE enqueue so the budget covers queue wait too (see
   // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
@@ -503,9 +531,12 @@ export async function chatCompletion(
   // disabled (withSpan passes straight through).
   return withSpan(
     'llm.chat',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
-        await opts?.beforeDispatch?.();
+    () => enqueue(async (signal) => {
+      await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal.throwIfAborted();
+      deadline?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
@@ -534,14 +565,14 @@ export async function chatCompletion(
               }
             : null,
         };
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
 }
 
 export async function chat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: StreamChatOptions,
 ): Promise<string> {
   return (await chatCompletion(cfg, model, messages, opts)).text;
 }
@@ -556,15 +587,18 @@ export async function chat(
  * circuit subsequent calls.
  */
 export async function* streamChat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal: AbortSignal | undefined, opts: StreamChatOptions,
 ): AsyncGenerator<StreamChunk> {
   // The span covers only the dispatch (breaker + initial HTTP request), not
   // the stream consumption — a span held open for the whole stream would
   // outlive minutes-long generations and skew duration percentiles.
   const res = await withSpan(
     'llm.stream_chat.dispatch',
-    () => getProviderBreaker(cfg.providerId).execute(async () => {
+    async () => {
       await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
       const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),
@@ -574,7 +608,8 @@ export async function* streamChat(
       });
       if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await boundedErrorDetail(r));
       return r;
-    }),
+      });
+    },
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
   const reader = res.body!.getReader();
@@ -653,13 +688,15 @@ export async function* streamChat(
 }
 
 export async function generateEmbedding(
-  cfg: ProviderConfig, model: string, text: string | string[],
+  cfg: ProviderConfig, model: string, text: string | string[], transportContext: TransportContext,
 ): Promise<number[][]> {
   const input = Array.isArray(text) ? text : [text];
   return withSpan(
     'llm.embeddings',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
+    () => enqueue(async (signal) => {
+      await authorizeTransport(cfg, model, transportContext);
+      signal.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
           method: 'POST',
           headers: headers(cfg),
@@ -685,8 +722,8 @@ export async function generateEmbedding(
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model, 'llm.input_count': input.length },
   );
 }

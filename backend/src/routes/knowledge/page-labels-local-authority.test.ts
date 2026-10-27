@@ -195,9 +195,9 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       const tags = await applyTags();
 
       expect(labels.statusCode, labels.body).toBe(200);
-      expect(labels.json()).toEqual({ labels: ['taken-over'] });
+      expect(labels.json()).toEqual({ labels: ['taken-over', 'all-ai'] });
       expect(tags.statusCode, tags.body).toBe(200);
-      expect(await labelsFor(pageId)).toEqual(['taken-over', 'troubleshooting']);
+      expect(await labelsFor(pageId)).toEqual(['taken-over', 'troubleshooting', 'all-ai']);
       expect(mockRequest).not.toHaveBeenCalled();
     });
 
@@ -248,7 +248,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       });
 
       expect(sharedResponse.statusCode, sharedResponse.body).toBe(200);
-      expect(await labelsFor(shared)).toEqual(['team']);
+      expect(await labelsFor(shared)).toEqual(['team', 'all-ai']);
       expect(privateResponse.statusCode).toBe(404);
       expect(await labelsFor(privatePage)).toEqual([]);
     });

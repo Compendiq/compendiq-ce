@@ -1,7 +1,11 @@
 import type { PoolClient } from 'pg';
+import { createHash } from 'node:crypto';
 import { AI_POLICY_LABEL_SYNONYMS } from '@compendiq/contracts';
 import {
+  applyCanonicalAiPolicyLabel,
+  canMutateAiPolicy,
   isAiPolicy,
+  isAiPolicyEnforcementAvailable,
   isStricterPolicy,
   planLabelPolicyChange,
   policyFromLabels,
@@ -31,6 +35,7 @@ export async function resolveIngestionAiPolicy(input: {
     userId: input.userId,
     spaceKey: input.spaceKey,
     labels: input.labels ?? [],
+    mode: 'ingestion',
   });
 }
 
@@ -43,13 +48,26 @@ export function tightenExistingAiPolicy(
 }
 
 /**
- * SQL expression evaluating to the stricter of `currentExpr` and the policy
- * derived from `labelsExpr` (both SQL fragments supplied by trusted code,
- * never by user input). Uses the migration-135 functions; never relaxes.
+ * Publication admission, not planning. Call on the transaction holding the
+ * target row before any write. Closed rollout defers the entire snapshot;
+ * it must never store a restrictive label beside an unchanged `all` policy.
+ * The source snapshot remains retryable (Confluence holds its cursor; Notion
+ * reports a failed item). Only the journal validator below may supply recovery
+ * authority, and only for the exact snapshot it validated.
  */
-export function TIGHTEN_ONLY_POLICY_SQL(currentExpr: string, labelsExpr: string): string {
-  return `CASE WHEN ai_policy_rank(ai_policy_from_labels(${labelsExpr})) > ai_policy_rank(${currentExpr})
-            THEN ai_policy_from_labels(${labelsExpr}) ELSE ${currentExpr} END`;
+export function admitAutomaticIngestionPolicy(input: {
+  identity: string;
+  currentPolicy: AiPolicy;
+  candidate: AiPolicy;
+}): AiPolicy {
+  if (!isAiPolicy(input.currentPolicy) || !isAiPolicy(input.candidate)) {
+    throw new PageWriteError(503, 'ai_policy_unavailable', 'The ingestion policy is unavailable');
+  }
+  const policy = stricterPolicy(input.currentPolicy, input.candidate);
+  if (isStricterPolicy(policy, input.currentPolicy) && !isAiPolicyEnforcementAvailable()) {
+    throw new FreshPublicationDeferredError(input.identity, 'ai_policy_enforcement_unavailable');
+  }
+  return policy;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -80,7 +98,8 @@ export function initialPolicyFromEffect(effect: Record<string, unknown>): {
   }
   // Never looser than its own labels, even if the effect was edited.
   const planned = planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: rawLabels });
-  return { initialPolicy: stricterPolicy(rawPolicy, planned.policy), initialLabels: planned.labels };
+  const initialPolicy = stricterPolicy(rawPolicy, planned.policy);
+  return { initialPolicy, initialLabels: applyCanonicalAiPolicyLabel(rawLabels, initialPolicy) };
 }
 
 /**
@@ -267,7 +286,7 @@ export const FRESH_PUBLICATION_FENCE_ACTIVE_SQL = `(
 /** A fresh Confluence import that must wait for durable publication authority. */
 export class FreshPublicationDeferredError extends Error {
   readonly confluenceId: string;
-  readonly reason: 'unbound_create' | 'bound_relocation' | 'unbound_relocation';
+  readonly reason: 'unbound_create' | 'bound_relocation' | 'unbound_relocation' | 'ai_policy_enforcement_unavailable';
   constructor(confluenceId: string, reason: FreshPublicationDeferredError['reason']) {
     super(`Fresh publication of Confluence page ${confluenceId} deferred: ${reason}`);
     this.name = 'FreshPublicationDeferredError';
@@ -303,8 +322,18 @@ export class FreshPublicationDeferredError extends Error {
  */
 export async function admitFreshConfluencePublication(
   client: PoolClient,
-  input: { confluenceId: string; resolvedPolicy: AiPolicy; labels: readonly string[] },
+  input: {
+    confluenceId: string; resolvedPolicy: AiPolicy; labels: readonly string[];
+    /** Server-fetched snapshot, never request metadata. Required to borrow a journal policy. */
+    snapshot?: { spaceKey: string; parentId: string | null; title: string; storage: string; version: number };
+  },
 ): Promise<{ policy: AiPolicy; labels: string[] }> {
+  // A supplied candidate is not authority to weaken the upstream snapshot.
+  // Refuse malformed candidates before reading journals or producing a plan.
+  if (!isAiPolicy(input.resolvedPolicy)) {
+    throw new PageWriteError(503, 'ai_policy_unavailable', 'The creation policy is unavailable');
+  }
+  const upstreamPolicy = stricterPolicy(input.resolvedPolicy, policyFromLabels(input.labels));
   const relocations = await client.query<{ created_confluence_id: string | null }>(
     `SELECT p.created_confluence_id
        FROM page_write_intents i
@@ -327,14 +356,28 @@ export async function admitFreshConfluencePublication(
     effect: Record<string, unknown>;
     remote_terminal_result: Record<string, unknown> | null;
     remote_effects_completed_at: Date | null;
+    authority_valid: boolean;
+    actor_id: string;
+    page_ids: number[];
   }>(
-    `SELECT effect, remote_terminal_result, remote_effects_completed_at
-       FROM page_write_intents
-      WHERE status = 'pending'
-        AND kind = 'pages.create.confluence'
-        AND remote_effect_started_at IS NOT NULL`,
+    `SELECT i.effect, i.remote_terminal_result, i.remote_effects_completed_at, i.actor_id, i.page_ids,
+            (EXISTS (SELECT 1 FROM users u WHERE u.id = i.actor_id AND u.deactivated_at IS NULL)
+             AND i.effect->>'effectClass' = 'remote'
+             AND NOT EXISTS (
+               SELECT 1 FROM unnest(i.page_ids) AS target(page_id)
+               LEFT JOIN pages p ON p.id = target.page_id
+               WHERE p.id IS NULL OR p.deleted_at IS NOT NULL
+                  OR i.revisions->target.page_id::text->>'contentRevision' IS DISTINCT FROM p.content_revision::text
+                  OR i.revisions->target.page_id::text->>'lifecycleRevision' IS DISTINCT FROM p.lifecycle_revision::text
+             )) AS authority_valid
+       FROM page_write_intents i
+      WHERE i.status = 'pending'
+        AND i.kind = 'pages.create.confluence'
+        AND i.remote_effect_started_at IS NOT NULL
+      FOR SHARE OF i`,
   );
-  let policy = input.resolvedPolicy;
+  let policy = upstreamPolicy;
+  let recoveredPolicy: AiPolicy = 'all';
   const labels = [...input.labels];
   for (const row of creates.rows) {
     const bound = boundConfluenceId(row.remote_terminal_result, row.remote_effects_completed_at);
@@ -346,8 +389,44 @@ export async function admitFreshConfluencePublication(
       continue;
     }
     if (bound !== input.confluenceId) continue;
+    // The restrictive fallback is a fence, not a recorded authorization.
+    // Legacy or unreadable policy metadata must never become permission to
+    // publish `none` while activation is closed merely because the ID binds.
+    let decoded: ReturnType<typeof initialPolicyFromEffect>;
+    try {
+      decoded = initialPolicyFromEffect(row.effect);
+    } catch {
+      throw new FreshPublicationDeferredError(input.confluenceId, 'unbound_create');
+    }
+    if (decoded.initialPolicy === undefined) {
+      throw new FreshPublicationDeferredError(input.confluenceId, 'unbound_create');
+    }
+    const snapshot = input.snapshot;
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    if (!snapshot || row.authority_valid !== true
+      || row.remote_terminal_result?.expectedVersion !== snapshot.version
+      || row.effect.spaceKey !== snapshot.spaceKey
+      || row.effect.parentConfluenceId !== snapshot.parentId
+      || row.effect.titleSha256 !== digest(snapshot.title)
+      || row.effect.storageSha256 !== digest(snapshot.storage)) {
+      throw new FreshPublicationDeferredError(input.confluenceId, 'unbound_create');
+    }
+    // Content/lifecycle revisions do not change when an ACE or role changes.
+    // A still-live actor and matching revisions are not policy authority.
+    for (const pageId of row.page_ids) {
+      if (!(await canMutateAiPolicy(row.actor_id, pageId, client))) {
+        throw new FreshPublicationDeferredError(input.confluenceId, 'unbound_create');
+      }
+    }
+    recoveredPolicy = stricterPolicy(recoveredPolicy, stated.policy);
     policy = stricterPolicy(policy, stated.policy);
     for (const label of stated.labels) if (!labels.includes(label)) labels.push(label);
   }
-  return { policy, labels };
+  // Planning is not rollout admission. Do not import a restriction as `all`,
+  // discard its labels, or advance the sync cursor past it. The caller handles
+  // this as a deferred publication and retries the upstream snapshot later.
+  // A validated journal may finish its already dispatched restriction, but
+  // cannot authorize a stricter upstream/default policy than it recorded.
+  admitAutomaticIngestionPolicy({ identity: input.confluenceId, currentPolicy: recoveredPolicy, candidate: policy });
+  return { policy, labels: applyCanonicalAiPolicyLabel(labels, policy) };
 }

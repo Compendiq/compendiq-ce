@@ -173,7 +173,16 @@ describe('generateConversationTitle', () => {
         expect.objectContaining({ role: 'system', content: expect.stringContaining('at most eight words') }),
         expect.objectContaining({ role: 'user', content: expect.stringContaining('Question:\n') }),
       ],
-      { maxTokens: 32, timeoutMs: 20_000, beforeDispatch: expect.any(Function) },
+      {
+        maxTokens: 32, timeoutMs: 20_000, beforeDispatch: expect.any(Function),
+        transportContext: { kind: 'article', stage: {
+          provenance: base.provenance, userId: base.userId, usecase: 'chat',
+          context: { stage: 'chat', attempt: 1, operation: {
+            operationId: expect.any(String), actor: { kind: 'user', id: base.userId },
+            source: 'conversation_title', cascadeId: null,
+          } },
+        } },
+      },
     );
     const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("title_source = 'generated'");

@@ -99,9 +99,10 @@ import {
   aiPolicyRefusalFromResult,
   applyAiPolicyOnClient,
   applyPageLabelsOnClient,
+  applyCanonicalAiPolicyLabel,
+  assertLabelPolicyChangeOnClient,
   canChoosePolicyAtCreation,
   canMutateAiPolicy,
-  emitAiPolicyChanges,
   isAiPolicy,
   isAiPolicyEnforcementAvailable,
   isAiPolicyRefusal,
@@ -114,6 +115,7 @@ import {
 } from '../../core/services/ai-policy-service.js';
 import { aiPolicyLabelConflict, isAiPolicyUpdatePaired } from '@compendiq/contracts';
 import { sendAiPolicyRefusal } from './page-ai-policy.js';
+import { publishBulkPolicyLabels } from './bulk-policy-labels.js';
 
 /**
  * Apply an explicit `aiPolicy` from a content update on the SAME held
@@ -389,9 +391,7 @@ async function planAuthorizedLabelWrite(
     currentLabels: current.labels ?? [],
     targetLabels,
   });
-  if (plan.kind === 'relax' && !(await canMutateAiPolicy(userId, pageId, client))) {
-    throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
-  }
+  await assertLabelPolicyChangeOnClient(client, { userId, pageId, plan });
   return plan;
 }
 
@@ -416,6 +416,77 @@ function assertPublishedLabelsMirrored(
       'The page AI policy changed while its labels were being published; the label write was not mirrored',
     );
   }
+}
+
+/**
+ * Bulk label policy effects are not ordinary partial-success tag edits. Plan
+ * the entire resolved selection before any row worker, job or remote intent
+ * starts. Re-read under the shared write/policy fences and compare the
+ * selection's existing content/lifecycle pair; never refresh it silently.
+ * Per-row publication still rechecks authority and the original pair.
+ */
+async function preflightBulkLabelPolicies(
+  userId: string,
+  rows: ReadonlyArray<{ id: number; labels: string[]; contentRevision: string; lifecycleRevision: string }>,
+  resolutionFailed: number,
+  target: (labels: readonly string[]) => string[],
+): Promise<boolean> {
+  const ids = rows.map((row) => row.id).sort((a, b) => a - b);
+  if (!ids.length) return false;
+  // Ordinary labels retain their existing per-row admission (including its
+  // integration-mode snapshot). Only policy effects require a set-wide fence.
+  const observed = await query<{ id: number; ai_policy: AiPolicy; labels: string[] | null }>(
+    'SELECT id, ai_policy, labels FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL', [ids],
+  );
+  const observedById = new Map(observed.rows.map((row) => [row.id, row]));
+  if (rows.every((row) => {
+    const page = observedById.get(row.id);
+    return page && isAiPolicy(page.ai_policy) && planLabelPolicyChange({
+      currentPolicy: page.ai_policy, currentLabels: page.labels, targetLabels: target(row.labels),
+    }).kind === 'unchanged';
+  })) return false;
+  await withPageWriteTransaction(ids, async (client) => {
+    await lockAiPolicyForPages(client, ids);
+    const current = await client.query<{
+      id: number; ai_policy: string; labels: string[] | null;
+      content_revision: string; lifecycle_revision: string;
+    }>(
+      `SELECT id, ai_policy, labels, content_revision::text, lifecycle_revision::text
+         FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL ORDER BY id FOR UPDATE`,
+      [ids],
+    );
+    const byId = new Map(current.rows.map((row) => [row.id, row]));
+    const plans = rows.map((row) => {
+      const fresh = byId.get(row.id);
+      if (!fresh) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      if (!isAiPolicy(fresh.ai_policy)) {
+        throw new PageWriteError(503, 'ai_policy_unavailable', 'The current AI policy is unavailable');
+      }
+      return { row, fresh, plan: planLabelPolicyChange({
+        currentPolicy: fresh.ai_policy, currentLabels: fresh.labels,
+        targetLabels: target(row.labels),
+      }) };
+    });
+    if (!plans.some(({ plan }) => plan.kind !== 'unchanged')) return;
+    // Unresolved identifiers may be inaccessible: no selected policy changes
+    // are allowed and no title or hidden target identity is disclosed.
+    if (resolutionFailed) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+    for (const { row, fresh, plan } of plans) {
+      if (!(await userCanAccessPage(userId, row.id, client))) {
+        throw new PageWriteError(404, 'page_not_found', 'Page not found');
+      }
+      if (fresh.content_revision !== row.contentRevision || fresh.lifecycle_revision !== row.lifecycleRevision) {
+        throw aiPolicyRefusalFromResult({ reason: 'stale_revision', pageIds: [row.id] });
+      }
+      if (plan.kind !== 'unchanged' && !(await canMutateAiPolicy(userId, row.id, client))) {
+        throw aiPolicyRefusalFromResult({ reason: 'not_authorized', pageIds: [row.id] });
+      }
+    }
+    if (plans.some(({ plan }) => plan.kind === 'tighten') && !isAiPolicyEnforcementAvailable()) {
+      throw aiPolicyRefusalFromResult({ reason: 'enforcement_unavailable', pageIds: [] });
+    }
+  });
+  return true;
 }
 
 /** The remote delta that realises the planned set from the admitted labels. */
@@ -1861,7 +1932,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // are decided HERE, before any remote effect, and carried through the
     // create (as part of the durable intent effect) so the local row is never
     // first published looser than the creator stated (#281 review).
-    const initialLabels = body.labels?.length
+    let initialLabels = body.labels?.length
       ? planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: body.labels }).labels
       : [];
     // An explicit `aiPolicy` that disagrees with the labels is a 422: the
@@ -1914,6 +1985,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       labels: initialLabels,
       explicit: body.aiPolicy,
     });
+    initialLabels = applyCanonicalAiPolicyLabel(initialLabels, initialPolicy);
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
@@ -2154,7 +2226,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // publication (sync-first). `publishCreatedConfluencePage` then tightens
     // that exact row to the admitted initial policy; its change records are
     // emitted only after the publication transaction has committed.
-    const createPolicyChanges: AiPolicyChangeRecord[] = [];
     const publication = {
       confluenceId: page.id,
       spaceKey: body.spaceKey!,
@@ -2165,7 +2236,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       initialPolicy,
       initialLabels,
       actorId: userId,
-      onPolicyChanges: (changes: AiPolicyChangeRecord[]) => { createPolicyChanges.push(...changes); },
     };
     const admittedCreateIntent = createIntent;
     const createdPageState: PublishedConfluencePage = await completePageWriteIntent(
@@ -2199,7 +2269,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     // The publication has COMMITTED (a thrown publication never reaches
     // here), so a sync-first tighten is now a durable transition.
-    emitAiPolicyChanges(createPolicyChanges);
     const localPageId = createdPageState.id;
 
     // A new Confluence page is visible to every user with space access (#893),
@@ -2211,7 +2280,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Labels supplied at creation (#1133). Confluence owns them for a synced
     // page, so they go upstream first and the local row mirrors what stuck. A
     // failure here must not fail the create: the page exists and is correct.
-    const createLabels = body.labels;
+    const createLabels = initialLabels;
     if (createLabels?.length && localPageId !== undefined && createdPageState) {
       // The requested set is validated against the just-published row BEFORE
       // the intent and the remote call (#281): a contradictory label set is
@@ -2269,7 +2338,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           },
         );
         const labelsIntentId = labelsIntent.id;
-        const committedLabels = await completePageWriteIntent(labelsIntent, async (writeClient) => {
+        await completePageWriteIntent(labelsIntent, async (writeClient) => {
           // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
           await lockAiPolicyForPages(writeClient, [localPageId]);
           await loadAuthorizedContentWriteState(
@@ -2282,7 +2351,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           await enqueuePageWriteInvalidation(writeClient, labelsIntentId);
           return applied;
         });
-        emitAiPolicyChanges(committedLabels.changes);
       } catch (err) {
         // The create itself succeeded. Keep a possibly-effectful labels intent
         // for reconciliation rather than guessing whether the remote call stuck.
@@ -2380,7 +2448,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       let committedVisibility = existingPage.visibility;
       let committedSource = existingPage.source;
       let committedSpaceKey = existingPage.space_key;
-      let localPolicyChanges: AiPolicyChangeRecord[] = [];
       try {
         await writeClient.query('BEGIN');
         await lockPageWriterRuntime(writeClient, runtimeId);
@@ -2504,7 +2571,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         if (body.aiPolicy !== undefined) {
           // Same transaction as the content write (#280): a refused policy
           // rolls the content back with it (local write, fully atomic).
-          localPolicyChanges = await applyRequestedAiPolicyOnClient(writeClient, {
+          await applyRequestedAiPolicyOnClient(writeClient, {
             userId, pageId: existingPage.id, aiPolicy: body.aiPolicy, expectedRevision: body.expectedRevision!,
           });
         }
@@ -2515,7 +2582,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       } finally {
         writeClient.release();
       }
-      emitAiPolicyChanges(localPolicyChanges);
 
       if (authoredContentChanged) {
         await invalidateCollabDocAfterBodyWrite(existingPage.id);
@@ -2719,7 +2785,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // page). The post-commit work — collab invalidation, cache, audit,
     // `page.updated` webhook — runs ONCE on every settled path.
     const settlement: { refusal: AiPolicyRefusalError | PageWriteError | null } = { refusal: null };
-    const remotePolicyChanges = await completePageWriteIntent(writeIntent, async (writeClient) => {
+    await completePageWriteIntent(writeIntent, async (writeClient) => {
       // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
       if (body.aiPolicy !== undefined) await lockAiPolicyForPages(writeClient, [existingPage.id]);
       let authorityLost: PageWriteError | null = null;
@@ -2779,7 +2845,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw err;
       }
     });
-    emitAiPolicyChanges(remotePolicyChanges);
 
     // Post-commit work, exactly once, on every settled path.
     await invalidateCollabDocAfterBodyWrite(existingPage.id);
@@ -4224,6 +4289,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
     let failed = resolutionFailed;
+    try {
+      const target = (labels: readonly string[]) =>
+        [...new Set([...labels.filter((label) => !removeTags.includes(label)), ...addTags])];
+      if (await preflightBulkLabelPolicies(userId, resolved.rows, resolutionFailed, target)) {
+        const result = await publishBulkPolicyLabels(userId, resolved.rows, target, 'pages.bulk.tags');
+        await cache.invalidateAcrossUsers('pages');
+        await logAuditEvent(userId, 'BULK_PAGE_TAGGED', 'page', undefined,
+          { affectedCount: resolved.rows.length, addTags, removeTags, ...result }, request);
+        return result;
+      }
+    } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+      throw err;
+    }
     // Remote-backed rows commit local labels only after fresh admission and a
     // terminal provider response. Standalone-mode rows still commit directly.
     const bulkLimit = pLimit(5);
@@ -4310,7 +4389,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                 }
               },
             );
-            const committed = await completePageWriteIntent(tagIntent, async (writeClient) => {
+            await completePageWriteIntent(tagIntent, async (writeClient) => {
               await lockAiPolicyForPages(writeClient, [numericPageId]);
               await loadAuthorizedContentWriteState(
                 writeClient, numericPageId, userId, tagIntent.revisions[numericPageId]!,
@@ -4322,9 +4401,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
               return applied;
             });
-            emitAiPolicyChanges(committed.changes);
+            
           } else {
-            const committed = await withPageWriteTransaction([numericPageId], async (writeClient) => {
+            await withPageWriteTransaction([numericPageId], async (writeClient) => {
               await lockAiPolicyForPages(writeClient, [numericPageId]);
               await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, {
                 contentRevision: pageInfo.contentRevision,
@@ -4332,7 +4411,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               });
               return applyPageLabelsOnClient(writeClient, { userId, pageId: numericPageId, targetLabels: labels });
             });
-            emitAiPolicyChanges(committed.changes);
+            
           }
 
           return id;
@@ -4435,6 +4514,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const { errors, failed: initialFailed } = bulkResolutionFailures(resolved);
     const eligible = resolved.rows;
+    try {
+      if (await preflightBulkLabelPolicies(userId, eligible, initialFailed, () => normTags)) {
+        const result = await publishBulkPolicyLabels(userId, eligible, () => normTags, 'pages.bulk.replace_tags');
+        await cache.invalidateAcrossUsers('pages');
+        await logAuditEvent(userId, 'BULK_PAGE_TAGS_REPLACED', 'page', undefined,
+          { affectedCount: eligible.length, tags: normTags, ...result }, request);
+        return { ...result, cancelled: false, ...(jobId ? { jobId } : {}) };
+      }
+    } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+      throw err;
+    }
 
     if (jobId) {
       await startBulkJob(jobId, eligible.length, userId, 'replace-tags');
@@ -4510,7 +4601,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                   }
                 },
               );
-              const committed = await completePageWriteIntent(tagIntent, async (writeClient) => {
+              await completePageWriteIntent(tagIntent, async (writeClient) => {
                 await lockAiPolicyForPages(writeClient, [page.id]);
                 await loadAuthorizedContentWriteState(
                   writeClient, page.id, userId, tagIntent.revisions[page.id]!,
@@ -4522,9 +4613,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                 await enqueuePageWriteInvalidation(writeClient, tagIntent.id);
                 return applied;
               });
-              emitAiPolicyChanges(committed.changes);
+              
             } else {
-              const committed = await withPageWriteTransaction([page.id], async (writeClient) => {
+              await withPageWriteTransaction([page.id], async (writeClient) => {
                 await lockAiPolicyForPages(writeClient, [page.id]);
                 await loadAuthorizedContentWriteState(writeClient, page.id, userId, {
                   contentRevision: page.contentRevision,
@@ -4532,7 +4623,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                 });
                 return applyPageLabelsOnClient(writeClient, { userId, pageId: page.id, targetLabels: normTags });
               });
-              emitAiPolicyChanges(committed.changes);
+              
             }
             return page.id;
           }),

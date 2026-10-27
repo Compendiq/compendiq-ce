@@ -23,8 +23,9 @@ export function normalizeAiPolicyValue(value: unknown): AiPolicy | null {
   if (typeof value !== 'string') return null;
   const v = value.trim().toLowerCase();
   if ((AI_POLICY_LABELS as readonly string[]).includes(v)) return v as AiPolicy;
-  const alias = (AI_POLICY_INPUT_ALIASES as Record<string, AiPolicy>)[v];
-  return alias ?? null;
+  return Object.hasOwn(AI_POLICY_INPUT_ALIASES, v)
+    ? (AI_POLICY_INPUT_ALIASES as Record<string, AiPolicy>)[v]!
+    : null;
 }
 
 /** Accepts `all | local_only | none | no_ai` and always yields a canonical `AiPolicy`. */
@@ -67,7 +68,8 @@ export const AI_POLICY_CANONICAL_LABELS: Record<AiPolicy, string> = {
 
 export function normalizeAiPolicyLabel(label: unknown): AiPolicy | null {
   if (typeof label !== 'string') return null;
-  return AI_POLICY_LABEL_SYNONYMS[label.trim().toLowerCase()] ?? null;
+  const key = label.trim().toLowerCase();
+  return Object.hasOwn(AI_POLICY_LABEL_SYNONYMS, key) ? AI_POLICY_LABEL_SYNONYMS[key]! : null;
 }
 
 export function isReservedAiPolicyLabel(label: unknown): boolean {
@@ -91,7 +93,6 @@ export function aiPolicyLabelConflict(labels: ReadonlyArray<string>): AiPolicy[]
 /** Drops every reserved policy label and appends the canonical one for `policy`. */
 export function applyCanonicalAiPolicyLabel(labels: ReadonlyArray<string>, policy: AiPolicy): string[] {
   const kept = labels.filter((l) => !isReservedAiPolicyLabel(l));
-  if (policy === 'all') return kept;
   return [...kept, AI_POLICY_CANONICAL_LABELS[policy]];
 }
 
@@ -119,7 +120,7 @@ export type AiPolicyAdmissionBlockReason = (typeof AI_POLICY_ADMISSION_BLOCK_REA
 export const AI_POLICY_PROVENANCE_VERSION = 1;
 
 const PageIdSchema = z.coerce.number().int().positive();
-const RevisionSchema = z.coerce.number().int().nonnegative();
+const RevisionSchema = z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /** PUT /api/pages/:id/ai-policy */
 export const UpdatePageAiPolicySchema = z.object({

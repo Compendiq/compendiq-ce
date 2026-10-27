@@ -373,7 +373,7 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     expect(await persistedMessages(b.id)).not.toContain(SECRET);
   });
 
-  it('records an unindexed root and refuses history after its policy is tightened', async () => {
+  it('records an unindexed restricted root and refuses history after its provider becomes external', async () => {
     const owner = await createUser('root-history-owner', 'admin');
     await insertSpace('ROOT', 'local', owner.id);
     const created = await query<{ id: number }>(
@@ -381,17 +381,23 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
        VALUES ('standalone', 'ROOT', 'Root', $1, $1, 'private', $2, FALSE) RETURNING id`, [SECRET, owner.id],
     );
     const id = created.rows[0]!.id;
+    // Existing restrictions remain enforced while new activation is closed.
+    await query(`UPDATE pages SET ai_policy = 'local_only', labels = ARRAY['local-ai-only'] WHERE id = $1`, [id]);
+    const providerId = (await query<{ id: string }>('SELECT id FROM llm_providers WHERE is_default')).rows[0]!.id;
+    const local = await app.inject({ method: 'PATCH', url: `/api/admin/llm-providers/${providerId}`,
+      headers: { authorization: `Bearer ${owner.token}` }, payload: { locality: 'local' },
+    });
+    expect(local.statusCode, local.body).toBe(200);
     const first = await ask(owner, { question: QUESTION, pageId: String(id), includeSubPages: true });
     expect(first.content).toBe(SECRET);
     const stored = await query<{ id: string; messages: Array<{ aiProvenance?: { pages: Array<{ pageId: number }> } }> }>(
       'SELECT id, messages FROM llm_conversations WHERE user_id = $1', [owner.id],
     );
     expect(stored.rows[0]!.messages[1]!.aiProvenance!.pages.map((p) => p.pageId)).toContain(id);
-    const tighten = await app.inject({ method: 'PUT', url: `/api/pages/${id}/labels`,
-      headers: { authorization: `Bearer ${owner.token}` },
-      payload: { addLabels: ['no-ai'], removeLabels: [] },
+    const external = await app.inject({ method: 'PATCH', url: `/api/admin/llm-providers/${providerId}`,
+      headers: { authorization: `Bearer ${owner.token}` }, payload: { locality: 'external' },
     });
-    expect(tighten.statusCode, tighten.body).toBe(200);
+    expect(external.statusCode, external.body).toBe(200);
     await expectDenied(owner, { question: 'Continue.', conversationId: stored.rows[0]!.id });
   });
 

@@ -317,6 +317,7 @@ export async function reformulateQuery(question: string): Promise<string[]> {
       { role: 'user', content: sanitized },
     ];
     const reply = await chat(config, model, messages, {
+      transportContext: { kind: 'non_article', purpose: 'user_query' },
       maxTokens: REFORMULATION_MAX_TOKENS,
       timeoutMs: REFORMULATION_TIMEOUT_MS,
     });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  inlineArticlePolicy,
   canShowPolicySelector,
   requiresConfirmation,
   selectorReducer,
@@ -24,6 +25,14 @@ import {
 } from './article-ai-policy';
 
 describe('article AI policy UI logic', () => {
+  it('decodes live inline policy without granting permission for missing detail', () => {
+    expect(inlineArticlePolicy({ aiPolicy: 'local_only', aiPolicyRevision: 4 })).toEqual({
+      articlePolicy: 'local_only', articlePolicyRevision: 4,
+    });
+    expect(inlineArticlePolicy(undefined)).toEqual({});
+    expect(inlineArticlePolicy({ aiPolicy: 'unknown', aiPolicyRevision: 4 })).toEqual({});
+    expect(inlineArticlePolicy({})).toEqual({ articlePolicy: undefined, articlePolicyRevision: undefined });
+  });
   it('shows selector only with the active server page-detail capability and revision', () => {
     const detail = {
       canChangeAiPolicy: true, aiPolicyActivation: 'active',

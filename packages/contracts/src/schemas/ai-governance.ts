@@ -17,7 +17,8 @@ export const AiDecisionEventSchema = AiOperationContextSchema.extend({
   type: z.literal('decision'),
   usecase: z.string().min(1),
   stage: z.string().min(1),
-  attempt: z.number().int().positive(),
+  /** Null only when durable allocation failed before admission; never invent 1. */
+  attempt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
   articles: z.array(z.object({
     pageId: z.number().int().positive(),
     policy: AiPolicySchema.nullable(),
@@ -26,13 +27,17 @@ export const AiDecisionEventSchema = AiOperationContextSchema.extend({
   }).strict()),
   provider: z.object({
     providerId: z.string().min(1),
+    /** Concrete receiving model when established, never inferred from an assignment later. */
+    model: z.string().min(1).nullable().optional(),
     configRevision: revision.nullable(),
     declaredLocality: ProviderLocalitySchema.nullable(),
     effectiveLocality: ProviderLocalitySchema.nullable(),
   }).strict().nullable(),
   decision: z.enum(['admitted', 'blocked']),
   reason: z.string().min(1),
-}).strict();
+}).strict().refine((event) => event.attempt !== null
+  || (event.decision === 'blocked' && event.reason === 'policy_unavailable'),
+{ message: 'Unknown attempt is only valid for unavailable pre-admission refusals', path: ['attempt'] });
 export type AiDecisionEvent = z.infer<typeof AiDecisionEventSchema>;
 
 /** Persist on the mutation's held client; rollback must roll this back too. */

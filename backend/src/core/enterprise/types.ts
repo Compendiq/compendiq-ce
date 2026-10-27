@@ -65,6 +65,10 @@ export interface EnterprisePlugin {
    */
   resolveUsecaseOverride?(usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
 
+  /** Dispatch-only authoritative override. Read and fence policy using this
+   * transaction; no pool checkout, cached policy or network calls. */
+  resolveUsecaseOverrideOnClient?(client: import('pg').PoolClient, usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
+
   /**
    * Article AI policy creation default (SPEC-CORE-001). The CE noop returns
    * `'all'`; creation still applies the stricter of this value and labels.
@@ -85,7 +89,4 @@ export interface EnterprisePlugin {
 
   /** Complete stage decision captured at admission; never reconstruct from current settings. */
   onAiDecision?(event: import('@compendiq/contracts').AiDecisionEvent): void | Promise<void>;
-
-  /** Legacy observation only, not a durable committed-change persistence seam. */
-  onAiPolicyEvent?(event: import('./ai-policy-hooks.js').AiPolicyEvent): void;
 }

@@ -1,3 +1,9 @@
+import { newAiOperation, emitAiDecision } from '../../core/enterprise/ai-policy-hooks.js';
+import { randomUUID } from 'node:crypto';
+import { emitUnresolvedDecision } from '../../domains/llm/services/ai-policy-admission.js';
+import { resolveReadablePageRef } from './_helpers.js';
+import { assembleDirectArticleContext } from './_article-transport.js';
+import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
 import { FastifyInstance } from 'fastify';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
@@ -8,7 +14,6 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
-  assembleContextIfNeeded,
   resolveSystemPrompt,
   checkCacheWithLock,
   sendCachedSSE,
@@ -46,7 +51,22 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
+    const operation = newAiOperation('direct_article', { kind: 'user', id: userId });
+    const assignment = await resolveUsecase('summary').catch(async (error: unknown) => {
+      const page = body.pageId ? await resolveReadablePageRef(userId, body.pageId).catch(() => null) : null;
+      if (page) {
+        await emitUnresolvedDecision(page.id, 'summary', { operation, stage: 'summary', attempt: 1 }, 'policy_unavailable');
+      } else {
+        emitAiDecision({ ...operation, eventId: randomUUID(), occurredAt: new Date().toISOString(),
+          type: 'decision', usecase: 'summary', stage: 'summary', attempt: 1,
+          articles: [], provider: null, decision: 'blocked', reason: 'policy_unavailable' });
+      }
+      throw error;
+    });
+    const { config: summaryConfig, model: resolvedModel } = assignment;
+    const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
+      userId, body.pageId, content, includeSubPages, summaryConfig, 'summary', resolvedModel, { operation },
+    );
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
@@ -96,18 +116,26 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
     const basePrompt = await resolveSystemPrompt(userId, 'summarize');
     const systemPrompt = `${basePrompt} ${lengthInstructions[length]}${multiPageSuffix}`;
 
-    // Resolve the `summary` use-case up-front so the cache key includes the
-    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: summaryConfig, model: resolvedModel } = await resolveUsecase('summary');
+    // Keep the saved summary assignment used for composition.
     logger.debug(
       { userId, bodyModel: model, providerId: summaryConfig.providerId, resolvedModel },
       'Resolved summary usecase assignment',
     );
 
+    const effectiveModel = resolvedModel;
+    if (transportContext.kind === 'article') {
+      transportContext.stage.context.modelSelection = { kind: 'assigned' };
+    }
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, summarizeContent, summaryConfig.providerId, { thinking: body.thinking });
+    const cacheKey = buildLlmCacheKey(effectiveModel, systemPrompt, summarizeContent, summaryConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
+      // Cache reuse is not an inference attempt. Still revalidate after the
+      // potentially waiting cache lookup; a denial emits its typed refusal.
+      if (transportContext.kind === 'article') {
+        await authorizeArticleDispatch(summaryConfig, transportContext.stage.provenance, userId, 'summary', transportContext.stage.context, effectiveModel, true);
+      }
       sendCachedSSE(reply, cached.content);
       return;
     }
@@ -120,11 +148,11 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
         { role: 'user' as const, content: summarizeContent },
       ];
       await streamSSE(request, reply,
-        (signal) => streamChat(summaryConfig, resolvedModel, summarizeMessages, signal, { thinking: body.thinking }),
+        (signal) => streamChat(summaryConfig, effectiveModel, summarizeMessages, signal, { thinking: body.thinking, transportContext }),
         sumExtras, {
           llmCache, cacheKey, postProcess,
           audit: {
-            userId, action: 'summarize', model: resolvedModel, provider: summaryConfig.providerId,
+            userId, action: 'summarize', model: effectiveModel, provider: summaryConfig.providerId,
             inputTokens: estimateTokens(summarizeMessages.map((m) => m.content).join('')),
             inputMessages: summarizeMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             retrievedChunkIds: [],

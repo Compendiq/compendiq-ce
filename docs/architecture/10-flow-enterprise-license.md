@@ -238,6 +238,22 @@ flowchart LR
     events --> report["Model Governance Evidence<br/>recorded decisions only"]
 ```
 
+`applyAiPolicyOnClient` owns the awaited `persistAiPolicyChange(client, event)`
+call after policy/label and derived-state changes. The cascade supplies one
+server-owned operation/cascade identity, user actor and `subtree_cascade`
+source; it does not insert a second aggregate. The primitive reads old policy
+and revisions from locked rows. Sink failures propagate to the transaction
+owner and roll back policy and evidence together. The cascade still owns
+content-revision publication and its hierarchy/lifecycle fences. Direct policy
+updates no longer emit a second post-commit notification. Interactive direct
+relaxation stores `all-ai`.
+
+The legacy `emitAiPolicyChanges` export remains functional for unmigrated
+creation/recovery callers; it is not an empty shim. Those callers still need
+held-client migration and removal before final epic acceptance. In particular,
+this partial cutover does not establish complete producer coverage or rollout
+readiness. Restrictive activation remains closed.
+
 The EE hook is wired into the plugin only; CE routes and ingestion keep
 calling `resolveCreationAiPolicy`. Losing the license makes the hook answer
 `all` for new pages but never rewrites stored page restrictions. Event

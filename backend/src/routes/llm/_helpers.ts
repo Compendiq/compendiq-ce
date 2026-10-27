@@ -13,7 +13,7 @@ import {
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
-import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix, type IncludedPageRef, type SubPagePolicyContext } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import {
@@ -22,6 +22,7 @@ import {
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 
 export { sanitizeLlmInput };
 
@@ -119,14 +120,14 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
-  opts?: { protectMedia?: boolean; layoutTokens?: boolean },
-): Promise<{ markdown: string; multiPageSuffix: string }> {
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean; policyContext?: SubPagePolicyContext; parentRef?: ResolvedPageRef },
+): Promise<{ markdown: string; multiPageSuffix: string; includedPageRefs: IncludedPageRef[] }> {
   // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
   // Confluence id (pages.parent_id; the DB id for standalone pages). A page
   // the caller cannot read, or that does not exist, contributes neither its
   // title nor its sub-page tree: the request falls back to the caller's own
   // content alone, so both cases produce the same prompt.
-  const resolved = includeSubPages && pageId ? await resolveReadablePageRef(userId, pageId) : undefined;
+  const resolved = includeSubPages && pageId ? opts?.parentRef ?? await resolveReadablePageRef(userId, pageId) : undefined;
   if (resolved) {
     const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
     const assembled = await assembleSubPageContext(
@@ -139,11 +140,12 @@ export async function assembleContextIfNeeded(
       // alignment runs against the parent, and without its tokens any
       // Improve of a multi-cell layout page is guaranteed unrecoverable.
       // Sub-page conversions stay token-free (see assembleSubPageContext).
-      { parentLayoutTokens: opts?.layoutTokens === true },
+      { parentLayoutTokens: opts?.layoutTokens === true, policyContext: opts?.policyContext },
     );
     return {
       markdown: assembled.markdown,
       multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+      includedPageRefs: assembled.includedPageRefs,
     };
   }
 
@@ -153,6 +155,7 @@ export async function assembleContextIfNeeded(
     // requests them.
     markdown: htmlToMarkdown(html, { layoutTokens: opts?.layoutTokens === true }),
     multiPageSuffix: '',
+    includedPageRefs: [],
   };
 }
 
@@ -360,7 +363,7 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
     }
   } finally {
-    if (options?.audit && dispatched) {
+    if (options?.audit && dispatched && !(streamError instanceof ArticleStageRefusedError)) {
       emitLlmAudit({
         ...options.audit,
         inputTokens: usage?.promptTokens ?? options.audit.inputTokens,

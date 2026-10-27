@@ -42,6 +42,18 @@ export function pagesSearchParams(filter: AiPolicyFilter): Record<string, string
   return filter === 'any' ? {} : { aiPolicy: filter };
 }
 
+/** Legacy page consumers may not type policy fields; decode the actual wire, never infer all. */
+export function inlineArticlePolicy(detail: unknown): {
+  articlePolicy?: AiPolicy;
+  articlePolicyRevision?: number;
+} {
+  const parsed = PageAiPolicyDetailFieldsSchema.safeParse(detail);
+  return parsed.success ? {
+    articlePolicy: parsed.data.aiPolicy,
+    articlePolicyRevision: parsed.data.aiPolicyRevision,
+  } : {};
+}
+
 /** Selector uses the page-detail wire contract, never a locally invented capability. */
 export function canShowPolicySelector(detail: unknown): boolean {
   const parsed = PageAiPolicyDetailFieldsSchema.safeParse(detail);

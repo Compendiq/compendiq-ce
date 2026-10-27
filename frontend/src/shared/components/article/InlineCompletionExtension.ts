@@ -235,7 +235,7 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
             if (meta?.type === 'accepted') {
               return { ...EMPTY_STATE, completionAccepted: true };
             }
-            if (meta?.type === 'clear') return EMPTY_STATE;
+            if (meta?.type === 'clear') return { ...EMPTY_STATE };
             if (tr.docChanged || tr.selectionSet) return EMPTY_STATE;
             return state;
           },
@@ -268,6 +268,10 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
             ]);
           },
           handleKeyDown(view, event) {
+            if (!valueOf(options.enabled) || !view.editable || navigator.onLine === false) {
+              cancelPending?.();
+              return false;
+            }
             if (view.composing) return false;
             const hasSuggestion = completionState(view.state).activeSuggestion != null;
             if (hasSuggestion && event.key === 'Tab' && !event.shiftKey) {
@@ -317,6 +321,8 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
             cancelTimer();
             if (
               destroyed
+              || !view.editable
+              || navigator.onLine === false
               || !valueOf(options.enabled)
               || view.composing
               || isInTable(view.state)
@@ -381,6 +387,8 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
               view = nextView;
               const previous = completionState(prevState);
               const current = completionState(nextView.state);
+              if (current !== previous && current !== EMPTY_STATE
+                && !current.loading && !current.activeSuggestion && !current.completionAccepted) cancelTimer();
               if (
                 previous.abortController
                 && previous.abortController !== current.abortController

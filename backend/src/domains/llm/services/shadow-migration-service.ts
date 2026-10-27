@@ -1,4 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
+import { allocateEmbeddingAttempt, nextExplicitEmbeddingAttempt, shadowEmbeddingAttempt } from './embedding-stage-operation.js';
+import type { AiOperationContext } from '@compendiq/contracts';
 // One statement of pgvector's HNSW tiering, shared with the destructive
 // re-embed path, the eval seeder and #1115's image index.
 import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
@@ -7,6 +9,8 @@ import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.
 // worked out here and its rationale now lives with the helper.
 import { withLockRetry } from '../../../core/db/with-lock-retry.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { captureEmbeddingArticle, embeddingArticleStage, validateEmbeddingPublicationOnClient } from './embedding-article-stage.js';
+import { ArticleStageRefusedError } from './article-stage-admission.js';
 import { LlmHttpError } from './llm-http-error.js';
 import { getProviderById } from './llm-provider-service.js';
 import { bumpProviderCacheVersion } from './cache-bus.js';
@@ -14,7 +18,7 @@ import { enqueueJob, getJobStatus } from '../../../core/services/queue-service.j
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { warnThresholdOutlivedItsModel } from '../../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from './llm-provider-resolver.js';
-import { admitPageForProvider, loadProviderMetadata } from './ai-policy-admission.js';
+import { admitPageForProvider, emitUnresolvedDecision, loadProviderMetadata } from './ai-policy-admission.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { invalidateGraphCache } from '../../../core/services/redis-cache.js';
@@ -166,6 +170,7 @@ async function providerConfigFor(providerId: string) {
   if (!cfg) return null;
   return {
     providerId: cfg.id,
+    configRevision: cfg.configRevision,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     authType: cfg.authType,
@@ -266,7 +271,7 @@ export async function startShadowMigration(opts: {
   // accepted at all.
   let vectors: number[][];
   try {
-    vectors = await generateEmbedding(cfg, opts.model, 'probe');
+    vectors = await generateEmbedding(cfg, opts.model, 'probe', { kind: 'non_article', purpose: 'provider_probe' });
   } catch (err) {
     // LlmHttpError means the provider ANSWERED with an error status; the
     // failure an admin is most likely to cause — wrong port, service down,
@@ -467,12 +472,6 @@ export async function runShadowBackfillJob(job?: {
   let state = await getShadowMigrationState();
   if (!state || state.status !== 'active') return 'no-active-migration';
 
-  const cfg = await providerConfigFor(state.providerId);
-  if (!cfg) {
-    logger.error({ providerId: state.providerId }, 'Shadow migration provider vanished — leaving stragglers');
-    return { processed: 0, failed: 0 };
-  }
-
   const total = await countBackfillPages();
   let processed = 0;
   let failed = 0;
@@ -510,7 +509,19 @@ export async function runShadowBackfillJob(job?: {
       // inside a large batch (review r1).
       state = await getShadowMigrationState();
       if (!state || state.status !== 'active') return 'aborted';
-      const admission = await admitPageForProvider(page_id, 'embedding', state.providerId, state.model);
+      const epoch = shadowStateFingerprint(state);
+      let allocated;
+      try {
+        allocated = await shadowEmbeddingAttempt(page_id, epoch, { providerId: state.providerId, model: state.model });
+      } catch (err) {
+        if (!(err instanceof ArticleStageRefusedError)) throw err;
+        blocked++;
+        blockedPages.add(page_id);
+        continue;
+      }
+      const { operation, attempt } = allocated;
+      const admission = await admitPageForProvider(page_id, 'embedding', state.providerId, state.model,
+        { operation, stage: 'shadow_embedding', attempt, preliminary: true });
       if (!admission.admitted) {
         blocked++;
         blockedPages.add(page_id);
@@ -518,9 +529,22 @@ export async function runShadowBackfillJob(job?: {
         continue;
       }
       try {
-        await shadowEmbedExistingRows(page_id, cfg, state.model);
+        const cfg = await providerConfigFor(state.providerId).catch(() => null);
+        if (!cfg) {
+          await emitUnresolvedDecision(page_id, 'embedding',
+            { operation, stage: 'shadow_embedding', attempt }, 'policy_unavailable');
+          blocked++;
+          blockedPages.add(page_id);
+          continue;
+        }
+        await shadowEmbedExistingRows(page_id, cfg, state.model, admission, epoch, operation, attempt);
         processed++;
       } catch (err) {
+        if (err instanceof ArticleStageRefusedError) {
+          blocked++;
+          blockedPages.add(page_id);
+          continue;
+        }
         failed++;
         failedPages.add(page_id);
         logger.warn({ err, pageId: page_id }, 'Shadow backfill failed for page — left as straggler');
@@ -549,7 +573,28 @@ async function shadowEmbedExistingRows(
   pageId: number,
   cfg: NonNullable<Awaited<ReturnType<typeof providerConfigFor>>>,
   model: string,
+  admission: Extract<Awaited<ReturnType<typeof admitPageForProvider>>, { admitted: true }>,
+  epoch: string,
+  operation: AiOperationContext,
+  firstAttempt: number,
 ): Promise<void> {
+  let article;
+  try {
+    const source = (await query<{ title: string; space_key: string; body_html: string }>(
+      'SELECT title, space_key, body_html FROM pages WHERE id = $1 AND deleted_at IS NULL', [pageId],
+    )).rows[0];
+    if (!source) throw new ArticleStageRefusedError();
+    article = await captureEmbeddingArticle(pageId, source.title, source.space_key, source.body_html);
+  } catch (err) {
+    // Preliminary success emitted nothing. Only this pre-transport boundary
+    // owns the refusal; catching the whole method would double-count final
+    // dispatch refusals and misreport publication as another inference.
+    await emitUnresolvedDecision(pageId, 'embedding',
+      { operation, stage: 'shadow_embedding', attempt: firstAttempt }, 'policy_unavailable',
+      { providerId: cfg.providerId, model });
+    throw err;
+  }
+  const stage = embeddingArticleStage(article, admission, 'shadow_embedding', operation);
   const rows = await query<{ chunk_index: number; chunk_text: string }>(
     `SELECT chunk_index, chunk_text FROM page_embeddings WHERE page_id = $1 AND embedding_next IS NULL ORDER BY chunk_index`,
     [pageId],
@@ -559,7 +604,13 @@ async function shadowEmbedExistingRows(
   const embeddings: Array<{ chunkIndex: number; text: string; embedding: number[] }> = [];
   for (let i = 0; i < rows.rows.length; i += EMBED_BATCH) {
     const slice = rows.rows.slice(i, i + EMBED_BATCH);
-    const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text));
+    // Later batches belong to this retained job, not a successor generation.
+    // Final transport admission emits the stale-source refusal before HTTP.
+    const attempt = i === 0 ? firstAttempt : await allocateEmbeddingAttempt(pageId, operation, 'shadow_embedding',
+      () => nextExplicitEmbeddingAttempt(article, operation), { providerId: cfg.providerId, model });
+    const vectors = await generateEmbedding(cfg, model, slice.map((r) => r.chunk_text), {
+      kind: 'article', stage: { ...stage, context: { ...stage.context, attempt } },
+    });
     for (let j = 0; j < slice.length; j++) {
       embeddings.push({ chunkIndex: slice[j]!.chunk_index, text: slice[j]!.chunk_text, embedding: vectors[j]! });
     }
@@ -568,6 +619,10 @@ async function shadowEmbedExistingRows(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Schema first: swap/abort lock both tables before the candidate row.
+    await client.query('LOCK TABLE page_embeddings, pages IN ROW EXCLUSIVE MODE');
+    await validateEmbeddingPublicationOnClient(client, article, stage, model);
+    if (await shadowEpochFromClient(client) !== epoch) throw new ArticleStageRefusedError();
     for (const e of embeddings) {
       // Guarded write-back (review r1): the provider round-trip above is a
       // long lock-free window in which embedPage can replace the page's rows
@@ -587,7 +642,7 @@ async function shadowEmbedExistingRows(
     await client.query(
       `UPDATE pages SET page_avg_embedding_next = (
          SELECT CASE WHEN COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0
-                     THEN AVG(embedding_next) END
+                     THEN AVG(embedding_next) FILTER (WHERE (metadata->>'source') IS DISTINCT FROM 'image_analysis') END
          FROM page_embeddings WHERE page_id = $1
        ) WHERE id = $1`,
       [pageId],

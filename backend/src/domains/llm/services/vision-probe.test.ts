@@ -72,7 +72,10 @@ describe('probeVision', () => {
   it('allows enough tokens for a full-sentence answer and thinking blocks', async () => {
     mockChat.mockResolvedValue('yellow purple green');
     await probeVision(CFG, 'm');
-    expect(mockChat.mock.calls[0]![3]).toEqual({ maxTokens: 512 });
+    expect(mockChat.mock.calls[0]![3]).toEqual({
+      maxTokens: 512,
+      transportContext: { kind: 'non_article', purpose: 'provider_probe' },
+    });
   });
 
   it('returns vision:true when the reply names all three bands in order', async () => {

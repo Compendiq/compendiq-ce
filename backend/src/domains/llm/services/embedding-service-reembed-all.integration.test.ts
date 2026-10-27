@@ -129,7 +129,7 @@ beforeEach(async () => {
   if (!canRun) return;
   await truncateAllTables();
   const provider = await query<{ id: string }>(
-    `INSERT INTO llm_providers (name, base_url) VALUES ('Test', 'http://localhost:0/v1') RETURNING id::text`,
+    `INSERT INTO llm_providers (name, base_url, is_default, default_model) VALUES ('Test', 'http://localhost:0/v1', TRUE, 'bge-m3') RETURNING id::text`,
   );
   mocks.providerId = provider.rows[0]!.id;
   // Drop any lingering lock keys from prior runs (different test file may

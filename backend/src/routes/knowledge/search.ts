@@ -142,7 +142,7 @@ async function generateSearchEmbedding(
     // file, so neither half can be added or dropped unnoticed — and dropping
     // the wrapper here while leaving the import behind is red, not green.
     const embeddings = await generateEmbedding(
-      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
+      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q), { kind: 'non_article', purpose: 'user_query' },
     );
     const embedding = embeddings[0];
     // `!embedding` alone would miss a zero-length inner vector ([[]]) — an

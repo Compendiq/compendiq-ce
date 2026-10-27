@@ -461,18 +461,25 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
 
       Y.applyUpdate(peerDraft, Y.encodeStateAsUpdate(runtimeB!.getRoom(pageId)!.doc));
       appendParagraph(peerDraft, 'MISSED_WHILE_UNSUBSCRIBED');
-      expect(await runtimeB!.handleInboundFrame(
-        pageId, 'connected-peer', encodeSyncUpdate(Y.encodeStateAsUpdate(peerDraft)),
-      )).toBe('ok');
-      // That edit debounced the peer's BYTEA persist by 2 s, the same delay as
-      // the reconnect retry above, so it fired during the rejoin's correlation
-      // round and held the page lifecycle lock past the dump deadline on a
-      // loaded host. Keeping the edit in the peer's memory also means only the
-      // round, not a persisted merge, can carry it to the cached room.
+      // Keep this edit memory-only so the assertion proves peer correlation,
+      // not a persisted merge. handleInboundFrame awaits COMMIT after applying
+      // Yjs: on a loaded full run its timer can fire before that promise returns.
+      // Yjs listeners run synchronously, in registration order; cancel the real
+      // timer immediately after wireDoc schedules it, before yielding to SQL.
       const peerRoom = runtimeB!.getRoom(pageId)!;
-      expect(peerRoom.persistTimer).not.toBeNull();
-      clearTimeout(peerRoom.persistTimer!);
-      peerRoom.persistTimer = null;
+      const holdPeerPersist = () => {
+        expect(peerRoom.persistTimer).not.toBeNull();
+        clearTimeout(peerRoom.persistTimer!);
+        peerRoom.persistTimer = null;
+      };
+      peerRoom.doc.on('update', holdPeerPersist);
+      try {
+        expect(await runtimeB!.handleInboundFrame(
+          pageId, 'connected-peer', encodeSyncUpdate(Y.encodeStateAsUpdate(peerDraft)),
+        )).toBe('ok');
+      } finally {
+        peerRoom.doc.off('update', holdPeerPersist);
+      }
       // PING is ordered after the peer's publication on this same connection.
       await main!.ping();
       expect(await namedSubscriberId(name)).toBeUndefined();

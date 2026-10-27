@@ -27,7 +27,9 @@ import type { PoolClient } from 'pg';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
-import { resolveIngestionAiPolicy, TIGHTEN_ONLY_POLICY_SQL } from '../../../core/services/ai-policy-ingestion.js';
+import { admitAutomaticIngestionPolicy, resolveIngestionAiPolicy } from '../../../core/services/ai-policy-ingestion.js';
+import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../../core/services/ai-policy-deferred-ingestion.js';
+import { applyCanonicalAiPolicyLabel, lockAiPolicyForPages, policyFromLabels, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 import {
   LocalAttachmentError,
   putLocalAttachments,
@@ -524,10 +526,104 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     ).map((child) => normalizeNotionId(child.id)));
   }
 
+  // Policy follows the article receiving the source bytes, not just sources
+  // allocated their own article. A table row is deliberately absent from jobs;
+  // a folded database is deliberately absent from ordered. Neither is absent
+  // from the host's policy observation. Keep the target's owner/source identity
+  // for publication and bind its observation revision to every contribution.
+  const policySources = new Map<ImportJob, Record<string, unknown>[]>();
+  for (const source of jobs) {
+    if (items.get(source.id)?.status === 'fail') continue;
+    let target = source;
+    const seen = new Set<ImportJob>();
+    while (target.foldedInto) {
+      if (seen.has(target)) throw new NotionImportError('Cyclic folded database ownership', 409);
+      seen.add(target);
+      const host = byKey.get(normalizeNotionId(target.foldedInto));
+      if (!host) throw new NotionImportError('Folded database has no receiving article', 409);
+      target = host;
+    }
+    const sources = policySources.get(target) ?? [];
+    sources.push(source.page);
+    if (source.flatten?.kind === 'table') sources.push(...source.flatten.rows);
+    policySources.set(target, sources);
+  }
+  const policyLabels = (job: ImportJob): string[] =>
+    (policySources.get(job) ?? [job.page]).flatMap((source) => extractWikiPageProperties(source).labels);
+  const policyObservationRevision = (job: ImportJob): string => {
+    const sources = policySources.get(job) ?? [job.page];
+    if (sources.length === 1 && typeof job.page.last_edited_time === 'string' && job.page.last_edited_time.length > 0) {
+      return job.page.last_edited_time;
+    }
+    return `snapshot:${sha256(JSON.stringify(sources.map((source) => ({
+      id: typeof source.id === 'string' ? normalizeNotionId(source.id) : null,
+      revision: source.last_edited_time ?? null,
+      snapshot: sha256(JSON.stringify(source)),
+    })).sort((a, b) => (a.id ?? '').localeCompare(b.id ?? ''))))}`;
+  };
+
+  async function publishCompletedPolicy(job: ImportJob, pageId: number): Promise<void> {
+    await withPageWriteTransaction([pageId], async (client) => {
+      await lockAiPolicyForPages(client, [pageId]);
+      await assertNotionTargetAuthority(client, {
+        pageId, userId: input.userId, notionPageId: job.id, expectedState: 'complete',
+      });
+      await publishIngestionPolicyOnClient(client, {
+        source: 'notion', sourceScope: input.userId, sourceId: job.id,
+        // A concurrent completed row is existing, not a creation-default target.
+        pageId, userId: input.userId, candidate: policyFromLabels(policyLabels(job)),
+      });
+    });
+  }
+
+  // Record a refused snapshot before allocating a placeholder. The decision and
+  // observation commit together, independently of the refused content write.
+  // Pending observations survive upstream label removal on subsequent imports.
+  const policyJobs = jobs.filter((job) => !job.foldedInto &&
+    (!items.has(job.id) || items.get(job.id)?.status === 'already_imported'));
+  for (const job of policyJobs) {
+    try {
+      const labels = policyLabels(job);
+      const candidate = job.reuseId === undefined
+        ? await resolveIngestionAiPolicy({ userId: input.userId, spaceKey: destination.spaceKey, labels })
+        : policyFromLabels(labels);
+      job.ingestionPolicy = await observeIngestionAdmission({
+        source: 'notion', sourceScope: input.userId, sourceId: normalizeNotionId(job.id),
+        // Older API snapshots may omit last_edited_time. A digest identifies
+        // that observation without storing authored content in governance data.
+        observedRevision: policyObservationRevision(job),
+        userId: input.userId, policy: candidate,
+      }, async (client, pendingPolicy) => {
+        const current = job.reuseId === undefined ? undefined : (await client.query<{ ai_policy: AiPolicy }>(
+          'SELECT ai_policy FROM pages WHERE id=$1 AND deleted_at IS NULL', [job.reuseId],
+        )).rows[0];
+        if (job.reuseId !== undefined && !current) throw new NotionImportError('Import target no longer exists', 409);
+        return admitAutomaticIngestionPolicy({
+          identity: job.id, currentPolicy: current?.ai_policy ?? 'all', candidate: pendingPolicy,
+        });
+      });
+    } catch (err) {
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
+  }
+
+  // A completed import still receives tighten-only policy intent even when its
+  // authored body is deliberately retained. Do not apply creation defaults here.
+  for (const job of policyJobs) {
+    if (items.get(job.id)?.status !== 'already_imported' || job.reuseId === undefined) continue;
+    try {
+      await publishCompletedPolicy(job, job.reuseId);
+    } catch (err) {
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
+  }
+
   // Allocate every local ID before converting any final body. Forward mention
   // rewrites are deterministic, and the enclosing batch lock keeps every
   // selected page exclusively owned until finalization or cleanup.
   for (const job of ordered) {
+    if (items.has(job.id)) continue;
     const existing = job.reuseId === undefined
       ? null
       : {
@@ -580,7 +676,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           notionPageId: job.id,
           bodyHtml: '',
           bodyText: '',
-          labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
+          labels: applyCanonicalAiPolicyLabel(job.database ? ['notion-import', 'database'] : wikiProps.labels, job.ingestionPolicy ?? 'all'),
           author: wikiProps.author,
           verifiedAt: wikiProps.verifiedAt,
         }, client, []));
@@ -596,11 +692,17 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           job.localPageId = concurrent.id;
           importedPages.set(normalizeNotionId(job.id), concurrent.id);
           if (concurrent.complete && !input.overwriteExisting) {
-            items.set(job.id, {
-              notionPageId: job.id,
-              status: 'already_imported',
-              localPageId: concurrent.id,
-            });
+            try {
+              await publishCompletedPolicy(job, concurrent.id);
+              items.set(job.id, {
+                notionPageId: job.id,
+                status: 'already_imported',
+                localPageId: concurrent.id,
+              });
+            } catch (publicationError) {
+              importedPages.delete(normalizeNotionId(job.id));
+              items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(publicationError) });
+            }
           } else {
             job.createdPlaceholder = false;
             job.reuseComplete = concurrent.complete;
@@ -623,6 +725,18 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         status: 'fail',
         reason: 'Notion import lost its original page revision fence',
       });
+      continue;
+    }
+    try {
+      const current = await query<{ ai_policy: AiPolicy }>('SELECT ai_policy FROM pages WHERE id = $1', [job.localPageId]);
+      if (!current.rows[0]) throw new NotionImportError('Import target no longer exists', 409);
+      admitAutomaticIngestionPolicy({
+        identity: job.id, currentPolicy: current.rows[0].ai_policy,
+        candidate: policyFromLabels(job.database ? [] : extractWikiPageProperties(job.page).labels),
+      });
+    } catch (err) {
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
       continue;
     }
     const converted = convertNotionBlocks(job.blocks ?? [], {
@@ -738,6 +852,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       finalIntent = reservation.intent;
       finalHierarchyComponent = reservation.hierarchyComponent;
       await completePageWriteIntent(finalIntent, async (client) => {
+        await lockAiPolicyForPages(client, finalIntent!.pageIds);
         await assertNotionComponentAuthority(client, finalIntent!.pageIds, input.userId);
         if (reusesExistingPage && finalHierarchyComponent) {
           if (await findSubtreeKeyAmbiguity(job.localPageId!, client)) {
@@ -779,11 +894,15 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
             notionPageId: job.id,
             bodyHtml,
             bodyText,
-            labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
+            labels: applyCanonicalAiPolicyLabel(job.database ? ['notion-import', 'database'] : wikiProps.labels, job.ingestionPolicy ?? 'all'),
             author: wikiProps.author,
             verifiedAt: wikiProps.verifiedAt,
           }, client, finalIntent!.pageIds);
         } else {
+          await publishIngestionPolicyOnClient(client, {
+            source: 'notion', sourceScope: input.userId, sourceId: job.id,
+            pageId: job.localPageId!, userId: input.userId, candidate: job.ingestionPolicy ?? 'all',
+          });
           await client.query(
             `UPDATE pages
                 SET body_html = $2, body_text = $3,
@@ -863,6 +982,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
 
 interface ImportJob {
   id: string;
+  ingestionPolicy?: AiPolicy;
   page: Record<string, unknown>;
   title: string;
   parentNotionId: string | null;
@@ -1106,6 +1226,10 @@ async function persistStandalonePage(opts: {
   const depth = newPath.split('/').filter(Boolean).length - 1;
 
   if (opts.reuse) {
+    const { policy: admittedPolicy } = await publishIngestionPolicyOnClient(client, {
+      source: 'notion', sourceScope: opts.userId, sourceId: opts.notionPageId,
+      pageId: opts.id, userId: opts.userId, candidate: policyFromLabels(opts.labels),
+    });
     await rehomePage(opts.id, opts.parentId, opts.userId, protectedPageIds, client);
     // Article AI policy (SPEC-WORK-002): an existing row is tighten-only —
     // re-import may raise its policy from the incoming labels, never lower it.
@@ -1115,7 +1239,6 @@ async function persistStandalonePage(opts: {
               visibility = $7, path = $8, depth = $9, labels = $10,
               author = COALESCE($11, author),
               verified_at = COALESCE($12, verified_at),
-              ai_policy = ${TIGHTEN_ONLY_POLICY_SQL('ai_policy', '$10::text[]')},
               embedding_dirty = TRUE, image_analysis_dirty = TRUE,
               content_revision = content_revision + 1
         WHERE id = $1 AND deleted_at IS NULL
@@ -1123,7 +1246,7 @@ async function persistStandalonePage(opts: {
       [
         opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey,
         opts.parentId, opts.visibility, newPath, depth,
-        opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
+        applyCanonicalAiPolicyLabel(opts.labels, admittedPolicy), opts.author ?? null, opts.verifiedAt ?? null,
       ],
     );
     return pageRevisionFromRow(updated.rows[0]);
@@ -1131,10 +1254,12 @@ async function persistStandalonePage(opts: {
 
   // Article AI policy (SPEC-WORK-002): a NEW row takes the stricter of the
   // creation default (EE/CE hook) and the policy its incoming labels name.
-  const aiPolicy = await resolveIngestionAiPolicy({
-    userId: opts.userId,
-    spaceKey: opts.spaceKey,
-    labels: opts.labels,
+  const aiPolicy = admitAutomaticIngestionPolicy({
+    identity: opts.notionPageId,
+    currentPolicy: 'all',
+    candidate: await resolveIngestionAiPolicy({
+      userId: opts.userId, spaceKey: opts.spaceKey, labels: opts.labels,
+    }),
   });
   const inserted = await client.query<RevisionRow>(
     `INSERT INTO pages
@@ -1149,10 +1274,14 @@ async function persistStandalonePage(opts: {
     [
       opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,
       opts.visibility, opts.spaceKey, opts.parentId,
-      opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
-      opts.notionPageId, newPath, depth, aiPolicy,
+      applyCanonicalAiPolicyLabel(opts.labels, 'all'), opts.author ?? null, opts.verifiedAt ?? null,
+      opts.notionPageId, newPath, depth, 'all',
     ],
   );
+  await publishIngestionPolicyOnClient(client, {
+    source: 'notion', sourceScope: opts.userId, sourceId: opts.notionPageId,
+    pageId: opts.id, userId: opts.userId, candidate: aiPolicy, consumeObservations: false,
+  });
   return pageRevisionFromRow(inserted.rows[0]);
 }
 

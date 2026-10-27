@@ -38,7 +38,7 @@ const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 async function user(): Promise<string> {
   const n = randomUUID().slice(0, 8);
   const r = await query<{ id: string }>(
-    `INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'user') RETURNING id`,
+    `INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'admin') RETURNING id`,
     [`fp-${n}`, `fp-${n}@test.invalid`],
   );
   return r.rows[0]!.id;
@@ -179,15 +179,50 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     expect(await row('cf-moved')).toBeUndefined();
   });
 
-  it('does not fence an import that is already as strict as the unbound statement', async () => {
+  it('defers new restrictions while rollout is closed even when they satisfy the unbound fence', async () => {
     const creator = await user();
     await pendingRootCreate({
       actor: creator, spaceKey: 'FP', title: 'Local plan', storage: '<p>l</p>',
       initialPolicy: 'local_only', initialLabels: ['ai-local-only'],
     });
-    const counts = await walkOne(creator, 'FP', remotePage({ id: 'cf-strict', title: 'Strict', storage: '<p>s</p>', labels: ['no-ai'] }));
-    expect(counts.pagesCreated).toBe(1);
-    expect(await row('cf-strict')).toMatchObject({ ai_policy: 'none' });
+    const page = remotePage({ id: 'cf-strict', title: 'Strict', storage: '<p>s</p>', labels: ['no-ai'] });
+    const client = stubClient([page]);
+    let attachmentCalls = 0;
+    client.getPageAttachments = async () => { attachmentCalls++; return { results: [] }; };
+    await expect(__internal.syncPage(client, creator, 'FP', page, new Date(), new Map(),
+      { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 }, randomUUID()))
+      .rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    expect(attachmentCalls).toBe(0);
+    expect(await row('cf-strict')).toBeUndefined();
+    await __internal.syncSpace(client, creator, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await lastSynced('FP')).toBeNull();
+  });
+
+  it.each([1, 2])('defers existing snapshots at version %s without changing rows or advancing the cursor', async (version) => {
+    const actor = await user();
+    const page = remotePage({ id: 'cf-existing', title: 'Original', storage: '<p>original</p>' });
+    await walkOne(actor, 'FP', page);
+    const before = await query('SELECT * FROM pages WHERE confluence_id = $1', [page.id]);
+    const incoming = remotePage({ id: page.id, title: 'Changed', storage: '<p>changed</p>', labels: ['ops', 'no-ai'] });
+    incoming.version.number = version;
+    await expect(walkOne(actor, 'FP', incoming)).rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    expect((await query('SELECT * FROM pages WHERE confluence_id = $1', [page.id])).rows).toEqual(before.rows);
+    await __internal.syncSpace(stubClient([incoming]), actor, 'FP', undefined, new Date(), new Map(), randomUUID());
+    expect(await lastSynced('FP')).toBeNull();
+  });
+
+  it('does not let a bound all journal authorize a new upstream restriction', async () => {
+    const creator = await user();
+    const page = remotePage({ id: 'cf-new-restriction', title: 'Original', storage: '<p>original</p>', labels: ['no-ai'] });
+    await expect(walkOne(creator, 'FP', page))
+      .rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Original', storage: '<p>original</p>',
+      initialPolicy: 'all', initialLabels: ['all-ai'], acknowledgedId: page.id,
+    });
+    await expect(walkOne(creator, 'FP', page))
+      .rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    expect(await row(page.id)).toBeUndefined();
   });
 
   it('seeds a row bound by the exact acknowledged id no looser than the durable statement, with its canonical label', async () => {
@@ -207,6 +242,53 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     const seeded = await row('cf-1');
     expect(seeded).toMatchObject({ ai_policy: 'none', embedding_status: 'policy_blocked' });
     expect([...seeded!.labels].sort()).toEqual(['no-ai', 'ops', 'team']);
+  });
+
+  it('does not borrow a bound policy for a substituted snapshot or inactive creator before attachment effects', async () => {
+    const creator = await user();
+    await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Original', storage: '<p>original</p>',
+      initialPolicy: 'none', initialLabels: ['no-ai'], acknowledgedId: 'cf-bound',
+    });
+    const original = remotePage({ id: 'cf-bound', title: 'Original', storage: '<p>original</p>' });
+    const variants = [
+      { ...original, title: 'Substituted' },
+      { ...original, body: { storage: { value: '<p>changed</p>' } } },
+      { ...original, version: { ...original.version, number: 2 } },
+      { ...original, ancestors: [{ id: 'different-parent' }] },
+    ] as ConfluencePage[];
+    for (const page of variants) {
+      const client = stubClient([page]);
+      let attachmentCalls = 0;
+      client.getPageAttachments = async () => { attachmentCalls++; return { results: [] }; };
+      await expect(__internal.syncPage(client, creator, 'FP', page, new Date(), new Map(),
+        { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 }, randomUUID()))
+        .rejects.toBeInstanceOf(FreshPublicationDeferredError);
+      expect(attachmentCalls).toBe(0);
+      expect(await row('cf-bound')).toBeUndefined();
+    }
+    await expect(walkOne(creator, 'OTHER', original)).rejects.toBeInstanceOf(FreshPublicationDeferredError);
+    await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [creator]);
+    await expect(walkOne(creator, 'FP', original)).rejects.toBeInstanceOf(FreshPublicationDeferredError);
+    expect(await row('cf-bound')).toBeUndefined();
+  });
+
+  it('does not turn contradictory bound journal labels into restrictive recovery authority', async () => {
+    const creator = await user();
+    const intentId = await pendingRootCreate({
+      actor: creator, spaceKey: 'FP', title: 'Legacy', storage: '<p>legacy</p>',
+      initialPolicy: 'all', initialLabels: [], acknowledgedId: 'cf-legacy',
+    });
+    await setEffectPolicy(intentId, 'all', ['no-ai', 'local-ai-only']);
+    const page = remotePage({ id: 'cf-legacy', title: 'Legacy', storage: '<p>legacy</p>' });
+    const client = stubClient([page]);
+    let attachmentCalls = 0;
+    client.getPageAttachments = async () => { attachmentCalls++; return { results: [] }; };
+    await expect(__internal.syncPage(client, creator, 'FP', page, new Date(), new Map(),
+      { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 }, randomUUID()))
+      .rejects.toMatchObject({ reason: 'unbound_create' });
+    expect(attachmentCalls).toBe(0);
+    expect(await row(page.id)).toBeUndefined();
   });
 
   it('boundConfluenceId accepts only a validated receipt (positive control + invalid shapes)', () => {
@@ -375,11 +457,65 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     }
   });
 
+  it('retains a deferred restriction when the upstream label is subsequently removed', async () => {
+    const actor = await user();
+    const page = remotePage({ id: 'cf-deferred', title: 'Deferred', storage: '<p>x</p>', labels: ['no-ai'] });
+    await expect(walkOne(actor, 'FP', page)).rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    page.metadata!.labels!.results = [];
+    page.version.number = 2;
+    await expect(walkOne(actor, 'FP', page)).rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    const pending = await query(`SELECT policy, observed_revision, applied_at FROM ai_policy_deferred_ingestion
+      WHERE source_id=$1 ORDER BY observed_revision`, [page.id]);
+    expect(pending.rows).toEqual([
+      { policy: 'none', observed_revision: '1', applied_at: null },
+      { policy: 'none', observed_revision: '2', applied_at: null },
+    ]);
+    expect(await row(page.id)).toBeUndefined();
+  });
+
+  it('rolls back publication if the in-transaction derived-state purge fails', async () => {
+    const actor = await user();
+    await pendingRootCreate({ actor, spaceKey: 'FP', title: 'Atomic', storage: '<p>x</p>',
+      initialPolicy: 'none', initialLabels: ['no-ai'], acknowledgedId: 'cf-atomic' });
+    await query(`CREATE FUNCTION fail_policy_purge() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'purge fault'; END $$;
+      CREATE TRIGGER fail_policy_purge BEFORE DELETE ON page_embeddings
+      FOR EACH STATEMENT EXECUTE FUNCTION fail_policy_purge()`);
+    try {
+      await expect(walkOne(actor, 'FP', remotePage({ id: 'cf-atomic', title: 'Atomic', storage: '<p>x</p>' })))
+        .rejects.toThrow('purge fault');
+      expect(await row('cf-atomic')).toBeUndefined();
+    } finally {
+      await query('DROP TRIGGER fail_policy_purge ON page_embeddings; DROP FUNCTION fail_policy_purge()');
+    }
+    await walkOne(actor, 'FP', remotePage({ id: 'cf-atomic', title: 'Atomic', storage: '<p>x</p>' }));
+    expect(await row('cf-atomic')).toMatchObject({ ai_policy: 'none', embedding_status: 'policy_blocked' });
+  });
+
+  it('rolls back a neutral fresh row when a restrictive observation arrives after preflight', async () => {
+    const actor = await user();
+    const page = remotePage({ id: 'cf-late-observation', title: 'Late', storage: '<p>x</p>' });
+    const client = stubClient([page]);
+    client.getPageAttachments = async () => {
+      await query(`INSERT INTO ai_policy_deferred_ingestion
+        (id, source, source_scope, source_id, observed_revision, policy, observed_by)
+        VALUES ($1, 'confluence', 'shared', $2, 'earlier', 'none', $3)
+        ON CONFLICT DO NOTHING`, [randomUUID(), page.id, actor]);
+      return { results: [] };
+    };
+    await expect(__internal.syncPage(client, actor, 'FP', page, new Date(), new Map(),
+      { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 }, randomUUID()))
+      .rejects.toMatchObject({ reason: 'ai_policy_enforcement_unavailable' });
+    expect(await row(page.id)).toBeUndefined();
+    expect((await query(`SELECT applied_at, applied_page_id FROM ai_policy_deferred_ingestion
+      WHERE source_id=$1`, [page.id])).rows).toEqual([{ applied_at: null, applied_page_id: null }]);
+  });
+
   it('a page with no pending create is seeded by the ingestion rule alone', async () => {
     const creator = await user();
     await walkOne(creator, 'FP', remotePage({ id: 'cf-3', title: 'Ordinary', storage: '<p>x</p>' }));
     const ingestionDefault = await resolveIngestionAiPolicy({ userId: creator, spaceKey: 'FP', labels: [] });
-    expect(await row('cf-3')).toMatchObject({ ai_policy: ingestionDefault, labels: [] });
+    expect(await row('cf-3')).toMatchObject({ ai_policy: ingestionDefault, labels: ['all-ai'] });
   });
 
   it('a space walk counts the deferral apart from failures, holds the cursor, and resumes once the id is bound', async () => {

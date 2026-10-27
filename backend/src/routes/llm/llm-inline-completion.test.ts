@@ -125,6 +125,8 @@ describe.skipIf(!dbAvailable)('POST /api/llm/inline-completion (#1417)', () => {
 
   beforeEach(async () => {
     await truncateAllTables();
+    await query("INSERT INTO users (id, username, password_hash, role) VALUES ('00000000-0000-4000-8000-000000000141', 'inline', 'x', 'user')");
+    await query("INSERT INTO pages (id, title, source, visibility, owner_id, created_by_user_id) VALUES (42, 'PAT rotation', 'standalone', 'private', '00000000-0000-4000-8000-000000000141', '00000000-0000-4000-8000-000000000141')");
     hIncrBy.mockClear();
     providerBody = {};
     canQuery = true;
@@ -149,7 +151,7 @@ describe.skipIf(!dbAvailable)('POST /api/llm/inline-completion (#1417)', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/inline-completion',
-      payload: { prefix: 'Rotate the ' },
+      payload: { pageId: 42, prefix: 'Rotate the ' },
     });
     expect(response.statusCode).toBe(204);
     expect(providerBody).toEqual({});
@@ -185,12 +187,53 @@ describe.skipIf(!dbAvailable)('POST /api/llm/inline-completion (#1417)', () => {
     expect(audit.rows[0]!.count).toBe('0');
   });
 
+  it.each(['none', 'local_only'])('blocks %s on an undeclared provider without usage', async (policy) => {
+    await assign();
+    await query('UPDATE pages SET ai_policy = $1 WHERE id = 42', [policy]);
+    const response = await app.inject({ method: 'POST', url: '/api/llm/inline-completion',
+      payload: { pageId: 42, prefix: 'secret prefix', suffix: 'secret suffix', title: 'secret title' } });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'ai_policy_unavailable' });
+    expect(providerBody).toEqual({});
+    expect(hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing and inaccessible article identity before dispatch', async () => {
+    await assign();
+    for (const pageId of [undefined, 999]) {
+      const response = await app.inject({ method: 'POST', url: '/api/llm/inline-completion',
+        payload: { pageId, prefix: 'secret draft' } });
+      expect(response.statusCode).toBe(pageId ? 404 : 422);
+    }
+    expect(providerBody).toEqual({});
+    expect(hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it('authorizes local_only freshly but refuses revoked global permission on a readable page', async () => {
+    const authorize = () => app.inject({ method: 'POST',
+      url: '/api/llm/inline-completion/browser-authorization', payload: { pageId: 42 } });
+    await query("UPDATE pages SET ai_policy = 'local_only' WHERE id = 42");
+    const allowed = await authorize();
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.headers['cache-control']).toBe('no-store');
+    expect(allowed.json()).toMatchObject({ pageId: 42, authorized: true, aiPolicy: 'local_only' });
+    canQuery = false;
+    expect((await authorize()).statusCode).toBe(403);
+    canQuery = true;
+    await query("UPDATE pages SET ai_policy = 'none' WHERE id = 42");
+    expect((await authorize()).json()).toEqual({ error: 'ai_policy_denied' });
+    await query('DELETE FROM pages WHERE id = 42');
+    expect((await authorize()).statusCode).toBe(404);
+    expect(providerBody).toEqual({});
+    expect(hIncrBy).not.toHaveBeenCalled();
+  });
+
   it('requires llm:query permission', async () => {
     canQuery = false;
     const response = await app.inject({
       method: 'POST',
       url: '/api/llm/inline-completion',
-      payload: { prefix: 'Rotate the ' },
+      payload: { pageId: 42, prefix: 'Rotate the ' },
     });
     expect(response.statusCode).toBe(403);
   });

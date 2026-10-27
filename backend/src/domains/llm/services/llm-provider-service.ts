@@ -28,6 +28,7 @@ interface ProviderRow {
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
 interface ProviderConfigRow {
+  configRevision: number | undefined;
   id: string;
   name: string;
   baseUrl: string;
@@ -85,6 +86,7 @@ function rowToDto(r: ProviderRow): LlmProvider {
 
 function rowToConfig(r: ProviderRow): ProviderConfigRow {
   return {
+    configRevision: decodeProviderMetadata(r)?.configRevision,
     id: r.id,
     name: r.name,
     baseUrl: r.base_url,

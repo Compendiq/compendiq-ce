@@ -20,29 +20,3 @@ export function emitAiDecision(event: AiDecisionEvent): void {
   }
 }
 
-/** @deprecated Compatibility observation, not the complete evidence contract. */
-export type AiPolicyEvent =
-  | { type: 'admitted'; pageId: number; usecase: string; providerId: string; configRevision: number; policy: string; policyRevision: number }
-  | {
-      type: 'blocked';
-      pageId: number;
-      usecase: string;
-      providerId: string | null;
-      /** Policy decisions plus the fail-closed outcomes of admission (#280). */
-      reason: 'policy_none' | 'provider_not_local' | 'policy_changed' | 'not_found' | 'stage_disabled' | 'policy_unavailable';
-      /** `null` when the refusal happened before the policy could be read (fail closed). */
-      policy: string | null;
-    }
-  | { type: 'policy_changed'; pageId: number; userId: string; from: string; to: string; revision: number };
-
-/**
- * Inert event sink. CE does nothing with these beyond debug logging; an EE
- * plugin may observe them. A failing observer never affects the caller.
- */
-export function emitAiPolicyEvent(event: AiPolicyEvent): void {
-  try {
-    getEnterprisePlugin().onAiPolicyEvent?.(event);
-  } catch (err) {
-    logger.warn({ err, type: event.type }, 'ai-policy event observer failed');
-  }
-}

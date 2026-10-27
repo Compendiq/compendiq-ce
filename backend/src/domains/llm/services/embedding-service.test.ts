@@ -102,6 +102,35 @@ vi.mock('./ai-policy-admission.js', () => {
   return { admitPageForUsecase: admit, admitPageForProvider: admit, RECHECKABLE_BLOCK_SQL: 'FALSE' };
 });
 
+// Scheduling evidence has real PostgreSQL coverage in embedding-operation.db.test.ts.
+vi.mock('./embedding-operation.js', () => ({
+  embeddingOperation: async () => ({ operationId: '00000000-0000-0000-0000-000000000001',
+    actor: { kind: 'worker', id: 'embedding' }, source: 'embedding', cascadeId: null }),
+  nextEmbeddingAttempt: async () => 1,
+}));
+
+// Legacy scripted orchestration suite. The authoritative article snapshot and
+// held-client validation are exercised without persistence mocks in
+// embedding-policy-publication.db.test.ts.
+vi.mock('./embedding-article-stage.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./embedding-article-stage.js')>(),
+  captureEmbeddingArticle: async (pageId: number) => ({ pageId, policy: 'all', policyRevision: 0, contentRevision: 0, rowVersion: '1', imageRevision: '0' }),
+  claimEmbeddingArticle: async (page: unknown) => page,
+  validateEmbeddingSourceOnClient: async () => {},
+  validateEmbeddingPublicationOnClient: async () => {},
+  settleEmbeddingArticle: async (_page: unknown, publish: (client: unknown) => Promise<void>) => {
+    await publish({ query: mocks.query });
+    return true;
+  },
+}));
+vi.mock('./article-stage-admission.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./article-stage-admission.js')>(),
+  validateArticleStageOnClient: async () => {},
+  admitArticleStage: async (_p: unknown, _u: unknown, _s: unknown, publish: (client: unknown) => Promise<void>) => {
+    await publish({ query: mocks.query });
+  },
+}));
+
 vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToEmbeddingText: mocks.htmlToEmbeddingText,
   // embedPage's short-markdown fallback (#1265 review M1) imports this too.
@@ -1281,7 +1310,8 @@ describe('embedding-service', () => {
     const updateCalls = mocks.query.mock.calls.filter(
       (call: unknown[]) => typeof call[0] === 'string' && call[0].includes("embedding_status = 'not_embedded'"),
     );
-    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls.filter((call) => String(call[0]).includes('embedding_dirty = FALSE'))).toHaveLength(2);
+    expect(updateCalls.filter((call) => String(call[0]).includes("AND embedding_status = 'embedding'"))).toHaveLength(2);
   });
 });
 
@@ -1332,7 +1362,7 @@ describe('embedPage', () => {
     // (ADR-027 D6.3); with the analysis store absent the snapshot is 0.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
       [101, 0],
     );
   });
@@ -1347,7 +1377,7 @@ describe('embedPage', () => {
     // Same terminal-status write as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded'/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded'/),
       [102, 0],
     );
   });

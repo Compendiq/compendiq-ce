@@ -74,6 +74,10 @@ async function handleUpstream(request: IncomingMessage, response: ServerResponse
       authorization: request.headers.authorization,
       body: payload,
     });
+    if (request.method === 'POST' && request.url === '/rest/api/content/rbac-created-page/label') {
+      sendJson(response, 200, { results: payload });
+      return;
+    }
     if (request.method !== 'POST' || request.url !== '/rest/api/content') {
       sendJson(response, 404, { message: 'Unexpected Confluence fixture request' });
       return;
@@ -236,7 +240,11 @@ describe.skipIf(!available)('POST /api/pages Confluence RBAC admission with real
 
     expect(response.statusCode).toBe(200);
     expect(body).toMatchObject({ id: 'rbac-created-page', source: 'confluence' });
-    expect(upstreamRequests).toHaveLength(1);
+    expect(upstreamRequests).toHaveLength(2);
+    expect(upstreamRequests[1]).toMatchObject({
+      method: 'POST', url: '/rest/api/content/rbac-created-page/label',
+      body: [{ prefix: 'global', name: 'all-ai' }],
+    });
     const request = upstreamRequests[0];
     if (!request) throw new Error('Expected one Confluence create request');
     expect(request).toMatchObject({

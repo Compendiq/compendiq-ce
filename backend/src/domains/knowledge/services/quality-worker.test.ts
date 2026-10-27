@@ -10,49 +10,14 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM streaming helper and content converter to avoid real calls in tests.
-// The worker streams via `streamChat` from openai-compatible-client; the
-// `getSystemPrompt` helper from prompts.ts is a pure string builder and
-// runs unmocked.
-vi.mock('../../llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn().mockImplementation(() => {
-    async function* generator() {
-      yield {
-        content: `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`,
-        done: false,
-      };
-      yield { content: '', done: true };
-    }
-    return generator();
-  }),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn().mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
-}));
-
-vi.mock('../../../core/services/content-converter.js', () => ({
-  htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
-}));
-
-// The resolver names a REAL provider row (inserted per test — article AI
-// policy admission fails closed on a provider it cannot read).
-const mocks = vi.hoisted(() => ({ providerId: '' }));
-vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockImplementation(async () => ({
-    config: {
-      providerId: mocks.providerId, id: mocks.providerId, name: 'X',
-      baseUrl: 'http://x/v1', apiKey: null,
-      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
-    },
-    model: 'qwen3.5',
-  })),
-}));
+// Exercise the real resolver, admission and streaming transport; only the
+// outbound provider is replaced. No synthetic article or persistence mocks.
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { bumpProviderCacheVersion } from '../../llm/services/cache-bus.js';
+let server: Server;
+let baseUrl: string;
+const report = `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`;
 
 // Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
 // to assert call shape from the worker's success path.
@@ -220,15 +185,26 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   beforeAll(async () => {
     await setupTestDb();
+    server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: report } }] })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   });
 
   beforeEach(async () => {
     await truncateAllTables();
 
     const provider = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url) VALUES ('X', 'http://x/v1') RETURNING id::text`,
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model) VALUES ('X', $1, 'none', 'qwen3.5') RETURNING id::text`,
+      [baseUrl],
     );
-    mocks.providerId = provider.rows[0]!.id;
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('quality', $1, 'qwen3.5')", [provider.rows[0]!.id]);
+    bumpProviderCacheVersion();
 
     // Re-seed system roles (truncateAllTables clears them)
     await query(
@@ -265,6 +241,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   afterAll(async () => {
     stopQualityWorker();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     await teardownTestDb();
   });
 

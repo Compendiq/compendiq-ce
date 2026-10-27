@@ -43,45 +43,13 @@ describe('stripSummaryPreamble', () => {
   });
 });
 
-// Mock the LLM streaming helper to avoid real LLM calls in tests.
-// The worker streams via `streamChat` from openai-compatible-client using
-// messages it builds itself; `getSystemPrompt` from prompts.ts is a pure
-// string helper and runs unmocked.
-vi.mock('../../llm/services/openai-compatible-client.js', () => ({
-  streamChat: vi.fn().mockImplementation(() => {
-    async function* generator() {
-      yield { content: 'This is a **test** summary.', done: false };
-      yield { content: '', done: true };
-    }
-    return generator();
-  }),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi
-    .fn()
-    .mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
-}));
-
-// Default mock: resolver returns a REAL provider row (inserted per test —
-// article AI policy admission fails closed on a provider it cannot read)
-// with model qwen3.5. Tests that need a different assignment override this.
-const mocks = vi.hoisted(() => ({ providerId: '' }));
-vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockImplementation(async () => ({
-    config: {
-      providerId: mocks.providerId, id: mocks.providerId, name: 'X',
-      baseUrl: 'http://x/v1', apiKey: null,
-      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
-    },
-    model: 'qwen3.5',
-  })),
-}));
+// Real saved assignments and transport admission, with an outbound HTTP stub.
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { bumpProviderCacheVersion } from '../../llm/services/cache-bus.js';
+let server: Server;
+let baseUrl: string;
+let responseText: string;
 
 // Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
 // to assert call shape from the worker's success path.
@@ -96,15 +64,27 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
   beforeAll(async () => {
     await setupTestDb();
+    server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: responseText } }] })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   });
 
   beforeEach(async () => {
     await truncateAllTables();
 
     const provider = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url) VALUES ('X', 'http://x/v1') RETURNING id::text`,
+      `INSERT INTO llm_providers (name, base_url, auth_type, default_model, is_default) VALUES ('X', $1, 'none', 'qwen3.5', TRUE) RETURNING id::text`,
+      [baseUrl],
     );
-    mocks.providerId = provider.rows[0]!.id;
+    responseText = 'This is a **test** summary.';
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('summary', $1, 'qwen3.5')", [provider.rows[0]!.id]);
+    bumpProviderCacheVersion();
 
     // Re-seed system roles (truncateAllTables clears them)
     await query(
@@ -141,6 +121,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
   afterAll(async () => {
     stopSummaryWorker();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     await teardownTestDb();
   });
 
@@ -299,18 +280,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     });
 
     it('strips model preamble/meta framing before persisting the summary (#912)', async () => {
-      const { streamChat } = await import('../../llm/services/openai-compatible-client.js');
-      vi.mocked(streamChat).mockImplementationOnce(() => {
-        async function* g() {
-          yield {
-            content:
-              "Here's a summary of the article in Markdown format:\n\n- Deploys nightly.\n\nIf the text was in German, please provide it so I can respond in German.",
-            done: false,
-          };
-          yield { content: '', done: true };
-        }
-        return g();
-      });
+      responseText = "Here's a summary of the article in Markdown format:\n\n- Deploys nightly.\n\nIf the text was in German, please provide it so I can respond in German.";
 
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
@@ -459,19 +429,11 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.errors).toBe(0);
     });
 
-    it('should mark pages as skipped (not disabled) when no model is available anywhere', async () => {
-      // Override the resolver mock to simulate "no model configured anywhere".
-      const { resolveUsecase } = await import(
-        '../../llm/services/llm-provider-resolver.js'
-      );
-      vi.mocked(resolveUsecase).mockResolvedValueOnce({
-        config: {
-          providerId: 'p1', id: 'p1', name: 'X',
-          baseUrl: 'http://x/v1', apiKey: null,
-          authType: 'none', verifySsl: true, defaultModel: null,
-        },
-        model: '',
-      });
+    it('keeps work pending when no model is available anywhere', async () => {
+      // Real resolver configuration: no model is available anywhere.
+      await query("UPDATE llm_usecase_assignments SET model = '' WHERE usecase = 'summary'");
+      await query("UPDATE llm_providers SET default_model = ''");
+      bumpProviderCacheVersion();
 
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
@@ -482,30 +444,18 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       const result = await runSummaryBatch('');
       expect(result.processed).toBe(0);
 
-      // Verify status is 'skipped' (not 'disabled' which would violate DB constraint)
-      const pageResult = await query<{ summary_status: string }>(
-        "SELECT summary_status FROM pages WHERE confluence_id = 'noskip1'",
+      const pageResult = await query<{ summary_status: string; summary_ai_attempt: number }>(
+        "SELECT summary_status, summary_ai_attempt FROM pages WHERE confluence_id = 'noskip1'",
       );
-      expect(pageResult.rows[0].summary_status).toBe('skipped');
+      expect(pageResult.rows[0]).toMatchObject({ summary_status: 'pending', summary_ai_attempt: 1 });
     });
 
-    it('clears a stale summary_error when the no-model path skips a re-synced page, so rescan recovers it (#910)', async () => {
-      // A page that previously FAILED (non-null summary_error) then got
-      // re-synced to 'pending' WITHOUT clearing summary_error. When the
-      // no-model path flips it to 'skipped', it must also null the stale
-      // error — otherwise rescanAllSummaries excludes it (config-skips are
-      // identified by summary_error IS NULL) and it never recovers.
-      const { resolveUsecase } = await import(
-        '../../llm/services/llm-provider-resolver.js'
-      );
-      vi.mocked(resolveUsecase).mockResolvedValueOnce({
-        config: {
-          providerId: 'p1', id: 'p1', name: 'X',
-          baseUrl: 'http://x/v1', apiKey: null,
-          authType: 'none', verifySsl: true, defaultModel: null,
-        },
-        model: '',
-      });
+    it('keeps a re-synced page eligible despite a prior error and unavailable model', async () => {
+      // Missing configuration must not hide work behind a terminal skip or
+      // overwrite the previous failure. Pending work remains rescan eligible.
+      await query("UPDATE llm_usecase_assignments SET model = '' WHERE usecase = 'summary'");
+      await query("UPDATE llm_providers SET default_model = ''");
+      bumpProviderCacheVersion();
 
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_error)
@@ -516,14 +466,13 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       const result = await runSummaryBatch('');
       expect(result.processed).toBe(0);
 
-      // (a) The no-model skip must null the stale error and mark it skipped.
       const afterSkip = await query<{ summary_status: string; summary_error: string | null }>(
         "SELECT summary_status, summary_error FROM pages WHERE confluence_id = 'stale-err'",
       );
-      expect(afterSkip.rows[0].summary_status).toBe('skipped');
-      expect(afterSkip.rows[0].summary_error).toBeNull();
+      expect(afterSkip.rows[0].summary_status).toBe('pending');
+      expect(afterSkip.rows[0].summary_error).toBe('LLM timeout from a prior failure');
 
-      // (b) rescan must now re-select and re-queue it as a config-skip.
+      // Rescan still selects the queued row; no terminal config-skip is needed.
       const resetCount = await rescanAllSummaries();
       expect(resetCount).toBe(1);
 

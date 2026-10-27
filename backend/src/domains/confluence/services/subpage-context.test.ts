@@ -10,7 +10,11 @@ import {
   getMultiPagePromptSuffix,
   hasSubPages,
 } from './subpage-context.js';
-import { admitPageForProvider } from '../../llm/services/ai-policy-admission.js';
+import { admitPageForProvider as admitProvider } from '../../llm/services/ai-policy-admission.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+const admitPageForProvider = (...args: [number, Parameters<typeof admitProvider>[1], string, string]) => admitProvider(...args, {
+  operation: newAiOperation('subpage_test', { kind: 'worker', id: 'test' }), stage: 'chat', attempt: 1,
+});
 import { declareProviderLocality } from '../../llm/services/llm-provider-service.js';
 
 const dbAvailable = await isDbAvailable();

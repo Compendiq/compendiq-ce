@@ -11,11 +11,11 @@
  *
  * NEVER writes summaries back to Confluence — local DB only.
  *
- * `summary_status = 'skipped'` recovery:
- *   When no summary model can be resolved for the configured provider
- *   (e.g. admin set provider=openai but no openai_model / usecase model),
- *   pending pages are transitioned to `'skipped'` rather than sitting
- *   stuck in `'pending'`. Admin recovery paths, in order of preference:
+ * Missing-provider recovery:
+ *   Unresolved destinations emit a typed refusal for each bounded candidate
+ *   and leave its status unchanged. The next scheduled batch retries after
+ *   configuration is repaired, retaining its durable operation/attempt.
+ *   Legacy configuration-skipped rows can be recovered as follows:
  *     1. Set a model for the Summary use case (Settings → AI Models,
  *        Use case assignments), or set the shared `openai_model` /
  *        `ollama_model` field.
@@ -30,6 +30,11 @@
  */
 
 import crypto from 'node:crypto';
+import type { QueryResultRow } from 'pg';
+import { AI_POLICY_PROVENANCE_VERSION, type ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../llm/services/article-stage-admission.js';
+import { asRevision, emitUnresolvedDecision, publishCurrentAiPolicyBlock } from '../../llm/services/ai-policy-admission.js';
 import { query } from '../../../core/db/postgres.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
@@ -243,6 +248,8 @@ interface SummaryCandidate {
   body_text: string;
   summary_content_hash: string | null;
   summary_retry_count: number;
+  content_revision: string;
+  summary_ai_operation_id: string | null;
   title: string;
 }
 
@@ -254,7 +261,7 @@ interface SummaryCandidate {
  */
 async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   const result = await query<SummaryCandidate>(
-    `SELECT id, body_text, summary_content_hash, summary_retry_count, title
+    `SELECT id, body_text, summary_content_hash, summary_retry_count, title, content_revision::text, summary_ai_operation_id
      FROM pages
      WHERE (summary_status IN ('pending', 'failed')
             OR (summary_status = 'policy_blocked' AND ${RECHECKABLE_BLOCK_SQL}))
@@ -286,13 +293,15 @@ class SummaryPolicyBlocked extends Error {
 async function summarizePage(
   candidate: SummaryCandidate,
   assignment: SummaryAssignment,
+  context: { operation: ReturnType<typeof newAiOperation>; stage: string; attempt: number;
+    modelSelection: { kind: 'assigned' } | { kind: 'explicit'; model: string } },
 ): Promise<void> {
   const { id, body_text, title } = candidate;
   const { config, model } = assignment;
 
   // Article AI policy (SPEC-WORK-001): admitted against the provider the
   // call below would use, before any state is touched and before any call.
-  const admission = await admitPageForProvider(id, 'summary', config.providerId, model);
+  const admission = await admitPageForProvider(id, 'summary', config.providerId, model, { ...context, preliminary: true });
   if (!admission.admitted) {
     if (admission.reason === 'not_found') throw new SummaryPolicyBlocked(id, 'not_found');
     if (!isPersistableBlockReason(admission.reason)) {
@@ -301,19 +310,38 @@ async function summarizePage(
       logger.warn({ pageId: id, reason: admission.reason, providerId: config.providerId }, 'Summary admission unavailable; page left for the next pass');
       throw new SummaryPolicyBlocked(id, admission.reason);
     }
-    await query(
-      `UPDATE pages SET summary_status = 'policy_blocked', summary_error = NULL, ai_policy_block_reason = $2
-        WHERE id = $1`,
-      [id, admission.reason],
-    );
+    await publishCurrentAiPolicyBlock({ pageId: id, providerId: config.providerId,
+      contentRevision: candidate.content_revision, reason: admission.reason }, async (client) => {
+      const result = await client.query(
+        `UPDATE pages SET summary_status = 'policy_blocked', summary_error = NULL, ai_policy_block_reason = $2
+          WHERE id = $1`, [id, admission.reason],
+      );
+      return (result.rowCount ?? 0) > 0;
+    });
     logger.info({ pageId: id, reason: admission.reason, providerId: config.providerId }, 'Summary blocked by article AI policy');
     throw new SummaryPolicyBlocked(id, admission.reason);
   }
 
+  const contentRevision = asRevision(candidate.content_revision);
+  if (contentRevision === null) throw new SummaryPolicyBlocked(id, 'policy_unavailable');
+  const provenance: ConversationTurnAiProvenance = {
+    version: AI_POLICY_PROVENANCE_VERSION,
+    providerId: admission.providerId, configRevision: admission.configRevision,
+    locality: admission.locality,
+    pages: [{ pageId: id, policy: admission.policy, policyRevision: admission.policyRevision, contentRevision }],
+  };
+  // Validation and the write use the same held client; no inference is inside
+  // this transaction. Stale successes AND failures leave successor state alone.
+  const publish = async (sql: string, params: unknown[]): Promise<void> => {
+    await admitArticleStage(provenance, null, 'summary', async (client) => {
+      await client.query<QueryResultRow>(sql, params);
+    }, context, config, model);
+  };
+
   // Skip empty/short content. Admission succeeded, so any block reason left
   // by an earlier pass (provider since declared local) is stale.
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
-    await query(
+    await publish(
       `UPDATE pages
        SET summary_status = 'skipped',
            summary_error = 'Content too short for summarization',
@@ -328,7 +356,7 @@ async function summarizePage(
   const contentHash = computeContentHash(body_text);
 
   // Mark as summarizing
-  await query(
+  await publish(
     `UPDATE pages SET summary_status = 'summarizing', ai_policy_block_reason = NULL WHERE id = $1`,
     [id],
   );
@@ -343,7 +371,7 @@ async function summarizePage(
         content: `${getSystemPrompt('summarize')} ${SUMMARIZE_LENGTH_INSTRUCTION_SHORT}`,
       },
       { role: 'user', content: sanitized },
-    ]);
+    ], undefined, { transportContext: { kind: 'article', stage: { provenance, userId: null, usecase: 'summary', context } } });
     const rawSummary = await collectStream(generator);
     // Strip model framing/meta-chatter before the empty-check, PII scan, and
     // HTML conversion so both summary_text and summary_html are stored clean (#912).
@@ -359,7 +387,7 @@ async function summarizePage(
     // source content changes); on 'redacted' the redacted variant is persisted.
     const piiResult = await scanForPii(markdownSummary, 'summary');
     if (piiResult?.action === 'blocked') {
-      await query(
+      await publish(
         `UPDATE pages
          SET summary_status = 'skipped',
              summary_error = $1,
@@ -384,7 +412,7 @@ async function summarizePage(
     const summaryText = stripHtml(summaryHtml);
 
     // Store result
-    await query(
+    await publish(
       `UPDATE pages
        SET summary_text = $1,
            summary_html = $2,
@@ -409,13 +437,14 @@ async function summarizePage(
 
     logger.info({ pageId: id, title, model }, 'Summary generated');
   } catch (err) {
+    if (err instanceof ArticleStageRefusedError) throw err;
     const message = err instanceof Error ? err.message : 'Unknown error';
     const newRetryCount = candidate.summary_retry_count + 1;
     // Status is always 'failed' — retry gating is handled by the
     // findCandidates SQL query which filters on summary_retry_count < MAX_RETRIES.
     const newStatus = 'failed';
 
-    await query(
+    await publish(
       `UPDATE pages
        SET summary_status = $1,
            summary_error = $2,
@@ -486,23 +515,8 @@ export async function runSummaryBatch(
     const effectiveModel = model || assignment?.model || '';
     await assertLease();
 
-    if (!assignment || !effectiveModel) {
-      const flipped = await query(
-        // Clear stale errors so config-skips remain recoverable by rescan.
-        `UPDATE pages SET summary_status = 'skipped', summary_error = NULL
-         WHERE summary_status = 'pending' AND deleted_at IS NULL`,
-      );
-      logger.warn(
-        { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
-        'No summary provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
-      );
-      return { processed: 0, errors: 0 };
-    }
-
-    const effectiveAssignment: SummaryAssignment = {
-      config: assignment.config,
-      model: effectiveModel,
-    };
+    const effectiveAssignment: SummaryAssignment | null = assignment && effectiveModel
+      ? { config: assignment.config, model: effectiveModel } : null;
 
     // Only the lease holder may recover a crashed run's orphaned pages.
     await query(
@@ -533,11 +547,36 @@ export async function runSummaryBatch(
     for (const candidate of candidates) {
       await assertLease();
       try {
-        await summarizePage(candidate, effectiveAssignment);
+        const operation = newAiOperation('summary', { kind: 'worker', id: 'summary-worker' });
+        if (candidate.summary_ai_operation_id) operation.operationId = candidate.summary_ai_operation_id;
+        const claimed = await query<{ summary_ai_operation_id: string; summary_ai_attempt: number }>(
+          `UPDATE pages SET summary_ai_operation_id = COALESCE(summary_ai_operation_id, $2::uuid),
+             summary_ai_attempt = summary_ai_attempt + 1
+           WHERE id = $1 AND content_revision = $3 AND deleted_at IS NULL
+           RETURNING summary_ai_operation_id, summary_ai_attempt`,
+          [candidate.id, operation.operationId, candidate.content_revision],
+        ).catch(async (error: unknown) => {
+          await emitUnresolvedDecision(candidate.id, 'summary', { operation, stage: 'summary', attempt: null },
+            'policy_unavailable', effectiveAssignment
+              ? { providerId: effectiveAssignment.config.providerId, model: effectiveAssignment.model } : undefined);
+          throw error;
+        });
+        const job = claimed.rows[0];
+        if (!job) continue;
+        operation.operationId = job.summary_ai_operation_id;
+        const context = { operation, stage: 'summary', attempt: job.summary_ai_attempt,
+          modelSelection: model ? { kind: 'explicit' as const, model } : { kind: 'assigned' as const } };
+        if (!effectiveAssignment) {
+          await emitUnresolvedDecision(candidate.id, 'summary', context, 'policy_unavailable');
+          // Keep the work eligible for the next pass; never bulk-overwrite a
+          // successor policy/content state or pretend this was an inference.
+          continue;
+        }
+        await summarizePage(candidate, effectiveAssignment, context);
         processed++;
       } catch (err) {
         // A policy block is neither a success nor a provider failure.
-        if (err instanceof SummaryPolicyBlocked) continue;
+        if (err instanceof SummaryPolicyBlocked || err instanceof ArticleStageRefusedError) continue;
         errors++;
         logger.error({ err, pageId: candidate.id }, 'Error in summary batch');
       }
@@ -617,7 +656,9 @@ export function stopSummaryWorker(): void {
 export async function rescanAllSummaries(): Promise<number> {
   const result = await query(
     `UPDATE pages
-     SET summary_content_hash = NULL,
+     SET summary_ai_operation_id = NULL,
+         summary_ai_attempt = 0,
+         summary_content_hash = NULL,
          summary_status = 'pending',
          summary_retry_count = 0
      WHERE deleted_at IS NULL
@@ -635,7 +676,9 @@ export async function rescanAllSummaries(): Promise<number> {
 export async function regenerateSummary(pageId: number): Promise<void> {
   await query(
     `UPDATE pages
-     SET summary_status = 'pending',
+     SET summary_ai_operation_id = NULL,
+         summary_ai_attempt = 0,
+         summary_status = 'pending',
          summary_content_hash = NULL,
          summary_retry_count = 0,
          summary_error = NULL

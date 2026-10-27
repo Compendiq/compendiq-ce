@@ -1,3 +1,9 @@
+import { assembleDirectArticleContext } from './_article-transport.js';
+import { randomUUID } from 'node:crypto';
+import { newAiOperation, emitAiDecision } from '../../core/enterprise/ai-policy-hooks.js';
+import { emitUnresolvedDecision } from '../../domains/llm/services/ai-policy-admission.js';
+import { resolveReadablePageRef } from './_helpers.js';
+import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
@@ -8,7 +14,6 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
-  assembleContextIfNeeded,
   checkCacheWithLock,
   sendCachedSSE,
   streamSSE,
@@ -45,7 +50,21 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
+    const operation = newAiOperation('direct_article', { kind: 'user', id: userId });
+    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality').catch(async (error: unknown) => {
+      const page = body.pageId ? await resolveReadablePageRef(userId, body.pageId).catch(() => null) : null;
+      if (page) {
+        await emitUnresolvedDecision(page.id, 'quality', { operation, stage: 'quality', attempt: 1 }, 'policy_unavailable');
+      } else {
+        emitAiDecision({ ...operation, eventId: randomUUID(), occurredAt: new Date().toISOString(),
+          type: 'decision', usecase: 'quality', stage: 'quality', attempt: 1,
+          articles: [], provider: null, decision: 'blocked', reason: 'policy_unavailable' });
+      }
+      throw error;
+    });
+    const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
+      userId, body.pageId, content, includeSubPages, qualityConfig, 'quality', resolvedModel, { operation },
+    );
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -55,9 +74,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
-    // Resolve the `quality` use-case up-front so the cache key can include the
-    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality');
+    // Cache and transport use the same destination as the composition.
     logger.debug(
       { userId, bodyModel: model, providerId: qualityConfig.providerId, resolvedModel },
       'Resolved quality usecase assignment',
@@ -67,6 +84,10 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, qualityConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
+      if (transportContext.kind === 'article') {
+        await authorizeArticleDispatch(qualityConfig, transportContext.stage.provenance, userId,
+          'quality', transportContext.stage.context, resolvedModel, true);
+      }
       sendCachedSSE(reply, cached.content);
       return;
     }
@@ -77,7 +98,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
         { role: 'user' as const, content: sanitized },
       ];
       await streamSSE(request, reply,
-        (signal) => streamChat(qualityConfig, resolvedModel, qualityMessages, signal, { thinking: body.thinking }),
+        (signal) => streamChat(qualityConfig, resolvedModel, qualityMessages, signal, { thinking: body.thinking, transportContext }),
         undefined, {
           llmCache, cacheKey,
           audit: {

@@ -6,8 +6,10 @@
  * configurable interval via env var; batch size from admin settings
  * (`quality_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
- * `quality_status = 'skipped'` recovery:
- *   Pages are marked `'skipped'` in two situations:
+ * Unresolved assignments emit bounded typed refusals and leave work eligible.
+ * Operation UUIDs and stage attempts survive retries and crash recovery.
+ * Legacy `quality_status = 'skipped'` recovery:
+ *   Historically pages were marked `'skipped'` in two situations:
  *     a) body_text is empty or shorter than the 50-char analysis threshold
  *        (handled in analyzePageQuality / processBatch), or
  *     b) no quality model can be resolved for the configured provider
@@ -29,6 +31,11 @@
  */
 
 import { query } from '../../../core/db/postgres.js';
+import { AI_POLICY_PROVENANCE_VERSION, type ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../llm/services/article-stage-admission.js';
+import { asRevision, emitUnresolvedDecision, publishCurrentAiPolicyBlock } from '../../llm/services/ai-policy-admission.js';
+import type { ArticleTransportStage } from '../../llm/services/openai-compatible-client.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
@@ -142,13 +149,14 @@ export function parseQualityScores(text: string): QualityScores | null {
 async function collectStreamedResponse(
   assignment: QualityAssignment,
   content: string,
+  articleStage: ArticleTransportStage,
 ): Promise<string> {
   const { sanitized } = sanitizeLlmInput(content);
   const systemPrompt = getSystemPrompt('analyze_quality');
   const generator = streamChat(assignment.config, assignment.model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },
-  ]);
+  ], undefined, { transportContext: { kind: 'article', stage: articleStage } });
 
   let fullResponse = '';
   for await (const chunk of generator) {
@@ -165,11 +173,14 @@ async function analyzePageQuality(
   assignment: QualityAssignment,
   bodyHtml: string,
   bodyText: string,
-  currentRetryCount: number = 0,
+  contentRevisionText: string,
+  currentRetryCount: number,
+  context: { operation: ReturnType<typeof newAiOperation>; stage: string; attempt: number },
 ): Promise<'processed' | 'failed' | 'blocked'> {
-  // Article AI policy (SPEC-WORK-001): admitted against the provider the
-  // call would use, before the row is claimed and before any call.
-  const admission = await admitPageForProvider(pageId, 'quality', assignment.config.providerId, assignment.model);
+  // The batch retains durable job identity across retries; this preflight
+  // emits only refusals. The transport owns the admitted stage decision.
+  const admission = await admitPageForProvider(pageId, 'quality', assignment.config.providerId, assignment.model,
+    { ...context, preliminary: true });
   if (!admission.admitted) {
     if (admission.reason === 'not_found') return 'blocked';
     if (!isPersistableBlockReason(admission.reason)) {
@@ -178,18 +189,34 @@ async function analyzePageQuality(
       logger.warn({ pageId, reason: admission.reason, providerId: assignment.config.providerId }, 'Quality admission unavailable; page left for the next pass');
       return 'blocked';
     }
-    await query(
-      `UPDATE pages SET quality_status = 'policy_blocked', quality_error = NULL, ai_policy_block_reason = $2
-        WHERE id = $1`,
-      [pageId, admission.reason],
-    );
+    await publishCurrentAiPolicyBlock({ pageId, providerId: assignment.config.providerId,
+      contentRevision: contentRevisionText, reason: admission.reason }, async (client) => {
+      const result = await client.query(
+        `UPDATE pages SET quality_status = 'policy_blocked', quality_error = NULL, ai_policy_block_reason = $2
+          WHERE id = $1`, [pageId, admission.reason],
+      );
+      return (result.rowCount ?? 0) > 0;
+    });
     logger.info({ pageId, reason: admission.reason, providerId: assignment.config.providerId }, 'Quality analysis blocked by article AI policy');
     return 'blocked';
   }
 
+  const contentRevision = asRevision(contentRevisionText);
+  if (contentRevision === null) return 'blocked';
+  const provenance: ConversationTurnAiProvenance = {
+    version: AI_POLICY_PROVENANCE_VERSION, providerId: admission.providerId,
+    configRevision: admission.configRevision, locality: admission.locality,
+    pages: [{ pageId, policy: admission.policy, policyRevision: admission.policyRevision, contentRevision }],
+  };
+  const publish = async (sql: string, params: unknown[]): Promise<void> => {
+    await admitArticleStage(provenance, null, 'quality', async (client) => {
+      await client.query(sql, params);
+    }, context, assignment.config, assignment.model);
+  };
+
   // Mark as analyzing. Admission just succeeded, so a block reason left by
   // an earlier pass (provider since declared local) is stale.
-  await query(
+  await publish(
     `UPDATE pages SET quality_status = 'analyzing', ai_policy_block_reason = NULL WHERE id = $1`,
     [pageId],
   );
@@ -201,19 +228,19 @@ async function analyzePageQuality(
     // Skip pages with insufficient content for meaningful analysis
     if (!markdown || markdown.trim().length < 50) {
       logger.debug({ pageId, contentLength: markdown?.length ?? 0 }, 'Skipping quality analysis — content too short');
-      await query(
+      await publish(
         `UPDATE pages SET quality_status = 'skipped' WHERE id = $1`,
         [pageId],
       );
       return 'processed';
     }
 
-    const response = await collectStreamedResponse(assignment, markdown);
+    const response = await collectStreamedResponse(assignment, markdown, { provenance, userId: null, usecase: 'quality', context });
     const scores = parseQualityScores(response);
 
     if (!scores) {
       logger.warn({ pageId }, 'Failed to parse quality scores from LLM response');
-      await query(
+      await publish(
         `UPDATE pages
          SET quality_status = 'failed',
              quality_error = $2,
@@ -225,7 +252,7 @@ async function analyzePageQuality(
       return 'failed';
     }
 
-    await query(
+    await publish(
       `UPDATE pages
        SET quality_score = $2,
            quality_completeness = $3,
@@ -264,6 +291,7 @@ async function analyzePageQuality(
     logger.info({ pageId, score: scores.overall }, 'Quality analysis complete');
     return 'processed';
   } catch (err) {
+    if (err instanceof ArticleStageRefusedError) return 'blocked';
     const rawMessage = err instanceof Error ? err.message : 'Unknown error';
     // Replace raw network errors with user-friendly messages
     const isTransient = /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(rawMessage);
@@ -271,7 +299,7 @@ async function analyzePageQuality(
       ? 'Could not reach AI service — will retry on next cycle'
       : rawMessage;
     logger.error({ err, pageId }, 'Quality analysis failed for page');
-    await query(
+    await publish(
       `UPDATE pages
        SET quality_status = 'failed',
            quality_error = $2,
@@ -299,22 +327,6 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
   // immediately via the provider cache-bus.
   const assignment = await resolveQualityAssignment();
   await assertLockHeld();
-
-  // When no provider/model can be resolved, mark pending pages as skipped
-  // and return rather than making a call with an empty model name (which
-  // would fail downstream and leave pages stuck in 'pending'). Hit when no
-  // default provider is configured or the quality use case has no model set.
-  if (!assignment || !assignment.model) {
-    const flipped = await query(
-      `UPDATE pages SET quality_status = 'skipped'
-       WHERE quality_status = 'pending' AND deleted_at IS NULL`,
-    );
-    logger.warn(
-      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No quality provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
-    );
-    return { processed: flipped.rowCount ?? 0, errors: 0 };
-  }
 
   // Recover pages stuck in 'analyzing' (#909). A crash/restart while
   // analyzePageQuality was mid-flight leaves the page at 'analyzing' forever —
@@ -345,8 +357,10 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
     body_html: string;
     body_text: string;
     quality_retry_count: number;
+    content_revision: string;
+    quality_ai_operation_id: string | null;
   }>(
-    `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+    `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count, content_revision::text, quality_ai_operation_id
      FROM pages
      WHERE quality_status = 'pending'
        AND deleted_at IS NULL
@@ -366,6 +380,8 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
       body_html: string;
       body_text: string;
       quality_retry_count: number;
+    content_revision: string;
+    quality_ai_operation_id: string | null;
     }>(
       // #828: also re-scan retry-exhausted 'failed' pages whose content
       // changed since the last analysis. sync-service never writes
@@ -376,7 +392,7 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
       // page can't be picked up by both queries in the same batch. Re-selection
       // self-limits: the failure path stamps quality_analyzed_at = NOW(), so
       // last_modified_at > quality_analyzed_at flips false after one attempt.
-      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count, content_revision::text, quality_ai_operation_id
        FROM pages
        WHERE quality_status IN ('analyzed', 'failed')
          AND deleted_at IS NULL
@@ -399,8 +415,10 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
       body_html: string;
       body_text: string;
       quality_retry_count: number;
+    content_revision: string;
+    quality_ai_operation_id: string | null;
     }>(
-      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count, content_revision::text, quality_ai_operation_id
        FROM pages
        WHERE quality_status = 'failed'
          AND deleted_at IS NULL
@@ -425,8 +443,10 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
       body_html: string;
       body_text: string;
       quality_retry_count: number;
+    content_revision: string;
+    quality_ai_operation_id: string | null;
     }>(
-      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count, content_revision::text, quality_ai_operation_id
        FROM pages
        WHERE quality_status = 'policy_blocked'
          AND ${RECHECKABLE_BLOCK_SQL}
@@ -457,11 +477,33 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
   for (const page of pages) {
     await assertLockHeld();
     try {
-      const outcome = await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.quality_retry_count);
+      const operation = newAiOperation('quality', { kind: 'worker', id: 'quality-worker' });
+      if (page.quality_ai_operation_id) operation.operationId = page.quality_ai_operation_id;
+      const claimed = await query<{ quality_ai_operation_id: string; quality_ai_attempt: number }>(
+        `UPDATE pages SET quality_ai_operation_id = COALESCE(quality_ai_operation_id, $2::uuid),
+           quality_ai_attempt = quality_ai_attempt + 1
+         WHERE id = $1 AND content_revision = $3 AND deleted_at IS NULL
+         RETURNING quality_ai_operation_id, quality_ai_attempt`,
+        [page.id, operation.operationId, page.content_revision],
+      ).catch(async (error: unknown) => {
+        await emitUnresolvedDecision(page.id, 'quality', { operation, stage: 'quality', attempt: null },
+          'policy_unavailable', assignment ? { providerId: assignment.config.providerId, model: assignment.model } : undefined);
+        throw error;
+      });
+      const job = claimed.rows[0];
+      if (!job) continue;
+      operation.operationId = job.quality_ai_operation_id;
+      const context = { operation, stage: 'quality', attempt: job.quality_ai_attempt };
+      if (!assignment?.model) {
+        await emitUnresolvedDecision(page.id, 'quality', context, 'policy_unavailable');
+        continue; // Keep eligible work visible; no inference or token charge.
+      }
+      const outcome = await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.content_revision, page.quality_retry_count, context);
       // 'blocked' (article AI policy) is neither a success nor a failure.
       if (outcome === 'failed') result.errors++;
       else if (outcome === 'processed') result.processed++;
     } catch (err) {
+      if (err instanceof ArticleStageRefusedError) continue;
       // Persistence and other unexpected page failures must not abandon the
       // remaining candidates or turn the failed page into a processed success.
       result.errors++;
@@ -587,7 +629,7 @@ export function stopQualityWorker(): void {
 export async function forceQualityRescan(): Promise<number> {
   const result = await query(
     // A `none` page stays parked (SPEC-WORK-001): only a policy change lifts it.
-    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL AND ai_policy <> 'none'`,
+    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0, quality_ai_operation_id = NULL, quality_ai_attempt = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL AND ai_policy <> 'none'`,
   );
   const count = result.rowCount ?? 0;
   logger.info({ count }, 'Forced quality rescan — all pages reset to pending');

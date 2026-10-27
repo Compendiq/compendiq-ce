@@ -61,7 +61,7 @@ export function sendAiPolicyFailure(reply: FastifyReply, result: Extract<AiPolic
 
 /**
  * Article AI policy mutation endpoints (SPEC-CORE-003). Changes are
- * observable through the inert `emitAiPolicyEvent` sink.
+ * recorded through the held-client typed `AiPolicyChangeEvent` hook.
  */
 export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.put('/pages/:id/ai-policy', async (request, reply) => {

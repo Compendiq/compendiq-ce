@@ -21,6 +21,8 @@ import {
 } from './openai-compatible-client.js';
 import { providerResourceUrl } from './provider-url.js';
 import { emitLlmAudit, estimateTokens } from './llm-audit-hook.js';
+import type { ArticleTransportStage } from './openai-compatible-client.js';
+import { admitArticleStage, authorizeArticleDispatch, ArticleStageRefusedError } from './article-stage-admission.js';
 
 export const INLINE_COMPLETION_STOP = ['\n', '\n\n', '```'] as const;
 export const INLINE_COMPLETION_TIMEOUT_MS = 10_000;
@@ -40,6 +42,7 @@ export interface InlineCompletionResult {
 }
 
 export interface InlineCompletionOptions {
+  stage: ArticleTransportStage;
   /** Test seam and future internal override; the route uses the fixed default. */
   timeoutMs?: number;
   /** Only authenticated interactive requests opt into the inference audit. */
@@ -78,8 +81,13 @@ export async function requestInlineCompletion(
   model: string,
   input: InlineCompletionRequest,
   signal: AbortSignal,
-  opts: InlineCompletionOptions = {},
+  opts: InlineCompletionOptions,
 ): Promise<InlineCompletionResult> {
+  const stage = opts?.stage;
+  if (!stage || !stage.userId || stage.usecase !== 'inline_completion'
+    || stage.provenance.pages.length !== 1
+    || stage.provenance.pages[0]?.pageId !== input.pageId) throw new ArticleStageRefusedError();
+  let attempt = 0;
   const strategy = supportsFim(model) ? 'fim' : 'chat';
   const fim = `<PRE>${input.prefix}<SUF>${input.suffix ?? ''}<MID>`;
   const requestBody = strategy === 'fim'
@@ -125,6 +133,11 @@ export async function requestInlineCompletion(
   const requestSignal = AbortSignal.any([signal, deadline]);
 
   const post = async (body: typeof requestBody): Promise<{ raw: string; usage: InlineCompletionResult['usage'] }> => {
+    requestSignal.throwIfAborted();
+    await authorizeArticleDispatch(cfg, stage.provenance, stage.userId, stage.usecase,
+      { ...stage.context, attempt: ++attempt }, model);
+    requestSignal.throwIfAborted();
+    dispatched = true;
     const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, endpoint), {
       method: 'POST',
       headers: providerRequestInfra.headers(cfg),
@@ -175,11 +188,10 @@ export async function requestInlineCompletion(
   let dispatched = false;
   let failure: unknown;
   try {
-  return await withSpan(
+  const result = await withSpan(
     'llm.inline_completion',
     () => getProviderBreaker(cfg.providerId).execute(async () => {
       signal.throwIfAborted();
-      dispatched = true;
       let reply = await post(requestBody);
       let completion = finish(reply.raw);
       if (completion === '' && Object.keys(retryExtras).length > 0) {
@@ -197,7 +209,7 @@ export async function requestInlineCompletion(
             completion = text;
           }
         } catch (error) {
-          if (signal.aborted) throw error;
+          if (signal.aborted || error instanceof ArticleStageRefusedError) throw error;
           logger.debug(
             { providerId: cfg.providerId, model, err: error },
             'inline completion: reasoning_effort retry failed; returning the empty first reply',
@@ -206,7 +218,7 @@ export async function requestInlineCompletion(
       }
       rawOutput = reply.raw;
       reportedUsage = reply.usage;
-      return { completion, usage: reportedUsage, strategy };
+      return { completion, usage: reportedUsage, strategy } satisfies InlineCompletionResult;
     }),
     {
       'llm.provider_id': cfg.providerId,
@@ -214,6 +226,12 @@ export async function requestInlineCompletion(
       'llm.inline_completion.strategy': strategy,
     },
   );
+  // Publication reuses the same held-client checks but is not another model
+  // attempt. A no-op publisher suppresses decision evidence on both outcomes.
+  await admitArticleStage(stage.provenance, stage.userId, stage.usecase, async () => {},
+    { ...stage.context, attempt }, cfg, model);
+  requestSignal.throwIfAborted();
+  return result;
   } catch (error) {
     failure = error;
     throw error;

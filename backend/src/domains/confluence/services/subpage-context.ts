@@ -109,6 +109,8 @@ export class SubPagePolicyError extends Error {
   constructor(
     public readonly reason: SubPagePolicyErrorReason,
     message: string,
+    /** Server-read identity only; never carry the refused title or body. */
+    public readonly pageId?: number,
   ) {
     super(message);
     this.name = 'SubPagePolicyError';
@@ -280,7 +282,7 @@ export async function fetchAdmittedSubPages(
       const policyRevision = asRevision(row.ai_policy_revision);
       const contentRevision = asRevision(row.content_revision);
       if (!isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null) {
-        throw new SubPagePolicyError('ai_policy_unavailable', 'Unreadable descendant metadata');
+        throw new SubPagePolicyError('ai_policy_unavailable', 'Unreadable descendant metadata', row.id);
       }
 
       // Queue children for next depth level. Standalone (local-space) pages have

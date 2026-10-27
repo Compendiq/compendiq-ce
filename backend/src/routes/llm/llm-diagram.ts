@@ -1,6 +1,8 @@
+import { directArticleTransport } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/prompts.js';
-import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { resolveDirectArticleChat } from './_article-resolution.js';
+import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
@@ -77,16 +79,22 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     // Resolve the `chat` use-case up-front so the cache key includes the
     // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(request.userId, body.pageId);
     logger.debug(
       { userId: request.userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
     );
 
+    const transportContext = await directArticleTransport(request.userId, body.pageId, false, chatConfig, 'chat', operation);
+
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
+      if (transportContext.kind === 'article') {
+        await authorizeArticleDispatch(chatConfig, transportContext.stage.provenance, request.userId,
+          'chat', transportContext.stage.context, resolvedModel, true);
+      }
       sendCachedSSE(reply, cached.content);
       return;
     }
@@ -97,7 +105,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
         { role: 'user' as const, content: userContent },
       ];
       await streamSSE(request, reply,
-        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking }),
+        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking, transportContext }),
         undefined, {
           llmCache, cacheKey,
           audit: {

@@ -11,6 +11,7 @@ export * from './schemas/spaces.js';
 export * from './schemas/space-ai-policy.js';
 export * from './schemas/llm.js';
 export * from './schemas/client-assets.js';
+export * from './schemas/browser-inline.js';
 export * from './schemas/admin.js';
 export * from './schemas/admin-users.js';
 export * from './schemas/notifications.js';

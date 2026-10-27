@@ -1,6 +1,12 @@
 import type { PoolClient } from 'pg';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
-import { chat } from '../../llm/services/openai-compatible-client.js';
+import { chat, type ArticleTransportStage } from '../../llm/services/openai-compatible-client.js';
+import { AI_POLICY_PROVENANCE_VERSION } from '@compendiq/contracts';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { asRevision, loadProviderMetadata } from '../../llm/services/ai-policy-admission.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../llm/services/article-stage-admission.js';
+import { validateAutoTagPublicationOnClient, type AutoTagPublicationStage } from '../../llm/services/auto-tag-publication.js';
+import { AiPolicyRefusalError, isAiPolicy, isAiPolicyRefusal } from '../../../core/services/ai-policy-service.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
@@ -15,14 +21,15 @@ import {
   PageWriteError,
   reservePageWriteIntent,
   runPageWriteIntentEffect,
+  runGeneratedLabelRequest,
   withPageWriteTransaction,
 } from '../../../core/services/page-write-admission.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
   applyPageLabelsOnClient,
-  canMutateAiPolicy,
-  emitAiPolicyChanges,
+  assertLabelPolicyChangeOnClient,
   planLabelPolicyChange,
+  reservedAiPolicyLabel,
   type AiPolicy,
 } from '../../../core/services/ai-policy-service.js';
 
@@ -58,8 +65,18 @@ const SYSTEM_PROMPT = `You are a document classifier. Given the following articl
 export async function autoTagContent(
   _userId: string,
   content: string,
-  options: { isHtml?: boolean; modelOverride?: string } = {},
+  options: { isHtml?: boolean; modelOverride?: string; articleStage: ArticleTransportStage;
+    resolved?: Awaited<ReturnType<typeof resolveUsecase>> },
 ): Promise<AllowedTag[]> {
+  // This API classifies article content, never unrelated free-form input.
+  // Check before resolving a destination as well as at the transport boundary:
+  // JavaScript callers and stale clients must not turn missing provenance into
+  // an unrestricted call (nor certify an empty article set).
+  const stage = options?.articleStage;
+  if (!stage || !Array.isArray(stage.provenance?.pages) || stage.provenance.pages.length === 0
+    || stage.userId !== _userId || stage.usecase !== 'auto_tag') {
+    throw new ArticleStageRefusedError();
+  }
   // Convert HTML to markdown if needed
   let text = options.isHtml ? htmlToMarkdown(content) : content;
 
@@ -70,7 +87,7 @@ export async function autoTagContent(
 
   const { sanitized } = sanitizeLlmInput(text);
 
-  const { config, model: resolvedModel } = await resolveUsecase('auto_tag');
+  const { config, model: resolvedModel } = options.resolved ?? await resolveUsecase('auto_tag');
   const effectiveModel = options.modelOverride || resolvedModel;
   if (!effectiveModel) {
     throw new Error('Auto-tag failed: no model configured for auto_tag use case');
@@ -81,8 +98,12 @@ export async function autoTagContent(
     response = await chat(config, effectiveModel, [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: sanitized },
-    ]);
+    ], { transportContext: { kind: 'article', stage: { ...stage, context: {
+      ...stage.context,
+      modelSelection: options.modelOverride ? { kind: 'explicit', model: options.modelOverride } : { kind: 'assigned' },
+    } } } });
   } catch (err) {
+    if (isAiPolicyRefusal(err) || err instanceof ArticleStageRefusedError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Auto-tag failed: ${message}`, { cause: err });
   }
@@ -160,13 +181,18 @@ export async function autoTagPage(
   userId: string,
   pageId: string,
   modelOverride?: string,
+  publish?: (tags: AllowedTag[], stage: ArticleTransportStage) => Promise<void>,
 ): Promise<{ suggestedTags: AllowedTag[]; existingLabels: string[] }> {
   const isNumericId = /^\d+$/.test(pageId);
   const result = await query<{
+    id: number;
+    ai_policy: unknown;
+    ai_policy_revision: unknown;
+    content_revision: unknown;
     body_html: string;
     labels: string[];
   }>(
-    `SELECT body_html, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+    `SELECT id, ai_policy, ai_policy_revision, content_revision, body_html, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
     [isNumericId ? parseInt(pageId, 10) : pageId],
   );
 
@@ -179,7 +205,31 @@ export async function autoTagPage(
     return { suggestedTags: [], existingLabels: labels ?? [] };
   }
 
-  const suggestedTags = await autoTagContent(userId, body_html, { isHtml: true, modelOverride });
+  const row = result.rows[0]!;
+  const policyRevision = asRevision(row.ai_policy_revision);
+  const contentRevision = asRevision(row.content_revision);
+  if (!isAiPolicy(row.ai_policy) || policyRevision === null || contentRevision === null) {
+    throw new AiPolicyRefusalError(503, { error: 'ai_policy_unavailable', pageIds: [row.id] }, 'Policy unavailable');
+  }
+  const resolved = await resolveUsecase('auto_tag');
+  const { config } = resolved;
+  const provider = await loadProviderMetadata({ query }, config.providerId);
+  if (!provider || provider.configRevision !== config.configRevision) throw new ArticleStageRefusedError();
+  if (row.ai_policy === 'none' || (row.ai_policy === 'local_only' && provider.effectiveLocality !== 'local')) {
+    throw new AiPolicyRefusalError(403, { error: 'ai_policy_denied', pageIds: [row.id] }, 'Article policy forbids auto-tagging');
+  }
+  const stage: AutoTagPublicationStage = {
+    model: modelOverride || resolved.model,
+    provenance: { version: AI_POLICY_PROVENANCE_VERSION, providerId: config.providerId,
+      configRevision: provider.configRevision, locality: provider.effectiveLocality,
+      pages: [{ pageId: row.id, policy: row.ai_policy, policyRevision, contentRevision }] },
+    userId, usecase: 'auto_tag',
+    context: { operation: newAiOperation('auto_tag', { kind: 'user', id: userId }), stage: 'auto_tag', attempt: 1,
+      modelSelection: modelOverride ? { kind: 'explicit', model: modelOverride } : { kind: 'assigned' } },
+  };
+  const suggestedTags = await autoTagContent(userId, body_html, { isHtml: true, modelOverride, articleStage: stage, resolved });
+  await admitArticleStage(stage.provenance, userId, 'auto_tag', undefined, stage.context, config, stage.model);
+  await publish?.(suggestedTags, stage);
 
   return {
     suggestedTags,
@@ -255,7 +305,7 @@ export const LABEL_WRITE_DENIED_REASON = 'page_not_found';
 export async function applyLabelChanges(
   userId: string,
   pageId: string,
-  changes: { add: readonly string[]; remove?: readonly string[] },
+  changes: { add: readonly string[]; remove?: readonly string[]; articleStage?: ArticleTransportStage },
 ): Promise<string[]> {
   const isNumericId = /^\d+$/.test(pageId);
   const params = [isNumericId ? parseInt(pageId, 10) : pageId];
@@ -296,6 +346,9 @@ export async function applyLabelChanges(
       if (actor.rowCount !== 1 || !(await canWriteLabelsLocally(userId, page, client))) {
         throw new PageWriteError(404, LABEL_WRITE_DENIED_REASON, 'Page not found');
       }
+      if (changes.articleStage) {
+        await validateAutoTagPublicationOnClient(client, changes.articleStage, userId, initial.id);
+      }
       // Policy authority (an explicit relaxation) and the policy/label write
       // itself are decided by the primitive on this same transaction.
       return applyPageLabelsOnClient(client, {
@@ -304,8 +357,7 @@ export async function applyLabelChanges(
         targetLabels: mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []),
       });
     });
-    emitAiPolicyChanges(committed.changes);
-    return committed.labels;
+        return committed.labels;
   }
 
   if (!initial.confluence_id) throw new Error(`Page is missing confluence_id: ${pageId}`);
@@ -328,6 +380,7 @@ export async function applyLabelChanges(
       remove: [...(changes.remove ?? [])],
       priorLabels: initial.labels ?? [],
       targetLabels: initialPlan.labels,
+      ...(changes.articleStage ? { autoTagStage: changes.articleStage } : {}),
     },
   });
 
@@ -401,9 +454,10 @@ export async function applyLabelChanges(
             'The page labels changed after label admission',
           );
         }
-        if (plan.kind === 'relax' && !(await canMutateAiPolicy(userId, page.id, client))) {
-          throw new PageWriteError(403, 'ai_policy_not_authorized', 'Not authorized to relax this page\'s AI policy');
+        if (changes.articleStage) {
+          await validateAutoTagPublicationOnClient(client, changes.articleStage, userId, initial.id);
         }
+        await assertLabelPolicyChangeOnClient(client, { userId, pageId: page.id, plan });
 
         const confluence = await getClientForUser(userId, client);
         if (!confluence) {
@@ -422,20 +476,56 @@ export async function applyLabelChanges(
     throw error;
   }
 
-  const current = admitted.page.labels ?? [];
+  let current = admitted.page.labels ?? [];
+  if (changes.articleStage) {
+    // A public policy change is local and may leave an older canonical label
+    // upstream. Reconcile that slot, but never overwrite independent human
+    // labels discovered since admission.
+    let observed: string[];
+    try {
+      observed = await admitted.confluence.getLabels(admitted.page.confluence_id!);
+    } catch (error) {
+      await cancelPageWriteIntentBeforeEffect(intent);
+      throw error;
+    }
+    const ordinary = (labels: readonly string[]) => labels.filter((label) => reservedAiPolicyLabel(label) === null);
+    if (!sameLabelSet(ordinary(observed), ordinary(current))) {
+      await cancelPageWriteIntentBeforeEffect(intent);
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'Remote human labels changed before generated publication');
+    }
+    current = observed;
+  }
   const { add, remove } = remoteLabelDelta(current, admitted.labels);
 
   // Every call below is idempotent at the provider boundary. A rejection or
   // timeout after a call begins leaves the intent unresolved; reconciliation
   // must read the remote label set before it may settle the operation.
   await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, async () => {
-    if (add.length > 0) await admitted.confluence.addLabels(admitted.page.confluence_id!, add);
+    let requestIndex = 0;
+    let before = [...new Set(current)].sort();
+    const request = async (after: string[], dispatch: () => Promise<void>) => {
+      after = [...new Set(after)].sort();
+      if (changes.articleStage) {
+        await runGeneratedLabelRequest(intent, requestIndex, { before, after }, (client) =>
+          validateAutoTagPublicationOnClient(client, changes.articleStage!, userId, initial.id), dispatch);
+      } else {
+        await dispatch();
+      }
+      requestIndex++;
+      before = after;
+    };
+    if (add.length > 0) {
+      await request([...before, ...add], () => admitted.confluence.addLabels(admitted.page.confluence_id!, add));
+    }
     for (const label of remove) {
-      await admitted.confluence.removeLabel(admitted.page.confluence_id!, label);
+      await request(before.filter((item) => item !== label), () => admitted.confluence.removeLabel(admitted.page.confluence_id!, label));
     }
   });
 
   const committed = await completePageWriteIntent(intent, async (client) => {
+    if (changes.articleStage) {
+      await validateAutoTagPublicationOnClient(client, changes.articleStage, userId, initial.id);
+    }
     const applied = await applyPageLabelsOnClient(client, {
       userId,
       pageId: initial.id,
@@ -455,8 +545,7 @@ export async function applyLabelChanges(
     await enqueuePageWriteInvalidation(client, intent.id);
     return applied;
   });
-  emitAiPolicyChanges(committed.changes);
-  return committed.labels;
+    return committed.labels;
 }
 
 /**
@@ -489,7 +578,10 @@ export async function autoTagAllPages(
      FROM pages cp
      WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
        AND cp.deleted_at IS NULL
-       AND (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
+       AND NOT EXISTS (
+         SELECT 1 FROM unnest(cp.labels) AS label
+          WHERE ai_policy_label_value(label) IS NULL
+       )
        AND cp.body_html IS NOT NULL`,
     [await getUserAccessibleSpaces(userId)],
   );
@@ -499,11 +591,12 @@ export async function autoTagAllPages(
 
   for (const page of pages.rows) {
     try {
-      const suggestedTags = await autoTagContent(userId, page.body_html, { isHtml: true, modelOverride });
-      if (suggestedTags.length > 0) {
-        await applyTags(userId, String(page.id), suggestedTags);
-        tagged++;
-      }
+      await autoTagPage(userId, String(page.id), modelOverride, async (tags, articleStage) => {
+        if (tags.length > 0) {
+          await applyLabelChanges(userId, String(page.id), { add: tags, articleStage });
+          tagged++;
+        }
+      });
     } catch (err) {
       logger.error({ err, pageId: page.id }, 'Failed to auto-tag page');
       errors++;

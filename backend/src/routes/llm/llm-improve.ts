@@ -1,20 +1,21 @@
+import { assembleDirectArticleContext } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import {
   SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, contentToText,
   type ChatContentPart, type ChatMessage,
 } from '../../domains/llm/services/prompts.js';
-import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { resolveDirectArticleChat } from './_article-resolution.js';
+import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { ImproveRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
-  assembleContextIfNeeded,
   resolveReadablePageRef,
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -47,7 +48,6 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     try {
-    const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model, includeSubPages, instruction, referenceText, imageHandle } = body;
     const userId = request.userId;
@@ -58,7 +58,11 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // #765: layoutTokens applies only to the main-page conversion — the
     // sub-page branch inside assembleContextIfNeeded never emits tokens.
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
+    const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(userId, body.pageId);
+    const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
+      userId, body.pageId, content, includeSubPages, chatConfig, 'chat', resolvedModel,
+      { protectMedia: true, layoutTokens: true, operation },
+    );
 
     // Sanitize before sending to LLM. The two flags below are `let` because
     // the web-search block further down folds its own sanitizer detections
@@ -167,9 +171,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
 
-    // Resolve the `chat` use-case up-front so the cache key includes the
-    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    // Cache and transport retain the destination used for composition.
     logger.debug(
       { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
@@ -198,6 +200,10 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
+      if (transportContext.kind === 'article') {
+        await authorizeArticleDispatch(chatConfig, transportContext.stage.provenance, userId,
+          'chat', transportContext.stage.context, resolvedModel, true);
+      }
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
       // comparing formatting-stripped bodyText against the markdown output.
@@ -252,12 +258,18 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking });
+      const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking, transportContext });
 
       const accumulated = await streamSSE(request, reply, generator, improveExtras, {
         llmCache,
         cacheKey,
         postProcess,
+        audit: {
+          userId, action: 'improve', model: resolvedModel, provider: chatConfig.providerId,
+          inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
+          inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+          retrievedChunkIds: [], promptInjectionDetected, sanitized: wasSanitized,
+        },
         // Never cache a response that lost the layout tokens: the apply will
         // 422 with "run AI Improve again", and a cached token-less response
         // would replay on every retry until the TTL expires.
@@ -278,37 +290,6 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         );
       }
 
-      emitLlmAudit({
-        userId,
-        action: 'improve',
-        model: resolvedModel,
-        provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
-        outputTokens: estimateTokens(accumulated),
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
-        retrievedChunkIds: [],
-        durationMs: Date.now() - auditStart,
-        status: 'success',
-        promptInjectionDetected,
-        sanitized: wasSanitized,
-      });
-    } catch (err) {
-      emitLlmAudit({
-        userId,
-        action: 'improve',
-        model: resolvedModel,
-        provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
-        outputTokens: 0,
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
-        retrievedChunkIds: [],
-        durationMs: Date.now() - auditStart,
-        status: 'error',
-        errorMessage: err instanceof Error ? err.message : String(err),
-        promptInjectionDetected,
-        sanitized: wasSanitized,
-      });
-      throw err;
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }

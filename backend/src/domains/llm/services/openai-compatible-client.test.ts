@@ -1,7 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
+
+// This suite sends only synthetic literals (hi, 2+2, a/b) to its HTTP servers.
+// Keep its queue/breaker/wire assertions on the real transport, with an explicit
+// non-article context. Article and omitted-context proofs use the raw exports.
+const syntheticContext = { kind: 'non_article', purpose: 'synthetic_evaluation' } as const;
+function chat(config: ProviderConfig, model: string, messages: ChatMessage[], options?: Omit<StreamChatOptions, 'transportContext'>) {
+  return transportChat(config, model, messages, { ...options, transportContext: syntheticContext });
+}
+function streamChat(config: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, options?: Omit<StreamChatOptions, 'transportContext'>) {
+  return transportStreamChat(config, model, messages, signal, { ...options, transportContext: syntheticContext });
+}
+function generateEmbedding(config: ProviderConfig, model: string, text: string | string[]) {
+  return transportEmbedding(config, model, text, syntheticContext);
+}
 import { ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
 
 let srv: Server;
@@ -27,6 +41,28 @@ afterAll(() => new Promise<void>((r) => srv.close(() => r())));
 const cfg: ProviderConfig = {
   providerId: 'id1', baseUrl: '', apiKey: 'sekret', authType: 'bearer', verifySsl: true,
 };
+
+describe('mandatory transport context', () => {
+  it('refuses omitted contexts for chat, streaming and embeddings before sending any bytes', async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => { hits++; response.end('{}'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const config = { ...cfg, providerId: 'missing-context', baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1` };
+    try {
+      // Deliberately exercise stale JavaScript callers, not the fixture wrappers.
+      // @ts-expect-error context omission must also remain a type error
+      await expect(transportChat(config, 'm', [{ role: 'user', content: 'article draft' }])).rejects.toThrow('ai_policy_unavailable');
+      // @ts-expect-error context omission must also remain a type error
+      await expect(transportEmbedding(config, 'm', 'article body')).rejects.toThrow('ai_policy_unavailable');
+      // @ts-expect-error context omission must also remain a type error
+      await expect(transportStreamChat(config, 'm', [{ role: 'user', content: 'article selection' }]).next()).rejects.toThrow('ai_policy_unavailable');
+      expect(hits).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
 
 describe('openai-compatible-client', () => {
   it('listModels returns models from /v1/models', async () => {

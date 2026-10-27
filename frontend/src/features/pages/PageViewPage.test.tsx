@@ -9,6 +9,15 @@ import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { toast } from 'sonner';
+import { getClientInferenceManager, resetClientInferenceManager } from '../../shared/lib/client-inference/client-inference-manager';
+import type { WorkerRequest, WorkerEvent } from '../../shared/lib/client-inference/worker-protocol';
+
+vi.mock('../../shared/lib/client-inference/device-gpu-profile', () => ({
+  probeDeviceGpu: async () => ({ hasWebGPU: true, tier: 'medium', recommendedModelTier: 'compact', adapterName: 'test' }),
+}));
+vi.mock('../../shared/lib/client-inference/opfs-model-cache', () => ({
+  hasOpfsModel: async () => true,
+}));
 
 vi.mock('sonner', () => ({
   toast: {
@@ -78,10 +87,12 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
 
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
+let useRealEditor = false;
 
 vi.mock('../../shared/components/article/Editor', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
-  return {
+  const actual = await vi.importActual<typeof import('../../shared/components/article/Editor')>('../../shared/components/article/Editor');
+  const mocks = {
     // Mirrors the real Editor's contract (#954): the body is owned by the
     // editor instance (read via getHTML() on save), NOT pushed to the parent
     // per keystroke. onChange is a cheap boolean dirty signal. The textarea is
@@ -128,6 +139,8 @@ vi.mock('../../shared/components/article/Editor', async () => {
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
   };
+  return { ...mocks, Editor: (props: React.ComponentProps<typeof actual.Editor>) => useRealEditor
+    ? <actual.Editor {...props} /> : <mocks.Editor {...props as React.ComponentProps<typeof mocks.Editor>} /> };
 });
 
 vi.mock('../../shared/lib/editor-drafts', async () => ({
@@ -229,6 +242,8 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       ollamaModel: 'qwen3.5',
       llmProvider: 'ollama',
       openaiModel: null,
+      clientInferenceEnabled: useRealEditor,
+      clientInferenceAdminEnabled: useRealEditor,
       inlineCompletionEnabled: true,
       inlineCompletionDelay: 'balanced',
       inlineCompletionMode: 'full',
@@ -380,6 +395,90 @@ describe('PageViewPage', () => {
   });
 
 
+
+  it('clears actual editor ghosts and aborts pending inline on a live page policy transition without losing the draft', async () => {
+    useRealEditor = true;
+    currentMockPage = { ...mockPage, id: '42', canMutateContent: true, aiPolicy: 'all', aiPolicyRevision: 0 } as typeof mockPage;
+    let pendingSignal: AbortSignal | undefined;
+    let hold = false;
+    let canInfer = true;
+    let authorizationRevision = 0;
+    const workerMessages: WorkerRequest[] = [];
+    class InlineWorker {
+      onmessage: ((event: MessageEvent<WorkerEvent>) => void) | null = null;
+      postMessage(message: WorkerRequest) {
+        workerMessages.push(message);
+        queueMicrotask(() => {
+          if (message.type === 'load') this.onmessage?.({ data: { id: message.id, type: 'ready', modelId: message.modelId } } as MessageEvent<WorkerEvent>);
+          if (message.type === 'complete' && !hold) this.onmessage?.({ data: { id: message.id, type: 'result', text: ' suggestion' } } as MessageEvent<WorkerEvent>);
+        });
+      }
+      terminate() {}
+    }
+    resetClientInferenceManager();
+    vi.stubGlobal('Worker', InlineWorker);
+    vi.mocked(apiFetch).mockImplementation(async (path, options) => {
+      if (path === '/models/client-assets') return { enabled: true, activeModelId: 'qwen2.5-0.5b-instruct-q4', models: [] } as never;
+      if (path === '/client-inference/policy') return { active: false, mode: 'allowed', allowedModels: [] } as never;
+      if (path === '/llm/inline-completion/browser-authorization') {
+        if (!canInfer) throw new ApiError(403, 'Forbidden');
+        return { authorized: true, pageId: 42, aiPolicy: 'local_only', aiPolicyRevision: authorizationRevision } as never;
+      }
+      if (path === '/llm/inline-completion') {
+        pendingSignal = options?.signal as AbortSignal;
+        if (hold) return new Promise(() => {});
+        return { completion: ' suggestion', model: 'test', provider: 'test' } as never;
+      }
+      return { linked: [], section: [], related: [] } as never;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/pages/42']}><LazyMotion features={domAnimation}>
+        <Routes><Route path='/pages/:id' element={children} /></Routes>
+      </LazyMotion></MemoryRouter></QueryClientProvider>;
+    const view = render(<PageViewPage />, { wrapper: Wrapper });
+    try {
+      fireEvent.click(screen.getByText('Edit'));
+      await waitFor(() => expect(view.container.querySelector('.tiptap')).not.toBeNull());
+      const dom = view.container.querySelector('.tiptap') as HTMLElement;
+      const editor = (dom as HTMLElement & { editor: import('@tiptap/core').Editor }).editor;
+      act(() => { editor.commands.insertContent(' unsaved draft'); editor.commands.setTextSelection(editor.state.doc.content.size - 1); });
+      await getClientInferenceManager().decideComplete({ input: { pageId: 42, prefix: 'warm' },
+        signal: new AbortController().signal, assigned: false, withoutServer: true, wordMode: false });
+      await waitFor(() => expect(getClientInferenceManager().isReady()).toBe(true));
+      const html = editor.getHTML();
+      const selection = editor.state.selection.from;
+      fireEvent.keyDown(dom, { key: '\\', altKey: true });
+      await screen.findByTestId('inline-completion-ghost');
+      canInfer = false;
+      fireEvent(window, new Event('focus'));
+      await waitFor(() => expect(screen.queryByTestId('inline-completion-ghost')).toBeNull());
+      const sends = workerMessages.filter((message) => message.type === 'complete').length;
+      vi.mocked(apiFetch).mockClear();
+      fireEvent.keyDown(dom, { key: '\\', altKey: true });
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/llm/inline-completion/browser-authorization', expect.any(Object)));
+      expect(workerMessages.filter((message) => message.type === 'complete')).toHaveLength(sends);
+      canInfer = true;
+      fireEvent.keyDown(dom, { key: '\\', altKey: true });
+      await screen.findByTestId('inline-completion-ghost');
+      authorizationRevision = 1;
+      currentMockPage = { ...currentMockPage!, aiPolicy: 'local_only', aiPolicyRevision: 1 } as typeof mockPage;
+      view.rerender(<PageViewPage />);
+      await waitFor(() => expect(screen.queryByTestId('inline-completion-ghost')).toBeNull());
+      hold = true;
+      const before = workerMessages.filter((message) => message.type === 'complete').length;
+      fireEvent.keyDown(dom, { key: '\\', altKey: true });
+      await waitFor(() => expect(workerMessages.filter((message) => message.type === 'complete')).toHaveLength(before + 1));
+      const pendingId = workerMessages.filter((message) => message.type === 'complete').at(-1)!.id;
+      currentMockPage = { ...currentMockPage!, aiPolicy: 'none', aiPolicyRevision: 2 } as typeof mockPage;
+      view.rerender(<PageViewPage />);
+      await waitFor(() => expect(workerMessages).toContainEqual(expect.objectContaining({ type: 'abort', targetId: pendingId })));
+      expect(pendingSignal).toBeUndefined();
+      expect(editor.getHTML()).toBe(html);
+      expect(editor.state.selection.from).toBe(selection);
+      expect(editor.isEditable).toBe(true);
+    } finally { view.unmount(); useRealEditor = false; resetClientInferenceManager(); vi.unstubAllGlobals(); }
+  });
 
   // ---------- fetch-failure vs. genuine 404 (P1) ----------
   // usePage used to be consumed as { data, isLoading } only, so a 500, a

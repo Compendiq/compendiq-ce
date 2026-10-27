@@ -5,18 +5,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
-import { admitPageForProvider, admitPageForUsecase } from './ai-policy-admission.js';
+import { admitPageForProvider as admitProvider, admitPageForUsecase as admitUsecase } from './ai-policy-admission.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import type { AiDecisionEvent } from '@compendiq/contracts';
+const context = () => ({ operation: newAiOperation('admission_test', { kind: 'worker', id: 'test' }), stage: 'test', attempt: 1 });
+const admitPageForProvider = (...args: [number, Parameters<typeof admitProvider>[1], string, string]) => admitProvider(...args, context());
+const admitPageForUsecase = (...args: [number, Parameters<typeof admitUsecase>[1]]) => admitUsecase(...args, context());
 import { createProvider, updateProvider, LocalityActorRequiredError } from './llm-provider-service.js';
 
 // Enterprise event sink seam only; PostgreSQL is real.
-const seams = vi.hoisted(() => ({ events: [] as Array<Record<string, unknown>> }));
+const seams = vi.hoisted(() => ({ events: [] as AiDecisionEvent[] }));
 vi.mock('../../../core/enterprise/ai-policy-hooks.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../core/enterprise/ai-policy-hooks.js')>();
   return {
     ...actual,
-    emitAiPolicyEvent: (event: Record<string, unknown>) => {
+    emitAiDecision: (event: AiDecisionEvent) => {
       seams.events.push(event);
-      actual.emitAiPolicyEvent(event as Parameters<typeof actual.emitAiPolicyEvent>[0]);
+      actual.emitAiDecision(event as Parameters<typeof actual.emitAiDecision>[0]);
     },
   };
 });
@@ -51,7 +56,7 @@ async function adminUser(): Promise<string> {
   return r.rows[0]!.id;
 }
 
-const blockedEvents = () => seams.events.filter((e) => e.type === 'blocked');
+const blockedEvents = () => seams.events.filter((e) => e.decision === 'blocked');
 
 describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
   beforeAll(async () => { await setupTestDb(); await query(migration135); await query(migration136); });
@@ -72,7 +77,7 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
     const open = await admitPageForProvider(await insertPage('all'), 'embedding', 'not-a-uuid', 'm');
     expect(open).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: 'all' });
     expect(blockedEvents().map((e) => e.reason)).toEqual(['policy_unavailable', 'policy_unavailable', 'policy_none', 'policy_unavailable']);
-    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(0);
+    expect(seams.events.filter((e) => e.decision === 'admitted')).toHaveLength(0);
   });
 
   it('a provider deleted after the resolver named it is policy_unavailable through admitPageForUsecase, with one blocked event', async () => {
@@ -92,8 +97,8 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
     seams.events.length = 0;
     const result = await admitPageForUsecase(pageId, 'summary');
     expect(result).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true });
-    expect(blockedEvents()).toEqual([expect.objectContaining({ reason: 'policy_unavailable', pageId })]);
-    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(0);
+    expect(blockedEvents()).toEqual([expect.objectContaining({ reason: 'policy_unavailable', articles: [expect.objectContaining({ pageId })] })]);
+    expect(seams.events.filter((e) => e.decision === 'admitted')).toHaveLength(0);
   });
 
   it('a provider row that exists (default external, undeclared) is admitted under `all` only', async () => {
@@ -107,7 +112,7 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
     expect(open).toMatchObject({ admitted: true, locality: 'external', configRevision: 1, providerId: provider.id });
     const local = await admitPageForProvider(await insertPage('local_only'), 'embedding', provider.id, 'm');
     expect(local).toMatchObject({ admitted: false, reason: 'provider_not_local', retryable: false });
-    expect(seams.events.map((e) => e.type)).toEqual(['admitted', 'blocked']);
+    expect(seams.events.map((e) => e.decision)).toEqual(['admitted', 'blocked']);
   });
 
   it('a read failure is policy_unavailable, not an exception and not an admission', async () => {
@@ -124,9 +129,9 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
     const result = await admitPageForProvider(pageId, 'embedding', provider.id, 'm');
     expect(result).toMatchObject({ admitted: false, reason: 'policy_unavailable', retryable: true, policy: null });
     expect(blockedEvents()).toEqual([
-      expect.objectContaining({ reason: 'policy_unavailable', policy: null, providerId: provider.id, pageId }),
+      expect.objectContaining({ reason: 'policy_unavailable', articles: [{ pageId, policy: null, policyRevision: null, contentRevision: null }], provider: expect.objectContaining({ providerId: provider.id, configRevision: null }) }),
     ]);
-    expect(seams.events.filter((e) => e.type === 'admitted')).toHaveLength(0);
+    expect(seams.events.filter((e) => e.decision === 'admitted')).toHaveLength(0);
   });
 
   it('an unassigned rerank / image_analysis / inline_completion stage is stage_disabled and emits one blocked event each', async () => {
@@ -141,7 +146,7 @@ describe.skipIf(!dbAvailable)('ai-policy admission fails closed (#280)', () => {
   it('a missing page is not_found with one blocked event', async () => {
     const result = await admitPageForProvider(2_000_000_000, 'embedding', randomUUID(), 'm');
     expect(result).toMatchObject({ admitted: false, reason: 'not_found', retryable: false });
-    expect(blockedEvents()).toEqual([expect.objectContaining({ reason: 'not_found', policy: null })]);
+    expect(blockedEvents()).toEqual([expect.objectContaining({ reason: 'not_found', articles: [{ pageId: 2_000_000_000, policy: null, policyRevision: null, contentRevision: null }] })]);
   });
 
   it('a locality declaration without an identified administrator is refused', async () => {

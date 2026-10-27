@@ -38,7 +38,7 @@ export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
     // The plugin is the package's DEFAULT export — the one object that
     // carries the required members AND the optional hooks (#280:
     // `resolveAiPolicyCreationDefault`, `aiPolicyEnforcementAvailable`,
-    // `onAiPolicyEvent`). The package also re-exports a few required members
+    // `onAiDecision`, `persistAiPolicyChange`). The package also re-exports a few required members
     // by name for convenience, but the optional hooks are only reachable on
     // the default object, so the namespace is never used as the plugin.
     const candidate = mod?.default as Partial<EnterprisePlugin> | undefined;

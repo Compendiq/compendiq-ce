@@ -91,7 +91,7 @@ describe('ai-policy contracts', () => {
   it('writes back exactly one canonical label', () => {
     expect(AI_POLICY_CANONICAL_LABELS).toEqual({ all: 'all-ai', local_only: 'local-ai-only', none: 'no-ai' });
     expect(applyCanonicalAiPolicyLabel(['x', 'no_ai', 'ai:none'], 'none')).toEqual(['x', 'no-ai']);
-    expect(applyCanonicalAiPolicyLabel(['x', 'no-ai'], 'all')).toEqual(['x']);
+    expect(applyCanonicalAiPolicyLabel(['x', 'no-ai'], 'all')).toEqual(['x', 'all-ai']);
     expect(aiPolicyLabelConflict(['no-ai', 'ai:local', 'x']).sort()).toEqual(['local_only', 'none']);
   });
 
@@ -114,6 +114,13 @@ describe('ai-policy contracts', () => {
     expect(ConversationTurnAiProvenancePageSchema.safeParse(page).success).toBe(false);
     expect(ConversationTurnAiProvenancePageSchema.safeParse({ ...page, contentRevision: 4 }).success).toBe(true);
     expect(ConversationTurnAiProvenancePageSchema.safeParse({ ...page, contentRevision: -1 }).success).toBe(false);
+  });
+
+  it.each(['constructor', '__proto__', 'hasOwnProperty', 'toString', 'valueOf'])('treats inherited key %s as ordinary input', (label) => {
+    expect(normalizeAiPolicyValue(label)).toBeNull();
+    expect(normalizeAiPolicyLabel(label)).toBeNull();
+    expect(aiPolicyLabelConflict([label])).toEqual([]);
+    expect(applyCanonicalAiPolicyLabel([label], 'none')).toEqual([label, 'no-ai']);
   });
 
   it('never accepts an unknown locality', () => {
