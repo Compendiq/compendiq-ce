@@ -59,6 +59,14 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 
 N named `openai-compatible` providers in `llm_providers` table, configured via Settings → AI Models. Each use case (chat / summary / quality / auto_tag / embedding) inherits a default or pins an explicit `provider+model` — **except `rerank` (#1104), which never inherits: unassigned means the rerank stage is disabled** (it targets a Cohere/Jina-style `/v1/rerank` endpoint the default provider cannot serve; `resolveRerankUsecase`, not `resolveUsecase`, and a dedicated `rerank-client.ts` sharing the queue/breaker infra) **and `image_analysis` (#1115, ADR-027 D3/D7), which never inherits for the same reason one rung stronger** — a text-only model answers the request with a fluent description of nothing, so the assignment is probe-gated and unassigned PAUSES the analysis worker (see the multimodal block below) **and `image_analysis` (#1615, ADR-027 D3), the third rung: the assignment IS the egress control** — no page image leaves the host until an admin has saved a provider for it, so unassigned means no new image analysis, never the default or the chat provider; the PUT probes the pair synchronously with the known-content vision probe and refuses with 422 `{reason}` (`no_provider` / `no_model` / `text_only` / `unconfirmed`) before any row is written, `resolveImageAnalysisUsecase`, and the last `true` identity is retained in `admin_settings.image_analysis_identity` across an unassign (pause, not purge). Ollama uses its `/v1` shim — not a separate protocol. Queue + per-provider circuit breakers wrap every outbound call in `openai-compatible-client.ts`.
 
+**Provider reconnect invalidation (#1794).** Redis pub/sub does not replay
+missed provider changes. On subscriber reconnect the LLM cache-bus advances
+its local version and notifies bump listeners, so the next resolver reads
+current configuration from PostgreSQL. It also clears all provider dispatchers
+and breakers: a missed deletion can concern a provider tested without ever
+entering the resolver cache. An inactive bus retains synchronous local
+invalidation on writes.
+
 **Client inference (#1418 / ADR-026) is not an ADR-021 use case.** The browser WebGPU SLM never inherits, never talks to Hugging Face, and falls through to #1417 / `/llm/improve` when it is not ready. Unassigned `inline_completion` plus the Editor setting “Use on-device suggestions when no server model is assigned” (default on) may run local ghost text only when the worker is ready. Hunspell EN/DE is a separate MIT worker, not GPU. Runbook: `docs/runbooks/client-inference.md`.
 
 The editor's availability gate checks GPU eligibility, not worker readiness:

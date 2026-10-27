@@ -1,7 +1,7 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
-import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
-import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
+import { invalidateAllProviderResources, invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
+import { getProviderCacheVersion, onProviderCacheBump, onProviderCacheReconnect, onProviderDeleted } from './cache-bus.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { logger } from '../../../core/utils/logger.js';
 import type {
@@ -42,6 +42,9 @@ onProviderCacheBump(() => {
   }
   configCache.clear();
 });
+
+// A missed deletion can concern a provider tested without ever resolving it.
+onProviderCacheReconnect(() => invalidateAllProviderResources());
 
 // Issue #267 — Definitive per-id cleanup on provider deletion. Runs even if
 // the resolver's configCache doesn't have an entry for `id` (e.g. a provider
