@@ -44,8 +44,30 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mocks.query(...args),
-  getPool: () => mocks.getPool(),
+  query: (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('SELECT content_revision::text FROM pages')) {
+      return Promise.resolve({ rows: [{ content_revision: '1' }] });
+    }
+    return mocks.query(...args);
+  },
+  getPool: () => {
+    const pool = mocks.getPool();
+    return {
+      ...pool,
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          ...client,
+          query: (...args: unknown[]) => {
+            if (typeof args[0] === 'string' && args[0].includes('SELECT content_revision::text FROM pages')) {
+              return Promise.resolve({ rows: [{ content_revision: '1' }] });
+            }
+            return client.query(...args);
+          },
+        };
+      },
+    };
+  },
 }));
 
 vi.mock('./llm-provider-resolver.js', () => ({
@@ -208,6 +230,7 @@ function makePage(id: string, numId = 1) {
     title: `Page ${id}`,
     space_key: 'DEV',
     body_html: `<p>Content for ${id}</p>`,
+    content_revision: '1',
   };
 }
 

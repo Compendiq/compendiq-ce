@@ -21,6 +21,11 @@ Source-of-truth docs:
 6. **Diagrams are source-of-truth.** When a code change affects system structure (compose, domains, ESLint boundaries, table/FK migrations, auth/sync/RAG/license flows, content pipeline), update the matching `docs/architecture/*.md` in the same PR. If unsure which diagram applies, flag it in the PR description.
 7. **Documentation research via Ref MCP.** When researching external library documentation, APIs, framework behavior, or technical specifications, use the `ref` MCP tools (`ref_search_documentation`, `ref_read_url`) whenever the tool is available.
 
+Embedding publication must carry the `content_revision` of the exact page
+snapshot supplied to the embedder and check it under a page-row lock before
+replacing chunks. A stale result rolls back without clearing the new page's
+dirty flag. Keep the separate image-analysis revision and schema-epoch fences.
+
 ## Build
 
 ```bash
