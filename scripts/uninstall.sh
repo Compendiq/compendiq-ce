@@ -101,6 +101,11 @@ main() {
   parse_args "$@"
 
   INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
+  # Keep validation, Compose and removal anchored to the invocation directory.
+  case "$INSTALL_DIR" in
+    /*) ;;
+    *) INSTALL_DIR="$(pwd -P)/${INSTALL_DIR}" ;;
+  esac
 
   printf '\n%b%bCompendiq Uninstaller%b\n\n' "$CYAN" "$BOLD" "$RESET"
 

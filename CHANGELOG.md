@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installation target safety (#1781):** resolve relative installer and
+  uninstaller directories before changing directory, so generated files,
+  Compose operations and removal refer to the invocation-relative target.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
