@@ -66,6 +66,9 @@ current configuration from PostgreSQL. It also clears all provider dispatchers
 and breakers: a missed deletion can concern a provider tested without ever
 entering the resolver cache. An inactive bus retains synchronous local
 invalidation on writes.
+Provider queries capture that version before reading and repeat the SELECT if
+it changed in flight, including empty results and enterprise overrides. An old
+Postgres snapshot must never be cached under the post-reconnect version.
 
 **Client inference (#1418 / ADR-026) is not an ADR-021 use case.** The browser WebGPU SLM never inherits, never talks to Hugging Face, and falls through to #1417 / `/llm/improve` when it is not ready. Unassigned `inline_completion` plus the Editor setting “Use on-device suggestions when no server model is assigned” (default on) may run local ghost text only when the worker is ready. Hunspell EN/DE is a separate MIT worker, not GPU. Runbook: `docs/runbooks/client-inference.md`.
 
