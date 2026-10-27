@@ -85,6 +85,38 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     return pageId;
   }
 
+  it('finds standalone sources by internal ID with the full-scan visibility scope (#1798)', async () => {
+    const vec = fakeVec(37);
+    const standalone = await seedPage({ confluenceId: null, source: 'standalone', spaceKey: null, title: 'Shared source', createdBy: USER_B, vec });
+    const historical = await seedPage({ confluenceId: 'old-standalone-id', source: 'standalone', spaceKey: null, title: 'Own source', visibility: 'private', createdBy: USER_A, vec });
+    const confluence = await seedPage({ confluenceId: 'conf-source', source: 'confluence', spaceKey: 'TEAMA', title: 'Confluence source', vec });
+    const hidden = await seedPage({ confluenceId: null, source: 'standalone', spaceKey: null, title: 'Hidden private', visibility: 'private', createdBy: USER_B, vec });
+    const secret = await seedPage({ confluenceId: 'secret-source', source: 'confluence', spaceKey: 'SECRET', title: 'Hidden space', vec });
+    const pairs = await scanAllDuplicates(USER_A, { maxPairsPerPage: 10 });
+    const visible = [standalone, historical, confluence];
+    for (const [id, key] of [[standalone, String(standalone)], [historical, String(historical)], [confluence, 'conf-source']] as const) {
+      const neighbors = (await findDuplicates(USER_A, key)).map((row) => row.id).sort((a, b) => a - b);
+      const scanNeighbors = pairs.flatMap(({ page1, page2 }) => page1.id === id ? [page2.id] : page2.id === id ? [page1.id] : []).sort((a, b) => a - b);
+      expect(neighbors).toEqual(visible.filter((other) => other !== id).sort((a, b) => a - b));
+      expect(neighbors).toEqual(scanNeighbors);
+    }
+    expect(await findDuplicates(USER_A, String(hidden))).toEqual([]);
+    expect(await findDuplicates(USER_A, 'secret-source')).toEqual([]);
+    expect(await findDuplicates(USER_A, 'old-standalone-id')).toEqual([]);
+    expect(pairs.flatMap(({ page1, page2 }) => [page1.id, page2.id])).not.toContain(hidden);
+    expect(pairs.flatMap(({ page1, page2 }) => [page1.id, page2.id])).not.toContain(secret);
+  });
+
+  it('fails closed only for collisions between readable source identifiers', async () => {
+    const vec = fakeVec(41);
+    const local = await seedPage({ confluenceId: null, source: 'standalone', spaceKey: null, title: 'Local', createdBy: USER_A, vec });
+    const collision = await seedPage({ confluenceId: String(local), source: 'confluence', spaceKey: 'SECRET', title: 'Hidden collision', vec });
+    const neighbor = await seedPage({ confluenceId: 'neighbor', source: 'confluence', spaceKey: 'TEAMA', title: 'Neighbor', vec });
+    expect((await findDuplicates(USER_A, String(local))).map((r) => r.id)).toContain(neighbor);
+    await query(`UPDATE pages SET space_key = 'TEAMA' WHERE id = $1`, [collision]);
+    expect(await findDuplicates(USER_A, String(local))).toEqual([]);
+  });
+
   it('excludes near-duplicates from inaccessible spaces and others-private standalone pages', async () => {
     const vec = fakeVec(7);
     await seedPage({ confluenceId: 'src-1', source: 'confluence', spaceKey: 'TEAMA', title: 'Deploy guide', vec });

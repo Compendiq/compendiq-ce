@@ -886,6 +886,13 @@ behind page ACEs are fenced in the database (migration 129 queues the pages;
 the page publication worker bumps the `pages` generation), so sync, relocate
 and the EE bulk route need no cache code of their own.
 
+Per-page duplicate lookup uses source-aware identity: a standalone page's
+internal ID, or a Confluence page's content ID, never a historical standalone
+Confluence ID. Resolve the source within `visiblePagesPredicate`, just like
+the full scan and candidate set. Missing, inaccessible, deleted, and
+caller-visible ambiguous identities return the same empty result; an
+inaccessible collision must not alter the answer.
+
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a

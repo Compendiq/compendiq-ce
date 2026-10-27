@@ -49,6 +49,14 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+`GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
+or a Confluence page's content ID. Both the source and candidates use the
+caller's page visibility, including restrictions; inaccessible, deleted,
+missing, or visibly ambiguous sources return an empty `duplicates` array.
+Standalone rows' historical Confluence IDs are not source identifiers.
+`GET /api/admin/duplicates` scans the same caller-visible corpus, but its
+pair cap and average-to-average scoring differ from the per-page candidate scan.
+
 ## Example Requests
 
 ### Health Check
