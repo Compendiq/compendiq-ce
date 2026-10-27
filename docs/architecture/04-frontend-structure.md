@@ -66,6 +66,30 @@ flowchart TB
     class stores,zAuth,zTheme,zUI,zAV,zDock,zCmd,zKb st
 ```
 
+## Stream completion and partial output (#1801)
+
+```mermaid
+flowchart LR
+    wire["streamSSE<br/>parsed frames until EOF"]
+    ai["AiContext<br/>chat and generation"]
+    edit["useImproveStream<br/>editor preview"]
+    workers["WorkersTab<br/>embedding progress"]
+    done["LLM done: true<br/>continue for later metadata"]
+    complete["commit / enable application"]
+    incomplete["EOF without done<br/>retain partial + error"]
+    embed["type: complete<br/>required for success"]
+    wire --> ai --> done --> complete
+    wire --> edit --> done
+    ai --> incomplete
+    edit --> incomplete
+    wire --> workers --> embed
+```
+
+An LLM error or incomplete stream keeps any partial output visible without
+running success callbacks. The editor preview keeps that text selectable but
+disables Replace and Insert. Cancellation is separate. A cached LLM response
+can finish with `done: true` and no `final` frame; later metadata still matters.
+
 ## Authenticated inset shell
 
 `AppLayout` paints a flat viewport **chassis** (`--app-chassis`, inset on

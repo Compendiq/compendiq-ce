@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Incomplete AI streams (#1801):** retain interrupted text with an error
+  instead of treating EOF as completion or offering it for application. Cached
+  completions and metadata following a done event remain supported.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

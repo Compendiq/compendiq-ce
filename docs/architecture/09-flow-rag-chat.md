@@ -127,6 +127,11 @@ sequenceDiagram
         BE-->>FE: SSE { done:true, conversationId, sources }
         BE->>CACHE: release with token<br/>(atomic compare-and-delete)
     end
+    alt EOF after done
+        Note over FE: Process later metadata before success
+    else EOF before done
+        Note over FE: Keep partial output and show interruption, no success callback
+    end
 ```
 
 ### Permission-check checkpoint

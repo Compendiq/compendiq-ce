@@ -11,6 +11,14 @@ Source-of-truth docs:
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
 - Enterprise design → `@docs/ENTERPRISE-ARCHITECTURE.md`
 
+AI SSE consumers must require `done: true` before success or application, but
+continue reading after that marker for post-processing and final metadata.
+Cached responses may carry content and `done` without a separate `final`.
+EOF without `done` retains partial output as an error, not a completed answer;
+explicit errors retain partial text too. Cancellation remains separate. The
+editor preview disables Replace and Insert until completion. Embedding streams
+use their own `type: 'complete'` contract, not the LLM marker.
+
 ## Mandatory Rules
 
 1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.
