@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fast-uri` override to 3.1.9 and refresh its locked version.
 
 ### Changed
+- **MCP `search_web` cache identity (#1787):** include the effective bounded
+  result width with the sanitized query, so requests at different widths do
+  not reuse a truncated result set.
 
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
   Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
