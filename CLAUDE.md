@@ -1382,6 +1382,7 @@ Release images: the `v*` tag push runs `.github/workflows/docker-build.yml`, whi
 - `pino-pretty` is a devDependency (excluded from production images).
 - Pin majors for framework deps (React 19, Fastify 5, TipTap v3).
 - **Root override `"vite": "^8.0.16"`** unifies the whole tree on a single vite 8 (frontend + vitest + `@tailwindcss/vite` must not split versions). The app runs **vite 8 with `@vitejs/plugin-react` 6.x** — these move together: vite 8's `rolldown` transform contract breaks plugin-react 5.x's native react-refresh wrapper in the dev server (`Missing field moduleType`, #800), so never downgrade one without the other. Rolldown also dropped the **object** form of `build.rollupOptions.output.manualChunks` — it must be the **function** form (see `frontend/vite.config.ts`).
+- **Happy DOM 21 override (#1708):** `@tiptap/html` 3.30.5 still peers on `^20.8.9`. Keep root `"happy-dom": "^21.0.4"` until TipTap accepts the patched major, or npm retains vulnerable 20.x beside backend's 21.x. Verify `collab-schema-parity.test.ts` and the production HTML/Yjs roundtrip when changing it; do not re-enable CSS or iframe loading.
 
 ## Code Quality
 
