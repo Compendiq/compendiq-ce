@@ -5,6 +5,19 @@
  * In EE mode: the enterprise plugin calls setLlmAuditHook to register a writer.
  */
 
+import { createHash } from 'node:crypto';
+import type { ChatContentPart } from './prompts.js';
+
+/** Hash the provider prompt as ordered JSON tuples, including multimodal parts. */
+export function fingerprintPrompt(messages: readonly { role: string; content: string | ChatContentPart[] }[]): string {
+  const framed = messages.map(({ role, content }) => [
+    role,
+    typeof content === 'string' ? content : content.map((part) =>
+      part.type === 'text' ? ['text', part.text] : ['image_url', part.image_url.url]),
+  ]);
+  return createHash('sha256').update(JSON.stringify(framed)).digest('hex');
+}
+
 export interface LlmAuditEntry {
   userId: string | null;
   action: 'chat' | 'ask' | 'improve' | 'generate' | 'summarize' | 'embed' | 'quality' | 'tag' | 'diagram';
@@ -13,11 +26,11 @@ export interface LlmAuditEntry {
   inputTokens: number;
   outputTokens: number;
   inputMessages: { role: string; contentLength: number }[];
+  promptHash: string;
   retrievedChunkIds: string[];
   durationMs: number;
   status: 'success' | 'error';
   errorMessage?: string;
-  inputText?: string;
   outputText?: string;
   /**
    * `true` when the prompt-injection heuristic flagged the input before the

@@ -36,7 +36,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { AskRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { emitLlmAudit, estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import {
@@ -1139,6 +1139,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
               role: m.role,
               contentLength: contentToText(m.content).length,
             })),
+            promptHash: fingerprintPrompt(messages),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'success',
@@ -1172,6 +1173,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
               role: m.role,
               contentLength: contentToText(m.content).length,
             })),
+            promptHash: fingerprintPrompt(messages),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'error',

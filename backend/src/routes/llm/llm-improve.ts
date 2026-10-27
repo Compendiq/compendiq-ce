@@ -11,7 +11,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { ImproveRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { emitLlmAudit, estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   assembleContextIfNeeded,
@@ -286,6 +286,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+        promptHash: fingerprintPrompt(improveMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
@@ -301,6 +302,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: 0,
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+        promptHash: fingerprintPrompt(improveMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'error',

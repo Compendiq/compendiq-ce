@@ -6,7 +6,7 @@ import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache
 import { AnalyzeQualityRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   assembleContextIfNeeded,
   checkCacheWithLock,
@@ -84,6 +84,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
             userId, action: 'quality', model: resolvedModel, provider: qualityConfig.providerId,
             inputTokens: estimateTokens(qualityMessages.map((m) => m.content).join('')),
             inputMessages: qualityMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            promptHash: fingerprintPrompt(qualityMessages),
             retrievedChunkIds: [],
           },
         });

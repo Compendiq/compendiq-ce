@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **LLM audit prompt identity (#1790):** fingerprint the ordered provider
+  messages and structured content rather than role/length summaries, without
+  passing prompt plaintext to audit hooks or persisting it in CE.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
