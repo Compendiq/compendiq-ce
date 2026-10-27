@@ -248,11 +248,11 @@ content-revision publication and its hierarchy/lifecycle fences. Direct policy
 updates no longer emit a second post-commit notification. Interactive direct
 relaxation stores `all-ai`.
 
-The legacy `emitAiPolicyChanges` export remains functional for unmigrated
-creation/recovery callers; it is not an empty shim. Those callers still need
-held-client migration and removal before final epic acceptance. In particular,
-this partial cutover does not establish complete producer coverage or rollout
-readiness. Restrictive activation remains closed.
+The legacy `emitAiPolicyChanges` export has been removed. Creation/recovery
+callers that change policy use held-client typed persistence rather than a
+post-commit observer. This does not establish complete producer coverage or
+rollout readiness: retained legacy records and decision-delivery gaps remain
+explicitly bounded by the report. Restrictive activation remains closed.
 
 The EE hook is wired into the plugin only; CE routes and ingestion keep
 calling `resolveCreationAiPolicy`. Losing the license makes the hook answer

@@ -13,8 +13,8 @@ flowchart TD
     held --> events
     held -->|failure| rollback["caller rolls back mutation and evidence"]
     held --> commit["caller commits rows and evidence together"]
-    ordinary["CE producer follow-on: ordinary mutations"] -.-> held
-    legacy["Unmigrated onAiPolicyEvent producers"] --> old["ai_policy_enforcement_events<br/>legacy unknown operation/locality coverage"]
+    ordinary["CE ordinary policy/label mutations"] --> transaction
+    legacy["Retained legacy evidence"] --> old["ai_policy_enforcement_events<br/>legacy unknown operation/locality coverage"]
     events --> report["historical operations and stage attempts<br/>full association JSON in CSV"]
     old --> report
     pages["current nondeleted pages"] --> snapshot["generation-time policy snapshot"]
@@ -29,9 +29,13 @@ content, endpoint or usage fields. JSON arrays preserve every article associatio
 including policy/content revisions. Captured locality is never reconstructed from
 current settings. Exact event replay is idempotent; reusing an ID for different
 evidence fails. The held-client sink never commits, opens another transaction,
-uses the pool or swallows failures. Cascade uses it now without duplicate legacy
-emission. Ordinary CE producer invocation is a separate #280 follow-on, not
-certified by the EE sink tests. Legacy producers remain explicitly legacy.
+uses the pool or swallows failures. The shared `applyAiPolicyOnClient` primitive
+awaits this sink once for the complete change set. Ordinary mutations and EE
+cascades use that same producer without duplicate legacy emission; EE supplies
+its operation/cascade identity but does not persist a second event. Native
+signed-license HTTP tests check the aggregate and sink-failure rollback. Retained
+legacy evidence remains explicitly legacy. Cascade previews refuse unsafe bigint
+revision tokens rather than rounding them into an unusable compare-and-swap set.
 
 Decision delivery is best effort with surfaced observer warnings; failed delivery
 never permits a denied dispatch. No automatic retention duration is configured
