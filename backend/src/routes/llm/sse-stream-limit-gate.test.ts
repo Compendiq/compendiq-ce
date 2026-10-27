@@ -142,10 +142,10 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../domains/llm/services/llm-audit-hook.js', () => ({
-  emitLlmAudit: vi.fn(),
-  estimateTokens: vi.fn().mockReturnValue(10),
-}));
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<Record<string, unknown>>();
+  return { ...actual, emitLlmAudit: vi.fn() };
+});
 
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),

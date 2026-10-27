@@ -111,6 +111,13 @@ never by name or size. Only history-free
 asks write the `/llm/ask` cache; a follow-up is grounded in the asker's own
 thread, which the key does not carry.
 
+LLM inference audit hooks receive message role/length summaries and
+`promptHash`, never prompt plaintext. Producers hash the actual provider
+messages as ordered JSON tuples of role and content, retaining structured
+text/image parts and their order; the CE writer persists that digest unchanged.
+Hashes from before #1790 used length summaries and are not comparable to new
+fingerprints. Cache replay is not an inference audit event.
+
 **Removed (do not revive):** `LLM_PROVIDER` was the legacy two-slot toggle and is gone — replaced wholesale by the `llm_providers` table + per-use-case assignments.
 
 ## Security (Mandatory)
