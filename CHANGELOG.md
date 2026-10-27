@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Sub-page AI context now follows standalone pages by internal ID even when
+  they retain a historical Confluence ID, including at recursive levels.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

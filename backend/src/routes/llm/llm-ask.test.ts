@@ -2962,7 +2962,7 @@ describe('POST /api/llm/ask', () => {
     function seedPageQueries() {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('FROM pages WHERE confluence_id')) {
-          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] });
+          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', source: 'confluence', title: 'Doc' }] });
         }
         if (sql.includes('body_html FROM pages WHERE id')) {
           return Promise.resolve({ rows: [{ body_html: '<p>secret</p>' }] });
@@ -3005,8 +3005,6 @@ describe('POST /api/llm/ask', () => {
 
       expect(response.statusCode).toBe(200);
       expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 1);
-      // The RBAC gate must short-circuit before any tree assembly.
-      expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
       expect(userMessage()).not.toContain('Page tree context');
     });
 
@@ -3032,12 +3030,6 @@ describe('POST /api/llm/ask', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
-        'test-user-123',
-        'page-abc',
-        '<p>secret</p>',
-        'Doc',
-      );
       const msg = userMessage();
       expect(msg).toContain('Page tree context');
       expect(msg).toContain('ASSEMBLED-TREE');

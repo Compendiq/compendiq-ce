@@ -59,8 +59,8 @@ describe('subpage-context', () => {
       // First call: children of parent
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: '<p>Content 1</p>' },
-          { confluence_id: 'child-2', title: 'Child 2', body_html: '<p>Content 2</p>' },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: '<p>Content 1</p>' },
+          { id: 2, source: 'confluence', confluence_id: 'child-2', title: 'Child 2', body_html: '<p>Content 2</p>' },
         ],
       });
       // Second call: children of child-1
@@ -89,13 +89,13 @@ describe('subpage-context', () => {
       // Children of parent
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: '<p>C1</p>' },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: '<p>C1</p>' },
         ],
       });
       // Children of child-1 (depth 2)
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'grandchild-1', title: 'Grandchild 1', body_html: '<p>GC1</p>' },
+          { id: 2, source: 'confluence', confluence_id: 'grandchild-1', title: 'Grandchild 1', body_html: '<p>GC1</p>' },
         ],
       });
       // Children of grandchild-1 (depth 3)
@@ -119,7 +119,7 @@ describe('subpage-context', () => {
     it('should coalesce null body_html to empty string', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: null },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: null },
         ],
       });
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -135,7 +135,7 @@ describe('subpage-context', () => {
       for (let i = 1; i <= 5; i++) {
         mockQuery.mockResolvedValueOnce({
           rows: [
-            { confluence_id: `level-${i}`, title: `Level ${i}`, body_html: `<p>L${i}</p>` },
+            { id: i, source: 'confluence', confluence_id: `level-${i}`, title: `Level ${i}`, body_html: `<p>L${i}</p>` },
           ],
         });
       }
@@ -154,7 +154,7 @@ describe('subpage-context', () => {
       // Sub-pages query
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Getting Started', body_html: '<p>Start here</p>' },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Getting Started', body_html: '<p>Start here</p>' },
         ],
       });
       // No children of child-1
@@ -197,8 +197,8 @@ describe('subpage-context', () => {
       // Sub-pages with content that will exceed maxChars
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: longContent },
-          { confluence_id: 'child-2', title: 'Child 2', body_html: longContent },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: longContent },
+          { id: 2, source: 'confluence', confluence_id: 'child-2', title: 'Child 2', body_html: longContent },
         ],
       });
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -225,7 +225,7 @@ describe('subpage-context', () => {
       // includeSubPages on a layout page is guaranteed unrecoverable.
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
         ],
       });
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -252,7 +252,7 @@ describe('subpage-context', () => {
     it('keeps every conversion token-free by default (no opts)', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
+          { id: 1, source: 'confluence', confluence_id: 'child-1', title: 'Child 1', body_html: '<div class="confluence-layout"><p>Sub</p></div>' },
         ],
       });
       mockQuery.mockResolvedValueOnce({ rows: [] });

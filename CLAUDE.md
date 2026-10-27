@@ -886,6 +886,13 @@ behind page ACEs are fenced in the database (migration 129 queues the pages;
 the page publication worker bumps the `pages` generation), so sync, relocate
 and the EE bulk route need no cache code of their own.
 
+Sub-page LLM context uses the parent's source at the initial lookup and every
+recursive step: Confluence ID for a Confluence page, internal ID as text for
+a standalone page, even if that standalone row retains a historical
+Confluence ID. Do not add that historical ID as an alternate traversal key.
+The caller's visibility filter and the existing breadth, depth and character
+limits still apply.
+
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a

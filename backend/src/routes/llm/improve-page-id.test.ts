@@ -171,8 +171,8 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
       if (sql.includes('INSERT INTO llm_improvements')) {
         return Promise.resolve({ rows: [{ id: 'improvement-1' }] });
       }
-      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
-        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
+      if (sql.includes('SELECT id, confluence_id, title, source FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', source: 'confluence', title: 'T' }] });
       }
       // user_settings for custom prompt lookup
       if (sql.includes('SELECT custom_prompts FROM user_settings')) {
@@ -217,10 +217,10 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
   it('resolves a NUMERIC pageId as the internal pages.id first (what the frontend routes pass)', async () => {
     const selects: Array<{ sql: string; params: unknown[] }> = [];
     mockQuery.mockImplementation((sql: string, params: unknown[]) => {
-      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+      if (sql.includes('SELECT id, confluence_id, title, source FROM pages')) {
         selects.push({ sql, params });
         if (sql.includes('WHERE id = $1')) {
-          return Promise.resolve({ rows: [{ id: 11, confluence_id: '917505', title: 'Layout page' }] });
+          return Promise.resolve({ rows: [{ id: 11, confluence_id: '917505', source: 'confluence', title: 'Layout page' }] });
         }
         return Promise.resolve({ rows: [] });
       }
@@ -268,8 +268,8 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
       if (sql.includes('INSERT INTO llm_improvements')) {
         return Promise.resolve({ rows: [{ id: 'improvement-1' }] });
       }
-      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
-        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
+      if (sql.includes('SELECT id, confluence_id, title, source FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', source: 'confluence', title: 'T' }] });
       }
       if (sql.includes('SELECT custom_prompts FROM user_settings')) {
         return Promise.resolve({ rows: [] });
