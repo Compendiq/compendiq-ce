@@ -59,6 +59,7 @@ import {
   confluenceToHtml,
   htmlToText,
 } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import {
   listCachedAttachments,
   readCachedAttachmentFile,
@@ -382,6 +383,7 @@ export function rewriteAttachmentRefs(
 
   for (const img of doc.querySelectorAll('img[src]')) rewriteOne(img, 'src');
   for (const anchor of doc.querySelectorAll('a[href]')) rewriteOne(anchor, 'href');
+  for (const diagram of doc.querySelectorAll('.confluence-drawio[data-drawio-source]')) rewriteOne(diagram, 'data-drawio-source');
 
   return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
@@ -1341,7 +1343,9 @@ async function publishToConfluenceOnClient(
     }
   }, client);
 
-  const finalHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  const finalHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? ''), confluenceId,
+  )).html;
   const finalText = htmlToText(finalHtml);
   await client.query(
     `UPDATE pages SET
@@ -2096,7 +2100,9 @@ async function verifyLocalToConfluencePublication(
     [prep.id],
   );
   const current = row.rows[0];
-  const expectedHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  const expectedHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? ''), confluenceId,
+  )).html;
   if (
     !current ||
     current.source !== 'confluence' ||

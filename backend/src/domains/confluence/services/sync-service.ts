@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { query, getPool } from '../../../core/db/postgres.js';
 import {
   ConfluenceClient,
@@ -40,6 +41,7 @@ import {
   lockPageWrites,
 } from '../../../core/services/page-write-admission.js';
 import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+
 
 interface SyncStatus {
   userId: string;
@@ -657,9 +659,11 @@ async function syncPage(
   }
   const bodyStorage = page.body?.storage?.value ?? '';
 
-  // Convert to HTML
-  const bodyHtml = confluenceToHtml(bodyStorage, page.id, spaceKey);
-  const bodyText = htmlToText(bodyHtml);
+  // Resolve previews against cached bytes rather than the attachment name.
+  const convertedHtml = confluenceToHtml(bodyStorage, page.id, spaceKey);
+  let preview = await materializeDrawioPreviews(convertedHtml, page.id);
+  let bodyHtml = preview.html;
+  let bodyText = htmlToText(bodyHtml);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
@@ -715,12 +719,12 @@ async function syncPage(
 
   if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
     const existingRow = existing.rows[0]!;
-    const htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
+    let htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
 
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
     // Compare expected filenames (from XHTML) against files on disk, per-file.
-    const missing = await getMissingAttachments(page.id, bodyStorage, spaceKey);
+    const missing = [...new Set([...await getMissingAttachments(page.id, bodyStorage, spaceKey), ...preview.missing])];
     if (missing.length === 0 && !htmlChanged) {
       // Content + attachments both fully up to date. Still re-evaluate the
       // Confluence-side view restrictions: they can change independently of
@@ -751,11 +755,16 @@ async function syncPage(
         const { results: attachments } = await client.getPageAttachments(page.id);
         await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
         await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+        preview = await materializeDrawioPreviews(convertedHtml, page.id);
+        bodyHtml = preview.html;
+        bodyText = htmlToText(bodyHtml);
+        htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
 
         // Track which are still missing
-        const stillMissing = new Set(
-          await getMissingAttachments(page.id, bodyStorage, spaceKey),
-        );
+        const stillMissing = new Set([
+          ...await getMissingAttachments(page.id, bodyStorage, spaceKey),
+          ...preview.missing,
+        ]);
         for (const f of retriable) {
           if (stillMissing.has(f)) {
             await recordAttachmentFailure(redis, page.id, f);
@@ -808,6 +817,9 @@ async function syncPage(
   const { results: attachments } = await client.getPageAttachments(page.id);
   await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
   await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+  preview = await materializeDrawioPreviews(convertedHtml, page.id);
+  bodyHtml = preview.html;
+  bodyText = htmlToText(bodyHtml);
 
   // Save current version snapshot before updating (for version history / semantic diff)
   if (existing.rows.length > 0) {

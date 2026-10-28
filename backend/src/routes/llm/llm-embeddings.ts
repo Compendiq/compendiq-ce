@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings, getAdminChunkSettings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
@@ -214,7 +215,9 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
             }
 
             const resolvedSpaceKey = cachedRow.rows[0].space_key ?? '';
-            const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
+            const bodyHtml = (await materializeDrawioPreviews(
+              confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey), page.id,
+            )).html;
             const resolvedBodyHtml = cachedRow.rows[0].body_html ?? bodyHtml;
 
             // Same admin chunk options the dirty-page worker passes — without

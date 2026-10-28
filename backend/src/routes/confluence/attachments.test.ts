@@ -341,6 +341,17 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     expect(denied.statusCode).toBe(404);
   });
 
+  it('does not serve legacy XML cached under a PNG name', async () => {
+    const page = await seedPage();
+    const directory = join(attachmentRoot, page.remoteId);
+    const xml = '<mxfile><diagram>editable</diagram></mxfile>';
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'diagram.png'), xml);
+    const response = await app.inject({ method: 'GET', url: `/api/attachments/${page.remoteId}/diagram.png` });
+    expect(response.statusCode).toBe(404);
+    await expect(readFile(join(directory, 'diagram.png'), 'utf8')).resolves.toBe(xml);
+  });
+
   it('lists real cache entries and reports filesystem failures instead of inventing emptiness', async () => {
     const page = await seedPage();
     const directory = join(attachmentRoot, page.remoteId);

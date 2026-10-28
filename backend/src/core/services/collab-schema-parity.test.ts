@@ -217,6 +217,11 @@ const GOLDEN: Array<{ name: string; html: string; expectTypes: string[] }> = [
     expectTypes: ['drawioDiagram'],
   },
   {
+    name: 'draw.io source only',
+    html: '<div class="confluence-drawio" data-diagram-name="arch" data-drawio-source="/api/attachments/1/arch.drawio"><span>Draw.io preview unavailable: arch</span></div>',
+    expectTypes: ['drawioDiagram'],
+  },
+  {
     name: 'comment',
     html: '<p><mark data-comment-id="42">annotated</mark></p>',
     expectTypes: ['comment'],
@@ -279,6 +284,11 @@ describe('collab schema parity (#1445)', () => {
       if (fixture.name === 'draw.io') {
         expect(html2).toContain('confluence-drawio');
         expect(html2).not.toContain('data:image/png');
+      }
+      if (fixture.name === 'draw.io source only') {
+        expect(html2).toContain('data-drawio-source="/api/attachments/1/arch.drawio"');
+        expect(html2).toContain('Draw.io preview unavailable: arch');
+        expect(html2).not.toContain('<img');
       }
       if (fixture.name === 'native-panel') {
         expect(html2).toContain('data-macro-name="panel"');

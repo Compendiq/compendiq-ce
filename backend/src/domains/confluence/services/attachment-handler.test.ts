@@ -4,7 +4,6 @@ import path from 'path';
 import { request } from 'undici';
 import {
   syncImageAttachments,
-  syncDrawioAttachments,
   fetchAndCacheAttachment,
   fetchAndCachePageImage,
   readAttachment,
@@ -298,7 +297,7 @@ describe('attachment-handler', () => {
 
   describe('fetchAndCacheAttachment', () => {
     it('fetches attachment from Confluence, caches it, and returns the buffer', async () => {
-      const imageData = Buffer.from('confluence-image-data');
+      const imageData = Buffer.from('iVBORw0KGgo=', 'base64');
       const client = createMockClient();
       (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
         results: makeAttachments([
@@ -454,263 +453,6 @@ describe('attachment-handler', () => {
     });
   });
 
-  describe('syncDrawioAttachments', () => {
-    it('downloads draw.io diagram PNGs using pre-fetched attachments', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">topology</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'topology.png', download: '/download/topology.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['topology.png']);
-      // Must NOT call getPageAttachments — uses pre-fetched data
-      expect(client.getPageAttachments).not.toHaveBeenCalled();
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns empty array when no drawio macros', async () => {
-      const bodyStorage = '<p>No diagrams</p>';
-      const client = createMockClient();
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, []);
-
-      expect(result).toEqual([]);
-    });
-
-    it('extracts diagramName when preceded by other parameters (real Confluence DC format)', async () => {
-      // Real Confluence DC 9.2 draw.io macros often include baseUrl, revision, and other params before diagramName
-      const bodyStorage = `<ac:structured-macro ac:name="drawio" ac:schema-version="1" ac:macro-id="abc123">
-  <ac:parameter ac:name="baseUrl">https://confluence.example.com</ac:parameter>
-  <ac:parameter ac:name="diagramName">network-topology</ac:parameter>
-  <ac:parameter ac:name="revision">3</ac:parameter>
-  <ac:parameter ac:name="simple">0</ac:parameter>
-</ac:structured-macro>`;
-
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'network-topology.png', download: '/download/network-topology.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['network-topology.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
-    });
-
-    it('matches attachment by name without .png extension as fallback, cached as .png', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch-diagram</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      // Some draw.io versions store the attachment without .png extension
-      const attachments = makeAttachments([
-        { title: 'arch-diagram', download: '/download/arch-diagram' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      // Should cache as arch-diagram.png so the URL matches
-      expect(result).toEqual(['arch-diagram.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/arch-diagram');
-    });
-
-    it('handles multiple draw.io diagrams on one page', async () => {
-      const bodyStorage = `
-<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">diagram-a</ac:parameter></ac:structured-macro>
-<p>Some text between diagrams</p>
-<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">diagram-b</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'diagram-a.png', download: '/download/diagram-a.png' },
-        { title: 'diagram-b.png', download: '/download/diagram-b.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['diagram-a.png', 'diagram-b.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
-    });
-
-    it('skips diagrams whose attachments are not found', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">missing-diagram</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      // No matching attachment in the list
-      const attachments = makeAttachments([
-        { title: 'unrelated.png', download: '/download/unrelated.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual([]);
-      expect(client.downloadAttachment).not.toHaveBeenCalled();
-    });
-
-    it('handles download errors gracefully', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">broken</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Download failed'));
-      const attachments = makeAttachments([
-        { title: 'broken.png', download: '/download/broken.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual([]);
-    });
-
-    it('falls back to .xml attachment when no PNG export exists, cached as .png', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">network</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      // Only the XML source file is available — no PNG export
-      const attachments = makeAttachments([
-        { title: 'network.xml', download: '/download/network.xml' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      // Should cache as network.png so the URL (/api/attachments/{pageId}/network.png) matches
-      expect(result).toEqual(['network.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/network.xml');
-    });
-
-    it('prefers PNG attachment over XML when both exist', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>`;
-
-      const client = createMockClient();
-      // Both PNG and XML exist — PNG should win
-      const attachments = makeAttachments([
-        { title: 'flow.png', download: '/download/flow.png' },
-        { title: 'flow.xml', download: '/download/flow.xml' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['flow.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/flow.png');
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
-    });
-
-    it('skips download when draw.io diagram is already cached (idempotent)', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">cached-diagram</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'cached-diagram.png', download: '/download/cached-diagram.png' },
-      ]);
-
-      // Simulate file already cached: fs.access resolves for this test
-      (fs.access as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['cached-diagram.png']);
-      // No download should have occurred
-      expect(client.downloadAttachment).not.toHaveBeenCalled();
-      expect(fs.writeFile).not.toHaveBeenCalled();
-    });
-
-    it('downloads draw.io PNG when not yet cached', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">new-diagram</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'new-diagram.png', download: '/download/new-diagram.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['new-diagram.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledOnce();
-      expect(fs.writeFile).toHaveBeenCalledOnce();
-    });
-
-    // ─── #302 Gap 2: .drawio XML sibling DOWNLOAD branch ─────────────
-    it('downloads BOTH the .png and the .drawio XML sibling when present (#302)', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">roundtrip</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'roundtrip.png', download: '/download/roundtrip.png' },
-        { title: 'roundtrip.drawio', download: '/download/roundtrip.drawio' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      // Both halves must end up on disk so Compendiq's draw.io viewer can re-open
-      // the diagram for editing (without re-fetching from Confluence).
-      expect(result).toEqual(['roundtrip.png', 'roundtrip.drawio']);
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/roundtrip.png');
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/roundtrip.drawio');
-      // Both files written with their OWN filenames — .drawio stays as .drawio,
-      // not renamed to .png (verifies the sibling is stored alongside, not instead).
-      const writeCalls = vi.mocked(fs.writeFile).mock.calls.map((call) => call[0] as string);
-      expect(writeCalls.some((p) => p.endsWith('roundtrip.png'))).toBe(true);
-      expect(writeCalls.some((p) => p.endsWith('roundtrip.drawio'))).toBe(true);
-    });
-
-    it('falls back to PNG-only when no .drawio sibling exists (back-compat)', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">legacy</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      // Older Confluence pages uploaded only the PNG — no .drawio sibling.
-      const attachments = makeAttachments([
-        { title: 'legacy.png', download: '/download/legacy.png' },
-      ]);
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['legacy.png']);
-      // Only the PNG is fetched — the .drawio branch is skipped silently
-      // because `find(a.title === 'legacy.drawio')` returns undefined.
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/legacy.png');
-    });
-
-    it('skips .drawio download when the sibling is already cached (idempotent)', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">cached</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'cached.png', download: '/download/cached.png' },
-        { title: 'cached.drawio', download: '/download/cached.drawio' },
-      ]);
-
-      // Simulate both PNG and .drawio already cached on disk.
-      // syncDrawioAttachments calls fs.access twice (once per file).
-      vi.mocked(fs.access)
-        .mockResolvedValueOnce(undefined) // cached.png exists
-        .mockResolvedValueOnce(undefined); // cached.drawio exists
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      expect(result).toEqual(['cached.png', 'cached.drawio']);
-      // Neither file downloaded — both served from cache
-      expect(client.downloadAttachment).not.toHaveBeenCalled();
-      expect(fs.writeFile).not.toHaveBeenCalled();
-    });
-
-    it('keeps the PNG result when the .drawio download fails (failure is non-fatal)', async () => {
-      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">broken-xml</ac:parameter></ac:structured-macro>`;
-      const client = createMockClient();
-      const attachments = makeAttachments([
-        { title: 'broken-xml.png', download: '/download/broken-xml.png' },
-        { title: 'broken-xml.drawio', download: '/download/broken-xml.drawio' },
-      ]);
-
-      // PNG download succeeds (buffer); .drawio download throws.
-      (client.downloadAttachment as ReturnType<typeof vi.fn>)
-        .mockResolvedValueOnce(Buffer.from('png-data'))
-        .mockRejectedValueOnce(new Error('Confluence 500'));
-
-      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-      // PNG made it, .drawio failure is logged and swallowed (no throw)
-      expect(result).toEqual(['broken-xml.png']);
-      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
-    });
-  });
 
   describe('syncImageAttachments with non-standard attribute ordering', () => {
     it('handles ri:filename not being the first attribute', async () => {
@@ -739,52 +481,6 @@ describe('attachment-handler', () => {
     });
   });
 
-  describe('fetchAndCacheAttachment draw.io fallback', () => {
-    it('finds .xml attachment when .png is requested', async () => {
-      const imageData = Buffer.from('drawio-xml');
-      const client = createMockClient();
-      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
-        results: makeAttachments([
-          { title: 'diagram.xml', download: '/download/diagram.xml' },
-        ]),
-      });
-      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(imageData);
-
-      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'diagram.png');
-
-      expect(result).toEqual(imageData);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/diagram.xml');
-    });
-
-    it('finds bare-name attachment when .png is requested', async () => {
-      const imageData = Buffer.from('drawio-data');
-      const client = createMockClient();
-      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
-        results: makeAttachments([
-          { title: 'mydiagram', download: '/download/mydiagram' },
-        ]),
-      });
-      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(imageData);
-
-      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'mydiagram.png');
-
-      expect(result).toEqual(imageData);
-      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/mydiagram');
-    });
-
-    it('returns null when no fallback matches either', async () => {
-      const client = createMockClient();
-      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
-        results: makeAttachments([
-          { title: 'unrelated.pdf', download: '/download/unrelated.pdf' },
-        ]),
-      });
-
-      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'missing.png');
-
-      expect(result).toBeNull();
-    });
-  });
 
   describe('hasLocalAttachments', () => {
     it('returns true when directory has files', async () => {
@@ -910,7 +606,7 @@ describe('attachment-handler', () => {
     });
 
     it('fetchAndCacheAttachment matches attachment with different casing', async () => {
-      const imageData = Buffer.from('case-data');
+      const imageData = Buffer.from('iVBORw0KGgo=', 'base64');
       const client = createMockClient();
       (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
         results: makeAttachments([
@@ -1022,22 +718,6 @@ describe('attachment-handler', () => {
       });
     });
 
-    describe('syncDrawioAttachments with large files', () => {
-      it('uses streaming for large draw.io attachments', async () => {
-        const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">big-diagram</ac:parameter></ac:structured-macro>`;
-        const client = createMockClient();
-        const largeSize = STREAM_THRESHOLD_BYTES * 2;
-        const attachments = makeAttachments([
-          { title: 'big-diagram.png', download: '/download/big-diagram.png', fileSize: largeSize },
-        ]);
-
-        const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
-
-        expect(result).toEqual(['big-diagram.png']);
-        expect(client.downloadAttachmentToFile).toHaveBeenCalledTimes(1);
-        expect(client.downloadAttachment).not.toHaveBeenCalled();
-      });
-    });
 
     describe('fetchAndCacheAttachment with large files', () => {
       it('uses streaming for large on-demand attachments', async () => {
@@ -1071,7 +751,7 @@ describe('attachment-handler', () => {
       });
 
       it('uses in-memory download for small on-demand attachments', async () => {
-        const smallData = Buffer.from('small-content');
+        const smallData = Buffer.from('iVBORw0KGgo=', 'base64');
         const client = createMockClient();
         (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
           results: [{
@@ -1092,7 +772,7 @@ describe('attachment-handler', () => {
       });
 
       it('uses in-memory download when attachment has no fileSize metadata', async () => {
-        const data = Buffer.from('no-size-info');
+        const data = Buffer.from('iVBORw0KGgo=', 'base64');
         const client = createMockClient();
         (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
           results: [{

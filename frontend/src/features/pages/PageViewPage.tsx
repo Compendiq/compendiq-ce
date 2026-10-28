@@ -868,28 +868,32 @@ export function PageViewPage() {
       toast.info(`${refusal} The diagram is shown as it was frozen.`);
       return;
     }
-    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
-    // Confluence pages key attachments by confluence_id against /api/attachments; standalone
-    // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
-    // this branch, standalone pages would 404 against the Confluence route.
+    // Prefer the editable XML sibling; older diagrams may only have a
+    // PNG with embedded XML. Never substitute an empty diagram on failure.
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
     const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
     let dataUri: string;
     try {
       const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to load diagram: ${res.status}`);
-      }
-      const blob = await res.blob();
-      dataUri = await new Promise<string>((resolve) => {
+      const baseUrl = `${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}`;
+      const headers = { Authorization: `Bearer ${accessToken}` };
+      const source = await fetch(`${baseUrl}.drawio`, { headers, cache: 'no-store' });
+      if (source.ok) {
+        dataUri = await source.text();
+        if (!dataUri.trim()) throw new Error('Diagram source is empty');
+      } else {
+        if (source.status !== 404) throw new Error(`Failed to load diagram source: ${source.status}`);
+        const res = await fetch(`${baseUrl}.png`, { headers, cache: 'no-store' });
+        if (!res.ok) throw new Error(`Failed to load diagram: ${res.status}`);
+        const blob = await res.blob();
+        const { promise, resolve, reject } = Promise.withResolvers<string>();
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
         reader.readAsDataURL(blob);
-      });
+        dataUri = await promise;
+      }
     } catch (error) {
       toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
       return;

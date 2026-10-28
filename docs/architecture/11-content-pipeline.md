@@ -91,7 +91,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
-| `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
+| `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
@@ -717,17 +717,16 @@ On `POST /llm/improvements/apply` the route:
 
 ### Lossless confluence-drawio turndown rule
 
-A custom turndown rule in `htmlToMarkdown()` converts
-`<div class="confluence-drawio" data-diagram-name="…">` to a fenced
-` ```drawio\nNAME\n``` ` block instead of discarding the wrapper.
-`markdownToHtml()` post-processes the emitted
-`<pre><code class="language-drawio">NAME</code></pre>` back into the
-`<div class="confluence-drawio" data-diagram-name="NAME"></div>` wrapper so
-non-Improve callers (copy/paste, export) also round-trip draw.io losslessly.
+A custom turndown rule in `htmlToMarkdown()` emits a fenced `drawio`
+block. Wrappers with source or preview metadata use one JSON line carrying
+the diagram name, source, inline XML, preview and edit link; name-only
+wrappers retain the plain-name form. `markdownToHtml()` restores both forms,
+including explicit unavailable text when no preview is present, so copy,
+export and re-import do not silently discard the editable source reference.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|
-| `confluenceDrawio` | `<div class="confluence-drawio" data-diagram-name="…">` | ` ```drawio\nNAME\n``` ` |
+| `confluenceDrawio` | `<div class="confluence-drawio" data-diagram-name="…">` | ` ```drawio\nNAME-or-JSON\n``` ` |
 
 ## AI Improve layout preservation — boundary tokens (#765)
 
@@ -1042,6 +1041,14 @@ sync into Store A and rewritten in `body_html` to
 `/api/attachments/{confluence_id}/{filename}`. A standalone article ends up
 using *both*: images pasted into the editor go to Store A under its numeric
 id, while draw.io saves and explicit uploads go to Store B.
+
+Draw.io XML is retained as a `.drawio` sibling, never relabelled as PNG.
+The converter defaults to an unavailable presentation; the shared
+cache-aware publication step checks PNG bytes before emitting an image.
+Without a preview the wrapper names the unavailable preview and retains the
+source URL when cached. Both editor schemas preserve that URL, and relocation
+re-keys and stages the source. No renderer or image-analysis provider is
+required to preserve it.
 
 `assertLocalPageAccess` rejects any page whose `source` is not `standalone`,
 so Store B becomes unreachable the moment a page turns Confluence-backed.

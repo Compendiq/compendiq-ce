@@ -12,7 +12,7 @@ import { getRedisClient } from '../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { logger } from '../../core/utils/logger.js';
-import { readAttachment, fetchAndCachePageImage, getMimeType } from '../../domains/confluence/services/attachment-handler.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType, isDrawioXml } from '../../domains/confluence/services/attachment-handler.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import type { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -792,6 +792,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         });
       }
       throw err;
+    }
+    // Old syncs wrote draw.io XML under a PNG name. Keep those bytes for the
+    // next sync to recover as source, but never serve them as an image.
+    if (data && filename.toLowerCase().endsWith('.png') && isDrawioXml(data)) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Diagram preview unavailable' });
     }
     if (data) {
       logger.debug({ pageId, filename, size: data.length }, 'Serving attachment from local cache');

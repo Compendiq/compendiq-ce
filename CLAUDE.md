@@ -1197,6 +1197,13 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+Draw.io XML-only attachments remain editable `.drawio` sources, not fake
+`.png` files. Sync publishes a preview only for PNG bytes; otherwise the
+diagram wrapper names the unavailable preview and retains its source URL.
+Both TipTap schemas must round-trip that URL; read-mode editing loads the XML
+before trying a legacy PNG. Never replace a failed source load with an empty
+diagram.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.
