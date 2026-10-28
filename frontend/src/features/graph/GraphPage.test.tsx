@@ -669,6 +669,43 @@ describe('GraphPage', () => {
     expect(screen.queryByTestId('graph-picker-no-results')).not.toBeInTheDocument();
   });
 
+  it('does not let an earlier retry move focus from a later query retry', async () => {
+    const calls = new Map<string, number>();
+    const pending = new Map<string, (response: Response) => void>();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/embeddings/status')) {
+        return new Response(JSON.stringify(largeEmbeddedStatus), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const query = new URL(url, 'http://localhost').searchParams.get('q')!;
+      const count = (calls.get(query) ?? 0) + 1;
+      calls.set(query, count);
+      if (count === 1) return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } });
+      const { promise, resolve } = Promise.withResolvers<Response>();
+      pending.set(query, resolve);
+      return promise;
+    });
+    render(<GraphPage />, { wrapper: createWrapper() });
+    const input = await screen.findByTestId('graph-picker-input');
+    fireEvent.change(input, { target: { value: 'alpha' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry search' }));
+    await waitFor(() => expect(pending.has('alpha')).toBe(true));
+    fireEvent.change(input, { target: { value: 'beta' } });
+    const retry = await screen.findByRole('button', { name: 'Retry search' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(pending.has('beta')).toBe(true));
+    await act(async () => {
+      pending.get('alpha')!(new Response('{"items":[],"total":0}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    });
+    expect(retry).toHaveFocus();
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => {
+      pending.get('beta')!(new Response('{"items":[],"total":0}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    });
+    await waitFor(() => expect(input).toHaveFocus());
+  });
+
   it('renders the article-picker landing for a large corpus — does NOT fetch the global graph (#360)', async () => {
     const fetchSpy = mockFetchRoutes([
       ['/embeddings/status', largeEmbeddedStatus],

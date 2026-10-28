@@ -923,6 +923,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
   const [retryingQuery, setRetryingQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const retryRef = useRef<HTMLButtonElement>(null);
+  const retryGeneration = useRef(0);
   const { data, isLoading, isError, isFetching, refetch } = useSearch({ q: q.trim(), page: 1 });
   const retrying = retryingQuery === q.trim();
 
@@ -966,7 +967,11 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
             ref={inputRef}
             type="text"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              retryGeneration.current++;
+              setRetryingQuery(null);
+              setQ(e.target.value);
+            }}
             placeholder="Search pages by title…"
             // A text field is operable, so its resting edge is the measured
             // --color-border-interactive one (WCAG 1.4.11, forced-colors), not
@@ -995,8 +1000,10 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
                   onClick={() => {
                     if (isFetching || retrying) return;
                     const query = q.trim();
+                    const generation = ++retryGeneration.current;
                     setRetryingQuery(query);
                     void refetch().then((result) => {
+                      if (generation !== retryGeneration.current) return;
                       if (!result.isError && document.activeElement === retryRef.current) {
                         inputRef.current?.focus();
                       }
