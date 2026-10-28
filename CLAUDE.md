@@ -754,6 +754,12 @@ Panel usage goes through the authenticated collection path, without content in
 event metadata. Impression semantics and adoption evaluation are documented in
 `docs/ADMIN-GUIDE.md`.
 
+Graph shareable filters (`space`, `edgeTypes`, `minScore`, `labels`, `full`)
+are read directly from the current URL, including on Back/Forward while
+`GraphPage` remains mounted. Filter changes replace the entry; the sidebar
+clear-focus and picker selection push entries. Keep unrelated URL parameters
+when editing filters, and keep the local graph request keyed on restored filters.
+
 ## Standalone Trash Cascade (#1636)
 
 Trashing a standalone article takes its WHOLE subtree, so the delete, the
