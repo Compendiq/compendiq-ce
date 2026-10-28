@@ -47,6 +47,12 @@ test('persisted note replies survive inspector and popover transitions', async (
   const popover = page.getByTestId('comment-popover-content');
   await expect(popover).toContainText('Persisted reply');
   await expect(popover).toContainText('New inspector reply');
+  await popover.getByTestId('popover-reply-toggle-btn').click();
+  await popover.getByTestId('popover-reply-input').fill('New popover reply');
+  await popover.getByTestId('popover-reply-submit-btn').click();
+  await expect(popover).toContainText('New popover reply');
+  await expect(popover).toContainText('Replies (3)');
   await page.keyboard.press('Escape');
-  await expect(thread).toContainText('2 replies');
+  await expect(thread).toContainText('3 replies');
+  await expect(thread).toContainText('New popover reply');
 });
