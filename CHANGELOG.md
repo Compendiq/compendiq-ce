@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
   `fast-uri` override to 3.1.9 and refresh its locked version.
 
+### Fixed
+
+- Command palette results and selection now follow the current query immediately;
+  the debounce and search show a pending state instead of dispatching an earlier page.
+
 ### Changed
 
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:

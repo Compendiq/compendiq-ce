@@ -176,6 +176,11 @@ never imported; deleted by `logoutApi()` on explicit sign-out). Any new
 per-user content kept in web storage and shown back in the UI belongs to the
 same class: scope it by user id the same way.
 
+Command-palette page results are bound to the exact query that produced them.
+Changing the input clears both the prior result and selection immediately; the
+pending state covers debounce as well as the request. Preserve the sequence
+guard for out-of-order responses and only select a result after it resolves.
+
 ## Testing & Mocks
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
