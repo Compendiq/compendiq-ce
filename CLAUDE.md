@@ -1287,6 +1287,8 @@ the `---` block renders as body and the import reports success with title and la
 by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
 extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
 repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
+the existing entry limit; do not expand each run without a shared budget.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format

@@ -211,6 +211,18 @@ describe('extractDocumentText', () => {
     expect(result.totalPages).toBeUndefined();
   });
 
+  it('preserves ODT repeated and default spaces alongside tabs and breaks', async () => {
+    const odt = buildOdt('<text:p>A<text:s text:c="4"/>B<text:s/>C<text:tab/>D<text:line-break/>E<text:s text:c=\'2\'/>F</text:p>');
+    expect((await extractDocumentText(odt, 'spaces.odt')).text).toBe('A    B C\tD\nE  F');
+  });
+
+  it('rejects ODT repeated-space expansion beyond the combined document limit', async () => {
+    const odt = buildOdt('<text:p>A<text:s text:c="11000000"/><text:s text:c="11000000"/>B</text:p>');
+    await expectRejection(() => extractDocumentText(odt, 'spaces.odt'), 'unprocessable');
+    const huge = buildOdt('<text:p>A<text:s text:c="999999999999999999999999"/>B</text:p>');
+    await expectRejection(() => extractDocumentText(huge, 'spaces.odt'), 'unprocessable');
+  });
+
   it('strips rtf control words down to the body text', async () => {
     const result = await extractDocumentText(buildRtf('Deploy on Monday.'), 'memo.rtf');
 

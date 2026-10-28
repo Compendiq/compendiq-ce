@@ -439,11 +439,21 @@ function odfContentToText(xml: string): string {
   // Drop elements whose content is not document text.
   body = body.replace(/<office:(annotation|forms|binary-data)\b[\s\S]*?<\/office:\1>/g, '');
 
-  // Inline whitespace elements carry no text node of their own.
+  // Bound the combined expansion, not just each text:s: a small XML entry can
+  // encode many large runs. Count the existing body as part of the budget.
+  let expandedBytes = Buffer.byteLength(body, 'utf8');
   body = body
     .replace(/<text:tab\b[^>]*\/?>/g, '\t')
     .replace(/<text:line-break\b[^>]*\/?>/g, '\n')
-    .replace(/<text:s\b[^>]*\/?>/g, ' ');
+    .replace(/<text:s\b([^>]*)\/?>/g, (_tag, attrs: string) => {
+      const raw = /(?:^|\s)text:c\s*=\s*(['"])(\d+)\1/.exec(attrs)?.[2];
+      const count = raw === undefined ? 1 : Number(raw);
+      if (!Number.isSafeInteger(count) || count < 1 || count > ZIP_LIMITS.maxEntryBytes - expandedBytes) {
+        throw new DocumentExtractionError('unprocessable', 'ODT repeated spaces exceed the document limit');
+      }
+      expandedBytes += count;
+      return ' '.repeat(count);
+    });
 
   // Empty blocks are written self-closing; normalise so one pass handles both.
   body = body.replace(/<text:(h|p)\b([^>]*)\/>/g, '<text:$1$2></text:$1>');
