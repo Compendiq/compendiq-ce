@@ -22,6 +22,14 @@ const mockComments: Comment[] = [
     createdAt: new Date().toISOString(),
     resolved: false,
     parentId: null,
+    replies: [{
+      id: 'r-1',
+      authorName: 'Charlie',
+      body: 'I agree!',
+      createdAt: new Date().toISOString(),
+      resolved: false,
+      parentId: 'c-1',
+    }],
   },
   {
     id: 'c-2',
@@ -30,14 +38,6 @@ const mockComments: Comment[] = [
     createdAt: new Date().toISOString(),
     resolved: true,
     parentId: null,
-  },
-  {
-    id: 'r-1',
-    authorName: 'Charlie',
-    body: 'I agree!',
-    createdAt: new Date().toISOString(),
-    resolved: false,
-    parentId: 'c-1',
   },
 ];
 
@@ -113,6 +113,13 @@ describe('CommentsSidebar', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('Great article!')).toBeInTheDocument();
     });
+  });
+
+  it('renders nested replies and their count', async () => {
+    renderSidebar();
+    fireEvent.click(screen.getByTestId('comments-toggle'));
+    expect(await screen.findByText('I agree!')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-thread-c-1')).toHaveTextContent('1 reply');
   });
 
   it('hides resolved threads by default and shows toggle', async () => {

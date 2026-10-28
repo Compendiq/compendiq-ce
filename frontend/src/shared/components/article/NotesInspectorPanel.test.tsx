@@ -16,6 +16,14 @@ const mockComments: Comment[] = [
     anchorData: {
       quote: 'Important section in article',
     },
+    replies: [{
+      id: 'r-1',
+      authorName: 'Charlie',
+      body: 'I agree!',
+      createdAt: new Date().toISOString(),
+      resolved: false,
+      parentId: 'c-1',
+    }],
   },
   {
     id: 'c-2',
@@ -24,14 +32,6 @@ const mockComments: Comment[] = [
     createdAt: new Date().toISOString(),
     resolved: true,
     parentId: null,
-  },
-  {
-    id: 'r-1',
-    authorName: 'Charlie',
-    body: 'I agree!',
-    createdAt: new Date().toISOString(),
-    resolved: false,
-    parentId: 'c-1',
   },
 ];
 
@@ -74,6 +74,12 @@ describe('NotesInspectorPanel', () => {
       expect(screen.getByText('Great article!')).toBeInTheDocument();
       expect(screen.queryByText('Needs some clarification.')).not.toBeInTheDocument();
     });
+  });
+
+  it('renders persisted nested replies and their count', async () => {
+    renderNotesPanel();
+    expect(await screen.findByText('I agree!')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-thread-c-1')).toHaveTextContent('1 reply');
   });
 
   it('lists threads as divided rows, not cards nested in the region', async () => {
