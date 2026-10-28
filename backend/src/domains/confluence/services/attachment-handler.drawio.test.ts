@@ -90,6 +90,9 @@ describe('draw.io attachment HTTP boundary', () => {
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     png.subarray(0, png.length - 4),
     Buffer.concat([png.subarray(0, 45), Buffer.from([0]), png.subarray(46)]),
+    // Valid IHDR checksum, but a declared 40 GB raster must be rejected
+    // before any compressed image data is expanded.
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgABhqAAAYagCAYAAACoUgvIAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64'),
   ])('does not publish an incomplete or corrupt PNG', async (invalid) => {
     files['/image'] = invalid;
     attachments = [attachment('diagram.png', '/image')];

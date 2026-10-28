@@ -3,6 +3,9 @@ import { createInflate } from 'node:zlib';
 import { finished } from 'node:stream/promises';
 
 const SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+// Bound decompression work for untrusted Confluence attachments independently
+// of the smaller, model-specific image-analysis limits.
+const MAX_RASTER_BYTES = 256 * 1024 * 1024;
 const CRC_TABLE = Array.from({ length: 256 }, (_, value) => {
   for (let i = 0; i < 8; i++) value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
   return value >>> 0;
@@ -99,7 +102,7 @@ export async function isValidPngFile(path: string): Promise<boolean> {
             rows.push({ count, bytes });
             expected += count * (bytes + 1);
           }
-          if (!Number.isSafeInteger(expected)) return false;
+          if (!Number.isSafeInteger(expected) || expected > MAX_RASTER_BYTES) return false;
           ihdr = true;
         } else if (type === 'IDAT') {
           idat = true;

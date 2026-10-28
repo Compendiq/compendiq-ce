@@ -1045,7 +1045,9 @@ id, while draw.io saves and explicit uploads go to Store B.
 Draw.io XML is retained as a `.drawio` sibling, never relabelled as PNG.
 The converter defaults to an unavailable presentation; the shared
 cache-aware publication step validates PNG framing, checksums and compressed
-raster data before emitting an image. Missing source and preview are checked
+raster data before emitting an image. Declared raster output is capped at
+256 MiB before decompression; oversized previews remain unavailable without
+discarding their editable sources. Missing source and preview are checked
 on unchanged-page syncs without treating an XML-only preview as a permanently
 failed attachment; the ordinary conflict policy protects local edits when a
 later attachment changes the presentation. Both editor schemas preserve the
