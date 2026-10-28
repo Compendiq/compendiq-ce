@@ -8,6 +8,7 @@ import type { PoolClient } from 'pg';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
 import { assertNonSsrfUrl } from '../../../core/utils/ssrf-guard.js';
+import { isValidPngFile as isPngFile } from '../../../core/services/valid-png.js';
 import {
   extractImageReferences,
   SUPPORTED_IMAGE_EXTENSIONS,
@@ -136,18 +137,6 @@ export function extractDrawioDiagramNames(bodyStorage: string): string[] {
   return names;
 }
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-async function isPngFile(filePath: string): Promise<boolean> {
-  const file = await fs.open(filePath, 'r');
-  try {
-    const signature = Buffer.alloc(PNG_SIGNATURE.length);
-    const { bytesRead } = await file.read(signature, 0, signature.length, 0);
-    return bytesRead === signature.length && signature.equals(PNG_SIGNATURE);
-  } finally {
-    await file.close();
-  }
-}
 
 export function isDrawioXml(data: Buffer): boolean {
   const text = data.subarray(0, 1024).toString('utf8').replace(/^\uFEFF/, '').trimStart();
@@ -578,14 +567,20 @@ export async function fetchAndCacheAttachment(
       }
     }
     const data = await client.downloadAttachment(attachment._links.download);
-    if (!isSource && data.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-      await fs.writeFile(filePath, data);
-      return data;
+    const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
+    try {
+      await fs.writeFile(temporaryPath, data);
+      if (!isSource && await isPngFile(temporaryPath)) {
+        await fs.rename(temporaryPath, filePath);
+        return data;
+      }
+      if ((isSource || isDrawioXml(data)) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
+        await fs.rename(temporaryPath, sourcePath);
+      }
+      return null;
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
     }
-    if ((isSource || isDrawioXml(data)) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
-      await fs.writeFile(sourcePath, data);
-    }
-    return null;
   }
 
   if (useStreaming) {

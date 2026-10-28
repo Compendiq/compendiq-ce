@@ -46,8 +46,7 @@ let fetchAndCachePageImage: typeof import('../../domains/confluence/services/att
 let putLocalAttachment: typeof import('./local-attachment-service.js')['putLocalAttachment'];
 let syncPage: typeof import('../../domains/confluence/services/sync-service.js')['__internal']['syncPage'];
 
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const PNG = Buffer.concat([PNG_SIG, Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.alloc(8)]);
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
 
 const OWNER = '00000000-0000-4000-8000-0000000000aa';
 

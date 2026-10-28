@@ -1,28 +1,22 @@
 import fs from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import { safeAttachmentPath } from './attachment-store.js';
+import { isValidPngFile } from './valid-png.js';
 
-const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 /** Resolve converted diagrams against cached bytes before publishing HTML. */
-export async function materializeDrawioPreviews(html: string, pageId: string): Promise<{ html: string; missing: string[] }> {
-  if (!html.includes('confluence-drawio')) return { html, missing: [] };
+export async function materializeDrawioPreviews(html: string, pageId: string): Promise<{ html: string; missing: string[]; missingSources: string[] }> {
+  if (!html.includes('confluence-drawio')) return { html, missing: [], missingSources: [] };
   const document = new JSDOM(`<body>${html}</body>`).window.document;
   const missing: string[] = [];
+  const missingSources: string[] = [];
   for (const diagram of document.querySelectorAll('.confluence-drawio')) {
     const name = diagram.getAttribute('data-diagram-name');
     if (!name) continue;
     const png = `${name}.png`;
     let validPng = false;
     try {
-      const file = await fs.open(safeAttachmentPath(pageId, png), 'r');
-      try {
-        const signature = Buffer.alloc(PNG_SIGNATURE.length);
-        const { bytesRead } = await file.read(signature, 0, signature.length, 0);
-        validPng = bytesRead === signature.length && signature.equals(PNG_SIGNATURE);
-      } finally {
-        await file.close();
-      }
+      validPng = await isValidPngFile(safeAttachmentPath(pageId, png));
     } catch {
       // Missing previews remain explicitly unavailable.
     }
@@ -49,7 +43,8 @@ export async function materializeDrawioPreviews(html: string, pageId: string): P
       diagram.setAttribute('data-drawio-source', `/api/attachments/${encodeURIComponent(pageId)}/${encodeURIComponent(`${name}.drawio`)}`);
     } catch {
       diagram.removeAttribute('data-drawio-source');
+      missingSources.push(`${name}.drawio`);
     }
   }
-  return { html: document.body.innerHTML, missing };
+  return { html: document.body.innerHTML, missing, missingSources };
 }

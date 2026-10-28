@@ -1044,11 +1044,13 @@ id, while draw.io saves and explicit uploads go to Store B.
 
 Draw.io XML is retained as a `.drawio` sibling, never relabelled as PNG.
 The converter defaults to an unavailable presentation; the shared
-cache-aware publication step checks PNG bytes before emitting an image.
-Without a preview the wrapper names the unavailable preview and retains the
-source URL when cached. Both editor schemas preserve that URL, and relocation
-re-keys and stages the source. No renderer or image-analysis provider is
-required to preserve it.
+cache-aware publication step validates PNG framing, checksums and compressed
+raster data before emitting an image. Missing source and preview are checked
+on unchanged-page syncs without treating an XML-only preview as a permanently
+failed attachment; the ordinary conflict policy protects local edits when a
+later attachment changes the presentation. Both editor schemas preserve the
+source URL, and relocation re-keys and stages the source. No renderer or
+image-analysis provider is required to preserve it.
 
 `assertLocalPageAccess` rejects any page whose `source` is not `standalone`,
 so Store B becomes unreachable the moment a page turns Confluence-backed.

@@ -9,14 +9,23 @@ import { ConfluenceClient, type ConfluencePage } from './confluence-client.js';
 
 const available = await isDbAvailable();
 const xml = '<mxfile><diagram>editable source</diagram></mxfile>';
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+let offerPng = false;
+let sourceAvailable = true;
 const storage = '<p>Before</p><ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro><p>After</p>';
 const page: ConfluencePage = { id: '179201', title: 'Diagram', type: 'page', status: 'current', version: { number: 1, when: '2026-01-01T00:00:00.000Z' }, body: { storage: { value: storage } } };
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://fixture');
-  if (url.pathname === '/download/source') { res.end(xml); return; }
+  if (url.pathname === '/download/source') {
+    if (!sourceAvailable) { res.writeHead(404); res.end(); } else res.end(xml);
+    return;
+  }
+  if (url.pathname === '/download/preview') { res.end(png); return; }
   res.setHeader('content-type', 'application/json');
   if (url.pathname.endsWith('/child/attachment')) {
-    res.end(JSON.stringify({ results: [{ id: '1', title: 'flow.xml', _links: { download: '/download/source' } }] }));
+    const results = [{ id: '1', title: 'flow.xml', _links: { download: '/download/source' } }];
+    if (offerPng) results.push({ id: '2', title: 'flow.png', _links: { download: '/download/preview' } });
+    res.end(JSON.stringify({ results }));
   } else if (url.pathname === '/rest/api/content/179201') {
     res.end(JSON.stringify(page));
   } else { res.statusCode = 404; res.end('{}'); }
@@ -60,6 +69,23 @@ describe.skipIf(!available)('source-only draw.io sync', () => {
     expect(result.rows[0]!.body_html).toContain('Draw.io preview unavailable: flow');
     expect(result.rows[0]!.body_html).toContain('data-drawio-source="/api/attachments/179201/flow.drawio"');
     expect(result.rows[0]!.body_html).not.toContain('<img');
+    expect(await readFile(join(root, page.id, 'flow.drawio'), 'utf8')).toBe(xml);
+    // An intentionally missing preview must never exhaust failure counters.
+    for (let i = 0; i < 4; i++) {
+      await __internal.syncPage(client, 'fixture', 'TEST', page, new Date(), new Map(), counts, 'drawio-test');
+    }
+    offerPng = true;
+    await __internal.syncMissingAttachments(client, 'fixture', 'TEST', new Date(), new Map(), counts, 'drawio-test', { mode: 'full' });
+    expect((await query<{ body_html: string }>('SELECT body_html FROM pages WHERE confluence_id = $1', [page.id])).rows[0]!.body_html)
+      .toContain('src="/api/attachments/179201/flow.png"');
+    expect(await readFile(join(root, page.id, 'flow.png'))).toEqual(png);
+
+    // A successful raster download does not suppress a failed source retry.
+    await rm(join(root, page.id, 'flow.drawio'));
+    sourceAvailable = false;
+    await __internal.syncPage(client, 'fixture', 'TEST', page, new Date(), new Map(), counts, 'drawio-test');
+    sourceAvailable = true;
+    await __internal.syncPage(client, 'fixture', 'TEST', page, new Date(), new Map(), counts, 'drawio-test');
     expect(await readFile(join(root, page.id, 'flow.drawio'), 'utf8')).toBe(xml);
   });
 });

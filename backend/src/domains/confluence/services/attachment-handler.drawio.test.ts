@@ -8,7 +8,7 @@ import { attachmentCacheDir, fetchAndCacheAttachment, MAX_ATTACHMENT_BYTES, STRE
 import { confluenceToHtml } from '../../../core/services/content-converter.js';
 import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
 const xml = Buffer.from('<mxfile><diagram id="1">editable</diagram></mxfile>');
 const body = '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="baseUrl">ignored</ac:parameter><ac:parameter ac:name="diagramName">diagram</ac:parameter></ac:structured-macro>';
 let files: Record<string, Buffer> = {};
@@ -84,6 +84,28 @@ describe('draw.io attachment HTTP boundary', () => {
     const rendered = await materializeDrawioPreviews(converted, pageId);
     expect(rendered.html).toContain(`src="/api/attachments/${pageId}/diagram.png"`);
     expect(rendered.html).not.toContain('preview unavailable');
+  });
+
+  it.each([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    png.subarray(0, png.length - 4),
+    Buffer.concat([png.subarray(0, 45), Buffer.from([0]), png.subarray(46)]),
+  ])('does not publish an incomplete or corrupt PNG', async (invalid) => {
+    files['/image'] = invalid;
+    attachments = [attachment('diagram.png', '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual([]);
+    await missing('diagram.png');
+    const result = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(result.html).not.toContain('<img');
+    expect(result.html).toContain('preview unavailable');
+  });
+
+  it('accepts an interlaced raster split across IDAT chunks', async () => {
+    const interlaced = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAAGuTRJ+AAAAA0lEQVR4nGOqZ4K+AAAAEElEQVQQUDBggGIkJpQLRAA1AQNh8iOwnAAAAABJRU5ErkJggg==', 'base64');
+    files['/image'] = interlaced;
+    attachments = [attachment('diagram.png', '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(interlaced);
   });
 
   it.each(['diagram.png', 'diagram'])('caches real %s PNG and skips repeat downloads', async (title) => {
