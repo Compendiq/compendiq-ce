@@ -800,6 +800,31 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
+  it('detaches a nested homepage before promoting its children (#1815)', () => {
+    mockTreeData = {
+      items: [
+        defaultTreeData.items[0]!,
+        defaultTreeData.items[1]!,
+        { ...defaultTreeData.items[2]!, parentId: 'child-1' },
+        { ...defaultTreeData.items[3]!, parentId: 'root-1' },
+      ],
+      total: 4,
+    };
+    mockSpacesData = [{ ...defaultSpaces[0]!, homepageId: 'child-1' }];
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Expand'));
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Configuration')).toHaveLength(1);
+    expect(screen.getAllByText('API Reference')).toHaveLength(1);
+    const rows = screen.getAllByRole('treeitem');
+    expect(rows.map((row) => row.getAttribute('data-page-id')).sort()).toEqual(
+      ['root-1', 'child-2', 'root-2'].sort(),
+    );
+    expect(rows.filter((row) => row.tabIndex === 0)).toHaveLength(1);
+  });
+
   it('keeps the homepage visible when it is the only page in the space (#961)', () => {
     mockTreeData = {
       items: [
