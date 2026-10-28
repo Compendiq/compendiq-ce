@@ -448,7 +448,7 @@ function odfContentToText(xml: string): string {
     .replace(/<text:s\b([^>]*)\/?>/g, (_tag, attrs: string) => {
       const raw = /(?:^|\s)text:c\s*=\s*(['"])(\d+)\1/.exec(attrs)?.[2];
       const count = raw === undefined ? 1 : Number(raw);
-      if (!Number.isSafeInteger(count) || count < 1 || count > ZIP_LIMITS.maxEntryBytes - expandedBytes) {
+      if (!Number.isSafeInteger(count) || count > ZIP_LIMITS.maxEntryBytes - expandedBytes) {
         throw new DocumentExtractionError('unprocessable', 'ODT repeated spaces exceed the document limit');
       }
       expandedBytes += count;
