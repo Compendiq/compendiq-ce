@@ -520,6 +520,10 @@ Compendiq notifies you of relevant events:
 - Verification requests assigned to you
 
 Access notifications via the bell icon in the top navigation bar.
+The badge counts all unread notifications, including older ones. In the
+notification panel, use **Older** and **Newer** to browse pages; select a
+notification to mark it read, or choose **Mark all as read** to clear all
+unread notifications.
 
 ## Dark and Light Theme
 

@@ -180,6 +180,10 @@ same class: scope it by user id the same way.
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
 
+The notification bell uses the global `/notifications/count` for its badge
+and mark-all action, not the current list page. Its paginated list and count
+queries must both be invalidated after read mutations.
+
 **Carve-out — the retrieval eval (#1102) runs a REAL embedding model in CI.**
 The `retrieval-eval` job in `pr-check.yml` brings up Ollama as a service
 container and embeds the vendored corpus with `nomic-embed-text`, because a
