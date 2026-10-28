@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Page title fields now grow and shrink when the available article width changes,
+  keeping wrapped titles visible while resizing the viewport or adjacent panels.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
