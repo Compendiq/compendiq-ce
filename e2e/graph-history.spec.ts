@@ -1,6 +1,21 @@
 import { test, expect } from '@playwright/test';
 import { authenticateContext, bearerHeaders, registerUser, uniqueUsername } from './helpers/auth';
 
+let cleanup: { token: string; spaceKey: string; ids: string[] } | undefined;
+
+test.afterEach(async ({ request }) => {
+  if (!cleanup) return;
+  const { token, spaceKey, ids } = cleanup;
+  cleanup = undefined;
+  const headers = { Authorization: `Bearer ${token}` };
+  if (ids.length) {
+    const removed = await request.post('/api/pages/bulk/delete', { headers, data: { ids } });
+    expect(removed.ok(), await removed.text()).toBeTruthy();
+  }
+  const removedSpace = await request.delete(`/api/spaces/local/${spaceKey}`, { headers });
+  expect(removedSpace.ok(), await removedSpace.text()).toBeTruthy();
+});
+
 test('graph filters follow reachable focus history and effective requests', async ({ page }, testInfo) => {
   const suffix = Date.now().toString(36);
   const session = await registerUser(page.request, uniqueUsername('graph_history'));
@@ -9,13 +24,16 @@ test('graph filters follow reachable focus history and effective requests', asyn
   const spaceKey = `GRAPH${suffix.toUpperCase()}`;
   const space = await page.request.post('/api/spaces/local', { ...auth, data: { key: spaceKey, name: `Graph ${suffix}` } });
   expect(space.ok(), await space.text()).toBeTruthy();
+  cleanup = { token: session.accessToken, spaceKey, ids: [] };
   const create = async (title: string, parentId?: number) => {
     const response = await page.request.post('/api/pages', {
       ...auth,
-      data: { spaceKey, title, bodyHtml: '<p>Graph history fixture</p>', labels: ['history'], parentId },
+      data: { spaceKey, title, bodyHtml: '<p>Graph history fixture</p>', labels: ['history'], visibility: 'private', parentId },
     });
     expect(response.ok(), await response.text()).toBeTruthy();
-    return (await response.json() as { id: number }).id;
+    const id = (await response.json() as { id: number }).id;
+    cleanup!.ids.push(String(id));
+    return id;
   };
   const first = await create(`History Alpha ${suffix}`);
   const second = await create(`History Bravo ${suffix}`, first);
