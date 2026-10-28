@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve persisted note replies and their counts in the article inspector,
+  comments sidebar, and anchored popover, including after refreshing a thread.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

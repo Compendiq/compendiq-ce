@@ -34,6 +34,14 @@ const mockComments: Comment[] = [
       quote: 'The quick brown fox',
       text: 'The quick brown fox',
     },
+    replies: [{
+      id: '201',
+      parentId: '101',
+      authorName: 'Bob',
+      body: 'Checked with team, looks good.',
+      createdAt: new Date(Date.now() - 1800_000).toISOString(),
+      resolved: false,
+    }],
   },
   {
     id: '102',
@@ -45,14 +53,6 @@ const mockComments: Comment[] = [
     anchorData: {
       quote: 'jumps over the lazy dog',
     },
-  },
-  {
-    id: '201',
-    parentId: '101',
-    authorName: 'Bob',
-    body: 'Checked with team, looks good.',
-    createdAt: new Date(Date.now() - 1800_000).toISOString(),
-    resolved: false,
   },
 ];
 
