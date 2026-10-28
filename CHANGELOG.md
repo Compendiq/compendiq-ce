@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Mobile navigation releases its focus trap and closes when the viewport
+  reaches desktop width, and stays closed when returning to mobile (#1813).
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

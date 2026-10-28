@@ -92,6 +92,9 @@ flowchart TB
 Mobile (`<md`) is edge-to-edge: inset and shell radius are 0, the
 destinations and sidebar live in the navigation drawer, and the inspector is a
 sheet.
+The navigation drawer traps focus only while open below `md`. Crossing to
+`md` or wider releases containment and clears its open state, so returning
+to mobile does not reopen the drawer.
 
 ## Article route panels (#1126)
 
