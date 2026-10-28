@@ -142,4 +142,57 @@ describe('SpellcheckExtension decorations', () => {
     const hits = deco?.find().filter((d) => d.from === 8 && d.to === 13);
     expect(hits?.length).toBe(1);
   });
+
+  it('clears on disable, cancels pending checks, fences old results and restarts once', async () => {
+    vi.useFakeTimers();
+    let enabled = true;
+    const messages: SpellMessage[] = [];
+    const listener: { current: FakeSpellWorker['onmessage'] } = { current: null };
+    const worker = {
+      set onmessage(value: FakeSpellWorker['onmessage']) { listener.current = value; },
+      postMessage(message: SpellMessage) { messages.push(message); },
+      terminate: vi.fn(),
+    };
+    const createWorker = vi.fn(() => worker as unknown as Worker);
+    const element = document.createElement('div');
+    document.body.appendChild(element);
+    editor = new Editor({
+      element,
+      content: '<p>World</p>',
+      extensions: [StarterKit, SpellcheckExtension.configure({
+        enabled: () => enabled,
+        createWorker,
+        fetchDictionaries: async () => [{ lang: 'en_US', aff: 'AFF', dic: 'DIC' }],
+      })],
+    });
+    await Promise.resolve();
+    listener.current?.({ data: { type: 'ready' } } as MessageEvent);
+    const first = messages.filter((m) => m.type === 'check').at(-1)!;
+    const miss = [{ from: 1, to: 6, word: 'World' }];
+    listener.current?.({ data: { type: 'misses', id: first.id, ranges: miss } } as MessageEvent);
+    expect(element.querySelectorAll('.spellcheck-miss')).toHaveLength(1);
+
+    editor.commands.insertContent('!');
+    enabled = false;
+    editor.view.dispatch(editor.state.tr);
+    expect(element.querySelectorAll('.spellcheck-miss')).toHaveLength(0);
+    listener.current?.({ data: { type: 'misses', id: first.id, ranges: miss } } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(messages.filter((m) => m.type === 'check')).toHaveLength(1);
+    expect(element.querySelectorAll('.spellcheck-miss')).toHaveLength(0);
+
+    enabled = true;
+    editor.view.dispatch(editor.state.tr);
+    listener.current?.({ data: { type: 'misses', id: first.id, ranges: miss } } as MessageEvent);
+    expect(element.querySelectorAll('.spellcheck-miss')).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(200);
+    const checks = messages.filter((m) => m.type === 'check');
+    expect(checks).toHaveLength(2);
+    expect(createWorker).toHaveBeenCalledTimes(1);
+    listener.current?.({ data: { type: 'misses', id: checks[1].id, ranges: miss } } as MessageEvent);
+    expect(element.querySelectorAll('.spellcheck-miss')).toHaveLength(1);
+    editor.destroy();
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    element.remove();
+  });
 });
