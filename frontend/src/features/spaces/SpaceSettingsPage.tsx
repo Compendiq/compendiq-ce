@@ -14,7 +14,7 @@ import { Button } from '../../shared/components/Button';
 export function SpaceSettingsPage() {
   const navigate = useNavigate();
   const { key } = useParams<{ key: string }>();
-  const { data: spacesData } = useLocalSpaces();
+  const { data: spacesData, isPending, isError, isFetching, refetch } = useLocalSpaces();
   const updateSpace = useUpdateLocalSpace();
   const deleteSpace = useDeleteLocalSpace();
 
@@ -106,6 +106,25 @@ export function SpaceSettingsPage() {
   // The saved identity mark: the space's chosen icon, HardDrive when unset.
   const SpaceGlyph = getSpaceIcon(space?.icon);
 
+  if (!space && (isError || (!isPending && !Array.isArray(spacesData)))) {
+    return (
+      <div className="mx-auto max-w-lg text-center py-12" role="alert">
+        <p className="text-muted-foreground">Could not load local spaces. Try again.</p>
+        <Button className="mt-4" onClick={() => void refetch()} disabled={isFetching}>
+          {isFetching ? 'Trying again…' : 'Try again'}
+        </Button>
+      </div>
+    );
+  }
+
+  if (!space && isPending) {
+    return (
+      <div className="mx-auto max-w-lg text-center py-12" role="status">
+        <p className="text-muted-foreground">Loading local spaces…</p>
+      </div>
+    );
+  }
+
   if (!space) {
     return (
       <div className="mx-auto max-w-lg text-center py-12">
@@ -122,6 +141,14 @@ export function SpaceSettingsPage() {
 
   return (
     <div className="mx-auto max-w-lg">
+      {isError && (
+        <div className="mb-4" role="alert">
+          <p className="text-muted-foreground">Could not refresh local spaces. Your edits are still available.</p>
+          <Button className="mt-2" onClick={() => void refetch()} disabled={isFetching}>
+            {isFetching ? 'Trying again…' : 'Try again'}
+          </Button>
+        </div>
+      )}
       <button
         onClick={() => navigate(-1)}
         className="mb-4 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
