@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Nested custom space homepages are detached from their actual parent before
+  their children are promoted in the sidebar, preventing duplicate page rows.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
