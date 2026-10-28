@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { GraphPage } from './GraphPage';
@@ -614,6 +614,95 @@ describe('GraphPage', () => {
   const largeEmbeddedStatus = {
     totalPages: 500, embeddedPages: 480, dirtyPages: 20, totalEmbeddings: 4000, isProcessing: false,
   };
+
+
+  it('restores focused filters through the reachable picker history without pushing filter edits', async () => {
+    const fetchSpy = mockFetchRoutes([
+      ['/embeddings/status', largeEmbeddedStatus],
+      ['/search?', { items: [{ id: 2, title: 'Deployment Guide', spaceKey: 'OPS' }], total: 1 }],
+      ['/graph/local?', mockGraphData],
+      ['/pages/graph?', mockGraphData],
+    ]);
+    function HistoryControls() {
+      const navigate = useNavigate();
+      const location = useLocation();
+      return (
+        <>
+          <button onClick={() => navigate(-1)}>Back</button>
+          <button onClick={() => navigate(1)}>Forward</button>
+          <output data-testid="history-url">{location.search}</output>
+        </>
+      );
+    }
+    render(<><HistoryControls /><GraphPage /></>, {
+      wrapper: createWrapper(['/graph?focus=1&space=DEV&edgeTypes=explicit_link&minScore=0.4&labels=howto&extra=kept']),
+    });
+    expect(await screen.findByTestId('graph-filter-sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-edge-explicit_link')).toBeChecked();
+    expect(screen.getByTestId('filter-min-score')).toHaveValue('0.4');
+    fireEvent.click(screen.getByTestId('graph-clear-focus-btn'));
+    expect(await screen.findByTestId('graph-picker-input')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('graph-picker-input'), { target: { value: 'Deployment' } });
+    fireEvent.click(await screen.findByRole('option', { name: /Deployment Guide/ }));
+    expect(await screen.findByTestId('graph-filter-sidebar')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('filter-edge-explicit_link'));
+    fireEvent.click(await screen.findByTestId('filter-edge-label_overlap'));
+    fireEvent.change(await screen.findByTestId('filter-min-score'), { target: { value: '0.8' } });
+    fireEvent.click(await screen.findByText('howto'));
+    fireEvent.click(await screen.findByText('ops'));
+    await waitFor(() => expect(screen.getByTestId('history-url')).toHaveTextContent('minScore=0.8'));
+    fireEvent.click(screen.getByText('Back'));
+    expect(await screen.findByTestId('graph-picker-input')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Back'));
+    expect(await screen.findByTestId('graph-filter-sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-edge-explicit_link')).toBeChecked();
+    expect(screen.getByTestId('filter-edge-label_overlap')).not.toBeChecked();
+    expect(screen.getByTestId('filter-min-score')).toHaveValue('0.4');
+    expect(screen.getByTestId('history-url')).toHaveTextContent('labels=howto');
+    expect(screen.getByTestId('history-url')).toHaveTextContent('space=DEV');
+    expect(screen.getByTestId('history-url')).toHaveTextContent('extra=kept');
+    fireEvent.click(screen.getByText('Forward'));
+    expect(await screen.findByTestId('graph-picker-input')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Forward'));
+    expect(await screen.findByTestId('graph-filter-sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-edge-label_overlap')).toBeChecked();
+    expect(screen.getByTestId('filter-min-score')).toHaveValue('0.8');
+    expect(screen.getByTestId('history-url')).toHaveTextContent('labels=ops');
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => {
+      const url = String(input);
+      return url.includes('/pages/2/graph/local?') && url.includes('minScore=0.8') && url.includes('labels=ops');
+    })).toBe(true));
+  });
+
+  it('restores full-graph and space parameters on same-component history changes', async () => {
+    const fetchSpy = mockFetchRoutes([
+      ['/embeddings/status', largeEmbeddedStatus],
+      ['/pages/graph?', mockGraphData],
+    ]);
+    function HistoryControls() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button onClick={() => navigate('/graph?full=1&space=OPS')}>Other graph</button>
+          <button onClick={() => navigate(-1)}>Back</button>
+          <button onClick={() => navigate(1)}>Forward</button>
+        </>
+      );
+    }
+    render(<><HistoryControls /><GraphPage /></>, { wrapper: createWrapper(['/graph']) });
+    fireEvent.click(await screen.findByTestId('graph-show-full-btn'));
+    expect(await screen.findByTestId('graph-space-filter')).toHaveTextContent('All spaces');
+    fireEvent.click(screen.getByTestId('graph-space-filter'));
+    fireEvent.click(screen.getByTestId('graph-space-filter-option-DEV'));
+    expect(await screen.findByTestId('graph-space-filter')).toHaveTextContent('DEV');
+    fireEvent.click(screen.getByText('Other graph'));
+    await waitFor(() => expect(screen.getByTestId('graph-space-filter')).toHaveTextContent('OPS'));
+    fireEvent.click(screen.getByText('Back'));
+    await waitFor(() => expect(screen.getByTestId('graph-space-filter')).toHaveTextContent('DEV'));
+    fireEvent.click(screen.getByText('Forward'));
+    await waitFor(() => expect(screen.getByTestId('graph-space-filter')).toHaveTextContent('OPS'));
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('spaceKey=OPS'))).toBe(true));
+  });
 
   it('renders the article-picker landing for a large corpus — does NOT fetch the global graph (#360)', async () => {
     const fetchSpy = mockFetchRoutes([

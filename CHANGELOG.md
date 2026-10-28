@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Graph history (#1805):** Back and Forward restore shareable graph filters
+  and their effective requests. Filter edits replace the current history entry;
+  changing the focused article still adds an entry.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
