@@ -44,6 +44,69 @@ test.describe('Pages CRUD', () => {
     await expect(page.getByRole('heading', { name: 'Updated title', exact: true })).toBeVisible();
   });
 
+  for (const surface of ['new', 'edit'] as const) {
+    test(`title reflows on viewport and adjacent panel resizing in ${surface} mode`, async ({ page }, testInfo) => {
+      const title = 'A long incident response title describing database saturation and recovery during the busiest production hours';
+      await page.setViewportSize({ width: 1500, height: 900 });
+      if (surface === 'new') {
+        await page.goto('/pages/new');
+      } else {
+        const created = await page.request.post('/api/pages', {
+          headers: bearerHeaders(session), data: { title, bodyHtml: '<p>Content</p>', spaceKey },
+        });
+        expect(created.ok(), await created.text()).toBeTruthy();
+        const { id } = await created.json();
+        await page.goto(`/pages/${id}`);
+        await page.getByTestId('edit-page-btn').click();
+      }
+      const field = page.getByLabel('Page title', { exact: true });
+      if (surface === 'new') await field.fill(title);
+      const measure = () => field.evaluate((el: HTMLTextAreaElement) => ({
+        width: el.clientWidth, height: el.clientHeight, scroll: el.scrollHeight, value: el.value,
+      }));
+      const assertFits = async () => {
+        await expect.poll(async () => {
+          const m = await measure();
+          return m.scroll - m.height;
+        }).toBeLessThanOrEqual(1);
+        expect((await measure()).value).toBe(title);
+      };
+      await assertFits();
+      const wide = await measure();
+      await testInfo.attach('wide', { body: await page.screenshot(), contentType: 'image/png' });
+      await page.setViewportSize({ width: 800, height: 900 });
+      await assertFits();
+      const narrow = await measure();
+      await testInfo.attach('narrow', { body: await page.screenshot(), contentType: 'image/png' });
+      expect(narrow.width).toBeLessThan(wide.width);
+      expect(narrow.height).toBeGreaterThan(wide.height);
+      await page.setViewportSize({ width: 1500, height: 900 });
+      await assertFits();
+      expect((await measure()).height).toBeLessThan(narrow.height);
+      const separator = page.getByRole('separator', { name: 'Resize tree sidebar' });
+      const start = await separator.boundingBox();
+      if (!start) throw new Error('Tree resize handle is not visible');
+      const beforePanel = await measure();
+      await page.mouse.move(start.x + start.width / 2, start.y + 100);
+      await page.mouse.down();
+      await page.mouse.move(start.x + start.width / 2 + 300, start.y + 100, { steps: 10 });
+      await page.mouse.up();
+      await expect.poll(async () => (await measure()).width).toBeLessThan(beforePanel.width);
+      await assertFits();
+      const panelNarrow = await measure();
+      await testInfo.attach('panel-narrow', { body: await page.screenshot(), contentType: 'image/png' });
+      await separator.dblclick();
+      await expect.poll(async () => (await measure()).width).toBeGreaterThan(panelNarrow.width);
+      await assertFits();
+      const panelWide = await measure();
+      await testInfo.attach('panel-wide', { body: await page.screenshot(), contentType: 'image/png' });
+      await testInfo.attach('dimensions', {
+        body: JSON.stringify({ wide, narrow, beforePanel, panelNarrow, panelWide }, null, 2),
+        contentType: 'application/json',
+      });
+    });
+  }
+
   test('add a tag to a page', async ({ page }) => {
     const created = await page.request.post('/api/pages', {
       headers: bearerHeaders(session),
