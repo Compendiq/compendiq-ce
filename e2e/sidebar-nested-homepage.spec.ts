@@ -51,7 +51,9 @@ test('nested Confluence homepage is detached before its children are promoted', 
     await expect(rows).toHaveCount(3);
     for (const id of [ids[0], ids[2], ids[3]]) await expect(page.locator(`[role="treeitem"][data-page-id="${id}"]`)).toHaveCount(1);
     await expect(page.locator(`[role="treeitem"][data-page-id="${ids[1]}"]`)).toHaveCount(0);
-    await testInfo.attach('nested-homepage', { body: await page.screenshot(), contentType: 'image/png' });
+    const screenshot = testInfo.outputPath('nested-homepage.png');
+    await page.screenshot({ path: screenshot });
+    await testInfo.attach('nested-homepage', { path: screenshot, contentType: 'image/png' });
     await ancestor.focus();
     await page.keyboard.press('ArrowDown');
     const focusedId = await page.locator('[role="treeitem"]:focus').getAttribute('data-page-id');
