@@ -3,6 +3,7 @@ import { authenticateContext, bearerHeaders, registerUser, uniqueUsername, type 
 
 test.describe('Keyboard shortcuts', () => {
   let session: E2eUser;
+  let cleanup: { spaceKey: string; ids: string[] } | undefined;
   test.beforeEach(async ({ context, page }) => {
     session = await registerUser(context.request, uniqueUsername('e2e_kb'));
     expect(session.user.role).toBe('user');
@@ -12,6 +13,19 @@ test.describe('Keyboard shortcuts', () => {
     // Keep keyboard shortcuts out of text-entry controls without clicking an
     // arbitrary body coordinate that might activate a card or focus search.
     await page.getByRole('heading', { name: 'Library', exact: true }).focus();
+  });
+
+  test.afterEach(async ({ request }) => {
+    if (!cleanup) return;
+    const { spaceKey, ids } = cleanup;
+    cleanup = undefined;
+    const headers = bearerHeaders(session);
+    if (ids.length) {
+      const removed = await request.post('/api/pages/bulk/delete', { headers, data: { ids } });
+      expect(removed.ok(), await removed.text()).toBeTruthy();
+    }
+    const removedSpace = await request.delete(`/api/spaces/local/${spaceKey}`, { headers });
+    expect(removedSpace.ok(), await removedSpace.text()).toBeTruthy();
   });
 
   test('question mark opens shortcut discovery', async ({ page }) => {
@@ -44,14 +58,16 @@ test.describe('Keyboard shortcuts', () => {
       headers: bearerHeaders(session), data: { key: spaceKey, name: spaceKey },
     });
     expect(space.ok(), await space.text()).toBeTruthy();
+    cleanup = { spaceKey, ids: [] };
     const firstTitle = uniqueUsername('PaletteFirst');
     const secondTitle = uniqueUsername('PaletteSecond');
     for (const title of [firstTitle, secondTitle]) {
       const created = await page.request.post('/api/pages', {
         headers: bearerHeaders(session),
-        data: { title, bodyHtml: '<p>Palette fixture</p>', spaceKey },
+        data: { title, bodyHtml: '<p>Palette fixture</p>', spaceKey, visibility: 'private' },
       });
       expect(created.ok(), await created.text()).toBeTruthy();
+      cleanup.ids.push(String((await created.json() as { id: number }).id));
     }
     const pending = Promise.withResolvers<void>();
     const requestStarted = Promise.withResolvers<void>();
