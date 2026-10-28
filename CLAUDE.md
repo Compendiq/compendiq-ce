@@ -6,6 +6,10 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 
 **Compendiq** — AI knowledge-base app over Confluence Data Center, multi-LLM (Ollama, OpenAI-compatible). Confluence is **per-user optional**: with `user_settings.confluence_enabled` off the app runs standalone — every feature works against the local corpus and nothing syncs (#1623; see *Confluence Integration Toggle*). Monorepo: `backend/` (Fastify 5 + Postgres + Redis), `frontend/` (React 19 + Vite), `packages/contracts/` (shared Zod schemas).
 
+Trash distinguishes a failed read from a successful empty list. A failed
+refresh retains cached results with a stale warning; retry keeps its control
+mounted and focusable until the request settles, then rehomes orphaned focus.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
