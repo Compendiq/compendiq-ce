@@ -8,7 +8,7 @@ import { PanelHeader } from '../PanelHeader';
 import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 import { BackupKmsCard } from './BackupKmsCard';
 import { BackupObjectLockCard } from './BackupObjectLockCard';
-import { useNoticeRetry } from './use-notice-retry';
+import { useNoticeRetry } from '../../../shared/hooks/use-notice-retry';
 
 const S3_FORM_KEYS = [
   's3Enabled',

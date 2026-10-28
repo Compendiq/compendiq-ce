@@ -7,7 +7,7 @@ import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { Button, IconButton } from '../../shared/components/Button';
 import { ApiError } from '../../shared/lib/api';
-import { useNoticeRetry } from '../settings/panels/use-notice-retry';
+import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
 
 /**
  * The server's reason, when there is one. A restore can be REFUSED with a
