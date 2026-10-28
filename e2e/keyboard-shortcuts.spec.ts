@@ -1,9 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { authenticateContext, registerUser, uniqueUsername } from './helpers/auth';
+import { authenticateContext, bearerHeaders, registerUser, uniqueUsername, type E2eUser } from './helpers/auth';
 
 test.describe('Keyboard shortcuts', () => {
+  let session: E2eUser;
+  let cleanup: { spaceKey: string; ids: string[] } | undefined;
   test.beforeEach(async ({ context, page }) => {
-    const session = await registerUser(context.request, uniqueUsername('e2e_kb'));
+    session = await registerUser(context.request, uniqueUsername('e2e_kb'));
     expect(session.user.role).toBe('user');
     await authenticateContext(context, session);
     await page.goto('/');
@@ -11,6 +13,19 @@ test.describe('Keyboard shortcuts', () => {
     // Keep keyboard shortcuts out of text-entry controls without clicking an
     // arbitrary body coordinate that might activate a card or focus search.
     await page.getByRole('heading', { name: 'Library', exact: true }).focus();
+  });
+
+  test.afterEach(async ({ request }) => {
+    if (!cleanup) return;
+    const { spaceKey, ids } = cleanup;
+    cleanup = undefined;
+    const headers = bearerHeaders(session);
+    if (ids.length) {
+      const removed = await request.post('/api/pages/bulk/delete', { headers, data: { ids } });
+      expect(removed.ok(), await removed.text()).toBeTruthy();
+    }
+    const removedSpace = await request.delete(`/api/spaces/local/${spaceKey}`, { headers });
+    expect(removedSpace.ok(), await removedSpace.text()).toBeTruthy();
   });
 
   test('question mark opens shortcut discovery', async ({ page }) => {
@@ -35,6 +50,67 @@ test.describe('Keyboard shortcuts', () => {
     await expect(palette).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(palette).toBeHidden();
+  });
+
+  test('palette binds page results to the current query through debounce and request', async ({ page }, testInfo) => {
+    const spaceKey = `PAL${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const space = await page.request.post('/api/spaces/local', {
+      headers: bearerHeaders(session), data: { key: spaceKey, name: spaceKey },
+    });
+    expect(space.ok(), await space.text()).toBeTruthy();
+    cleanup = { spaceKey, ids: [] };
+    const firstTitle = uniqueUsername('PaletteFirst');
+    const secondTitle = uniqueUsername('PaletteSecond');
+    for (const title of [firstTitle, secondTitle]) {
+      const created = await page.request.post('/api/pages', {
+        headers: bearerHeaders(session),
+        data: { title, bodyHtml: '<p>Palette fixture</p>', spaceKey, visibility: 'private' },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      cleanup.ids.push(String((await created.json() as { id: number }).id));
+    }
+    const pending = Promise.withResolvers<void>();
+    const requestStarted = Promise.withResolvers<void>();
+    await page.route('**/api/pages?*', async (route) => {
+      if (new URL(route.request().url()).searchParams.get('search') !== secondTitle) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      requestStarted.resolve();
+      await pending.promise;
+      await route.fulfill({ response });
+    });
+    await page.goto('/');
+    await page.getByRole('heading', { name: 'Library', exact: true }).focus();
+    await page.keyboard.press('ControlOrMeta+k');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    const input = palette.getByRole('combobox');
+    await input.fill(firstTitle);
+    const firstRow = palette.getByRole('option', { name: new RegExp(firstTitle) });
+    await expect(firstRow).toBeVisible();
+    const firstBounds = await firstRow.boundingBox();
+    expect(firstBounds).not.toBeNull();
+    await input.fill(secondTitle);
+    await page.mouse.click(firstBounds!.x + 10, firstBounds!.y + firstBounds!.height / 2);
+    await expect(palette).toBeVisible();
+    await expect(palette.getByRole('option', { name: new RegExp(firstTitle) })).toHaveCount(0);
+    await expect(palette.getByRole('status')).toHaveText('Searching...');
+    await input.press('Enter');
+    await expect(palette).toBeVisible();
+    await requestStarted.promise;
+    await expect(palette.getByRole('option', { name: new RegExp(firstTitle) })).toHaveCount(0);
+    await page.mouse.click(firstBounds!.x + 10, firstBounds!.y + firstBounds!.height / 2);
+    await expect(palette).toBeVisible();
+    await input.press('Enter');
+    await expect(palette).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('pending.png') });
+    pending.resolve();
+    await expect(palette.getByRole('option', { name: new RegExp(secondTitle) })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('resolved.png') });
+    await input.press('Enter');
+    await expect(palette).toBeHidden();
+    await expect(page.getByRole('heading', { name: secondTitle, exact: true })).toBeVisible();
   });
 
   test('ControlOrMeta+/ also opens shortcut discovery', async ({ page }) => {
