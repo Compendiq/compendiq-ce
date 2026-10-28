@@ -94,11 +94,13 @@ test.describe('Pages CRUD', () => {
       await expect.poll(async () => (await measure()).width).toBeLessThan(beforePanel.width);
       await assertFits();
       const panelNarrow = await measure();
+      expect(panelNarrow.height).toBeGreaterThan(beforePanel.height);
       await testInfo.attach('panel-narrow', { body: await page.screenshot(), contentType: 'image/png' });
       await separator.dblclick();
       await expect.poll(async () => (await measure()).width).toBeGreaterThan(panelNarrow.width);
       await assertFits();
       const panelWide = await measure();
+      expect(panelWide.height).toBeLessThan(panelNarrow.height);
       await testInfo.attach('panel-wide', { body: await page.screenshot(), contentType: 'image/png' });
       await testInfo.attach('dimensions', {
         body: JSON.stringify({ wide, narrow, beforePanel, panelNarrow, panelWide }, null, 2),
