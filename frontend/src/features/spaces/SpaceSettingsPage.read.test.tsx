@@ -18,15 +18,26 @@ afterEach(() => vi.restoreAllMocks());
 describe('local space read states', () => {
   it('loads, reports a failure and retries to a real list', async () => {
     const { promise, resolve } = Promise.withResolvers<Response>();
-    const fetch = vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(promise).mockResolvedValueOnce(response([space]));
+    const retry = Promise.withResolvers<Response>();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(promise).mockReturnValueOnce(retry.promise);
     renderPage();
     expect(screen.getByRole('status')).toHaveTextContent('Loading local spaces');
     expect(screen.queryByText(/Space not found/)).not.toBeInTheDocument();
     await act(async () => resolve(response({ error: 'unavailable' }, 500)));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load local spaces');
     expect(screen.queryByText(/Space not found/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const button = screen.getByRole('button', { name: 'Try again' });
+    button.focus();
+    fireEvent.click(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).toHaveTextContent('Trying again');
+    fireEvent.click(button);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await act(async () => retry.resolve(response([space])));
     expect(await screen.findByLabelText('Space Name')).toHaveValue('My Notes');
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(document.activeElement).toHaveClass('max-w-lg');
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -37,7 +48,8 @@ describe('local space read states', () => {
   });
 
   it('keeps unsaved edits through failed and successful refetches', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response([space])).mockResolvedValueOnce(response({ error: 'unavailable' }, 500)).mockResolvedValueOnce(response([{ ...space, name: 'Changed remotely', pageCount: 1 }]));
+    const retry = Promise.withResolvers<Response>();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response([space])).mockResolvedValueOnce(response({ error: 'unavailable' }, 500)).mockReturnValueOnce(retry.promise);
     const client = renderPage();
     const name = await screen.findByLabelText('Space Name');
     fireEvent.change(name, { target: { value: 'Unsaved name' } });
@@ -45,8 +57,15 @@ describe('local space read states', () => {
     await act(async () => { await client.refetchQueries({ queryKey: ['local-spaces'] }); });
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not refresh');
     expect(name).toHaveValue('Unsaved name');
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const button = screen.getByRole('button', { name: 'Try again' });
+    button.focus();
+    fireEvent.click(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    name.focus();
+    await act(async () => retry.resolve(response([{ ...space, name: 'Changed remotely', pageCount: 1 }])));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(name).toHaveFocus();
     expect(name).toHaveValue('Unsaved name');
     expect(screen.getByLabelText('Description')).toHaveValue('Unsaved description');
   });

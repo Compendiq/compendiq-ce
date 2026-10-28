@@ -10,16 +10,20 @@ import { getSpaceIcon } from '../../shared/components/spaces/space-icons';
 import { SpaceIconPicker } from './SpaceIconPicker';
 import { toast } from 'sonner';
 import { Button } from '../../shared/components/Button';
+import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
 
 export function SpaceSettingsPage() {
   const navigate = useNavigate();
   const { key } = useParams<{ key: string }>();
-  const { data: spacesData, isPending, isError, isFetching, refetch } = useLocalSpaces();
+  const { data: spacesData, isPending, isError, refetch } = useLocalSpaces();
   const updateSpace = useUpdateLocalSpace();
   const deleteSpace = useDeleteLocalSpace();
 
   const localSpaces = Array.isArray(spacesData) ? spacesData : [];
   const space = localSpaces.find((s) => s.key === key);
+  const unreadable = isError || (!isPending && !Array.isArray(spacesData));
+  const focusTarget = useRef<HTMLDivElement | null>(null);
+  const { retryInFlight, onRetry } = useNoticeRetry(refetch, unreadable, focusTarget);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -106,12 +110,12 @@ export function SpaceSettingsPage() {
   // The saved identity mark: the space's chosen icon, HardDrive when unset.
   const SpaceGlyph = getSpaceIcon(space?.icon);
 
-  if (!space && (isError || (!isPending && !Array.isArray(spacesData)))) {
+  if (!space && (unreadable || retryInFlight)) {
     return (
       <div className="mx-auto max-w-lg text-center py-12" role="alert">
         <p className="text-muted-foreground">Could not load local spaces. Try again.</p>
-        <Button className="mt-4" onClick={() => void refetch()} disabled={isFetching}>
-          {isFetching ? 'Trying again…' : 'Try again'}
+        <Button className="mt-4" onClick={onRetry} aria-disabled={retryInFlight}>
+          {retryInFlight ? 'Trying again…' : 'Try again'}
         </Button>
       </div>
     );
@@ -127,7 +131,7 @@ export function SpaceSettingsPage() {
 
   if (!space) {
     return (
-      <div className="mx-auto max-w-lg text-center py-12">
+      <div ref={focusTarget} tabIndex={-1} className="mx-auto max-w-lg text-center py-12">
         <p className="text-muted-foreground">Space not found or is not a local space.</p>
         <button
           onClick={() => navigate(-1)}
@@ -140,12 +144,12 @@ export function SpaceSettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-lg">
-      {isError && (
+    <div ref={focusTarget} tabIndex={-1} className="mx-auto max-w-lg">
+      {(isError || retryInFlight) && (
         <div className="mb-4" role="alert">
           <p className="text-muted-foreground">Could not refresh local spaces. Your edits are still available.</p>
-          <Button className="mt-2" onClick={() => void refetch()} disabled={isFetching}>
-            {isFetching ? 'Trying again…' : 'Try again'}
+          <Button className="mt-2" onClick={onRetry} aria-disabled={retryInFlight}>
+            {retryInFlight ? 'Trying again…' : 'Try again'}
           </Button>
         </div>
       )}
