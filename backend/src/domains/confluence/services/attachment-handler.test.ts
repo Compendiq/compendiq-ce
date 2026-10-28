@@ -41,6 +41,9 @@ vi.mock('../../../core/utils/ssrf-guard.js', () => ({
   assertNonSsrfUrl: (...args: unknown[]) => mockAssertNonSsrfUrl(...args),
 }));
 
+const files = vi.hoisted(() => new Map<string, Buffer>());
+const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+
 // Mock fs to avoid real filesystem operations.
 // fs.access defaults to REJECT (ENOENT) so tests see a cold cache by default.
 // Use (fs.access as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
@@ -49,6 +52,19 @@ vi.mock('fs/promises', () => ({
   default: {
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    open: vi.fn(async (filename: string) => {
+      const data = files.get(filename);
+      if (!data) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return {
+        stat: async () => ({ size: data.length }),
+        read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+          bytesRead: data.copy(buffer, offset, position, position + length),
+          buffer,
+        }),
+        close: async () => {},
+      };
+    }),
+    rename: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn().mockResolvedValue(Buffer.from('test')),
     access: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
     rm: vi.fn().mockResolvedValue(undefined),
@@ -90,7 +106,10 @@ describe('attachment-handler', () => {
     vi.mocked(fs.access).mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     // Restore other fs mocks to their working defaults after clearAllMocks
     vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    files.clear();
+    vi.mocked(fs.writeFile).mockImplementation(async (filename, data) => {
+      files.set(String(filename), Buffer.from(data as Buffer));
+    });
     vi.mocked(fs.readFile).mockResolvedValue(Buffer.from('test'));
     vi.mocked(fs.rm).mockResolvedValue(undefined);
     vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
@@ -297,7 +316,7 @@ describe('attachment-handler', () => {
 
   describe('fetchAndCacheAttachment', () => {
     it('fetches attachment from Confluence, caches it, and returns the buffer', async () => {
-      const imageData = Buffer.from('iVBORw0KGgo=', 'base64');
+      const imageData = validPng;
       const client = createMockClient();
       (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
         results: makeAttachments([
@@ -606,7 +625,7 @@ describe('attachment-handler', () => {
     });
 
     it('fetchAndCacheAttachment matches attachment with different casing', async () => {
-      const imageData = Buffer.from('iVBORw0KGgo=', 'base64');
+      const imageData = validPng;
       const client = createMockClient();
       (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
         results: makeAttachments([
@@ -751,7 +770,7 @@ describe('attachment-handler', () => {
       });
 
       it('uses in-memory download for small on-demand attachments', async () => {
-        const smallData = Buffer.from('iVBORw0KGgo=', 'base64');
+        const smallData = validPng;
         const client = createMockClient();
         (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
           results: [{
@@ -772,7 +791,7 @@ describe('attachment-handler', () => {
       });
 
       it('uses in-memory download when attachment has no fileSize metadata', async () => {
-        const data = Buffer.from('iVBORw0KGgo=', 'base64');
+        const data = validPng;
         const client = createMockClient();
         (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
           results: [{
@@ -924,7 +943,7 @@ describe('attachment-handler', () => {
       (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
         results: makeAttachments([{ title: 'logo.png', download: '/download/logo.png' }]),
       });
-      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('data'));
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(validPng);
 
       await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png', null);
 

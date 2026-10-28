@@ -686,7 +686,7 @@ describe('PageViewPage', () => {
   });
 
   it('shows error toast when draw.io attachment fetch returns non-OK status', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(null, { status: 404, statusText: 'Not Found' }),
     );
 
@@ -695,7 +695,7 @@ describe('PageViewPage', () => {
     fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
 
     await waitFor(() => {
-      // The draw.io editor should NOT be opened on fetch failure
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
       expect(screen.queryByTestId('drawio-editor')).not.toBeInTheDocument();
     });
 
@@ -707,11 +707,10 @@ describe('PageViewPage', () => {
     // /api/local-attachments, not /api/attachments (which would 404).
     currentMockPage = { ...mockPage, confluenceId: null as unknown as string };
 
-    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
     const fakeResponse = {
       ok: true,
       status: 200,
-      blob: () => Promise.resolve(pngBlob),
+      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -722,18 +721,17 @@ describe('PageViewPage', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('/api/local-attachments/page-1/my-diagram.png');
+    expect(url).toBe('/api/local-attachments/page-1/my-diagram.drawio');
     expect(String(url)).not.toMatch(/\/api\/attachments\//);
 
     fetchSpy.mockRestore();
   });
 
   it('routes Confluence-page diagram edit fetch to /api/attachments', async () => {
-    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
     const fakeResponse = {
       ok: true,
       status: 200,
-      blob: () => Promise.resolve(pngBlob),
+      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -744,8 +742,26 @@ describe('PageViewPage', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('/api/attachments/98765432/my-diagram.png');
+    expect(url).toBe('/api/attachments/98765432/my-diagram.drawio');
 
+    fetchSpy.mockRestore();
+  });
+
+  it.each([
+    [null, '/api/local-attachments/page-1/my-diagram'],
+    ['98765432', '/api/attachments/98765432/my-diagram'],
+  ])('falls back to a legacy PNG when source is absent (%s)', async (confluenceId, base) => {
+    currentMockPage = { ...mockPage, confluenceId: confluenceId as string };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: () => Promise.resolve(new Blob(['png-bytes'], { type: 'image/png' })),
+      } as Response);
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+    await waitFor(() => expect(screen.getByTestId('drawio-save-trigger')).toBeInTheDocument());
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([`${base}.drawio`, `${base}.png`]);
     fetchSpy.mockRestore();
   });
 
@@ -753,11 +769,10 @@ describe('PageViewPage', () => {
     // Standalone/local page: handleDrawioSave must PUT to /local-attachments.
     currentMockPage = { ...mockPage, confluenceId: null as unknown as string };
 
-    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
     const fakeResponse = {
       ok: true,
       status: 200,
-      blob: () => Promise.resolve(pngBlob),
+      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -789,11 +804,10 @@ describe('PageViewPage', () => {
   });
 
   it('routes Confluence-page diagram save PUT to /attachments', async () => {
-    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
     const fakeResponse = {
       ok: true,
       status: 200,
-      blob: () => Promise.resolve(pngBlob),
+      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
