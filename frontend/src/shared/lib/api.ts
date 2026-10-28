@@ -1,4 +1,4 @@
-import { LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
+import { AuthResponseSchema, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
 import { discardDraftsOnSignOut } from './editor-drafts';
@@ -27,8 +27,8 @@ export class ApiError extends Error {
 }
 
 /**
- * The refresh did not complete, but the session may still be valid: a network
- * error, a server or proxy error, 408/429, or the backend's retry-safe busy
+ * The refresh outcome is indeterminate: a network error, an unusable success
+ * body, a server or proxy error, 408/429, or the backend's retry-safe busy
  * 503 on every attempt. Callers keep the session and surface this error
  * instead of logging out.
  */
@@ -55,9 +55,9 @@ const REFRESH_BUSY = Symbol('refresh busy');
  * One `POST /auth/refresh`. Resolves the new access token, `null` when the
  * session is gone (401/403 and other non-transient 4xx), or REFRESH_BUSY for
  * the backend's retry-safe busy 503. Rejects with RefreshUnavailableError for
- * every other transient failure without retrying: after a network error or a
- * proxy 5xx the rotation may already have committed, and presenting the
- * consumed cookie again would be treated as token reuse.
+ * every other indeterminate failure without retrying: after a network error,
+ * proxy 5xx or unusable success body the rotation may already have committed,
+ * and presenting the consumed cookie again would be treated as token reuse.
  */
 async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
   let res: Response;
@@ -70,13 +70,17 @@ async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
     throw new RefreshUnavailableError();
   }
   if (res.ok) {
-    try {
-      const data = await res.json();
-      useAuthStore.getState().setAuth(data.accessToken, data.user);
-      return data.accessToken;
-    } catch {
-      return null;
+    const body: unknown = await res.json().catch(() => {
+      throw new RefreshUnavailableError();
+    });
+    const parsed = AuthResponseSchema.safeParse(body);
+    if (!parsed.success || !parsed.data.accessToken.trim()) {
+      throw new RefreshUnavailableError();
     }
+    // Validate everything before setAuth persists or broadcasts the session.
+    const { accessToken, user } = parsed.data;
+    useAuthStore.getState().setAuth(accessToken, user);
+    return accessToken;
   }
   if (await isMarkedBusy(res, REFRESH_BUSY_CODE)) return REFRESH_BUSY;
   if (res.status >= 500 || res.status === 408 || res.status === 429) throw new RefreshUnavailableError();

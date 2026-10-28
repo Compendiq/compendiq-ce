@@ -79,7 +79,7 @@ describe('App – ProtectedRoute token restoration', () => {
       if (url.includes('/auth/refresh')) {
         return new Response(JSON.stringify({
           accessToken: 'restored-token',
-          user: { id: '1', username: 'test', role: 'user' },
+          user: { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' },
         }), {
           status: 200,
           headers: { 'content-type': 'application/json' },

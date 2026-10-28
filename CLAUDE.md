@@ -156,9 +156,12 @@ it is not re-entrant, so hold it around the request only.
 (then `clearAuth()`). It retries only the backend's marked busy 503
 (`REFRESH_BUSY_CODE`, `code: "refresh_busy"`), taking the lock per attempt and
 adopting a sibling tab's token on each acquisition; network errors and other
-5xx/408/429 are never retried (the rotation may have committed). All of these
-reject with `RefreshUnavailableError` — callers must keep auth state on that
-rejection.
+5xx/408/429 are never retried (the rotation may have committed). Successful
+refresh bodies must pass `AuthResponseSchema` and contain a nonblank access
+token before `setAuth` mutates, persists or broadcasts anything (#1800).
+Unreadable bodies, invalid JSON and invalid success shapes (including JSON
+`null`) reject with `RefreshUnavailableError` without retry, just like other
+indeterminate outcomes — callers must keep auth state on that rejection.
 
 **Editor drafts are per-account (GHSA-r652-53hc-h6jh).** Local editor drafts
 live in `localStorage`, shared by every account in the browser. Build and

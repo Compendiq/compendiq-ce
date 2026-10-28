@@ -13,7 +13,7 @@ vi.mock('../../stores/auth-store', () => ({
 
 const { fetchJson, FetchJsonError } = await import('./fetch-json');
 
-const USER = { id: '1', username: 'test', role: 'user' };
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
 
 describe('fetchJson', () => {
   beforeEach(() => {

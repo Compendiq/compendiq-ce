@@ -46,7 +46,9 @@ sequenceDiagram
     BE->>DB: UPDATE refresh_tokens SET revoked WHERE jti AND NOT revoked RETURNING
     alt claimed
         BE->>DB: INSERT successor (same family), COMMIT
-        BE-->>FE: 200 { accessToken (new) }<br/>Set-Cookie: successor
+        BE-->>FE: 200 { accessToken (new), user }<br/>Set-Cookie: successor
+        FE->>FE: validate AuthResponseSchema and nonblank token before auth mutation
+        Note over FE: Unreadable or invalid success: keep auth,<br/>reject RefreshUnavailableError, do not retry
     else already revoked (replay or concurrent loser)
         BE->>DB: revoke whole family, COMMIT
         BE-->>FE: 401
@@ -159,10 +161,14 @@ the backend's retry-safe busy `503` (body `code: "refresh_busy"`,
 `REFRESH_BUSY_CODE` in `@compendiq/contracts`) is retried, after 1s and 3s.
 Each attempt takes the cross-tab lock on its own, so the lock is free during the
 backoff, and each acquisition first adopts a token another tab refreshed
-meanwhile. A network error, any other `5xx`, `408` or `429` is not retried —
-after a lost response or a proxy error the rotation may already have
-committed, and presenting the consumed cookie again would be token reuse. Both
-cases reject with `RefreshUnavailableError` (an `ApiError` with status `503`).
+meanwhile. A network error, any other `5xx`, `408` or `429`, or an unreadable,
+malformed or unusable success body is not retried — rotation may already have
+committed, and presenting the consumed cookie again would be token reuse.
+Successful bodies must pass `AuthResponseSchema` and carry a nonblank access
+token before any auth mutation, persistence or broadcast (#1800). A JSON `null`
+body is invalid success, not evidence of session loss. These indeterminate
+outcomes and exhausted busy attempts reject with `RefreshUnavailableError`
+(an `ApiError` with status `503`).
 Callers keep the session and surface that error — `apiFetch` throws it,
 `useSessionInit` leaves auth as is, presence reconnects with backoff and the
 collaboration socket rejoins after a pause that doubles from 1s up to 30s and
