@@ -477,6 +477,8 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 
 Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
 
+Edits made while a save is in progress remain in the form and require a subsequent save; the completed request only saves the values submitted with it.
+
 ### Enterprise
 
 | Variable | Default | Description |
