@@ -11,6 +11,11 @@ Source-of-truth docs:
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
 - Enterprise design → `@docs/ENTERPRISE-ARCHITECTURE.md`
 
+The graph landing picker distinguishes search failures from successful empty
+results and retries the current query. Cached results may remain visible after
+a refetch failure only for their own query key; the two-character threshold,
+large-graph gate, and full-graph escape remain independent.
+
 ## Mandatory Rules
 
 1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.

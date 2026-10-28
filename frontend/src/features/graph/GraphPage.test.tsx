@@ -615,6 +615,97 @@ describe('GraphPage', () => {
     totalPages: 500, embeddedPages: 480, dirtyPages: 20, totalEmbeddings: 4000, isProcessing: false,
   };
 
+  it('distinguishes a failed picker search from an empty result and retries the same query', async () => {
+    let fail = true;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/embeddings/status')) {
+        return new Response(JSON.stringify(largeEmbeddedStatus), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/search?')) {
+        return new Response(JSON.stringify(fail ? { error: 'Unavailable' } : { items: [], total: 0 }), {
+          status: fail ? 503 : 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    render(<GraphPage />, { wrapper: createWrapper() });
+    const input = await screen.findByTestId('graph-picker-input');
+    fireEvent.change(input, { target: { value: 'x' } });
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/search?'))).toBe(false);
+    fireEvent.change(input, { target: { value: 'missing' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not search pages');
+    expect(screen.queryByTestId('graph-picker-no-results')).not.toBeInTheDocument();
+    fail = false;
+    const retry = screen.getByRole('button', { name: 'Retry search' });
+    retry.focus();
+    fireEvent.click(retry);
+    expect(await screen.findByTestId('graph-picker-no-results')).toHaveTextContent('missing');
+    expect(input).toHaveFocus();
+    expect(screen.getByTestId('graph-show-full-btn')).toBeInTheDocument();
+  });
+
+  it('retains only cached results for the failed query', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).includes('/embeddings/status')) {
+        return new Response(JSON.stringify(largeEmbeddedStatus), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } });
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['search', { q: 'alpha', page: 1 }], { items: [{ id: 1, title: 'Alpha result' }], total: 1 });
+    render(
+      <QueryClientProvider client={client}>
+        <LazyMotion features={domAnimation}><MemoryRouter initialEntries={['/graph']}><GraphPage /></MemoryRouter></LazyMotion>
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByTestId('graph-picker-input');
+    fireEvent.change(input, { target: { value: 'alpha' } });
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('Alpha result')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'beta' } });
+    await waitFor(() => expect(screen.queryByText('Alpha result')).not.toBeInTheDocument());
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByTestId('graph-picker-no-results')).not.toBeInTheDocument();
+  });
+
+  it('does not let an earlier retry move focus from a later query retry', async () => {
+    const calls = new Map<string, number>();
+    const pending = new Map<string, (response: Response) => void>();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/embeddings/status')) {
+        return new Response(JSON.stringify(largeEmbeddedStatus), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const query = new URL(url, 'http://localhost').searchParams.get('q')!;
+      const count = (calls.get(query) ?? 0) + 1;
+      calls.set(query, count);
+      if (count === 1) return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } });
+      const { promise, resolve } = Promise.withResolvers<Response>();
+      pending.set(query, resolve);
+      return promise;
+    });
+    render(<GraphPage />, { wrapper: createWrapper() });
+    const input = await screen.findByTestId('graph-picker-input');
+    fireEvent.change(input, { target: { value: 'alpha' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry search' }));
+    await waitFor(() => expect(pending.has('alpha')).toBe(true));
+    fireEvent.change(input, { target: { value: 'beta' } });
+    const retry = await screen.findByRole('button', { name: 'Retry search' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(pending.has('beta')).toBe(true));
+    await act(async () => {
+      pending.get('alpha')!(new Response('{"items":[],"total":0}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    });
+    expect(retry).toHaveFocus();
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => {
+      pending.get('beta')!(new Response('{"items":[],"total":0}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    });
+    await waitFor(() => expect(input).toHaveFocus());
+  });
+
   it('renders the article-picker landing for a large corpus — does NOT fetch the global graph (#360)', async () => {
     const fetchSpy = mockFetchRoutes([
       ['/embeddings/status', largeEmbeddedStatus],

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Graph article picker (#1804):** distinguish failed searches from empty
+  results and offer a retry, retaining cached results only for the same query.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on
