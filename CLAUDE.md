@@ -732,6 +732,13 @@ The CE fallback `GET /api/admin/license` route registers **only** when `enterpri
 
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
 
+**Access Control user caches (#1809).** `['admin', 'users']` stores the
+`/admin/users` envelope; approver pickers select its `users` array without
+changing the cached shape. `/users` is a distinct RBAC list under the child key
+`['admin', 'users', 'rbac']`. User lifecycle and bulk mutations invalidate the
+`['admin', 'users']` prefix so both lists refresh; do not merge their endpoints
+or store arrays under the envelope key.
+
 ## Article Connections (#1314)
 
 Connections belongs below the read-mode article, not on another canvas. Keep
