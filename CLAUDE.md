@@ -1208,6 +1208,12 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+PDF tables split tall rows at wrapped-line boundaries across pages, retaining
+column positions and borders. A fitting first header row repeats on continuation
+pages only when it leaves room for at least one body line; an oversized header
+itself continues without repetition. Spanning cells and non-Latin font coverage
+are separate limitations.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.
