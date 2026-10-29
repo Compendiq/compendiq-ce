@@ -461,6 +461,13 @@ The knowledge graph provides a visual map of relationships between pages:
 2. Explore connections between pages based on links, tags, and semantic similarity.
 3. Click on nodes to navigate to specific pages.
 
+## Trash
+
+Trash lists deleted local pages and lets you restore them before automatic
+purge. If Trash cannot be loaded, use **Retry**; a failed read does not mean
+the bin is empty. If a refresh fails, the last loaded results remain visible
+with a warning that they may be out of date.
+
 ## Keyboard Shortcuts
 
 Press `?` or `Ctrl+/` to open the keyboard shortcuts modal, then start typing in its search box to narrow the list. Key shortcuts:
