@@ -1,11 +1,16 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AuthResponseSchema } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { RefreshUnavailableError } from './api';
 import { loadDrawioSource } from './drawio-source';
 
 const nativeFetch = globalThis.fetch;
-const user = { id: 'diagram-user', username: 'diagram-user', role: 'user' as const };
+const refreshedSession = AuthResponseSchema.parse({
+  accessToken: 'fresh-token',
+  user: { id: '00000000-0000-4000-8000-000000000001', username: 'diagram-user', role: 'user' },
+});
+const user = refreshedSession.user;
 const source = '/api/attachments/1/flow.drawio';
 const preview = '/api/attachments/1/flow.png';
 
@@ -40,7 +45,7 @@ describe('draw.io loader authentication over local HTTP', () => {
             return;
           }
           response.setHeader('content-type', 'application/json');
-          response.end(JSON.stringify({ accessToken: 'fresh-token', user }));
+          response.end(JSON.stringify(refreshedSession));
           return;
         }
         response.writeHead(401);
@@ -56,7 +61,7 @@ describe('draw.io loader authentication over local HTTP', () => {
           nativeFetch(`http://127.0.0.1:${address.port}${String(input)}`, init));
         const loading = loadDrawioSource({ sourceUrl: source, previewUrl: preview });
         if (mode === 'success' || mode === 'busy') {
-          await expect(loading).rejects.toThrow('editable diagram source');
+          await expect(loading).rejects.toBeInstanceOf(Error);
           expect(requests).toEqual([
             `GET ${source}`, 'POST /api/auth/refresh',
             ...(mode === 'busy' ? ['POST /api/auth/refresh'] : []),

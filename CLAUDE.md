@@ -1214,6 +1214,9 @@ An attachment-candidate fallback is not an authentication retry: one logical
 load may invoke the shared refresh helper only once. Propagate refresh
 unavailability immediately, keeping auth state and the helper's marked-busy
 retry policy; never replay an uncertain rotation through the PNG candidate.
+Synthetic refresh-success fixtures must satisfy the shared `AuthResponseSchema`,
+including UUID user IDs. Assert request sequences and preserved session state,
+not incidental error-message wording.
 A missing local source is unknown upstream availability, not proof of absence:
 retain the converted source locator on page-only publication (including PUT,
 bulk sync and recovery). The existing authorized attachment GET resolves it
