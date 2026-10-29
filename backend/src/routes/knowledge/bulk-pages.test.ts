@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -129,6 +130,8 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
       // known route module until the suite's filesystem sandbox exists.
       const { pagesCrudRoutes } = await import('./pages-crud.js');
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      const { attachmentRoutes } = await import('../confluence/attachments.js');
+      await instance.register(attachmentRoutes, { prefix: '/api' });
     });
   });
 
@@ -301,6 +304,91 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     expect(await rowForPage(pageId)).toBeUndefined();
     expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
+
+  it.each(['bulk-sync', 'page-put'] as const)(
+    'keeps cold-cache draw.io XML reachable after %s publication',
+    async (publication) => {
+      const confluenceId = `cold-${publication}`;
+      const pageId = await seedConfluencePage(confluenceId, 'Source-only diagram');
+      const storage = '<p>Keep prose</p><ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>';
+      const xml = '<mxfile><diagram id="flow"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+      const requests: string[] = [];
+      let version = 1;
+      const server = createServer(async (request, response) => {
+        const path = new URL(request.url!, 'http://localhost').pathname;
+        requests.push(`${request.method} ${path}`);
+        if (path === '/download/flow.drawio') {
+          response.setHeader('content-type', 'application/xml');
+          response.end(xml);
+          return;
+        }
+        response.setHeader('content-type', 'application/json');
+        if (path.endsWith('/child/attachment')) {
+          response.end(JSON.stringify({ results: [{
+            id: 'source', title: 'flow.drawio', version: { number: 1 },
+            _links: { download: '/download/flow.drawio' },
+          }] }));
+          return;
+        }
+        if (path === `/rest/api/content/${confluenceId}`) {
+          if (request.method === 'PUT') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString()) as { version: { number: number } };
+            version = body.version.number;
+          }
+          response.end(JSON.stringify({
+            id: confluenceId, title: 'Source-only diagram', type: 'page', status: 'current',
+            version: { number: version }, body: { storage: { value: storage } },
+            ancestors: [], metadata: { labels: { results: [] } },
+          }));
+          return;
+        }
+        response.statusCode = 404;
+        response.end('{}');
+      });
+      const listening = Promise.withResolvers<void>();
+      server.once('error', listening.reject);
+      server.listen(0, '127.0.0.1', listening.resolve);
+      await listening.promise;
+      try {
+        const address = server.address() as { port: number };
+        await query('UPDATE user_settings SET confluence_url = $2 WHERE user_id = $1',
+          [actorId, `http://127.0.0.1:${address.port}`]);
+        const undici = await vi.importActual<typeof Undici>('undici');
+        mockUndiciRequest.mockImplementation(undici.request);
+        const sourcePath = join(attachmentsDir, confluenceId, 'flow.drawio');
+        await expect(access(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+        const response = publication === 'bulk-sync'
+          ? await app.inject({ method: 'POST', url: '/api/pages/bulk/sync', payload: { ids: [confluenceId] } })
+          : await app.inject({
+            method: 'PUT', url: `/api/pages/${pageId}`,
+            payload: {
+              title: 'Source-only diagram', version: 1,
+              bodyHtml: `<p>Keep prose</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/${confluenceId}/flow.drawio"><span>Draw.io preview unavailable: flow</span></div>`,
+            },
+          });
+        expect(response.statusCode, response.body).toBe(200);
+        if (publication === 'bulk-sync') expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
+        const html = (await rowForPage(pageId))!.body_html;
+        expect(html).toContain(`data-drawio-source="/api/attachments/${confluenceId}/flow.drawio"`);
+        expect(html).toContain('Draw.io preview unavailable: flow');
+        expect(html).not.toContain('<img');
+        // Page-only publication must not silently fetch or claim cached bytes.
+        await expect(access(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(requests.some((request) => request.includes('/download/'))).toBe(false);
+        const source = await app.inject({ method: 'GET', url: `/api/attachments/${confluenceId}/flow.drawio` });
+        expect(source.statusCode, source.body).toBe(200);
+        expect(source.body).toBe(xml);
+        expect(requests).toContain('GET /download/flow.drawio');
+      } finally {
+        server.closeAllConnections();
+        const closed = Promise.withResolvers<void>();
+        server.close((error) => error ? closed.reject(error) : closed.resolve());
+        await closed.promise;
+      }
+    },
+  );
 
   it('re-syncs authorized rows independently and persists the successful remote representation', async () => {
     const goodId = await seedConfluencePage('sync-good', 'Old good');

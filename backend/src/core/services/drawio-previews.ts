@@ -45,7 +45,9 @@ export async function materializeDrawioPreviews(html: string, pageId: string): P
       await fs.access(safeAttachmentPath(pageId, `${name}.drawio`));
       diagram.setAttribute('data-drawio-source', `/api/attachments/${encodeURIComponent(pageId)}/${encodeURIComponent(`${name}.drawio`)}`);
     } catch {
-      diagram.removeAttribute('data-drawio-source');
+      // A local miss does not establish upstream absence. Keep the converted
+      // source locator for the authorized on-demand attachment GET, including
+      // page-only publications that have not synchronized attachments yet.
       missingSources.push(`${name}.drawio`);
     }
   }

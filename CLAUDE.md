@@ -1205,6 +1205,10 @@ unchanged pages, without counting an intentionally absent preview as a
 permanent download failure. Both TipTap schemas must round-trip that URL;
 read-mode editing loads XML without stale cache before trying a legacy PNG.
 Never replace a failed source load with an empty diagram.
+A missing local source is unknown upstream availability, not proof of absence:
+retain the converted source locator on page-only publication (including PUT,
+bulk sync and recovery). The existing authorized attachment GET resolves it
+on demand; only validated local raster bytes may become a preview.
 Extensionless previews are classified even beside an existing XML source;
 classification receipts suppress repeated downloads of unchanged bare sources.
 Attachment saves and their recovery publish newly valid previews into existing
