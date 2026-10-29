@@ -714,6 +714,10 @@ about what it measured, and lint, typecheck and every other suite stay green.
 - Pure utilities → test directly with real inputs.
 - Mock at the boundary (HTTP), never at the service-function layer.
 
+SMTP save success reconciles the submitted snapshot against the current draft;
+never clear the whole form: fields edited while the request is pending,
+including fields absent from its body, remain unsaved for the next request.
+
 **Browser CI (#1543).** PR Check's `Playwright E2E` job runs on relevant PRs
 (frontend, backend, contracts, E2E, build/config and workflow changes); manual
 `workflow_dispatch` runs it unconditionally. `E2E_CI=1` builds on a disposable
