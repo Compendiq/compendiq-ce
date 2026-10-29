@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createClient, type RedisClientType } from 'redis';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -83,5 +83,39 @@ describe('searchWeb cache width with real Redis and loopback SearXNG', () => {
       largeQuery,
       cappedQuery,
     ]);
+  });
+
+  it('never adopts or overwrites a legacy query entry during an upgrade', async () => {
+    redis = createClient({ url: redisUrl });
+    await redis.connect();
+    const query = `aspect ratio ${randomUUID()} 16`;
+    const legacyQuery = `${query}:9`;
+    const legacyKey = `mcp:docs:search:${createHash('sha256').update(legacyQuery).digest('hex').slice(0, 16)}`;
+    const legacy = JSON.stringify({
+      query: legacyQuery,
+      results: [{ title: 'Legacy query', url: 'https://example.test/legacy', snippet: 'Wrong query' }],
+      fetchedAt: new Date().toISOString(),
+    });
+    await redis.setEx(legacyKey, 60, legacy);
+    const currentResults = [{ title: 'Current query', url: 'https://example.test/current', content: 'Correct query' }];
+    const queries: string[] = [];
+    server = createServer((request, response) => {
+      queries.push(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ results: currentResults }));
+    });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    server.listen(0, '127.0.0.1', resolve);
+    await promise;
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Loopback server did not bind');
+    const options = { numResults: 9, searxngUrl: `http://127.0.0.1:${address.port}` };
+    const first = await searchWeb(query, redis, options);
+    expect(first).toEqual([{ title: 'Current query', url: 'https://example.test/current', snippet: 'Correct query' }]);
+    expect(await redis.get(legacyKey)).toBe(legacy);
+    // An old replica may keep writing while the new replica serves its own cache.
+    await redis.setEx(legacyKey, 60, legacy);
+    expect(await searchWeb(query, redis, options)).toEqual(first);
+    expect(queries).toEqual([query]);
   });
 });

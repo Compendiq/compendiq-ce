@@ -1372,6 +1372,9 @@ an upstream integration-point change fails the image build.
 the sanitized query plus that effective width. Keep the width in cache
 identity because cached results are already truncated; a narrower request
 must not poison a later wider request, or vice versa.
+Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
+can equal the new query-plus-width hashes. Never read legacy entries as
+width-aware results; let their TTL expire without flushing shared Redis.
 
 The MCP cache-width regression is mandatory in the sidecar test suite and uses
 real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The

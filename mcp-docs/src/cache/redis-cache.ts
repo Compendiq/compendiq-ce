@@ -30,7 +30,7 @@ function searchCacheKey(query: string, numResults: number): string {
     .update(`${query.toLowerCase()}:${numResults}`)
     .digest('hex')
     .slice(0, 16);
-  return `mcp:docs:search:${hash}`;
+  return `mcp:docs:search:v2:${hash}`;
 }
 
 export class DocsCache {

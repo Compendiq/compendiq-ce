@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **MCP `search_web` cache identity (#1787):** include the effective bounded
   result width with the sanitized query, so requests at different widths do
-  not reuse a truncated result set. Its regression requires real Redis and
-  runs in the MCP sidecar CI job; missing test configuration fails explicitly.
+  not reuse a truncated result set. A versioned namespace isolates legacy
+  query-only entries during upgrades, including mixed-version replicas.
+  Its regression requires real Redis and runs in the MCP sidecar CI job;
+  missing test configuration fails explicitly.
 
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
   Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
