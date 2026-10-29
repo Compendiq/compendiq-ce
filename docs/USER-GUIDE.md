@@ -19,6 +19,13 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
    [Standalone mode](#standalone-mode-working-without-confluence) below.
    Either direction can be changed later.
 
+In the setup wizard, **Test Connection** saves and checks the URL and PAT
+currently entered. **Continue** and space discovery become available only
+after that exact pair passes. Editing either field clears the result, even
+if an earlier test is still running; test the new values before continuing.
+Leaving the step also discards pending results. Choosing **Use Standalone
+Mode** does not require a successful connection test.
+
 ### Standalone mode: working without Confluence
 
 The **Sync with Confluence** switch sits at the top of **Settings → Confluence**
