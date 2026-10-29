@@ -1032,6 +1032,14 @@ row's *origin* (the cascade section above); `confluence_enabled` is a per-user
 integration *mode* and says nothing about any page's provenance. The collision
 of words is unfortunate and the two must not be collapsed.
 
+**Setup probes certify an exact persisted URL/PAT pair (#1807).** Every edit,
+new probe and departure invalidates earlier completions, including failures
+and toasts. Check ownership after both persistence and probing; Continue and
+space discovery use only current-pair success. Order setup settings writes
+across revisits and standalone choices, and discard the previous pair's
+available-spaces cache before revealing a newly verified picker. Keep PATs
+out of query keys and persistent browser storage.
+
 ## Library Search
 
 Search provenance comes from `pages.source`, never a space key, historical
