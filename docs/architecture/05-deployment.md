@@ -174,14 +174,22 @@ docker compose -f docker/docker-compose.yml \
 That override is the only compose file that carries `build:` sections.
 
 
-Branch tags (`:dev`, `:latest`) are **linux/amd64 only** — the Docker
-workflow publishes `linux/arm64` solely for `v*` release tags, built on
-native arm64 runners and merged with the amd64 build into one index. The four
-Compendiq services (`frontend`, `backend`, `mcp-docs`, `searxng`) therefore
-set `platform: linux/amd64` so `docker compose pull` on Apple Silicon
-requests the amd64 manifest and runs it under Rosetta, instead of 404ing
-on a missing arm64 index. `postgres` and `redis` stay unpinned: they are
-multi-arch and should run native.
+Branch builds publish only `linux/amd64`; a push to `main` can replace
+`latest` with such a build, even if a release previously made it multi-arch.
+The canonical Compose file pins the four Compendiq services to
+`linux/amd64`. The installer-generated Compose pins those services for `dev`
+and `latest` too, so a later branch publication does not break a subsequent
+pull. On ARM this requires amd64 emulation (for example Rosetta on Docker
+Desktop); it does not establish that emulation is enabled or working.
+
+For other tags the installer leaves the platform unset, so Compose selects the
+daemon's native architecture. Recent semver releases provide both amd64 and
+arm64; older releases or other tags may not. If a tag has no native manifest,
+Compose reports the pull failure: use a supported release or explicitly set
+the four service platforms to an available architecture with working emulation.
+This is not a registry availability probe. `postgres` and `redis` remain
+un-pinned and select their native images. Regenerating Compose replaces manual
+platform edits.
 
 ### MCP sidecar authentication
 

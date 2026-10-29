@@ -9,6 +9,7 @@ on:
       - 'scripts/install-path.test.sh'
       - 'scripts/install.test.sh'
       - '.github/workflows/test-installer.yml'
+      - 'scripts/install.platform.test.sh'
   workflow_dispatch:
 
 # Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
@@ -57,6 +58,10 @@ jobs:
       - name: Run install.sh --dry-run with custom flags (Docker present)
         if: matrix.docker_present
         run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0 --dir /tmp/test-compendiq
+
+      - name: Verify generated image platforms with Compose
+        if: matrix.docker_present
+        run: bash scripts/install.platform.test.sh
 
       - name: Run install.sh --dry-run (Docker absent, expect graceful failure)
         if: ${{ !matrix.docker_present }}

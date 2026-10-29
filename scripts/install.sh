@@ -248,6 +248,14 @@ write_compose() {
   local version="${COMPENDIQ_VERSION:-latest}"
   local port="${COMPENDIQ_PORT:-8080}"
 
+  # Branch publications are amd64-only. latest can be replaced by a main
+  # branch publication after generation, so keep its fallback stable as well.
+  # Release tags remain unpinned so Compose selects their native architecture.
+  local platform_line=""
+  case "$version" in
+    dev|latest) platform_line="platform: linux/amd64" ;;
+  esac
+
   # Mutable tags (latest/dev) can be silently repointed to a different image.
   # Warn operators to pin an immutable version tag or digest for reproducible,
   # tamper-evident production deploys (see docs/architecture/05-deployment.md).
@@ -272,6 +280,7 @@ write_compose() {
 services:
   frontend:
     image: ghcr.io/compendiq/compendiq-ce-frontend:__VERSION__
+    __PLATFORM__
     ports:
       - "__PORT__:8081"
     depends_on:
@@ -299,6 +308,7 @@ services:
 
   backend:
     image: ghcr.io/compendiq/compendiq-ce-backend:__VERSION__
+    __PLATFORM__
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -421,6 +431,7 @@ services:
   # MCP web-docs feature; the backend's MCP_DOCS_URL resolves to this host.
   mcp-docs:
     image: ghcr.io/compendiq/compendiq-ce-mcp-docs:__VERSION__
+    __PLATFORM__
     environment:
       NODE_ENV: production
       PORT: "3100"
@@ -458,6 +469,7 @@ services:
   # SearXNG metasearch backend used by mcp-docs for web-doc lookups.
   searxng:
     image: ghcr.io/compendiq/compendiq-ce-searxng:__VERSION__
+    __PLATFORM__
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
       SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}
@@ -497,7 +509,7 @@ networks:
 COMPOSEEOF
 
   # Replace placeholders with actual values
-  sed "s|__VERSION__|${version}|g; s|__PORT__|${port}|g" "$compose_file" > "${compose_file}.tmp"
+  sed "s|__VERSION__|${version}|g; s|__PORT__|${port}|g; s|__PLATFORM__|${platform_line}|g" "$compose_file" > "${compose_file}.tmp"
   mv "${compose_file}.tmp" "$compose_file"
 
   ok "docker-compose.yml written"
