@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import { ExternalLink, ShieldCheck } from 'lucide-react';
 import type { SettingsResponse } from '@compendiq/contracts';
@@ -32,12 +32,14 @@ function IntegrationSwitch({
   onCheckedChange,
   label,
   help,
+  saving,
 }: {
   id: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   label: string;
   help: string;
+  saving: boolean;
 }) {
   const helpId = `${id}-help`;
   return (
@@ -56,6 +58,7 @@ function IntegrationSwitch({
         checked={checked}
         onCheckedChange={onCheckedChange}
         aria-describedby={helpId}
+        aria-disabled={saving}
         className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action"
       >
         <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
@@ -64,7 +67,7 @@ function IntegrationSwitch({
   );
 }
 
-export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
+export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => Promise<unknown> }) {
   const [url, setUrl] = useState(settings.confluenceUrl ?? '');
   const [pat, setPat] = useState('');
   const [testing, setTesting] = useState(false);
@@ -77,23 +80,38 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
   // before the field existed omits it, and "unknown" means on (the column
   // defaults to TRUE), not off.
   const savedEnabled = settings.confluenceEnabled !== false;
-  // Mirrored so the switch moves on click instead of after the settings
-  // refetch; the refetched value then wins, which also reverts a failed save.
+  // Only confirmed values drive the switch, mode copy and credential form.
+  // A failed write never restores a snapshot over a newer settings read.
   const [enabled, setEnabled] = useState(savedEnabled);
   useEffect(() => setEnabled(savedEnabled), [savedEnabled]);
+  const modeSaveInFlight = useRef(false);
+  const [savingMode, setSavingMode] = useState(false);
+  const [modeError, setModeError] = useState(false);
 
   const tokenUrl = confluenceTokenUrl(url);
   const isVerified = verified !== null && verified.url === url && verified.pat === pat;
 
-  function handleToggle(next: boolean) {
-    setEnabled(next);
-    if (!next) {
-      // The form unmounts; a green banner from before the switch flipped must
-      // not greet whoever turns the integration back on.
-      setTestResult(null);
-      setVerified(null);
+  async function handleToggle(next: boolean) {
+    if (modeSaveInFlight.current) return;
+    modeSaveInFlight.current = true;
+    setSavingMode(true);
+    setModeError(false);
+    try {
+      await onSave({ confluenceEnabled: next });
+      setEnabled(next);
+      if (!next) {
+        // A confirmed mode change hides the form and retires its green result.
+        setTestResult(null);
+        setVerified(null);
+      }
+    } catch {
+      // The parent reports the request error; keep the latest confirmed mode,
+      // not the value captured when this request started.
+      setModeError(true);
+    } finally {
+      modeSaveInFlight.current = false;
+      setSavingMode(false);
     }
-    onSave({ confluenceEnabled: next });
   }
 
   async function testConnection() {
@@ -113,9 +131,13 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
     }
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    onSave({ confluenceUrl: url, ...(pat ? { confluencePat: pat } : {}) });
+    try {
+      await onSave({ confluenceUrl: url, ...(pat ? { confluencePat: pat } : {}) });
+    } catch {
+      // The shared settings mutation reports the error and the draft stays put.
+    }
   }
 
   return (
@@ -129,7 +151,15 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
           onCheckedChange={handleToggle}
           label="Sync with Confluence"
           help={enabled ? ON_HELP : OFF_HELP}
+          saving={savingMode}
         />
+        <p role="status" className={`px-4 text-xs leading-5 text-muted-foreground ${savingMode || modeError ? 'pb-4' : ''}`}>
+          {savingMode
+            ? 'Saving mode… The last confirmed mode stays active until saving finishes.'
+            : modeError
+              ? 'Could not save the mode. The last confirmed mode is still shown. Try the switch again.'
+              : ''}
+        </p>
       </div>
 
       {enabled && (

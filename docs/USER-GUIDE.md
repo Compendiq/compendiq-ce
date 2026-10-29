@@ -23,8 +23,12 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 
 The **Sync with Confluence** switch sits at the top of **Settings → Confluence**
 and is **on** by default, so an existing installation keeps behaving exactly as
-it did. It saves the moment you flip it — the panel's **Save** button only ever
-submits credentials. Turn the switch off and Compendiq runs standalone:
+it did. Clicking the switch starts saving immediately — the panel's **Save**
+button only submits credentials. While **Saving mode…** is shown, the switch
+and credential form keep the last confirmed mode, and further switch presses
+wait for that save. A failed save leaves that confirmed mode visible and
+offers another try; it never presents the unsaved choice as active.
+Once turning the switch off is confirmed, Compendiq runs standalone:
 
 - **Everything keeps working.** Pages, the editor, search, the AI assistant,
   Q&A, quality analysis, tags, notes, versions and the knowledge graph all run

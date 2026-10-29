@@ -211,31 +211,33 @@ describe('ConfluenceTab — integration toggle', () => {
     expect(copy).toMatch(/kept/i);
   });
 
-  it('saves the new flag on its own, once, without touching the credentials', () => {
-    const onSave = vi.fn();
+  it('saves the new flag on its own, once, without touching the credentials', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
     render(<ConfluenceTab settings={settings} onSave={onSave} />);
 
     fireEvent.click(screen.getByTestId('confluence-enabled'));
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: false });
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false'));
   });
 
-  it('saves the flag when switched back on', () => {
-    const onSave = vi.fn();
+  it('saves the flag when switched back on', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
     render(<ConfluenceTab settings={offSettings} onSave={onSave} />);
 
     fireEvent.click(screen.getByTestId('confluence-enabled'));
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: true });
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true'));
   });
 
-  it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', () => {
+  it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', async () => {
     render(
       <ConfluenceTab
         settings={{ ...offSettings, confluenceEnabled: true } as SettingsResponse}
-        onSave={vi.fn()}
+        onSave={vi.fn().mockResolvedValue({})}
       />,
     );
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
@@ -245,7 +247,9 @@ describe('ConfluenceTab — integration toggle', () => {
 
     // Off and on again: still masked, never an empty "paste your token" field.
     fireEvent.click(screen.getByTestId('confluence-enabled'));
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false'));
     fireEvent.click(screen.getByTestId('confluence-enabled'));
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true'));
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
       'placeholder',
       '••••••••••',

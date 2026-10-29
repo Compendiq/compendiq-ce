@@ -982,6 +982,13 @@ pulled from Confluence. Six rules fall out, and none of them is negotiable.
    read *unknown* as *off* — the one misreading that silently makes a connected
    user's workspace standalone.
 
+The settings mode switch awaits the parent's `mutateAsync` callback (#1808).
+Keep the switch, mode copy and credential form on the last confirmed value
+until the write succeeds; show a pending status and reject duplicate presses
+without removing keyboard focus. Failure never writes a rollback snapshot:
+a newer confirmed settings read or a save after remount must survive an older
+failure. Credential saves consume that same promise and retain drafts on error.
+
 **A local write succeeds; only a Confluence-ONLY operation refuses.** With the
 flag off a synced page takes the same write path a standalone page takes — the
 editor/collab save, `PUT /pages/:id` and the AI-improve apply write the local

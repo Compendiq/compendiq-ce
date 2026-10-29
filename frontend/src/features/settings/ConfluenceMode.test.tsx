@@ -1,0 +1,168 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Toaster } from 'sonner';
+import { SettingsLayout } from './SettingsLayout';
+import { SettingsPanelRoute } from './SettingsPanelRoute';
+import { useAuthStore } from '../../stores/auth-store';
+
+const clients: QueryClient[] = [];
+const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+  status, headers: { 'Content-Type': 'application/json' },
+});
+
+function settingsServer(initial: boolean | undefined) {
+  let enabled = initial;
+  const writes: Array<{ body: Record<string, unknown>; resolve: (response: Response) => void }> = [];
+  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === '/api/settings' && init?.method === 'PUT') {
+      const { promise, resolve } = Promise.withResolvers<Response>();
+      writes.push({ body: JSON.parse(String(init.body)), resolve });
+      return promise;
+    }
+    if (url === '/api/settings') {
+      return reply({ confluenceEnabled: enabled, confluenceUrl: 'https://confluence.example.test', hasConfluencePat: true });
+    }
+    if (url === '/api/settings/test-confluence') return reply({ success: true, message: 'Connected (fixture)' });
+    throw new Error(`Unexpected network request: ${url}`);
+  });
+  return {
+    writes,
+    fetch,
+    setConfirmed(value: boolean) { enabled = value; },
+    async settle(index: number, success: boolean) {
+      await act(async () => {
+        const write = writes[index];
+        if (success && typeof write.body.confluenceEnabled === 'boolean') enabled = write.body.confluenceEnabled;
+        write.resolve(success ? reply({ success: true }) : reply({ error: 'Mode save rejected (fixture)' }, 500));
+      });
+    },
+  };
+}
+
+function openSettings(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
+  clients.push(client);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/settings/personal/confluence']}>
+        <Routes>
+          <Route path="/settings" element={<SettingsLayout />}>
+            <Route path=":category/:item" element={<SettingsPanelRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+      <Toaster />
+    </QueryClientProvider>,
+  );
+  return { ...view, client };
+}
+
+beforeEach(() => {
+  useAuthStore.setState({ user: { id: 'mode-test-user', username: 'mode-test', role: 'user' }, accessToken: 'fixture-token', isAuthenticated: true });
+});
+afterEach(() => {
+  cleanup();
+  for (const client of clients.splice(0)) client.clear();
+  useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false });
+  vi.restoreAllMocks();
+});
+
+describe('Confluence mode through the real settings route and mutation', () => {
+  it.each([false, true])('keeps confirmed %s through a failed save, then permits a successful retry', async (initial) => {
+    const server = settingsServer(initial);
+    openSettings();
+    const control = await screen.findByRole('switch', { name: 'Sync with Confluence' });
+    control.focus();
+    fireEvent.click(control);
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    expect(server.writes[0].body).toEqual({ confluenceEnabled: !initial });
+    expect(control).toHaveAttribute('aria-checked', String(initial));
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    expect(control).not.toBeDisabled();
+    expect(control).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveTextContent('Saving mode');
+    expect(screen.queryByText('Settings saved')).not.toBeInTheDocument();
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(initial);
+
+    await server.settle(0, false);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+    expect(control).toHaveAttribute('aria-checked', String(initial));
+    expect(screen.getByRole('status')).toHaveTextContent('Could not save the mode');
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(initial);
+    expect(screen.queryByText('Settings saved')).not.toBeInTheDocument();
+
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(2));
+    await server.settle(1, true);
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', String(!initial)));
+    expect(control).toHaveAttribute('aria-disabled', 'false');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(!initial);
+    expect(await screen.findByText('Settings saved')).toBeInTheDocument();
+    expect(server.fetch.mock.calls.every(([url]) => String(url) === '/api/settings')).toBe(true);
+  });
+
+  it('reads a missing legacy flag as enabled and writes explicit false', async () => {
+    const server = settingsServer(undefined);
+    openSettings();
+    const control = await screen.findByRole('switch');
+    expect(control).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes[0]?.body).toEqual({ confluenceEnabled: false }));
+    await server.settle(0, true);
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  it('does not restore an old snapshot over a newer confirmed settings read on failure', async () => {
+    const server = settingsServer(true);
+    const { client } = openSettings();
+    const control = await screen.findByRole('switch');
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    server.setConfirmed(false);
+    await act(async () => { await client.invalidateQueries({ queryKey: ['settings'] }); });
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+    await server.settle(0, false);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByLabelText('Confluence URL')).not.toBeInTheDocument();
+  });
+
+  it('keeps a newer confirmed choice when an older request fails after leaving and reopening settings', async () => {
+    const server = settingsServer(true);
+    const first = openSettings();
+    fireEvent.click(await screen.findByRole('switch'));
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    first.unmount();
+    openSettings(first.client);
+    const control = await screen.findByRole('switch');
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(2));
+    await server.settle(1, true);
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+    await server.settle(0, false);
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByLabelText('Confluence URL')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('retains credential drafts when their now-awaitable save rejects', async () => {
+    const server = settingsServer(true);
+    openSettings();
+    const pat = await screen.findByLabelText(/Personal Access Token/);
+    fireEvent.change(pat, { target: { value: 'synthetic-draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    const save = screen.getByRole('button', { name: 'Save' });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    expect(server.writes[0].body).toEqual({ confluenceUrl: 'https://confluence.example.test', confluencePat: 'synthetic-draft' });
+    await server.settle(0, false);
+    expect(pat).toHaveValue('synthetic-draft');
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByText('Settings saved')).not.toBeInTheDocument();
+  });
+});
