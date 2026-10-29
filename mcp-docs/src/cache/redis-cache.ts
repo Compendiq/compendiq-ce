@@ -25,9 +25,12 @@ function urlCacheKey(url: string): string {
   return `mcp:docs:url:${hash}`;
 }
 
-function searchCacheKey(query: string): string {
-  const hash = createHash('sha256').update(query.toLowerCase()).digest('hex').slice(0, 16);
-  return `mcp:docs:search:${hash}`;
+function searchCacheKey(query: string, numResults: number): string {
+  const hash = createHash('sha256')
+    .update(`${query.toLowerCase()}:${numResults}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `mcp:docs:search:v2:${hash}`;
 }
 
 export class DocsCache {
@@ -57,10 +60,10 @@ export class DocsCache {
     }
   }
 
-  async getCachedSearch(query: string): Promise<CachedSearch | null> {
+  async getCachedSearch(query: string, numResults: number): Promise<CachedSearch | null> {
     if (!this.redis) return null;
     try {
-      const raw = await this.redis.get(searchCacheKey(query));
+      const raw = await this.redis.get(searchCacheKey(query, numResults));
       return raw ? (JSON.parse(raw) as CachedSearch) : null;
     } catch (err) {
       logger.error({ err }, 'Cache get error');
@@ -68,10 +71,18 @@ export class DocsCache {
     }
   }
 
-  async setCachedSearch(query: string, data: CachedSearch): Promise<void> {
+  async setCachedSearch(
+    query: string,
+    numResults: number,
+    data: CachedSearch,
+  ): Promise<void> {
     if (!this.redis) return;
     try {
-      await this.redis.setEx(searchCacheKey(query), this.searchTtl, JSON.stringify(data));
+      await this.redis.setEx(
+        searchCacheKey(query, numResults),
+        this.searchTtl,
+        JSON.stringify(data),
+      );
     } catch (err) {
       logger.error({ err }, 'Cache set error');
     }

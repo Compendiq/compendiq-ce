@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, RotateCcw, Trash2, Search, X, CheckSquare, Square } from 'lucide-react';
@@ -7,6 +7,7 @@ import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { Button, IconButton } from '../../shared/components/Button';
 import { ApiError } from '../../shared/lib/api';
+import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
 
 /**
  * The server's reason, when there is one. A restore can be REFUSED with a
@@ -39,7 +40,9 @@ function isAncestorConflict(error: unknown): boolean {
 
 export function TrashPage() {
   const navigate = useNavigate();
-  const { data: trashData, isLoading } = useTrash();
+  const { data: trashData, isLoading, isError, refetch } = useTrash();
+  const descriptionRef = useRef<HTMLParagraphElement>(null);
+  const { retryInFlight, onRetry } = useNoticeRetry(refetch, isError, descriptionRef);
   const restoreMutation = useRestorePage();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -184,7 +187,7 @@ export function TrashPage() {
       </HeaderHost>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-muted-foreground">
+        <p ref={descriptionRef} tabIndex={-1} className="text-sm text-muted-foreground">
           Deleted pages are automatically purged 30 days after deletion
         </p>
 
@@ -217,9 +220,27 @@ export function TrashPage() {
         )}
       </div>
 
+      {(isError || retryInFlight) && (
+        <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>
+            {trashData
+              ? 'Could not refresh trash. Showing the last loaded results, which may be out of date.'
+              : 'Could not load trash. Please try again.'}
+          </span>
+          <button
+            type="button"
+            className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+            aria-disabled={retryInFlight}
+            onClick={onRetry}
+          >
+            {retryInFlight ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      )}
+
       {/* Trash list */}
-      {isLoading ? (
-        <div className="space-y-3">
+      {!trashData && (isError || retryInFlight) ? null : isLoading ? (
+        <div className="space-y-3" role="status" aria-label="Loading trash">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="nm-card h-16 animate-pulse" />
           ))}

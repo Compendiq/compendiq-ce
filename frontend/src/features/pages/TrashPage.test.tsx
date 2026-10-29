@@ -161,6 +161,53 @@ describe('TrashPage', () => {
     vi.restoreAllMocks();
   });
 
+  it('shows pending without claiming the trash is empty', () => {
+    const { promise } = Promise.withResolvers<Response>();
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(promise);
+    render(<TrashPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('trash-empty')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the initial error and keyboard focus during retry, then shows the successful empty state', async () => {
+    const { promise, resolve: resolveRetry } = Promise.withResolvers<Response>();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{}', { status: 500 }))
+      .mockReturnValueOnce(promise);
+    render(<TrashPage />, { wrapper: createWrapper() });
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.queryByTestId('trash-empty')).not.toBeInTheDocument();
+    retry.focus();
+    fireEvent.click(retry);
+    expect(screen.getByRole('button', { name: 'Retrying…' })).toHaveFocus();
+    expect(screen.queryByTestId('trash-empty')).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    resolveRetry(new Response(JSON.stringify({ items: [], total: 0 }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    expect(await screen.findByTestId('trash-empty')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/automatically purged/)).toHaveFocus());
+  });
+
+  it('retains cached rows and labels them stale after a failed refresh', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockTrashData), {
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValue(new Response('{}', { status: 500 }));
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter><TrashPage /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Deleted Article');
+    await client.invalidateQueries();
+    expect(await screen.findByText(/Showing the last loaded results/)).toBeInTheDocument();
+    expect(screen.getByText('Deleted Article')).toBeInTheDocument();
+    expect(screen.queryByTestId('trash-empty')).not.toBeInTheDocument();
+  });
+
   it('renders the page title and description', () => {
     mockApi({ items: [], total: 0 });
     render(<TrashPage />, { wrapper: createWrapper() });

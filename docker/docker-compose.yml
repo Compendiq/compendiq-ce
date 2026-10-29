@@ -87,7 +87,6 @@ services:
       CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
       CONFLUENCE_DOCKER_HOST: ${CONFLUENCE_DOCKER_HOST:-confluence}
       ATTACHMENTS_DIR: /app/data/attachments
-      NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
       MCP_DOCS_URL: ${MCP_DOCS_URL:-http://mcp-docs:3100/mcp}
       MCP_DOCS_TOKEN: ${MCP_DOCS_TOKEN:-}
     depends_on:
@@ -103,7 +102,6 @@ services:
     stop_grace_period: 60s
     volumes:
       - attachments:/app/data
-      - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
@@ -115,9 +113,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs:
-      # Root FS is read-only. Persistent writes go to the `attachments` named
-      # volume (/app/data, from ATTACHMENTS_DIR); the CA bundle is bind-mounted
-      # read-only. Only transient scratch needs a writable /tmp.
+      # Root FS is read-only. Persistent writes go to the attachments volume.
+      # Only transient scratch needs a writable /tmp.
       - /tmp
     mem_limit: ${BACKEND_MEM_LIMIT:-1024m}
     cpus: 2.0

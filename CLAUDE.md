@@ -6,6 +6,10 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 
 **Compendiq** — AI knowledge-base app over Confluence Data Center, multi-LLM (Ollama, OpenAI-compatible). Confluence is **per-user optional**: with `user_settings.confluence_enabled` off the app runs standalone — every feature works against the local corpus and nothing syncs (#1623; see *Confluence Integration Toggle*). Monorepo: `backend/` (Fastify 5 + Postgres + Redis), `frontend/` (React 19 + Vite), `packages/contracts/` (shared Zod schemas).
 
+Trash distinguishes a failed read from a successful empty list. A failed
+refresh retains cached results with a stale warning; retry keeps its control
+mounted and focusable until the request settles, then rehomes orphaned focus.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
@@ -14,6 +18,11 @@ Source-of-truth docs:
 ## Mandatory Rules
 
 1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.
+   Installer and uninstaller paths (`--dir` / `INSTALL_DIR`) are anchored to
+   the invocation directory before any `cd`; validation, Compose, writes and
+   removal must use that same target, including symlink/`..` traversal (use
+   physical `cd` without dereferencing the removal operand). Exercise actual
+   scripts with removal intercepted (`scripts/install-path.test.sh`).
 2. **Branch model.** Branch from `dev` as `feature/<desc>`. PRs target `dev`. Only `dev → main` may target `main`. If a PR accidentally targets `main`, retarget before merging.
 3. **No secrets in commits.** No `.env`, PATs, API keys, JWT secrets, license keys.
 4. **Ask when ambiguous** — don't guess at intent.
@@ -179,6 +188,10 @@ same class: scope it by user id the same way.
 ## Testing & Mocks
 
 Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
+
+The notification bell uses the global `/notifications/count` for its badge
+and mark-all action, not the current list page. Its paginated list and count
+queries must both be invalidated after read mutations.
 
 **Carve-out — the retrieval eval (#1102) runs a REAL embedding model in CI.**
 The `retrieval-eval` job in `pr-check.yml` brings up Ollama as a service
@@ -598,9 +611,14 @@ alt and no caption, and no query may restate a manifest caption — a page that
 captions its own figures is answerable from text alone, so a leg measured on it
 scores a win it did not earn. Each page pins a `textSha256` and each image the
 upstream Commons `sha1`, because a revision id renders through the CURRENT
-templates and never pinned the pictures at all. `corpus-de-images.test.ts` fails
-on the wiring, a leaked caption, a licence outside the allow-list, an unnamed or
-silently-cut author, a missing credit and a body whose sha no longer matches.
+templates and never pinned the pictures at all. Pinned rebuilds also compare
+encoded image SHA-256 digests against the committed files: source hashes do not
+pin thumbnail renderers or Pillow. Encoder upgrades require the controlled
+refresh in `tools/eval-corpus-images/README.md`, including image inspection and
+label revalidation before updating the fixture's manifest digest.
+`corpus-de-images.test.ts` fails on the wiring, a leaked caption, a licence
+outside the allow-list, an unnamed or silently-cut author, a missing credit and
+a body whose sha no longer matches.
 `fixture-de-images.json` is its own file with its own schema and loader (never a
 widened `FixtureSchema`): 309 labels over all 65 pages and 187 images, written
 by blind labellers on a different model from the implementer, in two styles —
@@ -696,6 +714,10 @@ about what it measured, and lint, typecheck and every other suite stay green.
 - Pure utilities → test directly with real inputs.
 - Mock at the boundary (HTTP), never at the service-function layer.
 
+SMTP save success reconciles the submitted snapshot against the current draft;
+never clear the whole form: fields edited while the request is pending,
+including fields absent from its body, remain unsaved for the next request.
+
 **Browser CI (#1543).** PR Check's `Playwright E2E` job runs on relevant PRs
 (frontend, backend, contracts, E2E, build/config and workflow changes); manual
 `workflow_dispatch` runs it unconditionally. `E2E_CI=1` builds on a disposable
@@ -726,6 +748,13 @@ CE-side extension points (must remain inert in community mode):
 The CE fallback `GET /api/admin/license` route registers **only** when `enterprise.version === 'community'` to avoid duplicate-route errors when EE registers its own.
 
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
+
+**Access Control user caches (#1809).** `['admin', 'users']` stores the
+`/admin/users` envelope; approver pickers select its `users` array without
+changing the cached shape. `/users` is a distinct RBAC list under the child key
+`['admin', 'users', 'rbac']`. User lifecycle and bulk mutations invalidate the
+`['admin', 'users']` prefix so both lists refresh; do not merge their endpoints
+or store arrays under the envelope key.
 
 ## Article Connections (#1314)
 
@@ -849,6 +878,12 @@ pre-revocation fill publish under the post-revocation generation. The
 exception is an RBAC input that is itself part of the cache key, as in
 `/pages/filters` (`filters:v3:<sorted spaces>`): a request with the fresh list
 misses the stale entry, so reading the spaces first is safe there.
+`GET /pages?visibility=private|shared` narrows that caller-visible set by
+the row's visibility, including Confluence rows. The list, count and ILIKE
+fallback share the predicate; the cache identity includes visibility and is
+versioned when its shape changes. Filter-mode bulk selection uses the same
+visibility test. This is a filter, not a replacement for the access predicate.
+
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.
@@ -977,6 +1012,16 @@ pulled from Confluence. Six rules fall out, and none of them is negotiable.
    read *unknown* as *off* — the one misreading that silently makes a connected
    user's workspace standalone.
 
+The settings mode switch awaits the parent's `mutateAsync` callback (#1808),
+then awaits the authoritative settings read (`refetch` with `cancelRefetch:
+false` joins the mutation's invalidation; `throwOnError: true` exposes failure).
+The settings query alone drives the switch, mode copy and credential form;
+neither a late successful PUT acknowledgment nor a failure may replace a newer
+confirmed read. Keep the switch blocked through confirmation without removing
+keyboard focus. A failed confirmation is not a failed write: keep the switch
+blocked and offer a read-only retry, returning focus to the switch only if the
+successful retry still owns focus. Credential saves retain drafts on error.
+
 **A local write succeeds; only a Confluence-ONLY operation refuses.** With the
 flag off a synced page takes the same write path a standalone page takes — the
 editor/collab save, `PUT /pages/:id` and the AI-improve apply write the local
@@ -1026,6 +1071,14 @@ schema reports both independently. And `source = 'standalone'` classifies one
 row's *origin* (the cascade section above); `confluence_enabled` is a per-user
 integration *mode* and says nothing about any page's provenance. The collision
 of words is unfortunate and the two must not be collapsed.
+
+**Setup probes certify an exact persisted URL/PAT pair (#1807).** Every edit,
+new probe and departure invalidates earlier completions, including failures
+and toasts. Check ownership after both persistence and probing; Continue and
+space discovery use only current-pair success. Order setup settings writes
+across revisits and standalone choices, and discard the previous pair's
+available-spaces cache before revealing a newly verified picker. Keep PATs
+out of query keys and persistent browser storage.
 
 ## Library Search
 
@@ -1192,6 +1245,12 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+PDF tables split tall rows at wrapped-line boundaries across pages, retaining
+column positions and borders. A fitting first header row repeats on continuation
+pages only when it leaves room for at least one body line; an oversized header
+itself continues without repetition. Spanning cells and non-Latin font coverage
+are separate limitations.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.
@@ -1282,6 +1341,8 @@ the `---` block renders as body and the import reports success with title and la
 by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
 extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
 repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
+the existing entry limit; do not expand each run without a shared budget.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
@@ -1363,11 +1424,32 @@ derived image keeps upstream ClearURLs fetches primary and patches only their
 all-failed branch to load the pinned local baseline. Keep the patch strict so
 an upstream integration-point change fails the image build.
 
+`search_web` caches only the requested bounded result width: its Redis key is
+the sanitized query plus that effective width. Keep the width in cache
+identity because cached results are already truncated; a narrower request
+must not poison a later wider request, or vice versa.
+Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
+can equal the new query-plus-width hashes. Never read legacy entries as
+width-aware results; let their TTL expire without flushing shared Redis.
+
+The MCP cache-width regression is mandatory in the sidecar test suite and uses
+real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
+PR Check sidecar job provisions Redis and sets this explicitly. Missing
+configuration fails the suite rather than skipping the regression.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
 
 Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `package.json`s (root, backend, frontend, packages/contracts, mcp-docs), merge, tag `vX.Y.Z`. Patch = bug, minor = feature or pre-1.0 breaking, major = `1.0.0` when production-ready.
+
+Release images: the `v*` tag push runs `.github/workflows/docker-build.yml`, which builds each image natively per architecture (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; never QEMU — emulated arm64 `npm ci` hangs or dies with `Illegal instruction`), pushes by digest and merges one multi-arch index via the reusable `docker-image.yml`. Branch pushes (`dev`, `main`) stay amd64-only. To republish an existing release without moving its tag: `gh workflow run docker-build.yml --ref dev -f tag=vX.Y.Z -f images=all` (or e.g. `images=mcp-docs`); a rebuild only moves `latest` if it is the newest stable tag.
+
+Installer-generated Compose pins the four Compendiq images to amd64 for `dev`
+and mutable `latest` (a main build can replace a multi-arch latest). ARM needs
+working amd64 emulation for those tags. Other tags are unpinned for native
+selection; an older release without the daemon architecture still fails to pull.
+Postgres and Redis remain unpinned.
 
 ## Dependencies
 
@@ -1375,6 +1457,7 @@ Feature PRs to `dev` → no bump. Release (`dev → main`) → bump all five `pa
 - `pino-pretty` is a devDependency (excluded from production images).
 - Pin majors for framework deps (React 19, Fastify 5, TipTap v3).
 - **Root override `"vite": "^8.0.16"`** unifies the whole tree on a single vite 8 (frontend + vitest + `@tailwindcss/vite` must not split versions). The app runs **vite 8 with `@vitejs/plugin-react` 6.x** — these move together: vite 8's `rolldown` transform contract breaks plugin-react 5.x's native react-refresh wrapper in the dev server (`Missing field moduleType`, #800), so never downgrade one without the other. Rolldown also dropped the **object** form of `build.rollupOptions.output.manualChunks` — it must be the **function** form (see `frontend/vite.config.ts`).
+- **Happy DOM 21 override (#1708):** `@tiptap/html` 3.30.5 still peers on `^20.8.9`. Keep root `"happy-dom": "^21.0.4"` until TipTap accepts the patched major, or npm retains vulnerable 20.x beside backend's 21.x. Verify `collab-schema-parity.test.ts` and the production HTML/Yjs roundtrip when changing it; do not re-enable CSS or iframe loading.
 
 ## Code Quality
 
@@ -1391,6 +1474,14 @@ Full reference is `.env.example`. Keys you must set:
 - `POSTGRES_PASSWORD`, `REDIS_PASSWORD` — required by docker compose (no defaults; URL-safe values, e.g. `openssl rand -hex 24`)
 
 Tunable defaults (override only with reason): `EMBEDDING_DIMENSIONS=1024`, `USE_BULLMQ=true`, `SYNC_INTERVAL_MIN=15`, `LLM_CONCURRENCY=4`, `LLM_MAX_QUEUE_DEPTH=50`, `LLM_STREAM_TIMEOUT_MS=300000`, `LLM_CACHE_TTL=3600`, `QUALITY_CHECK_INTERVAL_MINUTES=60`, `SUMMARY_CHECK_INTERVAL_MINUTES=60`, `CONFLUENCE_RATE_LIMIT_RPM=60`, `SHUTDOWN_TIMEOUT_MS=50000` (keep below container stop grace period). TLS escape hatches: `LLM_VERIFY_SSL`, `CONFLUENCE_VERIFY_SSL`, `NODE_EXTRA_CA_CERTS`. Observability: `OTEL_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`. SMTP: `SMTP_*` (also configurable via admin UI).
+
+**Corporate CA trust (#1819).** Base Compose does not mount a host CA file.
+For private upstreams, layer `docker/docker-compose.corporate-ca.yml` and set
+`HOST_CA_BUNDLE_PATH` to an existing readable PEM. The backend adds that PEM
+to Node roots and the image system bundle; it must not replace public trust or
+disable certificate/hostname verification. Recreate the backend after changing
+the PEM or override. Existing deployments using the old automatic mount must
+explicitly opt in; `CONTAINER_CA_BUNDLE_PATH` is no longer used.
 
 Quality/Summary batch entrypoints own their local guard, Redis lease and
 `isProcessing` state for every caller, including BullMQ. Do not put locking
@@ -1613,3 +1704,11 @@ baseline frozen before that policy was enabled. #278 signing/governance and
 #277's full baseline UI are not implemented in this slice.
 Operations, capacity, retention and recovery:
 `docs/runbooks/immutable-page-baselines.md`.
+
+Webhook administration distinguishes an unreadable list from a successful
+empty response. A failed refresh retains cached subscriptions with a stale
+notice; retry uses `useNoticeRetry` so focus survives pending and recovery.
+Keep the runtime feature gate and signing notice intact.
+`useNoticeRetry` lives in `frontend/src/shared/hooks/use-notice-retry.ts`;
+all settings and administration consumers import that one shared definition,
+not the former settings-panel path.

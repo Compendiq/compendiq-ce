@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { m } from 'framer-motion';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 import { SpaceSyncPanel } from './SpaceSyncPanel';
@@ -9,12 +10,42 @@ interface ConfluenceStepProps {
   onBack: () => void;
 }
 
+// Keep setup writes ordered even when Back unmounts this step and a new visit
+// starts before the previous save completes. Probes themselves may overlap.
+let pendingSettingsWrite: Promise<unknown> | null = null;
+
 export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
   const [confluenceUrl, setConfluenceUrl] = useState('');
   const [pat, setPat] = useState('');
   const [testing, setTesting] = useState(false);
-  const [testSuccess, setTestSuccess] = useState<boolean | null>(null);
+  const [testResult, setTestResult] = useState<{
+    url: string;
+    pat: string;
+    success: boolean;
+  } | null>(null);
   const [choosingStandalone, setChoosingStandalone] = useState(false);
+  const queryClient = useQueryClient();
+  const generation = useRef(0);
+  const leaving = useRef(false);
+  const testSuccess = testResult?.url === confluenceUrl && testResult.pat === pat
+    ? testResult.success
+    : null;
+
+  useEffect(() => () => {
+    generation.current += 1;
+  }, []);
+
+  function invalidateTest() {
+    generation.current += 1;
+    setTestResult(null);
+    setTesting(false);
+  }
+
+  function leaveStep(next: () => void) {
+    leaving.current = true;
+    invalidateTest();
+    next();
+  }
 
   /**
    * #1623: declining Confluence is a *decision*, not a deferral. Persisting
@@ -28,63 +59,89 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
    * the wizard still advances, exactly as a failed in-wizard sync does.
    */
   async function handleStandalone() {
+    if (leaving.current) return;
+    leaving.current = true;
+    invalidateTest();
+    const requestGeneration = generation.current;
     setChoosingStandalone(true);
     try {
-      await apiFetch('/settings', {
+      // A credential PUT already sent cannot be undone. Finish it before
+      // persisting the newer standalone decision, never in the reverse order.
+      await pendingSettingsWrite?.catch(() => {});
+      if (generation.current !== requestGeneration) return;
+      const save = apiFetch('/settings', {
         method: 'PUT',
         body: JSON.stringify({ confluenceEnabled: false }),
       });
+      pendingSettingsWrite = save;
+      await save;
     } catch (err) {
+      if (generation.current !== requestGeneration) return;
       toast.error(
         err instanceof Error
           ? `Could not save standalone mode: ${err.message}`
           : 'Could not save standalone mode',
       );
     } finally {
-      setChoosingStandalone(false);
+      if (generation.current === requestGeneration) setChoosingStandalone(false);
     }
-    onNext();
+    if (generation.current === requestGeneration) onNext();
   }
 
   async function handleTest(e: FormEvent) {
     e.preventDefault();
+    if (testing || leaving.current || !confluenceUrl || !pat) return;
+    const requestGeneration = ++generation.current;
+    const credentials = { url: confluenceUrl, pat };
+    const isCurrent = () => generation.current === requestGeneration;
     setTesting(true);
-    setTestSuccess(null);
+    setTestResult(null);
 
     try {
+      // Serialize credential writes, but let an edited pair supersede a slow
+      // probe. A late PUT must not overwrite the pair a newer probe certifies.
+      await pendingSettingsWrite?.catch(() => {});
+      if (!isCurrent()) return;
       // Save settings first, then test the connection. `confluenceEnabled` is
       // sent explicitly (#1623): an admin who picked standalone earlier in the
       // same session — or on an earlier run of the wizard — has the flag
       // persisted as false, and entering credentials now is the clearest
       // possible statement that they want the integration back on.
-      await apiFetch('/settings', {
+      const save = apiFetch('/settings', {
         method: 'PUT',
         body: JSON.stringify({
-          confluenceUrl,
-          confluencePat: pat,
+          confluenceUrl: credentials.url,
+          confluencePat: credentials.pat,
           confluenceEnabled: true,
         }),
       });
+      pendingSettingsWrite = save;
+      await save;
+      if (!isCurrent()) return;
 
       // Actually authenticate against Confluence with the entered credentials.
       // A local read (GET /spaces) succeeds regardless of the PAT's validity,
       // so any credentials would "pass" — probe the real endpoint instead (#950).
       const result = await apiFetch<{ success: boolean; message: string }>(
         '/settings/test-confluence',
-        { method: 'POST', body: JSON.stringify({ url: confluenceUrl, pat }) },
+        { method: 'POST', body: JSON.stringify(credentials) },
       );
+      if (!isCurrent()) return;
+      setTestResult({ ...credentials, success: result.success });
       if (result.success) {
-        setTestSuccess(true);
+        // Space discovery is credential-scoped even though its shared query
+        // key is not. Never mount the new picker with a prior pair's cache.
+        queryClient.removeQueries({ queryKey: ['spaces', 'available'], exact: true });
         toast.success('Confluence connected successfully');
       } else {
-        setTestSuccess(false);
         toast.error(result.message || 'Connection test failed');
       }
     } catch (err) {
-      setTestSuccess(false);
+      if (!isCurrent()) return;
+      setTestResult({ ...credentials, success: false });
       toast.error(err instanceof Error ? err.message : 'Connection test failed');
     } finally {
-      setTesting(false);
+      if (isCurrent()) setTesting(false);
     }
   }
 
@@ -115,11 +172,12 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
               setConfluenceUrl(e.target.value);
               // Any edit invalidates the prior test — the wizard must not
               // proceed with untested (and unpersisted) credentials.
-              setTestSuccess(null);
+              invalidateTest();
             }}
             className="nm-input"
             placeholder="https://confluence.example.com"
             data-testid="confluence-url"
+            disabled={choosingStandalone}
           />
         </div>
 
@@ -133,11 +191,12 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             value={pat}
             onChange={(e) => {
               setPat(e.target.value);
-              setTestSuccess(null);
+              invalidateTest();
             }}
             className="nm-input"
             placeholder="Your Confluence PAT"
             data-testid="confluence-pat"
+            disabled={choosingStandalone}
           />
           <p className="mt-1 text-xs text-muted-foreground">
             Generate a PAT in Confluence under Profile &gt; Personal Access Tokens.
@@ -166,7 +225,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
 
         <button
           type="submit"
-          disabled={testing || !confluenceUrl || !pat}
+          disabled={testing || choosingStandalone || !confluenceUrl || !pat}
           className="nm-button-ghost px-4 py-2 text-sm"
           data-testid="test-confluence-btn"
         >
@@ -185,7 +244,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
       <div className="mt-6 flex items-center justify-between">
         <button
           type="button"
-          onClick={onBack}
+          onClick={() => leaveStep(onBack)}
           className="nm-icon-button px-4 py-2 text-sm"
           data-testid="confluence-back-btn"
         >
@@ -206,8 +265,10 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
           </button>
           <button
             type="button"
-            onClick={onNext}
-            disabled={!testSuccess}
+            onClick={() => {
+              if (testSuccess === true && !leaving.current) leaveStep(onNext);
+            }}
+            disabled={testSuccess !== true || choosingStandalone}
             className="nm-button-primary px-6 py-2.5"
             data-testid="confluence-next-btn"
           >

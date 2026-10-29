@@ -1,8 +1,7 @@
-# Pinned to what the committed corpus was built with. Pillow's encoders are the
-# reason: a different major can change JPEG/PNG output bytes for identical input,
-# which would make a "reproduce the pinned revisions" rebuild produce a diff.
+# Python >=3.11. Encoder upgrades require a controlled corpus refresh; see README.
+# Pillow can change resampling and output bytes even with identical source input.
 requests==2.34.2
-Pillow==12.3.0
+Pillow==13.0.0
 markdownify==1.2.3
 beautifulsoup4==4.15.0
 PyYAML==6.0.3

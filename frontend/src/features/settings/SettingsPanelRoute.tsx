@@ -1,4 +1,4 @@
-import { lazy, type ComponentType, type ReactElement } from 'react';
+import { lazy, type ReactElement } from 'react';
 import { Link, Navigate, useOutletContext, useParams } from 'react-router-dom';
 import { SETTINGS_NAV, canSeeItem, firstVisiblePath } from './settings-nav';
 import type { AccessContextWithLoading } from './SettingsLayout';
@@ -42,22 +42,17 @@ interface PanelRenderContext {
   isLoading: boolean;
   onSaveSettings: (body: Record<string, unknown>) => void;
   onSaveSettingsAsync: (body: Record<string, unknown>) => Promise<unknown>;
+  onConfirmSettings: () => Promise<unknown>;
   isAdmin: boolean;
 }
-
-const renderWithSettings = (Component: ComponentType<{ settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }>): PanelRenderer => ({
-  settings,
-  isLoading,
-  onSaveSettings,
-}) => {
-  if (isLoading || !settings) return <SkeletonFormFields />;
-  return <Component settings={settings} onSave={onSaveSettings} />;
-};
 
 // Map of `<category>/<item>` → panel renderer. Keep in sync with settings-nav.ts.
 const PANELS: Readonly<Record<string, PanelRenderer>> = {
   // Personal
-  'personal/confluence': renderWithSettings(ConfluenceTab),
+  'personal/confluence': ({ settings, isLoading, onSaveSettingsAsync, onConfirmSettings }) => {
+    if (isLoading || !settings) return <SkeletonFormFields />;
+    return <ConfluenceTab settings={settings} onSave={onSaveSettingsAsync} onConfirmMode={onConfirmSettings} />;
+  },
   'personal/ai-prompts': ({ settings, isLoading, onSaveSettings, isAdmin }) => {
     if (isLoading || !settings) return <SkeletonFormFields />;
     return <AiPromptsTab settings={settings} onSave={onSaveSettings} isAdmin={isAdmin} />;
@@ -106,7 +101,7 @@ export function SettingsPanelRoute() {
   const key = `${category ?? ''}/${item ?? ''}`;
 
   const user = useAuthStore((s) => s.user);
-  const { data: settings, isLoading } = useSettings();
+  const { data: settings, isLoading, refetch } = useSettings();
   const updateSettings = useUpdateSettings();
 
   // Gating check against the live nav config.
@@ -161,6 +156,8 @@ export function SettingsPanelRoute() {
     isLoading,
     onSaveSettings: (body) => updateSettings.mutate(body),
     onSaveSettingsAsync: (body) => updateSettings.mutateAsync(body),
+    // Join the mutation's invalidation read rather than cancelling/restarting it.
+    onConfirmSettings: () => refetch({ cancelRefetch: false, throwOnError: true }),
     isAdmin: ctx.isAdmin,
   });
 }

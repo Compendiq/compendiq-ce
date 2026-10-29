@@ -5,10 +5,24 @@ on:
     branches: [main, dev]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Rebuild an existing release tag (e.g. v0.9.1): checks out that tag's
+          source, builds amd64 + arm64 natively and re-pushes its version tags.
+          Empty = build the selected branch as usual.
+        type: string
+        default: ''
+      images:
+        description: Comma-separated images to build (backend, frontend, searxng, mcp-docs) or "all"
+        type: string
+        default: all
 
-# Cancel in-progress runs for the same branch — saves CI minutes on rapid pushes
+# Cancel in-progress runs for the same branch — saves CI minutes on rapid pushes.
+# A tag rebuild dispatched from a branch gets its own group so it neither
+# cancels nor is cancelled by that branch's pushes.
 concurrency:
-  group: docker-build-${{ github.ref }}
+  group: docker-build-${{ github.ref }}-${{ inputs.tag }}
   cancel-in-progress: true
 
 jobs:
@@ -21,292 +35,184 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       searxng: ${{ steps.filter.outputs.searxng }}
       mcp: ${{ steps.filter.outputs.mcp }}
+      ref: ${{ steps.release.outputs.ref }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      latest: ${{ steps.release.outputs.latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - name: Classify changed images
-        id: filter
+      # release_tag != '' switches the image jobs to native amd64 + arm64
+      # builds merged into one index. A pushed v* tag builds itself; the
+      # `tag` dispatch input rebuilds an existing tag from any branch without
+      # moving it. A rebuild only claims `latest` when it is the newest stable
+      # tag, so rebuilding an old release cannot roll `latest` back.
+      - name: Resolve release
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          ref="" release_tag="" latest=auto
+          if [ -n "$INPUT_TAG" ]; then
+            if ! [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag input '$INPUT_TAG' is not a vX.Y.Z release tag"
+              exit 1
+            fi
+            if ! git rev-parse -q --verify "refs/tags/$INPUT_TAG^{commit}" >/dev/null; then
+              echo "::error::tag $INPUT_TAG does not exist"
+              exit 1
+            fi
+            newest=$(git tag -l 'v*' --sort=-v:refname | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sed -n 1p)
+            ref="refs/tags/$INPUT_TAG" release_tag="$INPUT_TAG"
+            if [ "$INPUT_TAG" = "$newest" ]; then latest=true; else latest=false; fi
+          elif [[ "$REF" == refs/tags/* ]]; then
+            release_tag="$REF_NAME"
+          fi
+          {
+            echo "ref=$ref"
+            echo "release_tag=$release_tag"
+            echo "latest=$latest"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Classify changed images
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          INPUT_IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          declare -A build=([backend]=false [frontend]=false [searxng]=false [mcp]=false)
+          emit() {
+            for name in backend frontend searxng mcp; do
+              echo "$name=${build[$name]}" | tee -a "$GITHUB_OUTPUT"
+            done
+          }
           all_true() {
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-            echo "searxng=true" >> "$GITHUB_OUTPUT"
-            echo "mcp=true" >> "$GITHUB_OUTPUT"
+            for name in "${!build[@]}"; do build[$name]=true; done
             echo "Building all images."
           }
-          REF="${{ github.ref }}"
-          BEFORE="${{ github.event.before }}"
           ZERO="0000000000000000000000000000000000000000"
-          case "$REF" in
-            refs/tags/*)
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "${INPUT_IMAGES:-all}" = "all" ]; then
               all_true
-              exit 0
-              ;;
-          esac
-          if [ "${{ github.event_name }}" != "push" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "$ZERO" ]; then
-            all_true
+            else
+              for image in ${INPUT_IMAGES//,/ }; do
+                case "$image" in
+                  backend|frontend|searxng) build[$image]=true ;;
+                  mcp-docs) build[mcp]=true ;;
+                  *) echo "::error::unknown image '$image' in images input"; exit 1 ;;
+                esac
+              done
+            fi
+            emit
             exit 0
           fi
-          if ! CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}"); then
-            echo "Could not diff $BEFORE..${{ github.sha }} — building all images."
+          if [[ "$REF" == refs/tags/* ]] || [ "$EVENT" != "push" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "$ZERO" ]; then
             all_true
+            emit
+            exit 0
+          fi
+          if ! CHANGED=$(git diff --name-only "$BEFORE" "$SHA"); then
+            echo "Could not diff $BEFORE..$SHA — building all images."
+            all_true
+            emit
             exit 0
           fi
           flag() {
-            local name="$1" pattern="$2"
-            if echo "$CHANGED" | grep -qE "$pattern"; then
-              echo "$name=true" >> "$GITHUB_OUTPUT"
-              echo "$name=true"
-            else
-              echo "$name=false" >> "$GITHUB_OUTPUT"
-              echo "$name=false"
-            fi
+            if echo "$CHANGED" | grep -qE "$2"; then build[$1]=true; fi
           }
-          flag backend '^(backend/|packages/contracts/|package-lock\.json|package\.json$|\.dockerignore$|\.github/workflows/docker-build\.yml)'
-          flag frontend '^(frontend/|packages/contracts/|package-lock\.json|package\.json$|build-info\.json$|\.dockerignore$|\.github/workflows/docker-build\.yml)'
-          flag searxng '^(docker/searxng/|\.github/workflows/docker-build\.yml)'
-          flag mcp '^(mcp-docs/|\.dockerignore$|\.github/workflows/docker-build\.yml)'
+          flag backend '^(backend/|packages/contracts/|package-lock\.json|package\.json$|\.dockerignore$|\.github/workflows/docker-(build|image)\.yml)'
+          flag frontend '^(frontend/|packages/contracts/|package-lock\.json|package\.json$|build-info\.json$|\.dockerignore$|\.github/workflows/docker-(build|image)\.yml)'
+          flag searxng '^(docker/searxng/|\.github/workflows/docker-(build|image)\.yml)'
+          flag mcp '^(mcp-docs/|\.dockerignore$|\.github/workflows/docker-(build|image)\.yml)'
+          emit
 
+  # Each image job calls docker-image.yml: amd64-only on branch builds;
+  # native amd64 + arm64 runners merged into one index on release builds.
   docker-backend:
     name: Backend Image
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/compendiq/compendiq-ce-backend
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-
-      - name: Set up QEMU
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./backend/Dockerfile
-          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          push: true
-          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache
-          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache,mode=max
-          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
-          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}
-
-      # Smoke-load the runtime image's prod node_modules. Guards against the
-      # class of bug where npm's hoister demotes a backend prod dep to
-      # `backend/node_modules/` — invisible to the runtime stage unless that
-      # tree is merged onto `/app/node_modules`. Builds succeed in that case;
-      # containers crash on boot. The historically-hoisted four (`p-limit`,
-      # `ipaddr.js`, two OpenTelemetry packages) are not sufficient: collab
-      # TipTap packages demote and `collab-schema.js` imports them on boot.
-      # amd64-only steps suffice; arm64 (tags) shares the same module graph.
-      # Uses the first tag from metadata, which is always present.
-      - name: Smoke-test runtime module resolution
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        env:
-          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
-        run: |
-          docker pull "$IMAGE"
-          docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-            "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); console.log('runtime require smoke ok');"
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      image: compendiq-ce-backend
+      context: .
+      file: ./backend/Dockerfile
+      ref: ${{ needs.changes.outputs.ref }}
+      release_tag: ${{ needs.changes.outputs.release_tag }}
+      latest: ${{ needs.changes.outputs.latest }}
+      attest: true
+      # Smoke-load the runtime image's prod node_modules on every built
+      # architecture. Guards against the class of bug where npm's hoister
+      # demotes a backend prod dep to `backend/node_modules/` — invisible to
+      # the runtime stage unless that tree is merged onto `/app/node_modules`.
+      # Builds succeed in that case; containers crash on boot. The
+      # historically-hoisted four (`p-limit`, `ipaddr.js`, two OpenTelemetry
+      # packages) are not sufficient: collab TipTap packages demote and
+      # `collab-schema.js` imports them on boot.
+      smoke_test: |
+        docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
+          "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/compendiq/compendiq-ce-frontend
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-
-      - name: Set up QEMU
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      # Stamp the committed placeholder build-info.json (commit: "unknown")
-      # with the real CE commit. The frontend bundle bakes __APP_COMMIT__ at
-      # build time from this file (frontend/vite.config.ts), and the EE flow
-      # never rebuilds the frontend — both editions ship this same CE image —
-      # so "Frontend commit" in Settings → System can only be filled in here.
-      # Mirrors scripts/build-enterprise.sh (git rev-parse --short HEAD) and
-      # the placeholder's JSON shape so vite's `ceCommit ?? commit` resolves it.
-      - name: Stamp build-info.json with the CE commit
-        run: |
-          SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-          cat > build-info.json <<EOF
-          {
-            "edition": "community",
-            "commit": "${SHORT_SHA}",
-            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          echo "Stamped build-info.json:"
-          cat build-info.json
-
-      - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./frontend/Dockerfile
-          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          push: true
-          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache
-          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache,mode=max
-          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
-          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      image: compendiq-ce-frontend
+      context: .
+      file: ./frontend/Dockerfile
+      ref: ${{ needs.changes.outputs.ref }}
+      release_tag: ${{ needs.changes.outputs.release_tag }}
+      latest: ${{ needs.changes.outputs.latest }}
+      attest: true
+      stamp_build_info: true
 
   docker-searxng:
     name: SearXNG Image
     needs: changes
     if: needs.changes.outputs.searxng == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/compendiq/compendiq-ce-searxng
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-
-      - name: Set up QEMU
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./docker/searxng
-          file: ./docker/searxng/Dockerfile
-          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          push: true
-          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache
-          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache,mode=max
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      image: compendiq-ce-searxng
+      context: ./docker/searxng
+      file: ./docker/searxng/Dockerfile
+      ref: ${{ needs.changes.outputs.ref }}
+      release_tag: ${{ needs.changes.outputs.release_tag }}
+      latest: ${{ needs.changes.outputs.latest }}
 
   docker-mcp-docs:
     name: MCP Docs Image
     needs: changes
     if: needs.changes.outputs.mcp == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      image: compendiq-ce-mcp-docs
+      context: .
+      file: ./mcp-docs/Dockerfile
+      ref: ${{ needs.changes.outputs.ref }}
+      release_tag: ${{ needs.changes.outputs.release_tag }}
+      latest: ${{ needs.changes.outputs.latest }}
+      attest: true
 
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/compendiq/compendiq-ce-mcp-docs
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-
-      - name: Set up QEMU
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./mcp-docs/Dockerfile
-          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          push: true
-          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache
-          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache,mode=max
-          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
-          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}

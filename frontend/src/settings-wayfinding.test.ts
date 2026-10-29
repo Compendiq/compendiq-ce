@@ -257,9 +257,13 @@ describe('settings wayfinding matches the live rail', () => {
 
   it('every hardcoded /settings/<category>/<item> path is a live panel path', () => {
     const offences: string[] = [];
+    // Relative module imports can contain the same suffix as an absolute URL.
+    const panelPath = /(?<![./])\/settings\/[a-z0-9-]+\/[a-z0-9-]+/g;
+    expect("../settings/panels/use-notice-retry".match(panelPath)).toBeNull();
+    expect("'/settings/governance/data-compliance'".match(panelPath)).toEqual(['/settings/governance/data-compliance']);
     for (const { path, source } of files) {
       source.split('\n').forEach((line, idx) => {
-        for (const m of line.matchAll(/\/settings\/[a-z0-9-]+\/[a-z0-9-]+/g)) {
+        for (const m of line.matchAll(panelPath)) {
           if (!PANEL_PATHS.has(m[0])) {
             offences.push(`${rel(path)}:${idx + 1} — ${m[0]}`);
           }

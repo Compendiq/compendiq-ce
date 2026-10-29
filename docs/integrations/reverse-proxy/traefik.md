@@ -148,7 +148,7 @@ docker logs traefik 2>&1 | grep -i acme | tail -20
 | Variable | Example | Why |
 |---|---|---|
 | `FRONTEND_URL` | `https://compendiq.corp.example.com` | CORS allowlist + setup-wizard redirect target. Must exactly match what Traefik exposes (scheme + host + port). |
-| `NODE_EXTRA_CA_CERTS` | `/etc/ssl/certs/corporate-ca.pem` | Only needed if Traefik presents an internal-CA cert on the backend-side leg (rare: most users terminate TLS at Traefik and speak plain HTTP on the internal network). |
+| `NODE_EXTRA_CA_CERTS` | `/etc/compendiq/corporate-ca.pem` | For outbound backend HTTPS to an internal CA; in Docker, use the [private-CA override](../self-signed-tls/README.md) to mount it. |
 | `BACKEND_HOST_PORT` | removed | The compose file no longer publishes the backend on the host at all — only Traefik reaches the frontend, and the backend is reached by the frontend on the internal network. |
 | `FRONTEND_PORT` | `8081` | Leave as default; the Traefik `server.port` label targets this. |
 

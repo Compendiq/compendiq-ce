@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-29
+
+### Fixed
+
+- **Installation target safety (#1781):** resolve relative installer and
+  uninstaller directories before changing directory, so generated files,
+  Compose operations and removal refer to the invocation-relative target.
+
+### Security
+
+- **Dependabot dependency compatibility (#1708):** keep backend Undici on
+  the intended 7.30.1 update, matching the workspace lockfile. Override
+  TipTap HTML's Happy DOM 20 peer to patched 21.0.4 so the vulnerable
+  transitive copy is not retained alongside the backend update; server
+  HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
+  `fast-uri` override to 3.1.9 and refresh its locked version.
+
+### Fixed
+
+- **Page list visibility filter (#1786):** private and shared list requests
+  now filter both items and totals, including substring-search fallback, and
+  use distinct cache entries. Matching bulk filters select the same visible set.
+
+### Changed
+- **MCP `search_web` cache identity (#1787):** include the effective bounded
+  result width with the sanitized query, so requests at different widths do
+  not reuse a truncated result set. A versioned namespace isolates legacy
+  query-only entries during upgrades, including mixed-version replicas.
+  Its regression requires real Redis and runs in the MCP sidecar CI job;
+  missing test configuration fails explicitly.
+
+- **Portable Compose trust (#1819):** the base deployment no longer mounts a
+  Red Hat host CA file over the image trust store. Private CAs require the
+  explicit corporate-CA override and an existing host PEM. Backend TLS
+  dispatchers retain public and system roots when the private PEM is supplied;
+  verification remains enabled. Existing custom-CA deployments must opt in
+  and recreate the backend.
+
+- Installer-generated Compose selects amd64 for the four Compendiq `dev` and
+  mutable `latest` images, avoiding missing ARM manifests after branch
+  publications. Other tags retain native architecture selection; PostgreSQL
+  and Redis are unchanged. ARM requires working amd64 emulation for branch
+  tags.
+
+- **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
+  Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
+  remains enabled; only its runner distribution is pinned.
+- **Pillow 13 image-corpus refresh (#1707):** regenerate the three affected
+  eval images from unchanged sources, revalidate their labels and update the
+  fixture's corpus identity. Pinned rebuilds now detect encoded-image byte
+  changes, including changes invisible to source hashes or file sizes.
+  The corpus builder requires Python 3.11 or newer; historical eval results
+  and text-axis baselines are unchanged.
+- **Release images build `linux/arm64` on native arm64 runners** instead of
+  QEMU emulation, merged with the amd64 build into one multi-arch index.
+  Emulated arm64 `npm ci` hung the v0.9.1 `mcp-docs` build for hours on two
+  attempts before a third got through. The Docker workflow's
+  manual run gains a `tag` input (plus `images`) that rebuilds an existing
+  release tag without moving it. Branch images (`:dev`, `:latest`) stay
+  amd64-only.
+
 ## [0.9.1] - 2026-10-07
 
 > Patch: dependency security updates — `@modelcontextprotocol/sdk` 1.31.0, OpenTelemetry spans without the DB username (attribute and HTTP metric names change, see below), `katex`, `sharp`, `shell-quote` and others. Node.js floor 22.13.0 for source installs. 20 commits since v0.9.0.

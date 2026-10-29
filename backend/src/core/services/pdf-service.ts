@@ -540,86 +540,86 @@ function renderTable(ctx: RenderContext, el: Element): void {
   ensureSpace(ctx, LINE_HEIGHT * 2);
   ctx.y -= 4;
 
-  for (let r = 0; r < rows.length; r++) {
-    const cells = Array.from(rows[r]!.querySelectorAll('th, td'));
+  const prepared = rows.map((row) => {
+    const cells = Array.from(row.querySelectorAll('th, td'));
     const isHeader = cells[0]?.tagName.toLowerCase() === 'th';
-    const cellFont = isHeader ? ctx.fontBold : ctx.font;
-    const fontSize = FONT_SIZE_BODY;
+    const font = isHeader ? ctx.fontBold : ctx.font;
+    const lines = Array.from({ length: colCount }, (_, c) =>
+      wrapText(cells[c]?.textContent?.trim() ?? '', font, FONT_SIZE_BODY, colWidth - TABLE_CELL_PADDING * 2),
+    );
+    return { isHeader, font, lines, count: Math.max(1, ...lines.map((cell) => cell.length)) };
+  });
+  const lineHeight = FONT_SIZE_BODY + 3;
+  const padding = TABLE_CELL_PADDING * 2;
+  const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+  const header = prepared[0]?.isHeader ? prepared[0] : undefined;
+  // A repeated header must leave room for at least one line of the row.
+  const repeatHeader = header && header.count * lineHeight + padding + lineHeight + padding <= pageCapacity
+    ? header : undefined;
 
-    // Calculate row height (based on tallest cell)
-    let maxLines = 1;
-    const cellTexts: string[][] = [];
-    for (let c = 0; c < colCount; c++) {
-      const text = cells[c]?.textContent?.trim() ?? '';
-      const lines = wrapText(text, cellFont, fontSize, colWidth - TABLE_CELL_PADDING * 2);
-      cellTexts.push(lines);
-      maxLines = Math.max(maxLines, lines.length);
-    }
-
-    const rowHeight = maxLines * (fontSize + 3) + TABLE_CELL_PADDING * 2;
-    ensureSpace(ctx, rowHeight);
-
-    // Draw header background
-    if (isHeader) {
+  const drawFragment = (row: typeof prepared[number], start: number, count: number): void => {
+    const height = count * lineHeight + padding;
+    const top = ctx.y;
+    const bottom = top - height;
+    if (row.isHeader) {
       ctx.page.drawRectangle({
-        x: MARGIN_LEFT,
-        y: ctx.y - rowHeight + TABLE_CELL_PADDING,
-        width: CONTENT_WIDTH,
-        height: rowHeight,
+        x: MARGIN_LEFT, y: bottom, width: CONTENT_WIDTH, height,
         color: COLOR_TABLE_HEADER_BG,
       });
     }
-
-    // Draw cell text
     for (let c = 0; c < colCount; c++) {
-      const lines = cellTexts[c] ?? [''];
-      for (let l = 0; l < lines.length; l++) {
+      const lines = row.lines[c]!;
+      for (let l = start; l < Math.min(start + count, lines.length); l++) {
         try {
           ctx.page.drawText(lines[l]!, {
             x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
-            y: ctx.y - TABLE_CELL_PADDING - l * (fontSize + 3),
-            size: fontSize,
-            font: cellFont,
-            color: COLOR_TEXT,
+            y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
+            size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
           });
         } catch {
           // Skip unencodable characters
         }
       }
     }
-
-    // Draw row borders
-    const rowTop = ctx.y + TABLE_CELL_PADDING;
-    const rowBottom = ctx.y - rowHeight + TABLE_CELL_PADDING;
-
-    // Horizontal borders
-    ctx.page.drawLine({
-      start: { x: MARGIN_LEFT, y: rowTop },
-      end: { x: MARGIN_LEFT + CONTENT_WIDTH, y: rowTop },
-      thickness: 0.5,
-      color: COLOR_TABLE_BORDER,
-    });
-    if (r === rows.length - 1) {
+    for (const y of [top, bottom]) {
       ctx.page.drawLine({
-        start: { x: MARGIN_LEFT, y: rowBottom },
-        end: { x: MARGIN_LEFT + CONTENT_WIDTH, y: rowBottom },
-        thickness: 0.5,
-        color: COLOR_TABLE_BORDER,
+        start: { x: MARGIN_LEFT, y }, end: { x: MARGIN_LEFT + CONTENT_WIDTH, y },
+        thickness: 0.5, color: COLOR_TABLE_BORDER,
       });
     }
-
-    // Vertical borders
     for (let c = 0; c <= colCount; c++) {
       const x = MARGIN_LEFT + c * colWidth;
       ctx.page.drawLine({
-        start: { x, y: rowTop },
-        end: { x, y: rowBottom },
-        thickness: 0.5,
-        color: COLOR_TABLE_BORDER,
+        start: { x, y: top }, end: { x, y: bottom },
+        thickness: 0.5, color: COLOR_TABLE_BORDER,
       });
     }
+    ctx.y -= height;
+  };
 
-    ctx.y -= rowHeight;
+  const continueTable = (rowIndex: number): void => {
+    newPage(ctx);
+    if (rowIndex > 0 && repeatHeader) drawFragment(repeatHeader, 0, repeatHeader.count);
+  };
+
+  for (let r = 0; r < prepared.length; r++) {
+    const row = prepared[r]!;
+    const fullHeight = row.count * lineHeight + padding;
+    const freshCapacity = pageCapacity - (r > 0 && repeatHeader ? repeatHeader.count * lineHeight + padding : 0);
+    // Keep ordinary rows together when they fit on a fresh page.
+    if (fullHeight <= freshCapacity && ctx.y - fullHeight < MARGIN_BOTTOM) continueTable(r);
+    let start = 0;
+    while (start < row.count) {
+      const available = Math.floor((ctx.y - MARGIN_BOTTOM - padding) / lineHeight);
+      if (available < 1) {
+        continueTable(r);
+        continue;
+      }
+      const count = Math.min(available, row.count - start);
+      drawFragment(row, start, count);
+      start += count;
+      if (start < row.count) continueTable(r);
+    }
   }
 
   ctx.y -= PARAGRAPH_SPACING;

@@ -133,6 +133,13 @@ curl http://localhost:3051/api/pages \
   -H "Authorization: Bearer <access-token>"
 ```
 
+The optional `visibility=private` or `visibility=shared` query parameter
+narrows the caller-visible rows by their stored visibility, including
+Confluence rows. It applies to the total and to search's substring fallback as
+well as the returned items. Omitting it leaves visibility unfiltered; access
+rules still apply in every case. Filter-based bulk selection uses the same
+visibility condition.
+
 ### Get a Page
 
 ```bash
