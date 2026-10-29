@@ -15,6 +15,9 @@ const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body)
 function settingsServer(initial: boolean | undefined) {
   let enabled = initial;
   const writes: Array<{ body: Record<string, unknown>; resolve: (response: Response) => void }> = [];
+  let holdReads = false;
+  const reads: Array<(response: Response) => void> = [];
+  const currentSettings = () => ({ confluenceEnabled: enabled, confluenceUrl: 'https://confluence.example.test', hasConfluencePat: true });
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     if (url === '/api/settings' && init?.method === 'PUT') {
@@ -23,7 +26,12 @@ function settingsServer(initial: boolean | undefined) {
       return promise;
     }
     if (url === '/api/settings') {
-      return reply({ confluenceEnabled: enabled, confluenceUrl: 'https://confluence.example.test', hasConfluencePat: true });
+      if (holdReads) {
+        const { promise, resolve } = Promise.withResolvers<Response>();
+        reads.push(resolve);
+        return promise;
+      }
+      return reply(currentSettings());
     }
     if (url === '/api/settings/test-confluence') return reply({ success: true, message: 'Connected (fixture)' });
     throw new Error(`Unexpected network request: ${url}`);
@@ -31,6 +39,13 @@ function settingsServer(initial: boolean | undefined) {
   return {
     writes,
     fetch,
+    reads,
+    holdReads() { holdReads = true; },
+    async settleRead(index: number, success = true) {
+      await act(async () => {
+        reads[index](success ? reply(currentSettings()) : reply({ error: 'Confirmation unavailable (fixture)' }, 500));
+      });
+    },
     setConfirmed(value: boolean) { enabled = value; },
     async acknowledge(index: number) {
       // The write already committed; only its HTTP response was delayed.
@@ -107,6 +122,72 @@ describe('Confluence mode through the real settings route and mutation', () => {
     expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(!initial);
     expect(await screen.findByText('Settings saved')).toBeInTheDocument();
     expect(server.fetch.mock.calls.every(([url]) => String(url) === '/api/settings')).toBe(true);
+  });
+
+  it.each([false, true])('blocks further writes while confirming a change from %s', async (initial) => {
+    const server = settingsServer(initial);
+    openSettings();
+    const control = await screen.findByRole('switch');
+    server.holdReads();
+    control.focus();
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    await server.settle(0, true);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Confirming the current mode'));
+    expect(server.reads).toHaveLength(1);
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    expect(control).toHaveAttribute('aria-checked', String(initial));
+    expect(control).toHaveFocus();
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(initial);
+    fireEvent.click(control);
+    expect(server.writes).toHaveLength(1);
+    await server.settleRead(0);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+    expect(control).toHaveAttribute('aria-checked', String(!initial));
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(!initial);
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes[1]?.body).toEqual({ confluenceEnabled: initial }));
+    await server.settle(1, true);
+    await waitFor(() => expect(server.reads).toHaveLength(2));
+    await server.settleRead(1);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+  });
+
+  it.each([false, true])('keeps confirmed %s locked after failed confirmation and retries only the read', async (initial) => {
+    const server = settingsServer(initial);
+    openSettings();
+    const control = await screen.findByRole('switch');
+    server.holdReads();
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes).toHaveLength(1));
+    await server.settle(0, true);
+    await waitFor(() => expect(server.reads).toHaveLength(1));
+    await server.settleRead(0, false);
+    const retry = await screen.findByRole('button', { name: 'Retry confirmation' });
+    expect(screen.getByRole('status')).toHaveTextContent('Mode was saved, but the current mode could not be read');
+    expect(control).toHaveAttribute('aria-checked', String(initial));
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(control);
+    expect(server.writes).toHaveLength(1);
+    retry.focus();
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await waitFor(() => expect(server.reads).toHaveLength(2));
+    expect(retry).toHaveTextContent('Retrying confirmation');
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    expect(retry).not.toBeDisabled();
+    expect(retry).toHaveFocus();
+    await server.settleRead(1, false);
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'false'));
+    expect(retry).toHaveFocus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(server.reads).toHaveLength(3));
+    await server.settleRead(2);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+    expect(control).toHaveAttribute('aria-checked', String(!initial));
+    expect(control).toHaveFocus();
+    expect(screen.queryByRole('button', { name: /Retry.*confirmation/ })).not.toBeInTheDocument();
+    expect(server.writes).toHaveLength(1);
   });
 
   it('reads a missing legacy flag as enabled and writes explicit false', async () => {

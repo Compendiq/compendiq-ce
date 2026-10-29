@@ -67,7 +67,11 @@ function IntegrationSwitch({
   );
 }
 
-export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => Promise<unknown> }) {
+export function ConfluenceTab({ settings, onSave, onConfirmMode }: {
+  settings: SettingsResponse;
+  onSave: (v: Record<string, unknown>) => Promise<unknown>;
+  onConfirmMode: () => Promise<unknown>;
+}) {
   const [url, setUrl] = useState(settings.confluenceUrl ?? '');
   const [pat, setPat] = useState('');
   const [testing, setTesting] = useState(false);
@@ -89,26 +93,50 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
     }
   }, [enabled]);
   const modeSaveInFlight = useRef(false);
-  const [savingMode, setSavingMode] = useState(false);
-  const [modeError, setModeError] = useState(false);
+  const [modePhase, setModePhase] = useState<'idle' | 'saving' | 'confirming' | 'failed' | 'unconfirmed'>('idle');
+  const [retryingConfirmation, setRetryingConfirmation] = useState(false);
+  const modeBlocked = modePhase === 'saving' || modePhase === 'confirming' || modePhase === 'unconfirmed';
 
   const tokenUrl = confluenceTokenUrl(url);
   const isVerified = verified !== null && verified.url === url && verified.pat === pat;
 
+  async function confirmMode(retryButton?: HTMLButtonElement) {
+    setModePhase('confirming');
+    try {
+      await onConfirmMode();
+      if (retryButton && document.activeElement === retryButton) {
+        document.getElementById('confluence-enabled')?.focus();
+      }
+      setModePhase('idle');
+    } catch {
+      setModePhase('unconfirmed');
+    }
+  }
+
   async function handleToggle(next: boolean) {
-    if (modeSaveInFlight.current) return;
+    if (modeSaveInFlight.current || modeBlocked) return;
     modeSaveInFlight.current = true;
-    setSavingMode(true);
-    setModeError(false);
+    setModePhase('saving');
     try {
       await onSave({ confluenceEnabled: next });
+      await confirmMode();
     } catch {
-      // The parent reports the request error; keep the latest confirmed mode,
-      // not the value captured when this request started.
-      setModeError(true);
+      // A write failure differs from a saved mode whose read-back failed.
+      setModePhase('failed');
     } finally {
       modeSaveInFlight.current = false;
-      setSavingMode(false);
+    }
+  }
+
+  async function retryConfirmation(button: HTMLButtonElement) {
+    if (modeSaveInFlight.current) return;
+    modeSaveInFlight.current = true;
+    setRetryingConfirmation(true);
+    try {
+      await confirmMode(button);
+    } finally {
+      modeSaveInFlight.current = false;
+      setRetryingConfirmation(false);
     }
   }
 
@@ -149,15 +177,24 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
           onCheckedChange={handleToggle}
           label="Sync with Confluence"
           help={enabled ? ON_HELP : OFF_HELP}
-          saving={savingMode}
+          saving={modeBlocked}
         />
-        <p role="status" className={`px-4 text-xs leading-5 text-muted-foreground ${savingMode || modeError ? 'pb-4' : ''}`}>
-          {savingMode
-            ? 'Saving mode… The last confirmed mode stays active until saving finishes.'
-            : modeError
-              ? 'Could not save the mode. The last confirmed mode is still shown. Try the switch again.'
-              : ''}
-        </p>
+        <div role="status" className={`px-4 text-xs leading-5 text-muted-foreground ${modePhase !== 'idle' ? 'pb-4' : ''}`}>
+          {modePhase === 'saving' && 'Saving mode… The last confirmed mode is shown.'}
+          {modePhase === 'confirming' && 'Mode saved. Confirming the current mode…'}
+          {modePhase === 'failed' && 'Could not save the mode. The last confirmed mode is still shown. Try the switch again.'}
+          {modePhase === 'unconfirmed' && 'Mode was saved, but the current mode could not be read. The last confirmed mode is shown. Retry confirmation before changing it again.'}
+          {(modePhase === 'unconfirmed' || retryingConfirmation) && (
+            <button
+              type="button"
+              className="nm-button-ghost mt-2 block"
+              aria-disabled={retryingConfirmation}
+              onClick={(event) => void retryConfirmation(event.currentTarget)}
+            >
+              {retryingConfirmation ? 'Retrying confirmation…' : 'Retry confirmation'}
+            </button>
+          )}
+        </div>
       </div>
 
       {enabled && (

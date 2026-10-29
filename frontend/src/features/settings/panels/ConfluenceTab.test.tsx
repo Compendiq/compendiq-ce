@@ -32,7 +32,7 @@ describe('ConfluenceTab — connection test result indicator', () => {
   // tests pin that contract.
   it('renders the success result with data-testid and data-state="success"', async () => {
     mockTestConnection({ success: true, message: 'Connected to Confluence 9.2' });
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
 
@@ -43,7 +43,7 @@ describe('ConfluenceTab — connection test result indicator', () => {
 
   it('renders the failure result with data-state="error"', async () => {
     mockTestConnection({ success: false, message: 'Authentication failed' });
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
 
@@ -53,7 +53,7 @@ describe('ConfluenceTab — connection test result indicator', () => {
   });
 
   it('shows no result box before the test runs', async () => {
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     expect(screen.queryByTestId('confluence-test-result')).not.toBeInTheDocument();
     // Settle any pending microtasks so nothing leaks into the next test.
     await waitFor(() => expect(true).toBe(true));
@@ -83,7 +83,7 @@ describe('confluenceTokenUrl', () => {
 
 describe('ConfluenceTab — save gating', () => {
   it('disables Save until the connection tests green', async () => {
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     const save = screen.getByTestId('confluence-save-btn');
     expect(save).toBeDisabled();
@@ -100,7 +100,7 @@ describe('ConfluenceTab — save gating', () => {
 
   it('keeps Save disabled when the test fails', async () => {
     mockTestConnection({ success: false, message: 'Authentication failed' });
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
 
@@ -110,7 +110,7 @@ describe('ConfluenceTab — save gating', () => {
 
   it('re-locks Save when credentials change after a green test', async () => {
     mockTestConnection({ success: true, message: 'Connected' });
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     const save = screen.getByTestId('confluence-save-btn');
     fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
@@ -130,7 +130,7 @@ describe('ConfluenceTab — save gating', () => {
   it('submits the tested credentials once Save unlocks', async () => {
     mockTestConnection({ success: true, message: 'Connected' });
     const onSave = vi.fn();
-    render(<ConfluenceTab settings={settings} onSave={onSave} />);
+    render(<ConfluenceTab settings={settings} onSave={onSave} onConfirmMode={async () => undefined} />);
 
     fireEvent.change(screen.getByLabelText(/personal access token/i), {
       target: { value: 'tok-123' },
@@ -149,14 +149,14 @@ describe('ConfluenceTab — save gating', () => {
 
 describe('ConfluenceTab — trust and guidance at PAT entry', () => {
   it('states that the token is encrypted at rest and never reaches an LLM', () => {
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     const hint = screen.getByText(/AES-256-GCM/i);
     expect(hint).toBeInTheDocument();
     expect(hint).toHaveTextContent(/never included in any prompt sent to a language model/i);
   });
 
   it('deep-links to the token page on the configured instance', () => {
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     expect(screen.getByTestId('confluence-token-link')).toHaveAttribute(
       'href',
       'https://confluence.example.com/plugins/personalaccesstokens/usertokens.action',
@@ -165,13 +165,13 @@ describe('ConfluenceTab — trust and guidance at PAT entry', () => {
 
   it('omits the deep link until the URL is usable', () => {
     render(
-      <ConfluenceTab settings={{ hasConfluencePat: false } as SettingsResponse} onSave={vi.fn()} />,
+      <ConfluenceTab settings={{ hasConfluencePat: false } as SettingsResponse} onSave={vi.fn()} onConfirmMode={async () => undefined} />,
     );
     expect(screen.queryByTestId('confluence-token-link')).not.toBeInTheDocument();
   });
 
   it('explains that sync waits until the connection tests green', () => {
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     expect(
       screen.getByText(/Nothing is mirrored until this connection tests green/),
     ).toBeInTheDocument();
@@ -188,7 +188,7 @@ describe('ConfluenceTab — integration toggle', () => {
   } as SettingsResponse;
 
   it('hides the credential form, the connection test and Save while the integration is off', () => {
-    render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
 
     expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false');
     expect(screen.queryByLabelText(/confluence url/i)).not.toBeInTheDocument();
@@ -198,7 +198,7 @@ describe('ConfluenceTab — integration toggle', () => {
   });
 
   it('describes off as standalone mode without asking for credentials or implying read-only pages', () => {
-    const { container } = render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} />);
+    const { container } = render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     const copy = container.textContent ?? '';
 
     expect(copy).toMatch(/standalone/i);
@@ -213,7 +213,7 @@ describe('ConfluenceTab — integration toggle', () => {
 
   it('saves the new flag on its own, once, without touching the credentials', async () => {
     const onSave = vi.fn().mockResolvedValue({});
-    render(<ConfluenceTab settings={settings} onSave={onSave} />);
+    render(<ConfluenceTab settings={settings} onSave={onSave} onConfirmMode={async () => undefined} />);
 
     fireEvent.click(screen.getByTestId('confluence-enabled'));
 
@@ -224,7 +224,7 @@ describe('ConfluenceTab — integration toggle', () => {
 
   it('saves the flag when switched back on', async () => {
     const onSave = vi.fn().mockResolvedValue({});
-    render(<ConfluenceTab settings={offSettings} onSave={onSave} />);
+    render(<ConfluenceTab settings={offSettings} onSave={onSave} onConfirmMode={async () => undefined} />);
 
     fireEvent.click(screen.getByTestId('confluence-enabled'));
 
@@ -236,7 +236,7 @@ describe('ConfluenceTab — integration toggle', () => {
   it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', () => {
     const onSave = vi.fn().mockResolvedValue({});
     const { rerender } = render(
-      <ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} />,
+      <ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} onConfirmMode={async () => undefined} />,
     );
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
       'placeholder',
@@ -244,9 +244,9 @@ describe('ConfluenceTab — integration toggle', () => {
     );
 
     // Only confirmed settings reads change the mode; saved credentials survive.
-    rerender(<ConfluenceTab settings={offSettings} onSave={onSave} />);
+    rerender(<ConfluenceTab settings={offSettings} onSave={onSave} onConfirmMode={async () => undefined} />);
     expect(screen.queryByLabelText(/personal access token/i)).not.toBeInTheDocument();
-    rerender(<ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} />);
+    rerender(<ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} onConfirmMode={async () => undefined} />);
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
       'placeholder',
       '••••••••••',
@@ -256,7 +256,7 @@ describe('ConfluenceTab — integration toggle', () => {
   it('treats a payload from before the flag existed as on', () => {
     // `confluenceEnabled` is absent here, not false — the column defaults to
     // TRUE, so a falsy read would hide a working user's credential form.
-    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} onConfirmMode={async () => undefined} />);
     expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByLabelText(/confluence url/i)).toBeInTheDocument();
   });

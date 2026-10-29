@@ -982,12 +982,15 @@ pulled from Confluence. Six rules fall out, and none of them is negotiable.
    read *unknown* as *off* — the one misreading that silently makes a connected
    user's workspace standalone.
 
-The settings mode switch awaits the parent's `mutateAsync` callback (#1808).
+The settings mode switch awaits the parent's `mutateAsync` callback (#1808),
+then awaits the authoritative settings read (`refetch` with `cancelRefetch:
+false` joins the mutation's invalidation; `throwOnError: true` exposes failure).
 The settings query alone drives the switch, mode copy and credential form;
 neither a late successful PUT acknowledgment nor a failure may replace a newer
-confirmed read. Show a pending status and reject duplicate presses without
-removing keyboard focus. Credential saves consume that same promise and
-retain drafts on error.
+confirmed read. Keep the switch blocked through confirmation without removing
+keyboard focus. A failed confirmation is not a failed write: keep the switch
+blocked and offer a read-only retry, returning focus to the switch only if the
+successful retry still owns focus. Credential saves retain drafts on error.
 
 **A local write succeeds; only a Confluence-ONLY operation refuses.** With the
 flag off a synced page takes the same write path a standalone page takes — the

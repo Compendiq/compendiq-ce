@@ -42,15 +42,16 @@ interface PanelRenderContext {
   isLoading: boolean;
   onSaveSettings: (body: Record<string, unknown>) => void;
   onSaveSettingsAsync: (body: Record<string, unknown>) => Promise<unknown>;
+  onConfirmSettings: () => Promise<unknown>;
   isAdmin: boolean;
 }
 
 // Map of `<category>/<item>` → panel renderer. Keep in sync with settings-nav.ts.
 const PANELS: Readonly<Record<string, PanelRenderer>> = {
   // Personal
-  'personal/confluence': ({ settings, isLoading, onSaveSettingsAsync }) => {
+  'personal/confluence': ({ settings, isLoading, onSaveSettingsAsync, onConfirmSettings }) => {
     if (isLoading || !settings) return <SkeletonFormFields />;
-    return <ConfluenceTab settings={settings} onSave={onSaveSettingsAsync} />;
+    return <ConfluenceTab settings={settings} onSave={onSaveSettingsAsync} onConfirmMode={onConfirmSettings} />;
   },
   'personal/ai-prompts': ({ settings, isLoading, onSaveSettings, isAdmin }) => {
     if (isLoading || !settings) return <SkeletonFormFields />;
@@ -100,7 +101,7 @@ export function SettingsPanelRoute() {
   const key = `${category ?? ''}/${item ?? ''}`;
 
   const user = useAuthStore((s) => s.user);
-  const { data: settings, isLoading } = useSettings();
+  const { data: settings, isLoading, refetch } = useSettings();
   const updateSettings = useUpdateSettings();
 
   // Gating check against the live nav config.
@@ -155,6 +156,8 @@ export function SettingsPanelRoute() {
     isLoading,
     onSaveSettings: (body) => updateSettings.mutate(body),
     onSaveSettingsAsync: (body) => updateSettings.mutateAsync(body),
+    // Join the mutation's invalidation read rather than cancelling/restarting it.
+    onConfirmSettings: () => refetch({ cancelRefetch: false, throwOnError: true }),
     isAdmin: ctx.isAdmin,
   });
 }
