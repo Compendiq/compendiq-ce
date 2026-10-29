@@ -1681,3 +1681,11 @@ baseline frozen before that policy was enabled. #278 signing/governance and
 #277's full baseline UI are not implemented in this slice.
 Operations, capacity, retention and recovery:
 `docs/runbooks/immutable-page-baselines.md`.
+
+Webhook administration distinguishes an unreadable list from a successful
+empty response. A failed refresh retains cached subscriptions with a stale
+notice; retry uses `useNoticeRetry` so focus survives pending and recovery.
+Keep the runtime feature gate and signing notice intact.
+`useNoticeRetry` lives in `frontend/src/shared/hooks/use-notice-retry.ts`;
+all settings and administration consumers import that one shared definition,
+not the former settings-panel path.

@@ -551,6 +551,10 @@ Compendiq supports both dark and light themes:
 
 Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Governance → Data & Compliance → Webhooks**.
 
+If the endpoint list cannot be loaded, use **Retry** rather than assuming no
+webhooks are configured. If a refresh fails, the last loaded list remains
+visible and may be out of date until the retry succeeds.
+
 ### Event catalogue (v0.4)
 
 | Event type | Fires when |
