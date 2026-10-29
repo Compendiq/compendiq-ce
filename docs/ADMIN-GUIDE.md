@@ -1989,6 +1989,10 @@ Compendiq logs user actions and system events. Query audit logs via the admin AP
 
 Admins manage the full user lifecycle from **Settings → Governance → Access Control → Users**. All mutations are audit-logged under `ADMIN_ACTION` events and rate-limited the same as other admin endpoints. Under the hood each action maps to one of the per-user admin endpoints (`POST|PUT|DELETE /api/admin/users/...`) so EE bulk tooling (#116) can compose the same primitives.
 
+User lifecycle changes refresh both the Users list and the user choices in
+Roles, including group membership and space-role assignment. The Roles tab
+remains available only when the licence grants `advanced_rbac`.
+
 ### Creating a user
 
 1. Go to **Settings → Governance → Access Control → Users** and click **Add user**.

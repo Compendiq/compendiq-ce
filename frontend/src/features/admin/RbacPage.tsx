@@ -194,7 +194,7 @@ function useSpaces() {
 
 function useUsers() {
   return useQuery<UserInfo[]>({
-    queryKey: ['admin', 'users'],
+    queryKey: ['admin', 'users', 'rbac'],
     queryFn: () => apiFetch('/users'),
     staleTime: 60_000,
   });

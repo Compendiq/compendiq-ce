@@ -346,10 +346,11 @@ function ApproversSection({ spaceKey, roles }: { spaceKey: string; roles: string
     ).assignments,
   });
 
-  const users = useQuery<{ id: string; username: string; displayName: string | null }[]>({
+  const users = useQuery({
     queryKey: ['admin', 'users'],
     retry: false,
-    queryFn: async () => (await apiFetch<{ users: { id: string; username: string; displayName: string | null }[] }>('/admin/users')).users,
+    queryFn: () => apiFetch<{ users: { id: string; username: string; displayName: string | null }[] }>('/admin/users'),
+    select: (response) => response.users,
   });
 
   const mutation = useMutation<unknown, unknown, { method: 'POST' | 'DELETE'; role: string; userId: string }>({
