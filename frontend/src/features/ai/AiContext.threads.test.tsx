@@ -691,7 +691,7 @@ describe('resolveAiPageId', () => {
  */
 function StateProbe() {
   const {
-    messages, conversationId, input, mode, setMode, model, activeThreadId,
+    messages, conversationId, input, mode, setMode, activeThreadId,
     threadLoadState, threadLoadError, historyTruncated, retryThreadLoad,
     setInput, setConversationId, purgeConversation, runStream, startNewConversation,
   } = useAiContext();
@@ -703,7 +703,6 @@ function StateProbe() {
       <span data-testid="active-thread-id">{activeThreadId}</span>
       <span data-testid="draft">{input}</span>
       <span data-testid="mode">{mode}</span>
-      <span data-testid="model">{model}</span>
       <span data-testid="load-state">{threadLoadState}</span>
       <span data-testid="load-error">{threadLoadError ?? 'none'}</span>
       <span data-testid="history-truncated">{historyTruncated ? 'yes' : 'no'}</span>
@@ -1136,10 +1135,8 @@ describe('AiContext conversation state machine (#1361)', () => {
     });
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
     expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
-    // Opening loads, never sends (#1176), and sets the action to Q&A…
+    // Opening loads, never sends (#1176), and sets the action to Q&A.
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
-    // …but never the model: the per-conversation dropdown is gone (#355 AC-4).
-    expect(screen.getByTestId('model')).toHaveTextContent('llama3');
 
     // The draft it was fetched next to is untouched.
     goTo('/ai');
