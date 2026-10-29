@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -308,13 +308,17 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
   it.each([
     ['bulk-sync', 'flow.drawio'], ['bulk-sync', 'flow.xml'], ['bulk-sync', 'flow'],
     ['page-put', 'flow.drawio'], ['page-put', 'flow.xml'], ['page-put', 'flow'],
+    ['page-put', 'flow.xml', 'png', false], ['page-put', 'flow.xml', 'png', true],
+    ['page-put', 'flow.xml', 'invalid', false], ['page-put', 'flow.xml', 'invalid', true],
   ] as const)(
     'keeps cold-cache draw.io XML reachable after %s publication from %s',
-    async (publication, sourceTitle) => {
-      const confluenceId = `cold-${publication}-${sourceTitle.replace('.', '-')}`;
+    async (publication, sourceTitle, preferredPayload?: 'png' | 'invalid', streaming = false) => {
+      const confluenceId = `cold-${publication}-${sourceTitle.replace('.', '-')}-${preferredPayload ?? 'only'}-${streaming}`;
       const pageId = await seedConfluencePage(confluenceId, 'Source-only diagram');
       const storage = '<p>Keep prose</p><ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>';
       const xml = '<mxfile><diagram id="flow"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+      const { STREAM_THRESHOLD_BYTES } = await import('../../domains/confluence/services/attachment-handler.js');
       const requests: string[] = [];
       let version = 1;
       const server = createServer(async (request, response) => {
@@ -325,12 +329,23 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
           response.end(xml);
           return;
         }
+        if (path === '/download/preferred') {
+          response.end(preferredPayload === 'png' ? png : Buffer.from('unrelated bytes'));
+          return;
+        }
         response.setHeader('content-type', 'application/json');
         if (path.endsWith('/child/attachment')) {
-          response.end(JSON.stringify({ results: [{
-            id: 'source', title: sourceTitle, version: { number: 1 },
-            _links: { download: '/download/flow.drawio' },
-          }] }));
+          const extensions = streaming ? { fileSize: STREAM_THRESHOLD_BYTES + 1 } : undefined;
+          response.end(JSON.stringify({ results: [
+            ...(preferredPayload ? [{
+              id: 'preferred', title: 'flow.drawio', version: { number: 1 },
+              _links: { download: '/download/preferred' }, extensions,
+            }] : []),
+            {
+              id: 'source', title: sourceTitle, version: { number: 1 },
+              _links: { download: '/download/flow.drawio' }, extensions,
+            },
+          ] }));
           return;
         }
         if (path === `/rest/api/content/${confluenceId}`) {
@@ -384,6 +399,12 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
         expect(source.statusCode, source.body).toBe(200);
         expect(source.body).toBe(xml);
         expect(requests).toContain('GET /download/flow.drawio');
+        if (preferredPayload) {
+          expect(requests).toContain('GET /download/preferred');
+          const pngPath = join(attachmentsDir, confluenceId, 'flow.png');
+          if (preferredPayload === 'png') expect(await readFile(pngPath)).toEqual(png);
+          else await expect(access(pngPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
       } finally {
         server.closeAllConnections();
         const closed = Promise.withResolvers<void>();

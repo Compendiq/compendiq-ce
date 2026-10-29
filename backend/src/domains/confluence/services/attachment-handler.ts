@@ -197,8 +197,6 @@ export async function syncDrawioAttachments(
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
       const pngAttachment = attachments.find((a) => a.title === pngName && a._links?.download);
-      const sourceAttachment = attachments.find((a) => a.title === sourceName && a._links?.download)
-        ?? attachments.find((a) => a.title === `${name}.xml` && a._links?.download);
       const bareAttachment = attachments.find((a) => a.title === name && a._links?.download);
       // Remember classification of an extensionless PNG separately: an
       // existing preview alone does not prove that the bare attachment is PNG.
@@ -274,9 +272,14 @@ export async function syncDrawioAttachments(
       };
 
       if (hasSource) skipped++;
-      else if (sourceAttachment) {
-        try { await download(sourceAttachment, 'source'); }
-        catch (err) { logger.warn({ err, pageId, name }, 'Failed to cache draw.io source'); }
+      else {
+        for (const sourceTitle of [sourceName, `${name}.xml`]) {
+          if (hasSource) break;
+          const sourceAttachment = attachments.find((a) => a.title === sourceTitle && a._links?.download);
+          if (!sourceAttachment) continue;
+          try { await download(sourceAttachment, 'source'); }
+          catch (err) { logger.warn({ err, pageId, name }, 'Failed to cache draw.io source'); }
+        }
       }
       if (hasPng) skipped++;
       else if (pngAttachment && !pngIsCachedSource) {
@@ -542,11 +545,12 @@ export async function fetchAndCacheAttachment(
       ?? findAttachmentByFilename(attachments, `${baseName}.xml`)
       ?? findAttachmentByFilename(attachments, `${baseName}.drawio`);
   }
-  if (!attachment && isSourceRequest) {
-    const baseName = safe.slice(0, -7);
-    attachment = findAttachmentByFilename(attachments, `${baseName}.xml`)
-      ?? findAttachmentByFilename(attachments, baseName);
-  }
+  const sourceAttachments = isSourceRequest
+    ? [safe, `${safe.slice(0, -7)}.xml`, safe.slice(0, -7)]
+      .map((title) => findAttachmentByFilename(attachments, title))
+      .filter((candidate): candidate is ConfluenceAttachment => Boolean(candidate?._links?.download))
+    : [];
+  if (isSourceRequest) attachment = sourceAttachments[0];
 
   if (!attachment?._links?.download) {
     logger.debug({ userId, pageId, filename: safe }, 'Attachment not found in Confluence');
@@ -563,23 +567,28 @@ export async function fetchAndCacheAttachment(
   const filePath = safeAttachmentPath(pageId, safe);
 
   if (isSourceRequest) {
-    const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
-    try {
-      const data = useStreaming ? null : await client.downloadAttachment(attachment._links.download);
-      if (data) await fs.writeFile(temporaryPath, data);
-      else await client.downloadAttachmentToFile(attachment._links.download, temporaryPath, MAX_ATTACHMENT_BYTES);
-      if (!await isDrawioXmlFile(temporaryPath)) {
-        const pngName = `${safe.slice(0, -7)}.png`;
-        if (await isPngFile(temporaryPath) && !await attachmentExists(pageId, pngName)) {
-          await fs.rename(temporaryPath, safeAttachmentPath(pageId, pngName));
+    for (const sourceAttachment of sourceAttachments) {
+      const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
+      try {
+        const sourceStreaming = sourceAttachment.extensions?.fileSize !== undefined
+          && sourceAttachment.extensions.fileSize > STREAM_THRESHOLD_BYTES;
+        const data = sourceStreaming ? null : await client.downloadAttachment(sourceAttachment._links!.download);
+        if (data) await fs.writeFile(temporaryPath, data);
+        else await client.downloadAttachmentToFile(sourceAttachment._links!.download, temporaryPath, MAX_ATTACHMENT_BYTES);
+        if (!await isDrawioXmlFile(temporaryPath)) {
+          const pngName = `${safe.slice(0, -7)}.png`;
+          if (await isPngFile(temporaryPath) && !await attachmentExists(pageId, pngName)) {
+            await fs.rename(temporaryPath, safeAttachmentPath(pageId, pngName));
+          }
+          continue;
         }
-        return null;
+        await fs.rename(temporaryPath, filePath);
+        return data ?? await fs.readFile(filePath);
+      } finally {
+        await fs.rm(temporaryPath, { force: true });
       }
-      await fs.rename(temporaryPath, filePath);
-      return data ?? await fs.readFile(filePath);
-    } finally {
-      await fs.rm(temporaryPath, { force: true });
     }
+    return null;
   }
 
   if (isPngRequest) {

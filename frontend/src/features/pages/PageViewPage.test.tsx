@@ -10,6 +10,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import type * as ApiModule from '../../shared/lib/api';
 import { toast } from 'sonner';
 
 vi.mock('sonner', () => ({
@@ -182,7 +183,8 @@ vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
   ),
 }));
 
-vi.mock('../../shared/lib/api', () => ({
+vi.mock('../../shared/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof ApiModule>()),
   apiFetch: vi.fn().mockResolvedValue({ linked: [], section: [], related: [] }),
   ApiError: class ApiError extends Error {
     statusCode: number;

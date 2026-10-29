@@ -1,5 +1,5 @@
 import { useAuthStore } from '../../stores/auth-store';
-import { refreshAccessTokenOnce } from './api';
+import { RefreshUnavailableError, refreshAccessTokenOnce } from './api';
 
 // Match the attachment upload/source limits. Compressed pages share one budget.
 const MAX_XML_BYTES = 25 * 1024 * 1024;
@@ -123,13 +123,15 @@ export async function loadDrawioSource(options: { xml?: string | null; sourceUrl
     candidates.push({ url: options.sourceUrl, xml: true });
   }
   if (options.previewUrl) candidates.push({ url: options.previewUrl, xml: false });
+  let attemptedRefresh = false;
   for (const candidate of candidates) {
     try {
       const headers: HeadersInit = {};
       const token = useAuthStore.getState().accessToken;
       if (token && candidate.url.startsWith('/api/')) headers.Authorization = `Bearer ${token}`;
       let response = await fetch(candidate.url, { headers, credentials: 'include', cache: 'no-store' });
-      if (response.status === 401 && candidate.url.startsWith('/api/')) {
+      if (response.status === 401 && candidate.url.startsWith('/api/') && !attemptedRefresh) {
+        attemptedRefresh = true;
         const refreshed = await refreshAccessTokenOnce();
         if (refreshed) {
           headers.Authorization = `Bearer ${refreshed}`;
@@ -137,7 +139,10 @@ export async function loadDrawioSource(options: { xml?: string | null; sourceUrl
         }
       }
       if (response.ok) return candidate.xml ? await diagramXml(await response.text()) : await diagramPng(await response.blob());
-    } catch {
+    } catch (error) {
+      // Rotation may have committed without its response/cookie reaching us.
+      // Never replay that refresh through the next attachment candidate.
+      if (error instanceof RefreshUnavailableError) throw error;
       // A missing/malformed source must not hide a usable legacy PNG+XML.
     }
   }

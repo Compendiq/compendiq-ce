@@ -1210,6 +1210,10 @@ Validate every XML page, preserving the complete multi-page file and valid empty
 graphs. Support the packaged editor's URI/double-URI tEXt and legacy raw-deflate
 zTXt formats, with bounded expansion. HTTP 200, MIME type, and filename are not
 proof of editable content. Never substitute an empty diagram on load failure.
+An attachment-candidate fallback is not an authentication retry: one logical
+load may invoke the shared refresh helper only once. Propagate refresh
+unavailability immediately, keeping auth state and the helper's marked-busy
+retry policy; never replay an uncertain rotation through the PNG candidate.
 A missing local source is unknown upstream availability, not proof of absence:
 retain the converted source locator on page-only publication (including PUT,
 bulk sync and recovery). The existing authorized attachment GET resolves it
@@ -1217,7 +1221,9 @@ on demand; only validated local raster bytes may become a preview.
 Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles.
 All sync and lazy paths classify bytes, including names ending in `.xml` or
 `.drawio`: actual PNG becomes a preview, actual XML becomes source, and other
-payloads are not cached. A Confluence-to-local move
+payloads are not cached. A preferred source title containing PNG or unrelated
+bytes must not shadow another valid XML source: continue through the supported
+source candidates, retaining any validated PNG separately. A Confluence-to-local move
 must refuse before any cutover or upstream deletion if a referenced draw.io
 source is not preserved as XML in its prepared attachments. Open/save the
 diagram first, then retry the move; never rewrite an unpreserved source.

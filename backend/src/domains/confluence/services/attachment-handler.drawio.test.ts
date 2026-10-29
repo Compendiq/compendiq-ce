@@ -9,7 +9,7 @@ import { confluenceToHtml } from '../../../core/services/content-converter.js';
 import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
-const xml = Buffer.from('<mxfile><diagram id="1">editable</diagram></mxfile>');
+const xml = Buffer.from('<mxfile><diagram id="1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>');
 const body = '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="baseUrl">ignored</ac:parameter><ac:parameter ac:name="diagramName">diagram</ac:parameter></ac:structured-macro>';
 let files: Record<string, Buffer> = {};
 let attachments: ConfluenceAttachment[] = [];
@@ -243,6 +243,28 @@ describe('draw.io attachment HTTP boundary', () => {
     await missing('diagram.drawio');
     if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
     else await missing('diagram.png');
+  });
+
+  it.each([
+    [false, true], [true, true], [false, false], [true, false],
+  ] as const)('finds an XML sibling after a non-XML preferred source (streaming: %s, PNG: %s)', async (streaming, validPng) => {
+    files = { '/preferred': validPng ? png : Buffer.from('unrelated bytes'), '/source': xml };
+    const size = streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined;
+    attachments = [attachment('diagram.drawio', '/preferred', size), attachment('diagram.xml', '/source', size)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments))
+      .toEqual(validPng ? ['diagram.png', 'diagram.drawio'] : ['diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    expect(requests).toEqual(['/preferred', '/source']);
+
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+    requests = [];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toEqual(xml);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    expect(requests).toEqual(['/preferred', '/source']);
   });
 
   it('on-demand PNG lookup accepts an extensionless real PNG', async () => {
