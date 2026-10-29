@@ -5,6 +5,9 @@ on:
     branches: [dev, main]
     paths:
       - 'scripts/install.sh'
+      - 'scripts/uninstall.sh'
+      - 'scripts/install-path.test.sh'
+      - 'scripts/install.test.sh'
       - '.github/workflows/test-installer.yml'
   workflow_dispatch:
 
@@ -42,6 +45,10 @@ jobs:
           apt-get install -y git openssl ca-certificates
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Run installer and uninstaller regression tests
+        run: |
+          bash scripts/install.test.sh
+          bash scripts/install-path.test.sh
 
       - name: Run install.sh --dry-run (Docker present)
         if: matrix.docker_present

@@ -657,6 +657,12 @@ dry_run_summary() {
 main() {
   setup_colors
   parse_args "$@"
+  # Anchor relative paths before any working-directory change, including dry runs.
+  INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
+  case "$INSTALL_DIR" in
+    /*) ;;
+    *) INSTALL_DIR="$(pwd -P)/${INSTALL_DIR}" ;;
+  esac
   banner
 
   # ---- Pre-flight ----
@@ -670,7 +676,6 @@ main() {
     local dry_run_dir
     dry_run_dir="$(mktemp -d)"
 
-    INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
     info "Dry-run mode — generating config to ${dry_run_dir}"
 
     # Print what would happen
@@ -713,10 +718,10 @@ main() {
   fi
 
   # ---- Install directory (CLI flag > env var > default) ----
-  INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
   info "Install directory: ${INSTALL_DIR}"
   mkdir -p "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
+  # Match filesystem traversal for paths containing symlinks followed by "..".
+  cd -P "$INSTALL_DIR"
 
   # ---- Generate config ----
   write_env "${INSTALL_DIR}/.env"
