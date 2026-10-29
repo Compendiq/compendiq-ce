@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Portable Compose trust (#1819):** the base deployment no longer mounts a
+  Red Hat host CA file over the image trust store. Private CAs require the
+  explicit corporate-CA override and an existing host PEM. Backend TLS
+  dispatchers retain public and system roots when the private PEM is supplied;
+  verification remains enabled. Existing custom-CA deployments must opt in
+  and recreate the backend.
+
 - **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
   Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
   remains enabled; only its runner distribution is pinned.

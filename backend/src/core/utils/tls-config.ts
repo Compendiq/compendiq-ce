@@ -1,11 +1,12 @@
 import { readFileSync, existsSync } from 'fs';
+import { rootCertificates } from 'tls';
 import { Agent, Dispatcher, interceptors } from 'undici';
 import { logger } from './logger.js';
 import { unsafeDisableTlsVerification } from './unsafe-tls.js';
 
 /**
- * Load custom CA certificates for undici (which doesn't respect NODE_EXTRA_CA_CERTS).
- * Checks NODE_EXTRA_CA_CERTS first, then common system CA bundle paths as fallback.
+ * Load CA certificates for undici. An explicit `ca` replaces Node's default
+ * trust, so a supplied private bundle must be combined with the default roots.
  */
 function loadCaBundle(): string | undefined {
   const caPath = process.env.NODE_EXTRA_CA_CERTS;
@@ -16,7 +17,15 @@ function loadCaBundle(): string | undefined {
       const contents = readFileSync(caPath, 'utf-8');
       if (contents.includes('-----BEGIN CERTIFICATE-----')) {
         logger.info({ caPath, size: contents.length }, 'Loaded custom CA bundle from NODE_EXTRA_CA_CERTS');
-        return contents;
+        // Explicit `ca` replaces Node's default roots. Include those roots and
+        // the image's system bundle as well as the supplied private CA.
+        const systemPaths = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'];
+        let systemBundle = '';
+        for (const path of systemPaths) {
+          if (path === caPath || !existsSync(path)) continue;
+          try { systemBundle = readFileSync(path, 'utf-8'); break; } catch { /* Try the next system path. */ }
+        }
+        return [...rootCertificates, systemBundle, contents].join('\n');
       }
       logger.warn({ caPath }, 'CA bundle file exists but contains no PEM certificates');
     } catch (err) {
