@@ -42,7 +42,7 @@ import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
 import { Button } from '../../shared/components/Button';
-import { useNoticeRetry } from '../settings/panels/use-notice-retry';
+import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // We bypass `apiFetch` for the same reason as IpAllowlistTab: the backend
