@@ -4,13 +4,13 @@ import { WebsocketProvider } from 'y-websocket';
 import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
 import { COLLAB_WS_PROTOCOL, CollabWritableAdmissionControlSchema, PageLifecycleEventSchema } from '@compendiq/contracts';
-import { refreshAccessTokenOnce } from '../../shared/lib/api';
+import { refreshAccessTokenOnce, RefreshUnavailableError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import type { CollabAwarenessUser } from './merge-presence';
 
 const MESSAGE_CONTROL = 4;
-// Rejoin pauses after an unavailable token refresh, as in use-presence.
+// Retry-safe busy refresh failures rejoin with backoff, as in use-presence.
 const REJOIN_BACKOFF_START_MS = 1_000;
 const REJOIN_BACKOFF_CAP_MS = 30_000;
 
@@ -115,6 +115,7 @@ export function useCollabProvider({
     let rejoinBackoffMs = REJOIN_BACKOFF_START_MS;
     // Same timer-handle type use-presence uses for its reconnect timer.
     let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
+    let pausedToken: string | null | undefined;
     const joinedRevision = latestRevision.current;
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
@@ -135,6 +136,16 @@ export function useCollabProvider({
       awareness,
     });
     setProvider(ws);
+
+    const resumeWithNewToken = () => {
+      const state = useAuthStore.getState();
+      if (cancelled || blocked || pausedToken === undefined || !state.accessToken ||
+          state.accessToken === pausedToken || state.user?.id !== selfUserId) return;
+      pausedToken = undefined;
+      ws.protocols = [COLLAB_WS_PROTOCOL, state.accessToken];
+      ws.connect();
+    };
+    const unsubscribeAuth = useAuthStore.subscribe(resumeWithNewToken);
 
     const preserveReadOnly = (reason: CollabReadOnlyReason) => {
       if (cancelled || blocked) return;
@@ -185,6 +196,7 @@ export function useCollabProvider({
       if (cancelled || blocked) return;
       setWritable(false);
       if (event.code === 4401) {
+        const refreshToken = useAuthStore.getState().accessToken;
         refreshAccessTokenOnce().then(
           (fresh) => {
             if (cancelled || blocked) return;
@@ -196,12 +208,16 @@ export function useCollabProvider({
             ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
             ws.connect();
           },
-          () => {
-            // Refresh temporarily unavailable: keep the session and rejoin
-            // after a growing pause (like presence), so a busy session lock
-            // is not hammered. A still-stale token is closed with 4401 again,
-            // which retries the refresh.
+          (error: unknown) => {
             if (cancelled || blocked) return;
+            if (error instanceof RefreshUnavailableError && !error.retrySafe) {
+              // Keep this draft/provider, but never reconnect with the stale
+              // token to repeat a rotation whose outcome is unknown.
+              pausedToken = refreshToken;
+              resumeWithNewToken();
+              return;
+            }
+            // Marked busy responses prove rollback, so rejoining is safe.
             const delay = rejoinBackoffMs;
             rejoinBackoffMs = Math.min(rejoinBackoffMs * 2, REJOIN_BACKOFF_CAP_MS);
             rejoinTimer = setTimeout(() => {
@@ -229,6 +245,7 @@ export function useCollabProvider({
 
     return () => {
       cancelled = true;
+      unsubscribeAuth();
       clearTimeout(rejoinTimer);
       awareness.off('update', refreshAwareness);
       ws.destroy();

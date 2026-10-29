@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
+import { focusManager, onlineManager, QueryObserver } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSessionInit } from '../hooks/useSessionInit';
 import { apiFetch, refreshAccessTokenOnce, RefreshUnavailableError } from './api';
+import { createQueryClient } from './query-client';
 
 const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'alice', role: 'user' as const };
 const SUCCESS = { accessToken: 'synthetic-new-token', user: USER };
@@ -127,5 +129,96 @@ describe('refresh result classification', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(useAuthStore.getState()).toBe(before);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('refresh safety at automatic consumer boundaries', () => {
+  it.each([200, 401])('fences QueryClient retries, polling and remounts before a replay could return %s', async (replayStatus) => {
+    const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60 }));
+    useAuthStore.getState().setAuth(`synthetic.${payload}.signature`, USER);
+    const before = useAuthStore.getState();
+    const persistedBefore = localStorage.getItem('compendiq-auth');
+    const held = Promise.withResolvers<Response>();
+    let refreshes = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (url !== '/api/auth/refresh') throw new Error(`Unexpected request: ${String(url)}`);
+      refreshes += 1;
+      return refreshes === 1 ? held.promise : new Response('{', { status: replayStatus });
+    });
+    const client = createQueryClient();
+    client.mount();
+    const queryFn = vi.fn(() => apiFetch('/fixture'));
+    const outcome = client.fetchQuery({ queryKey: ['refresh-boundary'], queryFn })
+      .catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(refreshes).toBe(1);
+      expect(useAuthStore.getState()).toBe(before);
+      held.resolve(new Response('{', { status: 200 }));
+      expect(await outcome).toBeInstanceOf(RefreshUnavailableError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(queryFn).toHaveBeenCalledTimes(1);
+
+      // Polling and a new observer are new fetch cycles, not QueryClient retries.
+      const observer = new QueryObserver(client, {
+        queryKey: ['refresh-boundary'], queryFn,
+        refetchInterval: 1_000, refetchIntervalInBackground: true,
+      });
+      let unsubscribe = observer.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(5_000);
+      unsubscribe();
+      unsubscribe = observer.subscribe(() => {});
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true);
+      await client.invalidateQueries({ queryKey: ['refresh-boundary'] });
+      await vi.advanceTimersByTimeAsync(5_000);
+      unsubscribe();
+      expect(queryFn.mock.calls.length).toBeGreaterThan(2);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(useAuthStore.getState()).toBe(before);
+      expect(localStorage.getItem('compendiq-auth')).toBe(persistedBefore);
+    } finally {
+      client.unmount();
+      client.clear();
+      focusManager.setFocused(undefined);
+      onlineManager.setOnline(true);
+    }
+  });
+
+  it('allows recovery with a replacement token, without replaying the failed refresh', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('{', { status: 200 }));
+    await expect(refreshAccessTokenOnce()).rejects.toBeInstanceOf(RefreshUnavailableError);
+    await expect(refreshAccessTokenOnce()).rejects.toBeInstanceOf(RefreshUnavailableError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    useAuthStore.getState().setAuth('synthetic-recovered-token', USER);
+    fetchSpy.mockResolvedValueOnce(json({ recovered: true }));
+    const client = createQueryClient();
+    try {
+      await expect(client.fetchQuery({
+        queryKey: ['recovered'], queryFn: () => apiFetch('/fixture'),
+      })).resolves.toEqual({ recovered: true });
+      expect(new Headers(fetchSpy.mock.calls[1]?.[1]?.headers).get('Authorization'))
+        .toBe('Bearer synthetic-recovered-token');
+      // The new session can rotate normally when it later needs to.
+      fetchSpy.mockResolvedValueOnce(json(SUCCESS));
+      await expect(refreshAccessTokenOnce()).resolves.toBe(SUCCESS.accessToken);
+    } finally {
+      client.clear();
+    }
+  });
+
+  it('does not fence a newer auth state when an older held refresh rejects', async () => {
+    const held = Promise.withResolvers<Response>();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(held.promise);
+    const oldFlight = refreshAccessTokenOnce().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    useAuthStore.getState().setAuth('synthetic-sibling-token', USER);
+    held.resolve(new Response('{', { status: 200 }));
+    expect(await oldFlight).toBeInstanceOf(RefreshUnavailableError);
+    fetchSpy.mockResolvedValueOnce(json(SUCCESS));
+    await expect(refreshAccessTokenOnce()).resolves.toBe(SUCCESS.accessToken);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });

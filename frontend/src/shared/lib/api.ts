@@ -27,14 +27,14 @@ export class ApiError extends Error {
 }
 
 /**
- * The refresh outcome is indeterminate: a network error, an unusable success
- * body, a server or proxy error, 408/429, or the backend's retry-safe busy
- * 503 on every attempt. Callers keep the session and surface this error
- * instead of logging out.
+ * Refresh is unavailable. Only an exhausted marked-busy response is retry-safe;
+ * every other outcome may have consumed the cookie. Callers keep the session.
  */
 export class RefreshUnavailableError extends ApiError {
-  constructor() {
-    super(503, 'Your session could not be refreshed right now. Please try again.');
+  constructor(public readonly retrySafe = false) {
+    super(503, retrySafe
+      ? 'Your session could not be refreshed right now. Please try again.'
+      : 'Your session could not be refreshed safely. Save your work, then reload to try again.');
     this.name = 'RefreshUnavailableError';
   }
 }
@@ -107,6 +107,10 @@ async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
  * which case callers must keep the session.
  */
 let pendingRefresh: Promise<string | null> | null = null;
+let unavailableRefresh: {
+  state: object;
+  error: RefreshUnavailableError;
+} | null = null;
 
 async function refreshWithBackoff(observedToken: string | null): Promise<string | null> {
   for (let attempt = 0; ; attempt += 1) {
@@ -117,7 +121,7 @@ async function refreshWithBackoff(observedToken: string | null): Promise<string 
     });
     if (outcome !== REFRESH_BUSY) return outcome;
     const delay = REFRESH_RETRY_DELAYS_MS[attempt];
-    if (delay === undefined) throw new RefreshUnavailableError();
+    if (delay === undefined) throw new RefreshUnavailableError(true);
     const pause = Promise.withResolvers<void>();
     setTimeout(pause.resolve, delay);
     await pause.promise;
@@ -125,8 +129,21 @@ async function refreshWithBackoff(observedToken: string | null): Promise<string 
 }
 
 export function refreshAccessTokenOnce(): Promise<string | null> {
+  const state = useAuthStore.getState();
+  // Retries, polling, focus refetches and reconnects all share this fence.
+  // A new auth state (login, logout or sibling token adoption) releases it;
+  // elapsed time and a new caller do not prove the cookie is safe to replay.
+  if (unavailableRefresh?.state === state) return Promise.reject(unavailableRefresh.error);
+  unavailableRefresh = null;
   if (!pendingRefresh) {
-    pendingRefresh = refreshWithBackoff(useAuthStore.getState().accessToken).finally(() => {
+    pendingRefresh = refreshWithBackoff(state.accessToken).catch((error: unknown) => {
+      // An old flight must not fence a newer session/token adopted meanwhile.
+      if (error instanceof RefreshUnavailableError && !error.retrySafe &&
+          useAuthStore.getState() === state) {
+        unavailableRefresh = { state, error };
+      }
+      throw error;
+    }).finally(() => {
       pendingRefresh = null;
     });
   }

@@ -48,7 +48,7 @@ sequenceDiagram
         BE->>DB: INSERT successor (same family), COMMIT
         BE-->>FE: 200 { accessToken (new), user }<br/>Set-Cookie: successor
         FE->>FE: validate AuthResponseSchema and nonblank token before auth mutation
-        Note over FE: Unreadable or invalid success: keep auth,<br/>reject RefreshUnavailableError, do not retry
+        Note over FE: Unreadable or invalid success: keep auth,<br/>reject RefreshUnavailableError, fence automatic refreshes
     else already revoked (replay or concurrent loser)
         BE->>DB: revoke whole family, COMMIT
         BE-->>FE: 401
@@ -168,11 +168,27 @@ Successful bodies must pass `AuthResponseSchema` and carry a nonblank access
 token before any auth mutation, persistence or broadcast (#1800). A JSON `null`
 body is invalid success, not evidence of session loss. These indeterminate
 outcomes and exhausted busy attempts reject with `RefreshUnavailableError`
-(an `ApiError` with status `503`).
-Callers keep the session and surface that error — `apiFetch` throws it,
-`useSessionInit` leaves auth as is, presence reconnects with backoff and the
-collaboration socket rejoins after a pause that doubles from 1s up to 30s and
-starts over at 1s once a socket connects.
+(an `ApiError` with status `503`). Only exhausted marked-busy attempts carry
+`retrySafe: true`, retaining the existing retry/backoff behavior.
+
+For indeterminate outcomes the shared helper retains the failure against the
+unchanged auth-state snapshot. Query retries, interval polls, window focus,
+online reconnect, newly mounted consumers and the token timer therefore cannot
+repeat the refresh POST. QueryClient also stops its immediate retry cycle.
+Presence and collaboration park their reconnect loops rather than reconnecting
+with a stale token; a replacement token for the same account resumes them,
+keeping the same collaborative document and admission revision. Ordinary
+transport reconnects and retry-safe busy backoff are unchanged.
+
+Callers keep the session and surface the error — `apiFetch` throws it and
+`useSessionInit` leaves auth as is. A new auth state (login, logout or sibling
+token adoption) releases the local fence; a late failure from an old flight
+cannot fence that newer state. There is no timer-based expiry. A user can
+explicitly **reload after preserving unsaved work** to attempt restoration
+again, or sign in with a new session. This is a tab-local, in-memory fence,
+not evidence that the HttpOnly cookie remains valid after a lost response;
+reload/new-tab restoration can still receive definite session loss. No tokens
+or failure markers are written to Web Storage, and no environment setting changes.
 
 #### Cross-tab auth-cookie lock
 

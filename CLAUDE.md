@@ -160,8 +160,16 @@ adopting a sibling tab's token on each acquisition; network errors and other
 refresh bodies must pass `AuthResponseSchema` and contain a nonblank access
 token before `setAuth` mutates, persists or broadcasts anything (#1800).
 Unreadable bodies, invalid JSON and invalid success shapes (including JSON
-`null`) reject with `RefreshUnavailableError` without retry, just like other
-indeterminate outcomes — callers must keep auth state on that rejection.
+`null`) reject with `RefreshUnavailableError`, just like other indeterminate
+outcomes — callers must keep auth state on that rejection. The shared helper
+retains that failure for the unchanged auth-state snapshot: query retries,
+polling, focus/reconnect refetches, remounts and timers must not replay the
+cookie. Query retry and presence/collab reconnect distinguish `retrySafe`
+(exhausted marked busy only); indeterminate reconnects park until a replacement
+token arrives for the same account, preserving the collaborative draft.
+A new auth state (including a sibling's valid token) releases the local fence;
+an older rejected flight must not fence that newer state. Explicit reload
+starts a new attempt; preserve unsaved work first. No timeout clears the fence.
 
 **Editor drafts are per-account (GHSA-r652-53hc-h6jh).** Local editor drafts
 live in `localStorage`, shared by every account in the browser. Build and

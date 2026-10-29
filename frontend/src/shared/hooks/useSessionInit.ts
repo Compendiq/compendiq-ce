@@ -9,10 +9,9 @@ import { refreshAccessTokenOnce } from '../lib/api';
  * starts without one. In that state, attempt a silent token refresh using the
  * httpOnly refresh cookie. If the session is gone (expired session, revoked
  * token, etc.), clear auth so the user is redirected to login immediately
- * instead of seeing broken API errors. If the refresh endpoint is only
- * unavailable (RefreshUnavailableError), keep the session: the cookie is still
- * valid, and the next request's reactive 401 refresh tries again and surfaces
- * the error.
+ * instead of seeing broken API errors. If the refresh outcome is indeterminate,
+ * keep the session and do not assume the cookie is still reusable. The shared
+ * refresh fence prevents subsequent requests from repeating that rotation.
  *
  * The refresh is routed through the shared refreshAccessTokenOnce() helper so it
  * joins the same single-flight promise as apiFetch's reactive 401 refresh. In
@@ -45,7 +44,7 @@ export function useSessionInit() {
         if (!token) clearAuth();
       },
       () => {
-        // Transient refresh failure: keep the session (see above).
+        // Keep auth; indeterminate refreshes require token replacement or reload.
       },
     );
   }, [isAuthenticated, accessToken, clearAuth]);
