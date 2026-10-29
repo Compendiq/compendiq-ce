@@ -17,6 +17,13 @@ interface NotificationDropdownProps {
   notifications: Notification[];
   onClickNotification: (notification: Notification) => void;
   onMarkAllRead: () => void;
+  unreadCount?: number;
+  isLoading?: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
+  offset?: number;
+  total?: number;
+  onPageChange?: (offset: number) => void;
 }
 
 const typeIcons: Record<Notification['type'], typeof Bell> = {
@@ -78,11 +85,20 @@ export function NotificationDropdown({
   notifications,
   onClickNotification,
   onMarkAllRead,
+  unreadCount,
+  isLoading = false,
+  isError = false,
+  onRetry,
+  offset = 0,
+  total = 0,
+  onPageChange,
 }: NotificationDropdownProps) {
   const groups = useMemo(() => groupByDate(notifications), [notifications]);
-  const hasUnread = notifications.some((n) => !n.read);
+  const hasUnread = unreadCount === undefined
+    ? notifications.some((n) => !n.read)
+    : unreadCount > 0;
 
-  if (notifications.length === 0) {
+  if (!isLoading && !isError && notifications.length === 0 && offset === 0 && !hasUnread) {
     return (
       <div className="flex flex-col items-center justify-center py-10 text-center" data-testid="notification-empty">
         <Inbox size={32} className="mb-3 text-muted-foreground" />
@@ -108,6 +124,13 @@ export function NotificationDropdown({
       )}
 
       {/* Grouped notification list */}
+        {isLoading && <p className="px-3 py-4 text-sm">Loading notifications…</p>}
+        {isError && (
+          <div className="px-3 py-4 text-sm">
+            <p>Could not load notifications.</p>
+            <button type="button" className="text-action underline" onClick={onRetry}>Try again</button>
+          </div>
+        )}
       <div className="max-h-[400px] overflow-y-auto">
         {groups.map((group) => (
           <div key={group.label}>
@@ -155,6 +178,16 @@ export function NotificationDropdown({
           </div>
         ))}
       </div>
+      {onPageChange && (offset > 0 || offset + 50 < total) && (
+        <div className="flex justify-between border-t border-border px-3 py-2">
+          <button type="button" disabled={offset === 0} onClick={() => onPageChange(Math.max(0, offset - 50))}>
+            Newer
+          </button>
+          <button type="button" disabled={offset + 50 >= total || isLoading || isError} onClick={() => onPageChange(offset + 50)}>
+            Older
+          </button>
+        </div>
+      )}
     </div>
   );
 }
