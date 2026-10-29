@@ -191,6 +191,8 @@ describe('usePresence', () => {
   });
 
   it('refreshes the token and reconnects after a 401 from the SSE endpoint', async () => {
+    const user = { id: '00000000-0000-4000-8000-000000000001', username: 'me', role: 'user' as const };
+    useAuthStore.getState().setAuth('token-abc', user);
     let sseOpens = 0;
     let refreshCalls = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
@@ -200,7 +202,7 @@ describe('usePresence', () => {
       if (urlStr.includes('/auth/refresh')) {
         refreshCalls += 1;
         return new Response(
-          JSON.stringify({ accessToken: 'fresh-token', user: { id: 'self', username: 'me', role: 'user' } }),
+          JSON.stringify({ accessToken: 'fresh-token', user }),
           { headers: { 'content-type': 'application/json' } },
         );
       }
@@ -219,6 +221,57 @@ describe('usePresence', () => {
     await waitFor(() => expect(sseOpens).toBeGreaterThanOrEqual(2));
 
     unmount();
+  });
+
+  it('parks after malformed refresh success, including across remount, and resumes on a new token', async () => {
+    const held = Promise.withResolvers<Response>();
+    const before = useAuthStore.getState();
+    let refreshes = 0;
+    let opens = 0;
+    let stream: StreamHandle | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      if (init?.method === 'DELETE' || String(url).endsWith('/heartbeat')) {
+        return new Response(null, { status: 204 });
+      }
+      if (url === '/api/auth/refresh') {
+        refreshes += 1;
+        return refreshes === 1 ? held.promise : new Response(null, { status: 401 });
+      }
+      opens += 1;
+      if (new Headers(init?.headers).get('Authorization') === 'Bearer token-recovered') {
+        const sse = makeSseResponse();
+        stream = sse.handle;
+        return sse.response;
+      }
+      return new Response(null, { status: 401 });
+    });
+    const first = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(refreshes).toBe(1);
+    expect(opens).toBe(1);
+    await act(async () => {
+      held.resolve(new Response('{', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(refreshes).toBe(1);
+    expect(opens).toBe(1);
+    expect(useAuthStore.getState()).toBe(before);
+
+    first.unmount();
+    const second = renderHook(() => usePresence('page-1'), { wrapper: Wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(opens).toBe(2);
+    expect(refreshes).toBe(1);
+    expect(useAuthStore.getState()).toBe(before);
+    await act(async () => { useAuthStore.getState().setAuth('token-recovered', before.user!); });
+    expect(opens).toBe(3);
+    expect(refreshes).toBe(1);
+    await act(async () => {
+      stream!.push(frame([{ userId: 'other', name: 'Recovered viewer', role: 'user', isEditing: false }]));
+    });
+    expect(second.result.current.viewers[0]?.name).toBe('Recovered viewer');
+    second.unmount();
+    stream!.close();
   });
 
   it('parks permanently when the refresh itself fails after a 401', async () => {

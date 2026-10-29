@@ -73,7 +73,7 @@ function lifecycle(revision: string, frozen = false) {
   };
 }
 
-const user = { id: 'self', username: 'me', role: 'user' as const };
+const user = { id: '00000000-0000-4000-8000-000000000001', username: 'me', role: 'user' as const };
 
 describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
   beforeEach(() => {
@@ -262,6 +262,45 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(result.current.ydoc).toBe(draft);
     expect(draft!.getText('draft').toString()).toBe('Draft during refresh');
     expect(result.current.writable).toBe(false);
+  });
+
+  it('parks an indeterminate refresh without losing the draft and resumes with a replacement token', async () => {
+    const held = Promise.withResolvers<Response>();
+    const refresh = vi.spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(held.promise)
+      .mockResolvedValue(new Response(null, { status: 401 }));
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '5',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); hydrate(socket, 'Unsaved draft'); });
+    const draft = result.current.ydoc;
+    const before = useAuthStore.getState();
+    await act(async () => {
+      socket.close(4401, 'unauthorized');
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(Socket.instances).toHaveLength(1);
+    await act(async () => {
+      held.resolve(new Response('{', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(Socket.instances).toHaveLength(1);
+    expect(useAuthStore.getState()).toBe(before);
+    expect(result.current.ydoc).toBe(draft);
+    expect(draft!.getText('draft').toString()).toBe('Unsaved draft');
+    expect(result.current.error).toBeNull();
+    expect(result.current.writable).toBe(false);
+
+    act(() => { useAuthStore.getState().setAuth('jwt-recovered', user); });
+    expect(Socket.instances).toHaveLength(2);
+    const recovered = Socket.instances[1]!;
+    expect(recovered.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-recovered']);
+    expect(new URL(recovered.url).searchParams.get('expectedLifecycleRevision')).toBe('5');
+    expect(result.current.ydoc).toBe(draft);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the session and rejoins with growing pauses while the token refresh stays busy', async () => {

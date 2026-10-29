@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Refresh recovery (#1800):** keep authentication after an unusable successful
+  refresh and prevent query retries, polling, remounts and presence/collaboration
+  reconnects from repeating a possibly committed rotation. Marked busy responses
+  remain retry-safe; replacement tokens or an explicit reload permit recovery.
+  Preserve unsaved work before reloading.
+
 ### Security
 
 - **Dependabot dependency compatibility (#1708):** keep backend Undici on

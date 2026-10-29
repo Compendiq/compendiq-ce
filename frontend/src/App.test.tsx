@@ -67,9 +67,10 @@ describe('App – ProtectedRoute token restoration', () => {
   });
 
   it('uses useSessionInit refresh fallback when accessToken is null but isAuthenticated', async () => {
+    const user = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' as const };
     useAuthStore.setState({
       accessToken: null,
-      user: { id: '1', username: 'test', role: 'user' },
+      user,
       isAuthenticated: true,
     });
 
@@ -79,7 +80,7 @@ describe('App – ProtectedRoute token restoration', () => {
       if (url.includes('/auth/refresh')) {
         return new Response(JSON.stringify({
           accessToken: 'restored-token',
-          user: { id: '1', username: 'test', role: 'user' },
+          user,
         }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -100,9 +101,13 @@ describe('App – ProtectedRoute token restoration', () => {
       }));
     });
 
-    // Token should be restored in the store
+    // Restore the token for the same authenticated account, not a different user.
     await waitFor(() => {
-      expect(useAuthStore.getState().accessToken).toBe('restored-token');
+      expect(useAuthStore.getState()).toMatchObject({
+        accessToken: 'restored-token',
+        user,
+        isAuthenticated: true,
+      });
     });
   });
 
