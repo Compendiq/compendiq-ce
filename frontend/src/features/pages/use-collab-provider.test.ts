@@ -73,7 +73,7 @@ function lifecycle(revision: string, frozen = false) {
   };
 }
 
-const user = { id: 'self', username: 'me', role: 'user' as const };
+const user = { id: '00000000-0000-4000-8000-000000000001', username: 'me', role: 'user' as const };
 
 describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
   beforeEach(() => {
