@@ -79,11 +79,15 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
   // `confluenceEnabled` must be read as an explicit false: a payload from
   // before the field existed omits it, and "unknown" means on (the column
   // defaults to TRUE), not off.
-  const savedEnabled = settings.confluenceEnabled !== false;
-  // Only confirmed values drive the switch, mode copy and credential form.
-  // A failed write never restores a snapshot over a newer settings read.
-  const [enabled, setEnabled] = useState(savedEnabled);
-  useEffect(() => setEnabled(savedEnabled), [savedEnabled]);
+  // The settings query is the only mode authority. A delayed PUT acknowledgment
+  // must not replace a newer read, even when that read confirms the same boolean.
+  const enabled = settings.confluenceEnabled !== false;
+  useEffect(() => {
+    if (!enabled) {
+      setTestResult(null);
+      setVerified(null);
+    }
+  }, [enabled]);
   const modeSaveInFlight = useRef(false);
   const [savingMode, setSavingMode] = useState(false);
   const [modeError, setModeError] = useState(false);
@@ -98,12 +102,6 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
     setModeError(false);
     try {
       await onSave({ confluenceEnabled: next });
-      setEnabled(next);
-      if (!next) {
-        // A confirmed mode change hides the form and retires its green result.
-        setTestResult(null);
-        setVerified(null);
-      }
     } catch {
       // The parent reports the request error; keep the latest confirmed mode,
       // not the value captured when this request started.

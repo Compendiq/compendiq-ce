@@ -32,6 +32,10 @@ function settingsServer(initial: boolean | undefined) {
     writes,
     fetch,
     setConfirmed(value: boolean) { enabled = value; },
+    async acknowledge(index: number) {
+      // The write already committed; only its HTTP response was delayed.
+      await act(async () => { writes[index].resolve(reply({ success: true })); });
+    },
     async settle(index: number, success: boolean) {
       await act(async () => {
         const write = writes[index];
@@ -129,6 +133,28 @@ describe('Confluence mode through the real settings route and mutation', () => {
     await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
     expect(control).toHaveAttribute('aria-checked', 'false');
     expect(screen.queryByLabelText('Confluence URL')).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('keeps a newer confirmed %s when an older successful response arrives late', async (latest) => {
+    const server = settingsServer(latest);
+    const { client } = openSettings();
+    const control = await screen.findByRole('switch');
+    fireEvent.click(control);
+    await waitFor(() => expect(server.writes[0]?.body).toEqual({ confluenceEnabled: !latest }));
+
+    // The first PUT commits, but its response is held. Another writer then
+    // commits the opposite choice before this tab reads settings again.
+    server.setConfirmed(!latest);
+    server.setConfirmed(latest);
+    await act(async () => { await client.invalidateQueries({ queryKey: ['settings'] }); });
+    expect(control).toHaveAttribute('aria-checked', String(latest));
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+
+    await server.acknowledge(0);
+    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
+    expect(control).toHaveAttribute('aria-checked', String(latest));
+    expect(Boolean(screen.queryByLabelText('Confluence URL'))).toBe(latest);
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 
   it('keeps a newer confirmed choice when an older request fails after leaving and reopening settings', async () => {

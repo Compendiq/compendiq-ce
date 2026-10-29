@@ -219,7 +219,7 @@ describe('ConfluenceTab — integration toggle', () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: false });
-    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-disabled', 'false'));
   });
 
   it('saves the flag when switched back on', async () => {
@@ -230,26 +230,23 @@ describe('ConfluenceTab — integration toggle', () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: true });
-    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-disabled', 'false'));
   });
 
-  it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', async () => {
-    render(
-      <ConfluenceTab
-        settings={{ ...offSettings, confluenceEnabled: true } as SettingsResponse}
-        onSave={vi.fn().mockResolvedValue({})}
-      />,
+  it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const { rerender } = render(
+      <ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} />,
     );
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
       'placeholder',
       '••••••••••',
     );
 
-    // Off and on again: still masked, never an empty "paste your token" field.
-    fireEvent.click(screen.getByTestId('confluence-enabled'));
-    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false'));
-    fireEvent.click(screen.getByTestId('confluence-enabled'));
-    await waitFor(() => expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true'));
+    // Only confirmed settings reads change the mode; saved credentials survive.
+    rerender(<ConfluenceTab settings={offSettings} onSave={onSave} />);
+    expect(screen.queryByLabelText(/personal access token/i)).not.toBeInTheDocument();
+    rerender(<ConfluenceTab settings={{ ...offSettings, confluenceEnabled: true }} onSave={onSave} />);
     expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
       'placeholder',
       '••••••••••',
