@@ -519,14 +519,15 @@ function confluenceToHtmlPass(
     div.className = 'confluence-drawio';
     div.setAttribute('data-diagram-name', diagramName);
 
-    const img = doc.createElement('img');
+    // Conversion has no attachment bytes. Do not claim a raster exists until
+    // the cache-aware publication path has verified it.
     if (pageId) {
-      img.src = `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.png`;
-    } else {
-      img.src = `#drawio:${diagramName}`;
+      div.setAttribute('data-drawio-source', `/api/attachments/${encodeURIComponent(pageId)}/${encodeURIComponent(`${diagramName}.drawio`)}`);
     }
-    img.alt = `Draw.io diagram: ${diagramName}`;
-    div.appendChild(img);
+    const unavailable = doc.createElement('span');
+    unavailable.className = 'drawio-preview-unavailable';
+    unavailable.textContent = `Draw.io preview unavailable: ${diagramName}`;
+    div.appendChild(unavailable);
 
     const link = doc.createElement('a');
     link.className = 'drawio-edit-link';
@@ -1972,13 +1973,20 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
     },
   });
 
-  // #723: draw.io diagrams — emit a fenced block carrying the diagram name so
-  // markdownToHtml can rebuild the .confluence-drawio wrapper losslessly.
+  // Keep the editable source and preview identity through Markdown consumers.
   turndownService.addRule('confluenceDrawio', {
     filter: (node) => node.nodeName === 'DIV' && node.classList.contains('confluence-drawio'),
     replacement: (_content, node) => {
-      const name = (node as HTMLElement).getAttribute('data-diagram-name') ?? 'diagram';
-      return `\n\n\`\`\`drawio\n${name}\n\`\`\`\n\n`;
+      const div = node as HTMLElement;
+      const name = div.getAttribute('data-diagram-name') ?? 'diagram';
+      const image = div.querySelector('img');
+      const source = div.getAttribute('data-drawio-source');
+      const xml = div.getAttribute('data-drawio-xml');
+      const link = div.querySelector('a.drawio-edit-link');
+      const metadata = { name, source, xml, src: image?.getAttribute('src') ?? null,
+        alt: image?.getAttribute('alt') ?? null, href: link?.getAttribute('href') ?? null };
+      const payload = source || xml || image || link ? JSON.stringify(metadata) : name;
+      return `\n\n\`\`\`drawio\n${payload}\n\`\`\`\n\n`;
     },
   });
 
@@ -3120,13 +3128,46 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 
   let html = await marked(normalized) as string;
 
-  // #723: rebuild draw.io wrappers from ```drawio fences.
-  // marked emits: <pre><code class="language-drawio">NAME\n</code></pre>
+  // Older authored fences contain just a name; exported wrappers also carry
+  // their source and preview attributes in a single JSON line.
   html = html.replace(
     /<pre><code class="language-drawio">([\s\S]*?)\n?<\/code><\/pre>/g,
-    (_m, name) => {
-      const safe = String(name).trim();
-      return `<div class="confluence-drawio" data-diagram-name="${safe.replace(/"/g, '&quot;')}"></div>`;
+    (_m, encoded) => {
+      const text = new JSDOM(`<body>${encoded}</body>`).window.document.body.textContent?.trim() ?? '';
+      let metadata: { name: string; source?: string | null; xml?: string | null; src?: string | null; alt?: string | null; href?: string | null } = { name: text };
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && 'name' in parsed && typeof parsed.name === 'string') {
+          metadata = parsed as typeof metadata;
+        }
+      } catch {
+        // A plain diagram name remains a valid authored fence.
+      }
+      const doc = new JSDOM('<body></body>').window.document;
+      const div = doc.createElement('div');
+      div.className = 'confluence-drawio';
+      div.setAttribute('data-diagram-name', metadata.name);
+      if (typeof metadata.source === 'string') div.setAttribute('data-drawio-source', metadata.source);
+      if (typeof metadata.xml === 'string') div.setAttribute('data-drawio-xml', metadata.xml);
+      if (typeof metadata.src === 'string') {
+        const image = doc.createElement('img');
+        image.setAttribute('src', metadata.src);
+        if (typeof metadata.alt === 'string') image.setAttribute('alt', metadata.alt);
+        div.appendChild(image);
+      } else {
+        const message = doc.createElement('span');
+        message.className = 'drawio-preview-unavailable';
+        message.textContent = `Draw.io preview unavailable: ${metadata.name}`;
+        div.appendChild(message);
+      }
+      if (typeof metadata.href === 'string') {
+        const link = doc.createElement('a');
+        link.className = 'drawio-edit-link';
+        link.href = metadata.href;
+        link.textContent = 'Edit in Confluence';
+        div.appendChild(link);
+      }
+      return div.outerHTML;
     },
   );
 

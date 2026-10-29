@@ -34,6 +34,17 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     expect(refs).toEqual([{ local: 'chart.png', target: 'chart.png' }]);
   });
 
+  it('re-keys and stages source-only draw.io attachments', () => {
+    const { html, refs } = rewriteAttachmentRefs(
+      '<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/42/flow.drawio"><span>Preview unavailable</span></div>',
+      ['/api/attachments/42/'],
+      '/api/local-attachments/7/',
+      false,
+    );
+    expect(html).toContain('data-drawio-source="/api/local-attachments/7/flow.drawio"');
+    expect(refs).toEqual([{ local: 'flow.drawio', target: 'flow.drawio' }]);
+  });
+
   // ── Review finding B1: cross-page references ──────────────────────────────
   //
   // `getLocalFilenameForImageSource` mints a synthetic `stem.xref-<hash>.ext`

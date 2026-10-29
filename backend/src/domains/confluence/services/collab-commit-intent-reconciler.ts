@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import {
   userCanAccessPage,
@@ -299,11 +300,10 @@ export async function publishCollabCommit(
 
   let bodyHtml: string;
   try {
-    bodyHtml = preferredBodyHtml ?? confluenceToHtml(
-      observed.bodyStorage,
+    bodyHtml = preferredBodyHtml ?? (await materializeDrawioPreviews(
+      confluenceToHtml(observed.bodyStorage, publication.confluenceId, page.space_key ?? ''),
       publication.confluenceId,
-      page.space_key ?? '',
-    );
+    )).html;
   } catch {
     throw new PageWriteError(
       409,

@@ -59,6 +59,7 @@ import {
   confluenceToHtml,
   htmlToText,
 } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import {
   listCachedAttachments,
   readCachedAttachmentFile,
@@ -66,6 +67,7 @@ import {
   getMimeType,
   isStorableAttachmentFilename,
   attachmentCacheDir,
+  isDrawioXml,
 } from '../../confluence/services/attachment-handler.js';
 import {
   canStoreLocalFilename,
@@ -382,6 +384,7 @@ export function rewriteAttachmentRefs(
 
   for (const img of doc.querySelectorAll('img[src]')) rewriteOne(img, 'src');
   for (const anchor of doc.querySelectorAll('a[href]')) rewriteOne(anchor, 'href');
+  for (const diagram of doc.querySelectorAll('.confluence-drawio[data-drawio-source]')) rewriteOne(diagram, 'data-drawio-source');
 
   return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
@@ -1341,7 +1344,9 @@ async function publishToConfluenceOnClient(
     }
   }, client);
 
-  const finalHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  const finalHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? ''), confluenceId,
+  )).html;
   const finalText = htmlToText(finalHtml);
   await client.query(
     `UPDATE pages SET
@@ -1923,6 +1928,24 @@ async function relocateToLocal(opts: {
     }
   }
 
+  // Page-only sync may retain an unresolved upstream source locator. A true
+  // move deletes that upstream page, so never rewrite a source we did not
+  // preserve in the operation's exact-byte preparation.
+  const sourcePrefix = `/api/attachments/${encodeURIComponent(oldConfluenceId)}/`;
+  const preservedSources = new Set(sourceFiles
+    .filter((file) => isDrawioXml(file.data))
+    .map((file) => `${sourcePrefix}${encodeURIComponent(file.sourceName)}`));
+  const document = new JSDOM(`<body>${page.body_html ?? ''}</body>`).window.document;
+  for (const diagram of document.querySelectorAll('.confluence-drawio[data-drawio-source]')) {
+    const source = diagram.getAttribute('data-drawio-source')!;
+    if (source.startsWith(sourcePrefix) && !preservedSources.has(source)) {
+      throw new RelocateError(
+        409,
+        'Cannot relocate: a draw.io source is not cached. Open and save the diagram to preserve its source, then try again.',
+      );
+    }
+  }
+
   const { intent } = await reserveRelocateIntent({
     page,
     userId,
@@ -2096,7 +2119,9 @@ async function verifyLocalToConfluencePublication(
     [prep.id],
   );
   const current = row.rows[0];
-  const expectedHtml = confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? '');
+  const expectedHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(observed.bodyStorage, confluenceId, prep.targetSpaceKey ?? ''), confluenceId,
+  )).html;
   if (
     !current ||
     current.source !== 'confluence' ||

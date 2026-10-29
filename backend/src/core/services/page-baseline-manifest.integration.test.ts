@@ -214,6 +214,20 @@ describe.skipIf(!dbAvailable)('page baseline manifest retained bytes', () => {
     await fs.rm(attachmentsDir, { recursive: true, force: true });
     await teardownTestDb();
   });
+  it('retains a source-only draw.io without requiring a nonexistent preview', async () => {
+    const pageId = await insertPage({
+      source: 'confluence',
+      confluenceId: '90179',
+      bodyStorage: '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>',
+      bodyHtml: '<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/90179/flow.drawio"><span>Draw.io preview unavailable: flow</span></div>',
+    });
+    const xml = Buffer.from('<mxfile><diagram>source</diagram></mxfile>');
+    await writeStoredFile('90179', 'flow.drawio', xml);
+    const prepared = await inspect(pageId, randomUUID());
+    expect(prepared.attachments.map((entry) => entry.filename)).toEqual(['flow.drawio']);
+    expect(prepared.totalBytes).toBe(xml.length);
+  });
+
 
   it('copies every URL-selected store, Draw.io XML and icon; preserves exact tuples, Unicode and byte ordering', async () => {
     const parentId = await insertPage({ title: 'Parent' });

@@ -428,6 +428,7 @@ export const DrawioDiagram = Node.create({
         renderHTML: () => ({}),
       },
       src: { default: null },
+      drawioSource: { default: null },
       alt: { default: 'Diagram' },
       editHref: { default: '#' },
     };
@@ -443,6 +444,7 @@ export const DrawioDiagram = Node.create({
           const link = el.querySelector('a.drawio-edit-link');
           return {
             diagramName: el.getAttribute('data-diagram-name'),
+            drawioSource: el.getAttribute('data-drawio-source'),
             xml: el.getAttribute('data-drawio-xml'),
             src: img?.getAttribute('src') || null,
             alt: img?.getAttribute('alt') || 'Diagram',
@@ -459,6 +461,8 @@ export const DrawioDiagram = Node.create({
     const children: unknown[] = [];
     if (imageSrc) {
       children.push(['img', { src: imageSrc, alt: node.attrs.alt }]);
+    } else if (node.attrs.diagramName) {
+      children.push(['span', { class: 'drawio-preview-unavailable' }, `Draw.io preview unavailable: ${node.attrs.diagramName}`]);
     }
     if (node.attrs.editHref && node.attrs.editHref !== '#') {
       children.push([
@@ -471,6 +475,7 @@ export const DrawioDiagram = Node.create({
       class: 'confluence-drawio',
       'data-diagram-name': node.attrs.diagramName,
     };
+    if (node.attrs.drawioSource) divAttrs['data-drawio-source'] = node.attrs.drawioSource;
     if (node.attrs.xml) {
       divAttrs['data-drawio-xml'] = node.attrs.xml;
     }

@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { NodeViewWrapper } from '@tiptap/react';
 import { Pencil, Trash2, Plus, GripVertical } from 'lucide-react';
 import { DrawioEditor } from '../diagrams/DrawioEditor';
 import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
+import { loadDrawioSource } from '../../lib/drawio-source';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
 import type { NodeViewProps } from '@tiptap/react';
@@ -21,56 +22,72 @@ const EMPTY_DIAGRAM_XML =
  * yet, renders a clickable placeholder.
  */
 export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, editor }: NodeViewProps) {
-  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorXml, setEditorXml] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const isEditable = editor.isEditable;
-  const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const { src, alt, diagramName, xml, pngDataUri } = node.attrs;
+  const { src, alt, diagramName, xml, pngDataUri, drawioSource } = node.attrs;
 
   // The image to display: prefer pngDataUri (locally edited) over src (server-backed)
   const { blobSrc } = useAuthenticatedSrc(pngDataUri ? null : src);
   const displaySrc = pngDataUri || blobSrc || src;
   const hasImage = Boolean(pngDataUri || src);
   const hasXml = Boolean(xml);
+  const isExisting = Boolean(diagramName || xml || src || pngDataUri || drawioSource);
 
-  const handleEdit = useCallback(() => {
-    if (!isEditable) return;
-    setEditorOpen(true);
-  }, [isEditable]);
+  const handleEdit = useCallback(async () => {
+    if (!isEditable || loading) return;
+    setError(null);
+    if (!isExisting) {
+      setEditorXml(EMPTY_DIAGRAM_XML);
+      return;
+    }
+
+    if (!xml && !src && !drawioSource?.startsWith('/api/attachments/') && !drawioSource?.startsWith('/api/local-attachments/')) {
+      setError('Diagram source is unavailable. Try again when the source is available.');
+      return;
+    }
+    setLoading(true);
+    try {
+      setEditorXml(await loadDrawioSource({ xml, sourceUrl: drawioSource, previewUrl: src }));
+    } catch {
+      setError('Could not load the diagram source. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [isEditable, loading, xml, isExisting, drawioSource, src]);
 
   const handleSave = useCallback(
     async (dataUri: string, newXml: string) => {
       updateAttributes({
         pngDataUri: dataUri,
         xml: newXml,
+        drawioSource: null,
         // Generate a name if none exists
         diagramName: diagramName || `diagram-${Date.now()}`,
       });
-      setEditorOpen(false);
+      setEditorXml(null);
     },
     [updateAttributes, diagramName],
   );
 
   const handleClose = useCallback(() => {
-    setEditorOpen(false);
+    setEditorXml(null);
   }, []);
 
   const handleDelete = useCallback(() => {
     deleteNode();
   }, [deleteNode]);
 
-  // Open editor on double-click
   const handleDoubleClick = useCallback(() => {
-    if (isEditable) setEditorOpen(true);
-  }, [isEditable]);
-
-  // The XML to send to the editor: use stored xml, or empty template
-  const editorXml = xml || EMPTY_DIAGRAM_XML;
+    void handleEdit();
+  }, [handleEdit]);
 
   return (
     <NodeViewWrapper className="drawio-nodeview-wrapper" data-testid="drawio-diagram-node">
       <div
-        ref={wrapperRef}
+        contentEditable={false}
         className={cn(
           'drawio-nodeview group relative',
           !hasImage && 'drawio-nodeview--empty',
@@ -98,7 +115,19 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
               draggable={false}
             />
           </div>
-        ) : (
+        ) : isExisting ? (
+          <div className="drawio-nodeview__placeholder" data-testid="drawio-unavailable">
+            <span>Preview unavailable{diagramName ? `: ${diagramName}` : ''}</span>
+            {isEditable && (
+              <div className="flex gap-2">
+                <Button type="button" variant="primary" size="sm" onClick={handleEdit} disabled={loading} data-testid="drawio-edit-btn">
+                  {loading ? 'Loading source…' : 'Edit diagram'}
+                </Button>
+                <IconButton variant="destructive-ghost" size="icon-sm" onClick={handleDelete} label="Delete diagram" title="Delete diagram" testid="drawio-delete-btn" icon={<Trash2 size={14} />} />
+              </div>
+            )}
+          </div>
+        ) : isEditable ? (
           /* Empty placeholder for new diagrams */
           <button
             type="button"
@@ -109,7 +138,8 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
             <Plus size={24} />
             <span>Click to create a draw.io diagram</span>
           </button>
-        )}
+        ) : null}
+        {error && <p role="alert">{error}</p>}
 
         {/* Hover overlay with edit/delete buttons */}
         {isEditable && hasImage && (
@@ -149,7 +179,7 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
       </div>
 
       {/* Full-screen draw.io editor overlay */}
-      {editorOpen && (
+      {editorXml !== null && (
         <DrawioEditor xml={editorXml} onSave={handleSave} onClose={handleClose} />
       )}
     </NodeViewWrapper>

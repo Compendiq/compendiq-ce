@@ -11,6 +11,7 @@ import {
   pageWriteStaysLocal,
 } from '../../domains/confluence/services/standalone-mode.js';
 import { htmlToConfluence, confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
@@ -2394,11 +2395,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }, { intent: writeIntent });
 
     // Update local cache
-    const bodyHtml = confluenceToHtml(
-      confPage.body.storage.value,
+    const bodyHtml = (await materializeDrawioPreviews(
+      confluenceToHtml(confPage.body.storage.value, existingPage.confluence_id!, existingPage.space_key ?? undefined),
       existingPage.confluence_id!,
-      existingPage.space_key ?? undefined,
-    );
+    )).html;
     const bodyText = htmlToText(bodyHtml);
 
     await completePageWriteIntent(writeIntent, async (writeClient) => {
@@ -3609,7 +3609,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           // GET and conversion change no protected bytes. Keep them outside the
           // transaction; a failed read must not leave a durable mutation intent.
           const page = await client.getPage(id);
-          const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id, observed.spaceKey ?? undefined);
+          const bodyHtml = (await materializeDrawioPreviews(
+            confluenceToHtml(page.body?.storage?.value ?? '', id, observed.spaceKey ?? undefined), id,
+          )).html;
           const bodyText = htmlToText(bodyHtml);
 
           await withPageWriteTransaction([numericPageId], async (writeClient) => {

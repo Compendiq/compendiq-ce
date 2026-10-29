@@ -1197,6 +1197,50 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+Draw.io XML-only attachments remain editable `.drawio` sources, not fake
+`.png` files. Publish a preview only after validating PNG chunks, checksums
+and raster stream; otherwise the wrapper names the unavailable preview and
+retains its source URL. Missing previews and sources are rechecked even on
+unchanged pages, without counting an intentionally absent preview as a
+permanent download failure. Both TipTap schemas must round-trip that URL and
+the `drawio-preview-unavailable` marker so a later preview save removes the
+obsolete message. Read and edit mode share `loadDrawioSource`: try XML without
+stale cache, then an actual decoded PNG containing editable draw.io metadata.
+Validate every XML page, preserving the complete multi-page file and valid empty
+graphs. Support the packaged editor's URI/double-URI tEXt and legacy raw-deflate
+zTXt formats, with bounded expansion. HTTP 200, MIME type, and filename are not
+proof of editable content. Never substitute an empty diagram on load failure.
+An attachment-candidate fallback is not an authentication retry: one logical
+load may invoke the shared refresh helper only once. Propagate refresh
+unavailability immediately, keeping auth state and the helper's marked-busy
+retry policy; never replay an uncertain rotation through the PNG candidate.
+Synthetic refresh-success fixtures must satisfy the shared `AuthResponseSchema`,
+including UUID user IDs. Assert request sequences and preserved session state,
+not incidental error-message wording.
+A missing local source is unknown upstream availability, not proof of absence:
+retain the converted source locator on page-only publication (including PUT,
+bulk sync and recovery). The existing authorized attachment GET resolves it
+on demand; only validated local raster bytes may become a preview.
+Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles.
+All sync and lazy paths classify bytes, including names ending in `.xml` or
+`.drawio`: actual PNG becomes a preview, actual XML becomes source, and other
+payloads are not cached. A preferred source title containing PNG or unrelated
+bytes must not shadow another valid XML source: continue through the supported
+source candidates, retaining any validated PNG separately. A Confluence-to-local move
+must refuse before any cutover or upstream deletion if a referenced draw.io
+source is not preserved as XML in its prepared attachments. Open/save the
+diagram first, then retry the move; never rewrite an unpreserved source.
+Extensionless previews are classified even beside an existing XML source;
+classification receipts suppress repeated downloads of unchanged bare sources.
+Attachment saves and their recovery publish newly valid previews into existing
+HTML under the same writer fence, never by reconverting stale storage. Update
+plain text and invalidate persisted collaborative bytes with that presentation.
+Incremental sync also reconciles stale presentation when both files exist,
+through the existing conflict policy rather than an unconditional body write.
+Read mode uses the draw.io schema renderer, not the editor-only React node view,
+so the admitted Edit Diagram callback remains reachable for source-only nodes.
+Remove its overlay when that callback is withdrawn (including a live freeze).
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.

@@ -138,12 +138,9 @@ describe('frozen article write guards', () => {
     renderPage();
 
     await screen.findByTestId('article-frozen-status');
-    // Two affordances, both withheld. `ArticleViewer` injects its overlay
-    // button only when the page supplies a callback, and the diagram node
-    // view offers Edit only while its editor is editable — read mode's
-    // never is. `DrawioEditor` has no read-only form, so neither may open
-    // one: the rendered image is the frozen view.
-    await screen.findByTestId('drawio-diagram-node');
+    // Read mode renders the frozen image, without offering the write-only
+    // DrawioEditor. Assert the visible content, not an editor node-view detail.
+    expect(await screen.findByRole('img', { name: 'flow' })).toBeVisible();
     await waitFor(() => {
       expect(document.querySelector('[data-testid="drawio-edit-btn"]')).toBeNull();
     });

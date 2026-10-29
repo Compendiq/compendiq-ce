@@ -1,3 +1,4 @@
+import { loadDrawioSource } from '../../shared/lib/drawio-source';
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { UNSAFE_NavigationContext, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -868,33 +869,22 @@ export function PageViewPage() {
       toast.info(`${refusal} The diagram is shown as it was frozen.`);
       return;
     }
-    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
-    // Confluence pages key attachments by confluence_id against /api/attachments; standalone
-    // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
-    // this branch, standalone pages would 404 against the Confluence route.
+    // Prefer the editable XML sibling; older diagrams may only have a
+    // PNG with embedded XML. Never substitute an empty diagram on failure.
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
     const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
-    let dataUri: string;
+    let xml: string;
     try {
-      const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to load diagram: ${res.status}`);
-      }
-      const blob = await res.blob();
-      dataUri = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(blob);
-      });
+      // Shared with the TipTap node view: import parsed diagram XML, not an
+      // arbitrary successful response or an unvalidated image data URI.
+      const baseUrl = `${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}`;
+      xml = await loadDrawioSource({ sourceUrl: `${baseUrl}.drawio`, previewUrl: `${baseUrl}.png` });
     } catch (error) {
       toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
       return;
     }
-    setDrawioXml(dataUri);
+    setDrawioXml(xml);
     setDrawioEditingDiagram(diagramName);
   }, [id, page?.confluenceId, contentWriteRefusal]);
 
