@@ -35,8 +35,11 @@ export const LOCALITY_HELP_TEXT =
 /** Library filter: the query param and cache key are the real API ones. */
 export type AiPolicyFilter = AiPolicy | 'any';
 export function pagesQueryKey(base: Record<string, unknown>, filter: AiPolicyFilter) {
-  const params = filter === 'any' ? base : { ...base, aiPolicy: filter };
-  return ['pages', params] as const;
+  // The selected filter is authoritative even when base came from a previous
+  // filtered query. "All articles" must remove that old policy, not retain it.
+  const params = { ...base };
+  delete params.aiPolicy;
+  return ['pages', { ...params, ...pagesSearchParams(filter) }] as const;
 }
 export function pagesSearchParams(filter: AiPolicyFilter): Record<string, string> {
   return filter === 'any' ? {} : { aiPolicy: filter };

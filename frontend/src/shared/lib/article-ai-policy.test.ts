@@ -168,6 +168,14 @@ describe('article AI policy UI logic', () => {
     expect(pagesQueryKey({ page: 1 }, 'any')).toEqual(['pages', { page: 1 }]);
   });
 
+  it('All articles removes an existing policy from the key without changing other filters', () => {
+    const base = Object.freeze({ page: 2, search: 'readable text', aiPolicy: 'none' });
+    expect(pagesQueryKey(base, 'any')).toEqual(['pages', { page: 2, search: 'readable text' }]);
+    expect(pagesQueryKey(base, 'all')).toEqual(['pages', { page: 2, search: 'readable text', aiPolicy: 'all' }]);
+    expect(pagesQueryKey(base, 'local_only')).toEqual(['pages', { page: 2, search: 'readable text', aiPolicy: 'local_only' }]);
+    expect(base.aiPolicy).toBe('none');
+  });
+
   it('labels make no verified or protection claims', () => {
     const all = [
       ...Object.values(AI_POLICY_CHIP_LABEL),
