@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   useMutation,
   useQuery,
@@ -42,6 +42,7 @@ import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
 import { Button } from '../../shared/components/Button';
+import { useNoticeRetry } from '../settings/panels/use-notice-retry';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // We bypass `apiFetch` for the same reason as IpAllowlistTab: the backend
@@ -129,7 +130,7 @@ export function WebhooksTab() {
 // feature isn't licensed — keeps the render completely inert in that branch.
 function WebhooksTabInner() {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery<WebhookSubscriptionListResponse>({
+  const { data, isLoading, isError, refetch } = useQuery<WebhookSubscriptionListResponse>({
     queryKey: ['admin', 'webhooks'],
     queryFn: () =>
       fetchJson<WebhookSubscriptionListResponse>('/admin/webhooks'),
@@ -137,6 +138,8 @@ function WebhooksTabInner() {
   });
 
   const subscriptions = data?.subscriptions ?? [];
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const { retryInFlight, onRetry } = useNoticeRetry(refetch, isError, headingRef);
 
   // Dialog state — a single discriminated union is easier to reason about
   // than N separate booleans.
@@ -192,7 +195,7 @@ function WebhooksTabInner() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-lg font-semibold">
+          <h1 ref={headingRef} tabIndex={-1} className="flex items-center gap-2 text-lg font-semibold nm-focus-ring">
             <Webhook size={22} className="text-action" />
             Webhook endpoints
           </h1>
@@ -227,13 +230,38 @@ function WebhooksTabInner() {
       </div>
 
       {/* Subscription list */}
-      {isLoading ? (
+      {(isError || retryInFlight) && (
+        <div
+          role="status"
+          className={cn(
+            'flex flex-wrap items-center gap-3 rounded-lg border p-4 text-sm',
+            data ? 'border-warning/40 bg-warning/10 text-warning' : 'border-destructive/40 bg-destructive/10 text-destructive',
+          )}
+          data-testid="webhooks-read-error"
+        >
+          <AlertTriangle size={18} aria-hidden="true" />
+          <span>
+            {data
+              ? 'Could not refresh webhook endpoints. Showing the last loaded list.'
+              : 'Could not load webhook endpoints.'}
+          </span>
+          <button
+            type="button"
+            className="nm-button-ghost aria-disabled:cursor-default aria-disabled:opacity-70"
+            aria-disabled={retryInFlight}
+            onClick={onRetry}
+          >
+            {retryInFlight ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      )}
+      {isLoading && !retryInFlight ? (
         <div className="space-y-3" data-testid="webhooks-loading">
           {Array.from({ length: 2 }).map((_, i) => (
             <div key={i} className="h-20 animate-pulse rounded-lg bg-foreground/5" />
           ))}
         </div>
-      ) : subscriptions.length === 0 ? (
+      ) : !data ? null : subscriptions.length === 0 ? (
         <div
           className="rounded-lg border border-border bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
           data-testid="webhooks-empty"
