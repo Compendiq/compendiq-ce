@@ -45,41 +45,53 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
       return;
     }
 
-    // Older preview-backed diagrams can still be opened from their PNG+XML.
-    const source = drawioSource || src;
-    if (!source || (drawioSource && !source.startsWith('/api/attachments/') && !source.startsWith('/api/local-attachments/'))) {
+    // Prefer editable source, then try legacy PNG+XML on a source failure.
+    // Neither failure may silently replace an existing diagram with an empty one.
+    const sources: Array<{ url: string; isXml: boolean }> = [];
+    if (drawioSource?.startsWith('/api/attachments/') || drawioSource?.startsWith('/api/local-attachments/')) {
+      sources.push({ url: drawioSource, isXml: true });
+    }
+    if (src) sources.push({ url: src, isXml: false });
+    if (sources.length === 0) {
       setError('Diagram source is unavailable. Try again when the source is available.');
       return;
     }
     setLoading(true);
     try {
-      const headers: HeadersInit = {};
-      const token = useAuthStore.getState().accessToken;
-      if (token && source.startsWith('/api/')) headers.Authorization = `Bearer ${token}`;
-      let response = await fetch(source, { headers, credentials: 'include', cache: 'no-store' });
-      if (response.status === 401 && source.startsWith('/api/')) {
-        const refreshed = await refreshAccessTokenOnce();
-        if (refreshed) {
-          headers.Authorization = `Bearer ${refreshed}`;
-          response = await fetch(source, { headers, credentials: 'include', cache: 'no-store' });
+      for (const source of sources) {
+        try {
+          const headers: HeadersInit = {};
+          const token = useAuthStore.getState().accessToken;
+          if (token && source.url.startsWith('/api/')) headers.Authorization = `Bearer ${token}`;
+          let response = await fetch(source.url, { headers, credentials: 'include', cache: 'no-store' });
+          if (response.status === 401 && source.url.startsWith('/api/')) {
+            const refreshed = await refreshAccessTokenOnce();
+            if (refreshed) {
+              headers.Authorization = `Bearer ${refreshed}`;
+              response = await fetch(source.url, { headers, credentials: 'include', cache: 'no-store' });
+            }
+          }
+          if (!response.ok) continue;
+          let content: string;
+          if (source.isXml) {
+            content = await response.text();
+          } else {
+            const blob = await response.blob();
+            if (blob.size === 0) continue;
+            const loaded = Promise.withResolvers<string>();
+            const reader = new FileReader();
+            reader.onload = () => loaded.resolve(reader.result as string);
+            reader.onerror = () => loaded.reject(reader.error);
+            reader.readAsDataURL(blob);
+            content = await loaded.promise;
+          }
+          if (!content.trim()) continue;
+          setEditorXml(content);
+          return;
+        } catch {
+          // Source may be absent or unavailable while a PNG+XML still works.
         }
       }
-      if (!response.ok) throw new Error('Source request failed');
-      let content: string;
-      if (drawioSource) {
-        content = await response.text();
-      } else {
-        const blob = await response.blob();
-        content = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(blob);
-        });
-      }
-      if (!content.trim()) throw new Error('Source is empty');
-      setEditorXml(content);
-    } catch {
       setError('Could not load the diagram source. Please try again.');
     } finally {
       setLoading(false);

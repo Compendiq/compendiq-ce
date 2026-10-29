@@ -1845,6 +1845,33 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
   // ── Confluence → local ────────────────────────────────────────────────────
 
   describe('Confluence → local', () => {
+    it.each(['missing', 'invalid', 'preserved'] as const)('preserves editable diagram source before deleting upstream (%s)', async (state) => {
+      const confluenceId = '7001792';
+      const source = `/api/attachments/${confluenceId}/flow.drawio`;
+      const html = `<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${source}"><span class="drawio-preview-unavailable">Draw.io preview unavailable: flow</span></div>`;
+      const id = await createPage({
+        title: 'Source-only diagram', source: 'confluence', confluenceId, spaceKey: 'CONF',
+        bodyHtml: html,
+      });
+      const xml = '<mxfile><diagram id="flow">retained-source</diagram></mxfile>';
+      if (state !== 'missing') await writeStoreA(confluenceId, 'flow.drawio', state === 'preserved' ? xml : 'not XML');
+      const response = await toLocal(id, confluenceId);
+      if (state !== 'preserved') {
+        expect(response.statusCode, response.body).toBe(409);
+        expect(response.json().error).toContain('draw.io source is not cached');
+        expect(h.client.deletePage).not.toHaveBeenCalled();
+        expect(await getRow(id)).toMatchObject({ source: 'confluence', confluence_id: confluenceId, body_html: html });
+        expect(await latestRelocateIntent(id)).toBeUndefined();
+        expect(await storeBFiles(id)).toEqual([]);
+      } else {
+        expect(response.statusCode, response.body).toBe(200);
+        expect(h.client.deletePage).toHaveBeenCalledWith(confluenceId);
+        expect((await getRow(id)).body_html).toContain(`data-drawio-source="/api/local-attachments/${id}/flow.drawio"`);
+        expect(await storeBFiles(id)).toEqual(['flow.drawio']);
+        expect(await fs.readFile(path.join(attachmentsRoot, 'local', String(id), 'flow.drawio'), 'utf8')).toBe(xml);
+      }
+    });
+
     it('flips the row, clears confluence_id, and deletes the page upstream', async () => {
       const id = await createPage({
         title: 'Synced', source: 'confluence', confluenceId: '700001', spaceKey: 'CONF',

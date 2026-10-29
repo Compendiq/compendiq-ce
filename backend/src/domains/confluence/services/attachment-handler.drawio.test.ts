@@ -197,6 +197,26 @@ describe('draw.io attachment HTTP boundary', () => {
     await missing('diagram.png');
   });
 
+  it.each([
+    ['diagram.drawio', false], ['diagram.xml', false], ['diagram', false],
+    ['diagram.drawio', true], ['diagram.xml', true], ['diagram', true],
+  ] as const)('loads %s as editable source on the first lazy request (streaming: %s)', async (title, streaming) => {
+    files['/source'] = xml;
+    attachments = [attachment(title, '/source', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toEqual(xml);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    expect(requests).toEqual(['/source']);
+    await missing('diagram.png');
+  });
+
+  it.each([false, true])('does not cache an extensionless PNG as editable XML (streaming: %s)', async (streaming) => {
+    files['/image'] = png;
+    attachments = [attachment('diagram', '/image', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toBeNull();
+    await missing('diagram.drawio');
+    expect(await fs.readdir(attachmentCacheDir(pageId))).toEqual([]);
+  });
+
   it('on-demand PNG lookup accepts an extensionless real PNG', async () => {
     files['/image'] = png;
     attachments = [attachment('diagram', '/image')];

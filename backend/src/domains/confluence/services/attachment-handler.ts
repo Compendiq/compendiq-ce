@@ -535,6 +535,7 @@ export async function fetchAndCacheAttachment(
   // An extensionless draw.io attachment can be either an export or source.
   // XML siblings are editable sources, never PNG responses.
   const isPngRequest = safe.toLowerCase().endsWith('.png');
+  const isSourceRequest = safe.toLowerCase().endsWith('.drawio');
   let fallback = false;
   if (!attachment && isPngRequest) {
     const baseName = safe.slice(0, -4);
@@ -542,6 +543,11 @@ export async function fetchAndCacheAttachment(
       ?? findAttachmentByFilename(attachments, `${baseName}.xml`)
       ?? findAttachmentByFilename(attachments, `${baseName}.drawio`);
     fallback = !!attachment;
+  }
+  if (!attachment && isSourceRequest) {
+    const baseName = safe.slice(0, -7);
+    attachment = findAttachmentByFilename(attachments, `${baseName}.xml`)
+      ?? findAttachmentByFilename(attachments, baseName);
   }
 
   if (!attachment?._links?.download) {
@@ -557,6 +563,20 @@ export async function fetchAndCacheAttachment(
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
   const filePath = safeAttachmentPath(pageId, safe);
+
+  if (isSourceRequest) {
+    const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
+    try {
+      const data = useStreaming ? null : await client.downloadAttachment(attachment._links.download);
+      if (data) await fs.writeFile(temporaryPath, data);
+      else await client.downloadAttachmentToFile(attachment._links.download, temporaryPath, MAX_ATTACHMENT_BYTES);
+      if (!await isDrawioXmlFile(temporaryPath)) return null;
+      await fs.rename(temporaryPath, filePath);
+      return data ?? await fs.readFile(filePath);
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
+    }
+  }
 
   if (isPngRequest) {
     const sourcePath = safeAttachmentPath(pageId, `${safe.slice(0, -4)}.drawio`);

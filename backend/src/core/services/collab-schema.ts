@@ -199,7 +199,7 @@ const DrawioDiagram = Node.create({
     if (imageSrc) {
       children.push(['img', { src: imageSrc, alt: node.attrs.alt }]);
     } else if (node.attrs.diagramName) {
-      children.push(['span', {}, `Draw.io preview unavailable: ${node.attrs.diagramName}`]);
+      children.push(['span', { class: 'drawio-preview-unavailable' }, `Draw.io preview unavailable: ${node.attrs.diagramName}`]);
     }
     if (node.attrs.editHref && node.attrs.editHref !== '#') {
       children.push([

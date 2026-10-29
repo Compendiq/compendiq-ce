@@ -193,6 +193,31 @@ describe('DrawioDiagramNodeView', () => {
     fetchMock.mockRestore();
   });
 
+  it.each([true, false])('tries the preview after a missing source without creating an empty diagram (preview available: %s)', async (available) => {
+    const source = '/api/attachments/123/architecture.drawio';
+    const preview = '/api/attachments/123/architecture.png';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input) === source || !available) return { ok: false, status: 404 } as Response;
+      return { ok: true, blob: async () => new Blob(['embedded-diagram-png'], { type: 'image/png' }) } as Response;
+    });
+    const props = makeProps({
+      node: { attrs: { diagramName: 'architecture', drawioSource: source, src: preview } } as NodeViewProps['node'],
+    });
+    render(<DrawioDiagramNodeView {...props} />);
+    fireEvent.click(screen.getByTestId('drawio-edit-btn'));
+    if (available) {
+      expect((await screen.findByTestId('mock-drawio-editor')).getAttribute('data-xml'))
+        .toBe('data:image/png;base64,ZW1iZWRkZWQtZGlhZ3JhbS1wbmc=');
+    } else {
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load');
+      expect(screen.queryByTestId('mock-drawio-editor')).toBeNull();
+      expect(props.updateAttributes).not.toHaveBeenCalled();
+    }
+    expect(fetchMock).toHaveBeenCalledWith(source, expect.objectContaining({ cache: 'no-store' }));
+    expect(fetchMock).toHaveBeenCalledWith(preview, expect.objectContaining({ cache: 'no-store' }));
+    fetchMock.mockRestore();
+  });
+
   it('does not open a blank editor when the source cannot be loaded', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 404 } as Response);
     const updateAttributes = vi.fn();

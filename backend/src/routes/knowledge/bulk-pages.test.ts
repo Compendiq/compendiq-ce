@@ -305,10 +305,13 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
-  it.each(['bulk-sync', 'page-put'] as const)(
-    'keeps cold-cache draw.io XML reachable after %s publication',
-    async (publication) => {
-      const confluenceId = `cold-${publication}`;
+  it.each([
+    ['bulk-sync', 'flow.drawio'], ['bulk-sync', 'flow.xml'], ['bulk-sync', 'flow'],
+    ['page-put', 'flow.drawio'], ['page-put', 'flow.xml'], ['page-put', 'flow'],
+  ] as const)(
+    'keeps cold-cache draw.io XML reachable after %s publication from %s',
+    async (publication, sourceTitle) => {
+      const confluenceId = `cold-${publication}-${sourceTitle.replace('.', '-')}`;
       const pageId = await seedConfluencePage(confluenceId, 'Source-only diagram');
       const storage = '<p>Keep prose</p><ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>';
       const xml = '<mxfile><diagram id="flow"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
@@ -325,7 +328,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
         response.setHeader('content-type', 'application/json');
         if (path.endsWith('/child/attachment')) {
           response.end(JSON.stringify({ results: [{
-            id: 'source', title: 'flow.drawio', version: { number: 1 },
+            id: 'source', title: sourceTitle, version: { number: 1 },
             _links: { download: '/download/flow.drawio' },
           }] }));
           return;

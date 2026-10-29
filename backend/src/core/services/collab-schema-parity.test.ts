@@ -288,6 +288,7 @@ describe('collab schema parity (#1445)', () => {
       if (fixture.name === 'draw.io source only') {
         expect(html2).toContain('data-drawio-source="/api/attachments/1/arch.drawio"');
         expect(html2).toContain('Draw.io preview unavailable: arch');
+        expect(html2).toContain('class="drawio-preview-unavailable"');
         expect(html2).not.toContain('<img');
       }
       if (fixture.name === 'native-panel') {

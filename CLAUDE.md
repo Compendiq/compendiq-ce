@@ -1202,13 +1202,19 @@ Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 and raster stream; otherwise the wrapper names the unavailable preview and
 retains its source URL. Missing previews and sources are rechecked even on
 unchanged pages, without counting an intentionally absent preview as a
-permanent download failure. Both TipTap schemas must round-trip that URL;
-read-mode editing loads XML without stale cache before trying a legacy PNG.
-Never replace a failed source load with an empty diagram.
+permanent download failure. Both TipTap schemas must round-trip that URL and
+the `drawio-preview-unavailable` marker so a later preview save removes the
+obsolete message. Read and edit mode try XML without stale cache, then a legacy
+PNG+XML if the source cannot be loaded. Never substitute an empty diagram.
 A missing local source is unknown upstream availability, not proof of absence:
 retain the converted source locator on page-only publication (including PUT,
 bulk sync and recovery). The existing authorized attachment GET resolves it
 on demand; only validated local raster bytes may become a preview.
+Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles,
+classifying bytes before caching them as source. A Confluence-to-local move
+must refuse before any cutover or upstream deletion if a referenced draw.io
+source is not preserved as XML in its prepared attachments. Open/save the
+diagram first, then retry the move; never rewrite an unpreserved source.
 Extensionless previews are classified even beside an existing XML source;
 classification receipts suppress repeated downloads of unchanged bare sources.
 Attachment saves and their recovery publish newly valid previews into existing

@@ -22,6 +22,7 @@ import {
 } from '../../core/services/page-baseline-service.js';
 import { MAX_LOCAL_ATTACHMENT_BYTES } from '../../core/services/local-attachment-service.js';
 import { REAL_PNG_40x30_BASE64 } from '../../core/services/test-image-fixtures.js';
+import { htmlToYDoc, yDocToHtml } from '../../core/services/collab-schema.js';
 import {
   buildKnowledgeTestApp,
   insertConfluencePage,
@@ -162,7 +163,10 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
     it.each([true, false])('promotes a source-only diagram only for a valid saved PNG (%s)', async (valid) => {
       const pageId = await seedPage();
       const source = `/api/local-attachments/${pageId}/flow.drawio`;
-      const html = `<p>Local edits stay</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${source}"><span class="drawio-preview-unavailable">Draw.io preview unavailable: flow</span></div><p>After</p>`;
+      const doc = htmlToYDoc(`<p>Local edits stay</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${source}"><span>Draw.io preview unavailable: flow</span></div><p>After</p>`);
+      const html = yDocToHtml(doc);
+      doc.destroy();
+      expect(html).toContain('class="drawio-preview-unavailable"');
       await seedLegacyAttachment(pageId, 'flow.drawio', 'application/xml', Buffer.from('<mxfile/>'));
       await query('UPDATE pages SET body_html = $2, body_text = $2 WHERE id = $1', [pageId, html]);
       const put = await upload(pageId, 'flow.png', valid ? PNG_DATA_URI : `data:image/png;base64,${Buffer.from('<mxfile/>').toString('base64')}`, '<mxfile><diagram>saved</diagram></mxfile>');

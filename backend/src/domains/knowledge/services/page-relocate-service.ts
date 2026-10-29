@@ -67,6 +67,7 @@ import {
   getMimeType,
   isStorableAttachmentFilename,
   attachmentCacheDir,
+  isDrawioXml,
 } from '../../confluence/services/attachment-handler.js';
 import {
   canStoreLocalFilename,
@@ -1924,6 +1925,24 @@ async function relocateToLocal(opts: {
         size: data.length,
         sha256: sha256(data),
       });
+    }
+  }
+
+  // Page-only sync may retain an unresolved upstream source locator. A true
+  // move deletes that upstream page, so never rewrite a source we did not
+  // preserve in the operation's exact-byte preparation.
+  const sourcePrefix = `/api/attachments/${encodeURIComponent(oldConfluenceId)}/`;
+  const preservedSources = new Set(sourceFiles
+    .filter((file) => isDrawioXml(file.data))
+    .map((file) => `${sourcePrefix}${encodeURIComponent(file.sourceName)}`));
+  const document = new JSDOM(`<body>${page.body_html ?? ''}</body>`).window.document;
+  for (const diagram of document.querySelectorAll('.confluence-drawio[data-drawio-source]')) {
+    const source = diagram.getAttribute('data-drawio-source')!;
+    if (source.startsWith(sourcePrefix) && !preservedSources.has(source)) {
+      throw new RelocateError(
+        409,
+        'Cannot relocate: a draw.io source is not cached. Open and save the diagram to preserve its source, then try again.',
+      );
     }
   }
 
