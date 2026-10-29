@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use distinct cache entries. Matching bulk filters select the same visible set.
 
 ### Changed
+- **MCP `search_web` cache identity (#1787):** include the effective bounded
+  result width with the sanitized query, so requests at different widths do
+  not reuse a truncated result set. A versioned namespace isolates legacy
+  query-only entries during upgrades, including mixed-version replicas.
+  Its regression requires real Redis and runs in the MCP sidecar CI job;
+  missing test configuration fails explicitly.
 
 - **Portable Compose trust (#1819):** the base deployment no longer mounts a
   Red Hat host CA file over the image trust store. Private CAs require the
