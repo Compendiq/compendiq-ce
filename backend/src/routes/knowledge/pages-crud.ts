@@ -533,14 +533,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages', async (request) => {
     const userId = request.userId;
     const params = PageListQuerySchema.parse(request.query);
-    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
+    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, visibility, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
     // Cache all page list queries. Filtered queries use a shorter TTL (2 min) vs
     // unfiltered (15 min) since filter results change more frequently (e.g. search
     // results after edits, embedding status during processing).
-    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || dateFrom || dateTo);
-    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
-    const cacheKey = `list:v3:${filterParts}`;
+    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || visibility || dateFrom || dateTo);
+    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', visibility ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
+    const cacheKey = `list:v4:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
@@ -639,6 +639,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (source) {
       whereParts.push(`cp.source = $${paramIdx++}`);
       values.push(source);
+    }
+
+    if (visibility) {
+      whereParts.push(`cp.visibility = $${paramIdx++}`);
+      values.push(visibility);
     }
 
     if (dateFrom) {

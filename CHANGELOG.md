@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
   `fast-uri` override to 3.1.9 and refresh its locked version.
 
+### Fixed
+
+- **Page list visibility filter (#1786):** private and shared list requests
+  now filter both items and totals, including substring-search fallback, and
+  use distinct cache entries. Matching bulk filters select the same visible set.
+
 ### Changed
 
 - **Portable Compose trust (#1819):** the base deployment no longer mounts a
