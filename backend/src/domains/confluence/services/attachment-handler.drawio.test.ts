@@ -121,6 +121,24 @@ describe('draw.io attachment HTTP boundary', () => {
     expect(requests).toEqual(['/image']);
   });
 
+  it.each([false, true])('downloads an extensionless PNG beside XML (source cached: %s)', async (cached) => {
+    files = { '/image': png, '/source': xml };
+    attachments = [attachment('diagram', '/image'), attachment('diagram.drawio', '/source')];
+    if (cached) {
+      await fs.mkdir(path.dirname(cacheFile('diagram.drawio')), { recursive: true });
+      await fs.writeFile(cacheFile('diagram.drawio'), xml);
+    }
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments))
+      .toEqual(['diagram.png', 'diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    const rendered = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(rendered.html).toContain(`src="/api/attachments/${pageId}/diagram.png"`);
+    expect(rendered.html).not.toContain('preview unavailable');
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    expect(requests).toEqual(cached ? ['/image'] : ['/source', '/image']);
+  });
+
   it('caches both PNG and XML, including streamed downloads', async () => {
     files = { '/image': png, '/source': xml };
     attachments = [attachment('diagram.png', '/image', STREAM_THRESHOLD_BYTES + 1), attachment('diagram.xml', '/source', STREAM_THRESHOLD_BYTES + 1)];

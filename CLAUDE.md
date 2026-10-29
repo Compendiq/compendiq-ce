@@ -1205,6 +1205,16 @@ unchanged pages, without counting an intentionally absent preview as a
 permanent download failure. Both TipTap schemas must round-trip that URL;
 read-mode editing loads XML without stale cache before trying a legacy PNG.
 Never replace a failed source load with an empty diagram.
+Extensionless previews are classified even beside an existing XML source;
+classification receipts suppress repeated downloads of unchanged bare sources.
+Attachment saves and their recovery publish newly valid previews into existing
+HTML under the same writer fence, never by reconverting stale storage. Update
+plain text and invalidate persisted collaborative bytes with that presentation.
+Incremental sync also reconciles stale presentation when both files exist,
+through the existing conflict policy rather than an unconditional body write.
+Read mode uses the draw.io schema renderer, not the editor-only React node view,
+so the admitted Edit Diagram callback remains reachable for source-only nodes.
+Remove its overlay when that callback is withdrawn (including a live freeze).
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can

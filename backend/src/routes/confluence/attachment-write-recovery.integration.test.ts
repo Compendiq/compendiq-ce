@@ -131,8 +131,8 @@ async function seedFencedIntent(input: {
   ownedRuntimes.add(runtimeId);
   await query(
     `INSERT INTO page_writer_runtimes
-       (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
-     VALUES ($1, $2::jsonb, NOW(), $3, 'Verified dead writer for attachment recovery', $4::jsonb)`,
+       (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof, enforcement_version)
+     VALUES ($1, $2::jsonb, NOW(), $3, 'Verified dead writer for attachment recovery', $4::jsonb, 1)`,
     [
       runtimeId,
       JSON.stringify({ host: 'test-host', pid: 999999, startedAt: new Date().toISOString() }),
@@ -280,6 +280,42 @@ afterAll(async () => {
 const describeDb = dbAvailable ? describe : describe.skip;
 
 describeDb('attachment.confluence.put recovery', () => {
+  it('publishes source-only HTML when recovering a verified PNG/XML save', async () => {
+    const seeded = await seedActorAndPage();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+      seeded.pageId,
+      '<p>Keep authored prose</p><div class="confluence-drawio" data-diagram-name="diagram" data-drawio-source="/api/attachments/remote-attachment-page/diagram.drawio"><span class="drawio-preview-unavailable">Draw.io preview unavailable: diagram</span></div>',
+    ]);
+    seeded.contentRevision = (await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1', [seeded.pageId],
+    )).rows[0]!.content_revision;
+    const staged = await seedFencedIntent({
+      ...seeded,
+      files: [
+        { filename: 'diagram.png', bytes: png, serverId: 'png-id', versionWhen: 'v1' },
+        { filename: 'diagram.drawio', bytes: Buffer.from('<mxfile/>'), serverId: 'xml-id', versionWhen: 'v1' },
+      ],
+      remoteStarted: true,
+      remoteCompleted: true,
+    });
+    remoteAttachments = [
+      { id: 'png-id', title: 'diagram.png', version: { number: 1, when: 'v1' } },
+      { id: 'xml-id', title: 'diagram.drawio', version: { number: 1, when: 'v1' } },
+    ];
+    await expect(reconcilePageWriteIntent(staged.id, {
+      actorId: seeded.recoveryAdminId,
+      reason: 'Recover verified source-only diagram save',
+    })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    const saved = (await query<{ body_html: string; body_text: string }>(
+      'SELECT body_html, body_text FROM pages WHERE id = $1', [seeded.pageId],
+    )).rows[0]!;
+    expect(saved.body_html).toContain('Keep authored prose');
+    expect(saved.body_html).toContain('src="/api/attachments/remote-attachment-page/diagram.png"');
+    expect(saved.body_html).not.toContain('preview unavailable');
+    expect(saved.body_text).not.toContain('preview unavailable');
+  });
+
   it('removes only the exact owned stages after a fenced pre-remote crash', async () => {
     const seeded = await seedActorAndPage();
     const staged = await seedFencedIntent({

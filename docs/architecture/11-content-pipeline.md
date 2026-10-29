@@ -58,6 +58,7 @@ flowchart LR
     DB -- "htmlToMarkdown()" --> LLM
     LLM -- "markdownToHtml()" --> DB
     DB <--> ED
+    ED -- "diagram save: validate PNG, promote source-only HTML under attachment fence" --> DB
     UP -- "extractDocumentText()" --> LLM
     NT -- "discover owned children; classify every row" --> NP
     NP -- "allocate parents before children" --> NC
@@ -100,6 +101,13 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | any other macro (catch-all) | `<div class="confluence-macro-unknown" data-macro-name="…" data-macro-params="{…}">` (#865; was lossy) | placeholder; opaque-protected on Improve |
+
+Diagram attachment publication promotes only source-only wrappers bound to the
+saved file URL, after full PNG validation, in the existing admitted transaction.
+Normal completion and recovery update HTML/plain text together without
+reconverting stale storage or changing the authored page version. Incremental
+Confluence recovery checks presentation as well as missing files and delegates
+any change to the existing conflict policy.
 
 ### Round-trip notes (issue #300)
 

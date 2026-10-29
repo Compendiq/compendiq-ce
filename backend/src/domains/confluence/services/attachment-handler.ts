@@ -214,6 +214,15 @@ export async function syncDrawioAttachments(
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
         }
       }
+      const bareSourceMarker = `${markerPath}-source`;
+      let bareIsCachedSource = false;
+      if (bareIdentity && hasSource && !hasPng) {
+        try {
+          bareIsCachedSource = await fs.readFile(bareSourceMarker, 'utf8') === bareIdentity;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+      }
       const pngSourceMarker = path.join(attachmentDir(pageId), `.drawio-png-source-${createHash('sha256').update(name).digest('hex')}`);
       const pngIdentity = pngAttachment && JSON.stringify([
         pngAttachment.id, pngAttachment.version?.number, pngAttachment._links?.download,
@@ -253,6 +262,9 @@ export async function syncDrawioAttachments(
           if (kind === 'unknown' && isPng && bareIdentity) {
             await fs.writeFile(markerPath, bareIdentity);
           }
+          if (kind === 'unknown' && !isPng && bareIdentity && hasSource) {
+            await fs.writeFile(bareSourceMarker, bareIdentity);
+          }
           if (kind === 'png' && !isPng && pngIdentity && hasSource) {
             await fs.writeFile(pngSourceMarker, pngIdentity);
           }
@@ -271,7 +283,7 @@ export async function syncDrawioAttachments(
         try { await download(pngAttachment, 'png'); }
         catch (err) { logger.error({ err, pageId, name }, 'Failed to cache draw.io PNG'); }
       }
-      if (bareAttachment && !hasSource && !bareIsCachedPng) {
+      if (bareAttachment && ((!hasSource && !bareIsCachedPng) || (!hasPng && !bareIsCachedSource))) {
         try { await download(bareAttachment, 'unknown'); }
         catch (err) { logger.warn({ err, pageId, name }, 'Failed to cache draw.io attachment'); }
       }

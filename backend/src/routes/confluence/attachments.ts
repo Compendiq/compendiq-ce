@@ -8,6 +8,7 @@ import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../core/db/advisory-locks.js';
 import { getPool, query } from '../../core/db/postgres.js';
 import { getPageBaselineGovernanceHook } from '../../core/services/page-baseline-governance.js';
 import { readFrozenPageAttachment } from '../../core/services/page-baseline-service.js';
+import { publishSavedDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
@@ -597,6 +598,11 @@ const reconcileConfluenceAttachmentPut: PageWriteIntentReconciler = async (clien
     throw new PageWriteError(409, 'intent_terminal_result_invalid', 'Attachment publication revision is unavailable');
   }
   if (stagedBytesPublished || currentContentRevision === terminalRevision) {
+    await publishSavedDrawioPreviews(client, metadata.pageId, metadata.files.map((file) => ({
+      filename: file.filename,
+      path: confluenceCacheFilePath(metadata.remotePageId, file.filename),
+      url: `/api/attachments/${encodeURIComponent(metadata.remotePageId)}/${encodeURIComponent(file.filename)}`,
+    })));
     const updated = await client.query<{ content_revision: string }>(
       `UPDATE pages
           SET image_analysis_dirty = TRUE,
@@ -1189,6 +1195,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
               confluenceCacheFilePath(page.confluence_id!, stage.filename),
             );
           }
+          await publishSavedDrawioPreviews(lockedClient, page.id, files.map((file) => ({
+            filename: file.filename,
+            path: confluenceCacheFilePath(page.confluence_id!, file.filename),
+            url: `/api/attachments/${encodeURIComponent(page.confluence_id!)}/${encodeURIComponent(file.filename)}`,
+          })));
           const updated = await lockedClient.query<{ content_revision: string }>(
             `UPDATE pages
                 SET image_analysis_dirty = TRUE,

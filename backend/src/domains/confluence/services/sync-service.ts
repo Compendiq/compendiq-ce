@@ -1554,8 +1554,8 @@ async function syncMissingAttachments(
     // covers the drawio structured-macro. This cheap string pre-filter avoids
     // pulling every body into heap and JSDOM-parsing pages with no attachments
     // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
-    const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
-      `SELECT confluence_id, body_storage FROM pages
+    const pagesResult = await query<{ confluence_id: string; body_storage: string; body_html: string }>(
+      `SELECT confluence_id, body_storage, body_html FROM pages
        WHERE space_key = $1 AND source = 'confluence' AND body_storage IS NOT NULL
          AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
        ORDER BY confluence_id
@@ -1572,7 +1572,7 @@ async function syncMissingAttachments(
           confluenceToHtml(row.body_storage, row.confluence_id, spaceKey), row.confluence_id,
         );
         missingDiagrams = preview.missing;
-        if (preview.missing.length > 0 || preview.missingSources.length > 0) {
+        if (preview.missing.length > 0 || preview.missingSources.length > 0 || preview.html !== row.body_html) {
           try {
             // Reuse the page's conflict policy when a newly available source or
             // preview changes its rendered body; never overwrite local edits here.

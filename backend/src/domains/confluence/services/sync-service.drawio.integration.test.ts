@@ -80,6 +80,15 @@ describe.skipIf(!available)('source-only draw.io sync', () => {
       .toContain('src="/api/attachments/179201/flow.png"');
     expect(await readFile(join(root, page.id, 'flow.png'))).toEqual(png);
 
+    // A save may already have installed both files while old HTML survives.
+    await query('UPDATE pages SET body_html = $2 WHERE confluence_id = $1', [
+      page.id, result.rows[0]!.body_html,
+    ]);
+    await __internal.syncMissingAttachments(client, 'fixture', 'TEST', new Date(), new Map(), counts, 'drawio-test', { mode: 'full' });
+    const recovered = (await query<{ body_html: string }>('SELECT body_html FROM pages WHERE confluence_id = $1', [page.id])).rows[0]!.body_html;
+    expect(recovered).toContain('src="/api/attachments/179201/flow.png"');
+    expect(recovered).not.toContain('preview unavailable');
+
     // A successful raster download does not suppress a failed source retry.
     await rm(join(root, page.id, 'flow.drawio'));
     sourceAvailable = false;

@@ -62,6 +62,30 @@ describe('ArticleViewer', () => {
     capturedEditorOptions.length = 0;
   });
 
+  it.each(['/api/local-attachments/42', '/api/attachments/remote-page'])(
+    'offers read-mode source editing and reloads a saved preview (%s)',
+    async (prefix) => {
+      const edit = vi.fn();
+      const sourceOnly = `<p>Before</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${prefix}/flow.drawio"><span class="drawio-preview-unavailable">Draw.io preview unavailable: flow</span></div><p>After</p>`;
+      const { container, getByRole, rerender } = render(<ArticleViewer content={sourceOnly} onEditDiagram={edit} />);
+      await waitFor(() => expect(getByRole('button', { name: 'Edit this draw.io diagram' })).toBeInTheDocument());
+      expect(container.querySelector('.confluence-drawio')).toHaveAttribute('data-drawio-source', `${prefix}/flow.drawio`);
+      expect(container.querySelector('img')).toBeNull();
+      fireEvent.click(getByRole('button', { name: 'Edit this draw.io diagram' }));
+      expect(edit).toHaveBeenCalledWith('flow');
+      mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:saved-preview');
+      const saved = `<p>Before</p><div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="${prefix}/flow.drawio"><img src="${prefix}/flow.png" alt="Draw.io diagram: flow"></div><p>After</p>`;
+      rerender(<ArticleViewer content={saved} onEditDiagram={edit} />);
+      await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', 'blob:saved-preview'));
+      expect(container).not.toHaveTextContent('preview unavailable');
+      expect(container).toHaveTextContent('Before');
+      expect(container).toHaveTextContent('After');
+      // A freeze revokes the callback without unmounting the viewer.
+      rerender(<ArticleViewer content={saved} />);
+      await waitFor(() => expect(container.querySelector('.drawio-inline-edit-btn')).toBeNull());
+    },
+  );
+
   it('preserves semantic insertion and deletion marks in formatted version diffs', async () => {
     const { container } = render(
       <ArticleViewer content="<p>Use the <del>old</del><ins>new</ins> service.</p>" />,
