@@ -1204,14 +1204,20 @@ retains its source URL. Missing previews and sources are rechecked even on
 unchanged pages, without counting an intentionally absent preview as a
 permanent download failure. Both TipTap schemas must round-trip that URL and
 the `drawio-preview-unavailable` marker so a later preview save removes the
-obsolete message. Read and edit mode try XML without stale cache, then a legacy
-PNG+XML if the source cannot be loaded. Never substitute an empty diagram.
+obsolete message. Read and edit mode share `loadDrawioSource`: try XML without
+stale cache, then an actual decoded PNG containing editable draw.io metadata.
+Validate every XML page, preserving the complete multi-page file and valid empty
+graphs. Support the packaged editor's URI/double-URI tEXt and legacy raw-deflate
+zTXt formats, with bounded expansion. HTTP 200, MIME type, and filename are not
+proof of editable content. Never substitute an empty diagram on load failure.
 A missing local source is unknown upstream availability, not proof of absence:
 retain the converted source locator on page-only publication (including PUT,
 bulk sync and recovery). The existing authorized attachment GET resolves it
 on demand; only validated local raster bytes may become a preview.
-Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles,
-classifying bytes before caching them as source. A Confluence-to-local move
+Lazy `.drawio` reads also resolve `.xml` and extensionless upstream titles.
+All sync and lazy paths classify bytes, including names ending in `.xml` or
+`.drawio`: actual PNG becomes a preview, actual XML becomes source, and other
+payloads are not cached. A Confluence-to-local move
 must refuse before any cutover or upstream deletion if a referenced draw.io
 source is not preserved as XML in its prepared attachments. Open/save the
 diagram first, then retry the move; never rewrite an unpreserved source.

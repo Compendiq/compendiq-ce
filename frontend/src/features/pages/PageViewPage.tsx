@@ -1,3 +1,4 @@
+import { loadDrawioSource } from '../../shared/lib/drawio-source';
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { UNSAFE_NavigationContext, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -873,32 +874,17 @@ export function PageViewPage() {
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
     const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
-    let dataUri: string;
+    let xml: string;
     try {
-      const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
+      // Shared with the TipTap node view: import parsed diagram XML, not an
+      // arbitrary successful response or an unvalidated image data URI.
       const baseUrl = `${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}`;
-      const headers = { Authorization: `Bearer ${accessToken}` };
-      const source = await fetch(`${baseUrl}.drawio`, { headers, cache: 'no-store' });
-      if (source.ok) {
-        dataUri = await source.text();
-        if (!dataUri.trim()) throw new Error('Diagram source is empty');
-      } else {
-        if (source.status !== 404) throw new Error(`Failed to load diagram source: ${source.status}`);
-        const res = await fetch(`${baseUrl}.png`, { headers, cache: 'no-store' });
-        if (!res.ok) throw new Error(`Failed to load diagram: ${res.status}`);
-        const blob = await res.blob();
-        const { promise, resolve, reject } = Promise.withResolvers<string>();
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-        dataUri = await promise;
-      }
+      xml = await loadDrawioSource({ sourceUrl: `${baseUrl}.drawio`, previewUrl: `${baseUrl}.png` });
     } catch (error) {
       toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
       return;
     }
-    setDrawioXml(dataUri);
+    setDrawioXml(xml);
     setDrawioEditingDiagram(diagramName);
   }, [id, page?.confluenceId, contentWriteRefusal]);
 

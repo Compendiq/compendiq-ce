@@ -3,8 +3,7 @@ import { NodeViewWrapper } from '@tiptap/react';
 import { Pencil, Trash2, Plus, GripVertical } from 'lucide-react';
 import { DrawioEditor } from '../diagrams/DrawioEditor';
 import { useAuthenticatedSrc } from '../../hooks/use-authenticated-src';
-import { useAuthStore } from '../../../stores/auth-store';
-import { refreshAccessTokenOnce } from '../../lib/api';
+import { loadDrawioSource } from '../../lib/drawio-source';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
 import type { NodeViewProps } from '@tiptap/react';
@@ -40,58 +39,19 @@ export function DrawioDiagramNodeView({ node, updateAttributes, deleteNode, edit
   const handleEdit = useCallback(async () => {
     if (!isEditable || loading) return;
     setError(null);
-    if (xml || !isExisting) {
-      setEditorXml(xml || EMPTY_DIAGRAM_XML);
+    if (!isExisting) {
+      setEditorXml(EMPTY_DIAGRAM_XML);
       return;
     }
 
-    // Prefer editable source, then try legacy PNG+XML on a source failure.
-    // Neither failure may silently replace an existing diagram with an empty one.
-    const sources: Array<{ url: string; isXml: boolean }> = [];
-    if (drawioSource?.startsWith('/api/attachments/') || drawioSource?.startsWith('/api/local-attachments/')) {
-      sources.push({ url: drawioSource, isXml: true });
-    }
-    if (src) sources.push({ url: src, isXml: false });
-    if (sources.length === 0) {
+    if (!xml && !src && !drawioSource?.startsWith('/api/attachments/') && !drawioSource?.startsWith('/api/local-attachments/')) {
       setError('Diagram source is unavailable. Try again when the source is available.');
       return;
     }
     setLoading(true);
     try {
-      for (const source of sources) {
-        try {
-          const headers: HeadersInit = {};
-          const token = useAuthStore.getState().accessToken;
-          if (token && source.url.startsWith('/api/')) headers.Authorization = `Bearer ${token}`;
-          let response = await fetch(source.url, { headers, credentials: 'include', cache: 'no-store' });
-          if (response.status === 401 && source.url.startsWith('/api/')) {
-            const refreshed = await refreshAccessTokenOnce();
-            if (refreshed) {
-              headers.Authorization = `Bearer ${refreshed}`;
-              response = await fetch(source.url, { headers, credentials: 'include', cache: 'no-store' });
-            }
-          }
-          if (!response.ok) continue;
-          let content: string;
-          if (source.isXml) {
-            content = await response.text();
-          } else {
-            const blob = await response.blob();
-            if (blob.size === 0) continue;
-            const loaded = Promise.withResolvers<string>();
-            const reader = new FileReader();
-            reader.onload = () => loaded.resolve(reader.result as string);
-            reader.onerror = () => loaded.reject(reader.error);
-            reader.readAsDataURL(blob);
-            content = await loaded.promise;
-          }
-          if (!content.trim()) continue;
-          setEditorXml(content);
-          return;
-        } catch {
-          // Source may be absent or unavailable while a PNG+XML still works.
-        }
-      }
+      setEditorXml(await loadDrawioSource({ xml, sourceUrl: drawioSource, previewUrl: src }));
+    } catch {
       setError('Could not load the diagram source. Please try again.');
     } finally {
       setLoading(false);

@@ -1,4 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { Blob as NativeBlob } from 'node:buffer';
+import { drawioPngBytes } from '../../lib/drawio-source.test-fixtures';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import type { NodeViewProps } from '@tiptap/react';
@@ -49,6 +51,8 @@ function makeProps(overrides: Partial<NodeViewProps> = {}): NodeViewProps {
     ...overrides,
   } as unknown as NodeViewProps;
 }
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('DrawioDiagramNodeView', () => {
   it('renders placeholder when no image is available', () => {
@@ -138,7 +142,7 @@ describe('DrawioDiagramNodeView', () => {
     expect(screen.queryByTestId('drawio-delete-btn')).toBeNull();
   });
 
-  it('opens DrawioEditor when edit button is clicked', () => {
+  it('opens DrawioEditor when edit button is clicked', async () => {
     const props = makeProps({
       node: {
         attrs: {
@@ -156,7 +160,7 @@ describe('DrawioDiagramNodeView', () => {
     expect(screen.queryByTestId('mock-drawio-editor')).toBeNull();
 
     fireEvent.click(screen.getByTestId('drawio-edit-btn'));
-    expect(screen.getByTestId('mock-drawio-editor')).toBeTruthy();
+    expect(await screen.findByTestId('mock-drawio-editor')).toBeTruthy();
   });
 
   it('opens DrawioEditor on placeholder click for new diagrams', () => {
@@ -166,7 +170,7 @@ describe('DrawioDiagramNodeView', () => {
     expect(screen.getByTestId('mock-drawio-editor')).toBeTruthy();
   });
 
-  it('shows an unavailable preview for existing diagrams and opens their stored XML', () => {
+  it('shows an unavailable preview for existing diagrams and opens their stored XML', async () => {
     const props = makeProps({
       node: { attrs: { diagramName: 'architecture', xml: '<mxGraphModel id="original"/>' } } as NodeViewProps['node'],
     });
@@ -175,7 +179,7 @@ describe('DrawioDiagramNodeView', () => {
     expect(screen.queryByTestId('drawio-placeholder')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Edit diagram' }));
-    expect(screen.getByTestId('mock-drawio-editor').getAttribute('data-xml')).toBe('<mxGraphModel id="original"/>');
+    expect((await screen.findByTestId('mock-drawio-editor')).getAttribute('data-xml')).toBe('<mxGraphModel id="original"/>');
   });
 
   it('loads the cached source for an existing diagram without inline XML', async () => {
@@ -193,21 +197,22 @@ describe('DrawioDiagramNodeView', () => {
     fetchMock.mockRestore();
   });
 
-  it.each([true, false])('tries the preview after a missing source without creating an empty diagram (preview available: %s)', async (available) => {
+  it.each(['valid', 'missing', 'bad-200'] as const)('tries the preview without creating an empty diagram (%s)', async (payload) => {
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ close: vi.fn() }));
     const source = '/api/attachments/123/architecture.drawio';
     const preview = '/api/attachments/123/architecture.png';
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input) === source || !available) return { ok: false, status: 404 } as Response;
-      return { ok: true, blob: async () => new Blob(['embedded-diagram-png'], { type: 'image/png' }) } as Response;
+      if (String(input) === source || payload === 'missing') return { ok: false, status: 404 } as Response;
+      return { ok: true, blob: async () => new NativeBlob([payload === 'valid' ? drawioPngBytes() : '<html>not a diagram</html>'], { type: 'image/png' }) } as unknown as Response;
     });
     const props = makeProps({
       node: { attrs: { diagramName: 'architecture', drawioSource: source, src: preview } } as NodeViewProps['node'],
     });
     render(<DrawioDiagramNodeView {...props} />);
     fireEvent.click(screen.getByTestId('drawio-edit-btn'));
-    if (available) {
+    if (payload === 'valid') {
       expect((await screen.findByTestId('mock-drawio-editor')).getAttribute('data-xml'))
-        .toBe('data:image/png;base64,ZW1iZWRkZWQtZGlhZ3JhbS1wbmc=');
+        .toContain('Standalone recovered preview');
     } else {
       expect(await screen.findByRole('alert')).toHaveTextContent('Could not load');
       expect(screen.queryByTestId('mock-drawio-editor')).toBeNull();
@@ -297,7 +302,7 @@ describe('DrawioDiagramNodeView', () => {
 
     render(<DrawioDiagramNodeView {...props} />);
     fireEvent.click(screen.getByTestId('drawio-edit-btn'));
-    fireEvent.click(screen.getByTestId('mock-save'));
+    fireEvent.click(await screen.findByTestId('mock-save'));
 
     await vi.waitFor(() => {
       expect(updateAttributes).toHaveBeenCalledWith({
@@ -369,7 +374,7 @@ describe('DrawioDiagramNodeView', () => {
     expect(badge).toBeNull();
   });
 
-  it('closes DrawioEditor when close is clicked', () => {
+  it('closes DrawioEditor when close is clicked', async () => {
     const props = makeProps({
       node: {
         attrs: {
@@ -385,7 +390,7 @@ describe('DrawioDiagramNodeView', () => {
 
     render(<DrawioDiagramNodeView {...props} />);
     fireEvent.click(screen.getByTestId('drawio-edit-btn'));
-    expect(screen.getByTestId('mock-drawio-editor')).toBeTruthy();
+    expect(await screen.findByTestId('mock-drawio-editor')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('mock-close'));
     expect(screen.queryByTestId('mock-drawio-editor')).toBeNull();

@@ -214,7 +214,35 @@ describe('draw.io attachment HTTP boundary', () => {
     attachments = [attachment('diagram', '/image', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
     expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toBeNull();
     await missing('diagram.drawio');
-    expect(await fs.readdir(attachmentCacheDir(pageId))).toEqual([]);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+  });
+
+  it.each([
+    ['diagram.xml', false, true], ['diagram.drawio', false, true],
+    ['diagram.xml', true, true], ['diagram.drawio', true, true],
+    ['diagram.xml', false, false], ['diagram.drawio', false, false],
+    ['diagram.xml', true, false], ['diagram.drawio', true, false],
+  ] as const)('classifies named source %s by bytes (streaming: %s, PNG: %s)', async (title, streaming, validPng) => {
+    files['/named-source'] = validPng ? png : Buffer.from('<html>upstream login</html>');
+    attachments = [attachment(title, '/named-source', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(validPng ? ['diagram.png'] : []);
+    await missing('diagram.drawio');
+    const rendered = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(rendered.html.includes('<img')).toBe(validPng);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.png')).toEqual(validPng ? png : null);
+    await missing('diagram.drawio');
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toBeNull();
+    await missing('diagram.drawio');
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
   });
 
   it('on-demand PNG lookup accepts an extensionless real PNG', async () => {

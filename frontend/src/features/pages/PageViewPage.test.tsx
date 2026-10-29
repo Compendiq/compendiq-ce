@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { Blob as NativeBlob } from 'node:buffer';
+import { drawioPngBytes } from '../../shared/lib/drawio-source.test-fixtures';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -373,6 +375,7 @@ describe('PageViewPage', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     useAuthStore.getState().clearAuth();
     useArticleViewStore.getState().setHeadings([]);
     useArticleViewStore.getState().setEditing(false);
@@ -710,7 +713,7 @@ describe('PageViewPage', () => {
     const fakeResponse = {
       ok: true,
       status: 200,
-      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
+      text: () => Promise.resolve('<mxfile><diagram id="one"><mxGraphModel/></diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -731,7 +734,7 @@ describe('PageViewPage', () => {
     const fakeResponse = {
       ok: true,
       status: 200,
-      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
+      text: () => Promise.resolve('<mxfile><diagram id="one"><mxGraphModel/></diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -752,16 +755,31 @@ describe('PageViewPage', () => {
     ['98765432', '/api/attachments/98765432/my-diagram'],
   ])('falls back to a legacy PNG when source is absent (%s)', async (confluenceId, base) => {
     currentMockPage = { ...mockPage, confluenceId: confluenceId as string };
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ close: vi.fn() }));
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(null, { status: 404 }))
       .mockResolvedValueOnce({
         ok: true,
-        blob: () => Promise.resolve(new Blob(['png-bytes'], { type: 'image/png' })),
+        blob: () => Promise.resolve(new NativeBlob([drawioPngBytes()], { type: 'image/png' })),
       } as Response);
     render(<PageViewPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
     await waitFor(() => expect(screen.getByTestId('drawio-save-trigger')).toBeInTheDocument());
     expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([`${base}.drawio`, `${base}.png`]);
+    fetchSpy.mockRestore();
+  });
+
+  it('refuses successful non-diagram source and preview responses in read mode', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+      ok: true, status: 200,
+      text: async () => '<html>upstream login</html>',
+      blob: async () => new NativeBlob(['not a PNG'], { type: 'image/png' }),
+    }) as unknown as Response);
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('editable diagram source'), expect.anything()));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('drawio-editor')).not.toBeInTheDocument();
     fetchSpy.mockRestore();
   });
 
@@ -772,7 +790,7 @@ describe('PageViewPage', () => {
     const fakeResponse = {
       ok: true,
       status: 200,
-      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
+      text: () => Promise.resolve('<mxfile><diagram id="one"><mxGraphModel/></diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 
@@ -807,7 +825,7 @@ describe('PageViewPage', () => {
     const fakeResponse = {
       ok: true,
       status: 200,
-      text: () => Promise.resolve('<mxfile><diagram>source</diagram></mxfile>'),
+      text: () => Promise.resolve('<mxfile><diagram id="one"><mxGraphModel/></diagram></mxfile>'),
     } as unknown as Response;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
 

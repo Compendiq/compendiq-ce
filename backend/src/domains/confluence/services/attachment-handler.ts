@@ -243,8 +243,8 @@ export async function syncDrawioAttachments(
         const temporaryPath = safeAttachmentPath(pageId, temporaryName);
         try {
           await cacheAttachment(client, userId, pageId, attachment._links!.download, temporaryName, attachment.extensions?.fileSize);
-          const isPng = kind === 'source' ? false : await isPngFile(temporaryPath);
-          if (kind !== 'source' && !isPng && !await isDrawioXmlFile(temporaryPath)) {
+          const isPng = await isPngFile(temporaryPath);
+          if (!isPng && !await isDrawioXmlFile(temporaryPath)) {
             logger.warn({ pageId, name }, 'Ignoring unrecognised draw.io attachment');
             return;
           }
@@ -536,13 +536,11 @@ export async function fetchAndCacheAttachment(
   // XML siblings are editable sources, never PNG responses.
   const isPngRequest = safe.toLowerCase().endsWith('.png');
   const isSourceRequest = safe.toLowerCase().endsWith('.drawio');
-  let fallback = false;
   if (!attachment && isPngRequest) {
     const baseName = safe.slice(0, -4);
     attachment = findAttachmentByFilename(attachments, baseName)
       ?? findAttachmentByFilename(attachments, `${baseName}.xml`)
       ?? findAttachmentByFilename(attachments, `${baseName}.drawio`);
-    fallback = !!attachment;
   }
   if (!attachment && isSourceRequest) {
     const baseName = safe.slice(0, -7);
@@ -570,7 +568,13 @@ export async function fetchAndCacheAttachment(
       const data = useStreaming ? null : await client.downloadAttachment(attachment._links.download);
       if (data) await fs.writeFile(temporaryPath, data);
       else await client.downloadAttachmentToFile(attachment._links.download, temporaryPath, MAX_ATTACHMENT_BYTES);
-      if (!await isDrawioXmlFile(temporaryPath)) return null;
+      if (!await isDrawioXmlFile(temporaryPath)) {
+        const pngName = `${safe.slice(0, -7)}.png`;
+        if (await isPngFile(temporaryPath) && !await attachmentExists(pageId, pngName)) {
+          await fs.rename(temporaryPath, safeAttachmentPath(pageId, pngName));
+        }
+        return null;
+      }
       await fs.rename(temporaryPath, filePath);
       return data ?? await fs.readFile(filePath);
     } finally {
@@ -580,17 +584,16 @@ export async function fetchAndCacheAttachment(
 
   if (isPngRequest) {
     const sourcePath = safeAttachmentPath(pageId, `${safe.slice(0, -4)}.drawio`);
-    const isSource = fallback && /\.(xml|drawio)$/i.test(attachment.title);
     if (useStreaming) {
       const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
       try {
         await client.downloadAttachmentToFile(attachment._links.download, temporaryPath, MAX_ATTACHMENT_BYTES);
-        const png = !isSource && await isPngFile(temporaryPath);
+        const png = await isPngFile(temporaryPath);
         if (png) {
           await fs.rename(temporaryPath, filePath);
           return await fs.readFile(filePath);
         }
-        if ((isSource || await isDrawioXmlFile(temporaryPath)) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
+        if (await isDrawioXmlFile(temporaryPath) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
           await fs.rename(temporaryPath, sourcePath);
         }
         return null;
@@ -602,11 +605,11 @@ export async function fetchAndCacheAttachment(
     const temporaryPath = safeAttachmentPath(pageId, `${randomUUID()}.tmp`);
     try {
       await fs.writeFile(temporaryPath, data);
-      if (!isSource && await isPngFile(temporaryPath)) {
+      if (await isPngFile(temporaryPath)) {
         await fs.rename(temporaryPath, filePath);
         return data;
       }
-      if ((isSource || isDrawioXml(data)) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
+      if (isDrawioXml(data) && !await attachmentExists(pageId, `${safe.slice(0, -4)}.drawio`)) {
         await fs.rename(temporaryPath, sourcePath);
       }
       return null;
