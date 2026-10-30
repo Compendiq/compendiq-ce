@@ -254,6 +254,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
       const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking });
 
+      let streamStatus: 'success' | 'error' | 'aborted' = 'success';
       const accumulated = await streamSSE(request, reply, generator, improveExtras, {
         llmCache,
         cacheKey,
@@ -268,12 +269,20 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         finalExtras: (out) => ({
           layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(out),
         }),
+        onFinished: (result) => {
+          streamStatus = result.status;
+        },
       });
 
       // Persist the full improved content now that streaming is done
-      if (improvementId && accumulated) {
+      if (improvementId && streamStatus === 'success' && accumulated) {
         await query(
           `UPDATE llm_improvements SET improved_content = $1, status = 'completed' WHERE id = $2`,
+          [accumulated.slice(0, 50000), improvementId],
+        );
+      } else if (improvementId) {
+        await query(
+          `UPDATE llm_improvements SET improved_content = $1, status = 'cancelled' WHERE id = $2`,
           [accumulated.slice(0, 50000), improvementId],
         );
       }
