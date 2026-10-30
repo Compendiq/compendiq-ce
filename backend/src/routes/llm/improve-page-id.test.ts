@@ -356,6 +356,70 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(updateCall).toBeUndefined();
   });
 
+  it('marks a partial provider failure as cancelled instead of completed', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO llm_improvements')) {
+        return Promise.resolve({ rows: [{ id: 'improvement-failed' }] });
+      }
+      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    async function* failingGenerator() {
+      yield { content: 'partial output', done: false };
+      throw new Error('provider reset');
+    }
+    mockProviderStreamChat.mockReturnValue(failingGenerator());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>x</p>', type: 'grammar', model: 'llama3', pageId: 'conf-123' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const updateCalls = (mockQuery.mock.calls as unknown[][]).filter(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE llm_improvements'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]![0]).toContain("status = 'cancelled'");
+    expect(updateCalls[0]![1]).toEqual(['partial output', 'improvement-failed']);
+    expect(updateCalls[0]![0]).not.toContain("status = 'completed'");
+  });
+
+  it('does not leave an empty successful stream stuck in streaming', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO llm_improvements')) {
+        return Promise.resolve({ rows: [{ id: 'improvement-empty' }] });
+      }
+      if (sql.includes('SELECT id, confluence_id, title FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, confluence_id: 'conf-123', title: 'T' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    async function* emptyGenerator() {
+      yield* [];
+    }
+    mockProviderStreamChat.mockReturnValue(emptyGenerator());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: { content: '<p>x</p>', type: 'grammar', model: 'llama3', pageId: 'conf-123' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const updateCalls = (mockQuery.mock.calls as unknown[][]).filter(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE llm_improvements'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]![0]).toContain("status = 'cancelled'");
+    expect(updateCalls[0]![1]).toEqual(['', 'improvement-empty']);
+  });
+
   it('#704: echoes the original markdown (what the model was fed) in the final SSE event', async () => {
     // htmlToMarkdown is mocked to echo its input, so the markdown baseline the
     // backend feeds the model equals the request content. The final SSE event

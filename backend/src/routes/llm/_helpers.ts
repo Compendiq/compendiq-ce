@@ -283,6 +283,8 @@ export async function streamSSE(
      * pre-Accept warning.
      */
     finalExtras?: (content: string) => Record<string, unknown>;
+    /** Report whether the stream completed normally or was interrupted. */
+    onFinished?: (result: { status: 'success' | 'error' | 'aborted' }) => void;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -372,6 +374,9 @@ export async function streamSSE(
           : {}),
       });
     }
+    options?.onFinished?.({
+      status: controller.signal.aborted ? 'aborted' : streamError ? 'error' : 'success',
+    });
     reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }
