@@ -396,6 +396,35 @@ describe.skipIf(!canRun)('webhook-outbox-poller', () => {
       expect(row?.status).toBe('dispatched');
       expect(row?.dispatched_at).not.toBeNull();
     });
+
+    it('init sweep leaves a stale row whose job is still live, and resets one whose job is missing', async () => {
+      const liveRowId = await insertOutboxRow({});
+      expect(await __pollOnce()).toBe(1);
+      const liveJobId = (await readOutboxRow(liveRowId))!.bullmq_job_id!;
+      const missingRowId = await insertOutboxRow({});
+      await query(
+        `UPDATE webhook_outbox
+            SET status = 'dispatched', dispatched_at = NOW(), bullmq_job_id = 'no-such-job'
+          WHERE id = $1`,
+        [missingRowId],
+      );
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '3600 seconds' WHERE id = ANY($1)`, [
+        [liveRowId, missingRowId],
+      ]);
+
+      const teardown = await initWebhookOutboxPoller({ pollIntervalMs: 3_600_000 });
+      try {
+        const live = await readOutboxRow(liveRowId);
+        expect(live?.status).toBe('dispatched');
+        expect(live?.bullmq_job_id).toBe(liveJobId);
+        const missing = await readOutboxRow(missingRowId);
+        expect(missing?.status).toBe('pending');
+        expect(missing?.bullmq_job_id).toBeNull();
+        expect(await getAssertionQueue().getJobs(['waiting', 'active', 'delayed'])).toHaveLength(1);
+      } finally {
+        await teardown();
+      }
+    });
   });
 
   describe('periodic stale-dispatch reconciliation (no restart)', () => {
