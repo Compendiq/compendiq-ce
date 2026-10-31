@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
