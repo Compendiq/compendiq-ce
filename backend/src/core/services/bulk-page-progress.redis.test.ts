@@ -16,6 +16,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 import { createClient, type RedisClientType } from 'redis';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import { setRedisClient } from './redis-cache.js';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 import {
   startBulkJob,
   publishProgress,
@@ -29,6 +30,8 @@ const redisAvailable = await isRedisAvailable();
 
 /** Upper bound for one generator step; well under the 15s keepalive. */
 const STEP_MS = 2_000;
+const CHANNEL_PREFIX = prefixedRedisChannel('bulk-page-progress:channel:');
+const channelKey = (jobId: string): string => `${CHANNEL_PREFIX}${jobId}`;
 
 let main: RedisClientType | null = null;
 const jobIds: string[] = [];
@@ -188,6 +191,72 @@ describe.skipIf(!redisAvailable)('streamBulkProgress (real Redis) — replay/sub
     expect(seen.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(seen.map((e) => e.completed)).toEqual([0, 1, 2]);
     expect(seen[2]!.done).toBe(true);
+  });
+
+  /**
+   * What a pre-#1785 pod does: LPUSH + PUBLISH the same seq-less payload,
+   * non-atomically. Used to simulate a rolling upgrade.
+   */
+  async function legacyPush(jobId: string, ev: Omit<BulkProgressEvent, 'seq'>): Promise<void> {
+    const payload = JSON.stringify(ev);
+    await main!.lPush(`bulk-page-progress:list:${jobId}`, payload);
+    await main!.publish(channelKey(jobId), payload);
+  }
+
+  it('rolling upgrade: a legacy seq-less event landing in both history and live feed is yielded exactly once', async () => {
+    const { jobId, signal } = newJob();
+    await startBulkJob(jobId, 3, 'user-1', 'tag');
+
+    const realLRange = main!.lRange.bind(main!);
+    vi.spyOn(main!, 'lRange').mockImplementationOnce(async (key, start, stop) => {
+      await legacyPush(jobId, { jobId, total: 3, completed: 1, failed: 0, done: false, cancelled: false });
+      return realLRange(key, start, stop);
+    });
+
+    const gen = streamBulkProgress(jobId, signal);
+    const seen: BulkProgressEvent[] = [await nextEvent(gen, 'seq 1'), await nextEvent(gen, 'legacy')];
+    expect(seen.map((e) => e.seq)).toEqual([1, undefined]);
+    expect(seen[1]!.completed).toBe(1);
+
+    // The generator has consumed history and is about to inspect the live
+    // queue, where the legacy live copy sits. A fresh seq'd terminal must be
+    // the very next thing yielded — not the duplicate.
+    await publishProgress(jobId, { completed: 3, done: true });
+    const terminal = await nextEvent(gen, 'terminal after legacy dedupe');
+    expect(terminal).toMatchObject({ seq: 2, completed: 3, done: true });
+    await expectEnd(gen, 'end');
+  });
+
+  it('rolling upgrade: a legacy seq-less event published after replay is still delivered', async () => {
+    const { jobId, signal } = newJob();
+    await startBulkJob(jobId, 3, 'user-1', 'tag');
+
+    const gen = streamBulkProgress(jobId, signal);
+    await nextEvent(gen, 'seq 1');
+    const waiting = gen.next();
+    // Same content as what a matched duplicate would carry, but it was never
+    // in the replayed history, so it must reach the consumer.
+    await legacyPush(jobId, { jobId, total: 3, completed: 2, failed: 0, done: false, cancelled: false });
+    const r = await within(waiting, 'legacy live-only event');
+    expect(r.done).toBe(false);
+    expect(r.value).toMatchObject({ completed: 2, done: false });
+    expect((r.value as BulkProgressEvent).seq).toBeUndefined();
+  });
+
+  it('rolling upgrade: a legacy seq-less terminal event in the replay window terminates the stream', async () => {
+    const { jobId, signal } = newJob();
+    await startBulkJob(jobId, 1, 'user-1', 'delete');
+
+    const gen = streamBulkProgress(jobId, signal);
+    await nextEvent(gen, 'seq 1');
+    // Suspended at the first replay yield, after subscribe. Legacy pod
+    // finishes the job now.
+    await legacyPush(jobId, { jobId, total: 1, completed: 1, failed: 0, done: true, cancelled: false });
+
+    const terminal = await nextEvent(gen, 'legacy terminal');
+    expect(terminal).toMatchObject({ completed: 1, done: true });
+    expect(terminal.seq).toBeUndefined();
+    await expectEnd(gen, 'end after legacy done');
   });
 
   it('live path: a consumer connected before any progress sees every event through done', async () => {

@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and live deliveries. A `done`/`cancelled` event published at any point
   between replay and subscription terminates the client stream instead of
   leaving it waiting; events are no longer lost, duplicated or reordered
-  across that boundary.
+  across that boundary. Events written by a pre-upgrade pod (no `seq`) during
+  a rolling upgrade are deduplicated by content against the replayed history.
 
 ## [0.9.2] - 2026-10-29
 

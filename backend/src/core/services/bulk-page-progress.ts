@@ -65,8 +65,12 @@ return seq
 
 export interface BulkProgressEvent {
   jobId: string;
-  /** Monotonic per-job position, assigned at publish. Strictly increasing in list order. */
-  seq: number;
+  /**
+   * Monotonic per-job position, assigned at publish. Strictly increasing in
+   * list order. Absent only on events written by a pre-#1785 pod during a
+   * rolling upgrade; `streamBulkProgress` dedupes those by content.
+   */
+  seq?: number;
   total: number;
   completed: number;
   failed: number;
@@ -303,6 +307,8 @@ export async function* streamBulkProgress(
 
     let lastEvent: BulkProgressEvent | null = null;
     let lastSeq = 0;
+    /** Replayed pre-#1785 (seq-less) entries, as stored JSON, awaiting their live copy. */
+    const legacyReplayed: string[] = [];
     const queue: BulkProgressEvent[] = [];
     let resolveWaiter: (() => void) | null = null;
     let aborted = false;
@@ -337,7 +343,8 @@ export async function* streamBulkProgress(
       for (const ev of await readEventList(redis, jobId)) {
         if (aborted) break;
         lastEvent = ev;
-        lastSeq = ev.seq;
+        if (ev.seq === undefined) legacyReplayed.push(JSON.stringify(ev));
+        else lastSeq = ev.seq;
         yield ev;
         if (ev.done || ev.cancelled) return;
       }
@@ -345,9 +352,25 @@ export async function* streamBulkProgress(
       while (!aborted) {
         const ev = queue.shift();
         if (ev !== undefined) {
-          if (ev.seq <= lastSeq) continue; // already replayed from history
+          if (ev.seq === undefined) {
+            // Legacy (seq-less) live copy. A pre-#1785 pod LPUSHes and
+            // PUBLISHes the same payload, so a live copy of a replayed entry
+            // is byte-identical to it. Drop it iff it matches a replayed
+            // legacy entry not yet claimed by a live copy; otherwise it was
+            // published after LRANGE and must be yielded. No-loss: a false
+            // match requires identical content, i.e. a state the consumer
+            // already holds (terminal flags are sticky, so a matched
+            // terminal event already ended the stream).
+            const idx = legacyReplayed.indexOf(JSON.stringify(ev));
+            if (idx !== -1) {
+              legacyReplayed.splice(idx, 1);
+              continue;
+            }
+          } else {
+            if (ev.seq <= lastSeq) continue; // already replayed from history
+            lastSeq = ev.seq;
+          }
           lastEvent = ev;
-          lastSeq = ev.seq;
           yield ev;
           if (ev.done || ev.cancelled) return;
           continue;
