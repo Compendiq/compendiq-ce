@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Webhook outbox enqueue recovery (#1795):** the outbox poller now runs a
+  bounded, rate-limited reconciliation sweep during normal poll cycles that
+  resets `dispatched` rows whose BullMQ job is missing (enqueue failed after
+  the claim committed), so they are re-delivered without a restart. Rows whose
+  job still exists are left alone.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
