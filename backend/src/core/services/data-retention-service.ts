@@ -22,6 +22,7 @@
  *   row is absent).
  */
 
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { safeIntOr } from '../utils/safe-int.js';
@@ -364,8 +365,12 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
   let deleted = 0;
   let affectedPages = 0;
 
-  const client = await pool.connect();
+  // Acquire inside the try: a saturated/unreachable pool makes connect()
+  // reject (connectionTimeoutMillis), and that must stay contained in this
+  // sweep like every other failure — "Never throws".
+  let client: PoolClient | null = null;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     // Capture the affected page_ids in the same statement so the followup
@@ -418,14 +423,14 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
 
     await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client?.query('ROLLBACK').catch(() => {});
     logger.error(
       { err, retentionDays: days },
       'pending_sync_versions retention cleanup failed',
     );
     return 0;
   } finally {
-    client.release();
+    client?.release();
   }
 
   try {
