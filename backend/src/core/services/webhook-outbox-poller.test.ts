@@ -19,7 +19,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Queue } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 
 import {
   isDbAvailable,
@@ -440,6 +440,45 @@ describe.skipIf(!canRun)('webhook-outbox-poller', () => {
       __expireReconcileIntervalForTests();
       expect(await __pollOnce()).toBe(0);
       expect(await q.getJobs(['waiting', 'active', 'delayed', 'completed', 'failed'])).toHaveLength(1);
+      expect((await readOutboxRow(id))?.bullmq_job_id).toBe(row!.bullmq_job_id);
+    });
+
+    it('resets a stale dispatched row whose job is terminal (failed) exactly once', async () => {
+      const id = await insertOutboxRow({});
+      expect(await __pollOnce()).toBe(1);
+      const failedJobId = (await readOutboxRow(id))!.bullmq_job_id!;
+
+      // Worker throws before marking the row done → job failed, row stays dispatched.
+      const worker = new Worker(
+        WEBHOOK_DELIVERY_QUEUE,
+        async () => {
+          throw new Error('simulated worker DB failure');
+        },
+        { connection: getRedisConnectionOpts() },
+      );
+      const { promise: failed, resolve: onFailed } = Promise.withResolvers<void>();
+      worker.once('failed', () => onFailed());
+      try {
+        await failed;
+      } finally {
+        await worker.close();
+      }
+      const q = getAssertionQueue();
+      expect((await q.getJob(failedJobId))?.finishedOn).toBeTruthy();
+
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '3600 seconds' WHERE id = $1`, [id]);
+      __expireReconcileIntervalForTests();
+      expect(await __pollOnce()).toBe(1);
+
+      const row = await readOutboxRow(id);
+      expect(row?.status).toBe('dispatched');
+      expect(row?.bullmq_job_id).not.toBe(failedJobId);
+      expect(await q.getJob(row!.bullmq_job_id!)).toBeTruthy();
+
+      // Fresh job is non-terminal: further sweeps leave it alone.
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '3600 seconds' WHERE id = $1`, [id]);
+      __expireReconcileIntervalForTests();
+      expect(await __pollOnce()).toBe(0);
       expect((await readOutboxRow(id))?.bullmq_job_id).toBe(row!.bullmq_job_id);
     });
 

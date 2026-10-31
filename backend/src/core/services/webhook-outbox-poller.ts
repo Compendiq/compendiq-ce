@@ -222,7 +222,7 @@ export async function initWebhookOutboxPoller(
  * `RECONCILE_BATCH_LIMIT` rows stuck in `dispatched` beyond `thresholdMs`
  * (oldest first) and resets to `pending` ONLY those whose BullMQ job no
  * longer exists in Redis (e.g. `queue.add` failed after the claim commit).
- * A row whose job still exists (waiting/active/delayed/terminal) is owned by
+ * A row whose job still exists non-terminal (waiting/active/delayed) is owned by
  * the delivery worker and is left alone, so slow deliveries are never
  * duplicated. The reset is guarded on `(status, bullmq_job_id)` so a row
  * that moved on concurrently is not touched.
@@ -249,7 +249,7 @@ async function reconcileStaleDispatches(thresholdMs: number): Promise<number> {
   for (const row of stale.rows) {
     if (row.bullmq_job_id) {
       const job = await queue.getJob(row.bullmq_job_id);
-      if (job) continue; // owned by the delivery worker — leave alone
+      if (job && !job.finishedOn) continue; // non-terminal: owned by the delivery worker — leave alone
     }
     const res = await getPool().query(
       `UPDATE webhook_outbox
