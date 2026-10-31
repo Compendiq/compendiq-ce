@@ -18,7 +18,7 @@
  *   - Module-scope poll-in-progress guard prevents overlap on the same pod.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Queue } from 'bullmq';
 
 import {
@@ -36,6 +36,7 @@ import {
   WEBHOOK_DELIVERY_QUEUE,
   __pollOnce,
   __resetWebhookOutboxPollerForTests,
+  __expireReconcileIntervalForTests,
   __closeWebhookDeliveryQueueForTests,
 } from './webhook-outbox-poller.js';
 import { getRedisConnectionOpts } from '../utils/redis-connection.js';
@@ -394,6 +395,72 @@ describe.skipIf(!canRun)('webhook-outbox-poller', () => {
       const row = await readOutboxRow(freshId);
       expect(row?.status).toBe('dispatched');
       expect(row?.dispatched_at).not.toBeNull();
+    });
+  });
+
+  describe('periodic stale-dispatch reconciliation (no restart)', () => {
+    it('re-delivers a row whose enqueue failed after the claim committed, via ordinary cycles, with exactly one job', async () => {
+      const id = await insertOutboxRow({});
+      const poller = getWebhookDeliveryQueue();
+      const addSpy = vi.spyOn(poller, 'add').mockRejectedValueOnce(new Error('simulated redis outage'));
+
+      // Cycle 1: claim commits, enqueue fails.
+      expect(await __pollOnce()).toBe(0);
+      addSpy.mockRestore();
+
+      const orphaned = await readOutboxRow(id);
+      expect(orphaned?.status).toBe('dispatched');
+      const orphanJobId = orphaned!.bullmq_job_id!;
+      expect(orphanJobId).toBeTruthy();
+      const q = getAssertionQueue();
+      expect(await q.getJob(orphanJobId)).toBeUndefined();
+      expect(await q.getJobs(['waiting', 'active', 'delayed', 'completed', 'failed'])).toHaveLength(0);
+
+      // Ordinary cycle inside the rate-limit window / threshold: nothing happens.
+      expect(await __pollOnce()).toBe(0);
+      expect((await readOutboxRow(id))?.bullmq_job_id).toBe(orphanJobId);
+
+      // Time passes: row is older than the stale threshold and the sweep interval elapsed.
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '600 seconds' WHERE id = $1`, [id]);
+      __expireReconcileIntervalForTests();
+
+      // Ordinary cycle: sweep resets the row, same cycle re-claims and enqueues it.
+      expect(await __pollOnce()).toBe(1);
+
+      const row = await readOutboxRow(id);
+      expect(row?.status).toBe('dispatched');
+      expect(row?.bullmq_job_id).not.toBe(orphanJobId);
+      const jobs = await q.getJobs(['waiting', 'active', 'delayed', 'completed', 'failed']);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]!.id).toBe(row!.bullmq_job_id);
+      expect(jobs[0]!.data.outboxId).toBe(id);
+
+      // Further cycles (even with the sweep due again) never create a second job.
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '600 seconds' WHERE id = $1`, [id]);
+      __expireReconcileIntervalForTests();
+      expect(await __pollOnce()).toBe(0);
+      expect(await q.getJobs(['waiting', 'active', 'delayed', 'completed', 'failed'])).toHaveLength(1);
+      expect((await readOutboxRow(id))?.bullmq_job_id).toBe(row!.bullmq_job_id);
+    });
+
+    it('does NOT reset or duplicate a stale dispatched row whose job still exists in Redis', async () => {
+      const id = await insertOutboxRow({});
+      expect(await __pollOnce()).toBe(1);
+      const claimed = await readOutboxRow(id);
+      const jobId = claimed!.bullmq_job_id!;
+
+      // Slow delivery: row far older than the threshold, job still waiting.
+      await query(`UPDATE webhook_outbox SET dispatched_at = NOW() - INTERVAL '3600 seconds' WHERE id = $1`, [id]);
+      __expireReconcileIntervalForTests();
+
+      expect(await __pollOnce()).toBe(0);
+
+      const row = await readOutboxRow(id);
+      expect(row?.status).toBe('dispatched');
+      expect(row?.bullmq_job_id).toBe(jobId);
+      const jobs = await getAssertionQueue().getJobs(['waiting', 'active', 'delayed', 'completed', 'failed']);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]!.id).toBe(jobId);
     });
   });
 
