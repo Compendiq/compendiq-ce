@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
+  subscribes to the live channel before replaying the durable history list,
+  and every published event carries a monotonic per-job `seq` (assigned
+  atomically with the list write) that the stream uses to reconcile replayed
+  and live deliveries. A `done`/`cancelled` event published at any point
+  between replay and subscription terminates the client stream instead of
+  leaving it waiting; events are no longer lost, duplicated or reordered
+  across that boundary.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
