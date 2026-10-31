@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pending sync version retention atomicity (#1796):** the retention sweep
+  now deletes expired `pending_sync_versions` rows and recomputes
+  `pages.conflict_pending` in one transaction. A failed recompute rolls the
+  delete back so the next sweep retries the page, instead of leaving a stale
+  conflict flag that no later sweep could repair. The `RETENTION_PRUNED`
+  heartbeat is written only after the prune commits.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
