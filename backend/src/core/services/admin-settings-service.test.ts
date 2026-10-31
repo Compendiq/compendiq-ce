@@ -22,6 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
+  getWebhookDeliveriesRetentionDays,
   getAdminAccessDeniedRetentionDays,
   getRagPinIdentifiersEnabled,
   invalidateRagPinIdentifiersCache,
@@ -51,6 +52,39 @@ import {
   RAG_EF_SEARCH_DEFAULT,
 } from './admin-settings-service.js';
 import { logger } from '../utils/logger.js';
+
+describe('getWebhookDeliveriesRetentionDays (#1797)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    delete process.env.RETENTION_WEBHOOK_DELIVERIES_DAYS;
+  });
+
+  afterEach(() => {
+    delete process.env.RETENTION_WEBHOOK_DELIVERIES_DAYS;
+  });
+
+  it('returns the persisted admin_settings value when in range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(30);
+  });
+
+  it('honours the env fallback when the row is absent, then defaults to 90', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    process.env.RETENTION_WEBHOOK_DELIVERIES_DAYS = '45';
+    await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(45);
+
+    delete process.env.RETENTION_WEBHOOK_DELIVERIES_DAYS;
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
+  });
+
+  it('ignores out-of-range DB values and never throws on a DB error', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '6' }] });
+    await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
+    mockQuery.mockRejectedValueOnce(new Error('db down'));
+    await expect(getWebhookDeliveriesRetentionDays()).resolves.toBe(90);
+  });
+});
 
 describe('getAdminAccessDeniedRetentionDays (#264)', () => {
   beforeEach(() => {

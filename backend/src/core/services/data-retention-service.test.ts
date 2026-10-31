@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 // getter to a known value so the mocked DELETE loop is deterministic.
 vi.mock('./admin-settings-service.js', () => ({
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
 }));
 
 // #307 Finding #4: retention heartbeat test spy on audit-service emissions.
@@ -105,6 +106,8 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 })
         // standalone trash purge
         .mockResolvedValueOnce({ rowCount: 4 })
+        // webhook_deliveries (#1797)
+        .mockResolvedValueOnce({ rowCount: 0 })
         // page_versions
         .mockResolvedValueOnce({ rowCount: 2 });
 
@@ -124,8 +127,8 @@ describe('data-retention-service', () => {
       await runRetentionCleanup();
 
       // 3 umbrella time-based + 1 ADMIN_ACCESS_DENIED targeted
-      // + 1 standalone trash purge + 1 count-based = 6
-      expect(mockPool.query).toHaveBeenCalledTimes(6);
+      // + 1 standalone trash purge + 1 webhook_deliveries + 1 count-based = 7
+      expect(mockPool.query).toHaveBeenCalledTimes(7);
 
       // Verify audit_log uses default 365 days
       const auditCall = mockPool.query.mock.calls[0];
@@ -166,7 +169,7 @@ describe('data-retention-service', () => {
 
       // Now at index 5 (umbrella audit_log, search_analytics, error_log,
       // ADMIN_ACCESS_DENIED targeted, standalone trash purge, page_versions).
-      const versionsCall = mockPool.query.mock.calls[5];
+      const versionsCall = mockPool.query.mock.calls[6];
       expect(versionsCall[0]).toContain('ROW_NUMBER()');
       expect(versionsCall[0]).toContain('PARTITION BY page_id');
       expect(versionsCall[0]).toContain('NOT EXISTS');
@@ -187,7 +190,7 @@ describe('data-retention-service', () => {
       expect(auditCall[1]).toEqual([7]);
 
       // page_versions should use overridden max (now at index 5)
-      const versionsCall = mockPool.query.mock.calls[5];
+      const versionsCall = mockPool.query.mock.calls[6];
       expect(versionsCall[1]).toEqual([10]);
     });
 
@@ -205,7 +208,7 @@ describe('data-retention-service', () => {
       // audit_log falls back to its 365-day default (not NaN).
       expect(mockPool.query.mock.calls[0]![1]).toEqual([365]);
       // page_versions falls back to its 50 default (not NaN).
-      expect(mockPool.query.mock.calls[5]![1]).toEqual([50]);
+      expect(mockPool.query.mock.calls[6]![1]).toEqual([50]);
     });
 
     it('handles query errors gracefully and returns 0 for failed tables', async () => {
@@ -215,6 +218,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 3 })                    // error_log
         .mockResolvedValueOnce({ rowCount: 0 })                    // ADMIN_ACCESS_DENIED (#264)
         .mockResolvedValueOnce({ rowCount: 0 })                    // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 })                    // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 0 });                   // page_versions
 
       const results = await runRetentionCleanup();
@@ -248,6 +252,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 }) // error_log
         .mockResolvedValueOnce({ rowCount: 42 }) // ADMIN_ACCESS_DENIED batch 1 (short — drained)
         .mockResolvedValueOnce({ rowCount: 0 }) // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 }) // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 0 }); // page_versions
 
       const results = await runRetentionCleanup();
@@ -263,6 +268,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 10_000 }) // batch 2 full — loop again
         .mockResolvedValueOnce({ rowCount: 1234 })  // batch 3 short — drained
         .mockResolvedValueOnce({ rowCount: 0 })     // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 })     // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 0 });    // page_versions
 
       const results = await runRetentionCleanup();
@@ -276,6 +282,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 }) // error_log
         .mockRejectedValueOnce(new Error('lock timeout')) // ADMIN_ACCESS_DENIED
         .mockResolvedValueOnce({ rowCount: 7 }) // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 }) // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 0 }); // page_versions
 
       const results = await runRetentionCleanup();
@@ -298,6 +305,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 })      // ADMIN_ACCESS_DENIED drained
         .mockResolvedValueOnce({ rowCount: 10_000, rows: batch1 }) // trash batch 1 full — loop again
         .mockResolvedValueOnce({ rowCount: 7, rows: batch2 })      // trash batch 2 short — drained
+        .mockResolvedValueOnce({ rowCount: 0 })     // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 0 });     // page_versions
 
       const results = await runRetentionCleanup();
@@ -323,6 +331,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 })
         .mockResolvedValueOnce({ rowCount: 0 })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42 }] })
+        .mockResolvedValueOnce({ rowCount: 0 })
         .mockResolvedValueOnce({ rowCount: 0 });
       mockCleanupDirs.mockImplementationOnce(async (
         _deletion: { id: number },
@@ -349,12 +358,87 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 0 }) // error_log
         .mockResolvedValueOnce({ rowCount: 0 }) // ADMIN_ACCESS_DENIED drained
         .mockRejectedValueOnce(new Error('lock timeout')) // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 }) // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 2 }); // page_versions
 
       const results = await runRetentionCleanup();
       expect(results.pages_standalone_trash).toBe(0);
       // Adjacent sweeps still complete.
       expect(results.page_versions).toBe(2);
+    });
+
+    // ─── #1797 — webhook_deliveries attempt-ledger retention ──────────────
+    it('prunes webhook_deliveries by attempted_at, scoped to terminal outbox items, parameterised and batched', async () => {
+      mockPool.query.mockResolvedValue({ rowCount: 0 });
+
+      await runRetentionCleanup();
+
+      const webhookCall = mockPool.query.mock.calls[5];
+      expect(webhookCall[0]).toContain('DELETE FROM webhook_deliveries');
+      expect(webhookCall[0]).toContain('attempted_at <');
+      expect(webhookCall[0]).toContain(`o.status IN ('done', 'dead')`);
+      expect(webhookCall[0]).toContain('LIMIT $2');
+      // Never touches the outbox table itself.
+      expect(webhookCall[0]).not.toContain('DELETE FROM webhook_outbox');
+      expect(webhookCall[1]).toEqual([90, 10_000]);
+    });
+
+    it('loops the webhook_deliveries purge in 10_000-row batches until a short batch', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 }) // audit_log
+        .mockResolvedValueOnce({ rowCount: 0 }) // search_analytics
+        .mockResolvedValueOnce({ rowCount: 0 }) // error_log
+        .mockResolvedValueOnce({ rowCount: 0 }) // ADMIN_ACCESS_DENIED drained
+        .mockResolvedValueOnce({ rowCount: 0 }) // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 10_000 }) // webhook batch 1 full
+        .mockResolvedValueOnce({ rowCount: 10_000 }) // webhook batch 2 full
+        .mockResolvedValueOnce({ rowCount: 55 })     // webhook batch 3 short — drained
+        .mockResolvedValueOnce({ rowCount: 0 });     // page_versions
+
+      const results = await runRetentionCleanup();
+
+      expect(results.webhook_deliveries).toBe(20_055);
+      expect(results.page_versions).toBe(0);
+    });
+
+    it('swallows errors inside the webhook_deliveries purge and reports 0', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 }) // audit_log
+        .mockResolvedValueOnce({ rowCount: 0 }) // search_analytics
+        .mockResolvedValueOnce({ rowCount: 0 }) // error_log
+        .mockResolvedValueOnce({ rowCount: 0 }) // ADMIN_ACCESS_DENIED drained
+        .mockResolvedValueOnce({ rowCount: 0 }) // standalone trash purge
+        .mockRejectedValueOnce(new Error('lock timeout')) // webhook_deliveries
+        .mockResolvedValueOnce({ rowCount: 3 }); // page_versions
+
+      const results = await runRetentionCleanup();
+
+      expect(results.webhook_deliveries).toBe(0);
+      expect(results.page_versions).toBe(3);
+    });
+
+    it('emits the RETENTION_PRUNED heartbeat for webhook_deliveries, including zero-row and non-zero runs', async () => {
+      mockPool.query.mockResolvedValue({ rowCount: 0 });
+      await runRetentionCleanup();
+
+      const find = () =>
+        (mockLogAuditEvent as ReturnType<typeof vi.fn>).mock.calls.find(
+          (call) => call[1] === 'RETENTION_PRUNED' && (call[3] as string) === 'webhook_deliveries',
+        );
+      expect(find()).toBeDefined();
+      expect(find()![4]).toEqual({ table: 'webhook_deliveries', rows_pruned: 0, retention_days: 90 });
+
+      vi.clearAllMocks();
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 12 })
+        .mockResolvedValueOnce({ rowCount: 0 });
+      await runRetentionCleanup();
+      expect((find()![4] as Record<string, unknown>).rows_pruned).toBe(12);
     });
 
     // ─── #307 Finding #4 — zero-row heartbeat attestation ────────────────
@@ -396,6 +480,7 @@ describe('data-retention-service', () => {
         .mockResolvedValueOnce({ rowCount: 3 })  // error_log
         .mockResolvedValueOnce({ rowCount: 0 })  // ADMIN_ACCESS_DENIED drained
         .mockResolvedValueOnce({ rowCount: 0 })  // standalone trash purge
+        .mockResolvedValueOnce({ rowCount: 0 })  // webhook_deliveries
         .mockResolvedValueOnce({ rowCount: 2 }); // page_versions
 
       await runRetentionCleanup();

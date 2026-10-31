@@ -1063,6 +1063,41 @@ export async function getAdminAccessDeniedRetentionDays(): Promise<number> {
 }
 
 /**
+ * #1797 — returns the configured retention window (days) for
+ * `webhook_deliveries` attempt-ledger rows. Consumed by
+ * `data-retention-service.ts :: runWebhookDeliveriesRetention` and the admin
+ * GET/PUT `/api/admin/settings` surface. Distinct from any `webhook_outbox`
+ * retention (none exists; see #1760 boundary).
+ *
+ * Read cascade:
+ *   admin_settings.webhook_deliveries_retention_days  (authoritative)
+ *     -> env RETENTION_WEBHOOK_DELIVERIES_DAYS        (optional fallback)
+ *     -> 90                                           (hard default)
+ *
+ * Clamped to [7, 3650]. No caching (24 h scheduler cadence).
+ */
+export async function getWebhookDeliveriesRetentionDays(): Promise<number> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='webhook_deliveries_retention_days'`,
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+    }
+  } catch {
+    // Fall through to env / default — this getter must never throw.
+  }
+  const env = process.env.RETENTION_WEBHOOK_DELIVERIES_DAYS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+  }
+  return 90;
+}
+
+/**
  * Compendiq/compendiq-ee#118 — returns the configured retention window
  * (days) for `pending_sync_versions` rows. Stale conflict-pending versions
  * older than this are pruned by `data-retention-service.ts`.

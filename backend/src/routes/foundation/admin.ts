@@ -23,6 +23,7 @@ import {
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
+  getWebhookDeliveriesRetentionDays,
   getWorkerBatchSize,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
@@ -423,6 +424,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimits,
       llmMaxConcurrentStreamsPerUser,
       adminAccessDeniedRetentionDays,
+      webhookDeliveriesRetentionDays,
       registrationMode,
       ftsLanguage,
       ragFetchWidth,
@@ -448,6 +450,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       getRateLimits(),
       getStreamCap(),
       getAdminAccessDeniedRetentionDays(),
+      getWebhookDeliveriesRetentionDays(),
       getRegistrationMode(),
       // #1114 — read the keyword-index language through its own reader for
       // the same reason as the nine below: `getFtsLanguage` DISCARDS a value
@@ -567,6 +570,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // (default 90, [7, 3650]). Resolved via getter so the env fallback
       // + hard default cascade stay in one place.
       adminAccessDeniedRetentionDays,
+      // #1797 — retention for webhook_deliveries attempt rows (default 90, [7, 3650]).
+      webhookDeliveriesRetentionDays,
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -757,6 +762,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({
         key: 'admin_access_denied_retention_days',
         value: String(body.adminAccessDeniedRetentionDays),
+      });
+    }
+
+    // #1797 — retention (days) for webhook_deliveries attempt rows.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.webhookDeliveriesRetentionDays !== undefined) {
+      updates.push({
+        key: 'webhook_deliveries_retention_days',
+        value: String(body.webhookDeliveriesRetentionDays),
       });
     }
 

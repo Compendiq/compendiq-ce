@@ -13,13 +13,16 @@
  *   - standalone pages in the trash (soft-deleted) for more than 30 days —
  *       the Trash UI promises "purged after 30 days"; Confluence-synced pages
  *       have their own purge in sync-service (upstream re-confirmation).
+ *   - webhook_deliveries (#1797): attempt ledger rows of terminal outbox
+ *       items older than the admin-configurable window (default 90d).
  *
  * Retention periods are configurable via environment variables:
  *   RETENTION_AUDIT_LOG_DAYS, RETENTION_SEARCH_ANALYTICS_DAYS,
  *   RETENTION_ERROR_LOG_DAYS, RETENTION_VERSIONS_MAX,
  *   RETENTION_ADMIN_ACCESS_DENIED_DAYS (env fallback for the admin-configurable
  *   `admin_access_denied_retention_days` setting — consulted only when the DB
- *   row is absent).
+ *   row is absent), RETENTION_WEBHOOK_DELIVERIES_DAYS (same, for
+ *   `webhook_deliveries_retention_days`).
  */
 
 import { getPool } from '../db/postgres.js';
@@ -28,6 +31,7 @@ import { safeIntOr } from '../utils/safe-int.js';
 import {
   getAdminAccessDeniedRetentionDays,
   getPendingSyncVersionsRetentionDays,
+  getWebhookDeliveriesRetentionDays,
 } from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
@@ -107,6 +111,10 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   // after the delete so the conflicts list page no longer surfaces a row
   // whose pending versions have all been pruned.
   results['pending_sync_versions'] = await runPendingSyncVersionsRetention();
+
+  // Webhook delivery-attempt ledger retention (#1797). Terminal-outbox
+  // items only; never touches webhook_outbox itself.
+  results['webhook_deliveries'] = await runWebhookDeliveriesRetention();
 
   // Count-based retention for page_versions
   // #828: safeIntOr guards against a non-numeric RETENTION_VERSIONS_MAX (NaN
@@ -471,4 +479,81 @@ export function stopRetentionWorker(): void {
     retentionIntervalHandle = null;
     logger.info('Data retention worker stopped');
   }
+}
+
+const WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE = 10_000;
+
+/**
+ * Prune `webhook_deliveries` (the per-attempt delivery ledger, migration 068)
+ * older than `webhook_deliveries_retention_days` (#1797).
+ *
+ * Only ledger rows whose outbox item is TERMINAL (`done` / `dead`) are
+ * deleted: the delivery worker derives the next attempt number from
+ * `COUNT(*) FROM webhook_deliveries WHERE outbox_id = $1`, so purging the
+ * history of a `pending` / `dispatched` item would reset its retry budget.
+ *
+ * Never touches `webhook_outbox` — terminal-outbox retention is a separate,
+ * unimplemented policy (see #1760 for the job_history / notifications sweep).
+ *
+ * Batched (LIMIT 10_000), parameterised, emits a RETENTION_PRUNED heartbeat
+ * even for zero-row runs, never throws.
+ */
+async function runWebhookDeliveriesRetention(): Promise<number> {
+  let days: number;
+  try {
+    days = await getWebhookDeliveriesRetentionDays();
+  } catch (err) {
+    logger.error({ err }, 'Failed to resolve webhook_deliveries_retention_days; skipping purge');
+    return 0;
+  }
+
+  const pool = getPool();
+  let totalDeleted = 0;
+
+  try {
+    for (;;) {
+      const { rowCount } = await pool.query(
+        `DELETE FROM webhook_deliveries
+           WHERE id IN (
+             SELECT d.id
+               FROM webhook_deliveries d
+               JOIN webhook_outbox o ON o.id = d.outbox_id
+              WHERE d.attempted_at < NOW() - INTERVAL '1 day' * $1
+                AND o.status IN ('done', 'dead')
+              LIMIT $2
+           )`,
+        [days, WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE],
+      );
+      const n = rowCount ?? 0;
+      totalDeleted += n;
+      if (n > 0) {
+        logger.debug(
+          { batch: n, totalSoFar: totalDeleted, retentionDays: days },
+          'webhook_deliveries retention batch deleted',
+        );
+      }
+      if (n < WEBHOOK_DELIVERIES_PURGE_BATCH_SIZE) break;
+    }
+    if (totalDeleted > 0) {
+      logger.info(
+        { deleted: totalDeleted, retentionDays: days },
+        'webhook_deliveries retention cleanup completed',
+      );
+    }
+    // #307 Finding #4: always emit (heartbeat), including zero-row runs.
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'webhook_deliveries',
+      {
+        table: 'webhook_deliveries',
+        rows_pruned: totalDeleted,
+        retention_days: days,
+      },
+    );
+  } catch (err) {
+    logger.error({ err, retentionDays: days }, 'webhook_deliveries retention cleanup failed');
+  }
+  return totalDeleted;
 }

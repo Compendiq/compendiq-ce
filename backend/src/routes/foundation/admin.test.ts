@@ -62,6 +62,7 @@ vi.mock('nodemailer', () => {
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  getWebhookDeliveriesRetentionDays: vi.fn().mockResolvedValue(90),
   // Worker batch sizes — the real row → default cascade is covered in
   // `admin-retrieval-settings.test.ts` against the real service.
   getWorkerBatchSize: vi.fn().mockResolvedValue(5),
@@ -775,6 +776,48 @@ describe('Admin routes', () => {
         method: 'PUT',
         url: '/api/admin/settings',
         payload: { reembedHistoryRetention: 10_001 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ─── #1797 — webhookDeliveriesRetentionDays wiring ──────────────────────
+  describe('webhookDeliveriesRetentionDays (issue #1797)', () => {
+    it('GET /api/admin/settings returns the getter value (90 default)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).webhookDeliveriesRetentionDays).toBe(90);
+    });
+
+    it('PUT /api/admin/settings persists webhookDeliveriesRetentionDays via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { webhookDeliveriesRetentionDays: 45 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === 'webhook_deliveries_retention_days',
+      );
+      expect(upsert).toBeTruthy();
+      expect((upsert![1] as unknown[])[1]).toBe('45');
+    });
+
+    it.each([6, 3651, 30.5])('PUT rejects %s with 400 (validated by Zod)', async (value) => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { webhookDeliveriesRetentionDays: value },
       });
       expect(response.statusCode).toBe(400);
     });
