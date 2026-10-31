@@ -32,19 +32,41 @@ import { logger } from '../utils/logger.js';
 const PROGRESS_TTL_SEC = 60 * 30; // 30 minutes
 
 /**
- * Channel prefix for pub/sub-style progress events. We push to a Redis list
- * (LPUSH + LTRIM bounded) AND publish a notification so the SSE generator
- * can wake without polling. The list is the durable record (so a slow SSE
- * subscriber catches up); the pub/sub is the kick.
+ * Channel prefix for pub/sub-style progress events. Every publish runs one
+ * atomic Lua script: INCR the per-job sequence, LPUSH the event (with that
+ * `seq` stamped in) onto a bounded list, PUBLISH it. The list is the durable
+ * record (so a slow SSE subscriber catches up); the pub/sub is the kick; the
+ * `seq` is the cursor that lets the SSE generator reconcile the two without
+ * losing, duplicating or reordering events (#1785).
  */
 const PROGRESS_CHANNEL_PREFIX = prefixedRedisChannel('bulk-page-progress:channel:');
 const PROGRESS_LIST_PREFIX = 'bulk-page-progress:list:';
+const PROGRESS_SEQ_PREFIX = 'bulk-page-progress:seq:';
 const PROGRESS_CANCEL_PREFIX = 'bulk-page-progress:cancel:';
 const PROGRESS_META_PREFIX = 'bulk-page-progress:meta:';
 const PROGRESS_LIST_MAX = 1000;
 
+/**
+ * Atomic publish. ARGV[1] is the JSON object without `seq`; the script
+ * splices `"seq":<n>` in before the closing brace so the stored and
+ * published payloads are byte-identical and carry the counter value that
+ * ordered them. Atomicity guarantees list order == publish order == seq.
+ */
+const PUSH_EVENT_SCRIPT = `
+local seq = redis.call('INCR', KEYS[2])
+local payload = string.sub(ARGV[1], 1, -2) .. ',"seq":' .. seq .. '}'
+redis.call('LPUSH', KEYS[1], payload)
+redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[3]))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[4]))
+redis.call('PUBLISH', ARGV[2], payload)
+return seq
+`;
+
 export interface BulkProgressEvent {
   jobId: string;
+  /** Monotonic per-job position, assigned at publish. Strictly increasing in list order. */
+  seq: number;
   total: number;
   completed: number;
   failed: number;
@@ -53,6 +75,9 @@ export interface BulkProgressEvent {
   /** Optional human-readable note (e.g. last error). */
   note?: string;
 }
+
+/** Event as handed to the publish path; `seq` is assigned there. */
+type UnsequencedEvent = Omit<BulkProgressEvent, 'seq'>;
 
 interface InMemoryJob {
   meta: { total: number; userId: string; action: string };
@@ -70,6 +95,9 @@ function channelKey(jobId: string): string {
 }
 function listKey(jobId: string): string {
   return `${PROGRESS_LIST_PREFIX}${jobId}`;
+}
+function seqKey(jobId: string): string {
+  return `${PROGRESS_SEQ_PREFIX}${jobId}`;
 }
 function cancelKey(jobId: string): string {
   return `${PROGRESS_CANCEL_PREFIX}${jobId}`;
@@ -115,7 +143,7 @@ export async function startBulkJob(
   if (!memoryJobs.has(jobId)) {
     memoryJobs.set(jobId, {
       meta: { total, userId, action },
-      events: [{ jobId, total, completed: 0, failed: 0, done: false, cancelled: false }],
+      events: [{ jobId, seq: 1, total, completed: 0, failed: 0, done: false, cancelled: false }],
       cancelled: false,
       done: false,
       waiters: [],
@@ -130,14 +158,14 @@ export async function startBulkJob(
  */
 export async function publishProgress(
   jobId: string,
-  partial: Partial<Omit<BulkProgressEvent, 'jobId'>>,
+  partial: Partial<Omit<UnsequencedEvent, 'jobId'>>,
 ): Promise<void> {
   const redis = getRedisClient();
 
   if (redis) {
     try {
       const last = await getLatestEvent(redis, jobId);
-      const next: BulkProgressEvent = {
+      const next: UnsequencedEvent = {
         jobId,
         total: partial.total ?? last?.total ?? 0,
         completed: partial.completed ?? last?.completed ?? 0,
@@ -158,6 +186,7 @@ export async function publishProgress(
   const last = job.events[job.events.length - 1];
   const next: BulkProgressEvent = {
     jobId,
+    seq: job.events.length + 1,
     total: partial.total ?? last?.total ?? 0,
     completed: partial.completed ?? last?.completed ?? 0,
     failed: partial.failed ?? last?.failed ?? 0,
@@ -209,6 +238,7 @@ export async function cancelBulkJob(jobId: string): Promise<void> {
   const last = job.events[job.events.length - 1];
   job.events.push({
     jobId,
+    seq: job.events.length + 1,
     total: last?.total ?? 0,
     completed: last?.completed ?? 0,
     failed: last?.failed ?? 0,
@@ -259,21 +289,21 @@ export async function* streamBulkProgress(
   const KEEPALIVE_MS = 15_000;
 
   if (redis) {
-    // Replay any historical events first — the SSE client may connect after
-    // the POST has already completed several chunks.
-    const history = await readEventList(redis, jobId);
-    for (const ev of history) {
-      yield ev;
-      if (ev.done || ev.cancelled) return;
-    }
-
-    // Subscribe and stream. We use a duplicate connection because pub/sub
-    // mode disables normal commands on a redis-client v4+ instance.
+    // Subscribe BEFORE reading the durable list so nothing published between
+    // the two can fall through the gap (#1785). Live deliveries buffer in
+    // `queue` while history is replayed; `lastSeq` is the cursor that drops
+    // anything already replayed. The publish script makes list order,
+    // publish order and `seq` identical, so a `seq <= lastSeq` check is
+    // sufficient for both de-duplication and ordering.
+    //
+    // We use a duplicate connection because pub/sub mode disables normal
+    // commands on a redis-client v4+ instance.
     const sub = redis.duplicate();
     await sub.connect();
 
-    let lastEvent: BulkProgressEvent | null = history[history.length - 1] ?? null;
-    let pending: BulkProgressEvent | null = null;
+    let lastEvent: BulkProgressEvent | null = null;
+    let lastSeq = 0;
+    const queue: BulkProgressEvent[] = [];
     let resolveWaiter: (() => void) | null = null;
     let aborted = false;
 
@@ -285,15 +315,13 @@ export async function* streamBulkProgress(
 
     const onMessage = (msg: string): void => {
       try {
-        pending = JSON.parse(msg) as BulkProgressEvent;
+        queue.push(JSON.parse(msg) as BulkProgressEvent);
       } catch {
         // Drop malformed events.
         return;
       }
       wake();
     };
-
-    await sub.subscribe(channelKey(jobId), onMessage);
 
     const onAbort = (): void => {
       aborted = true;
@@ -302,11 +330,24 @@ export async function* streamBulkProgress(
     signal.addEventListener('abort', onAbort, { once: true });
 
     try {
+      await sub.subscribe(channelKey(jobId), onMessage);
+
+      // Replay history — the SSE client may connect after the POST has
+      // already completed several chunks.
+      for (const ev of await readEventList(redis, jobId)) {
+        if (aborted) break;
+        lastEvent = ev;
+        lastSeq = ev.seq;
+        yield ev;
+        if (ev.done || ev.cancelled) return;
+      }
+
       while (!aborted) {
-        if (pending !== null) {
-          const ev: BulkProgressEvent = pending;
-          pending = null;
+        const ev = queue.shift();
+        if (ev !== undefined) {
+          if (ev.seq <= lastSeq) continue; // already replayed from history
           lastEvent = ev;
+          lastSeq = ev.seq;
           yield ev;
           if (ev.done || ev.cancelled) return;
           continue;
@@ -327,7 +368,7 @@ export async function* streamBulkProgress(
         });
 
         if (aborted) break;
-        if (pending) continue;
+        if (queue.length > 0) continue;
 
         // Keepalive tick — yield the last known event with a marker note.
         if (lastEvent) {
@@ -390,18 +431,24 @@ export async function* streamBulkProgress(
 async function pushEvent(
   redis: RedisClientType,
   jobId: string,
-  ev: BulkProgressEvent,
+  ev: UnsequencedEvent,
 ): Promise<void> {
-  const payload = JSON.stringify(ev);
-  // LPUSH + LTRIM bounds the durable list; PUBLISH wakes subscribers. Both
-  // commands tolerate failure independently.
-  await Promise.all([
-    redis.lPush(listKey(jobId), payload).then(() => redis.lTrim(listKey(jobId), 0, PROGRESS_LIST_MAX - 1)),
-    redis.expire(listKey(jobId), PROGRESS_TTL_SEC),
-    redis.publish(channelKey(jobId), payload),
-  ]).catch((err) => {
-    logger.debug({ err, jobId }, 'bulk-progress: pushEvent partial failure');
-  });
+  // One atomic script: assign seq, LPUSH + LTRIM the bounded durable list,
+  // refresh TTLs, PUBLISH. Failure is logged, not thrown — a missed tick
+  // must not fail the bulk operation itself.
+  try {
+    await redis.eval(PUSH_EVENT_SCRIPT, {
+      keys: [listKey(jobId), seqKey(jobId)],
+      arguments: [
+        JSON.stringify(ev),
+        channelKey(jobId),
+        String(PROGRESS_LIST_MAX - 1),
+        String(PROGRESS_TTL_SEC),
+      ],
+    });
+  } catch (err) {
+    logger.debug({ err, jobId }, 'bulk-progress: pushEvent failed');
+  }
 }
 
 async function readEventList(
