@@ -276,3 +276,135 @@ describe.skipIf(!dbAvailable)('pending_sync_versions retention rows_pruned count
     expect(left.rows[0]!.c).toBe('1');
   });
 });
+
+// ── webhook_deliveries attempt-ledger retention (#1797) ──────────────────
+
+async function setWebhookDeliveriesRetentionDays(days: number): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value)
+     VALUES ($1, $2)
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`,
+    ['webhook_deliveries_retention_days', String(days)],
+  );
+}
+
+async function insertSubscription(): Promise<string> {
+  const user = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ('wh-ret-user', 'x', 'user') RETURNING id`,
+  );
+  const sub = await query<{ id: string }>(
+    `INSERT INTO webhook_subscriptions (user_id, url, secret_enc)
+     VALUES ($1, 'https://example.com/hook', '\\x00') RETURNING id`,
+    [user.rows[0]!.id],
+  );
+  return sub.rows[0]!.id;
+}
+
+async function insertOutbox(subscriptionId: string, status: string): Promise<string> {
+  const r = await query<{ id: string }>(
+    `INSERT INTO webhook_outbox (subscription_id, event_type, payload, payload_bytes, status)
+     VALUES ($1, 'page.created', '{}'::jsonb, 2, $2) RETURNING id`,
+    [subscriptionId, status],
+  );
+  return r.rows[0]!.id;
+}
+
+async function insertAttempt(
+  outboxId: string,
+  subscriptionId: string,
+  attemptNumber: number,
+  ageDays: number,
+): Promise<void> {
+  await query(
+    `INSERT INTO webhook_deliveries
+       (outbox_id, subscription_id, webhook_id, attempt_number, status, attempted_at)
+     VALUES ($1, $2, gen_random_uuid(), $3, 'failure', NOW() - ($4::text || ' days')::interval)`,
+    [outboxId, subscriptionId, attemptNumber, String(ageDays)],
+  );
+}
+
+async function countRows(table: 'webhook_deliveries' | 'webhook_outbox'): Promise<number> {
+  const r = await query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM ${table}`);
+  return Number(r.rows[0]!.c);
+}
+
+describe.skipIf(!dbAvailable)('webhook_deliveries retention (#1797)', () => {
+  it('purges attempt rows past the configured window, keeps newer ones, never touches webhook_outbox', async () => {
+    await setWebhookDeliveriesRetentionDays(30);
+    const sub = await insertSubscription();
+    const doneOutbox = await insertOutbox(sub, 'done');
+    const deadOutbox = await insertOutbox(sub, 'dead');
+    await insertAttempt(doneOutbox, sub, 1, 91);
+    await insertAttempt(doneOutbox, sub, 2, 45);
+    await insertAttempt(doneOutbox, sub, 3, 1);
+    await insertAttempt(deadOutbox, sub, 1, 91);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(3);
+    expect(await countRows('webhook_deliveries')).toBe(1);
+    // Terminal outbox rows are a separate policy (not purged here).
+    expect(await countRows('webhook_outbox')).toBe(2);
+
+    const audit = await query<{ metadata: { rows_pruned: number; retention_days: number } }>(
+      `SELECT metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id = 'webhook_deliveries'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata.rows_pruned).toBe(3);
+    expect(audit.rows[0]!.metadata.retention_days).toBe(30);
+  });
+
+  it('honours a longer window and still emits a zero-row heartbeat', async () => {
+    await setWebhookDeliveriesRetentionDays(100);
+    const sub = await insertSubscription();
+    const outbox = await insertOutbox(sub, 'done');
+    await insertAttempt(outbox, sub, 1, 91);
+    await insertAttempt(outbox, sub, 2, 1);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(0);
+    expect(await countRows('webhook_deliveries')).toBe(2);
+    const audit = await query<{ metadata: { rows_pruned: number } }>(
+      `SELECT metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id = 'webhook_deliveries'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata.rows_pruned).toBe(0);
+  });
+
+  it('defaults to 90 days when the setting row is absent', async () => {
+    await query(`DELETE FROM admin_settings WHERE setting_key = 'webhook_deliveries_retention_days'`);
+    const sub = await insertSubscription();
+    const outbox = await insertOutbox(sub, 'done');
+    await insertAttempt(outbox, sub, 1, 91);
+    await insertAttempt(outbox, sub, 2, 89);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(1);
+    expect(await countRows('webhook_deliveries')).toBe(1);
+  });
+
+  it('keeps old attempt rows of pending / dispatched outbox items (they drive the retry budget)', async () => {
+    await setWebhookDeliveriesRetentionDays(7);
+    const sub = await insertSubscription();
+    const pending = await insertOutbox(sub, 'pending');
+    const dispatched = await insertOutbox(sub, 'dispatched');
+    const done = await insertOutbox(sub, 'done');
+    await insertAttempt(pending, sub, 1, 91);
+    await insertAttempt(dispatched, sub, 1, 91);
+    await insertAttempt(done, sub, 1, 91);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(1);
+    const left = await query<{ outbox_id: string }>(
+      `SELECT outbox_id FROM webhook_deliveries ORDER BY outbox_id`,
+    );
+    expect(left.rows.map((r) => r.outbox_id).sort()).toEqual([pending, dispatched].sort());
+    expect(await countRows('webhook_outbox')).toBe(3);
+  });
+});
