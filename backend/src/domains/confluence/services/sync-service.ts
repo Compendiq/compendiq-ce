@@ -1599,11 +1599,19 @@ async function syncMissingAttachments(
         retried++;
       } catch (err) {
         logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
-        // Count the failed attempt per filename (same key scheme as the success
-        // path above) so a page whose attachment listing keeps throwing stops
-        // being retried after MAX_ATTACHMENT_FAILURES instead of every cycle.
+        // Count the failed attempt per filename (same key scheme and threshold
+        // warning as the success path above) so a page whose attachment listing
+        // or download keeps throwing stops being retried after
+        // MAX_ATTACHMENT_FAILURES instead of every cycle.
         for (const f of retriable) {
           await recordAttachmentFailure(redis, row.confluence_id, f);
+          const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
+          if (count >= MAX_ATTACHMENT_FAILURES) {
+            logger.warn(
+              { pageId: row.confluence_id, filename: f, failures: count },
+              'Attachment permanently failed — skipping until TTL expiry',
+            );
+          }
         }
       }
     }

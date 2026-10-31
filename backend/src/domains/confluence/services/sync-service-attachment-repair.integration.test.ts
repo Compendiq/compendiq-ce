@@ -139,6 +139,7 @@ describe.skipIf(!dbAvailable)('sync-service missing-attachment repair (#1799)', 
     expect(filename).toBeDefined();
     await clearAttachmentFailures(redis, 'live-1');
     vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
 
     try {
       expect(await getAttachmentFailureCount(redis, 'live-1', filename!)).toBe(0);
@@ -146,6 +147,14 @@ describe.skipIf(!dbAvailable)('sync-service missing-attachment repair (#1799)', 
       expect(await getAttachmentFailureCount(redis, 'live-1', filename!)).toBe(1);
       await syncMissingAttachments(makeClient({ failListing: true }) as never, 'user-1', 'DEV');
       expect(await getAttachmentFailureCount(redis, 'live-1', filename!)).toBe(2);
+      expect(warnSpy).not.toHaveBeenCalled();
+      await syncMissingAttachments(makeClient({ failListing: true }) as never, 'user-1', 'DEV');
+      expect(await getAttachmentFailureCount(redis, 'live-1', filename!)).toBe(3);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        { pageId: 'live-1', filename, failures: 3 },
+        'Attachment permanently failed — skipping until TTL expiry',
+      );
     } finally {
       await clearAttachmentFailures(redis, 'live-1');
     }
