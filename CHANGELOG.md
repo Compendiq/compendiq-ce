@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
 - **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
   subscribes to the live channel before replaying the durable history list,
   and every published event carries a monotonic per-job `seq` (assigned
