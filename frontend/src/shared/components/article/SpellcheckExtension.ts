@@ -73,6 +73,21 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let seq = 0;
     let latestCheckId = '';
+    let enabled = valueOf(options.enabled);
+
+    const stopChecks = () => {
+      clearTimeout(debounce ?? undefined);
+      debounce = null;
+      latestCheckId = '';
+    };
+
+    const syncEnabled = () => {
+      const next = valueOf(options.enabled);
+      if (enabled && !next) stopChecks();
+      const changed = next !== enabled;
+      enabled = next;
+      return changed;
+    };
 
     const startWorker = (view: EditorView): Worker | null => {
       if (worker) return worker;
@@ -97,7 +112,7 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
             options.onStatus?.('failed');
             return;
           }
-          if (data.type === 'misses' && data.ranges && data.id === latestCheckId) {
+          if (data.type === 'misses' && enabled && valueOf(options.enabled) && data.ranges && data.id === latestCheckId) {
             view.dispatch(view.state.tr.setMeta(spellcheckPluginKey, data.ranges));
           }
         };
@@ -124,9 +139,17 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
     };
 
     const schedule = (view: EditorView, immediate = false) => {
-      if (!valueOf(options.enabled)) return;
-      if (debounce) clearTimeout(debounce);
+      if (!valueOf(options.enabled)) {
+        syncEnabled();
+        return;
+      }
+      stopChecks();
       const run = () => {
+        debounce = null;
+        if (!valueOf(options.enabled)) {
+          syncEnabled();
+          return;
+        }
         const w = startWorker(view);
         if (!w) return;
         const id = `chk-${seq++}`;
@@ -147,6 +170,10 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
         state: {
           init: () => ({ decorations: DecorationSet.empty }),
           apply(tr, value) {
+            if (!valueOf(options.enabled)) {
+              syncEnabled();
+              return { decorations: DecorationSet.empty };
+            }
             const mapped = { decorations: value.decorations.map(tr.mapping, tr.doc) };
             const misses = tr.getMeta(spellcheckPluginKey) as MissRange[] | undefined;
             if (!misses) return mapped;
@@ -158,7 +185,9 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
         },
         props: {
           decorations(state) {
-            return spellcheckPluginKey.getState(state)?.decorations ?? DecorationSet.empty;
+            return valueOf(options.enabled)
+              ? spellcheckPluginKey.getState(state)?.decorations ?? DecorationSet.empty
+              : DecorationSet.empty;
           },
         },
         view(view) {
@@ -166,13 +195,13 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
           schedule(view);
           return {
             update(v, prev) {
-              if (!valueOf(options.enabled)) return;
+              const changed = syncEnabled();
+              if (!enabled) return;
               startWorker(v);
-              if (v.state.doc.eq(prev.doc)) return;
-              schedule(v);
+              if (changed || !v.state.doc.eq(prev.doc)) schedule(v);
             },
             destroy() {
-              if (debounce) clearTimeout(debounce);
+              stopChecks();
               worker?.terminate();
               worker = null;
             },

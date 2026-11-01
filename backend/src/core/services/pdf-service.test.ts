@@ -55,6 +55,40 @@ describe('pdf-service (pdf-lib)', () => {
       expect(result).toBeInstanceOf(Buffer);
     });
 
+    it('paginates oversized rows without losing text or shifting columns', async () => {
+      const sentences = Array.from({ length: 500 }, (_, i) =>
+        `Sentence${String(i).padStart(3, '0')} is ordinary readable prose.`,
+      );
+      const html = `<table><thead><tr><th>First column</th><th>Second column</th></tr></thead>
+        <tbody><tr><td>${sentences.join(' ')}</td><td>Column marker</td></tr>
+        <tr><td>Following row</td><td>Following value</td></tr></tbody></table>`;
+      const pdf = await getDocumentProxy(new Uint8Array(await generatePdf(html, {})));
+      expect(pdf.numPages).toBeGreaterThan(2);
+      const text: string[] = [];
+      for (let n = 1; n <= pdf.numPages; n++) {
+        const page = await pdf.getPage(n);
+        const content = await page.getTextContent();
+        const items = content.items.filter((item) => 'str' in item && item.str.trim());
+        const strings = items.map((item) => 'str' in item ? item.str : '');
+        text.push(strings.join(' '));
+        expect(strings.join(' ')).toContain('First column');
+        expect(strings.join(' ')).toContain('Second column');
+        for (const item of items) {
+          if (!('str' in item) || item.str.startsWith('Page ')) continue;
+          expect(item.transform[5]).toBeGreaterThanOrEqual(60);
+          expect(item.transform[5] + item.height).toBeLessThanOrEqual(841.89 - 50);
+          if (item.str.includes('Sentence')) expect(item.transform[4]).toBeCloseTo(56);
+          if (item.str.includes('Second column') || item.str.includes('Column marker')) {
+            expect(item.transform[4]).toBeCloseTo(303.64);
+          }
+        }
+      }
+      const all = text.join(' ');
+      for (const sentence of sentences) expect(all).toContain(sentence);
+      expect(all).toContain('Following row');
+      expect(all).toContain('Following value');
+    });
+
     it('should handle lists', async () => {
       const html = '<ul><li>Item 1</li><li>Item 2</li></ul><ol><li>First</li><li>Second</li></ol>';
       const result = await generatePdf(html, {});
