@@ -15,6 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delete back so the next sweep retries the page, instead of leaving a stale
   conflict flag that no later sweep could repair. The `RETENTION_PRUNED`
   heartbeat is written only after the prune commits.
+- **Webhook outbox enqueue recovery (#1795):** the outbox poller now runs a
+  bounded, rate-limited stale-dispatch sweep during normal poll cycles that
+  resets `dispatched` rows whose BullMQ job is missing or terminal (e.g.
+  enqueue failed after the claim committed), so they are re-delivered without
+  a restart. The init-time recovery shares the same check: rows whose job is
+  still live are left alone, so slow in-flight deliveries are not duplicated.
+- Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
+- **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
+  subscribes to the live channel before replaying the durable history list,
+  and every published event carries a monotonic per-job `seq` (assigned
+  atomically with the list write) that the stream uses to reconcile replayed
+  and live deliveries. A `done`/`cancelled` event published at any point
+  between replay and subscription terminates the client stream instead of
+  leaving it waiting; events are no longer lost, duplicated or reordered
+  across that boundary. Events written by a pre-upgrade pod (no `seq`) during
+  a rolling upgrade are deduplicated by content against the replayed history.
+- **Backup decrypt error wording (#1831):** a truncated or tampered backup
+  envelope now fails with a stable `BackupCryptoError('Backup truncated or
+  authentication failed')` instead of the raw OpenSSL message, which differs
+  between OpenSSL versions ("unable to authenticate data" vs "bad decrypt").
 
 ## [0.9.2] - 2026-10-29
 
