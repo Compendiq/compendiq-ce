@@ -804,14 +804,40 @@ export async function embedPage(
 
     // Lock the source row through publication. A concurrent content writer
     // either committed before this check or must wait until after our commit.
-    const source = await client.query<{ content_revision: string }>(
-      'SELECT content_revision::text FROM pages WHERE id = $1 FOR UPDATE',
+    //
+    // `content_revision` advances on ANY protected column (migration 120:
+    // draft autosaves, labels, sort_order, icons, parent_id, attachments…),
+    // which is coarser than what this run embedded. Fencing on the revision
+    // alone would discard valid vectors — and re-spend the provider call —
+    // every time such a write landed during the round-trip; a page under
+    // active draft autosave could be discarded indefinitely. So a moved
+    // revision only trips the fence when the embedded inputs (title and
+    // body_html — the same pair the fallback binding above identifies the
+    // row by) differ from the row as it is NOW, under the lock.
+    //
+    // The #1782 contract still holds. A title/body edit that committed before
+    // this SELECT is visible to it (FOR UPDATE reads the latest committed
+    // version) and rolls back below. One issued after it blocks on the row
+    // lock until our COMMIT, so the dirty flag it raises lands AFTER the
+    // dirty-clearing UPDATE at the end of this transaction and is never
+    // cleared by it. When the text is equal, the chunks describe the current
+    // body, so clearing `embedding_dirty` is correct even if a non-text write
+    // raised it; D6.3's image-revision guard below applies independently.
+    const source = await client.query<{ content_revision: string; title: string; body_html: string | null }>(
+      'SELECT content_revision::text, title, body_html FROM pages WHERE id = $1 FOR UPDATE',
       [pageId],
     );
-    if (source.rows[0]?.content_revision !== contentRevision) {
-      await client.query('ROLLBACK');
-      logger.info({ pageId }, 'Page content changed mid-embed — discarding stale vectors');
-      return 0;
+    const current = source.rows[0];
+    if (current?.content_revision !== contentRevision) {
+      if (current === undefined || current.title !== pageTitle || current.body_html !== bodyHtml) {
+        await client.query('ROLLBACK');
+        logger.info({ pageId }, 'Page content changed mid-embed — discarding stale vectors');
+        return 0;
+      }
+      logger.debug(
+        { pageId, embeddedRevision: contentRevision, currentRevision: current.content_revision },
+        'Page revision moved mid-embed without a text change — publishing',
+      );
     }
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.

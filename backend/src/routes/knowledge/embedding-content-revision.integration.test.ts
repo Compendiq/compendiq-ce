@@ -99,4 +99,43 @@ describe('embedding content revision publication fence', () => {
     expect(current.rows.length).toBeGreaterThan(0);
     expect(current.rows.every((r) => !r.embedding_dirty && r.chunk_text.includes('Bravo replacement'))).toBe(true);
   }, 30_000);
+
+  it('publishes when a non-text write moves content_revision mid-flight', async () => {
+    // Follows the previous case: live body is bravo, chunks are current.
+    await query('UPDATE pages SET embedding_dirty = TRUE WHERE id = $1', [pageId]);
+    const before = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    const { promise: held, resolve } = Promise.withResolvers<void>();
+    notifyRequest = resolve;
+    const inFlight = embedPage(userId, pageId, 'Article', 'NOTES', bravo);
+    await held;
+    // A draft autosave touches draft_* columns only; migration 120's trigger
+    // still bumps content_revision, which the old fence would have rejected.
+    const draft = '<p>Draft autosave text that is not published yet.</p>';
+    const response = await fetch(`${baseUrl}/api/pages/${pageId}/draft`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Article', bodyHtml: draft }),
+    });
+    expect(response.status, await response.text()).toBe(200);
+    const moved = await query<{ content_revision: string; body_html: string }>(
+      'SELECT content_revision::text, body_html FROM pages WHERE id = $1', [pageId],
+    );
+    expect(moved.rows[0]!.body_html).toBe(bravo);
+    expect(BigInt(moved.rows[0]!.content_revision)).toBeGreaterThan(BigInt(before.rows[0]!.content_revision));
+    pendingResponse!.emit('release');
+    pendingResponse = undefined;
+    expect(await inFlight).toBeGreaterThan(0);
+    const after = await query<{ body_html: string; draft_body_html: string; embedding_dirty: boolean; embedding_status: string; content_revision: string }>(
+      'SELECT body_html, draft_body_html, embedding_dirty, embedding_status, content_revision::text FROM pages WHERE id = $1', [pageId],
+    );
+    expect(after.rows[0]).toMatchObject({
+      body_html: bravo, draft_body_html: draft, embedding_dirty: false, embedding_status: 'embedded',
+      content_revision: moved.rows[0]!.content_revision,
+    });
+    const chunks = await query<{ chunk_text: string }>('SELECT chunk_text FROM page_embeddings WHERE page_id = $1', [pageId]);
+    expect(chunks.rows.length).toBeGreaterThan(0);
+    expect(chunks.rows.every((r) => r.chunk_text.includes('Bravo replacement'))).toBe(true);
+  }, 30_000);
 });

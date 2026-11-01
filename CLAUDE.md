@@ -23,7 +23,9 @@ Source-of-truth docs:
 
 Embedding publication must carry the `content_revision` of the exact page
 snapshot supplied to the embedder and check it under a page-row lock before
-replacing chunks. A stale result rolls back without clearing the new page's
+replacing chunks. `content_revision` moves on any protected column, so a moved
+revision only rejects the result when the embedded title or `body_html` differs
+from the locked row; a stale result rolls back without clearing the new page's
 dirty flag. Keep the separate image-analysis revision and schema-epoch fences.
 
 ## Build

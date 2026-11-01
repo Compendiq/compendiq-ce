@@ -93,10 +93,10 @@ sequenceDiagram
         ES->>ES: chunk(htmlToEmbeddingText(body_html))<br/>Markdown, fence-aware, section-packed (#35;1265)
         ES->>OL: POST /api/embeddings, resolved model<br/>bare chunk text, no query prefix (#35;1329)
         OL-->>ES: vector at the model's probed width
-        ES->>DB: Lock page and verify source content_revision
-        alt content revision still matches
+        ES->>DB: Lock page, verify source content_revision<br/>(moved revision tolerated if title and body_html still match)
+        alt embedded text still current
             ES->>DB: Replace page_embeddings and clear dirty if image revision matches
-        else content changed
+        else title or body changed
             ES->>DB: Roll back, retaining old chunks and newer dirty state
         end
     end

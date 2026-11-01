@@ -45,7 +45,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => {
-    if (typeof args[0] === 'string' && args[0].includes('SELECT content_revision::text FROM pages')) {
+    if (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')) {
       return Promise.resolve({ rows: [{ content_revision: '1' }] });
     }
     return mocks.query(...args);
@@ -59,7 +59,7 @@ vi.mock('../../../core/db/postgres.js', () => ({
         return {
           ...client,
           query: (...args: unknown[]) => {
-            if (typeof args[0] === 'string' && args[0].includes('SELECT content_revision::text FROM pages')) {
+            if (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')) {
               return Promise.resolve({ rows: [{ content_revision: '1' }] });
             }
             return client.query(...args);

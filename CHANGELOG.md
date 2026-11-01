@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Embedding publication (#1782):** discard vectors generated from a page
-  revision that changed while the provider request was in flight, preserving
-  the prior chunks and leaving newer content dirty for the next pass.
+- **Embedding publication (#1782):** discard vectors whose source title or
+  body changed while the provider request was in flight, preserving the prior
+  chunks and leaving newer content dirty for the next pass. Revision bumps
+  from non-text writes (draft autosave, labels, sort order, icons,
+  attachments) landing mid-flight still publish instead of re-spending the
+  embedding call.
 
 ### Security
 
