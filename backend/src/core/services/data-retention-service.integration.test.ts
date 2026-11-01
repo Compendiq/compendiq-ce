@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 
 import {
   setupTestDb,
@@ -274,5 +274,101 @@ describe.skipIf(!dbAvailable)('pending_sync_versions retention rows_pruned count
       [pageId],
     );
     expect(left.rows[0]!.c).toBe('1');
+  });
+});
+
+// ── #1796: delete + conflict recompute are one transaction ────────────────
+
+const FAULT_FN = 'ret_1796_fail_conflict_clear';
+
+/**
+ * Install a BEFORE UPDATE trigger on `pages` that raises when a row's
+ * `conflict_pending` flips TRUE → FALSE — i.e. exactly the recompute the
+ * sweep issues after deleting the last pending version. Plain Postgres,
+ * no mocking: the DELETE half of the sweep is untouched.
+ */
+async function installConflictClearFault(): Promise<void> {
+  await query(
+    `CREATE OR REPLACE FUNCTION ${FAULT_FN}() RETURNS trigger AS $$
+     BEGIN
+       IF OLD.conflict_pending AND NOT NEW.conflict_pending THEN
+         RAISE EXCEPTION 'ret-1796 injected failure on conflict clear';
+       END IF;
+       RETURN NEW;
+     END $$ LANGUAGE plpgsql`,
+  );
+  await query(
+    `CREATE TRIGGER ${FAULT_FN}
+       BEFORE UPDATE OF conflict_pending ON pages
+       FOR EACH ROW EXECUTE FUNCTION ${FAULT_FN}()`,
+  );
+}
+
+async function removeConflictClearFault(): Promise<void> {
+  await query(`DROP TRIGGER IF EXISTS ${FAULT_FN} ON pages`);
+  await query(`DROP FUNCTION IF EXISTS ${FAULT_FN}()`);
+}
+
+describe.skipIf(!dbAvailable)('pending_sync_versions retention atomicity (#1796)', () => {
+  afterEach(async () => {
+    if (!dbAvailable) return;
+    await removeConflictClearFault();
+  });
+
+  // Regression: the sweep ran `DELETE FROM pending_sync_versions …` and the
+  // `UPDATE pages SET conflict_pending = EXISTS(…)` recompute as two
+  // autocommitted statements. A failure in the recompute left the pending
+  // row deleted but the flag stuck TRUE, and because the next sweep found
+  // no pending rows it never revisited the page.
+  it('rolls the delete back when the conflict recompute fails, then repairs on the next sweep', async () => {
+    await setPendingSyncRetentionDays(7);
+    const pageId = await insertConflictPage('ret-1796');
+    await insertPendingVersion(pageId, 30);
+
+    await installConflictClearFault();
+    const failed = await runRetentionCleanup();
+
+    // Nothing half-applied: the pending row survives and the flag is intact.
+    const afterFailure = await query<{ pending: string; conflict_pending: boolean }>(
+      `SELECT (SELECT COUNT(*)::text FROM pending_sync_versions WHERE page_id = p.id) AS pending,
+              p.conflict_pending
+         FROM pages p WHERE p.id = $1`,
+      [pageId],
+    );
+    expect(afterFailure.rows[0]).toEqual({ pending: '1', conflict_pending: true });
+    // A rolled-back prune reports nothing deleted.
+    expect(failed['pending_sync_versions']).toBe(0);
+
+    // A failed prune attests nothing — no pending_sync_versions heartbeat —
+    // but the failure must not take the rest of the retention run with it.
+    const heartbeatsAfterFailure = await query<{ resource_id: string }>(
+      `SELECT resource_id FROM audit_log WHERE action = 'RETENTION_PRUNED' ORDER BY resource_id`,
+    );
+    expect(heartbeatsAfterFailure.rows.map((r) => r.resource_id)).not.toContain('pending_sync_versions');
+    expect(heartbeatsAfterFailure.rows.map((r) => r.resource_id)).toContain('audit_log');
+
+    await removeConflictClearFault();
+    const healthy = await runRetentionCleanup();
+
+    expect(healthy['pending_sync_versions']).toBe(1);
+    const afterRepair = await query<{ pending: string; conflict_pending: boolean; conflict_detected_at: Date | null }>(
+      `SELECT (SELECT COUNT(*)::text FROM pending_sync_versions WHERE page_id = p.id) AS pending,
+              p.conflict_pending, p.conflict_detected_at
+         FROM pages p WHERE p.id = $1`,
+      [pageId],
+    );
+    expect(afterRepair.rows[0]).toEqual({ pending: '0', conflict_pending: false, conflict_detected_at: null });
+
+    const heartbeats = await query<{ resource_id: string; metadata: { rows_pruned: number } }>(
+      `SELECT resource_id, metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id IN ('pending_sync_versions', 'audit_log')
+        ORDER BY resource_id, created_at`,
+    );
+    // audit_log heartbeat from both runs; pending_sync_versions only from the
+    // run whose prune actually committed.
+    expect(heartbeats.rows.map((r) => r.resource_id)).toEqual([
+      'audit_log', 'audit_log', 'pending_sync_versions',
+    ]);
+    expect(heartbeats.rows[2]!.metadata.rows_pruned).toBe(1);
   });
 });
