@@ -86,9 +86,13 @@ flowchart LR
 ```
 
 An LLM error or incomplete stream keeps any partial output visible without
-running success callbacks. The editor preview keeps that text selectable but
-disables Replace and Insert. Cancellation is separate. A cached LLM response
-can finish with `done: true` and no `final` frame; later metadata still matters.
+running success callbacks. In chat the partial stays the assistant message's
+`content` (rendered as ordinary Markdown) and the failure travels as a separate
+short `interruption` string beside `isError`; both renderers paint only that
+notice destructive and the `role="alert"` announcers speak only it. The editor
+preview keeps that text selectable but disables Replace and Insert.
+Cancellation is separate. A cached LLM response can finish with `done: true`
+and no `final` frame; later metadata still matters.
 
 ## Authenticated inset shell
 

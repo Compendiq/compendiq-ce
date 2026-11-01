@@ -630,6 +630,57 @@ describe('AiAssistantPage', () => {
       expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
     });
 
+    // #1801: a stream that dies after sending text keeps that text as an
+    // ordinary Markdown body with a short destructive notice beneath it. One
+    // concatenated red `<p>` collapsed a multi-paragraph/code partial into a
+    // single unreadable run and handed all of it to the assertive announcer.
+    it('renders retained partial output as Markdown and announces only the short notice', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const partial = '## Setup\n\nRun the **installer** first.\n\n```sh\nnpm ci\n```\n\nThen';
+      async function* truncatedStream() {
+        yield { content: partial };
+        // EOF without `done`.
+      }
+      streamSSEMock.mockReturnValue(truncatedStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'How do I set it up?' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      const notice = await screen.findByTestId('message-error');
+      expect(notice.textContent).toBe('The response was interrupted before completion. Try again.');
+      expect(notice.className).toContain('destructive');
+
+      // The partial went through the Markdown renderer: real structure, not a
+      // flattened run inside the notice.
+      expect(screen.getByRole('heading', { name: 'Setup' })).toBeInTheDocument();
+      expect(screen.getByText('installer').tagName).toBe('STRONG');
+      expect(screen.getByText('npm ci').closest('pre')).not.toBeNull();
+      expect(notice.textContent).not.toContain('installer');
+
+      // The assertive region speaks the notice alone.
+      expect(screen.getByTestId('ai-error-announcer').textContent).toBe(
+        'The response was interrupted before completion. Try again.',
+      );
+      // And the polite region does not call a cut-off answer ready.
+      expect(screen.getByTestId('ai-answer-announcer').textContent).toBe('');
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+    });
+
     it('enables send button when model is loaded and input is provided', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {

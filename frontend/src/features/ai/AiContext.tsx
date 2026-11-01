@@ -33,6 +33,17 @@ export interface Message {
    * destructive styling instead of the regular bubble). */
   isError?: boolean;
   /**
+   * Set alongside `isError` when the failed turn still has partial output
+   * (#1801). `content` is then the retained partial answer — rendered through
+   * the ordinary Markdown path so paragraphs and code blocks survive — and
+   * this is the short notice shown beside it. It is the ONLY text the
+   * `role="alert"` announcers speak: pushing a multi-kilobyte partial into an
+   * assertive live region is not an announcement. Absent on a partial-less
+   * failure, where `content` is itself the notice. Transient: errored turns
+   * are never persisted, so a reopened conversation never carries it.
+   */
+  interruption?: string;
+  /**
    * True when this assistant turn is the #1105 low-confidence refusal: the
    * backend measured retrieval below the operator's threshold, ran no chat
    * completion, and returned an honest "I am not answering" turn plus the weak
@@ -1428,17 +1439,18 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
 
     // Replace the placeholder assistant message with an inline error bubble —
-    // shared by thrown errors (catch below) and in-band SSE error events.
+    // shared by thrown errors (catch below) and in-band SSE error events. With
+    // partial output in hand the partial stays as the message body and the
+    // error rides along as `interruption`; folding both into one string would
+    // flatten the Markdown and hand the whole partial to the alert announcer.
     const failLastMessage = (text: string) => {
       setThreadMessages((prev) => {
         const updated = [...prev];
         const lastMsg = updated[updated.length - 1];
         if (lastMsg && lastMsg.role === 'assistant') {
-          updated[updated.length - 1] = {
-            ...lastMsg,
-            content: accumulated ? `${text}\n\nPartial output:\n${accumulated}` : text,
-            isError: true,
-          };
+          updated[updated.length - 1] = accumulated
+            ? { ...lastMsg, content: accumulated, isError: true, interruption: text }
+            : { ...lastMsg, content: text, isError: true };
         }
         return updated;
       });

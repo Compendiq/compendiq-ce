@@ -714,6 +714,7 @@ function StateProbe() {
             key={msg.id}
             data-refusal={msg.isRefusal ? 'yes' : 'no'}
             data-error={msg.isError ? 'yes' : 'no'}
+            data-interruption={msg.interruption ?? ''}
           >
             {msg.content}
           </li>
@@ -788,6 +789,10 @@ describe('AiContext conversation state machine (#1361)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+  // The partial stays the message body and the failure rides as a separate
+  // short `interruption` (#1801): one concatenated string would flatten the
+  // partial's Markdown in both renderers and feed all of it to the alert
+  // announcers. Both branches — EOF without `done` and an in-band error.
   it('retains an interrupted answer without promoting its conversation', async () => {
     streamSSEMock.mockImplementation(async function* () {
       yield { content: 'recoverable partial' };
@@ -795,8 +800,10 @@ describe('AiContext conversation state machine (#1361)', () => {
     });
     renderStateApp('/ai');
     fireEvent.click(screen.getByRole('button', { name: 'ask' }));
-    await waitFor(() => expect(screen.getByTestId('thread')).toHaveTextContent(/interrupted before completion/i));
-    expect(screen.getByTestId('thread')).toHaveTextContent('recoverable partial');
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^recoverable partial$/);
+    expect(turn).toHaveAttribute('data-interruption', 'The response was interrupted before completion. Try again.');
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
     expect(screen.getByTestId('location')).toHaveTextContent('/ai');
   });
@@ -808,9 +815,23 @@ describe('AiContext conversation state machine (#1361)', () => {
     });
     renderStateApp('/ai');
     fireEvent.click(screen.getByRole('button', { name: 'ask' }));
-    await waitFor(() => expect(screen.getByTestId('thread')).toHaveTextContent('provider failed'));
-    expect(screen.getByTestId('thread')).toHaveTextContent('recoverable partial');
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^recoverable partial$/);
+    expect(turn).toHaveAttribute('data-interruption', 'provider failed');
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('none');
+  });
+
+  it('makes the error the body itself when nothing was received', async () => {
+    streamSSEMock.mockImplementation(async function* () {
+      yield { error: 'provider failed', done: true };
+    });
+    renderStateApp('/ai');
+    fireEvent.click(screen.getByRole('button', { name: 'ask' }));
+    await waitFor(() => expect(screen.getByTestId('thread').lastElementChild).toHaveAttribute('data-error', 'yes'));
+    const turn = screen.getByTestId('thread').lastElementChild!;
+    expect(turn).toHaveTextContent(/^provider failed$/);
+    expect(turn).toHaveAttribute('data-interruption', '');
   });
 
   it('accepts cached done and processes conversation metadata after it', async () => {
