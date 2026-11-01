@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Per-page duplicate detection (#1798):** resolve standalone sources by
+  internal ID and Confluence sources by content ID under the same visibility
+  rules as the full scan, including restricted and private pages.
 - **Embedding publication (#1782):** discard vectors whose source title or
   body changed while the provider request was in flight, preserving the prior
   chunks and leaving newer content dirty for the next pass. Revision bumps
