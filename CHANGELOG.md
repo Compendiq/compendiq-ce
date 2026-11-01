@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook outbox enqueue recovery (#1795):** the outbox poller now runs a
+  bounded, rate-limited stale-dispatch sweep during normal poll cycles that
+  resets `dispatched` rows whose BullMQ job is missing or terminal (e.g.
+  enqueue failed after the claim committed), so they are re-delivered without
+  a restart. The init-time recovery shares the same check: rows whose job is
+  still live are left alone, so slow in-flight deliveries are not duplicated.
 - Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
 - **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
   subscribes to the live channel before replaying the durable history list,
