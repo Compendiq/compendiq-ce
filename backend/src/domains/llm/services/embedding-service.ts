@@ -539,7 +539,7 @@ export async function embedPage(
   pageTitle: string,
   spaceKey: string,
   bodyHtml: string,
-  opts?: { chunkSize?: number; chunkOverlap?: number },
+  opts?: { chunkSize?: number; chunkOverlap?: number; contentRevision?: string },
 ): Promise<number> {
   // Markdown-shaped, structure-preserving (#1265): this is what makes
   // chunkText's heading/paragraph splitting live code — htmlToText's
@@ -598,6 +598,20 @@ export async function embedPage(
   // chunk_index)` cannot collide and sibling assembly's boundary holds.
   const chunks: Array<{ text: string; metadata: PageChunkMetadata }> = [...authored, ...derived.chunks];
   if (chunks.length === 0) return 0;
+
+  // Callers which already selected the page carry that same row's revision.
+  // Other callers must bind their supplied source to a current database row;
+  // reading a revision alone could bless an already-stale body.
+  let contentRevision = opts?.contentRevision;
+  if (contentRevision === undefined) {
+    const source = await query<{ content_revision: string }>(
+      `SELECT content_revision::text FROM pages
+       WHERE id = $1 AND body_html IS NOT DISTINCT FROM $2 AND title = $3`,
+      [pageId, bodyHtml, pageTitle],
+    );
+    contentRevision = source.rows[0]?.content_revision;
+    if (contentRevision === undefined) return 0;
+  }
 
   // Schema-epoch snapshot (#1116, review r1): taken BEFORE any model is
   // resolved or any vector generated, so it covers the entire generate
@@ -786,6 +800,44 @@ export async function embedPage(
         'Shadow-migration epoch changed mid-embed — page re-queued for a clean embed',
       );
       return 0;
+    }
+
+    // Lock the source row through publication. A concurrent content writer
+    // either committed before this check or must wait until after our commit.
+    //
+    // `content_revision` advances on ANY protected column (migration 120:
+    // draft autosaves, labels, sort_order, icons, parent_id, attachments…),
+    // which is coarser than what this run embedded. Fencing on the revision
+    // alone would discard valid vectors — and re-spend the provider call —
+    // every time such a write landed during the round-trip; a page under
+    // active draft autosave could be discarded indefinitely. So a moved
+    // revision only trips the fence when the embedded inputs (title and
+    // body_html — the same pair the fallback binding above identifies the
+    // row by) differ from the row as it is NOW, under the lock.
+    //
+    // The #1782 contract still holds. A title/body edit that committed before
+    // this SELECT is visible to it (FOR UPDATE reads the latest committed
+    // version) and rolls back below. One issued after it blocks on the row
+    // lock until our COMMIT, so the dirty flag it raises lands AFTER the
+    // dirty-clearing UPDATE at the end of this transaction and is never
+    // cleared by it. When the text is equal, the chunks describe the current
+    // body, so clearing `embedding_dirty` is correct even if a non-text write
+    // raised it; D6.3's image-revision guard below applies independently.
+    const source = await client.query<{ content_revision: string; title: string; body_html: string | null }>(
+      'SELECT content_revision::text, title, body_html FROM pages WHERE id = $1 FOR UPDATE',
+      [pageId],
+    );
+    const current = source.rows[0];
+    if (current?.content_revision !== contentRevision) {
+      if (current === undefined || current.title !== pageTitle || current.body_html !== bodyHtml) {
+        await client.query('ROLLBACK');
+        logger.info({ pageId }, 'Page content changed mid-embed — discarding stale vectors');
+        return 0;
+      }
+      logger.debug(
+        { pageId, embeddedRevision: contentRevision, currentRevision: current.content_revision },
+        'Page revision moved mid-embed without a text change — publishing',
+      );
     }
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
@@ -1084,8 +1136,9 @@ export async function processDirtyPages(
         title: string;
         space_key: string;
         body_html: string;
+        content_revision: string;
       }>(
-        `SELECT id, confluence_id, title, space_key, body_html
+        `SELECT id, confluence_id, title, space_key, body_html, content_revision::text
          FROM pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
            AND COALESCE(page_type, 'page') != 'folder'
@@ -1148,7 +1201,7 @@ export async function processDirtyPages(
 
         try {
 
-          const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+          const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, { ...chunkOpts, contentRevision: page.content_revision });
           // embedPage returns 0 without throwing when every chunk-batch was
           // skipped for exceeding the context window — the page stays
           // embedding_dirty = TRUE, so it must be skipped past or the same
@@ -1209,7 +1262,7 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
-                const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
+                const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, { ...chunkOpts, contentRevision: page.content_revision });
                 // See the note on the initial embedPage call: a 0 return means
                 // every chunk-batch was skipped, leaving the page dirty.
                 if (embeddedChunks === 0) batchRemainingDirty++;
