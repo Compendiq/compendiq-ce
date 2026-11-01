@@ -380,6 +380,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 - `reembed_history_retention` (admin setting, default 150): how many
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
+- `webhook_deliveries_retention_days` (admin setting, default 90, range [7, 3650]; `webhookDeliveriesRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS` when the row is absent): the daily `maintenance` retention sweep prunes `webhook_deliveries` attempt rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Only attempts of finished deliveries (`webhook_outbox.status` `done`/`dead`) are pruned, because the delivery worker counts a pending item's ledger rows to pick its next attempt number. `webhook_outbox` rows are never deleted by this sweep.
 
 ### LLM Request Queue
 
@@ -476,6 +477,8 @@ Compendiq can send email notifications for key events. Configure SMTP in **Setti
 - License expiry warning (Enterprise)
 
 Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
+
+Edits made while a save is in progress remain in the form and require a subsequent save; the completed request only saves the values submitted with it.
 
 ### Enterprise
 
@@ -1362,8 +1365,12 @@ for the full span reference.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOST_CA_BUNDLE_PATH` | `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` | Host path to CA bundle (bind-mounted into container) |
-| `CONTAINER_CA_BUNDLE_PATH` | `/etc/ssl/certs/ca-certificates.crt` | Container path for the CA bundle |
+| `HOST_CA_BUNDLE_PATH` | *(none)* | Existing host PEM file, required only with `docker/docker-compose.corporate-ca.yml`; see the [private-CA guide](integrations/self-signed-tls/README.md). |
+
+The base Compose deployment uses image trust without a host CA mount. Existing
+manual deployments using the former `HOST_CA_BUNDLE_PATH` and
+`CONTAINER_CA_BUNDLE_PATH` settings must opt into the override to retain private
+trust. The old container path setting is no longer used.
 
 ## Upgrade Procedure
 
@@ -1983,6 +1990,10 @@ Compendiq logs user actions and system events. Query audit logs via the admin AP
 
 Admins manage the full user lifecycle from **Settings → Governance → Access Control → Users**. All mutations are audit-logged under `ADMIN_ACTION` events and rate-limited the same as other admin endpoints. Under the hood each action maps to one of the per-user admin endpoints (`POST|PUT|DELETE /api/admin/users/...`) so EE bulk tooling (#116) can compose the same primitives.
 
+User lifecycle changes refresh both the Users list and the user choices in
+Roles, including group membership and space-role assignment. The Roles tab
+remains available only when the licence grants `advanced_rbac`.
+
 ### Creating a user
 
 1. Go to **Settings → Governance → Access Control → Users** and click **Add user**.
@@ -2226,9 +2237,9 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 
 For self-signed certificates on Confluence or LLM servers:
 
-- Set `CONFLUENCE_VERIFY_SSL=false` or `LLM_VERIFY_SSL=false` to disable verification (not recommended for production).
-- Or provide a CA bundle via `NODE_EXTRA_CA_CERTS=/path/to/ca-bundle.pem`.
-- In Docker, mount the host CA bundle using `HOST_CA_BUNDLE_PATH` and `CONTAINER_CA_BUNDLE_PATH`.
+- Supply a CA PEM via `NODE_EXTRA_CA_CERTS` on bare metal, or the explicit
+  [corporate-CA Compose override](integrations/self-signed-tls/README.md) in Docker.
+  Restart the backend after changes; verification remains enabled.
 
 ### Embeddings are not being generated
 
