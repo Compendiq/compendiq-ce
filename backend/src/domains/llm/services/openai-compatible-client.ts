@@ -11,6 +11,7 @@ import { enqueue } from './llm-queue.js';
 import { filterListedModels, listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
+  invalidateAllProviderBreakers,
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -95,6 +96,13 @@ export function invalidateDispatcher(providerId: string): void {
  */
 export function invalidateBreaker(providerId: string): void {
   invalidateProviderBreaker(providerId);
+}
+
+/** A reconnect may have missed deletions, including unassigned providers. */
+export function invalidateAllProviderResources(): void {
+  for (const dispatcher of dispatchers.values()) void dispatcher.close();
+  dispatchers.clear();
+  invalidateAllProviderBreakers();
 }
 
 function headers(cfg: ProviderConfig): Record<string, string> {
