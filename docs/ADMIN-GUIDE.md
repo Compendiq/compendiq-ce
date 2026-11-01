@@ -380,6 +380,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 - `reembed_history_retention` (admin setting, default 150): how many
   completed/failed `reembed-all` job records BullMQ keeps in Redis before
   sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
+- `webhook_deliveries_retention_days` (admin setting, default 90, range [7, 3650]; `webhookDeliveriesRetentionDays` in `GET`/`PUT /api/admin/settings`; env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS` when the row is absent): the daily `maintenance` retention sweep prunes `webhook_deliveries` attempt rows older than this, in batches of 10 000, and always emits a `RETENTION_PRUNED` heartbeat (zero-row runs included). Only attempts of finished deliveries (`webhook_outbox.status` `done`/`dead`) are pruned, because the delivery worker counts a pending item's ledger rows to pick its next attempt number. `webhook_outbox` rows are never deleted by this sweep.
 
 ### LLM Request Queue
 

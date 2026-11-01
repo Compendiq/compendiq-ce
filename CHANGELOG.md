@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook delivery-ledger retention (#1797):** the daily retention worker now
+  prunes `webhook_deliveries` attempt rows older than the new
+  `webhook_deliveries_retention_days` admin setting (default 90, range 7–3650,
+  migration 130, env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS`, exposed in
+  `GET`/`PUT /api/admin/settings`) in bounded batches with a `RETENTION_PRUNED`
+  heartbeat. Only attempts of finished (`done`/`dead`) deliveries are removed;
+  `webhook_outbox` rows are never touched (terminal-outbox retention remains a
+  separate, unimplemented policy).
 - **Pending sync version retention atomicity (#1796):** the retention sweep
   now deletes expired `pending_sync_versions` rows and recomputes
   `pages.conflict_pending` in one transaction. A failed recompute rolls the

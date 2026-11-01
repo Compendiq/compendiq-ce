@@ -26,6 +26,7 @@ const validReadPayload = {
   // image leg for MRL truncation.
   reembedHistoryRetention: 150,
   adminAccessDeniedRetentionDays: 90,
+  webhookDeliveriesRetentionDays: 90,
   // Compendiq/compendiq-ee#113 Phase B-3 — required on read so a GET response
   // can never silently drop the cluster-wide LLM queue settings.
   llmConcurrency: 4,
