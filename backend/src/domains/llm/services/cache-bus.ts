@@ -83,6 +83,7 @@
 //                                   (e.g. before bootstrapLlmProviders()).
 
 import {
+  onReconnect,
   isCacheBusActive,
   publish,
   subscribe,
@@ -96,6 +97,18 @@ type DeletedListener = (id: string) => void;
 
 const listeners = new Set<Listener>();
 const deletedListeners = new Set<DeletedListener>();
+const reconnectListeners = new Set<() => void>();
+
+function notifyBump(): void {
+  version += 1;
+  for (const listener of listeners) {
+    try {
+      listener(version);
+    } catch (err) {
+      logger.warn({ err }, 'llm cache-bus: bump listener threw');
+    }
+  }
+}
 
 /**
  * Wire the cluster subscriber. Idempotent — second call is a no-op so
@@ -120,16 +133,7 @@ export function initProviderCacheBus(): void {
   }
 
   // provider:cache:bump → bump the per-pod version, fan out to local listeners.
-  subscribe<{ at?: number }>('provider:cache:bump', () => {
-    version += 1;
-    for (const l of listeners) {
-      try {
-        l(version);
-      } catch (err) {
-        logger.warn({ err }, 'llm cache-bus: bump listener threw on remote event');
-      }
-    }
-  });
+  subscribe<{ at?: number }>('provider:cache:bump', notifyBump);
 
   // provider:deleted → fan out the providerId to local listeners.
   subscribe<{ providerId: string }>('provider:deleted', (payload) => {
@@ -143,6 +147,19 @@ export function initProviderCacheBus(): void {
         l(id);
       } catch (err) {
         logger.warn({ err, id }, 'llm cache-bus: deleted listener threw on remote event');
+      }
+    }
+  });
+
+  // Pub/sub does not replay either bumps or deletions. Invalidate the
+  // resolver and also resources for providers never loaded by the resolver.
+  onReconnect(() => {
+    notifyBump();
+    for (const listener of reconnectListeners) {
+      try {
+        listener();
+      } catch (err) {
+        logger.warn({ err }, 'llm cache-bus: reconnect listener threw');
       }
     }
   });
@@ -181,14 +198,7 @@ export async function bumpProviderCacheVersion(): Promise<void> {
 
   // Single-pod fallback: bump + fan out locally so existing tests and
   // single-replica deployments keep their semantics.
-  version += 1;
-  for (const l of listeners) {
-    try {
-      l(version);
-    } catch (err) {
-      logger.warn({ err }, 'llm cache-bus: bump listener threw');
-    }
-  }
+  notifyBump();
 }
 
 export function getProviderCacheVersion(): number {
@@ -198,6 +208,11 @@ export function getProviderCacheVersion(): number {
 export function onProviderCacheBump(l: Listener): () => void {
   listeners.add(l);
   return () => listeners.delete(l);
+}
+
+export function onProviderCacheReconnect(listener: () => void): () => void {
+  reconnectListeners.add(listener);
+  return () => reconnectListeners.delete(listener);
 }
 
 // ─── Provider deletion (issue #267) ──────────────────────────────────────────

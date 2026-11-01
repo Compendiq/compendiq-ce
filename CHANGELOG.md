@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider configuration after Redis reconnect (#1794):** a replica that
+  misses provider updates or deletions invalidates its local configuration
+  and provider client resources when its subscriber reconnects.
 - **Page list visibility filter (#1786):** private and shared list requests
   now filter both items and totals, including substring-search fallback, and
   use distinct cache entries. Matching bulk filters select the same visible set.
