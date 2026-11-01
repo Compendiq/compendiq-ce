@@ -47,15 +47,29 @@ describe.skipIf(!available)('POST /api/llm/improve - layout-token cache guard', 
     const response = await improve('<p>Plain prose.</p>');
     expect(sseEvents(response.body).find((e) => e.final)).toMatchObject({ layoutTokensLost: false });
   });
-  it('computes the flag for pre-guard token-less cache entries too', async () => {
+  it('computes the flag for a replayed token-less entry too', async () => {
     fixture.output = TOKENS;
     expect((await improve(LAYOUT_CONTENT)).statusCode).toBe(200);
     const cachedKeys = await keys();
     expect(cachedKeys).toHaveLength(1);
-    await fixture.redis.set(cachedKeys[0]!, JSON.stringify({ content: 'token-less cached output', cachedAt: Date.now() }));
+    // A token-less output under the SAME recorded binding (entries written
+    // before the guard, inside their TTL). The provenance stays — #282
+    // refuses an entry without one, which the test below pins.
+    const entry = JSON.parse((await fixture.redis.get(cachedKeys[0]!))!);
+    await fixture.redis.set(cachedKeys[0]!, JSON.stringify({ ...entry, content: 'token-less cached output' }));
     const response = await improve(LAYOUT_CONTENT);
     expect(response.statusCode).toBe(200);
     expect(sseEvents(response.body).find((e) => e.final)).toMatchObject({ layoutTokensLost: true });
+    expect(fixture.requests).toHaveLength(1);
+  });
+  it('refuses a pre-#282 entry that carries no provenance rather than replaying it', async () => {
+    fixture.output = TOKENS;
+    expect((await improve(LAYOUT_CONTENT)).statusCode).toBe(200);
+    const cachedKeys = await keys();
+    await fixture.redis.set(cachedKeys[0]!, JSON.stringify({ content: 'token-less cached output', cachedAt: Date.now() }));
+    const response = await improve(LAYOUT_CONTENT);
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
     expect(fixture.requests).toHaveLength(1);
   });
 });

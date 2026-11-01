@@ -1,8 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { SystemPromptKey, contentToText, type ChatContentPart, type ChatMessage } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
-import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
+import { streamChat, type TransportContext } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { GenerateRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -22,6 +23,9 @@ import {
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
+
+/** Generate works from the caller's prompt alone: there is no article to admit. */
+const GENERATE_TRANSPORT: TransportContext = { kind: 'non_article', purpose: 'user_query' };
 
 export async function llmGenerateRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -165,7 +169,21 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      sendCachedSSE(reply, cached.content);
+      // Generate has no article transport, so there is no binding to re-admit
+      // — but the entry's SHAPE is still checked (non-empty string content,
+      // sane timestamp, no stray provenance) before it is streamed as a
+      // result. A malformed entry is refused, never regenerated silently.
+      let replayed: string;
+      try {
+        replayed = await replayDirectOutput(cached, {
+          transport: chatConfig, transportContext: GENERATE_TRANSPORT, userId, usecase: 'chat', model: resolvedModel,
+        });
+      } catch (err) {
+        const refusal = directRefusalResponse(err, 'chat');
+        if (!refusal) throw err;
+        return reply.code(refusal.statusCode).send(refusal.body);
+      }
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -182,25 +200,28 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking, transportContext: { kind: 'non_article', purpose: 'user_query' } });
+      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking, transportContext: GENERATE_TRANSPORT });
 
-      const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
-
-      emitLlmAudit({
-        userId,
-        action: 'generate',
-        model: resolvedModel,
-        provider: chatConfig.providerId,
-        inputTokens: estimateTokens(generateMessages.map(m => contentToText(m.content)).join('')),
-        outputTokens: estimateTokens(accumulated),
-        inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
-        retrievedChunkIds: [],
-        durationMs: Date.now() - auditStart,
-        status: 'success',
-        promptInjectionDetected,
-        sanitized: wasSanitized,
+      // The audit entry is written by streamSSE from the stream's REAL
+      // outcome — `success` only when the provider finished with `[DONE]`,
+      // `error` for a thrown stream, a truncated one or a client that went
+      // away — exactly as Improve/Summarize/Quality/Diagram already do. An
+      // unconditional `success` emit after the helper returned recorded a
+      // completed generation for every failed stream.
+      await streamSSE(request, reply, generator, genExtras, {
+        llmCache, cacheKey, postProcess,
+        audit: {
+          userId, action: 'generate', model: resolvedModel, provider: chatConfig.providerId,
+          inputTokens: estimateTokens(generateMessages.map(m => contentToText(m.content)).join('')),
+          inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+          retrievedChunkIds: [],
+          promptInjectionDetected,
+          sanitized: wasSanitized,
+        },
       });
     } catch (err) {
+      // Only a failure BEFORE the stream was dispatched reaches here —
+      // streamSSE reports its own outcome and never throws after dispatch.
       emitLlmAudit({
         userId,
         action: 'generate',

@@ -34,6 +34,9 @@ import {
   LlmHttpError,
   type ProviderConfig,
 } from './openai-compatible-client.js';
+import { authorizeArticleDispatch } from './article-stage-admission.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 
 
 export interface RerankResult {
@@ -64,8 +67,18 @@ export function normalizeRerankScores(results: RerankResult[]): RerankResult[] {
 }
 
 export interface RerankOptions {
-  /** Re-prove article authority after the queue wait, before sending bytes. */
-  beforeDispatch?: () => Promise<void>;
+  /**
+   * #282: the article grounding this call carries. When set, the stage is
+   * admitted INSIDE this client — against `cfg` and `model`, the exact
+   * transport the request below uses — after the queue wait and outside
+   * the breaker. The binding lives here rather than at the call site so
+   * no caller can hand a provenance to one transport and the bytes to
+   * another; `authorizeArticleDispatch` re-proves the saved provider row's
+   * revision, endpoint, credential and TLS setting and the live `rerank`
+   * model assignment on a held client, and a refusal (`ArticleStageRefusedError`)
+   * is a decision event, never a provider failure.
+   */
+  article?: { provenance: ConversationTurnAiProvenance; userId: string | null };
   /** Defaults to all documents — rag-service wants every candidate scored. */
   topN?: number;
   /**
@@ -97,12 +110,30 @@ export async function rerank(
   );
   // Created before enqueue so the budget covers queue wait (see RerankOptions).
   const deadline = opts?.timeoutMs != null ? AbortSignal.timeout(opts.timeoutMs) : undefined;
+  // One operation per call; every queued dispatch is a new numbered attempt.
+  const article = opts?.article;
+  const operation = article
+    ? newAiOperation('rerank', article.userId ? { kind: 'user', id: article.userId } : { kind: 'unknown', id: null })
+    : null;
+  let attempt = 0;
   return withSpan(
     'llm.rerank',
     () =>
-      enqueue((signal) =>
-        getProviderBreaker(cfg.providerId).execute(async () => {
-          await opts?.beforeDispatch?.();
+      enqueue(async (signal) => {
+        // #282: re-prove article authority AFTER the queue wait and OUTSIDE
+        // the breaker — a policy refusal is not a provider failure and must
+        // not count towards opening the per-provider breaker (which the
+        // chat and embedding paths share). Nothing has been sent yet, and
+        // the transport proved is `cfg`/`model`: the very values the fetch
+        // below reads.
+        if (article && operation) {
+          await authorizeArticleDispatch(
+            cfg, article.provenance, article.userId, 'rerank',
+            { operation, stage: 'rerank', attempt: ++attempt }, model,
+          );
+        }
+        signal.throwIfAborted();
+        return getProviderBreaker(cfg.providerId).execute(async () => {
           const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'rerank'), {
             method: 'POST',
             headers: providerRequestInfra.headers(cfg),
@@ -159,8 +190,8 @@ export async function rerank(
             );
           }
           return normalizeRerankScores(mapped).sort((a, b) => b.relevanceScore - a.relevanceScore);
-        }),
-      ),
+        });
+      }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model, 'llm.document_count': docs.length },
   );
 }

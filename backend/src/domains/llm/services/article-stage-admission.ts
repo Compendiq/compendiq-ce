@@ -9,12 +9,23 @@ import { ConversationTurnAiProvenanceSchema, type ConversationTurnAiProvenance, 
 import { asRevision, decodeProviderMetadata, PROVIDER_METADATA_COLUMNS, type ProviderMetadataRow, decideAiPolicyAdmission } from './ai-policy-admission.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
 
+/**
+ * Why an article stage refused. Distinguishing the three matters at the HTTP
+ * boundary: a KNOWN current denial (`ai_policy_denied` — the page's policy
+ * forbids this provider) and a GROUNDING CHANGE (`grounding_changed` — the
+ * recorded revisions, model or endpoint moved) are facts about the article
+ * and can be answered deterministically, whereas `ai_policy_unavailable` is
+ * "the authority could not be read" and is only ever retryable.
+ */
+export type ArticleStageRefusalReason = 'ai_policy_unavailable' | 'ai_policy_denied' | 'grounding_changed';
+
 /** A refusal is not a provider failure or a completed inference. */
 export class ArticleStageRefusedError extends Error {
-  readonly reason = 'ai_policy_unavailable';
-  constructor() {
+  readonly reason: ArticleStageRefusalReason;
+  constructor(reason: ArticleStageRefusalReason = 'ai_policy_unavailable') {
     super('Article grounding or destination changed or unavailable');
     this.name = 'ArticleStageRefusedError';
+    this.reason = reason;
   }
 }
 
@@ -33,17 +44,25 @@ export async function validateArticleStageOnClient(
   const pages = await client.query('SELECT id, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL ORDER BY id FOR SHARE', [provenance.pages.map((p) => p.pageId)]);
   const result = await client.query<ProviderMetadataRow>(`SELECT ${PROVIDER_METADATA_COLUMNS} FROM llm_providers WHERE id::text = $1 FOR SHARE`, [provenance.providerId]);
   const provider = decodeProviderMetadata(result.rows[0]);
-  if (!provider || provider.configRevision !== provenance.configRevision || provider.effectiveLocality !== provenance.locality) {
-    throw new ArticleStageRefusedError();
+  // An undecodable provider row is unreadable authority (retryable); a row
+  // that decodes but no longer matches the recorded binding is a change.
+  if (!provider) throw new ArticleStageRefusedError('ai_policy_unavailable');
+  if (provider.configRevision !== provenance.configRevision || provider.effectiveLocality !== provenance.locality) {
+    throw new ArticleStageRefusedError('grounding_changed');
   }
   for (const page of provenance.pages) {
     const current = pages.rows.find((r) => r.id === page.pageId);
     if (!current || current.ai_policy !== page.policy
       || asRevision(current.ai_policy_revision) !== page.policyRevision
       || asRevision(current.content_revision) !== page.contentRevision
-      || decideAiPolicyAdmission(page.policy, provider) !== 'admit'
       || (userId !== null && !(await userCanAccessPage(userId, page.pageId, client)))) {
-      throw new ArticleStageRefusedError();
+      throw new ArticleStageRefusedError('grounding_changed');
+    }
+    // The recorded policy IS the current one here, so this is the live
+    // decision for this provider: a `none` page, or `local_only` against a
+    // provider that is not effectively local, is a known denial.
+    if (decideAiPolicyAdmission(page.policy, provider) !== 'admit') {
+      throw new ArticleStageRefusedError('ai_policy_denied');
     }
   }
 }
@@ -86,7 +105,9 @@ export async function authorizeArticleDispatch(
       articles: provenance.pages.map((page) => ({ pageId: page.pageId, policy: null, policyRevision: null, contentRevision: null })),
       provider: { providerId: transport.providerId, model: null, configRevision: revision, declaredLocality: null, effectiveLocality: null },
     });
-    throw new ArticleStageRefusedError();
+    // A missing revision is unreadable binding; a revision that decodes but
+    // does not match the provenance is a change the caller must re-prove.
+    throw new ArticleStageRefusedError(revision === null ? 'ai_policy_unavailable' : 'grounding_changed');
   }
   await admitArticleStage(provenance, userId, usecase, undefined, context, transport, model, preliminary);
 }
@@ -128,7 +149,7 @@ export async function admitArticleStage(
           .catch(() => { throw new ArticleStageRefusedError(); });
         if (target?.config.providerId === provenance.providerId) resolvedModel = target.model;
         if (!target || target.config.providerId !== transport.providerId || target.model !== model) {
-          throw new ArticleStageRefusedError();
+          throw new ArticleStageRefusedError('grounding_changed');
         }
       }
       await validateArticleStageOnClient(client, provenance, userId);
@@ -175,7 +196,7 @@ export async function admitArticleStage(
         if (!row || transport.baseUrl !== row.base_url
           || transport.authType !== row.auth_type || transport.verifySsl !== row.verify_ssl
           || transport.apiKey !== (row.api_key === null ? null : decryptPat(row.api_key))) {
-          throw new ArticleStageRefusedError();
+          throw new ArticleStageRefusedError('grounding_changed');
         }
       }
     } finally {

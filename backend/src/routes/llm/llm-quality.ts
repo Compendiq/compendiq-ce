@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { newAiOperation, emitAiDecision } from '../../core/enterprise/ai-policy-hooks.js';
 import { emitUnresolvedDecision } from '../../domains/llm/services/ai-policy-admission.js';
 import { resolveReadablePageRef } from './_helpers.js';
-import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
@@ -84,11 +84,12 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, qualityConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      if (transportContext.kind === 'article') {
-        await authorizeArticleDispatch(qualityConfig, transportContext.stage.provenance, userId,
-          'quality', transportContext.stage.context, resolvedModel, true);
-      }
-      sendCachedSSE(reply, cached.content);
+      // #282: re-admitted under the RECORDED provenance (replayDirectOutput);
+      // a refusal is a status code before any SSE header.
+      const replayed = await replayDirectOutput(cached, {
+        transport: qualityConfig, transportContext, userId, usecase: 'quality', model: resolvedModel,
+      });
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -107,10 +108,16 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
             inputMessages: qualityMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             retrievedChunkIds: [],
           },
+          cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a pre-hijack refusal is a 409/503 with the contract body, never a 500.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'quality');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }

@@ -291,7 +291,7 @@ vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
 });
 
 // Import the route after all mocks are registered
-import { llmAskRoutes } from './llm-ask.js';
+import { llmAskRoutes, askRequestIdentity } from './llm-ask.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { buildPng, buildJpeg } from '../../core/services/test-image-fixtures.js';
@@ -404,6 +404,18 @@ describe('POST /api/llm/ask', () => {
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
       request.userCan = async () => true;
+    });
+    // #282: the route refuses a body that names neither an article nor an
+    // explicit `independent` question (400 `ask_identity_required`). The
+    // payloads in this suite predate the discriminator and are about other
+    // things, so the FIXTURE declares them independent — the route never
+    // does. The contract itself is pinned below (`ask identity contract`)
+    // with bodies sent RAW through the `x-ask-identity: raw` header, and
+    // against the real route in `ask-identity-contract.db.test.ts`.
+    app.addHook('preValidation', async (request) => {
+      if (request.headers['x-ask-identity'] === 'raw') return;
+      const b = request.body as Record<string, unknown> | null;
+      if (b && typeof b === 'object' && !('pageId' in b) && !('inputKind' in b)) b.inputKind = 'independent';
     });
 
     await app.register(llmAskRoutes, { prefix: '/api' });
@@ -1362,6 +1374,14 @@ describe('POST /api/llm/ask', () => {
   describe('page_ref at INSERT (#1361)', () => {
     function armInsertProbe(opts: { pageRow?: { id: number; confluence_id: string | null; title: string } | null; canAccess: boolean }) {
       mockQuery.mockImplementation(async (sql: string) => {
+        // #282: a page-bound ask reads the article's body and policy before
+        // retrieval; the row is admitted (`all`) so the subject here stays
+        // the INSERT.
+        if (typeof sql === 'string' && sql.includes('SELECT body_html, title, ai_policy')) {
+          return { rows: opts.pageRow
+            ? [{ body_html: '<p>doc</p>', title: opts.pageRow.title, ai_policy: 'all', ai_policy_revision: 1, content_revision: 1 }]
+            : [] };
+        }
         if (typeof sql === 'string' && sql.includes('FROM pages WHERE id = $1')) {
           return { rows: opts.pageRow ? [opts.pageRow] : [] };
         }
@@ -1390,17 +1410,23 @@ describe('POST /api/llm/ask', () => {
       expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
     });
 
-    it('writes NULL when the caller may not see the page (no title oracle through the list)', async () => {
+    it('refuses a page-bound ask on a page the caller may not see — nothing is inserted, no title oracle (#282)', async () => {
+      // Before #282 the ask answered free-form and wrote NULL; a page-bound
+      // question may carry that article's text, so an unreadable article is
+      // now a refusal before retrieval rather than a quietly dropped ref.
       armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: false });
-      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
-      expect(insertParams()[4]).toBeNull();
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
 
-    it('writes NULL for a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
+    it('refuses a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
       armInsertProbe({ pageRow: null, canAccess: true });
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '12345678901' } });
-      expect(response.statusCode).toBe(200);
-      expect(insertParams()[4]).toBeNull();
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
       // resolvePageRef skips the int4 lookup for an 11-digit id
       expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages WHERE id = $1'))).toBe(false);
     });
@@ -1410,6 +1436,193 @@ describe('POST /api/llm/ask', () => {
       await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
       expect(insertParams()[4]).toBeNull();
       expect(mockUserCanAccessPage).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Ask identity contract (#282) ────────────────────────────────────────
+
+  describe('ask identity contract (#282)', () => {
+    /** Send the body exactly as written — the fixture's default is bypassed. */
+    const raw = (payload: Record<string, unknown>) => app.inject({
+      method: 'POST', url: '/api/llm/ask', payload, headers: { 'x-ask-identity': 'raw' },
+    });
+
+    it.each([
+      ['pageId alone', { pageId: '42' }, { kind: 'page', pageId: '42' }],
+      ['pageId with inputKind page', { pageId: '42', inputKind: 'page' }, { kind: 'page', pageId: '42' }],
+      ['a padded pageId', { pageId: '  42 ' }, { kind: 'page', pageId: '42' }],
+      ['inputKind independent alone', { inputKind: 'independent' }, { kind: 'independent' }],
+      ['nothing', {}, { kind: 'missing' }],
+      ['a blank pageId and nothing else', { pageId: '   ' }, { kind: 'missing' }],
+      ['independent beside a pageId', { pageId: '42', inputKind: 'independent' }, { kind: 'contradictory' }],
+      ['page without a pageId', { inputKind: 'page' }, { kind: 'contradictory' }],
+      ['page with a blank pageId', { pageId: '', inputKind: 'page' }, { kind: 'contradictory' }],
+    ])('askRequestIdentity classifies %s', (_label, body, expected) => {
+      expect(askRequestIdentity(body as { pageId?: string; inputKind?: 'page' | 'independent' })).toEqual(expected);
+    });
+
+    it('refuses 400 ask_identity_required, before any read, when the body states neither', async () => {
+      const response = await raw({ question: 'is this paragraph accurate?' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      // Nothing ran: no conversation read, no provider resolution, no
+      // retrieval, no audit row, no sanitization of the question.
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockResolveUsecase).not.toHaveBeenCalled();
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockLogAuditEvent).not.toHaveBeenCalled();
+      expect(vi.mocked(sanitizeLlmInput)).not.toHaveBeenCalled();
+    });
+
+    it('refuses 400 when independent is declared beside a pageId', async () => {
+      const response = await raw({ question: 'q', pageId: '42', inputKind: 'independent' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('refuses 400 when page is declared without a pageId', async () => {
+      const response = await raw({ question: 'q', inputKind: 'page' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('answers an explicitly independent question with no article read at all', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+      const response = await raw({ question: 'q', inputKind: 'independent' });
+      expect(response.statusCode).toBe(200);
+      expect(mockAdmitPageForProvider).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('SELECT body_html, title, ai_policy'))).toBe(false);
+    });
+
+    describe('page-bound input', () => {
+      function seedArticle(policy: 'all' | 'local_only' | 'none') {
+        mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('FROM pages WHERE id = $1') && !sql.includes('body_html')) {
+            return { rows: [{ id: 42, confluence_id: 'c42', title: 'Doc' }] };
+          }
+          if (sql.includes('SELECT body_html, title, ai_policy')) {
+            return { rows: [{ body_html: '<p>doc</p>', title: 'Doc', ai_policy: policy, ai_policy_revision: 6, content_revision: 9 }] };
+          }
+          return { rows: [{ id: 'test-conv-id' }] };
+        });
+      }
+
+      /**
+       * `groundedResult` IS the open article (page 42). The rag stub stamps
+       * rows at revisions 1/1 while `seedArticle` reads the article at 6/9,
+       * and the route refuses a retrieval row that disagrees with the
+       * reading it admitted (a conflict, 409) — so a cell whose subject is
+       * the happy path retrieves the article at the revisions it was read at.
+       */
+      const retrievedArticle = { ...groundedResult, aiPolicyRevision: 6, contentRevision: 9 };
+
+      it('admits the open article for the bound provider BEFORE retrieval, with the sub-page tree off', async () => {
+        seedArticle('all');
+        mockHybridSearch.mockResolvedValue([retrievedArticle]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        const response = await raw({ question: 'is this paragraph right? "…"', pageId: '42' });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockAdmitPageForProvider).toHaveBeenCalledWith(42, 'chat', 'p1', 'm', expect.objectContaining({ stage: 'chat', preliminary: true }));
+        expect(mockAdmitPageForProvider.mock.invocationCallOrder[0]).toBeLessThan(mockHybridSearch.mock.invocationCallOrder[0]!);
+        expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+      });
+
+      it('records the open article in the turn provenance even when retrieval never returned it', async () => {
+        seedArticle('all');
+        // Retrieval returns a DIFFERENT page: the open article enters the
+        // record on its own reading, not through a retrieval row.
+        mockHybridSearch.mockResolvedValue([{ ...groundedResult, pageId: 7, confluenceId: 'c7' }]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        await raw({ question: 'q', pageId: '42' });
+
+        const insert = mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+        )!;
+        const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
+        const prov = messages.find((m) => m.role === 'assistant')!.aiProvenance as { pages: unknown[] };
+        expect(prov.pages).toEqual(expect.arrayContaining([
+          { pageId: 42, policy: 'all', policyRevision: 6, contentRevision: 9 },
+          { pageId: 7, policy: 'all', policyRevision: 1, contentRevision: 1 },
+        ]));
+        expect((insert[1] as unknown[])[4]).toBe(42);
+      });
+
+      it('refuses 409 ai_grounding_not_admissible, before retrieval, when the article is excluded for this destination', async () => {
+        seedArticle('none');
+        mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: false, reason: 'policy_none' });
+        mockHybridSearch.mockResolvedValue([groundedResult]);
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+        expect(mockStreamChatClient).not.toHaveBeenCalled();
+      });
+
+      it('refuses 409 when the row read with the body is no longer admitted, even though the admission passed', async () => {
+        // Tightened between the admission and the body read: the reading
+        // the turn is grounded in is the one decided.
+        seedArticle('local_only');
+        mockHybridSearch.mockResolvedValue([groundedResult]);
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it('refuses 503 ai_policy_unavailable when the admission cannot read policy state', async () => {
+        seedArticle('all');
+        mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: true, reason: 'policy_unavailable' });
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['revision', { configRevision: 4 }, 'ai_policy_provider_revision_mismatch'],
+        ['locality', { locality: 'local' }, 'ai_policy_provider_locality_mismatch'],
+      ])('refuses 409 when the admission binds a different provider %s than the request', async (_label, over, expected) => {
+        seedArticle('all');
+        mockAdmitPageForProvider.mockResolvedValue({ ...ROOT_ADMITTED, ...over });
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: expected, stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it('takes ONE article reading for the sub-page root and the open article', async () => {
+        seedArticle('all');
+        mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 6, contentRevision: 9 }]]));
+        mockAssembleSubPageContext.mockResolvedValue({ injectionWarnings: [], markdown: 'TREE', pageCount: 1, includedPageRefs: [] });
+        mockGetMultiPagePromptSuffix.mockReturnValue('');
+        mockHybridSearch.mockResolvedValue([retrievedArticle]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        const response = await raw({ question: 'q', pageId: '42', includeSubPages: true });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockAdmitPageForProvider).toHaveBeenCalledTimes(1);
+        const bodyReads = mockQuery.mock.calls.filter((c) => String(c[0]).includes('SELECT body_html, title, ai_policy'));
+        expect(bodyReads).toHaveLength(1);
+        expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
+          'test-user-123', 'c42', '<p>doc</p>', 'Doc', undefined, expect.anything(),
+        );
+      });
     });
   });
 
@@ -1515,7 +1728,11 @@ describe('POST /api/llm/ask', () => {
       });
     });
 
-    it('titles a new conversation created from an answer-cache hit', async () => {
+    it('does NOT title a new conversation created from an answer-cache hit (#282)', async () => {
+      // A replay is "an answer without a model call": no inference audit,
+      // `fromCache: true` on the wire. The title would be exactly such a
+      // call — a second shipment of the page-derived answer to whichever
+      // provider resolves at that moment, from a path that promised none.
       mockHybridSearch.mockResolvedValue([groundedResult]);
       mockGetCachedResponse.mockResolvedValue(cachedAnswer('A cached answer.', 42));
       mockGenerateConversationTitle.mockReturnValue(neverResolves);
@@ -1530,12 +1747,7 @@ describe('POST /api/llm/ask', () => {
       expect(parseSseBody(response.body)).toEqual(expect.arrayContaining([
         expect.objectContaining({ final: true, conversationId: 'test-conv-id' }),
       ]));
-      expect(mockGenerateConversationTitle).toHaveBeenCalledWith(expect.objectContaining({
-        conversationId: 'test-conv-id',
-        question: 'Cached question',
-        answer: 'A cached answer.',
-        refused: false,
-      }));
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
     });
 
     it('titles a newly persisted refusal from the question alone', async () => {
@@ -3638,7 +3850,13 @@ describe('POST /api/llm/ask', () => {
         yield { content: '', done: true };
       });
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
-      expect(response.body).toContain('Stream error');
+      // #282: the refusal is TYPED on the wire — the client learns the
+      // grounding moved, not that "something went wrong" — and the bytes
+      // already streamed are followed by the refusal frame, never `final`.
+      const events = parseSseBody(response.body);
+      expect(events.at(-1)).toEqual({ error: 'ai_grounding_not_admissible', done: true });
+      expect(events.some((e) => e.final === true)).toBe(false);
+      expect(response.body).not.toContain('Stream error');
       expect(mockSetCachedResponse).not.toHaveBeenCalled();
       expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
       expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);

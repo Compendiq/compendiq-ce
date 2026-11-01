@@ -691,6 +691,36 @@ describe('AskMode', () => {
     expect(callBody).not.toHaveProperty('conversationId', null);
   });
 
+  it('declares a question asked with no article open as independent (#282)', async () => {
+    // The backend refuses an ask that says neither `pageId` nor
+    // `inputKind: 'independent'` — the /ai page has no article beside it,
+    // so every question it sends is the user's own.
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      return Promise.resolve([]);
+    });
+    async function* fakeStream() {
+      yield { content: 'Answer' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Ask a question...');
+    fireEvent.change(input, { target: { value: 'what is our on-call policy?' } });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
+    });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(streamSSEMock).toHaveBeenCalled());
+    const callBody = streamSSEMock.mock.calls[0][1];
+    expect(callBody.inputKind).toBe('independent');
+    expect(callBody).not.toHaveProperty('pageId');
+  });
+
   describe('icon-only button accessible names (#939)', () => {
     beforeEach(() => {
       apiFetchMock.mockImplementation((path: string) => {

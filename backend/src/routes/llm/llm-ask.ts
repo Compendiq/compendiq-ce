@@ -39,6 +39,7 @@ import { LlmCache, buildRagCacheKey, policyRevisionsCacheComponent } from '../..
 // grounding set's policy state is recorded per assistant turn and re-proved
 // on every continuation and cache hit.
 import { admitPageForProvider, asRevision, loadProviderMetadata, type ProviderMetadata } from '../../domains/llm/services/ai-policy-admission.js';
+import { ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 import {
   pageAdmittedFor,
   provenancePagesStillAdmitted,
@@ -55,7 +56,7 @@ import {
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
-import { AskRequestSchema } from '@compendiq/contracts';
+import { AskRequestSchema, type AskInputKind } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
@@ -365,6 +366,51 @@ const REFUSAL_SOURCES_NOTE: Record<RefusalReason, string> = {
     ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
 };
 
+/**
+ * #282 — what one Ask request says it is about.
+ *
+ * `page`: the question was composed beside `pageId` and may carry that
+ * article's text (a quoted selection, an unsaved draft paragraph), so the
+ * article is admitted for the bound provider BEFORE the question text is
+ * read for anything. `independent`: the caller stated there is no open
+ * article. `missing`: the caller stated nothing — the request is refused
+ * rather than treated as free-form, because a client that forgot to say is
+ * exactly the client whose question might be article text. `contradictory`:
+ * the two fields disagree (`independent` beside a `pageId`, or `page`
+ * without one); refused the same way, since neither reading is provable.
+ *
+ * A blank or whitespace-only `pageId` names nothing and is treated as
+ * absent. Exported for the unit cells in `llm-ask.test.ts`.
+ */
+export type AskRequestIdentity =
+  | { kind: 'page'; pageId: string }
+  | { kind: 'independent' }
+  | { kind: 'missing' }
+  | { kind: 'contradictory' };
+
+export function askRequestIdentity(body: { pageId?: string | undefined; inputKind?: AskInputKind | undefined }): AskRequestIdentity {
+  const pageId = typeof body.pageId === 'string' && body.pageId.trim().length > 0 ? body.pageId.trim() : undefined;
+  if (pageId !== undefined) {
+    if (body.inputKind === 'independent') return { kind: 'contradictory' };
+    return { kind: 'page', pageId };
+  }
+  if (body.inputKind === 'independent') return { kind: 'independent' };
+  if (body.inputKind === 'page') return { kind: 'contradictory' };
+  return { kind: 'missing' };
+}
+
+/** The 400 bodies for the two unprovable identities; one code, two messages. */
+const ASK_IDENTITY_REFUSAL = {
+  missing: {
+    error: 'ask_identity_required',
+    message: 'State what the question is about: send pageId for a question composed beside an article, or inputKind: "independent" when no article is open.',
+  },
+  contradictory: {
+    error: 'ask_identity_required',
+    message: 'inputKind and pageId disagree: "independent" cannot name a pageId, and "page" requires one.',
+  },
+} as const;
+
 export async function llmAskRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -395,6 +441,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     const { question, model, conversationId, includeSubPages, externalUrls, referenceText, imageHandle } = body;
     const userId = request.userId;
     const operation = newAiOperation('ask', { kind: 'user', id: userId });
+
+    // ── #282: the question's identity, before anything reads it ──────────
+    // Refused as a request-shape error (400), not as a policy refusal: no
+    // article has been consulted yet, so there is nothing to attribute the
+    // refusal to. Nothing below — not sanitization, not the audit row, not
+    // the conversation read — runs for a request that cannot say what it is.
+    const identity = askRequestIdentity(body);
+    if (identity.kind === 'missing' || identity.kind === 'contradictory') {
+      return reply.code(400).send(ASK_IDENTITY_REFUSAL[identity.kind]);
+    }
 
     if (question.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Question too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -534,6 +590,97 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // ── #282: the open article, admitted BEFORE retrieval ────────────────
+    // A page-bound question may carry the article's own text (a quoted
+    // selection, an unsaved paragraph), so the article is admitted for the
+    // bound provider before the question is embedded, reranked or shown to
+    // anything — with or without the sub-page tree. The ONE reading taken
+    // here (title, body, policy and revisions from the same row) is what
+    // the sub-page walk below prepends and what the turn's provenance
+    // records; nothing re-reads the row and stamps newer metadata onto an
+    // older body. A page the caller cannot see, that no longer exists or
+    // that the policy excludes for this destination refuses the turn
+    // (409 `ai_grounding_not_admissible`) rather than quietly dropping the
+    // article and answering the question as if it were free-form.
+    // Access is enforced with the same arm as GET /pages/:id (#814).
+    let resolvedPageRef: ResolvedPageRef | undefined;
+    let openArticle: {
+      ref: ConversationTurnAiProvenancePage;
+      title: string;
+      bodyHtml: string;
+      confluenceId: string | null;
+      /** The id the caller sent (internal id or confluence id), for the walk's fallback. */
+      requestedPageId: string;
+    } | undefined;
+    if (identity.kind === 'page') {
+      const resolved = await resolvePageRef(identity.pageId);
+      if (!resolved || !(await userCanAccessPage(userId, resolved.id))) {
+        return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
+      }
+      resolvedPageRef = resolved;
+      // Admitted through the shared admission service (same lock, same
+      // decision, same events as every other stage) against the provider
+      // THIS request is already bound to — never a second resolution that
+      // could name a different row. A retryable refusal (policy state
+      // unreadable) is the 503; an admission that comes back at a different
+      // configuration revision or locality than the binding means the
+      // provider moved under the request: refused before any SSE header,
+      // never silently rebound.
+      const rootAdmission = await admitPageForProvider(resolved.id, 'chat', bound.providerId, resolvedModel,
+        { operation, stage: 'chat', attempt: 1, preliminary: true });
+      if (!rootAdmission.admitted) {
+        if (rootAdmission.retryable) return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+        return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
+      }
+      if (rootAdmission.configRevision !== bound.configRevision) {
+        logger.warn(
+          { pageId: resolved.id, bound: bound.configRevision, admitted: rootAdmission.configRevision },
+          'Open article admitted at a different provider revision than the request binding; refusing',
+        );
+        return refuse(409, { error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+      }
+      if (rootAdmission.locality !== bound.locality) {
+        logger.warn(
+          { pageId: resolved.id, bound: bound.locality, admitted: rootAdmission.locality },
+          'Open article admitted at a different provider locality than the request binding; refusing',
+        );
+        return refuse(409, { error: 'ai_policy_provider_locality_mismatch', stage: 'chat' });
+      }
+      let root;
+      try {
+        const bodyResult = await query<{
+          body_html: string | null; title: string; ai_policy: string;
+          ai_policy_revision: unknown; content_revision: unknown;
+        }>(
+          'SELECT body_html, title, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL',
+          [resolved.id],
+        );
+        root = bodyResult.rows[0];
+      } catch {
+        return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+      }
+      if (!root) return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
+      const policyRevision = asRevision(root.ai_policy_revision);
+      const contentRevision = asRevision(root.content_revision);
+      if ((root.ai_policy !== 'all' && root.ai_policy !== 'local_only' && root.ai_policy !== 'none')
+        || policyRevision === null || contentRevision === null || typeof root.title !== 'string') {
+        return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
+      }
+      // The admission above decided on the row as it was then; the row read
+      // WITH the bytes is what the turn is grounded in, so it is decided
+      // again here — a policy tightened between the two is a refusal.
+      if (!pageAdmittedFor(root.ai_policy, bound.locality)) {
+        return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
+      }
+      openArticle = {
+        ref: { pageId: resolved.id, policy: root.ai_policy, policyRevision, contentRevision },
+        title: root.title,
+        bodyHtml: root.body_html || '',
+        confluenceId: resolved.confluenceId ?? null,
+        requestedPageId: identity.pageId,
+      };
+    }
+
     // Perform hybrid RAG search — falls back to keyword-only if embedding fails
     let searchResults;
     // Object holder, not a bare `let`: TS control-flow analysis cannot see
@@ -625,15 +772,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       ragContext = cleanRag;
     }
 
-    // #1361: the page a dock conversation started from, written at INSERT.
-    // Resolved through resolvePageRef (internal id first, then confluence_id,
-    // int4-safe) and AUTHORISED with userCanAccessPage — the ask route never
-    // gated a bare `pageId` before, and the conversation list will read the
-    // page title back. Reused by the includeSubPages branch below when it ran.
-    let resolvedPageRef: ResolvedPageRef | undefined;
-
-    // If includeSubPages is enabled and a pageId is provided, augment the RAG context
-    // with the sub-page tree content
+    // If includeSubPages is enabled and the question is page-bound, augment
+    // the RAG context with the sub-page tree content. The root is the
+    // `openArticle` reading admitted above: resolved, authorised and admitted
+    // ONCE for this request; the walk only adds the descendants.
     let multiPageSuffix = '';
     // The realised-grounding signal for the #1105 gate. NOT multiPageSuffix:
     // that is a prompt-FORMATTING string which getMultiPagePromptSuffix
@@ -646,87 +788,20 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // revision it saw them — recorded in the turn's provenance beside the
     // retrieval rows so a continuation re-proves them too.
     let includedSubPages: ConversationTurnAiProvenancePage[] = [];
-    if (includeSubPages && body.pageId) {
-      // #814: enforce the same access control as GET /pages/:id before pulling
-      // the parent page (and its whole sub-tree) into the LLM prompt. Without
-      // this a caller with only the global `llm:query` permission could
-      // extract the content of any page in a space they cannot access.
-      const resolved = await resolvePageRef(body.pageId);
-      resolvedPageRef = resolved;
-      // #282: the ROOT is admitted for the `chat` use case through the
-      // shared admission service (same lock, same decision, same events as
-      // every other stage) — against the provider THIS request is already
-      // bound to, never a second resolution that could name a different
-      // row. A refused root contributes no tree, exactly as an unreadable
-      // one does, and a retryable refusal (policy state unreadable)
-      // refuses the turn rather than silently dropping grounding the
-      // caller asked for. An admission that comes back at a different
-      // configuration revision or locality than the binding means the
-      // provider moved between the top of the request and here: refused
-      // before any SSE header, never silently rebound. The walk then
-      // carries the SAME binding and decides each descendant itself.
-      let rootAdmission: Awaited<ReturnType<typeof admitPageForProvider>> | null = null;
-      if (resolved && (await userCanAccessPage(userId, resolved.id))) {
-        rootAdmission = await admitPageForProvider(resolved.id, 'chat', bound.providerId, resolvedModel,
-          { operation, stage: 'chat', attempt: 1, preliminary: true });
-        if (!rootAdmission.admitted && rootAdmission.retryable) {
-          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
-        }
-        if (rootAdmission.admitted) {
-          if (rootAdmission.configRevision !== bound.configRevision) {
-            logger.warn(
-              { pageId: resolved.id, bound: bound.configRevision, admitted: rootAdmission.configRevision },
-              'Sub-page root admitted at a different provider revision than the request binding; refusing',
-            );
-            return refuse(409, { error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
-          }
-          if (rootAdmission.locality !== bound.locality) {
-            logger.warn(
-              { pageId: resolved.id, bound: bound.locality, admitted: rootAdmission.locality },
-              'Sub-page root admitted at a different provider locality than the request binding; refusing',
-            );
-            return refuse(409, { error: 'ai_policy_provider_locality_mismatch', stage: 'chat' });
-          }
-        }
-      }
-      if (!resolved || !rootAdmission?.admitted) {
-        return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
-      }
-      if (resolved && rootAdmission.admitted) {
-        let root;
-        try {
-          const bodyResult = await query<{
-            body_html: string | null; title: string; ai_policy: string;
-            ai_policy_revision: unknown; content_revision: unknown;
-          }>(
-            'SELECT body_html, title, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL',
-            [resolved.id],
-          );
-          root = bodyResult.rows[0];
-        } catch {
-          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
-        }
-        if (!root) return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
-        const policyRevision = asRevision(root.ai_policy_revision);
-        const contentRevision = asRevision(root.content_revision);
-        if ((root.ai_policy !== 'all' && root.ai_policy !== 'local_only' && root.ai_policy !== 'none')
-          || policyRevision === null || contentRevision === null || typeof root.title !== 'string') {
-          return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
-        }
-        if (!pageAdmittedFor(root.ai_policy, bound.locality)) {
-          return refuse(409, { error: 'ai_grounding_not_admissible', stage: 'chat' });
-        }
-        const rootRef: ConversationTurnAiProvenancePage = {
-          pageId: resolved.id, policy: root.ai_policy, policyRevision, contentRevision,
-        };
-        const parentHtml = root.body_html || '';
+    if (includeSubPages && openArticle && resolvedPageRef) {
+      const resolved = resolvedPageRef;
+      const rootRef = openArticle.ref;
+      {
+        // The walk carries the SAME binding the root was admitted under and
+        // decides each descendant itself (`decideAiPolicyAdmission` from the
+        // row that supplied the body).
         let assembled: Awaited<ReturnType<typeof assembleSubPageContext>>;
         try {
           assembled = await assembleSubPageContext(
             userId,
-            resolved.confluenceId ?? body.pageId,
-            parentHtml,
-            root.title,
+            openArticle.confluenceId ?? openArticle.requestedPageId,
+            openArticle.bodyHtml,
+            openArticle.title,
             undefined,
             {
               policyContext: {
@@ -1024,7 +1099,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // under us) and whether this call INSERTed (the auto-title trigger).
     const persistedSources = toPersistedSources(sources);
     // #282: what this turn was grounded in, for the provider that answered
-    // it. Retrieval rows and the included sub-pages, deduplicated per page.
+    // it. Retrieval rows, the open article (a page-bound question may carry
+    // its text even when no tree was assembled and retrieval missed it),
+    // the included sub-pages and the replayed history, deduplicated per
+    // page. The open article's reading is the one taken before retrieval;
+    // a retrieval row for the same page at other revisions is a conflict.
     const historySelection = selectReplayableHistory(conversationHistory);
     const historicalPages = (historySelection.selected as StoredChatMessage[])
       .filter((turn) => turn.role === 'assistant')
@@ -1033,7 +1112,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     try {
       provenancePages = provenancePagesFrom([
         ...searchResults,
-        ...[...includedSubPages, ...historicalPages].map((p) => ({
+        ...[...(openArticle ? [openArticle.ref] : []), ...includedSubPages, ...historicalPages].map((p) => ({
           pageId: p.pageId, aiPolicy: p.policy, aiPolicyRevision: p.policyRevision, contentRevision: p.contentRevision,
         })),
       ]);
@@ -1047,11 +1126,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       locality: destinationLocality,
       pages: provenancePages,
     };
+    // #1361: the page a dock conversation started from, written at INSERT.
+    // `resolvedPageRef` is set for every page-bound ask (resolved and
+    // authorised above, before retrieval); the access arm is applied again
+    // at INSERT time inside saveConversation.
     const pageRefForInsert = async (): Promise<number | null> => {
-      if (!body.pageId) return null;
-      const resolved = resolvedPageRef ?? (await resolvePageRef(body.pageId));
-      if (!resolved) return null;
-      return (await userCanAccessPage(userId, resolved.id)) ? resolved.id : null;
+      if (!resolvedPageRef) return null;
+      return (await userCanAccessPage(userId, resolvedPageRef.id)) ? resolvedPageRef.id : null;
     };
     const insertPageRef = convId ? null : await pageRefForInsert();
     const saveConversation = async (
@@ -1285,7 +1366,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       if (externalUrls && externalUrls.length > 0 && externalDocs.length === 0) {
         groundingFailures.push('none of the attached URLs could be retrieved');
       }
-      if (includeSubPages && body.pageId && !subPageContextAssembled) {
+      if (includeSubPages && identity.kind === 'page' && !subPageContextAssembled) {
         groundingFailures.push('the requested page tree could not be included');
       }
       if (body.searchWeb && askWebSources.length === 0) {
@@ -1539,14 +1620,19 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         } catch {
           return refuse(503, { error: 'ai_policy_unavailable', stage: 'chat' });
         }
-        const { proof: publicationProof, saved } = await publish(cached.content, false);
+        const { proof: publicationProof } = await publish(cached.content, false);
         if (!publicationProof.ok) return refuse(publicationProof.status, { error: publicationProof.code, stage: 'chat' });
 
         sendCachedSSE(reply, cached.content, {
           conversationId: convId ?? null,
           sources,
         });
-        startAutoTitle(saved, cached.content);
+        // No auto-title on a replay. A cached answer is "an answer without
+        // an LLM call" (no audit row, `cached: true` on the wire), and the
+        // title call would be exactly such a call: a second shipment of the
+        // page-derived answer to whatever provider resolves at THAT moment,
+        // made from a path that promised none. The question-derived title
+        // stays on the persisted row the frame names.
         return;
       }
     }
@@ -1628,7 +1714,13 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           context: { operation, stage: 'chat', attempt: 1 } } },
         beforeDispatch: async () => {
           const proof = await reproveGrounding(turnProvenance.pages, bound, userId);
-          if (!proof.ok) throw new Error(proof.code);
+          // A refusal here is a POLICY decision, not a provider failure: it
+          // is typed so the catch below records no `error` audit for it (the
+          // admission already emitted its own decision event), and the
+          // reason distinguishes unreadable authority from a changed binding.
+          if (!proof.ok) {
+            throw new ArticleStageRefusedError(proof.status === 503 ? 'ai_policy_unavailable' : 'grounding_changed');
+          }
         },
       });
       let fullAnswer = '';
@@ -1658,7 +1750,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           // writing it would serve that private thread to the next caller
           // who asks the same question fresh.
           const { proof, saved } = await publish(fullAnswer, true);
-          if (!proof.ok) throw new Error(proof.code);
+          // Publication refused under the lock: the answer was generated but
+          // may not be persisted/cached — a policy outcome, not a stream
+          // error. Typed for the catch below.
+          if (!proof.ok) {
+            throw new ArticleStageRefusedError(proof.status === 503 ? 'ai_policy_unavailable' : 'grounding_changed');
+          }
 
           emitLlmAudit({
             userId,
@@ -1691,15 +1788,32 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       } catch (err) {
         if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
           logger.debug('RAG stream aborted by client disconnect');
+        } else if (err instanceof ArticleStageRefusedError && fullAnswer === '') {
+          // Refused at `beforeDispatch`, BEFORE any text reached the
+          // provider: a policy decision whose evidence is the admission's
+          // own decision event. It is not a provider error and must not be
+          // recorded as one — an `error` audit row here would count a
+          // refusal as a failed inference in the usage attestation.
+          logger.warn({ reason: err.reason }, 'RAG dispatch refused by article policy');
+          reply.raw.write(`data: ${JSON.stringify({
+            error: err.reason === 'ai_policy_unavailable' ? 'ai_policy_unavailable' : 'ai_grounding_not_admissible',
+            done: true,
+          })}\n\n`);
         } else {
-          logger.error({ err }, 'RAG stream error');
+          // A genuine stream failure, or a publication refused AFTER the
+          // provider answered (the text was generated and must be
+          // accounted for, but was not persisted or cached).
+          const refusal = err instanceof ArticleStageRefusedError ? err : null;
+          const publicationRefused = refusal !== null;
+          if (refusal) logger.warn({ reason: refusal.reason }, 'RAG answer not published: grounding changed');
+          else logger.error({ err }, 'RAG stream error');
           emitLlmAudit({
             userId,
             action: 'ask',
             model: resolvedModel,
             provider: chatConfig.providerId,
             inputTokens: estimateTokens(messages.map(m => contentToText(m.content)).join('')),
-            outputTokens: 0,
+            outputTokens: estimateTokens(fullAnswer),
             inputMessages: messages.map(m => ({
               role: m.role,
               contentLength: contentToText(m.content).length,
@@ -1707,12 +1821,16 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'error',
-            errorMessage: err instanceof Error ? err.message : String(err),
+            errorMessage: refusal
+              ? `Publication refused: ${refusal.reason}`
+              : err instanceof Error ? err.message : String(err),
             promptInjectionDetected,
             sanitized: wasSanitized,
             ...retrievedImageAudit,
           });
-          reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+          reply.raw.write(`data: ${JSON.stringify({
+            error: publicationRefused ? 'ai_grounding_not_admissible' : 'Stream error', done: true,
+          })}\n\n`);
         }
       } finally {
         request.raw.removeListener('close', onClose);

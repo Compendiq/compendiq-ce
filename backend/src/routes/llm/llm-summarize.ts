@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { emitUnresolvedDecision } from '../../domains/llm/services/ai-policy-admission.js';
 import { resolveReadablePageRef } from './_helpers.js';
 import { assembleDirectArticleContext } from './_article-transport.js';
-import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { FastifyInstance } from 'fastify';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
@@ -131,12 +131,14 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(effectiveModel, systemPrompt, summarizeContent, summaryConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      // Cache reuse is not an inference attempt. Still revalidate after the
-      // potentially waiting cache lookup; a denial emits its typed refusal.
-      if (transportContext.kind === 'article') {
-        await authorizeArticleDispatch(summaryConfig, transportContext.stage.provenance, userId, 'summary', transportContext.stage.context, effectiveModel, true);
-      }
-      sendCachedSSE(reply, cached.content);
+      // Cache reuse is not an inference attempt. The hit is re-admitted
+      // under its RECORDED provenance (#282, replayDirectOutput) after the
+      // potentially waiting lookup; a refusal is a status code before any
+      // SSE header, and a malformed entry is refused rather than regenerated.
+      const replayed = await replayDirectOutput(cached, {
+        transport: summaryConfig, transportContext, userId, usecase: 'summary', model: effectiveModel,
+      });
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -157,10 +159,16 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
             inputMessages: summarizeMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             retrievedChunkIds: [],
           },
+          cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a pre-hijack refusal is a 409/503 with the contract body, never a 500.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'summary');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }

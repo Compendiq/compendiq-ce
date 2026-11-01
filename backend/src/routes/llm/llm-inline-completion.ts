@@ -188,6 +188,15 @@ export async function llmInlineCompletionRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         if (error instanceof ArticleStageRefusedError) {
+          // #282: a KNOWN current denial — the article is `none`, or
+          // `local_only` against a provider that is not effectively local —
+          // is the editor's ordinary "no suggestion here" outcome, the same
+          // 204 an unassigned stage answers: no provider request, no usage,
+          // no error for the editor to back off from. The decision event is
+          // the admission's. Unreadable authority and a binding that moved
+          // (`ai_policy_unavailable`, `grounding_changed`) are still 503 —
+          // the request could not be decided, not decided against.
+          if (error.reason === 'ai_policy_denied') return reply.code(204).send();
           return reply.code(503).send({ error: 'ai_policy_unavailable' });
         }
         rethrowUnlessClientDisconnect(error, controller);

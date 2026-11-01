@@ -47,6 +47,22 @@ async function authorizeTransport(cfg: ProviderConfig, model: string, context: T
 export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
 
+/**
+ * The provider closed a streaming response WITHOUT its `data: [DONE]`
+ * terminator. Whatever text arrived before the EOF is a PREFIX of unknown
+ * length, not a completion: a proxy timeout, a crashed worker or a dropped
+ * socket all look exactly like this. It is thrown rather than yielded as
+ * `done: true` so no consumer can cache, publish or audit the prefix as a
+ * successful result. Not an `LlmHttpError` (no status was involved) and not
+ * counted against the breaker (the dispatch itself succeeded).
+ */
+export class StreamIncompleteError extends Error {
+  constructor(public readonly receivedCharacters: number) {
+    super('streamChat: provider ended the stream before [DONE]');
+    this.name = 'StreamIncompleteError';
+  }
+}
+
 export interface ProviderConfig {
   /** Revision read in the same SQL row as the resolved transport. */
   configRevision?: number;
@@ -621,6 +637,10 @@ export async function* streamChat(
   // Think-off drops it. The flag is closed on the first visible token or
   // at [DONE] so a reasoning-only stream still emits a well-formed block.
   let thinkOpen = false;
+  // Visible characters delivered so far — reported on the incomplete-stream
+  // error so an operator can tell a dropped-at-byte-zero stream from one
+  // cut mid-answer, without the error carrying any of the text itself.
+  let received = 0;
   // The try/finally guarantees teardown on ANY exit — including the early
   // generator.return() the runtime triggers when a consumer stops iterating
   // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
@@ -670,6 +690,7 @@ export async function* streamChat(
             }
           }
           if (content) {
+            received += content.length;
             if (thinkOpen) {
               yield { content: `</think>${content}`, done: false };
               thinkOpen = false;
@@ -683,8 +704,13 @@ export async function* streamChat(
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
-  if (thinkOpen) yield { content: '</think>', done: false };
-  yield { content: '', done: true };
+  // EOF before `[DONE]`: the provider (or a proxy between us) closed the
+  // socket mid-answer. The text so far is a prefix, not a result — see
+  // StreamIncompleteError. A consumer that is itself being torn down by a
+  // client disconnect never reaches here (generator.return() exits the
+  // loop above through the finally), so this only fires on a real EOF.
+  if (signal?.aborted) return;
+  throw new StreamIncompleteError(received);
 }
 
 export async function generateEmbedding(

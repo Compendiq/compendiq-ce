@@ -19,6 +19,12 @@ export class ArticleRouteFixture {
   providerId = '';
   permitted = true;
   output = 'Improved text';
+  /**
+   * When set, the synthetic provider writes the delta frame and then closes
+   * the socket WITHOUT `data: [DONE]` — the shape of a proxy timeout or a
+   * crashed worker mid-answer. Reset to `false` by `reset()`.
+   */
+  endWithoutDone = false;
   requests: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = [];
 
   async start(register: (app: FastifyInstance) => Promise<void>) {
@@ -32,7 +38,8 @@ export class ArticleRouteFixture {
       request.on('end', () => {
         this.requests.push(JSON.parse(raw));
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: this.output } }] })}\n\ndata: [DONE]\n\n`);
+        const delta = `data: ${JSON.stringify({ choices: [{ delta: { content: this.output } }] })}\n\n`;
+        response.end(this.endWithoutDone ? delta : `${delta}data: [DONE]\n\n`);
       });
     });
     await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
@@ -53,6 +60,7 @@ export class ArticleRouteFixture {
     this.requests.length = 0;
     this.permitted = true;
     this.output = 'Improved text';
+    this.endWithoutDone = false;
     this.userId = (await query<{ id: string }>("INSERT INTO users (username, password_hash, role) VALUES ('article-reader', 'x', 'user') RETURNING id")).rows[0]!.id;
     this.pageId = (await query<{ id: number }>(`INSERT INTO pages (title, source, visibility, created_by_user_id, owner_id, body_text, confluence_id)
       VALUES ('Article', 'standalone', 'private', $1, $1, 'Original text', 'conf-123') RETURNING id`, [this.userId])).rows[0]!.id.toString();

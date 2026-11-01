@@ -2,7 +2,7 @@ import { directArticleTransport } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/prompts.js';
 import { resolveDirectArticleChat } from './_article-resolution.js';
-import { authorizeArticleDispatch } from '../../domains/llm/services/article-stage-admission.js';
+import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
@@ -91,11 +91,12 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      if (transportContext.kind === 'article') {
-        await authorizeArticleDispatch(chatConfig, transportContext.stage.provenance, request.userId,
-          'chat', transportContext.stage.context, resolvedModel, true);
-      }
-      sendCachedSSE(reply, cached.content);
+      // #282: re-admitted under the RECORDED provenance (replayDirectOutput);
+      // a refusal is a status code before any SSE header.
+      const replayed = await replayDirectOutput(cached, {
+        transport: chatConfig, transportContext, userId: request.userId, usecase: 'chat', model: resolvedModel,
+      });
+      sendCachedSSE(reply, replayed);
       return;
     }
 
@@ -114,10 +115,16 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
             inputMessages: diagramMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
             retrievedChunkIds: [],
           },
+          cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         });
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a pre-hijack refusal is a 409/503 with the contract body, never a 500.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'chat');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }

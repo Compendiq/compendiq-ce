@@ -47,8 +47,15 @@ const PAGE = {
 
 const IMPROVED = 'You need a personal access token.';
 
+/** The durable row the Improve route names on its final frame (#282). */
+const IMPROVEMENT_ID = '3f0b2c4e-7a61-4d2b-9c58-1e4f6a8b0d21';
+const READMIT_PATH = `/llm/improvements/${IMPROVEMENT_ID}/readmit`;
+
 function baseRoutes(path: string) {
   if (path === '/pages/page-1') return Promise.resolve(PAGE);
+  if (path === READMIT_PATH) {
+    return Promise.resolve({ improvementId: IMPROVEMENT_ID, pageId: 1, improvedMarkdown: IMPROVED, aiProvenance: {} });
+  }
   if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
   if (path.startsWith('/llm/usecase-default')) return Promise.resolve({ model: 'llama3' });
   if (path === '/llm/conversations') return Promise.resolve([]);
@@ -111,7 +118,10 @@ describe('DockDiffCard (#1126)', () => {
     apiFetchMock.mockImplementation(baseRoutes);
     streamSSEMock.mockImplementation(() => (async function* () {
       yield { content: IMPROVED };
-      yield { final: true, done: true, originalMarkdown: PAGE.bodyText, layoutTokensLost: false };
+      yield {
+        final: true, done: true, originalMarkdown: PAGE.bodyText, layoutTokensLost: false,
+        improvementId: IMPROVEMENT_ID,
+      };
     })());
   });
 
@@ -153,6 +163,96 @@ describe('DockDiffCard (#1126)', () => {
     });
     await waitFor(() => expect(screen.queryByTestId('dock-diff-card')).not.toBeInTheDocument());
     expect(toast.success).toHaveBeenCalled();
+  });
+
+  // #282: the pending improvement is reusable state. Its text proves nothing
+  // about the policy or binding it was generated under, so Apply hands the
+  // durable row back BY REFERENCE and the server re-admits its recorded
+  // provenance first. The apply route sees only text the server just re-proved.
+  describe('re-admits the stored improvement before applying (#282)', () => {
+    /** Make `POST /llm/improvements/:id/readmit` fail with `status`. */
+    function failReadmitWith(status: number, message: string) {
+      apiFetchMock.mockImplementation((path: string) =>
+        path === READMIT_PATH ? Promise.reject(new ApiError(status, message)) : baseRoutes(path));
+    }
+
+    it('calls the readmit route for the row the final frame named, before the apply route', async () => {
+      renderDock();
+      await produceDiff();
+
+      fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+      await waitFor(() => expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.anything()));
+      const calls = apiFetchMock.mock.calls.map(([path]) => path as string);
+      expect(calls.indexOf(READMIT_PATH)).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf(READMIT_PATH)).toBeLessThan(calls.indexOf('/llm/improvements/apply'));
+      expect(apiFetchMock).toHaveBeenCalledWith(READMIT_PATH, expect.objectContaining({ method: 'POST' }));
+      // What is applied is the row's re-admitted text.
+      expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.objectContaining({
+        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 4, title: 'Onboarding Guide' }),
+      }));
+    });
+
+    it('keeps a 409 ai_history_not_replayable on the card, applies nothing and offers a re-run', async () => {
+      failReadmitWith(409, 'Conflict');
+      renderDock();
+      await produceDiff();
+
+      fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+      expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('can no longer be applied');
+      expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
+      // The text stays — the verdict is about the binding, not the words.
+      expect(screen.getByTestId('dock-unified-diff')).toHaveTextContent('personal access token');
+      expect(screen.queryByTestId('dock-diff-apply')).not.toBeInTheDocument();
+      expect(screen.getByTestId('dock-diff-rerun')).toBeInTheDocument();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it('keeps a 503 ai_policy_unavailable on the card and leaves Apply available to retry', async () => {
+      failReadmitWith(503, 'Service unavailable');
+      renderDock();
+      await produceDiff();
+
+      fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+      expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('Try Apply again');
+      expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
+      // Unreadable authority says nothing about the article: not a re-run.
+      expect(screen.getByTestId('dock-diff-apply')).toBeInTheDocument();
+      expect(screen.queryByTestId('dock-diff-rerun')).not.toBeInTheDocument();
+    });
+
+    it('refuses to apply when the re-admitted row is not the text on screen', async () => {
+      apiFetchMock.mockImplementation((path: string) =>
+        path === READMIT_PATH
+          ? Promise.resolve({ improvementId: IMPROVEMENT_ID, pageId: 1, improvedMarkdown: 'Something else entirely.', aiProvenance: {} })
+          : baseRoutes(path));
+      renderDock();
+      await produceDiff();
+
+      fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+      expect(await screen.findByTestId('dock-diff-apply-error')).toHaveTextContent('does not match');
+      expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
+      expect(screen.getByTestId('dock-diff-rerun')).toBeInTheDocument();
+    });
+
+    it('applies the text it has when the stream named no row', async () => {
+      // No readable page, an older backend: nothing to re-admit against.
+      streamSSEMock.mockImplementation(() => (async function* () {
+        yield { content: IMPROVED };
+        yield { final: true, done: true, originalMarkdown: PAGE.bodyText, layoutTokensLost: false };
+      })());
+      renderDock();
+      await produceDiff();
+
+      fireEvent.click(screen.getByTestId('dock-diff-apply'));
+
+      await waitFor(() => expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.anything()));
+      expect(apiFetchMock.mock.calls.some(([path]) => String(path).endsWith('/readmit'))).toBe(false);
+    });
   });
 
   it('keeps the 422 layout rejection on the card and offers a re-run', async () => {

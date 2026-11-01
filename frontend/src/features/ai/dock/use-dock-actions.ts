@@ -92,7 +92,7 @@ export function useDockActions({
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
     improvementType, diagramType, createSkill, input, setInput, setMessages, runStream,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
-    setDiffBaseVersion, setDiagramCode, setGeneratedDraft,
+    setDiffBaseVersion, setImprovementId, setDiagramCode, setGeneratedDraft,
   } = useAiContext();
 
   // #1402: "Ask your first AI question". `/ai`'s AskMode marks the same
@@ -134,7 +134,10 @@ export function useDockActions({
         question,
         model,
         conversationId: conversationId ?? undefined,
-        pageId: pageId ?? undefined,
+        // #282: the dock always sits beside an article when it has a pageId;
+        // declare it so the backend admits that article before the question
+        // is read. Without one the question is the user's own.
+        ...(pageId ? { inputKind: 'page', pageId } : { inputKind: 'independent' }),
         includeSubPages,
         ...(imageHandle && { imageHandle }),
         ...(referenceText && { referenceText }),
@@ -205,6 +208,9 @@ export function useDockActions({
         setOriginalMarkdown('');
         setLayoutTokensLost(undefined);
         setDiffBaseVersion(null);
+        // #282: a fresh run names a fresh row. Cleared with the text so a
+        // stale id can never be re-admitted beside new text.
+        setImprovementId(null);
         await runStream(
           '/llm/improve',
           {
@@ -254,6 +260,9 @@ export function useDockActions({
               if (meta?.originalMarkdown !== undefined) setOriginalMarkdown(meta.originalMarkdown);
               setLayoutTokensLost(meta?.layoutTokensLost);
               setDiffBaseVersion(baseVersion);
+              // #282: the row Apply will hand back by reference. `null` when
+              // the server named none — Apply then has nothing to re-admit.
+              setImprovementId(meta?.improvementId ?? null);
               setShowDiffView(true);
             },
           },
@@ -284,7 +293,7 @@ export function useDockActions({
     includeSubPages, referenceText, imageHandle, isBusy, onImageExpired, onImageConsumed, onDeepSearchConsumed,
     runStream, setInput,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
-    setDiffBaseVersion, setDiagramCode,
+    setDiffBaseVersion, setImprovementId, setDiagramCode,
   ]);
 
   const runCreateSkill = useCallback(async (skillId?: CreateSkillId) => {

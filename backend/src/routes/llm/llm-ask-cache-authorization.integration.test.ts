@@ -361,7 +361,9 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     );
 
     // The follow-up carries no page: only A's own earlier turn holds the secret.
-    const followUp = { question: 'Summarize zxqv914 again.', referenceText: REFERENCE };
+    // #282: a page-less question must SAY so (`inputKind: 'independent'`),
+    // exactly as both composers do — the route refuses one that says nothing.
+    const followUp = { question: 'Summarize zxqv914 again.', referenceText: REFERENCE, inputKind: 'independent' };
     const answer = await ask(a, { ...followUp, conversationId: conversation.rows[0]!.id });
     expect(answer.content).toBe(SECRET);
     expect(stub.streamCalls).toBe(2);
@@ -398,7 +400,10 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
       headers: { authorization: `Bearer ${owner.token}` }, payload: { locality: 'external' },
     });
     expect(external.statusCode, external.body).toBe(200);
-    await expectDenied(owner, { question: 'Continue.', conversationId: stored.rows[0]!.id });
+    // The continuation is page-less on the wire; the identity contract
+    // (#282) is satisfied first, so the refusal below is the history
+    // guard's 409, not the 400 an undeclared question draws.
+    await expectDenied(owner, { question: 'Continue.', conversationId: stored.rows[0]!.id, inputKind: 'independent' });
   });
 
   it('refuses a descendant body changed after its real SELECT and before consumption', async () => {

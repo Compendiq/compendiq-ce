@@ -65,6 +65,74 @@ describe.skipIf(!available)('serialized article stage admission', () => {
     }
   });
 
+  it('binds the rerank stage to the saved transport and model, outside the breaker', async () => {
+    const { rerank } = await import('./rerank-client.js');
+    const { ArticleStageRefusedError } = await import('./article-stage-admission.js');
+    const { loadProviderConfig } = await import('./llm-provider-resolver.js');
+    const { getProviderBreaker } = await import('../../../core/services/circuit-breaker.js');
+    const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const previous = getGlobalDispatcher();
+    setGlobalDispatcher(agent);
+    const provider = await createProvider({ name: randomUUID(), baseUrl: 'http://rerank-stage.test/v1', authType: 'none', verifySsl: true });
+    await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('rerank', $1, 'rerank-model')
+      ON CONFLICT (usecase) DO UPDATE SET provider_id = EXCLUDED.provider_id, model = EXCLUDED.model`, [provider.id]);
+    const config = await loadProviderConfig(provider.id);
+    const rows = await query<{ id: number; content_revision: string }>(`INSERT INTO pages (title, source, version, visibility, ai_policy)
+      VALUES ('Reranked', 'standalone', 1, 'shared', 'all') RETURNING id, content_revision`);
+    const page = rows.rows[0]!;
+    const provenance: ConversationTurnAiProvenance = { version: 1, providerId: provider.id, configRevision: config.configRevision!, locality: 'external',
+      pages: [{ pageId: page.id, policy: 'all', policyRevision: 0, contentRevision: Number(page.content_revision) }] };
+    const events: AiDecisionEvent[] = [];
+    vi.spyOn(getEnterprisePlugin(), 'onAiDecision').mockImplementation((event) => { events.push(event); });
+    const sentPaths: string[] = [];
+    agent.get('http://rerank-stage.test').intercept({ path: '/v1/rerank', method: 'POST' }).reply(200, (req) => {
+      sentPaths.push(req.path);
+      return { results: [{ index: 0, relevance_score: 0.9 }] };
+    }).persist();
+    agent.get('http://forged.test').intercept({ path: '/v1/rerank', method: 'POST' }).reply(200, (req) => {
+      sentPaths.push(`forged:${req.path}`);
+      return { results: [{ index: 0, relevance_score: 0.9 }] };
+    }).persist();
+    // The binding is the CLIENT's: the caller hands over the grounding and
+    // the client proves `cfg`/`model` — the values its own fetch reads —
+    // on a held connection after the queue wait. There is no hook for a
+    // caller to prove one transport and send to another.
+    const dispatchWith = (transport: typeof config, model: string) =>
+      rerank(transport, model, 'q', ['doc'], { article: { provenance, userId: null } });
+    try {
+      // Saved transport + assigned model: admitted, one request.
+      await expect(dispatchWith(config, 'rerank-model')).resolves.toEqual([{ index: 0, relevanceScore: 0.9 }]);
+      expect(sentPaths).toEqual(['/v1/rerank']);
+      expect(events.at(-1)).toMatchObject({ decision: 'admitted', usecase: 'rerank', stage: 'rerank', attempt: 1, provider: { providerId: provider.id, model: 'rerank-model' } });
+      const admittedOperation = events.at(-1)!.operationId;
+
+      // A forged endpoint on the same provider id/revision: refused before HTTP.
+      await expect(dispatchWith({ ...config, baseUrl: 'http://forged.test/v1' }, 'rerank-model')).rejects.toBeInstanceOf(ArticleStageRefusedError);
+      expect(sentPaths).toEqual(['/v1/rerank']);
+      expect(events.at(-1)).toMatchObject({ decision: 'blocked', usecase: 'rerank', attempt: 1 });
+      // Each call is its own operation; the refusal is never filed under the admitted one.
+      expect(events.at(-1)!.operationId).not.toBe(admittedOperation);
+
+      // A model the assignment does not name: refused before HTTP.
+      await expect(dispatchWith(config, 'other-model')).rejects.toBeInstanceOf(ArticleStageRefusedError);
+      expect(sentPaths).toEqual(['/v1/rerank']);
+
+      // The page is later restricted to local providers; this one is external.
+      await query("UPDATE pages SET ai_policy = 'local_only', ai_policy_revision = ai_policy_revision + 1 WHERE id = $1", [page.id]);
+      await expect(dispatchWith(config, 'rerank-model')).rejects.toBeInstanceOf(ArticleStageRefusedError);
+      expect(sentPaths).toEqual(['/v1/rerank']);
+      expect(events.at(-1)).toMatchObject({ decision: 'blocked', articles: [{ pageId: page.id, policy: 'local_only' }] });
+
+      // None of the refusals is a provider failure.
+      expect(getProviderBreaker(provider.id).getStatus().failureCount).toBe(0);
+    } finally {
+      setGlobalDispatcher(previous);
+      await agent.close();
+    }
+  });
+
   it('records the authoritative model on admission and on a same-provider model change', async () => {
     const { authorizeArticleDispatch } = await import('./article-stage-admission.js');
     const { loadProviderConfig } = await import('./llm-provider-resolver.js');

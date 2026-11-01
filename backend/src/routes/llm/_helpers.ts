@@ -21,8 +21,9 @@ import {
   ImageStagingUnavailableError,
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
-import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 import { ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -286,6 +287,16 @@ export async function streamSSE(
      * pre-Accept warning.
      */
     finalExtras?: (content: string) => Record<string, unknown>;
+    /**
+     * #282: the article binding the streamed text was generated under —
+     * written beside the cached output so a later hit can be re-admitted
+     * against the SAME provider revision, locality and page revisions
+     * rather than against whatever the request's current context says.
+     * Absent for a transport with no article (Generate): the entry then
+     * carries no provenance, and `replayDirectOutput` treats it as
+     * article-free.
+     */
+    cacheProvenance?: ConversationTurnAiProvenance;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -346,7 +357,7 @@ export async function streamSSE(
       options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted &&
       (options.shouldCache?.(fullContent) ?? true)
     ) {
-      await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
+      await options.llmCache.setCachedResponse(options.cacheKey, fullContent, undefined, options.cacheProvenance);
     }
 
     if ((extras || options?.finalExtras) && !controller.signal.aborted) {
@@ -358,6 +369,12 @@ export async function streamSSE(
     streamError = err;
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
+    } else if (err instanceof StreamIncompleteError) {
+      // The provider closed the socket before `[DONE]`: the text the client
+      // already saw is a prefix. Say so on the wire rather than letting the
+      // stream merely stop, so the client never renders it as finished.
+      logger.warn({ receivedCharacters: err.receivedCharacters }, 'SSE stream ended before completion');
+      reply.raw.write(`data: ${JSON.stringify({ error: 'Stream ended before completion', done: true })}\n\n`);
     } else {
       logger.error({ err }, 'SSE stream error');
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
@@ -371,7 +388,11 @@ export async function streamSSE(
         durationMs: Date.now() - auditStart,
         status: streamError || controller.signal.aborted ? 'error' : 'success',
         ...(streamError || controller.signal.aborted
-          ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
+          ? {
+              errorMessage: controller.signal.aborted
+                ? 'Client disconnected'
+                : streamError instanceof StreamIncompleteError ? 'Stream ended before completion' : 'Stream error',
+            }
           : {}),
       });
     }
@@ -379,7 +400,12 @@ export async function streamSSE(
     reply.raw.end();
   }
 
-  return fullContent;
+  // Only a COMPLETED stream is a result. A failed or truncated stream, or
+  // one the client abandoned, resolves to '' so no caller can persist the
+  // prefix as the finished output (the cache write above is gated the same
+  // way); callers that need the partial text for diagnostics have the
+  // audit entry's output-token count.
+  return streamError || controller.signal.aborted ? '' : fullContent;
 }
 
 /**

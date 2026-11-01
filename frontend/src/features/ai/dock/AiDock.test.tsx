@@ -399,6 +399,19 @@ describe('AiDock (#1126)', () => {
       expect(await askDock('where is the PAT setting?')).not.toHaveProperty('deepSearch');
     });
 
+    // #282: a question typed beside an article is declared page-bound so the
+    // backend admits THAT article before it reads the question. The dock is
+    // never mounted without a page, but a route without one (`/ai`) would be
+    // the user's own question.
+    it('declares the open article as the question’s input', async () => {
+      renderDock();
+      await openAndSettle();
+
+      expect(await askDock('is the PAT step still right?')).toMatchObject({
+        inputKind: 'page', pageId: 'page-1',
+      });
+    });
+
     // NON-STICKINESS TEST 1 — must not survive a SEND.
     it('sends the flag once, then resets — the next question goes without it', async () => {
       renderDock();

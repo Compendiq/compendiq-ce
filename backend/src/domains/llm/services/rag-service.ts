@@ -40,7 +40,6 @@ import { readDerivedProvenance, type DerivedProvenance } from './derived-provena
 import type { AiPolicy } from '@compendiq/contracts';
 import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
 import { asRevision, loadProviderMetadata } from './ai-policy-admission.js';
-import { admitArticleStage } from './article-stage-admission.js';
 import { ConversationTurnAiProvenanceSchema } from '@compendiq/contracts';
 import {
   aiPolicyPredicate,
@@ -2070,10 +2069,17 @@ async function hybridSearchInner(
         pages: pool.map((r) => ({ pageId: r.pageId, policy: r.aiPolicy,
           policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision })),
       });
-      const beforeDispatch = () => admitArticleStage(provenance, userId, 'rerank');
-      await beforeDispatch();
+      // #282: the rerank stage is admitted INSIDE the client against the
+      // EXACT transport it is about to use — provider row revision, endpoint,
+      // credential, TLS setting and the live `rerank` model assignment — not
+      // merely the provider id and locality the provenance names. The
+      // client runs that admission after the queue wait and outside the
+      // breaker, so a provider row edited while the call sat in the queue
+      // is refused before any chunk text leaves the host, and the refusal
+      // never counts as a provider failure. The provenance handed over is
+      // the pool as retrieved (policy + revisions per row).
       const scored = await rerankDocuments(rerankCfg.config, rerankCfg.model, queryText, docs, {
-        timeoutMs: RERANK_TIMEOUT_MS, beforeDispatch,
+        timeoutMs: RERANK_TIMEOUT_MS, article: { provenance, userId },
       });
       // An empty scored set means the provider answered 200 with nothing this
       // client could use (unrecognised keys, out-of-range indices, an empty
