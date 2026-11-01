@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
+  subscribes to the live channel before replaying the durable history list,
+  and every published event carries a monotonic per-job `seq` (assigned
+  atomically with the list write) that the stream uses to reconcile replayed
+  and live deliveries. A `done`/`cancelled` event published at any point
+  between replay and subscription terminates the client stream instead of
+  leaving it waiting; events are no longer lost, duplicated or reordered
+  across that boundary. Events written by a pre-upgrade pod (no `seq`) during
+  a rolling upgrade are deduplicated by content against the replayed history.
 - **Backup decrypt error wording (#1831):** a truncated or tampered backup
   envelope now fails with a stable `BackupCryptoError('Backup truncated or
   authentication failed')` instead of the raw OpenSSL message, which differs
