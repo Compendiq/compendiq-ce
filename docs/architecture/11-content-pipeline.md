@@ -382,6 +382,11 @@ fflate already decompressed into a **stored** archive before handing them to
 `mammoth` — mammoth's own inflater is unbounded and outside our reach, and the
 repack leaves it nothing to inflate.
 
+ODT `text:s` expands `text:c` spaces (one when omitted), alongside tabs and
+line breaks. The combined expansion and original body are bounded by the
+existing 20 MB entry limit; excessive counts fail extraction with 422 rather
+than allocating an unbounded string.
+
 **Where the text goes.** The response is never persisted; the frontend holds it
 and sends it back on the *next* LLM call, as a dedicated bounded field of that
 call's request:

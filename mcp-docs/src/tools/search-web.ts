@@ -31,7 +31,7 @@ export async function searchWeb(
 
   // 2. Check cache
   const cache = new DocsCache(redis);
-  const cached = await cache.getCachedSearch(sanitized);
+  const cached = await cache.getCachedSearch(sanitized, numResults);
   if (cached) {
     logOutboundRequest({
       tool: 'search_web', query: sanitized, userId: options.userId,
@@ -81,7 +81,7 @@ export async function searchWeb(
   }
 
   // 4. Cache successful responses only — a genuinely-empty result set is cacheable.
-  await cache.setCachedSearch(sanitized, {
+  await cache.setCachedSearch(sanitized, numResults, {
     results, query: sanitized, fetchedAt: new Date().toISOString(),
   });
 
