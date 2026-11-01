@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-page duplicate detection (#1798):** resolve standalone sources by
   internal ID and Confluence sources by content ID under the same visibility
   rules as the full scan, including restricted and private pages.
+- **Embedding publication (#1782):** discard vectors whose source title or
+  body changed while the provider request was in flight, preserving the prior
+  chunks and leaving newer content dirty for the next pass. Revision bumps
+  from non-text writes (draft autosave, labels, sort order, icons,
+  attachments) landing mid-flight still publish instead of re-spending the
+  embedding call.
 - **Webhook delivery-ledger retention (#1797):** the daily retention worker now
   prunes `webhook_deliveries` attempt rows older than the new
   `webhook_deliveries_retention_days` admin setting (default 90, range 7–3650,
@@ -66,6 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider configuration after Redis reconnect (#1794):** a replica that
+  misses provider updates or deletions invalidates its local configuration
+  and provider client resources when its subscriber reconnects.
 - **Page list visibility filter (#1786):** private and shared list requests
   now filter both items and totals, including substring-search fallback, and
   use distinct cache entries. Matching bulk filters select the same visible set.
