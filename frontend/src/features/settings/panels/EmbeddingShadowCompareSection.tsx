@@ -4,7 +4,7 @@ import { AlertTriangle, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
-import { useNoticeRetry } from './use-notice-retry';
+import { useNoticeRetry } from '../../../shared/hooks/use-notice-retry';
 
 /**
  * #1260 — "Compare on real queries", inside the shadow card's `ready` branch.

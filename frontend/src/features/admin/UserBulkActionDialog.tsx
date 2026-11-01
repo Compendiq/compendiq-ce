@@ -136,9 +136,7 @@ function UserBulkActionDialogInner({
       toast.success(
         `Action applied to ${selectedUserIds.length} user${selectedUserIds.length === 1 ? '' : 's'}`,
       );
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      // Mirror the dual-key invalidation from BulkUserImportModal for
-      // CE #304 compatibility.
+      // The prefix also covers the separate RBAC user list.
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
       handleClose();
     },

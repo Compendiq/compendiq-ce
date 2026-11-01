@@ -48,37 +48,32 @@ grep -c "BEGIN CERTIFICATE" corp-ca-bundle.pem
 
 ### 2. Point Compendiq at the bundle
 
-The bundled `docker/docker-compose.yml` already wires a CA bundle mount through two environment variables — you do **not** need to add a new volume entry. The relevant lines are:
+The base Compose deployment does not mount a host CA. To opt in, set an
+absolute host path to an existing PEM file readable by the backend container's
+UID 1000, then include the corporate CA override on every Compose invocation:
 
-```yaml
-backend:
-  environment:
-    NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
-  volumes:
-    - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
+```bash
+export HOST_CA_BUNDLE_PATH=/absolute/path/to/corp-ca-bundle.pem
+docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.corporate-ca.yml up -d
 ```
 
-Override the defaults in your `.env` (next to `docker-compose.yml`) to point at your bundle:
+The override mounts the PEM read-only at `/etc/compendiq/corporate-ca.pem`
+and sets `NODE_EXTRA_CA_CERTS` to that path. It does not overwrite the image's
+system bundle. Node's built-in roots and the image's system bundle remain
+trusted by the Confluence and LLM dispatchers alongside the private CA.
+Keep certificate and hostname verification enabled. On bare metal, set
+`NODE_EXTRA_CA_CERTS` to the PEM path directly.
 
-```env
-# Host path to the bundle you assembled in step 1
-HOST_CA_BUNDLE_PATH=/absolute/path/to/corp-ca-bundle.pem
-
-# Where it's mounted inside the container — keep the default unless
-# you have a reason to change it
-CONTAINER_CA_BUNDLE_PATH=/etc/ssl/certs/ca-certificates.crt
-
-# Leave these at their defaults — verification is ON
-CONFLUENCE_VERIFY_SSL=true
-LLM_VERIFY_SSL=true
-```
-
-Adding a second `volumes:` entry on top of this one would silently shadow the default mount and is a common source of "I mounted the file but Node still won't load it" tickets. Stick with the env vars.
+Previously `HOST_CA_BUNDLE_PATH` was applied by the base file, with
+`CONTAINER_CA_BUNDLE_PATH` selecting the mount target. Those settings no
+longer enable private trust by themselves: add the override when upgrading.
 
 ### 3. Restart the stack
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.corporate-ca.yml up -d
 ```
 
 Node picks up `NODE_EXTRA_CA_CERTS` at process start. On a fresh boot the backend logs one of:
@@ -89,7 +84,8 @@ Node picks up `NODE_EXTRA_CA_CERTS` at process start. On a fresh boot the backen
 You can grep for the exact string:
 
 ```bash
-docker compose -f docker/docker-compose.yml logs backend | grep "custom CA bundle"
+docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.corporate-ca.yml logs backend | grep "custom CA bundle"
 ```
 
 ## Path 2 (escape hatch): verification off
@@ -128,7 +124,7 @@ Turn verification back on as soon as the CA bundle lands.
 ## Troubleshooting
 
 **1. Compendiq still throws `UNABLE_TO_VERIFY_LEAF_SIGNATURE` after mounting the bundle.**
-The container never picked up the mount. Run `docker compose exec backend ls /etc/ssl/certs/corp-ca-bundle.pem` to confirm. If missing, re-check the compose `volumes:` line and `docker compose up -d` (not `restart`; restart skips volume remounts).
+Recreate the backend with both Compose files (not `restart`, which skips mount changes) and check that the host PEM exists and is readable by UID 1000.
 
 **2. `SELF_SIGNED_CERT_IN_CHAIN`.**
 Your bundle is missing an intermediate CA. Check the Confluence cert chain:
