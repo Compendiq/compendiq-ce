@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Popover from '@radix-ui/react-popover';
@@ -49,29 +49,13 @@ function toNotificationList(data: unknown): Notification[] {
   });
 }
 
-function useNotifications() {
+function useNotifications(offset: number) {
   return useQuery({
-    queryKey: ['notifications'],
-    queryFn: () => apiFetch<unknown>('/notifications'),
-    refetchInterval: 60_000, // poll every 60s
+    queryKey: ['notifications', 'list', offset],
+    queryFn: () => apiFetch<NotificationListResponse>(`/notifications?limit=50&offset=${offset}`),
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
-    select: toNotificationList,
   });
-}
-
-function patchCachedList(
-  old: unknown,
-  mapItem: (n: Notification) => Notification,
-): NotificationListResponse | Notification[] | undefined {
-  if (Array.isArray(old)) return old.map((row) => mapItem(toNotificationList([row])[0]!));
-  if (old && typeof old === 'object' && Array.isArray((old as NotificationListResponse).items)) {
-    const envelope = old as NotificationListResponse;
-    return {
-      ...envelope,
-      items: toNotificationList(envelope.items).map(mapItem),
-    };
-  }
-  return undefined;
 }
 
 function useMarkNotificationRead() {
@@ -79,46 +63,15 @@ function useMarkNotificationRead() {
   return useMutation({
     mutationFn: (notificationId: string) =>
       apiFetch(`/notifications/${notificationId}/read`, { method: 'POST' }),
-    onMutate: async (notificationId) => {
-      await queryClient.cancelQueries({ queryKey: ['notifications'] });
-      const previous = queryClient.getQueryData(['notifications']);
-      queryClient.setQueryData(['notifications'], (old) =>
-        patchCachedList(old, (n) => (n.id === notificationId ? { ...n, read: true } : n)),
-      );
-      return { previous };
-    },
-    onError: (_err, _id, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(['notifications'], context.previous);
-      }
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 }
 
 function useMarkAllRead() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () =>
-      apiFetch('/notifications/read-all', { method: 'POST' }),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['notifications'] });
-      const previous = queryClient.getQueryData(['notifications']);
-      queryClient.setQueryData(['notifications'], (old) =>
-        patchCachedList(old, (n) => ({ ...n, read: true })),
-      );
-      return { previous };
-    },
-    onError: (_err, _vars, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(['notifications'], context.previous);
-      }
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    mutationFn: () => apiFetch('/notifications/read-all', { method: 'POST' }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 }
 
@@ -132,14 +85,18 @@ export function NotificationBell() {
   // but plain buttons no longer auto-dismiss, so we control open state and close
   // it explicitly on the actions that used to be menu Items.
   const [open, setOpen] = useState(false);
-  const { data: notifications } = useNotifications();
+  const [offset, setOffset] = useState(0);
+  const { data: page, isLoading, isError, refetch } = useNotifications(offset);
+  const { data: count, isError: countError } = useQuery({
+    queryKey: ['notifications', 'count'],
+    queryFn: () => apiFetch<{ count: number }>('/notifications/count'),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+  const notifications = toNotificationList(page);
+  const unreadCount = count?.count ?? 0;
   const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllRead();
-
-  const unreadCount = useMemo(
-    () => (Array.isArray(notifications) ? notifications.filter((n) => !n.read).length : 0),
-    [notifications],
-  );
 
   const handleClickNotification = useCallback(
     (notification: Notification) => {
@@ -165,9 +122,11 @@ export function NotificationBell() {
           type="button"
           className="nm-icon-button relative"
           aria-label={
-            unreadCount > 0
-              ? `Notifications, ${unreadCount} unread`
-              : 'Notifications'
+            countError && !count
+              ? 'Notifications, unread count unavailable'
+              : unreadCount > 0
+                ? `Notifications, ${unreadCount} unread`
+                : 'Notifications'
           }
           data-testid="notification-bell"
         >
@@ -199,9 +158,16 @@ export function NotificationBell() {
 
           {/* Content */}
           <NotificationDropdown
-            notifications={notifications ?? []}
+            notifications={notifications}
+            unreadCount={unreadCount}
             onClickNotification={handleClickNotification}
             onMarkAllRead={handleMarkAllRead}
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={() => void refetch()}
+            offset={offset}
+            total={page?.total ?? 0}
+            onPageChange={setOffset}
           />
         </Popover.Content>
       </Popover.Portal>

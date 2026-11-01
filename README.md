@@ -138,7 +138,7 @@ INSTALL="https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/i
 curl -fsSL "$INSTALL" | bash -s -- --port 9090 --dir /opt/compendiq --version 0.8.0
 
 # Same knobs as environment variables
-COMPENDIQ_PORT=9090 INSTALL_DIR=/opt/compendiq curl -fsSL "$INSTALL" | bash
+curl -fsSL "$INSTALL" | INSTALL_DIR=/opt/compendiq COMPENDIQ_PORT=9090 bash
 
 # Validate prerequisites and generated config without installing anything
 curl -fsSL "$INSTALL" | bash -s -- --dry-run
@@ -146,6 +146,10 @@ curl -fsSL "$INSTALL" | bash -s -- --dry-run
 # Point at a GPU box elsewhere on the network
 OLLAMA_BASE_URL=http://gpu-server:11434 curl -fsSL "$INSTALL" | bash
 ```
+
+`--dir` and `INSTALL_DIR` accept relative paths, resolved against the directory
+where the script is invoked; quote paths containing spaces. The default is
+`$HOME/compendiq`. A CLI flag takes precedence over `INSTALL_DIR`.
 
 </details>
 

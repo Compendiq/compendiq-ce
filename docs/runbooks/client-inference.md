@@ -61,6 +61,9 @@ under `ATTACHMENTS_DIR`.
   provider being offline does not prevent ready local inference.
 - “Downloaded” reports browser storage, not GPU readiness. A worker load
   failure during pre-download is reported as an error, not “ready”.
+- Turning spellcheck off clears the editor's underlines immediately and
+  discards pending checks and late results. Turning it back on checks the
+  current document again using the existing worker.
 
 ## Local suggestions return no text
 

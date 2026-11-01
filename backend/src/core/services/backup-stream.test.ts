@@ -73,7 +73,7 @@ describe('backup envelope', () => {
     const encrypted = await readAll(encryptBackupStream(bufferStream('secret'), MASTER));
     const truncated = encrypted.subarray(0, encrypted.length - 8);
     await expect(readAll(decryptBackupStream(bufferStream(truncated), MASTER))).rejects.toThrow(
-      /truncated|auth|unable/i,
+      /truncated or authentication failed/i,
     );
   });
 
