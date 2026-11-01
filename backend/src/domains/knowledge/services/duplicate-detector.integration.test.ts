@@ -107,6 +107,19 @@ describe.skipIf(!dbAvailable)('duplicate-detector integration — RBAC kNN filte
     expect(pairs.flatMap(({ page1, page2 }) => [page1.id, page2.id])).not.toContain(secret);
   });
 
+  it('normalises zero-padded standalone IDs like the other per-page resolvers (#1167)', async () => {
+    const vec = fakeVec(43);
+    const standalone = await seedPage({ confluenceId: null, source: 'standalone', spaceKey: null, title: 'Padded source', createdBy: USER_B, vec });
+    const neighbor = await seedPage({ confluenceId: 'padded-neighbor', source: 'confluence', spaceKey: 'TEAMA', title: 'Padded neighbor', vec });
+    const canonical = (await findDuplicates(USER_A, String(standalone))).map((r) => r.id);
+    expect(canonical).toEqual([neighbor]);
+    // `/pages/007` resolves page 7, so `/pages/007/duplicates` must too.
+    expect((await findDuplicates(USER_A, '00' + String(standalone))).map((r) => r.id)).toEqual(canonical);
+    // Non-numeric strings bypass the normaliser and only reach the Confluence arm.
+    expect(await findDuplicates(USER_A, 'padded-neighbor')).toEqual(expect.arrayContaining([expect.objectContaining({ id: standalone })]));
+    expect(await findDuplicates(USER_A, 'not-a-page-id')).toEqual([]);
+  });
+
   it('fails closed only for collisions between readable source identifiers', async () => {
     const vec = fakeVec(41);
     const local = await seedPage({ confluenceId: null, source: 'standalone', spaceKey: null, title: 'Local', createdBy: USER_A, vec });

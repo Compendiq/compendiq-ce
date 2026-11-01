@@ -1,6 +1,7 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
+import { toPageIdText } from '../../../core/utils/page-id-text.js';
 // The third copy of this setting, now retired. The local `parseInt` had no
 // bounds check, so a garbage `RAG_EF_SEARCH` produced `SET LOCAL
 // hnsw.ef_search = NaN` and a SQL error here while retrieval quietly fell back
@@ -72,14 +73,18 @@ export async function findDuplicates(
 
   // Resolve the canonical identifier for each source, within the same readable
   // set used by the full scan. Historical Confluence IDs on standalone rows
-  // are metadata, not their identity.
+  // are metadata, not their identity. The `id::text` arm compares text, so a
+  // digit-only id is normalised like every other per-page resolver (#1167):
+  // `/pages/007` and `/pages/007/duplicates` must resolve the same row. The
+  // Confluence arm keeps the raw string — content ids are literal.
+  const standaloneIdText = /^\d+$/.test(pageId) ? toPageIdText(pageId) : pageId;
   const sourcePageResult = await query<{ id: number; title: string }>(
     `SELECT cp.id, cp.title FROM pages cp
       WHERE ((cp.source = 'confluence' AND cp.confluence_id = $1)
-          OR (cp.source = 'standalone' AND cp.id::text = $1))
+          OR (cp.source = 'standalone' AND cp.id::text = $2))
         AND cp.deleted_at IS NULL
-        AND ${visiblePagesPredicate(2, 3)}`,
-    [pageId, accessibleSpaces, userId],
+        AND ${visiblePagesPredicate(3, 4)}`,
+    [pageId, standaloneIdText, accessibleSpaces, userId],
   );
   // A visible identifier collision must not pick an arbitrary source; hidden
   // rows cannot affect this decision or become an existence oracle.
