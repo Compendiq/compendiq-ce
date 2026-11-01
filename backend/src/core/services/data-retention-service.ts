@@ -25,6 +25,7 @@
  *   `webhook_deliveries_retention_days`).
  */
 
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { safeIntOr } from '../utils/safe-int.js';
@@ -346,6 +347,12 @@ export async function purgeExpiredStandalonePages(): Promise<number> {
  * abandons a conflict doesn't see a stale `conflict_pending = TRUE` flag
  * on the conflicts list after the row was retention-pruned.
  *
+ * #1796: both statements run in ONE transaction. As separate autocommits,
+ * a failed recompute after a successful delete lost the affected page ids
+ * for good — the next sweep found no pending rows and never repaired the
+ * stale flag. Rolling the delete back keeps the pending row, so the next
+ * sweep retries the whole unit.
+ *
  * Emits a single `RETENTION_PRUNED` audit row with the count, including
  * zero-row sweeps (compliance heartbeat — see Finding #4 in the umbrella
  * loop). Never throws.
@@ -364,8 +371,16 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
 
   const pool = getPool();
   let deleted = 0;
+  let affectedPages = 0;
 
+  // Acquire inside the try: a saturated/unreachable pool makes connect()
+  // reject (connectionTimeoutMillis), and that must stay contained in this
+  // sweep like every other failure — "Never throws".
+  let client: PoolClient | null = null;
   try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
     // Capture the affected page_ids in the same statement so the followup
     // recompute targets only the rows we actually changed (no full-table
     // scan of `pages`). The CTE delete + RETURNING keeps both halves in
@@ -376,7 +391,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
     // would report the number of distinct PAGES as the deleted-row count
     // (wrong compliance attestation). Return every deleted row and dedupe
     // page ids in JS instead.
-    const result = await pool.query<{ page_id: number }>(
+    const result = await client.query<{ page_id: number }>(
       `WITH deleted AS (
          DELETE FROM pending_sync_versions
           WHERE detected_at < NOW() - INTERVAL '1 day' * $1
@@ -388,6 +403,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
 
     deleted = result.rows.length;
     const affectedPageIds = [...new Set(result.rows.map((r) => r.page_id))];
+    affectedPages = affectedPageIds.length;
 
     // Recompute `pages.conflict_pending` for any page whose queue was
     // just drained. We can't unconditionally set FALSE — a page may have
@@ -395,7 +411,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
     // one (rare but possible if conflicts pile up faster than the admin
     // resolves them).
     if (affectedPageIds.length > 0) {
-      await pool.query(
+      await client.query(
         `UPDATE pages
             SET conflict_pending = EXISTS (
                   SELECT 1 FROM pending_sync_versions
@@ -413,14 +429,29 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
       );
     }
 
+    await client.query('COMMIT');
+  } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
+    logger.error(
+      { err, retentionDays: days },
+      'pending_sync_versions retention cleanup failed',
+    );
+    return 0;
+  } finally {
+    client?.release();
+  }
+
+  try {
     if (deleted > 0) {
       logger.info(
-        { deleted, retentionDays: days, pages: affectedPageIds.length },
+        { deleted, retentionDays: days, pages: affectedPages },
         'pending_sync_versions retention cleanup completed',
       );
     }
 
     // Heartbeat audit row — see umbrella loop comments for rationale.
+    // Written after COMMIT: the attestation must describe a prune that
+    // actually landed, and an audit write failure must not undo the prune.
     await logAuditEvent(
       null,
       'RETENTION_PRUNED',
@@ -435,7 +466,7 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
   } catch (err) {
     logger.error(
       { err, retentionDays: days },
-      'pending_sync_versions retention cleanup failed',
+      'pending_sync_versions retention heartbeat audit failed',
     );
   }
 
