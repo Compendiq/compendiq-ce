@@ -38,7 +38,19 @@ export const AiDecisionEventSchema = AiOperationContextSchema.extend({
 }).strict().refine((event) => event.attempt !== null
   || (event.decision === 'blocked' && event.reason === 'policy_unavailable'),
 { message: 'Unknown attempt is only valid for unavailable pre-admission refusals', path: ['attempt'] });
+/** Historical decoder remains lossless: omitted legacy model is not rewritten.
+ * New typed producers must explicitly record the model or its unknown state. */
 export type AiDecisionEvent = z.infer<typeof AiDecisionEventSchema>;
+export type AiDecisionObservation = Omit<AiDecisionEvent, 'provider'> & {
+  provider: (NonNullable<z.infer<typeof AiDecisionEventSchema>['provider']> & { model: string | null }) | null;
+};
+
+/** New observations must not silently omit model evidence. Historical readers
+ * use AiDecisionEventSchema instead, preserving original persisted payloads. */
+export const AiDecisionObservationSchema = AiDecisionEventSchema.refine(
+  (event) => event.provider === null || event.provider.model !== undefined,
+  { message: 'New observations require a model or explicit null', path: ['provider', 'model'] },
+).transform((event): AiDecisionObservation => event as AiDecisionObservation);
 
 /** Persist on the mutation's held client; rollback must roll this back too. */
 export const AiPolicyChangeEventSchema = AiOperationContextSchema.extend({

@@ -220,7 +220,13 @@ export async function admitArticleStage(
     if (!publish && !preliminary) emitAiDecision({ ...snapshot, decision: 'admitted', reason: 'allowed' });
   } catch (err) {
     await client?.query('ROLLBACK').catch(() => undefined);
-    if (!publish) emitAiDecision(snapshot);
+    if (!publish) emitAiDecision({
+      ...snapshot,
+      reason: err instanceof ArticleStageRefusedError
+        ? (err.reason === 'ai_policy_denied' ? 'ai_policy_denied'
+          : err.reason === 'ai_policy_unavailable' ? 'policy_unavailable' : 'grounding_changed')
+        : 'policy_unavailable',
+    });
     throw err;
   } finally {
     client?.release();

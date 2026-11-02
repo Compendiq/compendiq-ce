@@ -7,6 +7,7 @@ import {
 } from '@compendiq/contracts';
 import {
   updatePageAiPolicies,
+  isAiPolicyRefusal,
   type AiPolicyMutationResult,
   type AiPolicyRefusal,
 } from '../../core/services/ai-policy-service.js';
@@ -64,6 +65,10 @@ export function sendAiPolicyFailure(reply: FastifyReply, result: Extract<AiPolic
  * recorded through the held-client typed `AiPolicyChangeEvent` hook.
  */
 export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.setErrorHandler((err, _request, reply) => {
+    if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+    throw err;
+  });
   fastify.put('/pages/:id/ai-policy', async (request, reply) => {
     const { id } = PageIdParamSchema.parse(request.params);
     const body = UpdatePageAiPolicySchema.parse(request.body);

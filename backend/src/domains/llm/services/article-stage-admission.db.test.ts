@@ -162,6 +162,26 @@ describe.skipIf(!available)('serialized article stage admission', () => {
     expect(JSON.stringify(events)).not.toContain('model-evidence.test');
   });
 
+  it('distinguishes a current denial from unreadable provider authority in evidence', async () => {
+    const provider = await createProvider({ name: randomUUID(), baseUrl: 'http://denial.test/v1', authType: 'none', verifySsl: true });
+    const row = (await query<{ id: number; content_revision: string }>(`INSERT INTO pages
+      (title, source, version, visibility, ai_policy) VALUES ('Denied', 'standalone', 1, 'shared', 'local_only')
+      RETURNING id, content_revision`)).rows[0]!;
+    const provenance: ConversationTurnAiProvenance = {
+      version: 1, providerId: provider.id, configRevision: provider.configRevision!, locality: 'external',
+      pages: [{ pageId: row.id, policy: 'local_only', policyRevision: 0, contentRevision: Number(row.content_revision) }],
+    };
+    const events: AiDecisionEvent[] = [];
+    vi.spyOn(getEnterprisePlugin(), 'onAiDecision').mockImplementation((event) => { events.push(event); });
+    await expect(admitArticleStage(provenance, null, 'summary')).rejects.toMatchObject({ reason: 'ai_policy_denied' });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ decision: 'blocked', reason: 'ai_policy_denied' });
+    await query('DELETE FROM llm_providers WHERE id = $1', [provider.id]);
+    await expect(admitArticleStage(provenance, null, 'summary')).rejects.toMatchObject({ reason: 'ai_policy_unavailable' });
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ decision: 'blocked', reason: 'policy_unavailable', provider: { configRevision: null } });
+  });
+
   it('records unknown state when a real SQL error aborts admission', async () => {
     const events: AiDecisionEvent[] = [];
     vi.spyOn(getEnterprisePlugin(), 'onAiDecision').mockImplementation((event) => { events.push(event); });
