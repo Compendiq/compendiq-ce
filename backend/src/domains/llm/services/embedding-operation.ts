@@ -27,8 +27,8 @@ export async function embeddingOperation(article: EmbeddingArticle): Promise<AiO
 /** Allocate before every new batch or retry, not from a loop-local index. */
 export async function nextEmbeddingAttempt(article: EmbeddingArticle, operation: AiOperationContext): Promise<number> {
   const result = await query(`UPDATE embedding_ai_operations SET attempt = attempt + 1
-    WHERE page_id = $1 AND operation_id = $2 AND content_revision = $3 AND image_revision = $4
-    RETURNING attempt`, [article.pageId, operation.operationId, article.contentRevision, article.imageRevision]);
+    WHERE page_id = $1 AND operation_id = $2 AND image_revision = $3
+    RETURNING attempt`, [article.pageId, operation.operationId, article.imageRevision]);
   const row = result.rows[0];
   if (!row) throw new ArticleStageRefusedError();
   return row.attempt;

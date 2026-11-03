@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { query, getPool } from '../../core/db/postgres.js';
+import { withEmbeddingDraftContinuity } from '../../core/services/embedding-draft-continuity.js';
+import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../core/services/ai-policy-deferred-ingestion.js';
+import { admitAutomaticIngestionPolicy } from '../../core/services/ai-policy-ingestion.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
@@ -108,6 +111,7 @@ import {
   isAiPolicyRefusal,
   lockAiPolicyForPages,
   planLabelPolicyChange,
+  policyFromLabels,
   resolveCreationAiPolicy,
   type AiPolicy,
   type AiPolicyChangeRecord,
@@ -3381,10 +3385,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         contentRevision: page.content_revision,
         lifecycleRevision: page.lifecycle_revision,
       });
-      await writeClient.query(
+      await withEmbeddingDraftContinuity(writeClient, page.id, () => writeClient.query(
         `UPDATE pages SET draft_body_html = $1, draft_body_text = $2, draft_updated_at = NOW(), draft_updated_by = $3 WHERE id = $4`,
         [body.bodyHtml, draftText, userId, page.id],
-      );
+      ));
     });
 
     return { id: page.id, hasDraft: true, draftUpdatedAt: new Date().toISOString() };
@@ -3663,10 +3667,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         contentRevision: page.content_revision,
         lifecycleRevision: page.lifecycle_revision,
       });
-      await writeClient.query(
+      await withEmbeddingDraftContinuity(writeClient, page.id, () => writeClient.query(
         `UPDATE pages SET draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL, draft_updated_at = NULL, draft_updated_by = NULL WHERE id = $1`,
         [page.id],
-      );
+      ));
     });
 
     return { id: page.id, hasDraft: false };
@@ -4069,9 +4073,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           const page = await client.getPage(id);
           const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id, observed.spaceKey ?? undefined);
           const bodyText = htmlToText(bodyHtml);
+          const candidate = policyFromLabels(page.metadata?.labels?.results.map((label) => label.name));
+          await observeIngestionAdmission({ source: 'confluence', sourceScope: 'shared', sourceId: id,
+            observedRevision: String(page.version.number), userId, policy: candidate }, async (admissionClient, pendingPolicy) => {
+            const current = await admissionClient.query<{ ai_policy: AiPolicy }>(
+              'SELECT ai_policy FROM pages WHERE id = $1 AND deleted_at IS NULL', [numericPageId]);
+            if (!current.rows[0]) throw new PageWriteError(404, 'page_not_found', 'Page not found');
+            admitAutomaticIngestionPolicy({ identity: id, currentPolicy: current.rows[0].ai_policy, candidate: pendingPolicy });
+          });
 
           await withPageWriteTransaction([numericPageId], async (writeClient) => {
+            await lockAiPolicyForPages(writeClient, [numericPageId]);
             await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
+            await publishIngestionPolicyOnClient(writeClient, {
+              source: 'confluence', sourceScope: 'shared', sourceId: id,
+              pageId: numericPageId, userId, candidate,
+            });
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
@@ -4080,7 +4097,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty
                  END,
-                 embedding_status = 'not_embedded', embedded_at = NULL,
+                 embedding_status = CASE WHEN embedding_status = 'policy_blocked' THEN embedding_status ELSE 'not_embedded' END,
+                 labels = ai_policy_apply_label(labels, ai_policy),
+                 embedded_at = NULL,
                  local_modified_at = NULL, local_modified_by = NULL
                WHERE id = $1`,
               [numericPageId, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],

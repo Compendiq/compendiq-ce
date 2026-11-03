@@ -36,6 +36,7 @@ export async function validateArticleStageOnClient(
   client: PoolClient,
   provenance: ConversationTurnAiProvenance,
   userId: string | null,
+  embeddingSources: ArticleStageContext['embeddingSources'] = [],
 ): Promise<void> {
   ConversationTurnAiProvenanceSchema.parse(provenance);
   for (const page of [...provenance.pages].sort((a, b) => a.pageId - b.pageId)) {
@@ -52,9 +53,14 @@ export async function validateArticleStageOnClient(
   }
   for (const page of provenance.pages) {
     const current = pages.rows.find((r) => r.id === page.pageId);
+    const source = embeddingSources?.find((entry) => entry.pageId === page.pageId);
+    if (source) {
+      const { validateEmbeddingSourceOnClient } = await import('./embedding-article-stage.js');
+      await validateEmbeddingSourceOnClient(client, { ...page, ...source });
+    }
     if (!current || current.ai_policy !== page.policy
       || asRevision(current.ai_policy_revision) !== page.policyRevision
-      || asRevision(current.content_revision) !== page.contentRevision
+      || (!source && asRevision(current.content_revision) !== page.contentRevision)
       || (userId !== null && !(await userCanAccessPage(userId, page.pageId, client)))) {
       throw new ArticleStageRefusedError('grounding_changed');
     }
@@ -73,7 +79,8 @@ export function historicalVersionDigest(title: string, bodyHtml: string | null, 
 
 export interface ArticleStageContext {
   /** Server-captured worker row/derived-source versions, never client input. */
-  embeddingSources?: { pageId: number; rowVersion: string; imageRevision: string }[];
+  embeddingSources?: { pageId: number; rowVersion: string; imageRevision: string;
+    published?: { title: string; spaceKey: string; bodyHtml: string; draftAnchor: string } }[];
   /** Caller intent only; the held-client resolver validates saved authority. */
   modelSelection?: import('./llm-provider-resolver.js').ArticleModelSelection;
   /** Server-read historical inputs, never a client-supplied source list. */
@@ -152,14 +159,12 @@ export async function admitArticleStage(
           throw new ArticleStageRefusedError('grounding_changed');
         }
       }
-      await validateArticleStageOnClient(client, provenance, userId);
+      if (context.embeddingSources?.length && (usecase !== 'embedding' || userId !== null)) {
+        throw new ArticleStageRefusedError();
+      }
+      await validateArticleStageOnClient(client, provenance, userId, context.embeddingSources);
       for (const source of context.embeddingSources ?? []) {
         if (!provenance.pages.some((page) => page.pageId === source.pageId)) throw new ArticleStageRefusedError();
-        const saved = await client.query(`SELECT xmin::text AS row_version, image_analysis_revision::text AS image_revision
-          FROM pages WHERE id = $1`, [source.pageId]);
-        if (saved.rows[0]?.row_version !== source.rowVersion || saved.rows[0]?.image_revision !== source.imageRevision) {
-          throw new ArticleStageRefusedError();
-        }
       }
       for (const version of context.historicalVersions ?? []) {
         if (!provenance.pages.some((page) => page.pageId === version.pageId)

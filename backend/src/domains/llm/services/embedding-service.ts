@@ -969,7 +969,15 @@ export async function embedPage(
     await client.query('LOCK TABLE page_embeddings, pages IN ROW EXCLUSIVE MODE');
     await validateEmbeddingPublicationOnClient(client, article, liveStage, embedModel);
     if (shadowStage && shadowEmbeddings && shadowTarget) {
-      await validateEmbeddingPublicationOnClient(client, article, shadowStage, shadowTarget.model);
+      try {
+        await validateEmbeddingPublicationOnClient(client, article, shadowStage, shadowTarget.model);
+      } catch (err) {
+        if (!(err instanceof ArticleStageRefusedError)) throw err;
+        // Live source/provider locks are already held. A candidate-only change
+        // invalidates its vectors, not valid live coverage. Epoch changes still
+        // defer the entire publication below.
+        shadowEmbeddings = null;
+      }
     }
     await client.query('SAVEPOINT embedding_vectors');
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);

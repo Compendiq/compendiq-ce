@@ -74,6 +74,10 @@ function loadProviderFromRow(
   const revision = Number(row.provider_config_revision);
   if (!cached || cached.version !== getProviderCacheVersion()
     || cached.cfg.configRevision !== revision) {
+    if (cached) {
+      invalidateDispatcher(cacheKey);
+      invalidateBreaker(cacheKey);
+    }
     cached = {
       version: getProviderCacheVersion(),
       cfg: {
