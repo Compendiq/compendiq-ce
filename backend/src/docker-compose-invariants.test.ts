@@ -537,6 +537,7 @@ describe('.env.example stays authoritative for env vars the backend reads', () =
     'REEMBED_WAIT_LOCKS_MS',
     'RETENTION_ADMIN_ACCESS_DENIED_DAYS',
     'RETENTION_PENDING_SYNC_VERSIONS_DAYS',
+    'RETENTION_WEBHOOK_DELIVERIES_DAYS',
   ])('documents %s', (varName) => {
     expect(envExample).toContain(varName);
   });

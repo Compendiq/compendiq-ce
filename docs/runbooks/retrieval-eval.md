@@ -612,20 +612,28 @@ content shapes — engineering diagrams, scientific figures, process notation an
 photographs. It exists because #1115's image retrieval leg cannot be measured on
 a corpus with no pictures. Built by `tools/eval-corpus-images/build.py` from
 `articles.yaml`, at revisions pinned in the corpus's own `MANIFEST.json`; a
-plain re-run reproduces the committed bytes, `--update` moves to current
-revisions and obliges a re-label. Read its `README.md` first.
+plain re-run checks for drift against the committed bytes, while `--update`
+moves to current revisions and obliges a re-label. Read its `README.md` first.
 
-**A revision id is the pin the four checks sit on, not one of them, and not the
+**A revision id is the pin the five checks sit on, not one of them, and not the
 whole of reproducibility.**
 `action=parse&oldid=` renders a fixed *wikitext* revision through the **current**
 template set and parser, so a template edit or a MediaWiki release moves the
 prose of a page nobody edited — the builder already carries a branch for one such
-change. So a plain re-run checks four things and exits non-zero on any of them:
-the page text against a recorded `textSha256`, each image against the upstream
-Commons `sha1`, the inventory against the committed manifest (a figure can stop
-being *usable* without either digest moving), and the total image budget. In
-every case the bytes are still written, so the diff is inspectable — the run
-simply stops claiming to have reproduced the corpus.
+change. A plain re-run checks five things and exits non-zero on any failure:
+the page text against `textSha256`, each source image against its Commons
+`sha1`, encoded images against SHA-256 snapshots of the committed files, the
+inventory against the manifest, and the total image budget. Encoded-byte checks
+catch thumbnail-renderer and Pillow changes even when the source hash and file
+size do not move. Drifted output is still written for inspection; the run stops
+claiming to have reproduced the corpus. `--update` skips all four drift checks,
+not the budget.
+
+An encoder-only dependency upgrade must use the controlled refresh procedure in
+`tools/eval-corpus-images/README.md`, not silently absorb unrelated live upstream
+changes. Revalidate affected image labels before updating the fixture's manifest
+digest. Historical image-axis reports retain their old corpus identity; generate
+fresh same-corpus measurements for comparisons. Text-axis baselines are unchanged.
 
 **Only `--images` reaches it, and it is still absent from `CORPUS_DIRS` and
 from `corpusDirsForLanguage`.** That is the point rather than an oversight:

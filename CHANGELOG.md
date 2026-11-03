@@ -7,8 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
+- **Per-page duplicate detection (#1798):** resolve standalone sources by
+  internal ID and Confluence sources by content ID under the same visibility
+  rules as the full scan, including restricted and private pages.
+- **Embedding publication (#1782):** discard vectors whose source title or
+  body changed while the provider request was in flight, preserving the prior
+  chunks and leaving newer content dirty for the next pass. Revision bumps
+  from non-text writes (draft autosave, labels, sort order, icons,
+  attachments) landing mid-flight still publish instead of re-spending the
+  embedding call.
+- **Webhook delivery-ledger retention (#1797):** the daily retention worker now
+  prunes `webhook_deliveries` attempt rows older than the new
+  `webhook_deliveries_retention_days` admin setting (default 90, range 7–3650,
+  migration 130, env fallback `RETENTION_WEBHOOK_DELIVERIES_DAYS`, exposed in
+  `GET`/`PUT /api/admin/settings`) in bounded batches with a `RETENTION_PRUNED`
+  heartbeat. Only attempts of finished (`done`/`dead`) deliveries are removed;
+  `webhook_outbox` rows are never touched (terminal-outbox retention remains a
+  separate, unimplemented policy).
+- **Pending sync version retention atomicity (#1796):** the retention sweep
+  now deletes expired `pending_sync_versions` rows and recomputes
+  `pages.conflict_pending` in one transaction. A failed recompute rolls the
+  delete back so the next sweep retries the page, instead of leaving a stale
+  conflict flag that no later sweep could repair. The `RETENTION_PRUNED`
+  heartbeat is written only after the prune commits.
+- **Webhook outbox enqueue recovery (#1795):** the outbox poller now runs a
+  bounded, rate-limited stale-dispatch sweep during normal poll cycles that
+  resets `dispatched` rows whose BullMQ job is missing or terminal (e.g.
+  enqueue failed after the claim committed), so they are re-delivered without
+  a restart. The init-time recovery shares the same check: rows whose job is
+  still live are left alone, so slow in-flight deliveries are not duplicated.
+- Routine missing-attachment repair no longer selects soft-deleted (trashed) pages, so they cost no Confluence attachment-list requests or error logs per sync cycle; a failed attachment-list request now advances the per-attachment retry counter (#1799)
+- **Bulk-progress SSE replay gap (#1785):** `streamBulkProgress` now
+  subscribes to the live channel before replaying the durable history list,
+  and every published event carries a monotonic per-job `seq` (assigned
+  atomically with the list write) that the stream uses to reconcile replayed
+  and live deliveries. A `done`/`cancelled` event published at any point
+  between replay and subscription terminates the client stream instead of
+  leaving it waiting; events are no longer lost, duplicated or reordered
+  across that boundary. Events written by a pre-upgrade pod (no `seq`) during
+  a rolling upgrade are deduplicated by content against the replayed history.
+- **Backup decrypt error wording (#1831):** a truncated or tampered backup
+  envelope now fails with a stable `BackupCryptoError('Backup truncated or
+  authentication failed')` instead of the raw OpenSSL message, which differs
+  between OpenSSL versions ("unable to authenticate data" vs "bad decrypt").
+
+## [0.9.2] - 2026-10-29
+
+### Fixed
+
+- **Installation target safety (#1781):** resolve relative installer and
+  uninstaller directories before changing directory, so generated files,
+  Compose operations and removal refer to the invocation-relative target.
+
+### Security
+
+- **Dependabot dependency compatibility (#1708):** keep backend Undici on
+  the intended 7.30.1 update, matching the workspace lockfile. Override
+  TipTap HTML's Happy DOM 20 peer to patched 21.0.4 so the vulnerable
+  transitive copy is not retained alongside the backend update; server
+  HTML/Yjs conversion remains on the existing TipTap 3 schema. Raise the
+  `fast-uri` override to 3.1.9 and refresh its locked version.
+
+### Fixed
+
+- **Provider configuration after Redis reconnect (#1794):** a replica that
+  misses provider updates or deletions invalidates its local configuration
+  and provider client resources when its subscriber reconnects.
+- **Page list visibility filter (#1786):** private and shared list requests
+  now filter both items and totals, including substring-search fallback, and
+  use distinct cache entries. Matching bulk filters select the same visible set.
+
+### Changed
+- **MCP `search_web` cache identity (#1787):** include the effective bounded
+  result width with the sanitized query, so requests at different widths do
+  not reuse a truncated result set. A versioned namespace isolates legacy
+  query-only entries during upgrades, including mixed-version replicas.
+  Its regression requires real Redis and runs in the MCP sidecar CI job;
+  missing test configuration fails explicitly.
+
+- **Portable Compose trust (#1819):** the base deployment no longer mounts a
+  Red Hat host CA file over the image trust store. Private CAs require the
+  explicit corporate-CA override and an existing host PEM. Backend TLS
+  dispatchers retain public and system roots when the private PEM is supplied;
+  verification remains enabled. Existing custom-CA deployments must opt in
+  and recreate the backend.
+
+- Installer-generated Compose selects amd64 for the four Compendiq `dev` and
+  mutable `latest` images, avoiding missing ARM manifests after branch
+  publications. Other tags retain native architecture selection; PostgreSQL
+  and Redis are unchanged. ARM requires working amd64 emulation for branch
+  tags.
+
+- **Playwright E2E CI uses Ubuntu 24.04** rather than `ubuntu-latest`:
+  Playwright 1.60 cannot install Chromium on Ubuntu 26.04. The browser gate
+  remains enabled; only its runner distribution is pinned.
+- **Pillow 13 image-corpus refresh (#1707):** regenerate the three affected
+  eval images from unchanged sources, revalidate their labels and update the
+  fixture's corpus identity. Pinned rebuilds now detect encoded-image byte
+  changes, including changes invisible to source hashes or file sizes.
+  The corpus builder requires Python 3.11 or newer; historical eval results
+  and text-axis baselines are unchanged.
 - **Release images build `linux/arm64` on native arm64 runners** instead of
   QEMU emulation, merged with the amd64 build into one multi-arch index.
   Emulated arm64 `npm ci` hung the v0.9.1 `mcp-docs` build for hours on two

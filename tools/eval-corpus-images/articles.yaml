@@ -51,9 +51,9 @@
 # (`Antenne` -> `Antenne (Technik)`, `Abgasturbolader` -> `Turbolader`,
 # `Balanced Scorecard` -> its current title). The REVISION each article was taken at is not recorded here: it is
 # recorded in the corpus's own MANIFEST.json, and `build.py` reads those pins
-# back on a plain re-run (the `vendor-eval-corpus.ts` precedent), so rebuilding
-# reproduces the committed bytes instead of tracking whatever the article says
-# today. `--update` moves to current revisions, which obliges a re-label.
+# back on a plain re-run (the `vendor-eval-corpus.ts` precedent). A pinned rebuild
+# checks text, source and encoded-image drift rather than assuming oldid freezes
+# live renderers. `--update` moves to current revisions and obliges a re-label.
 
 technical:
   - OSI-Modell

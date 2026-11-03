@@ -1,6 +1,6 @@
 {
   "name": "compendiq",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "private": true,
   "description": "Compendiq - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [
@@ -36,6 +36,7 @@
     "vitest": "^5.0.0"
   },
   "//tooling-deps-note": "lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor. @tailwindcss/typography (≤0.5.20) pins postcss-selector-parser 6.0.10 exactly (GHSA-rj75-hqrm-r3gf, fixed only in 7.1.6); mermaid (≤12.1.0) wants katex ^0.16 (GHSA-238p-pmpm-9mq7, fixed in 0.18.2). Drop those two overrides once the parents widen their ranges.",
+  "//dom-deps-note": "@tiptap/html 3.30.5 peers on happy-dom ^20.8.9, which otherwise retains vulnerable Happy DOM 20 beside backend's patched 21.x. Keep the override until TipTap accepts the patched major; server HTML/JSON conversion must remain compatible.",
   "overrides": {
     "@puppeteer/browsers": "3.2.2",
     "vite": "^8.0.16",
@@ -46,9 +47,10 @@
     "@tiptap/react": "3.30.5",
     "@tiptap/extension-bubble-menu": "3.30.5",
     "@tiptap/extension-floating-menu": "3.30.5",
+    "happy-dom": "^21.0.4",
     "protobufjs": "^7.5.5",
     "@fastify/static": "^9.1.1",
-    "fast-uri": "^3.1.7",
+    "fast-uri": "^3.1.9",
     "qs@6": "^6.16.0",
     "@xmldom/xmldom@0.8": "^0.8.15",
     "hono": "^4.12.18",

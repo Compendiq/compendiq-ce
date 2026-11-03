@@ -424,7 +424,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
       const page = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, source, title, body_text, body_storage, body_html, page_type, visibility)
-         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>x</p>', 'page', 'shared')
+         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>fresh body text long enough to embed properly for the test</p>', 'page', 'shared')
          RETURNING id`,
       );
       const pageId = page.rows[0]!.id;
@@ -456,7 +456,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       });
       const page = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, source, title, body_text, body_storage, body_html, page_type, visibility)
-         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>x</p>', 'page', 'shared')
+         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>fresh body text long enough to embed properly for the test</p>', 'page', 'shared')
          RETURNING id`,
       );
       const pageId = page.rows[0]!.id;
@@ -554,7 +554,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
 
       const page = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, source, title, body_text, body_storage, body_html, page_type, visibility)
-         VALUES (gen_random_uuid()::text, 'standalone', 'Racing page', 'racing body text long enough to embed', '', '<p>x</p>', 'page', 'shared')
+         VALUES (gen_random_uuid()::text, 'standalone', 'Racing page', 'racing body text long enough to embed', '', '<p>racing body text long enough to embed properly</p>', 'page', 'shared')
          RETURNING id`,
       );
       const pageId = page.rows[0]!.id;
@@ -571,6 +571,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
 
       await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>racing body text long enough to embed properly</p>']);
       const chunks = await embedPage(USER, pageId, 'Racing page', '', '<p>racing body text long enough to embed properly</p>');
+      expect(swapped).toBe(true);
       expect(chunks).toBe(0); // aborted, not written
 
       const rows = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_embeddings WHERE page_id = $1`, [pageId]);
@@ -584,7 +585,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       mockState.shadowFail = true;
       const page = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, source, title, body_text, body_storage, body_html, page_type, visibility)
-         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>x</p>', 'page', 'shared')
+         VALUES (gen_random_uuid()::text, 'standalone', 'Fresh page', 'fresh body text long enough to embed', '', '<p>fresh body text long enough to embed properly for the test</p>', 'page', 'shared')
          RETURNING id`,
       );
       const pageId = page.rows[0]!.id;
@@ -620,6 +621,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       // that leaks into the document path.
       const pageId = await seedEmbeddedPage('Doc A');
       await query(`DELETE FROM page_embeddings WHERE page_id = $1`, [pageId]);
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>alpha content about hooks and plugins, long enough to embed properly</p>']);
 
       generateEmbeddingMock.mockClear();
       await query("UPDATE pages SET space_key = 'SPACE', body_html = $2 WHERE id = $1", [pageId, '<p>alpha content about hooks and plugins, long enough to embed properly</p>']);

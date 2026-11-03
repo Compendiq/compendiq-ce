@@ -722,6 +722,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   inlineCompletionRef.current = inlineCompletion;
   const spellcheckRef = useRef(spellcheck);
   spellcheckRef.current = spellcheck;
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
   const [hunspellReady, setHunspellReady] = useState(false);
   const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
 
@@ -933,7 +935,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         onSuggestionStateChange: setInlineSuggestionActive,
       }),
       SpellcheckExtension.configure({
-        enabled: () => editable && !!spellcheckRef.current?.enabled,
+        enabled: () => editableRef.current && !!spellcheckRef.current?.enabled,
         languages: () => spellcheckRef.current?.languages ?? ['en_US', 'de_DE'],
         onStatus: (status) => setHunspellReady(status === 'ready'),
       }),
@@ -1070,6 +1072,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   // Keep the editor ref in sync
   editorRef.current = editor;
+
+  // Synchronize live settings without waiting for the next edit or repaint.
+  useLayoutEffect(() => {
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr);
+  }, [editor, editable, spellcheck?.enabled]);
 
   useEffect(() => {
     if (editor && !editor.isDestroyed && editor.isEditable !== editable) {

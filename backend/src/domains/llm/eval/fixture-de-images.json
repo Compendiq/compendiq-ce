@@ -1,5 +1,5 @@
 {
-  "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",
+  "corpusManifestSha": "877e6dc92e0becf9f7ec602da34279a69cbdde6e6219b42c64fc23afcbd5cfe6",
   "labeledBy": "six independent claude-sonnet-5 labelers, one page slice each, blind to retrieval code; merged by claude-opus-5 (schema validation, dedupe, coverage) — 2026-08-17. Ids are img-<slice>-<n>: the slice is the labeling agent, renumbered from the fragments' inconsistent schemes without reordering, so every label traces back to the one agent that wrote it. Slices 00-05 are that first round. Slices 07-09 are three further independent claude-sonnet-5 labelers (#1370, 2026-08-18), each given a third of the corpus under the same blind protocol — corpus pages, manifest captions and image bytes only, never the retrieval code — and they wrote the English image-negative distractors; their numbering is their own candidate order, so a gap is a candidate the merger rejected. Slice 06 was the merger's own four English negatives from review round 2; #1370 removed them and those ids are never reused.",
   "notUsable": [],
   "labels": [

@@ -1,7 +1,7 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
-import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
-import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
+import { invalidateAllProviderResources, invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
+import { getProviderCacheVersion, onProviderCacheBump, onProviderCacheReconnect, onProviderDeleted } from './cache-bus.js';
 import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { logger } from '../../../core/utils/logger.js';
 import type {
@@ -43,6 +43,9 @@ onProviderCacheBump(() => {
   }
   configCache.clear();
 });
+
+// A missed deletion can concern a provider tested without ever resolving it.
+onProviderCacheReconnect(() => invalidateAllProviderResources());
 
 // Issue #267 — Definitive per-id cleanup on provider deletion. Runs even if
 // the resolver's configCache doesn't have an entry for `id` (e.g. a provider
@@ -90,6 +93,17 @@ function loadProviderFromRow(
   return cached.cfg;
 }
 
+// A SELECT may have observed an old snapshot before a bump/reconnect. Never
+// populate the cache, or decide an assignment is missing, from that snapshot
+// after the generation has changed.
+async function queryProviderRows(sql: string, params: unknown[]) {
+  for (;;) {
+    const version = getProviderCacheVersion();
+    const result = await query<ResolveRow>(sql, params);
+    if (version === getProviderCacheVersion()) return result;
+  }
+}
+
 /**
  * `loadProviderConfig`'s "no such row" outcome, distinguishable from a DB or
  * decryption failure so a caller mapping it to a user-facing refusal (the
@@ -111,7 +125,7 @@ export class ProviderNotFoundError extends Error {
 export async function loadProviderConfig(
   providerId: string,
 ): Promise<ProviderConfig & { id: string; name: string; defaultModel: string | null }> {
-  const { rows } = await query<ResolveRow>(
+  const { rows } = await queryProviderRows(
     `SELECT
        NULL::uuid AS usecase_provider_id,
        NULL::text AS usecase_model,
@@ -188,7 +202,7 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
 async function resolveExplicitOnlyUsecase(
   usecase: 'rerank' | 'inline_completion' | 'image_analysis',
 ): Promise<Resolved | null> {
-  const rows = await query<ResolveRow>(
+  const rows = await queryProviderRows(
     `SELECT
        a.provider_id  AS usecase_provider_id,
        a.model        AS usecase_model,
@@ -306,7 +320,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   // policy's (providerId, model). CE noop always returns null.
   const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);
   if (override) {
-    const overrideRows = await query<ResolveRow>(
+    const overrideRows = await queryProviderRows(
       `SELECT
          NULL::uuid AS usecase_provider_id,
          NULL::text AS usecase_model,
@@ -368,7 +382,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
     FROM target t
     LEFT JOIN assignment a ON TRUE
   `;
-  const r = await query<ResolveRow>(sql, [usecase]);
+  const r = await queryProviderRows(sql, [usecase]);
   const row = r.rows[0];
   if (!row) throw new NoProviderConfiguredError('No default provider configured — set one in Settings → AI Models.');
 

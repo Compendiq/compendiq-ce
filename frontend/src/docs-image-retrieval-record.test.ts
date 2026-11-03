@@ -36,7 +36,9 @@ import { join, resolve } from 'path';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const read = (...parts: string[]) => readFileSync(join(REPO_ROOT, ...parts), 'utf-8');
 
-const claudeMd = read('CLAUDE.md');
+const claudeMd = ['CLAUDE.md', ...readdirSync(join(REPO_ROOT, 'docs/claude')).map((f) => `docs/claude/${f}`)]
+  .map((f) => read(f))
+  .join('\n\n');
 const adr = read('docs', 'ARCHITECTURE-DECISIONS.md');
 const evalRunbook = read('docs', 'runbooks', 'retrieval-eval.md');
 
@@ -191,6 +193,8 @@ describe('the docs put the P4 vision gate in the caller, not in the pick', () =>
    */
   const RECORD_FILES = [
     'CLAUDE.md',
+    'docs/claude/llm-and-rag.md',
+    'docs/claude/testing-and-retrieval-eval.md',
     'docs/ARCHITECTURE-DECISIONS.md',
     'docs/architecture/03-backend-domains.md',
     'docs/architecture/09-flow-rag-chat.md',
