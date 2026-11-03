@@ -254,6 +254,28 @@ post-commit observer. This does not establish complete producer coverage or
 rollout readiness: retained legacy records and decision-delivery gaps remain
 explicitly bounded by the report. Restrictive activation remains closed.
 
+### Relocation recovery verification before publication
+
+A retained relocation preparation is durable local progress, not evidence of a
+remote dispatch. In the committed-preparation recovery regression, the lifecycle
+lock can stop either preparation finish or the next local effect's start:
+`effect_finished_at` may therefore be null or populated. Do not interpret that
+field alone as settlement or permission to retry a remote operation. Recovery
+still requires the established runtime fencing and active recovery authority,
+a pending/unsettled intent, and durable evidence that no remote effect started.
+The regression verifies retained preparation/FK protection, no provider calls,
+cleanup after actor deletion or deactivation, and preservation of the original
+body, revisions, children and ACLs. Its synchronization must not depend on
+sleeps, retries, or one incidental local-effect timestamp value.
+
+Run the full backend gate after changing this regression, along with the other
+required integration, contract, frontend, lint and typecheck gates. Earlier
+unchanged-tree reruns or focused parent runs are not evidence of a repair.
+These native gates do not replace browser verification of defaults, cascades,
+report downloads or entitlement-loss recovery. Keep publication draft-only and
+remote completion withheld until the outstanding publication checks are met;
+this test correction changes neither production recovery nor activation rules.
+
 The EE hook is wired into the plugin only; CE routes and ingestion keep
 calling `resolveCreationAiPolicy`. Losing the license makes the hook answer
 `all` for new pages but never rewrites stored page restrictions. Event

@@ -1752,10 +1752,12 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         expect(authorityPid).not.toBeNull();
 
         const intent = await latestRelocateIntent(id);
+        // The lifecycle lock may block preparation finish or the next local
+        // effect's start. Neither phase has dispatched a remote effect, so
+        // effect_finished_at is not a recovery-safety invariant here.
         expect(intent).toMatchObject({
           status: 'pending',
           effect_started_at: expect.any(String),
-          effect_finished_at: null,
           remote_effect_started_at: null,
           settled_at: null,
         });
