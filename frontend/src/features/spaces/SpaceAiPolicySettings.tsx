@@ -14,6 +14,7 @@ export function SpaceAiPolicySettings({ spaceKey }: { spaceKey: string }) {
   const [choice, setChoice] = useState<AiPolicy | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [needsReload, setNeedsReload] = useState(false);
   const settings = useQuery({
     queryKey: ['space-ai-policy', spaceKey, enabled],
     enabled: enterpriseBackend,
@@ -22,7 +23,7 @@ export function SpaceAiPolicySettings({ spaceKey }: { spaceKey: string }) {
   });
   if (!enterpriseBackend) return null;
   const data = settings.data;
-  const writable = enabled && data?.canManage && data.entitled && !settings.isError;
+  const writable = enabled && data?.canManage && data.entitled && !settings.isError && !needsReload;
   const save = async () => {
     if (!data || !writable || busy || choice === null) return;
     setBusy(true);
@@ -34,7 +35,8 @@ export function SpaceAiPolicySettings({ spaceKey }: { spaceKey: string }) {
       setChoice(null);
       await settings.refetch();
     } catch {
-      setError('Settings were not saved. Your choice is retained. Reload current settings before retrying; authority, license or revision may have changed.');
+      setNeedsReload(true);
+      setError('The save could not be confirmed. Your choice is retained; the server may already have saved it. Reload current settings before retrying; authority, license or revision may have changed.');
     } finally { setBusy(false); }
   };
   return <section aria-label="AI creation default" className="mt-6 space-y-3 rounded-lg border border-border p-4">
@@ -53,8 +55,13 @@ export function SpaceAiPolicySettings({ spaceKey }: { spaceKey: string }) {
       </select></label>
       <button type="button" disabled={!writable || busy || choice === null} onClick={() => void save()}>Save creation default</button>
     </>}
-    {data && <AiPolicyCascadeSettings key={`${spaceKey}:${enabled}:${data.entitled}`} entitled={enabled && data.entitled && !settings.isError} enforcementAvailable={data.enforcementAvailable} />}
+    {data && <AiPolicyCascadeSettings key={`${spaceKey}:${enabled}:${data.entitled}:${needsReload}`} entitled={enabled && data.entitled && !settings.isError && !needsReload} enforcementAvailable={data.enforcementAvailable} />}
     {error && <p role="alert">{error}</p>}
-    <button type="button" disabled={busy} onClick={() => { setError(''); void settings.refetch(); }}>Reload current settings</button>
+    <button type="button" disabled={busy} onClick={() => {
+      setBusy(true);
+      void settings.refetch().then((result) => {
+        if (!result.isError) { setError(''); setNeedsReload(false); }
+      }).finally(() => setBusy(false));
+    }}>Reload current settings</button>
   </section>;
 }

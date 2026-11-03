@@ -17,7 +17,7 @@ function mount() {
 }
 beforeEach(() => { state.canUpdate = false; state.enterprise = true; state.entitled = true; state.api.mockReset(); state.api.mockResolvedValue(settings); });
 describe('space AI creation default', () => {
-  it('previews and confirms the exact owner set and discards a refused preview', async () => {
+  it.each(['409 stale_set', 'connection lost after commit'])('previews the exact owner set and discards an unconfirmed preview: %s', async (failure) => {
     mount();
     await screen.findByText('Preview subtree');
     fireEvent.change(screen.getByLabelText('Standalone root article ID'), { target: { value: '7' } });
@@ -25,9 +25,9 @@ describe('space AI creation default', () => {
     fireEvent.click(screen.getByText('Preview subtree'));
     await screen.findByText('Confirm subtree policy');
     expect(screen.getByText(/1 owned articles will change/)).toBeInTheDocument();
-    state.api.mockRejectedValueOnce(new Error('409 stale_set'));
+    state.api.mockRejectedValueOnce(new Error(failure));
     fireEvent.click(screen.getByText('Confirm subtree policy'));
-    await screen.findByText(/No cascade was applied/);
+    await screen.findByText(/The cascade could not be confirmed; it may already have committed/);
     expect(state.api).toHaveBeenCalledWith('/pages/7/ai-policy/cascade', { method: 'POST', body: JSON.stringify({ policy: 'all', items: [{ pageId: 7, expectedRevision: 3 }] }) });
     expect(screen.queryByText('Confirm subtree policy')).not.toBeInTheDocument();
   });
@@ -54,6 +54,28 @@ describe('space AI creation default', () => {
     expect(screen.getByText(/saved default is inactive/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('Save creation default')).toBeDisabled());
     expect(screen.getByText(/Effective creation default: All AI allowed/)).toBeInTheDocument();
+  });
+  it('requires a successful capability reload after an unconfirmed save and uses the new revision', async () => {
+    mount();
+    const select = await screen.findByRole('combobox', { name: 'Creation policy' });
+    fireEvent.change(select, { target: { value: 'all' } });
+    state.api.mockRejectedValueOnce(new Error('connection lost after commit'));
+    fireEvent.click(screen.getByText('Save creation default'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('server may already have saved it');
+    expect(screen.getByText('Save creation default')).toBeDisabled();
+    expect(screen.getByText('Preview subtree')).toBeDisabled();
+    expect(select).toHaveValue('all');
+    state.api.mockRejectedValueOnce(new Error('offline'));
+    fireEvent.click(screen.getByText('Reload current settings'));
+    await waitFor(() => expect(screen.getByText('Reload current settings')).toBeEnabled());
+    expect(screen.getByText('Save creation default')).toBeDisabled();
+    state.api.mockResolvedValueOnce({ ...settings, revision: '124' });
+    fireEvent.click(screen.getByText('Reload current settings'));
+    await waitFor(() => expect(screen.getByText('Save creation default')).toBeEnabled());
+    fireEvent.click(screen.getByText('Save creation default'));
+    await waitFor(() => expect(state.api).toHaveBeenCalledWith('/admin/spaces/ENG/default-ai-policy', {
+      method: 'PUT', body: JSON.stringify({ policy: 'all', expectedRevision: '124' }),
+    }));
   });
   it('does not allow mutation when settings cannot be read', async () => {
     state.api.mockRejectedValue(new Error('unavailable'));

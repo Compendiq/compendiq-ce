@@ -22,7 +22,9 @@ export function AiPolicyCascadeSettings({ entitled, enforcementAvailable }: { en
       else setPreview(result);
     } catch {
       setPreview(null);
-      setMessage('No cascade was applied. The root may be inaccessible, non-standalone or not yours, the preview may be stale or ambiguous, or license/readiness may have changed. Reload and preview again. For non-standalone roots use the ordinary per-page policy control.');
+      setMessage(commit
+        ? 'The cascade could not be confirmed; it may already have committed. Check current article policies and obtain a new preview before retrying. Authority, license, readiness or revisions may have changed.'
+        : 'The preview could not be loaded. The root may be inaccessible, non-standalone or not yours, or license/readiness may have changed. No mutation was requested. For non-standalone roots use the ordinary per-page policy control.');
     } finally { setBusy(false); }
   };
   return <section aria-label="Apply policy to owned subtree" className="mt-6 space-y-3 rounded-lg border border-border p-4">
