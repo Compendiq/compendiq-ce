@@ -80,7 +80,7 @@ describe.skipIf(!available)('Improve publishes only a completed stream', () => {
     expect(mockEmitLlmAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'improve', status: 'success' }));
   });
 
-  it('a completed stream whose binding moved during generation is not persisted as completed', async () => {
+  it.each(['policy', 'provider'] as const)('a completed stream whose %s binding moved is neither cached nor persisted as completed', async (change) => {
     // The provider answers only after the page policy has been tightened
     // underneath the in-flight request: the text streams (the dispatch was
     // admitted under the old binding), but the completed-row write runs
@@ -93,7 +93,9 @@ describe.skipIf(!available)('Improve publishes only a completed stream', () => {
     // written back strictly after the article stopped admitting.
     const onArrival = (request: import('node:http').IncomingMessage) => {
       request.pause();
-      tightened = query("UPDATE pages SET ai_policy = 'none', ai_policy_revision = ai_policy_revision + 1 WHERE id = $1", [Number(fixture.pageId)])
+      tightened = (change === 'policy'
+        ? query("UPDATE pages SET ai_policy = 'none', ai_policy_revision = ai_policy_revision + 1 WHERE id = $1", [Number(fixture.pageId)])
+        : query('UPDATE llm_providers SET base_url = $2 WHERE id = $1', [fixture.providerId, `${fixture.baseUrl}/changed`]))
         .finally(() => request.resume());
     };
     fixture.server.prependListener('request', onArrival);
@@ -108,6 +110,7 @@ describe.skipIf(!available)('Improve publishes only a completed stream', () => {
       // … but the row stays unpublished: the output was generated under a
       // binding the article no longer admits.
       expect((await improvements()).rows).toEqual([{ improved_content: '', status: 'streaming' }]);
+      expect(await fixture.redis.keys('kb:llm:*')).toEqual([]);
     } finally {
       fixture.server.removeListener('request', onArrival);
     }

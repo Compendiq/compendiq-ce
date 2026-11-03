@@ -719,6 +719,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // #282: the destination this text is for — applied inside every
         // candidate query and consulted by the rerank bypass.
         aiPolicy: { purpose: 'ai', destinationLocality },
+        queryArticle: openArticle ? { pages: [openArticle.ref], operation } : undefined,
         // #1284: this is the surface the refuse gate is evaluated on, and
         // the only one whose rows the Retrieval panel's confidence readout
         // reads. Both retrieval entrypoints record the verdict they computed

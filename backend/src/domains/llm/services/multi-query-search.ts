@@ -41,6 +41,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { withSpan } from '../../../telemetry.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { chat, type ChatMessage } from './openai-compatible-client.js';
+import { queryArticleTransport, type QueryArticleInput } from './query-article-transport.js';
 import { detectIdentifiers } from './identifier-shortcircuit.js';
 import {
   hybridSearch,
@@ -304,7 +305,7 @@ export function parseReformulations(reply: string, original: string): string[] {
  * refusal, or two lines of apology all return `[]`, and `[]` means the caller
  * runs exactly today's single-query search.
  */
-export async function reformulateQuery(question: string): Promise<string[]> {
+export async function reformulateQuery(question: string, userId = '', queryArticle?: QueryArticleInput): Promise<string[]> {
   try {
     const { config, model } = await resolveUsecase('chat');
     // The question is user input on its way to a model: same guard the ask
@@ -317,7 +318,7 @@ export async function reformulateQuery(question: string): Promise<string[]> {
       { role: 'user', content: sanitized },
     ];
     const reply = await chat(config, model, messages, {
-      transportContext: { kind: 'non_article', purpose: 'user_query' },
+      transportContext: await queryArticleTransport(queryArticle, userId, config, 'chat'),
       maxTokens: REFORMULATION_MAX_TOKENS,
       timeoutMs: REFORMULATION_TIMEOUT_MS,
     });
@@ -444,7 +445,7 @@ export async function multiQuerySearch(
       return hybridSearch(userId, question, topK, precomputedCoverage, opts);
     }
 
-    const paraphrases = await reformulateQuery(question);
+    const paraphrases = await reformulateQuery(question, userId, opts?.queryArticle);
     if (paraphrases.length === 0) {
       span?.setAttribute('rag.expansion', 'unavailable');
       report({ expanded: false, reason: 'unavailable' });

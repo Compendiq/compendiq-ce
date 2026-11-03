@@ -22,7 +22,7 @@ import {
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
-import { ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
@@ -292,9 +292,9 @@ export async function streamSSE(
      * written beside the cached output so a later hit can be re-admitted
      * against the SAME provider revision, locality and page revisions
      * rather than against whatever the request's current context says.
-     * Absent for a transport with no article (Generate): the entry then
-     * carries no provenance, and `replayDirectOutput` treats it as
-     * article-free.
+     * Independent input records an explicitly empty page set. Missing
+     * provenance is unknown: it cannot be published or replayed as safe.
+     * Publication holds the shared revision guard through the cache write.
      */
     cacheProvenance?: ConversationTurnAiProvenance;
   },
@@ -357,7 +357,23 @@ export async function streamSSE(
       options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted &&
       (options.shouldCache?.(fullContent) ?? true)
     ) {
-      await options.llmCache.setCachedResponse(options.cacheKey, fullContent, undefined, options.cacheProvenance);
+      const { llmCache, cacheKey, cacheProvenance } = options;
+      if (cacheProvenance && options.audit?.userId) {
+        try {
+          // The short publication transaction serializes the SET with policy
+          // mutation. A check followed by an unlocked SET could repopulate
+          // purged output. Replay still revalidates if invalidation fails.
+          await admitArticleStage(cacheProvenance, options.audit.userId, 'chat', async () => {
+            await llmCache.setCachedResponse(cacheKey, fullContent, undefined, cacheProvenance);
+          });
+        } catch {
+          // Inference already completed: keep its usage accounting, but never
+          // publish reusable state when authority changed or is unreadable.
+          logger.info('Direct output cache publication refused');
+        }
+      }
+      // Missing provenance is unknown, including for independent input.
+      // Such output may be displayed, but must not become a reusable entry.
     }
 
     if ((extras || options?.finalExtras) && !controller.signal.aborted) {

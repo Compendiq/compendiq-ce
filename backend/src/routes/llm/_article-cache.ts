@@ -98,9 +98,9 @@ function wellFormed(cached: unknown): cached is CachedLlmResponse {
  *    endpoint/credentials and the live model assignment — exactly as a
  *    fresh dispatch would be. A known denial or a changed binding is 409;
  *    unreadable authority is 503.
- * 4. For a transport with no article (Generate without a page) only the
- *    shape check applies; an entry that carries provenance anyway is still
- *    refused, since the current request has nothing to re-admit it against.
+ * 4. Independent input also requires an explicit empty provenance set bound
+ *    to its provider revision. An unbound non-article transport cannot prove
+ *    that missing metadata was safe and is never allowed to replay output.
  */
 export async function replayDirectOutput(cached: unknown, opts: ReplayDirectOutputOptions): Promise<string> {
   if (!wellFormed(cached)) {
@@ -115,8 +115,7 @@ export async function replayDirectOutput(cached: unknown, opts: ReplayDirectOutp
   }
 
   if (opts.transportContext.kind !== 'article') {
-    if (recorded !== null) throw new DirectCacheReplayError(409, 'ai_history_not_replayable');
-    return cached.content;
+    throw new DirectCacheReplayError(409, 'ai_history_not_replayable');
   }
 
   const current = opts.transportContext.stage;

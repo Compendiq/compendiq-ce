@@ -137,6 +137,14 @@ describe('generateConversationTitle', () => {
     expect(mockProvenanceStillAdmitted).toHaveBeenCalledWith(base.provenance.pages, 'external');
     const messages = mockChat.mock.calls[0]![2] as Array<{ role: string; content: string }>;
     expect(messages[1]!.content).toContain(`Answer:\n${base.answer}`);
+    const options = mockChat.mock.calls[0]![3];
+    await options.beforeDispatch();
+    const preliminary = mockAdmitStage.mock.calls.filter((call) => call[3] === undefined);
+    expect(preliminary).toHaveLength(2);
+    for (const call of preliminary) {
+      expect(call[4]).toBe(options.transportContext.stage.context);
+      expect(call[7]).toBe(true);
+    }
   });
 
   it.each([

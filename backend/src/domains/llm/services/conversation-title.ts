@@ -141,7 +141,8 @@ export async function generateConversationTitle({
     if (!destination || (config.configRevision !== undefined && config.configRevision !== destination.configRevision)) return;
     const titleProvenance = { ...parsed.data, providerId: config.providerId,
       configRevision: destination.configRevision, locality: destination.effectiveLocality };
-    const beforeDispatch = () => admitArticleStage(titleProvenance, userId, 'chat');
+    const context = { operation: newAiOperation('conversation_title', { kind: 'user', id: userId }), stage: 'chat' as const, attempt: 1 };
+    const beforeDispatch = () => admitArticleStage(titleProvenance, userId, 'chat', undefined, context, undefined, undefined, true);
     await beforeDispatch();
     // #282: re-admission against the provider answering NOW. The answer
     // (page-derived text) ships only when the provider's metadata decodes
@@ -183,7 +184,7 @@ export async function generateConversationTitle({
       timeoutMs: TITLE_TIMEOUT_MS,
       beforeDispatch,
       transportContext: { kind: 'article', stage: { provenance: titleProvenance, userId, usecase: 'chat',
-        context: { operation: newAiOperation('conversation_title', { kind: 'user', id: userId }), stage: 'chat', attempt: 1 } } },
+        context } },
     });
     const title = normalizeGeneratedTitle(rawTitle);
     if (!title) {

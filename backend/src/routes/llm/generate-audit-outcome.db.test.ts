@@ -75,6 +75,23 @@ describe.skipIf(!available)('POST /api/llm/generate audits the real stream outco
     expect(mockEmitLlmAudit).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['legacy', 'provider_revision'])('refuses %s cache without invalidation or a new model call', async (mode) => {
+    expect((await post()).statusCode).toBe(200);
+    const [key] = await fixture.redis.keys('kb:llm:*');
+    if (mode === 'legacy') {
+      await fixture.redis.set(key!, JSON.stringify({ content: 'Legacy output', cachedAt: Date.now() }));
+    } else {
+      const { query } = await import('../../core/db/postgres.js');
+      await query("UPDATE llm_providers SET base_url = 'http://changed.test/v1' WHERE id = $1", [fixture.providerId]);
+    }
+    vi.clearAllMocks();
+    const response = await post();
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+    expect(fixture.requests).toHaveLength(1);
+    expect(mockEmitLlmAudit).not.toHaveBeenCalled();
+  });
+
   it('a malformed cache entry is refused, not regenerated and not audited', async () => {
     expect((await post()).statusCode).toBe(200);
     const [key] = await fixture.redis.keys('kb:llm:*');

@@ -1,6 +1,7 @@
 import { query, getVectorPool } from '../../../core/db/postgres.js';
 import { resolveUsecase, resolveRerankUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { queryArticleTransport, type QueryArticleInput } from './query-article-transport.js';
 import { rerank as rerankDocuments } from './rerank-client.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 // Use the request-scoped memoised wrapper so a single hybrid request resolves
@@ -1293,6 +1294,8 @@ export interface RetrievalMeta {
 }
 
 export interface HybridSearchOptions {
+  /** Server-captured dependencies of the query, not of the retrieved candidates. */
+  queryArticle?: QueryArticleInput;
   rerank?: boolean;
   /**
    * #282 — the destination the retrieved text is for. `{ purpose: 'human' }`
@@ -1853,7 +1856,7 @@ async function hybridSearchInner(
     // remember. Documents are embedded bare under every model, so the stored
     // corpus is identical either way and flipping this needs no re-embed.
     const embeddings = await generateEmbedding(
-      config, model, formatQueryForEmbedding(model, question), { kind: 'non_article', purpose: 'user_query' },
+      config, model, formatQueryForEmbedding(model, question), await queryArticleTransport(opts?.queryArticle, userId, config, 'embedding'),
     );
     const questionEmbedding = embeddings[0]!;
     vectorResults = await vectorSearch(userId, questionEmbedding, await stageLimitPromise, { spaceKey: opts?.spaceKey, aiPolicy: purpose });
@@ -2066,8 +2069,8 @@ async function hybridSearchInner(
       const provenance = ConversationTurnAiProvenanceSchema.parse({
         version: 1, providerId: rerankCfg.config.providerId,
         configRevision: rerankMeta.configRevision, locality: rerankLocality,
-        pages: pool.map((r) => ({ pageId: r.pageId, policy: r.aiPolicy,
-          policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision })),
+        pages: [...(opts?.queryArticle?.pages ?? []), ...pool.map((r) => ({ pageId: r.pageId, policy: r.aiPolicy,
+          policyRevision: r.aiPolicyRevision, contentRevision: r.contentRevision }))],
       });
       // #282: the rerank stage is admitted INSIDE the client against the
       // EXACT transport it is about to use — provider row revision, endpoint,

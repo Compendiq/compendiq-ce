@@ -1,7 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { SystemPromptKey, contentToText, type ChatContentPart, type ChatMessage } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
-import { streamChat, type TransportContext } from '../../domains/llm/services/openai-compatible-client.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
+import { queryArticleTransport } from '../../domains/llm/services/query-article-transport.js';
+import { newAiOperation } from '../../core/enterprise/ai-policy-hooks.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { directRefusalResponse, replayDirectOutput } from './_article-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
@@ -23,9 +25,6 @@ import {
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
-
-/** Generate works from the caller's prompt alone: there is no article to admit. */
-const GENERATE_TRANSPORT: TransportContext = { kind: 'non_article', purpose: 'user_query' };
 
 export async function llmGenerateRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -141,6 +140,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     // Resolve the `chat` use-case up-front so the cache key includes the
     // resolved provider+model. Queue + per-provider breakers wrap streamChat().
     const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    const generateTransport = await queryArticleTransport({ pages: [],
+      operation: newAiOperation('generate', { kind: 'user', id: userId }) }, userId, chatConfig, 'chat');
     logger.debug(
       { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
@@ -169,14 +170,12 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      // Generate has no article transport, so there is no binding to re-admit
-      // — but the entry's SHAPE is still checked (non-empty string content,
-      // sane timestamp, no stray provenance) before it is streamed as a
-      // result. A malformed entry is refused, never regenerated silently.
+      // Explicit empty provenance and provider revision must both revalidate.
+      // Legacy absence is unknown, never evidence of independent input.
       let replayed: string;
       try {
         replayed = await replayDirectOutput(cached, {
-          transport: chatConfig, transportContext: GENERATE_TRANSPORT, userId, usecase: 'chat', model: resolvedModel,
+          transport: chatConfig, transportContext: generateTransport, userId, usecase: 'chat', model: resolvedModel,
         });
       } catch (err) {
         const refusal = directRefusalResponse(err, 'chat');
@@ -200,7 +199,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking, transportContext: GENERATE_TRANSPORT });
+      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking, transportContext: generateTransport });
 
       // The audit entry is written by streamSSE from the stream's REAL
       // outcome — `success` only when the provider finished with `[DONE]`,
@@ -210,6 +209,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       // completed generation for every failed stream.
       await streamSSE(request, reply, generator, genExtras, {
         llmCache, cacheKey, postProcess,
+        cacheProvenance: generateTransport.kind === 'article' ? generateTransport.stage.provenance : undefined,
         audit: {
           userId, action: 'generate', model: resolvedModel, provider: chatConfig.providerId,
           inputTokens: estimateTokens(generateMessages.map(m => contentToText(m.content)).join('')),
@@ -241,6 +241,10 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'chat');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
     }
