@@ -604,6 +604,7 @@ export async function updatePageAiPolicies(
   userId: string,
   policy: AiPolicy,
   items: Array<{ pageId: number; expectedRevision: number }>,
+  onCommittedRows?: (client: PoolClient, rows: Extract<AiPolicyMutationResult, { ok: true }>['rows']) => Promise<void>,
 ): Promise<AiPolicyMutationResult> {
   if (policy !== 'all' && !isAiPolicyEnforcementAvailable()) {
     return { ok: false, reason: 'enforcement_unavailable', pageIds: items.map((i) => i.pageId) };
@@ -646,8 +647,9 @@ export async function updatePageAiPolicies(
         'UPDATE pages SET content_revision = content_revision + 1 WHERE id = ANY($1::int[])',
         [ids],
       );
+      await onCommittedRows?.(client, result.rows);
       return result;
-    });
+    }, onCommittedRows !== undefined);
     return { ok: true, rows: committed.rows };
   } catch (err) {
     if (err instanceof AiPolicyMutationRollback) return err.result;

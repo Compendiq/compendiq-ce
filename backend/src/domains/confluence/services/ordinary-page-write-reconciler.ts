@@ -30,6 +30,7 @@ import {
   stricterPolicy,
   type AiPolicy,
 } from '../../../core/services/ai-policy-service.js';
+import { reservePolicyLabelSynchronization } from '../../../core/services/policy-label-synchronization.js';
 import { initialPolicyFromEffect } from '../../../core/services/ai-policy-ingestion.js';
 import {
   PageWriteError,
@@ -38,6 +39,8 @@ import {
   registerPageWriteIntentReconciler,
   registerGeneratedLabelCompensator,
   registerCanonicalLabelRepairer,
+  registerCommittedPolicyLabelDispatcher,
+  runPageWriteIntentEffect,
   type PageWriteIntentReconciler,
   type PageWriteRecoveryIntent,
   type PageWriteIntentRepairer,
@@ -608,6 +611,7 @@ const reconcilePageCreate: PageWriteIntentReconciler = async (client, intent) =>
     actorId,
     recoveryIntentId: intent.id,
   });
+  await reservePolicyLabelSynchronization(client, actorId, published.id);
   await enqueuePageWriteInvalidation(client, intent.id);
   return {
     outcome: 'applied',
@@ -807,6 +811,37 @@ const repairCanonicalLabels: PageWriteIntentRepairer = async (intent) => {
     'UPDATE page_label_canonical_repairs SET completed_at = NOW() WHERE intent_id = $1 AND NOT in_flight', [intent.id]));
 };
 
+const dispatchCommittedPolicyLabels: PageWriteIntentRepairer = async (intent) => {
+  const confluence = await advancePageWriteIntent(intent, async (client) => {
+    const pageId = intent.pageIds[0]!;
+    const actorId = await assertPageAccess(client, intent, pageId);
+    if (!await canMutateAiPolicy(actorId, pageId, client)) {
+      throw new PageWriteError(403, 'intent_access_changed', 'Policy authority changed');
+    }
+    const row = await client.query<{ labels: string[]; ai_policy_revision: string }>(
+      'SELECT labels, ai_policy_revision::text FROM pages WHERE id = $1 AND confluence_id = $2',
+      [pageId, stringValue(intent.effect.confluenceId, 'confluenceId')]);
+    if (!row.rows[0] || row.rows[0].ai_policy_revision !== intent.effect.policyRevision
+      || !sameLabelSet(row.rows[0].labels, exactLabels(intent.effect.targetLabels))) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'Committed policy changed');
+    }
+    const provider = await getClientForUser(actorId, client);
+    if (!provider) throw new PageWriteError(409, 'intent_provider_unavailable', 'Confluence is unavailable');
+    return provider;
+  });
+  const id = stringValue(intent.effect.confluenceId, 'confluenceId');
+  const desired = exactLabels(intent.effect.targetLabels);
+  const prior = await confluence.getLabels(id);
+  await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, async () => {
+    const added = desired.filter((label) => !prior.includes(label));
+    if (added.length) await confluence.addLabels(id, added);
+    for (const label of prior.filter((label) => !desired.includes(label))) await confluence.removeLabel(id, label);
+    if (!sameLabelSet(await confluence.getLabels(id), desired)) {
+      throw new PageWriteError(409, 'intent_terminal_evidence_mismatch', 'Remote label target differs');
+    }
+  });
+};
+
 const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
   const pageId = intent.pageIds[0];
   if (pageId === undefined || intent.pageIds.length !== 1) {
@@ -869,7 +904,7 @@ const reconcileLabels: PageWriteIntentReconciler = async (client, intent) => {
     await validateAutoTagPublicationOnClient(client, stage as ArticleTransportStage, actorId, pageId);
   }
   const localPolicyCommitted = intent.effect.localPolicyCommitted === true
-    && (intent.kind === 'pages.bulk.tags' || intent.kind === 'pages.bulk.replace_tags');
+    && (intent.kind === 'pages.bulk.tags' || intent.kind === 'pages.bulk.replace_tags' || intent.kind === 'pages.create.labels');
   if (localPolicyCommitted && intent.remoteEffectsCompletedAt === null) {
     // Local policy/labels committed for the WHOLE selection before dispatch.
     // Never restore prior labels or independently re-apply part of the bulk.
@@ -1387,6 +1422,7 @@ export function registerOrdinaryPageWriteReconcilers(): void {
   for (const kind of LABEL_KINDS) registerPageWriteIntentReconciler(kind, reconcileLabels);
   registerGeneratedLabelCompensator(compensateGeneratedLabels);
   registerCanonicalLabelRepairer(repairCanonicalLabels);
+  registerCommittedPolicyLabelDispatcher(dispatchCommittedPolicyLabels);
   registerPageWriteIntentReconciler('pages.create.confluence', reconcilePageCreate);
   registerPageWriteIntentReconciler('pages.update.confluence', reconcilePagePut);
   registerPageWriteIntentReconciler('pages.draft.publish.confluence', reconcilePagePut);

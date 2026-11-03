@@ -4,11 +4,9 @@ import { z } from 'zod';
 import {
   LlmProviderInputSchema,
   LlmProviderUpdateSchema,
-  DeclareProviderLocalitySchema,
 } from '@compendiq/contracts';
 import {
   getProviderLocality,
-  declareProviderLocality,
   listProviders,
   getProviderById,
   createProvider,
@@ -366,28 +364,6 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       const state = await getProviderLocality(id);
       if (!state) return reply.code(404).send({ error: 'Provider not found' });
       return state;
-    },
-  );
-
-  // PUT /admin/llm-providers/:id/locality — declare/reconfirm locality
-  // against the configuration revision the admin inspected.
-  fastify.put(
-    '/admin/llm-providers/:id/locality',
-    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
-    async (request, reply) => {
-      const { id } = IdParamsSchema.parse(request.params);
-      const body = DeclareProviderLocalitySchema.parse(request.body);
-      const result = await declareProviderLocality(id, body.locality, body.expectedConfigRevision, request.userId);
-      if (!result.ok) {
-        if (result.reason === 'not_found') return reply.code(404).send({ error: 'Provider not found' });
-        return reply.code(409).send({ error: 'stale_config_revision', message: 'The provider configuration changed; review it and declare locality again.' });
-      }
-      emitLlmAudit({
-        event: 'llm_provider_updated',
-        userId: request.userId,
-        metadata: { providerId: id, fields: ['locality'], locality: body.locality, configRevision: result.state.configRevision },
-      });
-      return result.state;
     },
   );
 

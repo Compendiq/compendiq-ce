@@ -147,10 +147,17 @@ export const BulkUpdatePageAiPolicySchema = z.object({
 });
 export type BulkUpdatePageAiPolicyInput = z.infer<typeof BulkUpdatePageAiPolicySchema>;
 
+export const PolicyLabelSynchronizationSchema = z.object({
+  status: z.enum(['complete', 'pending']),
+  pendingIntentIds: z.array(z.string().uuid()),
+});
+export type PolicyLabelSynchronization = z.infer<typeof PolicyLabelSynchronizationSchema>;
+
 export const PageAiPolicyResponseSchema = z.object({
   pageId: z.number().int().positive(),
   aiPolicy: AiPolicySchema,
   aiPolicyRevision: z.number().int().nonnegative(),
+  synchronization: PolicyLabelSynchronizationSchema.optional(),
 });
 export type PageAiPolicyResponse = z.infer<typeof PageAiPolicyResponseSchema>;
 

@@ -47,6 +47,7 @@ const ConfluenceCreatePayloadSchema = z.object({
 
 const available = (await isDbAvailable()) && (await isRedisAvailable());
 const upstreamRequests: UpstreamRequest[] = [];
+let upstreamLabels: unknown = [];
 
 let app: FastifyInstance;
 let redis: RedisClientType;
@@ -74,8 +75,9 @@ async function handleUpstream(request: IncomingMessage, response: ServerResponse
       authorization: request.headers.authorization,
       body: payload,
     });
-    if (request.method === 'POST' && request.url === '/rest/api/content/rbac-created-page/label') {
-      sendJson(response, 200, { results: payload });
+    if (request.url === '/rest/api/content/rbac-created-page/label') {
+      if (request.method === 'POST') upstreamLabels = payload;
+      sendJson(response, 200, { results: upstreamLabels });
       return;
     }
     if (request.method !== 'POST' || request.url !== '/rest/api/content') {
@@ -206,6 +208,7 @@ describe.skipIf(!available)('POST /api/pages Confluence RBAC admission with real
     await truncateAllTables();
     await redis.flushDb();
     upstreamRequests.length = 0;
+    upstreamLabels = [];
     currentUserId = await insertUser('rbac_create_user');
     await insertSpace('DEV', 'confluence');
     await insertSpace('HR', 'confluence');
@@ -240,8 +243,11 @@ describe.skipIf(!available)('POST /api/pages Confluence RBAC admission with real
 
     expect(response.statusCode).toBe(200);
     expect(body).toMatchObject({ id: 'rbac-created-page', source: 'confluence' });
-    expect(upstreamRequests).toHaveLength(2);
-    expect(upstreamRequests[1]).toMatchObject({
+    expect(response.json().synchronization).toEqual({ status: 'complete', pendingIntentIds: [] });
+    expect(upstreamRequests).toHaveLength(4);
+    expect(upstreamRequests[1]?.method).toBe('GET');
+    expect(upstreamRequests[3]?.method).toBe('GET');
+    expect(upstreamRequests[2]).toMatchObject({
       method: 'POST', url: '/rest/api/content/rbac-created-page/label',
       body: [{ prefix: 'global', name: 'all-ai' }],
     });

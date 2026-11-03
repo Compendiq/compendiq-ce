@@ -12,6 +12,20 @@ import {
   type AiPolicyRefusal,
 } from '../../core/services/ai-policy-service.js';
 
+import { reservePolicyLabelSynchronization, synchronizePolicyLabels, type PolicyLabelWrite } from './policy-label-synchronization.js';
+
+async function mutateWithSynchronization(userId: string, policy: Parameters<typeof updatePageAiPolicies>[1], items: Parameters<typeof updatePageAiPolicies>[2]) {
+  const writes: PolicyLabelWrite[] = [];
+  const result = await updatePageAiPolicies(userId, policy, items, async (client, rows) => {
+    for (const row of rows) {
+      const write = await reservePolicyLabelSynchronization(client, userId, row.pageId);
+      if (write) writes.push(write);
+    }
+  });
+  if (!result.ok) return { result, synchronization: undefined };
+  return { result, synchronization: await synchronizePolicyLabels(userId, writes) };
+}
+
 const PageIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 
 function toResponse(row: { pageId: number; policy: string; revision: number }): PageAiPolicyResponse {
@@ -72,18 +86,18 @@ export async function pageAiPolicyRoutes(fastify: FastifyInstance): Promise<void
   fastify.put('/pages/:id/ai-policy', async (request, reply) => {
     const { id } = PageIdParamSchema.parse(request.params);
     const body = UpdatePageAiPolicySchema.parse(request.body);
-    const result = await updatePageAiPolicies(request.userId, body.aiPolicy, [
+    const { result, synchronization } = await mutateWithSynchronization(request.userId, body.aiPolicy, [
       { pageId: id, expectedRevision: body.expectedRevision },
     ]);
     if (!result.ok) return sendAiPolicyFailure(reply, result);
-    return toResponse(result.rows[0]!);
+    return { ...toResponse(result.rows[0]!), synchronization };
   });
 
   // All-or-nothing: any stale, missing or unauthorized row leaves every row unchanged.
   fastify.post('/pages/bulk/ai-policy', async (request, reply) => {
     const body = BulkUpdatePageAiPolicySchema.parse(request.body);
-    const result = await updatePageAiPolicies(request.userId, body.aiPolicy, body.items);
+    const { result, synchronization } = await mutateWithSynchronization(request.userId, body.aiPolicy, body.items);
     if (!result.ok) return sendAiPolicyFailure(reply, result);
-    return { items: result.rows.map(toResponse) };
+    return { items: result.rows.map(toResponse), synchronization };
   });
 }

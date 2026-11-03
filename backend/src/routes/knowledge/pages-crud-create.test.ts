@@ -65,6 +65,7 @@ const ConfluenceCreatePayloadSchema = z.object({
 const available = (await isDbAvailable()) && (await isRedisAvailable());
 const upstreamRequests: UpstreamRequest[] = [];
 const upstreamPageIds: string[] = [];
+const upstreamLabels = new Map<string, unknown>();
 
 let app: FastifyInstance;
 let redis: RedisClientType;
@@ -109,8 +110,9 @@ async function handleUpstream(request: IncomingMessage, response: ServerResponse
       return;
     }
 
-    if (recorded.method === 'POST' && /^\/rest\/api\/content\/[^/]+\/label$/.test(recorded.url)) {
-      sendJson(response, 200, {});
+    if (/^\/rest\/api\/content\/[^/]+\/label$/.test(recorded.url)) {
+      if (recorded.method === 'POST') upstreamLabels.set(recorded.url, payload);
+      sendJson(response, 200, { results: upstreamLabels.get(recorded.url) ?? [] });
       return;
     }
 
@@ -260,6 +262,7 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     await redis.flushDb();
     upstreamRequests.length = 0;
     upstreamPageIds.length = 0;
+    upstreamLabels.clear();
     currentUserId = await insertUser('create_route_user');
     otherUserId = await insertUser('create_route_other');
     await insertLocalSpace('LOCAL_A', currentUserId);
@@ -586,7 +589,8 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     const remoteResult = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE confluence_id = $1', [String(localId)]);
     expect(localResult.rows[0]?.labels).toEqual([]);
     expect(remoteResult.rows[0]?.labels).toEqual(['remote-label', 'all-ai']);
-    const labelRequest = upstreamRequests.find((request) => request.url.endsWith('/label'));
+    expect(response.json().synchronization).toEqual({ status: 'complete', pendingIntentIds: [] });
+    const labelRequest = upstreamRequests.find((request) => request.method === 'POST' && request.url.endsWith('/label'));
     expect(labelRequest?.body).toEqual([
       { prefix: 'global', name: 'remote-label' }, { prefix: 'global', name: 'all-ai' },
     ]);

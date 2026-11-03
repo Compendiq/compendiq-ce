@@ -70,7 +70,6 @@ import {
   pagePublicationReceipt,
   publishCreatedConfluencePage,
   sameLabelSet,
-  type PublishedConfluencePage,
 } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 import {
   freezeSummary,
@@ -120,6 +119,7 @@ import {
 import { aiPolicyLabelConflict, isAiPolicyUpdatePaired } from '@compendiq/contracts';
 import { sendAiPolicyRefusal } from './page-ai-policy.js';
 import { publishBulkPolicyLabels } from './bulk-policy-labels.js';
+import { reservePolicyLabelSynchronization, synchronizePolicyLabels, type PolicyLabelWrite } from './policy-label-synchronization.js';
 
 /**
  * Apply an explicit `aiPolicy` from a content update on the SAME held
@@ -1941,9 +1941,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // are decided HERE, before any remote effect, and carried through the
     // create (as part of the durable intent effect) so the local row is never
     // first published looser than the creator stated (#281 review).
-    let initialLabels = body.labels?.length
-      ? planLabelPolicyChange({ currentPolicy: 'all', currentLabels: [], targetLabels: body.labels }).labels
-      : [];
+    let initialLabels = [...new Set(body.labels ?? [])];
     // An explicit `aiPolicy` that disagrees with the labels is a 422: the
     // caller stated two policies at once (#280). A restrictive explicit
     // choice on a foundation-only deployment is refused rather than silently
@@ -2247,7 +2245,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       actorId: userId,
     };
     const admittedCreateIntent = createIntent;
-    const createdPageState: PublishedConfluencePage = await completePageWriteIntent(
+    const labelWrites: PolicyLabelWrite[] = [];
+    await completePageWriteIntent(
       admittedCreateIntent,
       async (writeClient) => {
         const actor = await writeClient.query<{ active: boolean }>(
@@ -2272,13 +2271,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           }
         }
         const published = await publishCreatedConfluencePage(writeClient, publication);
+        const labelWrite = await reservePolicyLabelSynchronization(writeClient, userId, published.id);
+        if (labelWrite) labelWrites.push(labelWrite);
         await enqueuePageWriteInvalidation(writeClient, admittedCreateIntent.id);
         return published;
       },
     );
     // The publication has COMMITTED (a thrown publication never reaches
     // here), so a sync-first tighten is now a durable transition.
-    const localPageId = createdPageState.id;
 
     // A new Confluence page is visible to every user with space access (#893),
     // and the cached spaces payload carries per-space pageCount which this
@@ -2286,89 +2286,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidateAcrossUsers('pages');
     await cache.invalidateAcrossUsers('spaces');
 
-    // Labels supplied at creation (#1133). Confluence owns them for a synced
-    // page, so they go upstream first and the local row mirrors what stuck. A
-    // failure here must not fail the create: the page exists and is correct.
-    const createLabels = initialLabels;
-    if (createLabels?.length && localPageId !== undefined && createdPageState) {
-      // The requested set is validated against the just-published row BEFORE
-      // the intent and the remote call (#281): a contradictory label set is
-      // the caller's error and surfaces as 422 rather than being logged away.
-      const requestedLabels = [...new Set([...(createdPageState.labels ?? []), ...createLabels])];
-      let labelsIntent: PageWriteIntent | undefined;
-      try {
-        const createPlan = await withPageWriteTransaction(
-          [localPageId],
-          (writeClient) => planAuthorizedLabelWrite(writeClient, localPageId, userId, requestedLabels),
-        );
-        const targetLabels = createPlan.labels;
-        labelsIntent = await reservePageWriteIntent({
-          pageIds: [localPageId],
-          expectedRevisions: {
-            [localPageId]: {
-              contentRevision: createdPageState.contentRevision,
-              lifecycleRevision: createdPageState.lifecycleRevision,
-            },
-          },
-          kind: 'pages.create.labels',
-          actorId: userId,
-          effect: {
-            effectClass: 'remote',
-            confluenceId: page.id,
-            labelsSha256: createHash('sha256').update(JSON.stringify(targetLabels)).digest('hex'),
-            priorLabels: createdPageState.labels ?? [],
-            targetLabels,
-          },
-        });
-        const admittedLabelsIntent = labelsIntent;
-        let labelsClient: ConfluenceClient;
-        try {
-          labelsClient = await withPageWriteTransaction(
-            [localPageId],
-            (writeClient) => loadCurrentConfluenceWriteClient(
-              writeClient, admittedLabelsIntent, localPageId, userId, page.id,
-            ),
-            { intent: admittedLabelsIntent },
-          );
-        } catch (error) {
-          await cancelPageWriteIntentBeforeEffect(admittedLabelsIntent);
-          throw error;
-        }
-        // The local row was published WITH its labels (#281 review: first
-        // publication is never looser than stated); the freshly created
-        // Confluence page holds none yet, so the remote delta is against the
-        // empty remote set, not against the local mirror.
-        const { add: remoteAdd } = remoteLabelDelta([], targetLabels);
-        await runPageWriteIntentEffect(
-          labelsIntent,
-          { kind: 'remote', completesRemoteWork: true },
-          async () => {
-            if (remoteAdd.length > 0) await labelsClient.addLabels(page.id, remoteAdd);
-          },
-        );
-        const labelsIntentId = labelsIntent.id;
-        await completePageWriteIntent(labelsIntent, async (writeClient) => {
-          // Policy lock precedes the row lock `loadAuthorizedContentWriteState` takes.
-          await lockAiPolicyForPages(writeClient, [localPageId]);
-          await loadAuthorizedContentWriteState(
-            writeClient, localPageId, userId, admittedLabelsIntent.revisions[localPageId]!,
-          );
-          const applied = await applyPageLabelsOnClient(writeClient, {
-            userId, pageId: localPageId, targetLabels,
-          });
-          assertPublishedLabelsMirrored(applied.labels, targetLabels);
-          await enqueuePageWriteInvalidation(writeClient, labelsIntentId);
-          return applied;
-        });
-      } catch (err) {
-        // The create itself succeeded. Keep a possibly-effectful labels intent
-        // for reconciliation rather than guessing whether the remote call stuck.
-        logger.warn(
-          { err, confluenceId: page.id, intentId: labelsIntent?.id },
-          'Page created but its labels outcome requires reconciliation',
-        );
-      }
-    }
+    // Label debt committed with local publication; upstream failure cannot undo it.
+    const synchronization = await synchronizePolicyLabels(userId, labelWrites);
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
 
@@ -2383,7 +2302,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { id: page.id, title: page.title, version: page.version.number, source: 'confluence' };
+    return { id: page.id, title: page.title, version: page.version.number, source: 'confluence', synchronization };
   }));
 
   // PUT /api/pages/:id - update page (standalone local or Confluence + local cache)

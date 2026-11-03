@@ -324,6 +324,12 @@ const intentReconcilers = new Map<IntentKind, PageWriteIntentReconciler>();
 const intentRepairers = new Map<IntentKind, PageWriteIntentRepairer>();
 let generatedLabelCompensator: PageWriteIntentRepairer | undefined;
 let canonicalLabelRepairer: PageWriteIntentRepairer | undefined;
+let committedPolicyLabelDispatcher: PageWriteIntentRepairer | undefined;
+
+export function registerCommittedPolicyLabelDispatcher(dispatcher: PageWriteIntentRepairer): void {
+  if (committedPolicyLabelDispatcher) throw new PageWriteError(409, 'reconciler_already_registered', 'Policy label dispatcher is already registered');
+  committedPolicyLabelDispatcher = dispatcher;
+}
 
 /** Trusted canonical-only recovery; never a general remote replay capability. */
 export function registerCanonicalLabelRepairer(repairer: PageWriteIntentRepairer): void {
@@ -1031,6 +1037,7 @@ export async function lockPageWrites(
  */
 export async function withAiPolicyWriteTransaction<T>(
   pageIds: readonly number[], operation: (client: PoolClient) => Promise<T>,
+  replacesPolicyLabelDebt = false,
 ): Promise<T> {
   return withPageWriterOperation(() => inTransaction(async (client) => {
     await lockPageWriterRuntime(client, processRuntimeId);
@@ -1040,9 +1047,18 @@ export async function withAiPolicyWriteTransaction<T>(
       `SELECT * FROM page_write_intents WHERE status = 'pending' AND page_ids && $1::int[] FOR UPDATE`,
       [normalizePageIds(pageIds)],
     );
-    if (pending.rows.some((row) => !isGeneratedLabelIntent(row)
-      || row.remote_effect_started_at === null || row.recovery_started_at !== null)) {
+    const supersedableLabels = (row: IntentRow) => replacesPolicyLabelDebt && row.kind === 'pages.create.labels'
+      && row.effect.localPolicyCommitted === true && row.remote_effect_started_at === null
+      && row.recovery_started_at === null;
+    if (pending.rows.some((row) => !supersedableLabels(row) && (!isGeneratedLabelIntent(row)
+      || row.remote_effect_started_at === null || row.recovery_started_at !== null))) {
       throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
+    }
+    // Retirement rolls back with a refused CAS; the callback reserves fresh debt.
+    for (const row of pending.rows.filter(supersedableLabels)) {
+      await client.query(`UPDATE page_write_intents SET status = 'cancelled', settled_at = NOW(),
+        settlement_reason = 'policy_target_superseded', settlement_proof = '{"assertion":"no_remote_io_began"}'::jsonb
+        WHERE id = $1`, [row.id]);
     }
     const before = await client.query<{ id: number; ai_policy: string }>(
       'SELECT id, ai_policy FROM pages WHERE id = ANY($1::int[])', [pageIds]);
@@ -1050,7 +1066,7 @@ export async function withAiPolicyWriteTransaction<T>(
     const after = await client.query<{ id: number; ai_policy: string }>(
       'SELECT id, ai_policy FROM pages WHERE id = ANY($1::int[])', [pageIds]);
     const rank = (policy: string) => ['all', 'local_only', 'none'].indexOf(policy);
-    for (const row of pending.rows) {
+    for (const row of pending.rows.filter((row) => !supersedableLabels(row))) {
       const oldPolicy = before.rows.find((page) => page.id === row.page_ids[0])!.ai_policy;
       const newPolicy = after.rows.find((page) => page.id === row.page_ids[0])!.ai_policy;
       if (rank(oldPolicy) < 0 || rank(newPolicy) <= rank(oldPolicy)) {
@@ -2460,6 +2476,11 @@ export async function reconcilePageWriteIntent(
     }
     if (isOrdinaryAcknowledgedLabelIntent(discoveredIntent) && canonicalLabelRepairer) {
       await canonicalLabelRepairer(recoveryToken);
+    }
+    if (recoveryToken.kind === 'pages.create.labels' && recoveryToken.effect.localPolicyCommitted === true
+      && recoveryToken.remoteEffectStartedAt === null && committedPolicyLabelDispatcher) {
+      // First dispatch only: unknown unversioned outcomes remain fenced above.
+      await committedPolicyLabelDispatcher(recoveryToken);
     }
     const inspected = await verifyAndSettle(recoveryToken);
     if (inspected.kind === 'settled') {
