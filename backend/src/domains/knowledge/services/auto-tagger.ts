@@ -235,7 +235,9 @@ export async function autoTagPage(
     context,
   };
   const suggestedTags = await autoTagContent(userId, body_html, { isHtml: true, modelOverride, articleStage: stage, resolved });
-  await admitArticleStage(stage.provenance, userId, 'auto_tag', undefined, stage.context, config, stage.model);
+  // Returning suggestions is publication, not another provider dispatch. Keep
+  // the full revision/model check without recording a second inference decision.
+  await admitArticleStage(stage.provenance, userId, 'auto_tag', async () => {}, stage.context, config, stage.model);
   await publish?.(suggestedTags, stage);
 
   return {

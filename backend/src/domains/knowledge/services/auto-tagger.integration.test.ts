@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AiDecisionEvent } from '@compendiq/contracts';
+import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import { z } from 'zod';
 import {
   isDbAvailable,
@@ -425,7 +427,48 @@ describeDb('auto-tagger persistence and provider boundaries', () => {
   });
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describeDb('auto-tag article admission and publication', () => {
+  it.each(['suggestions', 'labels', 'stale-result'] as const)('records only the dispatched inference for %s', async (mode) => {
+    const actorId = await createUser();
+    const inserted = await query<{ id: number }>(`INSERT INTO pages
+      (title, body_html, source, visibility, created_by_user_id, labels)
+      VALUES ('Evidence', '<p>Deployment</p>', 'standalone', 'private', $1, ARRAY['all-ai']) RETURNING id`, [actorId]);
+    const id = inserted.rows[0]!.id;
+    const events: AiDecisionEvent[] = [];
+    vi.spyOn(getEnterprisePlugin(), 'onAiDecision').mockImplementation((event) => { events.push(event); });
+    let release!: () => void;
+    let reached!: () => void;
+    const arrived = new Promise<void>((resolve) => { reached = resolve; });
+    respondToProvider = (_body, response) => { release = () => sendTags(response); reached(); };
+    let published = false;
+    const work = autoTagPage(actorId, String(id), undefined, mode === 'suggestions' ? undefined : async (tags, articleStage) => {
+      published = true;
+      await applyLabelChanges(actorId, String(id), { add: tags, articleStage });
+    }).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+    await arrived;
+    try {
+      if (mode === 'stale-result') await query("UPDATE pages SET body_html = '<p>Successor</p>' WHERE id = $1", [id]);
+    } finally { release(); }
+    const result = await work;
+    if (mode === 'stale-result') {
+      expect(result.error).toMatchObject({ name: 'ArticleStageRefusedError' });
+      expect(published).toBe(false);
+    } else {
+      expect(result.error).toBeNull();
+      expect(result.value?.suggestedTags).toEqual(['architecture']);
+      expect(published).toBe(mode === 'labels');
+    }
+    expect(requests).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'decision', decision: 'admitted', reason: 'allowed',
+      stage: 'auto_tag', attempt: 1, actor: { kind: 'user', id: actorId },
+      provider: { model: ASSIGNED_MODEL }, articles: [{ pageId: id }] });
+    expect(events[0]!.operationId).toEqual(expect.any(String));
+    expect((await query('SELECT labels FROM pages WHERE id = $1', [id])).rows[0].labels)
+      .toEqual(mode === 'labels' ? ['architecture', 'all-ai'] : ['all-ai']);
+  });
   it('rechecks policy after queue wait without sending article bytes', async () => {
     const actorId = await createUser();
     const page = await query<{ id: number }>(`INSERT INTO pages
