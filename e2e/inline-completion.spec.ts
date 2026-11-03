@@ -3,7 +3,24 @@ import { authenticateContext, bearerHeaders, registerUser, uniqueUsername, type 
 
 test.describe('AI inline completion (#1417)', () => {
   let auth: E2eUser;
+  let fixturePageId: string | null = null;
+
+  test.afterEach(async ({ page }) => {
+    if (fixturePageId === null) return;
+    // Leave the editor before trashing only this test's article. Cleanup also
+    // runs when a policy/identity or keyboard assertion fails.
+    try {
+      await page.goto('about:blank');
+    } finally {
+      const removed = await page.request.delete(`/api/pages/${fixturePageId}`, {
+        headers: bearerHeaders(auth),
+      });
+      expect(removed.ok(), await removed.text()).toBeTruthy();
+    }
+  });
+
   test.beforeEach(async ({ page }) => {
+    fixturePageId = null;
     auth = await registerUser(page.request, uniqueUsername('e2e_inline'));
     await authenticateContext(page.context(), auth);
 
@@ -51,13 +68,23 @@ test.describe('AI inline completion (#1417)', () => {
     expect(space.ok(), await space.text()).toBeTruthy();
     const created = await page.request.post('/api/pages', {
       headers: bearerHeaders(auth),
-      data: { title: 'Inline completion fixture', bodyHtml: '<p></p>', spaceKey, aiPolicy: 'all' },
+      data: { title: 'Inline completion fixture', bodyHtml: '<p></p>', spaceKey, source: 'standalone', visibility: 'private', aiPolicy: 'all' },
     });
     expect(created.ok(), await created.text()).toBeTruthy();
     const { id } = await created.json();
+    // Capture the API-created identity before any subsequent assertion so a
+    // failed detail/keyboard check cannot leave a live fixture behind.
+    fixturePageId = String(id);
+    expect(fixturePageId).toMatch(/^[1-9]\d*$/);
     const detail = await page.request.get(`/api/pages/${id}`, { headers: bearerHeaders(auth) });
     expect(detail.ok(), await detail.text()).toBeTruthy();
-    expect(await detail.json()).toMatchObject({ aiPolicy: 'all', aiPolicyRevision: expect.any(Number) });
+    const article = await detail.json();
+    expect(String(article.id)).toBe(fixturePageId);
+    expect(String(article.createdByUserId)).toBe(String(auth.user.id));
+    expect(article).toMatchObject({
+      spaceKey, source: 'standalone', visibility: 'private',
+      aiPolicy: 'all', aiPolicyRevision: expect.any(Number),
+    });
 
     // Only the generated text is synthetic. Page identity, ownership and fresh
     // policy/permission reads use the actual API, not mocked authorization.
