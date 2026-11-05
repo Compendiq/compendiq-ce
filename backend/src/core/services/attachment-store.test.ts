@@ -388,6 +388,8 @@ describe('the record agrees with the code about where the bytes are', () => {
     // and the ADR is not, so a P2/P3 implementer reads whatever this file says
     // about the prefix before reading anything else.
     'CLAUDE.md',
+    'docs/claude/llm-and-rag.md',
+    'docs/claude/testing-and-retrieval-eval.md',
   ];
 
   /** The two phrasings the retired claim shipped in, and nothing broader. */
