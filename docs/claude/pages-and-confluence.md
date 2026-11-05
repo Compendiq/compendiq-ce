@@ -162,6 +162,13 @@ behind page ACEs are fenced in the database (migration 129 queues the pages;
 the page publication worker bumps the `pages` generation), so sync, relocate
 and the EE bulk route need no cache code of their own.
 
+Sub-page LLM context uses the parent's source at the initial lookup and every
+recursive step: Confluence ID for a Confluence page, internal ID as text for
+a standalone page, even if that standalone row retains a historical
+Confluence ID. Do not add that historical ID as an alternate traversal key.
+The caller's visibility filter and the existing breadth, depth and character
+limits still apply.
+
 Per-page duplicate lookup uses source-aware identity: a standalone page's
 internal ID, or a Confluence page's content ID, never a historical standalone
 Confluence ID. Resolve the source within `visiblePagesPredicate`, just like

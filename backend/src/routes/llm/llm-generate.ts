@@ -7,7 +7,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { GenerateRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { emitLlmAudit, estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -194,6 +194,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         inputTokens: estimateTokens(generateMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+        promptHash: fingerprintPrompt(generateMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
@@ -209,6 +210,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         inputTokens: estimateTokens(generateMessages.map(m => contentToText(m.content)).join('')),
         outputTokens: 0,
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+        promptHash: fingerprintPrompt(generateMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'error',

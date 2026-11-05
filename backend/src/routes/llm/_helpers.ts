@@ -57,7 +57,12 @@ export const MAX_DOCUMENT_TEXT_FOR_LLM = 80_000;
 export interface ResolvedPageRef {
   id: number;
   confluenceId: string | null;
+  source: string;
   title: string;
+}
+
+export function subPageParentKey(page: ResolvedPageRef): string {
+  return page.source === 'confluence' && page.confluenceId ? page.confluenceId : String(page.id);
 }
 
 // pages.id is int4 — only strings that safely fit are tried as internal ids
@@ -71,25 +76,25 @@ interface PageRefReader {
 }
 
 async function lookupPageRef(pageId: string, reader?: PageRefReader): Promise<ResolvedPageRef | undefined> {
-  type Row = { id: number; confluence_id: string | null; title: string };
+  type Row = { id: number; confluence_id: string | null; source: string; title: string };
   // Both lookups carry the gate, so a restricted internal id falls through to
   // the Confluence-id lookup exactly as a missing one does (no oracle).
   const gate = reader ? ` AND ${visiblePagesPredicate(2, 3, 'pages')}` : '';
   const gateValues = reader ? [reader.spaces, reader.userId] : [];
   if (/^\d+$/.test(pageId) && pageId.length <= SAFE_INT4_DIGITS) {
     const byId = await query<Row>(
-      `SELECT id, confluence_id, title FROM pages WHERE id = $1 AND deleted_at IS NULL${gate}`,
+      `SELECT id, confluence_id, title, source FROM pages WHERE id = $1 AND deleted_at IS NULL${gate}`,
       [parseInt(pageId, 10), ...gateValues],
     );
     const row = byId.rows[0];
-    if (row) return { id: row.id, confluenceId: row.confluence_id, title: row.title };
+    if (row) return { id: row.id, confluenceId: row.confluence_id, source: row.source, title: row.title };
   }
   const byConfluenceId = await query<Row>(
-    `SELECT id, confluence_id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL${gate}`,
+    `SELECT id, confluence_id, title, source FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL${gate}`,
     [pageId, ...gateValues],
   );
   const row = byConfluenceId.rows[0];
-  return row ? { id: row.id, confluenceId: row.confluence_id, title: row.title } : undefined;
+  return row ? { id: row.id, confluenceId: row.confluence_id, source: row.source, title: row.title } : undefined;
 }
 
 /**
@@ -131,7 +136,7 @@ export async function assembleContextIfNeeded(
     const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
     const assembled = await assembleSubPageContext(
       userId,
-      resolved.confluenceId ?? String(resolved.id),
+      subPageParentKey(resolved),
       parentHtml,
       resolved.title,
       undefined,
