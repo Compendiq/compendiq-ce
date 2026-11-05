@@ -81,6 +81,14 @@ Guarded by `frontend/src/workspace-themes.test.ts`, which parses tokens out of `
 
 **Conversation auto-titles complete #1361 only after the answer is complete.** A new row starts with the word-boundary question fallback, then `generateConversationTitle` runs fire-and-forget after the terminal SSE frame on all three creation paths: streamed, cached and refused. It uses the existing `chat` assignment, bounds and sanitises the question and non-refused answer, normalises one ≤80-character line, and compare-and-sets only while `title_source = 'question'`; a manual rename writes `'user'` and therefore wins the race. Provider, timeout, output and DB failures keep the fallback and never fail or delay the answer. `useConversationList` polls at three seconds only while a loaded question-title row is under 60 seconds old, then stops on `generated`, `user`, or expiry — never turn a soft failure into permanent polling.
 
+AI SSE consumers must require `done: true` before success or application, but
+continue reading after that marker for post-processing and final metadata.
+Cached responses may carry content and `done` without a separate `final`.
+EOF without `done` retains partial output as an error, not a completed answer;
+explicit errors retain partial text too. Cancellation remains separate. The
+editor preview disables Replace and Insert until completion. Embedding streams
+use their own `type: 'complete'` contract, not the LLM marker.
+
 **Conversation cursors retain PostgreSQL precision (#1667).** The list orders
 by `(updated_at DESC, id DESC)`, so its opaque cursor carries a six-digit UTC
 `TIMESTAMPTZ` string selected directly by PostgreSQL plus the UUID. Never build

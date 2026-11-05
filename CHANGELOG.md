@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Incomplete AI streams (#1801):** retain interrupted text with an error
+  instead of treating EOF as completion or offering it for application. Cached
+  completions and metadata following a done event remain supported.
 - **LLM audit prompt identity (#1790):** fingerprint the ordered provider
   messages and structured content rather than role/length summaries, without
   passing prompt plaintext to audit hooks or persisting it in CE.
