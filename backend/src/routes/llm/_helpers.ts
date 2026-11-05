@@ -199,9 +199,9 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
  *
  * 1. Return cached response immediately if present.
  * 2. Try to acquire a Redis lock so only one request generates.
- * 3. If the lock is already held by another request, poll until the cached
- *    result appears (or timeout, in which case we return null so the caller
- *    can generate anyway).
+ * 3. If the lock is already held, wait for the cached result. Generate can
+ *    provide its response so the waiter stays connected and retries ownership
+ *    after the current holder releases the lock.
  *
  * The caller MUST pass `lockToken` to `releaseLock()` in a finally block
  * when it is non-null, after writing the generated result to the cache.
@@ -209,22 +209,101 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
 export async function checkCacheWithLock(
   llmCache: LlmCache,
   cacheKey: string,
-): Promise<{ cached: CachedLlmResponse | null; lockToken: string | null }> {
+  response?: {
+    request: { raw: import('http').IncomingMessage };
+    reply: FastifyReply;
+  },
+): Promise<{ cached: CachedLlmResponse | null; lockToken: string | null; aborted: boolean }> {
   // Fast path — already in cache
   const cached = await llmCache.getCachedResponse(cacheKey);
-  if (cached) return { cached, lockToken: null };
+  if (cached) return { cached, lockToken: null, aborted: false };
 
   // Try to become the single generator for this key
   const lockToken = await llmCache.acquireLock(cacheKey);
   if (lockToken) {
-    return { cached: null, lockToken };
+    return { cached: null, lockToken, aborted: false };
   }
 
-  // Another request holds the lock — wait for it to populate the cache.
-  // A timeout deliberately returns without ownership so the caller can use
-  // the existing duplicate-generation fallback without releasing that lock.
-  const waited = await llmCache.waitForCachedResponse(cacheKey);
-  return { cached: waited, lockToken: null };
+  if (!response) {
+    const waited = await llmCache.waitForCachedResponse(cacheKey);
+    return { cached: waited, lockToken: null, aborted: false };
+  }
+
+  const { request, reply } = response;
+  if (request.raw.aborted || reply.raw.destroyed) {
+    return { cached: null, lockToken: null, aborted: true };
+  }
+
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  reply.raw.on('close', onClose);
+  let keepAliveTimer: NodeJS.Timeout | undefined;
+
+  const writeKeepAlive = () => {
+    if (controller.signal.aborted || reply.raw.destroyed || reply.raw.writableEnded) {
+      controller.abort();
+      return;
+    }
+    try {
+      reply.raw.write(': keep-alive\n\n');
+    } catch {
+      controller.abort();
+    }
+  };
+
+  try {
+    startSseResponse(reply);
+    writeKeepAlive();
+    keepAliveTimer = setInterval(writeKeepAlive, 1_000);
+    keepAliveTimer.unref?.();
+
+    while (!controller.signal.aborted) {
+      const waited = await llmCache.waitForCachedResponse(
+        cacheKey,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (waited) return { cached: waited, lockToken: null, aborted: false };
+
+      const nextLockToken = await llmCache.acquireLock(cacheKey);
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        if (nextLockToken) await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (!nextLockToken) continue;
+
+      const cachedAfterAcquire = await llmCache.getCachedResponse(cacheKey);
+      if (controller.signal.aborted || reply.raw.destroyed) {
+        await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: null, lockToken: null, aborted: true };
+      }
+      if (cachedAfterAcquire) {
+        await llmCache.releaseLock(cacheKey, nextLockToken);
+        return { cached: cachedAfterAcquire, lockToken: null, aborted: false };
+      }
+      return { cached: null, lockToken: nextLockToken, aborted: false };
+    }
+
+    return { cached: null, lockToken: null, aborted: true };
+  } finally {
+    if (keepAliveTimer) clearInterval(keepAliveTimer);
+    reply.raw.removeListener('close', onClose);
+  }
+}
+
+export function startSseResponse(reply: FastifyReply): void {
+  if (reply.raw.headersSent) return;
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
 }
 
 /**
@@ -243,13 +322,7 @@ export function sendCachedSSE(
   extras?: Record<string, unknown>,
   opts?: { cached?: boolean },
 ): void {
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  startSseResponse(reply);
   const contentFrame: Record<string, unknown> = { content, done: true };
   if (opts?.cached !== false) contentFrame.cached = true;
   reply.raw.write(`data: ${JSON.stringify(contentFrame)}\n\n`);
@@ -271,6 +344,7 @@ export async function streamSSE(
   options?: {
     llmCache?: LlmCache;
     cacheKey?: string;
+    lockToken?: string | null;
     postProcess?: (content: string) => OutputSanitizeResult;
     /** Only provider-dispatched calls pass audit metadata; cache hits bypass this helper. */
     audit?: Omit<LlmAuditEntry, 'outputTokens' | 'durationMs' | 'status' | 'errorMessage' | 'outputText'>;
@@ -288,6 +362,10 @@ export async function streamSSE(
      * pre-Accept warning.
      */
     finalExtras?: (content: string) => Record<string, unknown>;
+    /** Lets callers avoid persisting a partial response after a stream failure. */
+    onStreamError?: (error: unknown) => void;
+    /** Report whether the stream completed normally or was interrupted. */
+    onFinished?: (result: { status: 'success' | 'error' | 'aborted'; error?: unknown }) => void;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -299,20 +377,27 @@ export async function streamSSE(
   reply.raw.on('close', onClose);
   if (reply.raw.destroyed || request.raw.aborted) controller.abort();
 
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+  startSseResponse(reply);
 
   let fullContent = '';
   let outputCharacters = 0;
   let usage: StreamChunk['usage'];
+  let streamFailed = false;
   let streamError: unknown;
   const auditStart = Date.now();
   let dispatched = false;
+  const reportStreamError = (error: unknown): void => {
+    streamFailed = true;
+    streamError = error;
+    try {
+      options?.onStreamError?.(error);
+    } catch (callbackError) {
+      logger.error({ err: callbackError }, 'SSE stream error callback failed');
+    }
+  };
+  const stopLockHeartbeat = options?.llmCache && options.cacheKey && options.lockToken
+    ? options.llmCache.startLockHeartbeat(options.cacheKey, options.lockToken)
+    : undefined;
 
   try {
     if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
@@ -357,7 +442,7 @@ export async function streamSSE(
       );
     }
   } catch (err) {
-    streamError = err;
+    reportStreamError(err);
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
     } else {
@@ -365,18 +450,26 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
     }
   } finally {
+    stopLockHeartbeat?.();
+    if (controller.signal.aborted && !streamFailed) {
+      reportStreamError(new DOMException('Client disconnected', 'AbortError'));
+    }
     if (options?.audit && dispatched) {
       emitLlmAudit({
         ...options.audit,
         inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
         outputTokens: usage?.completionTokens ?? Math.ceil(outputCharacters / 4),
         durationMs: Date.now() - auditStart,
-        status: streamError || controller.signal.aborted ? 'error' : 'success',
-        ...(streamError || controller.signal.aborted
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
           ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
           : {}),
       });
     }
+    options?.onFinished?.({
+      status: controller.signal.aborted ? 'aborted' : streamFailed ? 'error' : 'success',
+      ...(streamError !== undefined ? { error: streamError } : {}),
+    });
     reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }

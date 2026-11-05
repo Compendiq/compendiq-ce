@@ -6,9 +6,11 @@ const LLM_CACHE_TTL = parseInt(process.env.LLM_CACHE_TTL ?? '3600', 10); // 1 ho
 const KEY_PREFIX = 'kb:llm:';
 const LOCK_PREFIX = 'llm:lock:';
 const LOCK_TTL = 120; // seconds — safety net if holder crashes
+const LOCK_HEARTBEAT_INTERVAL_MS = 30_000;
 const LOCK_POLL_INTERVAL_MS = 1_000; // 1 second between polls
 const LOCK_POLL_TIMEOUT_MS = 60_000; // give up waiting after 60 seconds
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+const RENEW_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) else return 0 end`;
 
 export interface CachedLlmResponse {
   content: string;
@@ -223,6 +225,34 @@ export class LlmCache {
     }
   }
 
+  /** Extend the lease only while the token still owns it. */
+  async renewLock(cacheKey: string, token: string, ttl: number = LOCK_TTL): Promise<boolean> {
+    try {
+      const result = await this.redis.eval(RENEW_LOCK_SCRIPT, {
+        keys: [LOCK_PREFIX + cacheKey],
+        arguments: [token, String(ttl)],
+      });
+      return Number(result) === 1;
+    } catch (err) {
+      logger.error({ err, cacheKey }, 'LLM lock renewal error');
+      return false;
+    }
+  }
+
+  /** Keep a live generation's lease from expiring while its stream is open. */
+  startLockHeartbeat(cacheKey: string, token: string): () => void {
+    let renewalInFlight = false;
+    const timer = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void this.renewLock(cacheKey, token).finally(() => {
+        renewalInFlight = false;
+      });
+    }, LOCK_HEARTBEAT_INTERVAL_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
   /**
    * Release the Redis lock only when token still identifies its current owner.
    * The compare-and-delete Lua script is atomic, so a holder whose TTL expired
@@ -241,17 +271,19 @@ export class LlmCache {
 
   /**
    * Poll for a cached response to appear (written by the lock holder).
-   * Returns the cached response if it appears within the timeout, or null
-   * if the timeout expires (caller should then generate its own response).
+   * Returns null when the holder releases without caching or the poll window
+   * expires; callers must check lock ownership again before generating.
    */
   async waitForCachedResponse(
     cacheKey: string,
     pollIntervalMs: number = LOCK_POLL_INTERVAL_MS,
     timeoutMs: number = LOCK_POLL_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<CachedLlmResponse | null> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !signal?.aborted) {
       const cached = await this.getCachedResponse(cacheKey);
+      if (signal?.aborted) return null;
       if (cached) return cached;
 
       // Check if the lock is still held — if not, the holder may have failed
@@ -266,10 +298,13 @@ export class LlmCache {
         // Redis error during exists check — keep polling
       }
 
-      await sleep(pollIntervalMs);
+      await sleep(pollIntervalMs, signal);
     }
 
-    logger.warn({ cacheKey }, 'Timed out waiting for locked LLM cache — proceeding with generation');
+    if (signal?.aborted) return null;
+    if (timeoutMs >= LOCK_POLL_TIMEOUT_MS) {
+      logger.warn({ cacheKey }, 'Timed out waiting for locked LLM cache');
+    }
     return null;
   }
 
@@ -299,6 +334,19 @@ export class LlmCache {
 }
 
 /** Promise-based sleep helper. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
 }
