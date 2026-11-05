@@ -6,11 +6,8 @@
  * Contract (Compendiq/compendiq-ee#115 P0f):
  *   - Fire-and-forget. Never throws into the LLM call path; insertion errors
  *     are logged at WARN and swallowed.
- *   - Plaintext prompts are NEVER persisted by this writer — only the SHA-256
- *     hex hash of the concatenated input messages goes into `prompt_hash`.
- *     EE writers that elect to persist plaintext (gated by an admin
- *     setting) write to the `input_text` / `output_text` columns introduced
- *     by EE migration 060; the CE writer does not touch those columns.
+ *   - Plaintext prompts are never supplied to this writer; `prompt_hash` is
+ *     the digest computed from the provider prompt by the producer.
  *   - `prompt_injection_detected` and `sanitized` come straight from the
  *     entry's optional flags (undefined → FALSE column default).
  *
@@ -21,28 +18,10 @@
  * `prompt_injection_detected`, `sanitized`) are added to the EE table
  * by 073 via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
  */
-import { createHash } from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import type { LlmAuditEntry } from './llm-audit-hook.js';
 
-/**
- * SHA-256 hex of the concatenated input-message contents. Used as the
- * `prompt_hash` column value. We avoid hashing JSON metadata (role, etc.)
- * so the hash is reproducible from any equivalent flat-content prompt.
- */
-function hashPromptFromEntry(entry: LlmAuditEntry): string {
-  // The CE call sites pass `inputText` for ad-hoc cases and otherwise we
-  // synthesize a stable digest from the per-message length pairs (the only
-  // shape preserved by the existing audit hook contract). Either way the
-  // plaintext is never stored.
-  const material =
-    typeof entry.inputText === 'string' && entry.inputText.length > 0
-      ? entry.inputText
-      : entry.inputMessages.map((m) => `${m.role}:${m.contentLength}`).join('|');
-
-  return createHash('sha256').update(material).digest('hex');
-}
 
 /**
  * The CE default writer. Inserts one row per call. Errors never propagate.
@@ -77,7 +56,7 @@ export async function defaultLlmAuditWriter(entry: LlmAuditEntry): Promise<void>
         entry.durationMs,
         entry.status,
         entry.status === 'error' ? entry.errorMessage ?? 'unknown error' : null,
-        hashPromptFromEntry(entry),
+        entry.promptHash,
         entry.promptInjectionDetected ?? false,
         entry.sanitized ?? false,
       ],

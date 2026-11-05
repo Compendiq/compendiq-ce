@@ -181,7 +181,7 @@ flowchart LR
     routes["Seven admitted text inference routes"] --> quota["EE department quota + stream admission"]
     quota --> text["Assigned text model or department fallback"]
     retrieval["embedding / rerank / image_analysis"] --> assigned["Existing dedicated assignments<br/>never department text fallback"]
-    text --> audit["CE audit hook<br/>provider usage or estimates"]
+    text --> audit["CE audit hook<br/>usage + framed prompt digest<br/>no prompt plaintext"]
     audit --> persist["Selected audit writer"]
     audit --> meter["EE admitted-request accounting<br/>once; cache replay excluded"]
     persist --> evidence["Model Governance Evidence report"]
@@ -192,6 +192,10 @@ flowchart LR
 Summarize, Diagram and Quality use the shared SSE audit lifecycle; inline
 completion reports counts without prompt/completion plaintext. Department
 accounting is composed once with the selected writer, not repeated inside it.
+The producer fingerprints ordered role/content tuples, including structured
+image parts, before calling the summary-only hook; the selected CE writer
+persists the digest, not the prompt. Historical length-summary hashes predate
+this contract and cannot be compared with the new fingerprints.
 Only an independently supplied artifact pair can populate checksum/asset
 evidence: matching a model name is not an observation. Registry checksum
 agreement is not proof of execution or network isolation. No browser audit

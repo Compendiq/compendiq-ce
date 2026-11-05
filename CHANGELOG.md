@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **LLM audit prompt identity (#1790):** fingerprint the ordered provider
+  messages and structured content rather than role/length summaries, without
+  passing prompt plaintext to audit hooks or persisting it in CE.
 - Sub-page AI context now follows standalone pages by internal ID even when
   they retain a historical Confluence ID, including at recursive levels.
 - **Per-page duplicate detection (#1798):** resolve standalone sources by
