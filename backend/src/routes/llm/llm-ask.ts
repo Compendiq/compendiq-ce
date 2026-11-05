@@ -45,6 +45,7 @@ import {
   sendCachedSSE,
   sanitizeLlmInput,
   resolvePageRef,
+  subPageParentKey,
   type ResolvedPageRef,
   resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
@@ -367,7 +368,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         const parentHtml = bodyResult.rows[0]?.body_html || '';
         const assembled = await assembleSubPageContext(
           userId,
-          resolved.confluenceId ?? body.pageId,
+          subPageParentKey(resolved),
           parentHtml,
           resolved.title,
         );
