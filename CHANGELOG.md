@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comments sidebar, and anchored popover, including after refreshing a thread.
 - Page title fields now grow and shrink when the available article width changes,
   keeping wrapped titles visible while resizing the viewport or adjacent panels.
+- Mobile navigation releases its focus trap and closes when the viewport
+  reaches desktop width, and stays closed when returning to mobile (#1813).
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.

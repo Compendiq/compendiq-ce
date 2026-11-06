@@ -45,4 +45,40 @@ test.describe('Keyboard shortcuts', () => {
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
   });
+
+  test('mobile navigation releases keyboard focus on desktop resize and stays closed on return', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const toggle = page.getByRole('button', { name: 'Open navigation menu' });
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    const drawer = page.getByRole('dialog', { name: 'Navigation menu' });
+    await expect(drawer).toBeVisible();
+    await expect.poll(() => drawer.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await expect(drawer).toBeHidden();
+    // Do not retain an exiting drawer behind md:hidden: it could flash back
+    // into view if the viewport returns to mobile during the exit animation.
+    await expect(page.locator('#mobile-nav-sidebar')).toHaveCount(0);
+    const pages = page.getByRole('link', { name: 'Pages', exact: true }).filter({ visible: true });
+    await pages.focus();
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => {
+      const active = document.activeElement as HTMLElement;
+      return active !== document.body && !!active.getClientRects().length;
+    })).toBe(true);
+    await expect(pages).not.toBeFocused();
+    await pages.focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect.poll(() => page.evaluate(() => {
+      const active = document.activeElement as HTMLElement;
+      return active !== document.body && !!active.getClientRects().length;
+    })).toBe(true);
+    await expect(pages).not.toBeFocused();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(drawer).toBeHidden();
+  });
 });
