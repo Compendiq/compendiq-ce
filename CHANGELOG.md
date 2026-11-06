@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve persisted note replies and their counts in the article inspector,
+  comments sidebar, and anchored popover, including after refreshing a thread.
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.
