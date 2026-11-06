@@ -75,23 +75,20 @@ function openPanel() {
 describe('NotificationBell', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
-    mockApiFetch = vi.fn().mockResolvedValue({ items: mockNotifications, total: mockNotifications.length });
+    mockApiFetch = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(url === '/notifications/count'
+        ? { count: 1 }
+        : { items: mockNotifications, total: mockNotifications.length }));
   });
 
   it('does not crash when GET /notifications returns the { items, total } envelope', async () => {
-    mockApiFetch = vi.fn().mockResolvedValue({
-      items: [
-        {
-          id: 7,
-          type: 'mention',
-          title: 'You were mentioned',
-          body: 'On a page',
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      total: 1,
-    });
+    mockApiFetch = vi.fn().mockImplementation((url: string) => Promise.resolve(
+      url === '/notifications/count' ? { count: 1 } : {
+        items: [{ id: 7, type: 'mention', title: 'You were mentioned', body: 'On a page',
+          isRead: false, createdAt: new Date().toISOString() }],
+        total: 1,
+      },
+    ));
     renderBell();
     await vi.waitFor(() => {
       expect(screen.getByTestId('notification-badge')).toHaveTextContent('1');
@@ -118,10 +115,12 @@ describe('NotificationBell', () => {
   });
 
   it('does not show badge when no unread notifications', async () => {
-    mockApiFetch = vi.fn().mockResolvedValue({
-      items: mockNotifications.map((n) => ({ ...n, read: true })),
-      total: mockNotifications.length,
-    });
+    mockApiFetch = vi.fn().mockImplementation((url: string) => Promise.resolve(
+      url === '/notifications/count' ? { count: 0 } : {
+        items: mockNotifications.map((n) => ({ ...n, read: true })),
+        total: mockNotifications.length,
+      },
+    ));
     renderBell();
     // Wait for query to settle, then check badge absence
     await vi.waitFor(() => {
@@ -183,5 +182,31 @@ describe('NotificationBell', () => {
     await vi.waitFor(() => {
       expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
     });
+  });
+
+  it('uses the global count and reaches an unread notification beyond the first page', async () => {
+    let unread = true;
+    const oldest = { ...mockNotifications[0], id: 'oldest', title: 'Oldest', link: undefined };
+    const recent = Array.from({ length: 50 }, (_, i) => ({
+      ...mockNotifications[1], id: `recent-${i}`, title: `Recent ${i}`,
+    }));
+    mockApiFetch = vi.fn().mockImplementation((url: string, options?: { method: string }) => {
+      if (url === '/notifications/count') return Promise.resolve({ count: unread ? 1 : 0 });
+      if (url === '/notifications/oldest/read' && options?.method === 'POST') {
+        unread = false;
+        return Promise.resolve({});
+      }
+      if (url.includes('offset=50')) return Promise.resolve({ items: [{ ...oldest, read: !unread }], total: 51 });
+      return Promise.resolve({ items: recent, total: 51 });
+    });
+    renderBell();
+    await screen.findByRole('button', { name: 'Notifications, 1 unread' });
+    openPanel();
+    await screen.findByText('Recent 0');
+    expect(screen.getByTestId('mark-all-read')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+    fireEvent.click(await screen.findByText('Oldest'));
+    await vi.waitFor(() => expect(screen.queryByTestId('notification-badge')).not.toBeInTheDocument());
+    expect(mockApiFetch).toHaveBeenCalledWith('/notifications/oldest/read', { method: 'POST' });
   });
 });

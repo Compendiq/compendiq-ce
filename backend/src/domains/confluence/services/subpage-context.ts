@@ -24,7 +24,7 @@ const MAX_DEPTH = 5;
 const MAX_SUB_PAGES = 50;
 
 interface PageContent {
-  confluenceId: string;
+  confluenceId: string | null;
   title: string;
   bodyHtml: string;
   depth: number;
@@ -70,11 +70,12 @@ export async function fetchSubPages(
 
     const result = await query<{
       id: number;
-      confluence_id: string;
+      confluence_id: string | null;
+      source: string;
       title: string;
       body_html: string;
     }>(
-      `SELECT id, confluence_id, title, body_html
+      `SELECT id, confluence_id, source, title, body_html
        FROM pages
        WHERE parent_id = $1
          AND deleted_at IS NULL
@@ -92,12 +93,11 @@ export async function fetchSubPages(
         depth: current.depth,
       });
 
-      // Queue children for next depth level. Standalone (local-space) pages have
-      // a NULL confluence_id and are keyed on `parent_id = <parent DB id as text>`,
-      // so fall back to the DB id — mirroring COALESCE(confluence_id, id::text)
-      // in pages-crud.ts (#886). Without this, standalone descendants below depth
-      // 1 are dropped (WHERE parent_id = NULL matches nothing).
-      queue.push({ id: row.confluence_id ?? String(row.id), depth: current.depth + 1 });
+      // Each level uses the parent's source, not the presence of a historical ID.
+      queue.push({
+        id: row.source === 'confluence' && row.confluence_id ? row.confluence_id : String(row.id),
+        depth: current.depth + 1,
+      });
     }
   }
 

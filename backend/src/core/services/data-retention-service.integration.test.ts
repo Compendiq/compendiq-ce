@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 
 import {
   setupTestDb,
@@ -274,5 +274,233 @@ describe.skipIf(!dbAvailable)('pending_sync_versions retention rows_pruned count
       [pageId],
     );
     expect(left.rows[0]!.c).toBe('1');
+  });
+});
+
+// ── webhook_deliveries attempt-ledger retention (#1797) ──────────────────
+
+async function setWebhookDeliveriesRetentionDays(days: number): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value)
+     VALUES ($1, $2)
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`,
+    ['webhook_deliveries_retention_days', String(days)],
+  );
+}
+
+async function insertSubscription(): Promise<string> {
+  const user = await query<{ id: string }>(
+    `INSERT INTO users (username, password_hash, role)
+     VALUES ('wh-ret-user', 'x', 'user') RETURNING id`,
+  );
+  const sub = await query<{ id: string }>(
+    `INSERT INTO webhook_subscriptions (user_id, url, secret_enc)
+     VALUES ($1, 'https://example.com/hook', '\\x00') RETURNING id`,
+    [user.rows[0]!.id],
+  );
+  return sub.rows[0]!.id;
+}
+
+async function insertOutbox(subscriptionId: string, status: string): Promise<string> {
+  const r = await query<{ id: string }>(
+    `INSERT INTO webhook_outbox (subscription_id, event_type, payload, payload_bytes, status)
+     VALUES ($1, 'page.created', '{}'::jsonb, 2, $2) RETURNING id`,
+    [subscriptionId, status],
+  );
+  return r.rows[0]!.id;
+}
+
+async function insertAttempt(
+  outboxId: string,
+  subscriptionId: string,
+  attemptNumber: number,
+  ageDays: number,
+): Promise<void> {
+  await query(
+    `INSERT INTO webhook_deliveries
+       (outbox_id, subscription_id, webhook_id, attempt_number, status, attempted_at)
+     VALUES ($1, $2, gen_random_uuid(), $3, 'failure', NOW() - ($4::text || ' days')::interval)`,
+    [outboxId, subscriptionId, attemptNumber, String(ageDays)],
+  );
+}
+
+async function countRows(table: 'webhook_deliveries' | 'webhook_outbox'): Promise<number> {
+  const r = await query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM ${table}`);
+  return Number(r.rows[0]!.c);
+}
+
+describe.skipIf(!dbAvailable)('webhook_deliveries retention (#1797)', () => {
+  it('purges attempt rows past the configured window, keeps newer ones, never touches webhook_outbox', async () => {
+    await setWebhookDeliveriesRetentionDays(30);
+    const sub = await insertSubscription();
+    const doneOutbox = await insertOutbox(sub, 'done');
+    const deadOutbox = await insertOutbox(sub, 'dead');
+    await insertAttempt(doneOutbox, sub, 1, 91);
+    await insertAttempt(doneOutbox, sub, 2, 45);
+    await insertAttempt(doneOutbox, sub, 3, 1);
+    await insertAttempt(deadOutbox, sub, 1, 91);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(3);
+    expect(await countRows('webhook_deliveries')).toBe(1);
+    // Terminal outbox rows are a separate policy (not purged here).
+    expect(await countRows('webhook_outbox')).toBe(2);
+
+    const audit = await query<{ metadata: { rows_pruned: number; retention_days: number } }>(
+      `SELECT metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id = 'webhook_deliveries'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata.rows_pruned).toBe(3);
+    expect(audit.rows[0]!.metadata.retention_days).toBe(30);
+  });
+
+  it('honours a longer window and still emits a zero-row heartbeat', async () => {
+    await setWebhookDeliveriesRetentionDays(100);
+    const sub = await insertSubscription();
+    const outbox = await insertOutbox(sub, 'done');
+    await insertAttempt(outbox, sub, 1, 91);
+    await insertAttempt(outbox, sub, 2, 1);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(0);
+    expect(await countRows('webhook_deliveries')).toBe(2);
+    const audit = await query<{ metadata: { rows_pruned: number } }>(
+      `SELECT metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id = 'webhook_deliveries'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata.rows_pruned).toBe(0);
+  });
+
+  it('defaults to 90 days when the setting row is absent', async () => {
+    await query(`DELETE FROM admin_settings WHERE setting_key = 'webhook_deliveries_retention_days'`);
+    const sub = await insertSubscription();
+    const outbox = await insertOutbox(sub, 'done');
+    await insertAttempt(outbox, sub, 1, 91);
+    await insertAttempt(outbox, sub, 2, 89);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(1);
+    expect(await countRows('webhook_deliveries')).toBe(1);
+  });
+
+  it('keeps old attempt rows of pending / dispatched outbox items (they drive the retry budget)', async () => {
+    await setWebhookDeliveriesRetentionDays(7);
+    const sub = await insertSubscription();
+    const pending = await insertOutbox(sub, 'pending');
+    const dispatched = await insertOutbox(sub, 'dispatched');
+    const done = await insertOutbox(sub, 'done');
+    await insertAttempt(pending, sub, 1, 91);
+    await insertAttempt(dispatched, sub, 1, 91);
+    await insertAttempt(done, sub, 1, 91);
+
+    const results = await runRetentionCleanup();
+
+    expect(results['webhook_deliveries']).toBe(1);
+    const left = await query<{ outbox_id: string }>(
+      `SELECT outbox_id FROM webhook_deliveries ORDER BY outbox_id`,
+    );
+    expect(left.rows.map((r) => r.outbox_id).sort()).toEqual([pending, dispatched].sort());
+    expect(await countRows('webhook_outbox')).toBe(3);
+  });
+});
+
+// ── #1796: delete + conflict recompute are one transaction ────────────────
+
+const FAULT_FN = 'ret_1796_fail_conflict_clear';
+
+/**
+ * Install a BEFORE UPDATE trigger on `pages` that raises when a row's
+ * `conflict_pending` flips TRUE → FALSE — i.e. exactly the recompute the
+ * sweep issues after deleting the last pending version. Plain Postgres,
+ * no mocking: the DELETE half of the sweep is untouched.
+ */
+async function installConflictClearFault(): Promise<void> {
+  await query(
+    `CREATE OR REPLACE FUNCTION ${FAULT_FN}() RETURNS trigger AS $$
+     BEGIN
+       IF OLD.conflict_pending AND NOT NEW.conflict_pending THEN
+         RAISE EXCEPTION 'ret-1796 injected failure on conflict clear';
+       END IF;
+       RETURN NEW;
+     END $$ LANGUAGE plpgsql`,
+  );
+  await query(
+    `CREATE TRIGGER ${FAULT_FN}
+       BEFORE UPDATE OF conflict_pending ON pages
+       FOR EACH ROW EXECUTE FUNCTION ${FAULT_FN}()`,
+  );
+}
+
+async function removeConflictClearFault(): Promise<void> {
+  await query(`DROP TRIGGER IF EXISTS ${FAULT_FN} ON pages`);
+  await query(`DROP FUNCTION IF EXISTS ${FAULT_FN}()`);
+}
+
+describe.skipIf(!dbAvailable)('pending_sync_versions retention atomicity (#1796)', () => {
+  afterEach(async () => {
+    if (!dbAvailable) return;
+    await removeConflictClearFault();
+  });
+
+  // Regression: the sweep ran `DELETE FROM pending_sync_versions …` and the
+  // `UPDATE pages SET conflict_pending = EXISTS(…)` recompute as two
+  // autocommitted statements. A failure in the recompute left the pending
+  // row deleted but the flag stuck TRUE, and because the next sweep found
+  // no pending rows it never revisited the page.
+  it('rolls the delete back when the conflict recompute fails, then repairs on the next sweep', async () => {
+    await setPendingSyncRetentionDays(7);
+    const pageId = await insertConflictPage('ret-1796');
+    await insertPendingVersion(pageId, 30);
+
+    await installConflictClearFault();
+    const failed = await runRetentionCleanup();
+
+    // Nothing half-applied: the pending row survives and the flag is intact.
+    const afterFailure = await query<{ pending: string; conflict_pending: boolean }>(
+      `SELECT (SELECT COUNT(*)::text FROM pending_sync_versions WHERE page_id = p.id) AS pending,
+              p.conflict_pending
+         FROM pages p WHERE p.id = $1`,
+      [pageId],
+    );
+    expect(afterFailure.rows[0]).toEqual({ pending: '1', conflict_pending: true });
+    // A rolled-back prune reports nothing deleted.
+    expect(failed['pending_sync_versions']).toBe(0);
+
+    // A failed prune attests nothing — no pending_sync_versions heartbeat —
+    // but the failure must not take the rest of the retention run with it.
+    const heartbeatsAfterFailure = await query<{ resource_id: string }>(
+      `SELECT resource_id FROM audit_log WHERE action = 'RETENTION_PRUNED' ORDER BY resource_id`,
+    );
+    expect(heartbeatsAfterFailure.rows.map((r) => r.resource_id)).not.toContain('pending_sync_versions');
+    expect(heartbeatsAfterFailure.rows.map((r) => r.resource_id)).toContain('audit_log');
+
+    await removeConflictClearFault();
+    const healthy = await runRetentionCleanup();
+
+    expect(healthy['pending_sync_versions']).toBe(1);
+    const afterRepair = await query<{ pending: string; conflict_pending: boolean; conflict_detected_at: Date | null }>(
+      `SELECT (SELECT COUNT(*)::text FROM pending_sync_versions WHERE page_id = p.id) AS pending,
+              p.conflict_pending, p.conflict_detected_at
+         FROM pages p WHERE p.id = $1`,
+      [pageId],
+    );
+    expect(afterRepair.rows[0]).toEqual({ pending: '0', conflict_pending: false, conflict_detected_at: null });
+
+    const heartbeats = await query<{ resource_id: string; metadata: { rows_pruned: number } }>(
+      `SELECT resource_id, metadata FROM audit_log
+        WHERE action = 'RETENTION_PRUNED' AND resource_id IN ('pending_sync_versions', 'audit_log')
+        ORDER BY resource_id, created_at`,
+    );
+    // audit_log heartbeat from both runs; pending_sync_versions only from the
+    // run whose prune actually committed.
+    expect(heartbeats.rows.map((r) => r.resource_id)).toEqual([
+      'audit_log', 'audit_log', 'pending_sync_versions',
+    ]);
+    expect(heartbeats.rows[2]!.metadata.rows_pruned).toBe(1);
   });
 });

@@ -188,6 +188,7 @@ describe('GenerateMode', () => {
     it('shows save panel after generation completes', async () => {
       async function* fakeStream() {
         yield { content: '# Docker Guide\n\nDocker is a container platform.' };
+        yield { done: true };
       }
       streamSSEMock.mockReturnValue(fakeStream());
 
