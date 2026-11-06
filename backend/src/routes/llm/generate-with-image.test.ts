@@ -299,5 +299,11 @@ describe('POST /llm/generate with an image (#1154)', () => {
     const { inputMessages } = mockEmitLlmAudit.mock.calls[0]![0];
     const user = inputMessages.find((m: { role: string }) => m.role === 'user');
     expect(user.contentLength).toBeGreaterThan(2);
+    const entry = mockEmitLlmAudit.mock.calls[0]![0];
+    expect(entry.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(entry)).not.toContain('describe this');
+    const sentMessages = mockStreamChat.mock.calls[0]![2];
+    const imageUrl = sentMessages[1].content.find((part: { type: string }) => part.type === 'image_url').image_url.url;
+    expect(JSON.stringify(entry)).not.toContain(imageUrl);
   });
 });

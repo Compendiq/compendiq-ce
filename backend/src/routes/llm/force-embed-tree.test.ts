@@ -172,7 +172,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
 
     // Mock DB query for pages lookup (includes id for embedPage integer param)
     mockQuery.mockResolvedValue({
-      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>cached content</p>' }],
+      rows: [{ id: 101, title: 'Cached title', space_key: 'DEV', body_html: '<p>cached content</p>', content_revision: '7' }],
     });
 
     const response = await app.inject({
@@ -204,6 +204,10 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     expect(lastEvent.done).toBe(true);
     expect(lastEvent.total).toBe(2);
     expect(lastEvent.completed).toBe(2);
+    expect(mockEmbedPage).toHaveBeenCalledWith(
+      expect.any(String), 101, 'Cached title', 'DEV', '<p>cached content</p>',
+      expect.objectContaining({ contentRevision: '7' }),
+    );
 
     // getPage should only be called once (for the root page), not for descendants
     // that already have body.storage.value from the getChildPages expand
@@ -239,7 +243,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
       .mockRejectedValueOnce(new Error('Embedding failed'));
 
     mockQuery.mockResolvedValue({
-      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>cached</p>' }],
+      rows: [{ id: 101, title: 'Cached title', space_key: 'DEV', body_html: '<p>cached</p>', content_revision: '7' }],
     });
 
     const response = await app.inject({
@@ -319,7 +323,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     mockEmbedPage.mockResolvedValue(3);
 
     mockQuery.mockResolvedValue({
-      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>leaf</p>' }],
+      rows: [{ id: 101, title: 'Leaf Page', space_key: 'DEV', body_html: '<p>leaf</p>', content_revision: '7' }],
     });
 
     const response = await app.inject({
