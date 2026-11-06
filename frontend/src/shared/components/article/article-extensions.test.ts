@@ -397,6 +397,18 @@ describe('article-extensions', () => {
   });
 
   describe('DrawioDiagram', () => {
+    it('round-trips the source-only unavailable marker for later preview publication', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, DrawioDiagram],
+        content: '<div class="confluence-drawio" data-diagram-name="flow" data-drawio-source="/api/attachments/1/flow.drawio"><span>Draw.io preview unavailable: flow</span></div>',
+      });
+      const html = editor.getHTML();
+      expect(html).toContain('class="drawio-preview-unavailable"');
+      expect(html).toContain('data-drawio-source="/api/attachments/1/flow.drawio"');
+      expect(html).not.toContain('<img');
+      editor.destroy();
+    });
+
     it('has correct name and is atomic and draggable', () => {
       expect(DrawioDiagram.name).toBe('drawioDiagram');
       expect(DrawioDiagram.config.atom).toBe(true);

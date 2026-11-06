@@ -341,6 +341,17 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     expect(denied.statusCode).toBe(404);
   });
 
+  it('does not serve legacy XML cached under a PNG name', async () => {
+    const page = await seedPage();
+    const directory = join(attachmentRoot, page.remoteId);
+    const xml = '<mxfile><diagram>editable</diagram></mxfile>';
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'diagram.png'), xml);
+    const response = await app.inject({ method: 'GET', url: `/api/attachments/${page.remoteId}/diagram.png` });
+    expect(response.statusCode).toBe(404);
+    await expect(readFile(join(directory, 'diagram.png'), 'utf8')).resolves.toBe(xml);
+  });
+
   it('lists real cache entries and reports filesystem failures instead of inventing emptiness', async () => {
     const page = await seedPage();
     const directory = join(attachmentRoot, page.remoteId);
@@ -418,6 +429,11 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
   it('publishes PNG and XML only after both bounded remote receipts remain current', async () => {
     const page = await seedPage();
     const xml = '<mxfile><diagram>safe</diagram></mxfile>';
+    const preview = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+      page.id,
+      `<p>Keep local prose</p><div class="confluence-drawio" data-diagram-name="diagram" data-drawio-source="/api/attachments/${page.remoteId}/diagram.drawio"><span class="drawio-preview-unavailable">Draw.io preview unavailable: diagram</span></div>`,
+    ]);
     const current = new Map<string, {
       id: string;
       title: string;
@@ -445,11 +461,18 @@ describeIntegration('attachment routes with PostgreSQL, Redis and filesystem', (
     const response = await app.inject({
       method: 'PUT',
       url: `/api/attachments/${page.remoteId}/diagram.png`,
-      payload: { dataUri: PNG_DATA_URI, xml },
+      payload: { dataUri: `data:image/png;base64,${preview.toString('base64')}`, xml },
     });
     expect(response.statusCode, response.body).toBe(200);
-    await expect(readFile(join(attachmentRoot, page.remoteId, 'diagram.png'))).resolves.toEqual(PNG);
+    await expect(readFile(join(attachmentRoot, page.remoteId, 'diagram.png'))).resolves.toEqual(preview);
     await expect(readFile(join(attachmentRoot, page.remoteId, 'diagram.drawio'), 'utf8')).resolves.toBe(xml);
+    const saved = (await query<{ body_html: string; body_text: string }>(
+      'SELECT body_html, body_text FROM pages WHERE id = $1', [page.id],
+    )).rows[0]!;
+    expect(saved.body_html).toContain('Keep local prose');
+    expect(saved.body_html).toContain(`src="/api/attachments/${page.remoteId}/diagram.png"`);
+    expect(saved.body_html).not.toContain('preview unavailable');
+    expect(saved.body_text).not.toContain('preview unavailable');
     const intent = await query<{
       status: string;
       effect: { receipts: unknown[] };

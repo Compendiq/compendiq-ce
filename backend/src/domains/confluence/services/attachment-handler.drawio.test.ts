@@ -1,0 +1,276 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createServer } from 'http';
+import { randomUUID } from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
+import { ConfluenceClient, type ConfluenceAttachment } from './confluence-client.js';
+import { attachmentCacheDir, fetchAndCacheAttachment, MAX_ATTACHMENT_BYTES, STREAM_THRESHOLD_BYTES, syncDrawioAttachments } from './attachment-handler.js';
+import { confluenceToHtml } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
+
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+const xml = Buffer.from('<mxfile><diagram id="1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>');
+const body = '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="baseUrl">ignored</ac:parameter><ac:parameter ac:name="diagramName">diagram</ac:parameter></ac:structured-macro>';
+let files: Record<string, Buffer> = {};
+let attachments: ConfluenceAttachment[] = [];
+let requests: string[] = [];
+let pageId: string;
+let client: ConfluenceClient;
+const server = createServer((req, res) => {
+  const url = new URL(req.url ?? '/', 'http://fixture');
+  if (url.pathname.includes('/child/attachment')) {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ results: attachments }));
+    return;
+  }
+  requests.push(url.pathname);
+  if (url.pathname === '/oversized') {
+    res.writeHead(200, { 'content-length': MAX_ATTACHMENT_BYTES + 1 });
+    res.end();
+    return;
+  }
+  const data = files[url.pathname];
+  if (!data) { res.writeHead(404); res.end(); return; }
+  res.end(data);
+});
+
+function attachment(title: string, download: string, fileSize?: number): ConfluenceAttachment {
+  return { id: title, title, mediaType: 'application/octet-stream', _links: { download }, ...(fileSize === undefined ? {} : { extensions: { fileSize, mediaType: 'application/octet-stream' } }) };
+}
+function cacheFile(name: string): string { return path.join(attachmentCacheDir(pageId), name); }
+async function missing(name: string): Promise<void> {
+  await expect(fs.access(cacheFile(name))).rejects.toMatchObject({ code: 'ENOENT' });
+}
+
+describe('draw.io attachment HTTP boundary', () => {
+  beforeAll(async () => {
+    const listening = Promise.withResolvers<void>();
+    server.listen(0, '127.0.0.1', listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing fixture port');
+    client = new ConfluenceClient(`http://127.0.0.1:${address.port}`, 'fixture');
+  });
+  afterAll(async () => {
+    const closed = Promise.withResolvers<void>();
+    server.close((err) => err ? closed.reject(err) : closed.resolve());
+    await closed.promise;
+  });
+  beforeEach(() => { pageId = `drawio-${randomUUID()}`; files = {}; attachments = []; requests = []; });
+  afterEach(async () => { await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true }); });
+
+  it.each(['diagram.xml', 'diagram', 'diagram.drawio', 'diagram.png'])('keeps %s XML editable without inventing a preview', async (title) => {
+    files['/source'] = xml;
+    attachments = [attachment(title, '/source')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    await missing('diagram.png');
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.drawio']);
+    expect(requests).toEqual(['/source']);
+  });
+
+  it('publishes source-only and real raster presentations from the same conversion', async () => {
+    files = { '/source': xml, '/image': png };
+    attachments = [attachment('diagram.xml', '/source')];
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    const converted = confluenceToHtml(body, pageId);
+    expect(converted).not.toContain('<img');
+    const sourceOnly = await materializeDrawioPreviews(converted, pageId);
+    expect(sourceOnly.html).toContain('Draw.io preview unavailable: diagram');
+    expect(sourceOnly.html).toContain(`data-drawio-source="/api/attachments/${pageId}/diagram.drawio"`);
+    expect(sourceOnly.html).not.toContain('<img');
+    attachments.push(attachment('diagram.png', '/image'));
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    const rendered = await materializeDrawioPreviews(converted, pageId);
+    expect(rendered.html).toContain(`src="/api/attachments/${pageId}/diagram.png"`);
+    expect(rendered.html).not.toContain('preview unavailable');
+  });
+
+  it.each([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    png.subarray(0, png.length - 4),
+    Buffer.concat([png.subarray(0, 45), Buffer.from([0]), png.subarray(46)]),
+    // Valid IHDR checksum, but a declared 40 GB raster must be rejected
+    // before any compressed image data is expanded.
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgABhqAAAYagCAYAAACoUgvIAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64'),
+  ])('does not publish an incomplete or corrupt PNG', async (invalid) => {
+    files['/image'] = invalid;
+    attachments = [attachment('diagram.png', '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual([]);
+    await missing('diagram.png');
+    const result = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(result.html).not.toContain('<img');
+    expect(result.html).toContain('preview unavailable');
+  });
+
+  it('accepts an interlaced raster split across IDAT chunks', async () => {
+    const interlaced = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAAGuTRJ+AAAAA0lEQVR4nGOqZ4K+AAAAEElEQVQQUDBggGIkJpQLRAA1AQNh8iOwnAAAAABJRU5ErkJggg==', 'base64');
+    files['/image'] = interlaced;
+    attachments = [attachment('diagram.png', '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(interlaced);
+  });
+
+  it.each(['diagram.png', 'diagram'])('caches real %s PNG and skips repeat downloads', async (title) => {
+    files['/image'] = png;
+    attachments = [attachment(title, '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    await missing('diagram.drawio');
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    expect(requests).toEqual(['/image']);
+  });
+
+  it.each([false, true])('downloads an extensionless PNG beside XML (source cached: %s)', async (cached) => {
+    files = { '/image': png, '/source': xml };
+    attachments = [attachment('diagram', '/image'), attachment('diagram.drawio', '/source')];
+    if (cached) {
+      await fs.mkdir(path.dirname(cacheFile('diagram.drawio')), { recursive: true });
+      await fs.writeFile(cacheFile('diagram.drawio'), xml);
+    }
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments))
+      .toEqual(['diagram.png', 'diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    const rendered = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(rendered.html).toContain(`src="/api/attachments/${pageId}/diagram.png"`);
+    expect(rendered.html).not.toContain('preview unavailable');
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    expect(requests).toEqual(cached ? ['/image'] : ['/source', '/image']);
+  });
+
+  it('caches both PNG and XML, including streamed downloads', async () => {
+    files = { '/image': png, '/source': xml };
+    attachments = [attachment('diagram.png', '/image', STREAM_THRESHOLD_BYTES + 1), attachment('diagram.xml', '/source', STREAM_THRESHOLD_BYTES + 1)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png', 'diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    expect(requests).toEqual(['/source', '/image']);
+  });
+
+  it('recovers a legacy XML-as-PNG even when the original attachment is gone', async () => {
+    await fs.mkdir(path.dirname(cacheFile('diagram.png')), { recursive: true });
+    await fs.writeFile(cacheFile('diagram.png'), xml);
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, [])).toEqual(['diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    await missing('diagram.png');
+  });
+
+  it('replaces an invalid cached preview with a real PNG and rejects an invalid export', async () => {
+    await fs.mkdir(path.dirname(cacheFile('diagram.png')), { recursive: true });
+    await fs.writeFile(cacheFile('diagram.png'), Buffer.from('not an image'));
+    files['/image'] = png;
+    attachments = [attachment('diagram.png', '/image')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    await fs.rm(cacheFile('diagram.png'));
+    files['/image'] = Buffer.from('not an image');
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual([]);
+    await missing('diagram.png');
+  });
+
+  it('examines a bare source even when an older PNG preview is cached', async () => {
+    await fs.mkdir(path.dirname(cacheFile('diagram.png')), { recursive: true });
+    await fs.writeFile(cacheFile('diagram.png'), png);
+    files['/source'] = xml;
+    attachments = [attachment('diagram', '/source')];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(['diagram.png', 'diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    await syncDrawioAttachments(client, 'user', pageId, body, attachments);
+    expect(requests).toEqual(['/source']);
+  });
+
+  it('enforces the streaming size limit without publishing partial files', async () => {
+    attachments = [attachment('diagram.png', '/oversized', MAX_ATTACHMENT_BYTES + 1)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual([]);
+    await missing('diagram.png');
+    expect(await fs.readdir(attachmentCacheDir(pageId))).toEqual([]);
+  });
+
+  it.each(['diagram.xml', 'diagram', 'diagram.drawio', 'diagram.png'])('on-demand PNG lookup never returns %s XML as an image', async (title) => {
+    files['/source'] = xml;
+    attachments = [attachment(title, '/source')];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.png')).toBeNull();
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    await missing('diagram.png');
+  });
+
+  it.each([
+    ['diagram.drawio', false], ['diagram.xml', false], ['diagram', false],
+    ['diagram.drawio', true], ['diagram.xml', true], ['diagram', true],
+  ] as const)('loads %s as editable source on the first lazy request (streaming: %s)', async (title, streaming) => {
+    files['/source'] = xml;
+    attachments = [attachment(title, '/source', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toEqual(xml);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    expect(requests).toEqual(['/source']);
+    await missing('diagram.png');
+  });
+
+  it.each([false, true])('does not cache an extensionless PNG as editable XML (streaming: %s)', async (streaming) => {
+    files['/image'] = png;
+    attachments = [attachment('diagram', '/image', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toBeNull();
+    await missing('diagram.drawio');
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+  });
+
+  it.each([
+    ['diagram.xml', false, true], ['diagram.drawio', false, true],
+    ['diagram.xml', true, true], ['diagram.drawio', true, true],
+    ['diagram.xml', false, false], ['diagram.drawio', false, false],
+    ['diagram.xml', true, false], ['diagram.drawio', true, false],
+  ] as const)('classifies named source %s by bytes (streaming: %s, PNG: %s)', async (title, streaming, validPng) => {
+    files['/named-source'] = validPng ? png : Buffer.from('<html>upstream login</html>');
+    attachments = [attachment(title, '/named-source', streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments)).toEqual(validPng ? ['diagram.png'] : []);
+    await missing('diagram.drawio');
+    const rendered = await materializeDrawioPreviews(confluenceToHtml(body, pageId), pageId);
+    expect(rendered.html.includes('<img')).toBe(validPng);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.png')).toEqual(validPng ? png : null);
+    await missing('diagram.drawio');
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toBeNull();
+    await missing('diagram.drawio');
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+  });
+
+  it.each([
+    [false, true], [true, true], [false, false], [true, false],
+  ] as const)('finds an XML sibling after a non-XML preferred source (streaming: %s, PNG: %s)', async (streaming, validPng) => {
+    files = { '/preferred': validPng ? png : Buffer.from('unrelated bytes'), '/source': xml };
+    const size = streaming ? STREAM_THRESHOLD_BYTES + 1 : undefined;
+    attachments = [attachment('diagram.drawio', '/preferred', size), attachment('diagram.xml', '/source', size)];
+    expect(await syncDrawioAttachments(client, 'user', pageId, body, attachments))
+      .toEqual(validPng ? ['diagram.png', 'diagram.drawio'] : ['diagram.drawio']);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    expect(requests).toEqual(['/preferred', '/source']);
+
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+    requests = [];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.drawio')).toEqual(xml);
+    expect(await fs.readFile(cacheFile('diagram.drawio'))).toEqual(xml);
+    if (validPng) expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+    else await missing('diagram.png');
+    expect(requests).toEqual(['/preferred', '/source']);
+  });
+
+  it('on-demand PNG lookup accepts an extensionless real PNG', async () => {
+    files['/image'] = png;
+    attachments = [attachment('diagram', '/image')];
+    expect(await fetchAndCacheAttachment(client, 'user', pageId, 'diagram.png')).toEqual(png);
+    expect(await fs.readFile(cacheFile('diagram.png'))).toEqual(png);
+  });
+});

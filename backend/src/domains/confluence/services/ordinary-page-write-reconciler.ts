@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import type { PoolClient } from 'pg';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
 import {
@@ -133,11 +134,10 @@ export async function publishCreatedConfluencePage(
   client: PoolClient,
   publication: CreatedConfluencePagePublication,
 ): Promise<PublishedConfluencePage> {
-  const bodyHtml = confluenceToHtml(
-    publication.storage,
+  const bodyHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(publication.storage, publication.confluenceId, publication.spaceKey),
     publication.confluenceId,
-    publication.spaceKey,
-  );
+  )).html;
   const bodyText = htmlToText(bodyHtml);
   const inserted = await client.query<PublishedConfluencePage>(
     `INSERT INTO pages
@@ -475,7 +475,10 @@ const reconcilePagePut: PageWriteIntentReconciler = async (client, intent) => {
   if (!local.rows[0]) {
     throw new PageWriteError(409, 'intent_local_identity_changed', 'The local page identity changed after admission');
   }
-  const bodyHtml = confluenceToHtml(storage, expectedConfluenceId, local.rows[0].space_key ?? undefined);
+  const bodyHtml = (await materializeDrawioPreviews(
+    confluenceToHtml(storage, expectedConfluenceId, local.rows[0].space_key ?? undefined),
+    expectedConfluenceId,
+  )).html;
   const resetDerivedWork = intent.kind === 'pages.update.confluence';
   await client.query(
     `UPDATE pages SET
