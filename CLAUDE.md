@@ -162,6 +162,11 @@ never imported; deleted by `logoutApi()` on explicit sign-out). Any new
 per-user content kept in web storage and shown back in the UI belongs to the
 same class: scope it by user id the same way.
 
+Command-palette page results are bound to the exact query that produced them.
+Changing the input clears both the prior result and selection immediately; the
+pending state covers debounce as well as the request. Preserve the sequence
+guard for out-of-order responses and only select a result after it resolves.
+
 ## Enterprise (Open-Core)
 
 CE is this repo. EE lives in the private `compendiq-enterprise` repo and ships as `@compendiq/enterprise` (loaded dynamically via `core/enterprise/loader.ts`, falls back to `noop.ts`). Both editions ship the **same unmodified CE frontend image** — no EE frontend bundle, no build-time SPA patching. Enterprise UI is gated at runtime via `useEnterprise().isEnterprise`, derived from `/api/admin/license` (`edition !== 'community' && valid === true`).

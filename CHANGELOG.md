@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Graph history (#1805):** Back and Forward restore shareable graph filters
   and their effective requests. Filter edits replace the current history entry;
   changing the focused article still adds an entry.
+- Command palette results and selection now follow the current query immediately;
+  the debounce and search show a pending state instead of dispatching an earlier page.
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.
