@@ -1538,11 +1538,11 @@ async function syncMissingAttachments(
   client: ConfluenceClient,
   userId: string,
   spaceKey: string,
-  syncRunStartedAt: Date,
-  ancestorCache: Map<string, ConfluenceRestriction[]>,
-  counts: SyncSpaceCounts,
-  syncRunId: string,
-  changeSet: RestrictionChangeSet,
+  syncRunStartedAt: Date = new Date(),
+  ancestorCache: Map<string, ConfluenceRestriction[]> = new Map(),
+  counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 },
+  syncRunId: string = 'attachment-repair',
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   const redis = getRedisClient();
 
@@ -1556,7 +1556,8 @@ async function syncMissingAttachments(
     // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
     const pagesResult = await query<{ confluence_id: string; body_storage: string; body_html: string }>(
       `SELECT confluence_id, body_storage, body_html FROM pages
-       WHERE space_key = $1 AND source = 'confluence' AND body_storage IS NOT NULL
+       WHERE space_key = $1 AND source = 'confluence' AND deleted_at IS NULL
+         AND body_storage IS NOT NULL
          AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
        ORDER BY confluence_id
        LIMIT $2 OFFSET $3`,
@@ -1632,6 +1633,20 @@ async function syncMissingAttachments(
         retried++;
       } catch (err) {
         logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+        // Count the failed attempt per filename (same key scheme and threshold
+        // warning as the success path above) so a page whose attachment listing
+        // or download keeps throwing stops being retried after
+        // MAX_ATTACHMENT_FAILURES instead of every cycle.
+        for (const f of retriable) {
+          await recordAttachmentFailure(redis, row.confluence_id, f);
+          const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
+          if (count >= MAX_ATTACHMENT_FAILURES) {
+            logger.warn(
+              { pageId: row.confluence_id, filename: f, failures: count },
+              'Attachment permanently failed — skipping until TTL expiry',
+            );
+          }
+        }
       }
     }
 

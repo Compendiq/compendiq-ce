@@ -2959,10 +2959,10 @@ describe('POST /api/llm/ask', () => {
 
   describe('includeSubPages RBAC gate', () => {
     /** Resolve the page + body_html queries so the parent page "exists". */
-    function seedPageQueries() {
+    function seedPageQueries(source: 'confluence' | 'standalone' = 'confluence') {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('FROM pages WHERE confluence_id')) {
-          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] });
+          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', source, title: 'Doc' }] });
         }
         if (sql.includes('body_html FROM pages WHERE id')) {
           return Promise.resolve({ rows: [{ body_html: '<p>secret</p>' }] });
@@ -3041,6 +3041,38 @@ describe('POST /api/llm/ask', () => {
       const msg = userMessage();
       expect(msg).toContain('Page tree context');
       expect(msg).toContain('ASSEMBLED-TREE');
+    });
+
+    it('keys a standalone parent by its internal id even when a historical confluence_id is set (#1791)', async () => {
+      seedPageQueries('standalone');
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        injectionWarnings: [],
+        markdown: 'ASSEMBLED-TREE',
+        pageCount: 2,
+        wasTruncated: false,
+        includedPages: [],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'summarise the tree',
+          model: 'llama3',
+          includeSubPages: true,
+          pageId: 'page-abc',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
+        'test-user-123',
+        '1',
+        '<p>secret</p>',
+        'Doc',
+      );
+      expect(userMessage()).toContain('ASSEMBLED-TREE');
     });
   });
 

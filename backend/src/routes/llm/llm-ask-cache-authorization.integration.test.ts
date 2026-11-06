@@ -250,6 +250,35 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     await upsertRateLimits({ llmStream: 1000 });
   });
 
+  it('includes historical standalone grandchildren in the actual ask prompt', async () => {
+    const user = await createUser('ask-historical-tree');
+    await insertSpace('LOCAL', 'local', user.id);
+    await grantAsker(user.id, 'LOCAL');
+    const insert = async (title: string, parent: string | null, oldId: string, body: string) => {
+      const row = await query<{ id: number }>(
+        `INSERT INTO pages (source, space_key, title, body_text, body_html, visibility,
+                            created_by_user_id, embedding_dirty, parent_id, confluence_id)
+         VALUES ('standalone', 'LOCAL', $1, $2, $3, 'shared', $4, FALSE, $5, $6) RETURNING id`,
+        [title, body, `<p>${body}</p>`, user.id, parent, oldId],
+      );
+      return row.rows[0]!.id;
+    };
+    const root = await insert('Root', null, 'old-root', 'Root body');
+    const child = await insert('Child', String(root), 'old-child', 'Child body');
+    await insert('Grandchild', String(child), 'old-grandchild', `Grandchild ${SECRET}`);
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const response = await fetch(`${address}/api/llm/ask`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${user.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ question: QUESTION, pageId: String(root), includeSubPages: true, referenceText: REFERENCE }),
+    });
+    expect(response.status).toBe(200);
+    const events = sseEvents(await response.text());
+    expect(events.some((event) => event.refused === true)).toBe(false);
+    expect(events.map((event) => typeof event.content === 'string' ? event.content : '').join('')).toBe(SECRET);
+    expect(stub.streamCalls).toBe(1);
+  });
+
   it('does not replay an answer built from a private standalone page to a caller denied that page', async () => {
     const a = await createUser('ask-cache-owner');
     const b = await createUser('ask-cache-other');

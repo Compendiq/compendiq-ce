@@ -93,6 +93,9 @@ npm run test -w frontend
 # Single test file
 cd backend && npx vitest run src/path/file.test.ts
 
+# MCP docs sidecar tests (requires a real Redis reachable at the test URL)
+(cd mcp-docs && MCP_DOCS_TEST_REDIS_URL=redis://127.0.0.1:6481 npm test)
+
 # E2E tests (requires running backend + frontend)
 npm run test:e2e
 ```

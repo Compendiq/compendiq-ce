@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { rootCertificates } from 'tls';
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -65,10 +66,10 @@ describe('llm-config', () => {
     }));
 
     const { buildLlmConnectOptions, llmDispatcher } = await import('./llm-config.js');
-    expect(buildLlmConnectOptions()).toEqual({ ca: fakeCert });
+    expect(buildLlmConnectOptions()).toEqual({ ca: [...rootCertificates, '', fakeCert].join('\n') });
     expect(llmDispatcher).toBeDefined();
     expect(MockAgent).toHaveBeenCalledWith({
-      connect: { ca: fakeCert },
+      connect: { ca: [...rootCertificates, '', fakeCert].join('\n') },
     });
   });
 

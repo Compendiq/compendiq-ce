@@ -5,7 +5,11 @@ on:
     branches: [dev, main]
     paths:
       - 'scripts/install.sh'
+      - 'scripts/uninstall.sh'
+      - 'scripts/install-path.test.sh'
+      - 'scripts/install.test.sh'
       - '.github/workflows/test-installer.yml'
+      - 'scripts/install.platform.test.sh'
   workflow_dispatch:
 
 # Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
@@ -42,6 +46,10 @@ jobs:
           apt-get install -y git openssl ca-certificates
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Run installer and uninstaller regression tests
+        run: |
+          bash scripts/install.test.sh
+          bash scripts/install-path.test.sh
 
       - name: Run install.sh --dry-run (Docker present)
         if: matrix.docker_present
@@ -50,6 +58,10 @@ jobs:
       - name: Run install.sh --dry-run with custom flags (Docker present)
         if: matrix.docker_present
         run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0 --dir /tmp/test-compendiq
+
+      - name: Verify generated image platforms with Compose
+        if: matrix.docker_present
+        run: bash scripts/install.platform.test.sh
 
       - name: Run install.sh --dry-run (Docker absent, expect graceful failure)
         if: ${{ !matrix.docker_present }}

@@ -256,11 +256,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
       </div>
 
       {/* Primed live regions — same contract as /ai: the role must exist before
-          the content arrives or assistive tech will not announce it. */}
+          the content arrives or assistive tech will not announce it. A failure
+          that retained partial output (#1801) announces only its short notice. */}
       <div role="alert" data-testid="ai-dock-error-announcer" className="sr-only">
         {(() => {
           const lastError = [...messages].reverse().find((msg) => msg.isError);
-          return lastError ? <span key={lastError.id}>{lastError.content}</span> : null;
+          return lastError ? (
+            <span key={lastError.id}>{lastError.interruption ?? lastError.content}</span>
+          ) : null;
         })()}
       </div>
       <div role="status" aria-live="polite" data-testid="ai-dock-answer-announcer" className="sr-only">
@@ -698,7 +701,7 @@ function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, st
             label="Assistant is typing"
           />
         )}
-        {msg.isError ? (
+        {msg.isError && !msg.interruption ? (
           <p
             className="rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-sm text-destructive"
             data-testid="message-error"
@@ -720,7 +723,20 @@ function DockMessage({ msg, isLast, isStreaming, isThinking, thinkingElapsed, st
             <p className="mt-1.5 whitespace-pre-wrap text-sm text-foreground">{msg.content}</p>
           </div>
         ) : (
-          content && <StreamingMessage content={content} isStreaming={isStreamingThis} />
+          <>
+            {content && <StreamingMessage content={content} isStreaming={isStreamingThis} />}
+            {msg.interruption && (
+              // A failure that kept its partial (#1801): the partial above is
+              // ordinary answer prose, readable and copyable; this is the
+              // short line saying it was cut off, in the error bubble's dress.
+              <p
+                className="mt-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-sm text-destructive"
+                data-testid="message-error"
+              >
+                {msg.interruption}
+              </p>
+            )}
+          </>
         )}
         {msg.sources && msg.sources.length > 0 && (
           <div className="mt-2 space-y-1">

@@ -19,12 +19,25 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
    [Standalone mode](#standalone-mode-working-without-confluence) below.
    Either direction can be changed later.
 
+In the setup wizard, **Test Connection** saves and checks the URL and PAT
+currently entered. **Continue** and space discovery become available only
+after that exact pair passes. Editing either field clears the result, even
+if an earlier test is still running; test the new values before continuing.
+Leaving the step also discards pending results. Choosing **Use Standalone
+Mode** does not require a successful connection test.
+
 ### Standalone mode: working without Confluence
 
 The **Sync with Confluence** switch sits at the top of **Settings → Confluence**
 and is **on** by default, so an existing installation keeps behaving exactly as
-it did. It saves the moment you flip it — the panel's **Save** button only ever
-submits credentials. Turn the switch off and Compendiq runs standalone:
+it did. Clicking the switch starts saving immediately — the panel's **Save**
+button only submits credentials. While **Saving mode…** or **Confirming the
+current mode…** is shown, the switch and credential form keep the last confirmed
+mode, and further switch presses wait for confirmation. A failed save leaves
+that confirmed mode visible and offers another try. If saving succeeds but
+reading the current mode fails, **Retry confirmation** reads the settings again
+without repeating the write; the switch stays unavailable until that succeeds.
+Once turning the switch off is confirmed, Compendiq runs standalone:
 
 - **Everything keeps working.** Pages, the editor, search, the AI assistant,
   Q&A, quality analysis, tags, notes, versions and the knowledge graph all run
@@ -461,6 +474,13 @@ The knowledge graph provides a visual map of relationships between pages:
 2. Explore connections between pages based on links, tags, and semantic similarity.
 3. Click on nodes to navigate to specific pages.
 
+## Trash
+
+Trash lists deleted local pages and lets you restore them before automatic
+purge. If Trash cannot be loaded, use **Retry**; a failed read does not mean
+the bin is empty. If a refresh fails, the last loaded results remain visible
+with a warning that they may be out of date.
+
 ## Keyboard Shortcuts
 
 Press `?` or `Ctrl+/` to open the keyboard shortcuts modal, then start typing in its search box to narrow the list. Key shortcuts:
@@ -520,6 +540,10 @@ Compendiq notifies you of relevant events:
 - Verification requests assigned to you
 
 Access notifications via the bell icon in the top navigation bar.
+The badge counts all unread notifications, including older ones. In the
+notification panel, use **Older** and **Newer** to browse pages; select a
+notification to mark it read, or choose **Mark all as read** to clear all
+unread notifications.
 
 ## Dark and Light Theme
 
@@ -532,6 +556,10 @@ Compendiq supports both dark and light themes:
 ## Webhook Integrations (Enterprise)
 
 Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Governance → Data & Compliance → Webhooks**.
+
+If the endpoint list cannot be loaded, use **Retry** rather than assuming no
+webhooks are configured. If a refresh fails, the last loaded list remains
+visible and may be out of date until the retry succeeds.
 
 ### Event catalogue (v0.4)
 

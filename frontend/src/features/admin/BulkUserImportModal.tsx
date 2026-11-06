@@ -171,9 +171,7 @@ function BulkUserImportModalInner({
       ),
     onSuccess: () => {
       toast.success('Bulk import complete');
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      // CE #304 also uses ['admin', 'users'] — keep both in sync so the
-      // UsersAdminPage list re-fetches regardless of which key wins.
+      // The prefix also covers the separate RBAC user list.
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
       handleClose();
     },
