@@ -478,6 +478,10 @@ The knowledge graph provides a visual map of relationships between pages:
 2. Explore connections between pages based on links, tags, and semantic similarity.
 3. Click on nodes to navigate to specific pages.
 
+Graph filter selections are included in the URL. Editing filters replaces the
+current history entry; selecting or clearing a focused article adds an entry,
+so browser Back and Forward restore the earlier graph and its filters.
+
 ## Trash
 
 Trash lists deleted local pages and lets you restore them before automatic

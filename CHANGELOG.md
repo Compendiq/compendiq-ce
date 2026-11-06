@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches desktop width, and stays closed when returning to mobile (#1813).
 - Nested custom space homepages are detached from their actual parent before
   their children are promoted in the sidebar, preventing duplicate page rows.
+- **Graph history (#1805):** Back and Forward restore shareable graph filters
+  and their effective requests. Filter edits replace the current history entry;
+  changing the focused article still adds an entry.
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.
