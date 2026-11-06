@@ -260,13 +260,14 @@ export async function fetchAdmittedSubPages(
     const result = await query<{
       id: number;
       confluence_id: string | null;
+      source: string;
       title: string;
       body_html: string | null;
       ai_policy: string;
       ai_policy_revision: string;
       content_revision: string;
     }>(
-      `SELECT id, confluence_id, title, body_html, ai_policy, ai_policy_revision::text, content_revision::text
+      `SELECT id, confluence_id, source, title, body_html, ai_policy, ai_policy_revision::text, content_revision::text
        FROM pages
        WHERE parent_id = $1
          AND deleted_at IS NULL
@@ -285,12 +286,11 @@ export async function fetchAdmittedSubPages(
         throw new SubPagePolicyError('ai_policy_unavailable', 'Unreadable descendant metadata', row.id);
       }
 
-      // Queue children for next depth level. Standalone (local-space) pages have
-      // a NULL confluence_id and are keyed on `parent_id = <parent DB id as text>`,
-      // so fall back to the DB id — mirroring COALESCE(confluence_id, id::text)
-      // in pages-crud.ts (#886). Without this, standalone descendants below depth
-      // 1 are dropped (WHERE parent_id = NULL matches nothing).
-      queue.push({ id: row.confluence_id ?? String(row.id), depth: current.depth + 1 });
+      // Each level uses the parent's source, not the presence of a historical ID.
+      queue.push({
+        id: row.source === 'confluence' && row.confluence_id ? row.confluence_id : String(row.id),
+        depth: current.depth + 1,
+      });
 
       if (provider) {
         const decision = decideAiPolicyAdmission(policy, provider);

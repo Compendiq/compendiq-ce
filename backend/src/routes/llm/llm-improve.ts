@@ -16,7 +16,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementIdParamSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   resolveReadablePageRef,
@@ -281,6 +281,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
           userId, action: 'improve', model: resolvedModel, provider: chatConfig.providerId,
           inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
           inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+          promptHash: fingerprintPrompt(improveMessages),
           retrievedChunkIds: [], promptInjectionDetected, sanitized: wasSanitized,
         },
         // Never cache a response that lost the layout tokens: the apply will
@@ -337,6 +338,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
           logger.warn({ improvementId, reason: err.reason }, 'Improvement not published: article binding no longer admits');
         }
       }
+
 
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);

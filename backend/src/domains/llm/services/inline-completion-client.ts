@@ -20,7 +20,7 @@ import {
   type ProviderConfig,
 } from './openai-compatible-client.js';
 import { providerResourceUrl } from './provider-url.js';
-import { emitLlmAudit, estimateTokens } from './llm-audit-hook.js';
+import { emitLlmAudit, estimateTokens, fingerprintPrompt } from './llm-audit-hook.js';
 import type { ArticleTransportStage } from './openai-compatible-client.js';
 import { admitArticleStage, authorizeArticleDispatch, ArticleStageRefusedError } from './article-stage-admission.js';
 
@@ -242,6 +242,7 @@ export async function requestInlineCompletion(
         inputTokens: reportedUsage?.promptTokens ?? estimateTokens(inputMessages.map((m) => m.content).join('')),
         outputTokens: reportedUsage?.completionTokens ?? estimateTokens(rawOutput),
         inputMessages: inputMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+        promptHash: fingerprintPrompt(inputMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: failure ? 'error' : 'success',

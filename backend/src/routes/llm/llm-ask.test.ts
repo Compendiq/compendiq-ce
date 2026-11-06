@@ -1502,7 +1502,7 @@ describe('POST /api/llm/ask', () => {
       function seedArticle(policy: 'all' | 'local_only' | 'none') {
         mockQuery.mockImplementation(async (sql: string) => {
           if (sql.includes('FROM pages WHERE id = $1') && !sql.includes('body_html')) {
-            return { rows: [{ id: 42, confluence_id: 'c42', title: 'Doc' }] };
+            return { rows: [{ id: 42, confluence_id: 'c42', source: 'confluence', title: 'Doc' }] };
           }
           if (sql.includes('SELECT body_html, title, ai_policy')) {
             return { rows: [{ body_html: '<p>doc</p>', title: 'Doc', ai_policy: policy, ai_policy_revision: 6, content_revision: 9 }] };
@@ -3277,10 +3277,10 @@ describe('POST /api/llm/ask', () => {
 
   describe('includeSubPages RBAC gate', () => {
     /** Resolve the page + body_html queries so the parent page "exists". */
-    function seedPageQueries() {
+    function seedPageQueries(source: 'confluence' | 'standalone' = 'confluence') {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('FROM pages WHERE confluence_id')) {
-          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] });
+          return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', source, title: 'Doc' }] });
         }
         if (sql.includes('SELECT body_html, title, ai_policy')) {
           return Promise.resolve({ rows: [{ body_html: '<p>secret</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 4, content_revision: 11 }] });
@@ -3464,6 +3464,41 @@ describe('POST /api/llm/ask', () => {
         { pageId: 1, policy: 'all', policyRevision: 4, contentRevision: 11 },
         { pageId: 9, policy: 'all', policyRevision: 2, contentRevision: 5 },
       ]));
+    });
+
+    it('keys a standalone parent by its internal id even when a historical confluence_id is set (#1791)', async () => {
+      seedPageQueries('standalone');
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        injectionWarnings: [],
+        markdown: 'ASSEMBLED-TREE',
+        pageCount: 2,
+        wasTruncated: false,
+        includedPages: [],
+        includedPageRefs: [],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: {
+          question: 'summarise the tree',
+          model: 'llama3',
+          includeSubPages: true,
+          pageId: 'page-abc',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
+        'test-user-123',
+        '1',
+        '<p>secret</p>',
+        'Doc',
+        undefined,
+        { policyContext: { providerId: 'p1', usecase: 'chat', expectedConfigRevision: 3, expectedLocality: 'external' } },
+      );
+      expect(userMessage()).toContain('ASSEMBLED-TREE');
     });
   });
 
@@ -3923,7 +3958,7 @@ describe('POST /api/llm/ask', () => {
     function seedSubPageQueries() {
       mockReadPagePolicies.mockResolvedValue(new Map([[1, { pageId: 1, policy: 'all', policyRevision: 1, contentRevision: 0 }]]));
       mockQuery.mockImplementation(async (sql: string) => {
-        if (sql.includes('FROM pages WHERE confluence_id')) return { rows: [{ id: 1, confluence_id: 'page-abc', title: 'Doc' }] };
+        if (sql.includes('FROM pages WHERE confluence_id')) return { rows: [{ id: 1, confluence_id: 'page-abc', source: 'confluence', title: 'Doc' }] };
         if (sql.includes('SELECT body_html, title, ai_policy')) return { rows: [{ body_html: '<p>x</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 1, content_revision: 0 }] };
         return { rows: [{ id: 'test-conv-id' }] };
       });

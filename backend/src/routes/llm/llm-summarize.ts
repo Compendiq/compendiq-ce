@@ -12,7 +12,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { SummarizeRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -157,6 +157,7 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
             userId, action: 'summarize', model: effectiveModel, provider: summaryConfig.providerId,
             inputTokens: estimateTokens(summarizeMessages.map((m) => m.content).join('')),
             inputMessages: summarizeMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            promptHash: fingerprintPrompt(summarizeMessages),
             retrievedChunkIds: [],
           },
           cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,

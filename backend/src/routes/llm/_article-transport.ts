@@ -45,7 +45,7 @@ async function captureRoot(userId: string, pageId: string | undefined, config: P
       provenance: { version: 1 as const, providerId: config.providerId, configRevision: provider.configRevision,
         locality: provider.effectiveLocality, pages: [{ pageId: page.id, policy: row.ai_policy, policyRevision, contentRevision }] },
       userId, usecase, context,
-    }, parentRef: { id: page.id, title: row.title as string, confluenceId: row.confluence_id as string | null } };
+    }, parentRef: { id: page.id, title: row.title as string, confluenceId: row.confluence_id as string | null, source: page.source } };
   })().catch((error: unknown) => {
     emitAiDecision({ ...snapshot, occurredAt: new Date().toISOString() });
     throw error;
