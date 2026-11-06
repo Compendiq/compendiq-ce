@@ -182,9 +182,15 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking });
+      const generator = (signal: AbortSignal) =>
+        streamChat(chatConfig, resolvedModel, generateMessages, signal, { thinking: body.thinking });
 
-      const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
+      let streamFailed = false;
+      let streamError: unknown;
+      const accumulated = await streamSSE(request, reply, generator, genExtras, {
+        llmCache, cacheKey, postProcess,
+        onStreamError: (error) => { streamFailed = true; streamError = error; },
+      });
 
       emitLlmAudit({
         userId,
@@ -197,7 +203,10 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         promptHash: fingerprintPrompt(generateMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
-        status: 'success',
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
+          ? { errorMessage: streamError instanceof Error ? streamError.message : String(streamError) }
+          : {}),
         promptInjectionDetected,
         sanitized: wasSanitized,
       });

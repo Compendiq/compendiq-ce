@@ -252,12 +252,19 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking });
+      const generator = (signal: AbortSignal) =>
+        streamChat(chatConfig, resolvedModel, improveMessages, signal, { thinking: body.thinking });
 
+      let streamStatus = 'success' as 'success' | 'error' | 'aborted';
+      let streamError: unknown;
       const accumulated = await streamSSE(request, reply, generator, improveExtras, {
         llmCache,
         cacheKey,
         postProcess,
+        onStreamError: (error) => {
+          streamStatus = 'error';
+          streamError = error;
+        },
         // Never cache a response that lost the layout tokens: the apply will
         // 422 with "run AI Improve again", and a cached token-less response
         // would replay on every retry until the TTL expires.
@@ -268,16 +275,26 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         finalExtras: (out) => ({
           layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(out),
         }),
+        onFinished: (result) => {
+          streamStatus = result.status;
+          if (result.error !== undefined) streamError = result.error;
+        },
       });
 
       // Persist the full improved content now that streaming is done
-      if (improvementId && accumulated) {
+      if (improvementId && streamStatus === 'success' && accumulated) {
         await query(
           `UPDATE llm_improvements SET improved_content = $1, status = 'completed' WHERE id = $2`,
           [accumulated.slice(0, 50000), improvementId],
         );
+      } else if (improvementId) {
+        await query(
+          `UPDATE llm_improvements SET improved_content = $1, status = 'cancelled' WHERE id = $2 AND status = 'streaming'`,
+          [accumulated.slice(0, 50000), improvementId],
+        );
       }
 
+      const streamFailed = streamStatus !== 'success';
       emitLlmAudit({
         userId,
         action: 'improve',
@@ -289,7 +306,14 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         promptHash: fingerprintPrompt(improveMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
-        status: 'success',
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
+          ? {
+              errorMessage: streamStatus === 'aborted'
+                ? 'Client disconnected'
+                : streamError instanceof Error ? streamError.message : String(streamError ?? 'Stream error'),
+            }
+          : {}),
         promptInjectionDetected,
         sanitized: wasSanitized,
       });
