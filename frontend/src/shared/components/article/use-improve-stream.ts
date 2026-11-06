@@ -90,6 +90,7 @@ export function useImproveStream(): UseImproveStreamResult {
     }
 
     let accumulated = '';
+    let completed = false;
     try {
       for await (const chunk of streamSSE<ImproveChunk>(
         '/llm/improve',
@@ -107,6 +108,7 @@ export function useImproveStream(): UseImproveStreamResult {
           setStatus('error');
           return;
         }
+        if (chunk.done === true) completed = true;
         // Post-processing may emit a cleaned full replacement.
         if (chunk.finalContent !== undefined) {
           accumulated = chunk.finalContent;
@@ -115,6 +117,12 @@ export function useImproveStream(): UseImproveStreamResult {
           accumulated += chunk.content;
           setOutput(accumulated);
         }
+      }
+      if (controller.signal.aborted) return;
+      if (!completed) {
+        setError('The response was interrupted before completion. Copy the partial output or try again.');
+        setStatus('error');
+        return;
       }
       setStatus('done');
     } catch (err) {
