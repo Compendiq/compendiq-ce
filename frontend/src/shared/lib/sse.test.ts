@@ -14,7 +14,7 @@ vi.mock('../../stores/auth-store', () => ({
 const { streamSSE } = await import('./sse');
 const { ApiError } = await import('./api');
 
-const USER = { id: '1', username: 'test', role: 'user' };
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
 
 function sseResponse(lines: string): Response {
   return new Response(lines, {

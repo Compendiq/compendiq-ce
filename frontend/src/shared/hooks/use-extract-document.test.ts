@@ -14,7 +14,7 @@ vi.mock('../../stores/auth-store', () => ({
 
 const { useExtractDocument } = await import('./use-extract-document');
 
-const USER = { id: '1', username: 'test', role: 'user' };
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
 
 function file(name = 'doc.pdf', type = 'application/pdf'): File {
   return new File(['%PDF-1.4'], name, { type });

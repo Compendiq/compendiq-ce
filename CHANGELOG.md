@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Refresh recovery (#1800):** keep authentication after an unusable successful
+  refresh and prevent query retries, polling, remounts and presence/collaboration
+  reconnects from repeating a possibly committed rotation. Marked busy responses
+  remain retry-safe; replacement tokens or an explicit reload permit recovery.
+  Preserve unsaved work before reloading.
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.

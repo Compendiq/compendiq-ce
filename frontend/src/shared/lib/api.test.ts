@@ -18,6 +18,8 @@ const { apiFetch, logoutApi, ApiError, RefreshUnavailableError } = await import(
 const { beginDraftEdit, persistDraft, readDraft } = await import('./editor-drafts');
 const { readRecentSearches, rememberRecentSearch } = await import('./recent-searches');
 
+const USER = { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' };
+
 /** Build a JWT whose payload carries the given `exp` (seconds since epoch). */
 function makeJwt(exp: number): string {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -37,7 +39,7 @@ describe('apiFetch', () => {
   beforeEach(() => {
     storeState = {
       accessToken: 'valid-token',
-      user: { id: '1', username: 'test', role: 'user' },
+      user: USER,
       isAuthenticated: true,
       setAuth: mockSetAuth,
       clearAuth: mockClearAuth,
@@ -80,7 +82,7 @@ describe('apiFetch', () => {
       // Refresh call: success
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'new-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
@@ -97,7 +99,7 @@ describe('apiFetch', () => {
     // Should have called refresh endpoint
     expect(fetchSpy).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({ method: 'POST' }));
     // Should have set auth with new token
-    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
   });
 
   it('clears auth and throws when refresh fails on 401', async () => {
@@ -122,7 +124,7 @@ describe('apiFetch', () => {
       .mockResolvedValueOnce(busyResponse('refresh_busy'))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'new-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
@@ -138,7 +140,7 @@ describe('apiFetch', () => {
 
     await expect(result).resolves.toEqual({ data: 'ok' });
     expect(refreshCalls()).toBe(3);
-    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', USER);
     expect(mockClearAuth).not.toHaveBeenCalled();
   });
 
@@ -196,7 +198,7 @@ describe('apiFetch', () => {
         // Update store so retry calls pick up the new token
         storeState.accessToken = 'refreshed-token';
         return new Response(
-          JSON.stringify({ accessToken: 'refreshed-token', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'refreshed-token', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         );
       }
@@ -242,7 +244,7 @@ describe('apiFetch', () => {
           return new Response(
             JSON.stringify({
               accessToken: 'fresh-token',
-              user: { id: '1', username: 'test', role: 'user' },
+              user: USER,
             }),
             { headers: { 'Content-Type': 'application/json' } },
           );
@@ -263,7 +265,7 @@ describe('apiFetch', () => {
     expect(dataCalls).toHaveLength(1);
     expect((dataCalls[0][1]?.headers as Headers).get('Authorization')).toBe('Bearer fresh-token');
     // Auth store received the fresh token.
-    expect(mockSetAuth).toHaveBeenCalledWith('fresh-token', { id: '1', username: 'test', role: 'user' });
+    expect(mockSetAuth).toHaveBeenCalledWith('fresh-token', USER);
   });
 
   it('attempts refresh on 401 when accessToken exists but expired', async () => {
@@ -273,7 +275,7 @@ describe('apiFetch', () => {
       .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ accessToken: 'refreshed', user: { id: '1', username: 'test', role: 'user' } }),
+          JSON.stringify({ accessToken: 'refreshed', user: USER }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
       )
