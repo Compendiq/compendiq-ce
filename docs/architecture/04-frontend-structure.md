@@ -313,6 +313,98 @@ enters the viewport, not on ordinary re-renders or background refetches.
   that existed only to keep a pending seed from firing at whatever document
   loaded next. Every request now starts at a chip or the composer.
 
+## Article AI policy surfaces (#283)
+
+The shared CE bundle carries the article AI policy UI (`all` / `local_only` /
+`none`) and provider locality (`local` / `external`); there is no EE
+frontend overlay. The logic lives in `shared/lib/article-ai-policy.ts`, the
+chips in `shared/components/badges/AiPolicyChips.tsx`.
+
+- **Policy and locality are categories, not statuses.** `AiPolicyChip`
+  (with a `compact` header form) and `LocalityChip` are neutral ink plus a
+  glyph, like `FrozenBadge`: the glyph survives `forced-colors` and colour
+  blindness. No Steel fill, no green seal, no amber, and the words never say
+  "verified" — locality is an administrator *declaration* that Compendiq does
+  not independently verify (`LOCALITY_HELP_TEXT`).
+- **The selector is capability-gated by the server**
+  (`canShowPolicySelector` validates the page-detail contract and requires
+  `canChangeAiPolicy === true`, `aiPolicyActivation === 'active'`, a known
+  policy and its revision); read access or shared visibility alone never
+  shows it. Missing fields and foundation-only activation fail closed, not
+  as `all`. A capability-name array is not the server's wire contract. `selectorReducer` is never optimistic: `saved` follows only a
+  server success, a 409 keeps the draft with `conflict`, and the reload the
+  conflict offers adopts the committed policy/revision, keeps the draft for
+  review and clears the stale-revision conflict.
+- **`no_ai` confirmation names the real effect** (`NO_AI_CONFIRMATION`):
+  vectors, image analyses, summaries and quality results are removed;
+  authored content, attachments, versions and keyword search remain; history
+  is retained but may no longer replay; sent work cannot be recalled.
+- **Editor gating is one verdict for mouse, keyboard and programmatic
+  paths** (`isEditorAiAllowed`, failing closed on unknown policy) with an
+  accessible prose reason (`editorAiUnavailableReason`); ghost text is
+  reconciled against the policy/revision snapshot it was generated under and
+  dropped on any change (`reconcileGhostText`).
+- **History refusal** (`handleChatRefusal`) keeps the draft:
+  `ai_history_not_replayable` offers New chat, `ai_policy_unavailable`
+  offers retry without reclassifying the history; both say nothing was sent.
+- **Locality is never auto-selected.** `LocalityDeclaration` starts null, an
+  endpoint edit clears it, and `localityToSubmit` sends `local` only when
+  Local was explicitly chosen for exactly the endpoint being saved —
+  otherwise External. Connection or vision probes never touch it.
+- **Worker states** `policy_blocked` and `recovering` render as their own
+  tones in `WorkerStatusBadge`, never as success or failure, with the block
+  reason as visible text wired by `aria-describedby`, not a `title`.
+  Each instance generates a stable unique description ID when the caller
+  supplies none, so multiple blocked stages cannot announce another stage's
+  reason. Recovery removes the obsolete description association.
+- The Library filter helpers (`pagesQueryKey` / `pagesSearchParams`) put
+  `aiPolicy` on the real list query key and request; "All articles" is the
+  absence of a filter, not the `all` value.
+
+These helpers and chips are the shared vocabulary; mounting them into the
+inspector Details section, the article header, the Library filter row, the
+editor menus, the dock and the provider editor is tracked against #283 and is
+not yet wired in this tree.
+
+## Frontend test determinism
+
+The Vitest suite runs at normal concurrency on a loaded CI runner, so a test
+that passes only when the machine is idle is a defect in the test. These
+conventions keep the suite honest without inflating timeouts, adding retries
+or skipping cases:
+
+- **Assert consumer behaviour, not a mock's echo.** A test pins what a
+  consumer can observe through the public contract (conversation contents,
+  readiness, mode, draft, thread isolation). It does not assert a value that
+  only proves a mock answered — the server resolves chat centrally and
+  ignores the request body's `model`, so `AiContext.threads.test.tsx` does not
+  wait for a literal default-model string.
+- **Await stream completion before a second action.** A seeded user bubble
+  precedes the async SSE iterator finishing; it is not a readiness signal for
+  the disabled action selector. Sequential dock tests supply distinct answers
+  at the network boundary, await the completed answer plus removal of the
+  streaming indicator and enabled controls, then send the next action. Assert
+  both questions and answers remain in the same thread. Unmount in `finally`
+  and clear the render's query client so assertion failures also clean up.
+- **Await an independent source only when it is the subject.** Two queries
+  that nothing orders (conversation hydration and the default-model lookup,
+  for instance) may settle in either order. A test that asserts one must not
+  silently depend on the other having finished first.
+- **Use direct state setup for tests unrelated to typing.** `PagesPage`
+  reads search, mode, space, filters and page from the URL, so a test about
+  banner copy, pagination names or row provenance renders straight at the
+  supported deep link (`/?mode=semantic&search=…`) instead of typing through
+  the 300 ms search debounce and switching modes through unrelated controls.
+  Only the tests whose subject *is* the debounce or the gesture drive it.
+- **Scope expensive DOM queries.** `getByRole` computes an accessible name
+  for every candidate; against the 600+ button icon grid a page-wide query
+  for a colour swatch is the slowest step of the test. `within(...)` the
+  smallest container that holds the target (`page-icon-color-row`).
+- **Shims install once per test.** `installVirtualizerRectShim` runs in
+  `beforeEach` and its restore in `afterEach`; a second installation inside a
+  test captures the shimmed function as the "original", so the real
+  `getBoundingClientRect` is never restored for the tests that follow.
+
 ## Collaborative editing (#1447, #276)
 
 Realtime CRDT editing is **opt-in** (`GET /api/collab/config` →

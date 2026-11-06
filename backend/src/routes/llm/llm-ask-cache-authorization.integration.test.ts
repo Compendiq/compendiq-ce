@@ -17,7 +17,8 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as postgres from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { query } from '../../core/db/postgres.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
@@ -134,6 +135,18 @@ async function ask(user: User, payload: Record<string, unknown>): Promise<AskRes
     refused: final?.refused === true,
     sources: final?.sources,
   };
+}
+
+async function expectDenied(user: User, payload: Record<string, unknown>): Promise<void> {
+  const before = await persistedMessages(user.id);
+  const calls = stub.streamCalls;
+  const response = await app.inject({ method: 'POST', url: '/api/llm/ask', headers: { authorization: `Bearer ${user.token}` }, payload });
+  expect(response.statusCode, response.body).toBe(409);
+  expect(response.json()).toEqual({ error: payload.conversationId
+    ? 'ai_history_not_replayable' : 'ai_grounding_not_admissible', stage: 'chat' });
+  expect(response.headers['content-type']).toContain('application/json');
+  expect(stub.streamCalls).toBe(calls);
+  expect(await persistedMessages(user.id)).toBe(before);
 }
 
 async function persistedMessages(userId: string): Promise<string> {
@@ -300,8 +313,9 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
       referenceText: REFERENCE,
     };
 
-    const { replay } = await warmThenReplay(a, b, body);
-    await expectNoLeakTo(b, replay);
+    const warmed = await ask(a, body);
+    expect(warmed.content).toBe(SECRET);
+    await expectDenied(b, body);
   });
 
   it('does not replay an answer built from a restricted Confluence page to a space reader without an ACE', async () => {
@@ -317,15 +331,16 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     await insertUserAce(restricted, c.id);
     const body = { question: QUESTION, pageId: String(restricted), includeSubPages: true, referenceText: REFERENCE };
 
-    const { replay } = await warmThenReplay(a, b, body);
-    await expectNoLeakTo(b, replay);
+    const warmed = await ask(a, body);
+    expect(warmed.content).toBe(SECRET);
+    await expectDenied(b, body);
 
     // A second caller holding the same ACE assembles the same prompt and
     // shares A's entry: equivalent authorized context still caches.
     const shared = await ask(c, body);
     expect(shared.cached).toBe(true);
     expect(shared.content).toBe(SECRET);
-    expect(stub.streamCalls).toBe(2);
+    expect(stub.streamCalls).toBe(1);
   });
 
   it('does not replay an answer whose tree held a restricted sub-page to a caller whose tree is narrower', async () => {
@@ -375,7 +390,9 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     );
 
     // The follow-up carries no page: only A's own earlier turn holds the secret.
-    const followUp = { question: 'Summarize zxqv914 again.', referenceText: REFERENCE };
+    // #282: a page-less question must SAY so (`inputKind: 'independent'`),
+    // exactly as both composers do — the route refuses one that says nothing.
+    const followUp = { question: 'Summarize zxqv914 again.', referenceText: REFERENCE, inputKind: 'independent' };
     const answer = await ask(a, { ...followUp, conversationId: conversation.rows[0]!.id });
     expect(answer.content).toBe(SECRET);
     expect(stub.streamCalls).toBe(2);
@@ -385,6 +402,64 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
     expect(replay.body).not.toContain(SECRET);
     expect(replay.content).toBe(PUBLIC_ONLY);
     expect(await persistedMessages(b.id)).not.toContain(SECRET);
+  });
+
+  it('records an unindexed restricted root and refuses history after its provider becomes external', async () => {
+    const owner = await createUser('root-history-owner', 'admin');
+    await insertSpace('ROOT', 'local', owner.id);
+    const created = await query<{ id: number }>(
+      `INSERT INTO pages (source, space_key, title, body_html, body_text, visibility, created_by_user_id, embedding_dirty)
+       VALUES ('standalone', 'ROOT', 'Root', $1, $1, 'private', $2, FALSE) RETURNING id`, [SECRET, owner.id],
+    );
+    const id = created.rows[0]!.id;
+    // Existing restrictions remain enforced while new activation is closed.
+    await query(`UPDATE pages SET ai_policy = 'local_only', labels = ARRAY['local-ai-only'] WHERE id = $1`, [id]);
+    const providerId = (await query<{ id: string }>('SELECT id FROM llm_providers WHERE is_default')).rows[0]!.id;
+    const local = await app.inject({ method: 'PATCH', url: `/api/admin/llm-providers/${providerId}`,
+      headers: { authorization: `Bearer ${owner.token}` }, payload: { locality: 'local' },
+    });
+    expect(local.statusCode, local.body).toBe(200);
+    const first = await ask(owner, { question: QUESTION, pageId: String(id), includeSubPages: true });
+    expect(first.content).toBe(SECRET);
+    const stored = await query<{ id: string; messages: Array<{ aiProvenance?: { pages: Array<{ pageId: number }> } }> }>(
+      'SELECT id, messages FROM llm_conversations WHERE user_id = $1', [owner.id],
+    );
+    expect(stored.rows[0]!.messages[1]!.aiProvenance!.pages.map((p) => p.pageId)).toContain(id);
+    const external = await app.inject({ method: 'PATCH', url: `/api/admin/llm-providers/${providerId}`,
+      headers: { authorization: `Bearer ${owner.token}` }, payload: { locality: 'external' },
+    });
+    expect(external.statusCode, external.body).toBe(200);
+    // The continuation is page-less on the wire; the identity contract
+    // (#282) is satisfied first, so the refusal below is the history
+    // guard's 409, not the 400 an undeclared question draws.
+    await expectDenied(owner, { question: 'Continue.', conversationId: stored.rows[0]!.id, inputKind: 'independent' });
+  });
+
+  it('refuses a descendant body changed after its real SELECT and before consumption', async () => {
+    const owner = await createUser('tree-race-owner', 'admin');
+    await insertSpace('DOCS', 'confluence');
+    const parent = await insertConfluencePage('race-parent', 'Root', 'Root body');
+    const child = await insertConfluencePage('race-child', 'Child', SECRET, { parentId: 'race-parent' });
+    const original = postgres.query;
+    let mutated = false;
+    const spy = vi.spyOn(postgres, 'query').mockImplementation(async (...args: Parameters<typeof postgres.query>) => {
+      const result = await original(...args);
+      if (!mutated && String(args[0]).includes('WHERE parent_id = $1') && String(args[0]).includes('content_revision::text')) {
+        mutated = true;
+        await original(`UPDATE pages SET body_html = '<p>Replacement</p>' WHERE id = $1`, [child]);
+      }
+      return result;
+    });
+    try {
+      await expectDenied(owner, { question: QUESTION, pageId: String(parent), includeSubPages: true });
+      expect(mutated).toBe(true);
+      const row = await original<{ content_revision: string; ai_policy_revision: string }>(
+        'SELECT content_revision::text, ai_policy_revision::text FROM pages WHERE id = $1', [child],
+      );
+      expect(row.rows[0]).toEqual({ content_revision: '1', ai_policy_revision: '0' });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('still serves an ordinary authorized repeat from the cache', async () => {
@@ -451,12 +526,7 @@ describe.skipIf(!available)('POST /api/llm/ask — the answer cache never widens
 
     // Same user, byte-identical body, same (empty) retrieval: only the
     // assembled prompt lost the page.
-    const again = await ask(a, body);
-    expect(again.sources).toEqual(warmed.sources);
-    expect(again.refused).toBe(false);
-    expect(again.cached).toBe(false);
-    expect(again.body).not.toContain(SECRET);
-    expect(again.content).toBe(PUBLIC_ONLY);
-    expect(stub.streamCalls).toBe(2);
+    await expectDenied(a, body);
+    expect(stub.streamCalls).toBe(1);
   });
 });

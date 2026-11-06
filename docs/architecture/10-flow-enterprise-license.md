@@ -43,6 +43,17 @@ sequenceDiagram
     I->>F: listen()
 ```
 
+**The package's DEFAULT export is the plugin — nothing else is consulted.**
+`loader.ts` reads `mod.default` and accepts it only when it carries a
+`validateLicense` function; a package that exposes the plugin through named
+exports alone, or whose default export is some other object, is logged
+(`Enterprise package found but its default export is not a plugin`) and the
+noop plugin is used. There is no namespace-object fallback and no
+compatibility shim: the cutover to the default export is clean, so an EE
+build that forgets `export default plugin` fails visibly at boot (every EE
+feature, including `resolveAiPolicyCreationDefault` for #280, stays inert)
+rather than half-loading.
+
 ## Runtime license update (EE only)
 
 ```mermaid
@@ -205,3 +216,86 @@ The shared `ReportId` contract and `ComplianceReportsTab` include
 `model_governance`; the live backend's `available` list controls generation.
 There is no EE frontend overlay. The EE report states retained audit coverage
 and ships CSV plus an unsigned checksum PDF cover in a ZIP.
+
+## Article AI policy enterprise extension points (SPEC-EE-001)
+
+```mermaid
+flowchart LR
+    settings["Shared local Space Settings"] --> readDefault["GET default-ai-policy<br/>visible space; saved/effective + capability + row revision"]
+    readDefault --> putDefault["PUT policy + expectedRevision<br/>live entitlement AND admin/scoped manage"]
+    putDefault --> cas["spaces xmin compare-and-swap<br/>stale 409; no article rewrite"]
+    create["CE page creation"] --> hook["resolveAiPolicyCreationDefault"]
+    hook -->|CE noop| all["all"]
+    hook -->|EE, org_llm_policy entitled| spaceDefault["spaces.default_ai_policy<br/>NULL means all"]
+    hook -->|EE, not entitled| all
+    spaceDefault --> stricter["stricter of default and labels"]
+    all --> stricter
+    preview["POST cascade/preview<br/>owner-scoped subtree"] --> commit["POST cascade<br/>exact ids and revisions"]
+    commit -->|stale, ambiguous or foreign| conflict["409, no row changed"]
+    commit --> fence["runtime epoch then exclusive hierarchy fence<br/>re-expand exact owned set"]
+    fence --> locks["lifecycle locks then AIP then page rows<br/>pending writer 409 / frozen target 423"]
+    locks --> write["applyAiPolicyOnClient<br/>canonical labels + policy revisions + purge/requeue<br/>content revision + typed change in one transaction"]
+    write --> committed["persistAiPolicyChange held client<br/>COMMIT or rollback together"]
+    observer["CE onAiDecision"] --> events["ai_governance_events v1<br/>captured destination + complete associations"]
+    legacy["Unmigrated onAiPolicyEvent"] --> old["legacy events; incomplete evidence"]
+    write --> events
+    events --> report["Model Governance Evidence<br/>recorded decisions only"]
+```
+
+`applyAiPolicyOnClient` owns the awaited `persistAiPolicyChange(client, event)`
+call after policy/label and derived-state changes. The cascade supplies one
+server-owned operation/cascade identity, user actor and `subtree_cascade`
+source; it does not insert a second aggregate. The primitive reads old policy
+and revisions from locked rows. Sink failures propagate to the transaction
+owner and roll back policy and evidence together. The cascade still owns
+content-revision publication and its hierarchy/lifecycle fences. Direct policy
+updates no longer emit a second post-commit notification. Interactive direct
+relaxation stores `all-ai`.
+
+The legacy `emitAiPolicyChanges` export has been removed. Creation/recovery
+callers that change policy use held-client typed persistence rather than a
+post-commit observer. This does not establish complete producer coverage or
+rollout readiness: retained legacy records and decision-delivery gaps remain
+explicitly bounded by the report. Restrictive activation remains closed.
+
+### Relocation recovery verification before publication
+
+A retained relocation preparation is durable local progress, not evidence of a
+remote dispatch. In the committed-preparation recovery regression, the lifecycle
+lock can stop either preparation finish or the next local effect's start:
+`effect_finished_at` may therefore be null or populated. Do not interpret that
+field alone as settlement or permission to retry a remote operation. Recovery
+still requires the established runtime fencing and active recovery authority,
+a pending/unsettled intent, and durable evidence that no remote effect started.
+The regression verifies retained preparation/FK protection, no provider calls,
+cleanup after actor deletion or deactivation, and preservation of the original
+body, revisions, children and ACLs. Its synchronization must not depend on
+sleeps, retries, or one incidental local-effect timestamp value.
+
+Run the full backend gate after changing this regression, along with the other
+required integration, contract, frontend, lint and typecheck gates. Earlier
+unchanged-tree reruns or focused parent runs are not evidence of a repair.
+These native gates do not replace browser verification of defaults, cascades,
+report downloads or entitlement-loss recovery. Keep publication draft-only and
+remote completion withheld until the outstanding publication checks are met;
+this test correction changes neither production recovery nor activation rules.
+
+The EE hook is wired into the plugin only; CE routes and ingestion keep
+calling `resolveCreationAiPolicy`. Losing the license makes the hook answer
+`all` for new pages but never rewrites stored page restrictions. Event
+recording is an observer of a decision already taken: an audit failure is
+logged and never turns a denied dispatch into an admitted one. There is no
+live inheritance resolver; a cascade writes each owned row once.
+
+The same `canMutateAiPolicy` hook that guards every later policy move also
+guards the **choice at creation** (`canChoosePolicyAtCreation`, #280): CE
+answers from ownership/edit rights, EE from its governance rules, and a
+creator the hook refuses cannot set a policy through `POST /pages` either
+(403 `ai_policy_denied` before any row or remote effect). Typed producers can
+record complete blocked-stage evidence, including unknown policies. Legacy
+producer coverage remains incomplete; observer delivery failure leaves a gap,
+never permission to dispatch. See [audit flow](./13-flow-ai-policy-audit.md) and
+[typed data model](./14-ai-governance-evidence-schema.md). Provider locality declarations are actor-bound: `POST/PATCH
+/api/llm/providers` with a `locality` and no identified administrator is 401
+`locality_actor_required`, and a `local` declaration without a declarer is
+not local for admission purposes.

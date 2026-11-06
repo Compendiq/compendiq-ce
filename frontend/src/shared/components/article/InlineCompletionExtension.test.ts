@@ -250,6 +250,37 @@ describe('InlineCompletionExtension (#1417)', () => {
     code.editor.destroy();
   });
 
+  it('clears visible ghost text without changing draft or selection on policy invalidation', async () => {
+    const { editor } = mount();
+    await typeAndResolve(editor);
+    const text = editor.getText();
+    const selection = editor.state.selection;
+    editor.view.dispatch(editor.state.tr.setMeta(inlineCompletionPluginKey, { type: 'clear' }));
+    expect(document.querySelector('[data-testid="inline-completion-ghost"]')).toBeNull();
+    key(editor, { key: 'Tab' });
+    expect(editor.getText()).toBe(text);
+    expect(editor.state.selection.eq(selection)).toBe(true);
+    editor.destroy();
+  });
+
+  it('cancels pending inference and rejects its late result on policy invalidation', async () => {
+    let signal: AbortSignal | undefined;
+    let finish!: (value: InlineCompletionResponse) => void;
+    const { editor } = mount({ request: (_input, currentSignal) => {
+      signal = currentSignal;
+      return new Promise((resolve) => { finish = resolve; });
+    } });
+    await typeAndResolve(editor);
+    const text = editor.getText();
+    editor.view.dispatch(editor.state.tr.setMeta(inlineCompletionPluginKey, { type: 'clear' }));
+    expect(signal?.aborted).toBe(true);
+    finish({ completion: ' stale', model: 'm', provider: 'p' });
+    await Promise.resolve();
+    expect(document.querySelector('[data-testid="inline-completion-ghost"]')).toBeNull();
+    expect(editor.getText()).toBe(text);
+    editor.destroy();
+  });
+
   it('supports manual-only mode through Alt+\\ force request', async () => {
     const { editor, request } = mount({ delayMs: null });
     editor.commands.insertContent(' ');

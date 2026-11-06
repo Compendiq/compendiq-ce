@@ -47,9 +47,21 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+const providerRow = { locality: 'external', config_revision: 1, locality_config_revision: null,
+  locality_declared_by: null, locality_declared_at: null };
 vi.mock('../../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mocks.mockQuery(...args),
-  getPool: () => mocks.mockPool,
+  query: (sql: string, ...args: unknown[]) => sql.includes('FROM llm_providers')
+    ? Promise.resolve({ rows: [providerRow] }) : mocks.mockQuery(sql, ...args),
+  getPool: () => ({ connect: async () => ({
+    query: async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM llm_providers')) return { rows: [providerRow] };
+      if (sql.includes('FROM pages')) return { rows: (params?.[0] as number[]).map((id) => ({
+        id, ai_policy: 'all', ai_policy_revision: 0, content_revision: 1,
+      })) };
+      return { rows: [] };
+    },
+    release: vi.fn(),
+  }) }),
   getVectorPool: () => mocks.mockPool,
 }));
 
@@ -1110,6 +1122,10 @@ describe('RAG Service', () => {
               chunk_text: `chunk text for page ${n}`,
               metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
               distance: 0.1 * n,
+              // #282: the leg selects the page's policy; a row WITHOUT one is
+              // never admitted to the rerank provider, so fixtures carry it.
+              ai_policy: 'all',
+              ai_policy_revision: 0, content_revision: 1,
             })),
           };
         }
@@ -2246,6 +2262,8 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
             chunk_index: n === 1 ? 2 : 0,
             metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
             distance: 0.1 * n,
+            ai_policy: 'all',
+            ai_policy_revision: 0, content_revision: 1,
           })),
         };
       }
@@ -2651,6 +2669,8 @@ describe('exact-identifier pin stage (#1107)', () => {
             chunk_index: 0,
             metadata: { page_title: `Page ${n}`, section_title: `Sec ${n}`, space_key: 'DEV' },
             distance: 0.1 * n,
+            ai_policy: 'all',
+            ai_policy_revision: 0, content_revision: 1,
           })),
         };
       }

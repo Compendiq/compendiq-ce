@@ -288,7 +288,8 @@ export const ImageAnalysisRowSchema = z.object({
   format: z.string(),
   width: z.number().int().nullable(),
   height: z.number().int().nullable(),
-  status: z.enum(['pending', 'analyzed', 'failed', 'failed_terminal', 'skipped']),
+  /** `policy_blocked`: parked by the article AI policy (SPEC-WORK-001) — neither work nor failure. */
+  status: z.enum(['pending', 'analyzed', 'failed', 'failed_terminal', 'skipped', 'policy_blocked']),
   skipReason: z.enum(['missing', 'unsupported', 'oversized', 'too_large', 'external', 'capped']).nullable(),
   providerId: z.string().uuid().nullable(),
   model: z.string().nullable(),
@@ -358,6 +359,8 @@ export const ImageAnalysisRowCountsSchema = z.object({
   /** `failed_terminal` — the attempt cap was reached; only Retry failed moves these. */
   terminal: z.number().int().nonnegative(),
   skipped: z.number().int().nonnegative(),
+  /** Parked by the article AI policy (SPEC-WORK-001) — apart from pending and failed. */
+  policyBlocked: z.number().int().nonnegative().default(0),
 });
 export type ImageAnalysisRowCounts = z.infer<typeof ImageAnalysisRowCountsSchema>;
 
@@ -411,6 +414,8 @@ export const ImageAnalysisLastRunSchema = z.object({
   pagesFailed: z.number().int().nonnegative().default(0),
   /** Step 2: individual references present but unreadable — the finer count. */
   unreadableRefs: z.number().int().nonnegative().default(0),
+  /** Step 3: rows the article AI policy parked — no call spent, neither processed nor failed. */
+  policyBlocked: z.number().int().nonnegative().default(0),
   reason: ImageAnalysisBatchReasonSchema.optional(),
   /** The status behind `provider_status` / `uniform_rejection`. */
   httpStatus: z.number().int().optional(),

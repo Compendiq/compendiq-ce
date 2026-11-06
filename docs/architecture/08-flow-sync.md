@@ -843,3 +843,94 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/core/db/advisory-locks.ts` — `PAGE_MOVE_ADVISORY_LOCK_ID`, shared with `PUT /pages/:id/move`
 - `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
 - `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard
+- `backend/src/core/services/ai-policy-ingestion.ts` — `resolveIngestionAiPolicy` / `TIGHTEN_ONLY_POLICY_SQL` (SPEC-WORK-001)
+- `backend/src/core/services/ai-policy-service.ts` — `purgeDerivedAiStateForPages`, called by the upsert when a page lands on `none`
+
+## Article AI policy at ingestion (SPEC-WORK-001)
+
+The page upsert resolves `pages.ai_policy` with `TIGHTEN_ONLY_POLICY_SQL`:
+Confluence labels (`ai-none`, `ai-local-only`, …) can only make an existing
+page STRICTER, never relax a policy an editor set, and are never consulted
+again after that write. The downstream marks are policy-aware:
+
+- `summary_status` is re-pended on every content change EXCEPT for a page
+  parked by `none` — its `policy_blocked` stays, because only a policy write
+  lifts a `policy_none` block. `embedding_dirty` / `image_analysis_dirty` are
+  raised as before; the workers' selects exclude `policy_none` rows and
+  re-check `provider_not_local` ones every pass.
+- When the upsert's `RETURNING ai_policy` is `none` (a label tightened it),
+  the sync calls `purgeDerivedAiStateForPages([id])` — the same purge the
+  interactive policy write performs, in its own transaction under the per-page
+  advisory lock — so no vector, summary, score or image payload outlives the
+  policy. Body, attachments and versions are kept.
+- The Notion importer (`notion-import-service.ts`) uses the same helpers on
+  insert and on reuse.
+
+### First-publication fence (#281 review)
+
+An app-side Confluence create (`pages.create.confluence`) states the page's
+initial policy and canonical labels in its intent (`effect.initialPolicy` /
+`effect.initialLabels`) BEFORE the HTTP dispatch; the intent's
+`remote_terminal_result.confluenceId` binds that statement to the remote id
+once the acknowledgment lands. The sync walker must not seed a fresh row for
+that page from the walker's weaker ingestion default while the reply is
+still outstanding — the article would be embedded and summarised against
+the author's stated `none`/`local_only` until recovery caught up.
+
+`admitFreshConfluencePublication` (`core/services/ai-policy-ingestion.ts`)
+runs on the INSERT transaction of every fresh Confluence row:
+
+- **Bound intents** seed the row with the stated policy, its canonical label
+  merged into the remote label set, and the derived marks the policy
+  implies. A pending intent acknowledged as a DIFFERENT id is inert for this
+  row. "Bound" means a **validated** receipt — `boundConfluenceId` and its SQL
+  twin `BOUND_CONFLUENCE_ID_SQL` apply the same rules the create reconciler's
+  `confirmPagePublication` applies before it trusts a terminal result:
+  `remote_effects_completed_at` set, non-empty string `confluenceId`,
+  `accepted: true`, a safe integer `expectedVersion ≥ 1`, and any
+  `observedConfluenceId` / `version` present agreeing with them. A bare id
+  with `accepted: false`, `expectedVersion: 0`, a conflicting observed id or
+  no completion timestamp is NOT a binding — such metadata can name an
+  unrelated existing page and must never release the fence for it. The SQL
+  twin checks JSON **type** before value, not `->>` text: an
+  `observedConfluenceId` that is a JSON number `880001` or JSON `null` does
+  not match the string command id `'880001'` (strict TS inequality), and
+  `version` must be a JSON number numerically equal to `expectedVersion`.
+- **Unbound intents** (dispatched, no terminal result, a NULL
+  `remote_terminal_result`, or a receipt that fails the validation above)
+  are a GLOBAL fence: a fresh import whose resolved policy is WEAKER than
+  any unbound statement is deferred in EVERY space and for EVERY principal.
+  Space or title heuristics are deliberately not used — the acknowledged
+  page may have been moved or renamed before the reply was lost, so only the
+  exact id can clear it. The statement's strength is decoded exactly as
+  `initialPolicyFromEffect` decodes it, in TypeScript and in the cursor
+  SQL alike: `initialPolicy: 'all'` beside a restrictive label from the
+  frozen synonym table (`no-ai`, `local-ai-only`, …) is a restrictive
+  statement, and absent or malformed metadata is treated as `none`. Only a
+  valid explicit `all` with no restrictive label fences nothing; an import
+  already at least as strict as every unbound statement passes. Label
+  trimming in the SQL uses the JavaScript `String.prototype.trim`
+  whitespace class (`JS_TRIM_SQL`, all 25 ECMA-262 WhiteSpace/LineTerminator
+  code points), not `btrim`'s space-only default, so `'no-ai\t'` or
+  `'\u00a0No-AI'` is restrictive on both sides. `createIntentHoldsFence` is
+  the exported TS form of the per-row cursor clause; the fence integration
+  suite runs it and `FRESH_PUBLICATION_FENCE_ACTIVE_SQL` over the same
+  stored rows (a decoder-parity table) and asserts both agree with the
+  walker's actual admission outcome.
+- A deferral is `FreshPublicationDeferredError`: `syncSpace` counts it in
+  `pagesDeferred` (apart from `pagesFailed`), skips the row and continues
+  the walk. The space cursor (`spaces.last_synced`) is NOT advanced while any
+  deferral happened, and the cursor UPDATE itself is guarded by
+  `FRESH_PUBLICATION_FENCE_ACTIVE_SQL` so an empty listing by another
+  principal cannot advance it either; the run does not emit `sync.completed`.
+  The next walk re-attempts the row; once the operator settles or recovery
+  binds the intent, the import proceeds with the bound statement.
+
+**Availability cost, by design:** a lost OR invalid acknowledgment holds
+every weaker fresh import across all spaces until the pending intent is
+settled — the reply stays `pending` indefinitely and no scheduler, journal
+or migration expires it. Recovery (`reconcilePageWriteIntent`) accepts both
+intent shapes `pages-crud.ts` reserves: a child create (one parent target)
+and a ROOT create (empty targets, `parentPageId`/`parentConfluenceId` null;
+space access re-checked for the original actor). The operator runbook is the
+only other way out (`docs/runbooks/page-write-intents.md`).

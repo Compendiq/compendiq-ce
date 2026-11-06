@@ -1,298 +1,123 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
-
-// Mock prompts module (getSystemPrompt extracted from the legacy ollama-service)
-const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a quality analyst');
-
-vi.mock('../../domains/llm/services/prompts.js', () => ({
-  getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  LANGUAGE_PRESERVATION_INSTRUCTION: '',
-}));
-
-// Mock llm-provider-resolver
-const mockResolveUsecase = vi.fn().mockResolvedValue({
-  config: {
-    providerId: 'p1',
-    baseUrl: 'http://x/v1',
-    apiKey: null,
-    authType: 'none',
-    verifySsl: true,
-    name: 'X',
-    defaultModel: 'm',
-  },
-  model: 'm',
-});
-
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
-}));
-
-// Mock openai-compatible-client (streamChat — queue + breakers wrapped inside)
-const mockStreamChatClient = vi.fn();
-
-vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
-  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-vi.mock('../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn(),
-  buildRagContext: vi.fn(),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToMarkdown: vi.fn((html: string) => html),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  getEmbeddingStatus: vi.fn(),
-  processDirtyPages: vi.fn(),
-  reEmbedAll: vi.fn(),
-  embedPage: vi.fn(),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
-}));
-
-const mockGetCachedResponse = vi.fn().mockResolvedValue(null);
-const mockSetCachedResponse = vi.fn();
-
-vi.mock('../../domains/llm/services/llm-cache.js', () => {
-  class MockLlmCache {
-    getCachedResponse = mockGetCachedResponse;
-    setCachedResponse = mockSetCachedResponse;
-    acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
-    releaseLock = vi.fn().mockResolvedValue(undefined);
-    waitForCachedResponse = vi.fn().mockResolvedValue(null);
-    clearAll = vi.fn();
-  }
-  return {
-    LlmCache: MockLlmCache,
-    buildLlmCacheKey: vi.fn().mockReturnValue('test-cache-key'),
-    buildRagCacheKey: vi.fn(),
-  };
-});
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn(),
-}));
-
-vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
-}));
-
+import { createClient, type RedisClientType } from 'redis';
+import { isDbAvailable, setupTestDb, truncateAllTables, teardownTestDb } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
+import { getSystemPrompt } from '../../domains/llm/services/prompts.js';
 import { llmQualityRoutes } from './llm-quality.js';
 
-describe('POST /api/llm/analyze-quality', () => {
+const available = await isDbAvailable() && await isRedisAvailable();
+describe.skipIf(!available)('POST /api/llm/analyze-quality — real article and provider', () => {
   let app: ReturnType<typeof Fastify>;
+  let server: Server;
+  let redis: RedisClientType;
+  let baseUrl: string;
+  let userId: string;
+  let pageId: string;
+  let permitted = true;
+  const requests: Array<{ model: string; messages: Array<{ content: string }> }> = [];
+  const content = '<p>This is a test article with some content.</p>';
+  const send = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/llm/analyze-quality', payload });
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    // Decorate with mock auth and redis
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'test-user-123';
-      // Grant all permissions; individual tests here don't exercise RBAC.
-      request.userCan = async () => true;
+    await setupTestDb();
+    redis = createClient({ url: process.env.REDIS_URL });
+    await redis.connect();
+    setRedisClient(redis);
+    server = createServer((request, response) => {
+      let raw = '';
+      request.on('data', (chunk) => { raw += chunk; });
+      request.on('end', () => {
+        requests.push(JSON.parse(raw));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: '## Overall Quality Score: 75/100\n## Completeness: 80/100\n' } }] })}\n\ndata: [DONE]\n\n`);
+      });
     });
-
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    app = Fastify();
+    await app.register(sensible);
+    app.decorate('redis', redis);
+    app.decorate('authenticate', async (request) => {
+      request.userId = userId;
+      request.userCan = async () => permitted;
+    });
     await app.register(llmQualityRoutes, { prefix: '/api' });
-    await app.ready();
   });
-
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    requests.length = 0;
+    permitted = true;
+    userId = (await query<{ id: string }>("INSERT INTO users (username, password_hash, role) VALUES ('quality-reader', 'x', 'user') RETURNING id")).rows[0]!.id;
+    pageId = (await query<{ id: number }>(`INSERT INTO pages (title, source, visibility, created_by_user_id, owner_id, body_text)
+      VALUES ('Article', 'standalone', 'private', $1, $1, $2) RETURNING id`, [userId, content])).rows[0]!.id.toString();
+    const providerId = (await query<{ id: string }>(`INSERT INTO llm_providers (name, base_url, auth_type, default_model)
+      VALUES ('Quality', $1, 'none', 'm') RETURNING id`, [baseUrl])).rows[0]!.id;
+    await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('quality', $1, 'm')", [providerId]);
+    bumpProviderCacheVersion();
+  });
   afterAll(async () => {
     await app.close();
+    setRedisClient(null);
+    await redis.quit();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+    await teardownTestDb();
   });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetCachedResponse.mockResolvedValue(null);
+  it('rejects missing content without dispatch', async () => {
+    expect((await send({ pageId, model: 'llama3' })).statusCode).toBeGreaterThanOrEqual(400);
+    expect(requests).toHaveLength(0);
   });
-
-  it('should reject request when content is missing', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: { model: 'llama3' },
-    });
-
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-  });
-
-  it('should accept a request without model and resolve it server-side (#929)', async () => {
-    // #929: `model` is optional in the contract — the route resolves it per
-    // use-case via resolveUsecase() and ignores any body value (ADR-021).
-    async function* mockGenerator() {
-      yield { content: '## Overall Quality Score: 75/100', done: true };
-    }
-    mockStreamChatClient.mockReturnValue(mockGenerator());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: { content: '<p>Some article text</p>' },
-    });
-
-    // Not rejected for a missing model — the stream path runs instead.
+  it('resolves an omitted model server-side', async () => {
+    const response = await send({ pageId, content });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
-    // The server-resolved model ('m'), not the absent body value, is used.
-    const [, model] = mockStreamChatClient.mock.calls[0] as [unknown, string];
-    expect(model).toBe('m');
+    expect(requests[0]!.model).toBe('m');
   });
-
-  it('should return 400 when content exceeds max length', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: {
-        content: 'x'.repeat(100_001),
-        model: 'llama3',
-      },
-    });
-
+  it('rejects oversized content', async () => {
+    const response = await send({ pageId, content: 'x'.repeat(100_001), model: 'llama3' });
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.body);
-    expect(body.message).toContain('Content too large');
+    expect(response.json().message).toContain('Content too large');
+    expect(requests).toHaveLength(0);
   });
-
-  it('should stream SSE response for valid request', async () => {
-    async function* mockGenerator() {
-      yield { content: '## Overall Quality Score: 75/100\n', done: false };
-      yield { content: '## Completeness: 80/100\n', done: true };
-    }
-    mockStreamChatClient.mockReturnValue(mockGenerator());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: {
-        content: '<p>This is a test article with some content.</p>',
-        model: 'llama3',
-      },
-    });
-
+  it('streams quality SSE and ignores a caller model override', async () => {
+    const response = await send({ pageId, content, model: 'llama3' });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
-
-    // Parse SSE data lines
-    const lines = response.body.split('\n').filter((l: string) => l.startsWith('data: '));
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-
-    const firstChunk = JSON.parse(lines[0].replace('data: ', ''));
-    expect(firstChunk.content).toContain('Overall Quality Score');
+    const chunks = response.body.split('\n').filter((line) => line.startsWith('data: '));
+    expect(JSON.parse(chunks[0]!.slice(6)).content).toContain('Overall Quality Score');
+    expect(requests[0]!.model).toBe('m');
   });
-
-  it('should use the analyze_quality system prompt', async () => {
-    async function* mockGenerator() {
-      yield { content: '## Overall Quality Score: 85/100', done: true };
-    }
-    mockStreamChatClient.mockReturnValue(mockGenerator());
-
-    await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: {
-        content: '<p>Article content</p>',
-        model: 'llama3',
-      },
-    });
-
-    expect(mockGetSystemPrompt).toHaveBeenCalledWith('analyze_quality');
+  it('uses the analyze_quality system prompt', async () => {
+    expect((await send({ pageId, content })).statusCode).toBe(200);
+    expect(requests[0]!.messages[0]!.content).toBe(getSystemPrompt('analyze_quality'));
   });
-
-  it('should return cached response when available', async () => {
-    mockGetCachedResponse.mockResolvedValue({ content: '## Overall Quality Score: 90/100' });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: {
-        content: '<p>Article</p>',
-        model: 'llama3',
-      },
-    });
-
+  it('replays a cached response without a second provider call', async () => {
+    await send({ pageId, content });
+    const response = await send({ pageId, content });
     expect(response.statusCode).toBe(200);
-    const lines = response.body.split('\n').filter((l: string) => l.startsWith('data: '));
-    const data = JSON.parse(lines[0].replace('data: ', ''));
-    expect(data.cached).toBe(true);
-    expect(data.content).toContain('Overall Quality Score');
-    expect(mockStreamChatClient).not.toHaveBeenCalled();
+    const chunks = response.body.split('\n').filter((line) => line.startsWith('data: '));
+    expect(JSON.parse(chunks[0]!.slice(6))).toMatchObject({ cached: true });
+    expect(response.body).toContain('Overall Quality Score');
+    expect(requests).toHaveLength(1);
   });
-
-  it('should accept optional pageId', async () => {
-    async function* mockGenerator() {
-      yield { content: 'Analysis complete', done: true };
-    }
-    mockStreamChatClient.mockReturnValue(mockGenerator());
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: {
-        content: '<p>Article</p>',
-        model: 'llama3',
-        pageId: 'page-123',
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
+  it('requires an existing readable article; omitted and nonexistent IDs send no bytes', async () => {
+    expect((await send({ content })).statusCode).toBeGreaterThanOrEqual(400);
+    expect((await send({ pageId: 'page-123', content })).statusCode).toBe(404);
+    expect(requests).toHaveLength(0);
+    expect((await send({ pageId, content })).statusCode).toBe(200);
   });
-});
-
-// =============================================================================
-// RBAC: a principal lacking the `llm:query` grant must be 403-blocked (#896)
-// =============================================================================
-
-describe('POST /api/llm/analyze-quality - RBAC', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.decorate('authenticate', async () => {});
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
-    app.addHook('onRequest', async (request) => {
-      request.userId = 'no-perm-user';
-      // Simulate a custom role holding none of the llm:* grants.
-      request.userCan = async () => false;
-    });
-
-    await app.register(llmQualityRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  it('should return 403 when the principal lacks llm:query', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/llm/analyze-quality',
-      payload: { content: '<p>x</p>', model: 'llama3' },
-    });
-
+  it('refuses missing inference permission', async () => {
+    permitted = false;
+    const response = await send({ pageId, content });
     expect(response.statusCode).toBe(403);
-    expect(JSON.parse(response.body).message).toContain('Permission "llm:query" required');
+    expect(response.json().message).toContain('Permission "llm:query" required');
+    expect(requests).toHaveLength(0);
   });
 });

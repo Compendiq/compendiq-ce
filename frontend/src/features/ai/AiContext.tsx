@@ -241,6 +241,17 @@ interface AiContextValue {
   /** `page.version` the pending improvement was produced from — see `AiThread`. */
   diffBaseVersion: number | null;
   setDiffBaseVersion: (v: number | null) => void;
+  /**
+   * #282: the durable `llm_improvements` row behind `improvedContent`, named
+   * by the Improve stream's final frame. Apply hands THIS back to
+   * `POST /llm/improvements/:id/readmit` (`readmitImprovement`) so the text is
+   * re-admitted under its recorded provenance before it touches the article.
+   * `null` when the stream named no row — no readable page, an aborted
+   * stream, or a backend older than #282 — in which case there is nothing to
+   * re-admit against and Apply sends the text it has.
+   */
+  improvementId: string | null;
+  setImprovementId: (v: string | null) => void;
 
   // Create skill / generate state
   createSkill: CreateSkillId;
@@ -292,6 +303,12 @@ interface StreamChunk {
   /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
   layoutTokensLost?: boolean;
   /**
+   * Improve route (#282): the durable `llm_improvements` row this output was
+   * published to, on the final frame. Absent when no row was created (no
+   * readable page) — the server never fabricates one.
+   */
+  improvementId?: string;
+  /**
    * Ask route (#1105): this turn is the low-confidence refusal, not an answer.
    * Carried on the final frame beside `sources`, which on this path are the
    * closest partial matches the gate declined to use.
@@ -311,7 +328,77 @@ export interface StreamMeta {
   originalMarkdown?: string;
   /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
   layoutTokensLost?: boolean;
+  /** Improve route (#282): the durable row to re-admit before Apply. */
+  improvementId?: string;
 }
+
+/**
+ * #282 — the client half of `POST /llm/improvements/:id/readmit`.
+ *
+ * A pending improvement is REUSABLE STATE: its text sits in the thread until
+ * the user presses Apply, which may be long after the stream that produced
+ * it, under an article policy or a provider binding that has since moved.
+ * The text itself proves nothing about what it was generated under, so
+ * before it is applied the row is handed back BY REFERENCE and the server
+ * re-admits its recorded provenance — same provider at its current revision
+ * and locality, every page still at its recorded policy and content
+ * revision, still readable by this user. Only text the server has just
+ * re-proved is applied; a refusal is a decision, never an inference, and
+ * costs no provider call.
+ *
+ * Both Apply consumers (the dock's `DockDiffCard` and `/ai`'s
+ * `ImproveDiffView`) go through this one function so the two cannot drift
+ * on what a 409 or a 503 means:
+ *
+ * - `admitted` — apply `improvedMarkdown` (the row's bytes, which the caller
+ *   compares against what the user reviewed on screen).
+ * - `refused` with `retryable: false` — 409 `ai_history_not_replayable`
+ *   (the binding moved, or the row is unknown provenance) or a 404 (the row
+ *   is gone). The page is untouched and pressing Apply again cannot change
+ *   the verdict: the way forward is to run Improve again, which proves a
+ *   fresh binding.
+ * - `refused` with `retryable: true` — 503 `ai_policy_unavailable`. The
+ *   authority that would decide could not be read; says nothing about the
+ *   article. Apply again shortly.
+ *
+ * Anything else (network failure, a 5xx that is not the contract's 503, a
+ * 403) is thrown unchanged for the caller's ordinary failure handling.
+ */
+export type ReadmitImprovementResult =
+  | { outcome: 'admitted'; improvedMarkdown: string }
+  | { outcome: 'refused'; retryable: boolean };
+
+export async function readmitImprovement(improvementId: string): Promise<ReadmitImprovementResult> {
+  try {
+    const response = await apiFetch<{ improvedMarkdown: string }>(
+      `/llm/improvements/${encodeURIComponent(improvementId)}/readmit`,
+      { method: 'POST' },
+    );
+    return { outcome: 'admitted', improvedMarkdown: response.improvedMarkdown };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.statusCode === 409 || err.statusCode === 404) return { outcome: 'refused', retryable: false };
+      if (err.statusCode === 503) return { outcome: 'refused', retryable: true };
+    }
+    throw err;
+  }
+}
+
+/** The sentence both Apply consumers show for a non-retryable refusal. */
+export const IMPROVEMENT_NOT_REPLAYABLE_MESSAGE =
+  'This improvement can no longer be applied: the article’s AI policy or the provider it was generated with has changed since. Nothing was changed. Run Improve again to produce one under the current policy.';
+
+/** …and for a retryable one. */
+export const IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE =
+  'The AI policy for this article could not be checked right now, so nothing was changed. Try Apply again in a moment.';
+
+/**
+ * The row's bytes differ from the text the user reviewed. The stored copy is
+ * what the server re-proved, so the on-screen text is not applied either —
+ * the user has not seen what would land.
+ */
+export const IMPROVEMENT_TEXT_MISMATCH_MESSAGE =
+  'The stored copy of this improvement does not match the text shown here, so nothing was changed. Run Improve again.';
 
 const AiCtx = createContext<AiContextValue | null>(null);
 
@@ -354,6 +441,8 @@ interface AiThread {
    * re-run and silently overwriting someone else's edit.
    */
   diffBaseVersion: number | null;
+  /** #282: the durable row behind `improvedContent`, or null — see the context value. */
+  improvementId: string | null;
   generatedDraft: string;
   /**
    * Stamped when the thread is FILED (#1361), never by a write.
@@ -387,6 +476,7 @@ const EMPTY_THREAD: AiThread = {
   layoutTokensLost: undefined,
   diagramCode: '',
   diffBaseVersion: null,
+  improvementId: null,
   generatedDraft: '',
   identity: 0,
   loadState: 'ready',
@@ -628,7 +718,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
-    generatedDraft,
+    improvementId, generatedDraft,
     loadState, loadError, historyTruncated,
   } = activeThread;
   /**
@@ -748,6 +838,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
   );
   const setDiffBaseVersion = useCallback(
     (v: number | null) => updateThread(threadKey, () => ({ diffBaseVersion: v })),
+    [threadKey, updateThread],
+  );
+  const setImprovementId = useCallback(
+    (v: string | null) => updateThread(threadKey, () => ({ improvementId: v })),
     [threadKey, updateThread],
   );
   const setGeneratedDraft = useCallback(
@@ -1397,6 +1491,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let finalSources: Source[] = [];
     let originalMarkdown: string | undefined;
     let streamLayoutTokensLost: boolean | undefined;
+    // #282: the durable row the Improve route published to, off the final
+    // frame. Local, like the two above: committed through `onComplete` with
+    // the content it names, never ahead of it.
+    let streamImprovementId: string | undefined;
     // #1119: the #1105 refusal verdict, read off the final frame. Local rather
     // than state because it is committed with the content in one update below.
     let refusedTurn = false;
@@ -1525,6 +1623,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.layoutTokensLost !== undefined) {
           streamLayoutTokensLost = chunk.layoutTokensLost;
         }
+        if (typeof chunk.improvementId === 'string' && chunk.improvementId) {
+          streamImprovementId = chunk.improvementId;
+        }
       }
       if (streamError) {
         // In-band SSE error events (HTTP 200 already established — the common
@@ -1562,8 +1663,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
       opts?.onComplete?.(
         accumulated,
         finalSources.length > 0 ? finalSources : undefined,
-        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined
-          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost }
+        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined || streamImprovementId !== undefined
+          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost, improvementId: streamImprovementId }
           : undefined,
       );
     } catch (err) {
@@ -1686,6 +1787,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setLayoutTokensLost,
     diffBaseVersion,
     setDiffBaseVersion,
+    improvementId,
+    setImprovementId,
     createSkill,
     setCreateSkill,
     generatedDraft,

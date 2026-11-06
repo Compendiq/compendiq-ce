@@ -1452,13 +1452,20 @@ describe('PagesPage', () => {
       expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
     });
 
+    /** The banner copy is the thing under test here, not the typing/mode
+     *  gesture, so each sample renders straight at the supported semantic
+     *  deep link instead of walking through the 300ms search debounce. */
+    function renderSemanticDeepLink() {
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=semantic&search=runbook']) });
+    }
+
     it('degraded banner never claims 0% or the threshold value at the edges (review r1)', async () => {
       // 0.0033 coverage must not render "only 0%" (that state is the sibling
       // zero-embeddings banner's), and 0.949 must not render "95%" — the copy
       // would contradict the <95% threshold that made it degraded.
       vi.restoreAllMocks();
       mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.0033, degradedReason: 'partial_embeddings' });
-      renderSemanticSearch();
+      renderSemanticDeepLink();
       const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
       expect(banner).toHaveTextContent('less than 1%');
       expect(banner).not.toHaveTextContent('only 0%');
@@ -1466,7 +1473,7 @@ describe('PagesPage', () => {
 
       vi.restoreAllMocks();
       mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.949, degradedReason: 'partial_embeddings' });
-      renderSemanticSearch();
+      renderSemanticDeepLink();
       const banner2 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
       expect(banner2).toHaveTextContent('94%');
       expect(banner2).not.toHaveTextContent('95%');
@@ -1476,7 +1483,7 @@ describe('PagesPage', () => {
       // in binary floating point (review r2).
       vi.restoreAllMocks();
       mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.29, degradedReason: 'partial_embeddings' });
-      renderSemanticSearch();
+      renderSemanticDeepLink();
       const banner3 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
       expect(banner3).toHaveTextContent('29%');
     });
@@ -2602,13 +2609,9 @@ describe('PagesPage', () => {
     it('semantic-mode pagination chevrons expose Previous/Next accessible names', async () => {
       vi.restoreAllMocks();
       mockFetchWithMultiplePages(3);
-      render(<PagesPage />, { wrapper: createWrapper() });
-
-      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
-        target: { value: 'kubernetes' },
-      });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      // The chevrons' names are under test, not the typing gesture: render at
+      // the supported semantic deep link rather than through the debounce.
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=semantic&search=kubernetes']) });
 
       expect(
         await screen.findByRole('button', { name: /previous page/i }, { timeout: 2000 }),

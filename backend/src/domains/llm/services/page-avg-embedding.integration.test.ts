@@ -45,28 +45,6 @@ vi.mock('./openai-compatible-client.js', async () => {
   };
 });
 
-// Provider resolver: skip the real DB lookup — the client mock ignores config.
-vi.mock('./llm-provider-resolver.js', async () => {
-  const actual = await vi.importActual<typeof import('./llm-provider-resolver.js')>(
-    './llm-provider-resolver.js',
-  );
-  return {
-    ...actual,
-    resolveUsecase: vi.fn(async () => ({
-      config: {
-        providerId: 'test-provider',
-        id: 'test-provider',
-        name: 'Test',
-        baseUrl: 'http://localhost:0/v1',
-        apiKey: null,
-        authType: 'none' as const,
-        verifySsl: false,
-        defaultModel: 'bge-m3',
-      },
-      model: 'bge-m3',
-    })),
-  };
-});
 
 import {
   setupTestDb,
@@ -112,6 +90,9 @@ describe.skipIf(!dbAvailable)('page_avg_embedding materialization + indexed kNN 
     await truncateAllTables();
     cap.vectors = [];
     cap.counter = 0;
+    await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, is_default, default_model) VALUES ('Test', 'http://localhost:0/v1', TRUE, 'bge-m3') RETURNING id::text`,
+    );
   });
 
   it('embedPage stores the elementwise average of the page chunk vectors', async () => {
@@ -122,6 +103,7 @@ describe.skipIf(!dbAvailable)('page_avg_embedding materialization + indexed kNN 
     const bodyHtml = para.repeat(6);
     await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, bodyHtml]);
 
+    await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, bodyHtml]);
     const chunks = await embedPage('test-user', pageId, 'Averaged Page', 'DEV', bodyHtml);
 
     // Sanity: the provider was asked to embed >1 chunk so averaging matters.

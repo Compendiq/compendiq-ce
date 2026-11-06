@@ -31,6 +31,7 @@ import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
+import { inlineArticlePolicy } from '../../shared/lib/article-ai-policy';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { Editor, EditorToolbar, EditorContextToolbars } from '../../shared/components/article/Editor';
 import { clearDraft, pageDraftKey, readDraft } from '../../shared/lib/editor-drafts';
@@ -1433,6 +1434,8 @@ export function PageViewPage() {
                     collabProvider={collabLive ? collab.provider : undefined}
                     caretUser={collabLive ? caretUser : undefined}
                     inlineCompletion={{
+                      ...inlineArticlePolicy(isError ? undefined : page),
+                      articlePermission: !isError && page.canMutateContent === true && editorWritable,
                       available: inlineCompletionAvailable,
                       enabled: settings?.inlineCompletionEnabled ?? true,
                       delay: settings?.inlineCompletionDelay ?? 'balanced',

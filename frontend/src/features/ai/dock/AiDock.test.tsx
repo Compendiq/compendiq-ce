@@ -87,7 +87,7 @@ function renderDock(
   const { initialEntry = '/pages/page-1', onClose = () => {} } =
     typeof opts === 'string' ? { initialEntry: opts } : opts;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <LazyMotion features={domAnimation}>
         <MemoryRouter initialEntries={[initialEntry]}>
@@ -104,6 +104,7 @@ function renderDock(
       </LazyMotion>
     </QueryClientProvider>,
   );
+  return { ...view, unmount: () => { view.unmount(); queryClient.clear(); } };
 }
 
 /** Open the dock and wait until it has a model, i.e. until Send can run. */
@@ -260,19 +261,44 @@ describe('AiDock (#1126)', () => {
   // The core of "one thread, four chips". runStream used to `setMessages([...])`
   // for every seeded turn, so each chip wiped the conversation it landed in.
   it('appends chip turns to one continuous thread instead of replacing it', async () => {
-    renderDock();
-    await openAndSettle();
+    streamSSEMock
+      .mockImplementationOnce(() => sse({ content: 'First completed answer.' }, { final: true, done: true }))
+      .mockImplementationOnce(() => sse({ content: 'Second completed answer.' }, { final: true, done: true }));
+    const { unmount } = renderDock();
+    try {
+      await openAndSettle();
 
-    fireEvent.change(composer(), { target: { value: 'what does this cover?' } });
-    fireEvent.keyDown(composer(), { key: 'Enter' });
-    expect(await screen.findByText('what does this cover?')).toBeInTheDocument();
+      fireEvent.change(composer(), { target: { value: 'what does this cover?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      // The user bubble is seeded before runStream awaits the iterator. It
+      // does not mean the disabled Radix selector can accept another action.
+      await waitFor(() => {
+        expect(screen.getByText('First completed answer.')).toBeInTheDocument();
+        expect(screen.queryByTestId('ai-dock-streaming')).not.toBeInTheDocument();
+        expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled();
+        expect(composer()).not.toBeDisabled();
+      });
 
-    await selectDockAction('diagram');
-    fireEvent.click(screen.getByTestId('ai-dock-send'));
+      await selectDockAction('diagram');
+      expect(screen.getByTestId('ai-dock-send')).not.toBeDisabled();
+      fireEvent.click(screen.getByTestId('ai-dock-send'));
 
-    expect(await screen.findByText('Draw a flowchart diagram of this page.')).toBeInTheDocument();
-    // The earlier question is still there — that is the whole fix.
-    expect(screen.getByText('what does this cover?')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText('Second completed answer.')).toBeInTheDocument();
+        expect(screen.queryByTestId('ai-dock-streaming')).not.toBeInTheDocument();
+        expect(screen.getByTestId('assistant-action-select')).not.toBeDisabled();
+      });
+      const thread = screen.getByTestId('ai-dock-thread');
+      expect(thread).toHaveTextContent('what does this cover?');
+      expect(thread).toHaveTextContent('First completed answer.');
+      expect(thread).toHaveTextContent('Draw a flowchart diagram of this page.');
+      expect(thread).toHaveTextContent('Second completed answer.');
+      expect(streamSSEMock.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+        '/llm/ask', '/llm/generate-diagram',
+      ]);
+    } finally {
+      unmount();
+    }
   });
 
   it('sends the composer text as Improve instructions and shows the user their own words', async () => {
@@ -371,6 +397,19 @@ describe('AiDock (#1126)', () => {
 
       expect(screen.getByTestId('ai-dock-deep-search')).not.toBeChecked();
       expect(await askDock('where is the PAT setting?')).not.toHaveProperty('deepSearch');
+    });
+
+    // #282: a question typed beside an article is declared page-bound so the
+    // backend admits THAT article before it reads the question. The dock is
+    // never mounted without a page, but a route without one (`/ai`) would be
+    // the user's own question.
+    it('declares the open article as the question’s input', async () => {
+      renderDock();
+      await openAndSettle();
+
+      expect(await askDock('is the PAT step still right?')).toMatchObject({
+        inputKind: 'page', pageId: 'page-1',
+      });
     });
 
     // NON-STICKINESS TEST 1 — must not survive a SEND.

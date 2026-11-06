@@ -505,8 +505,16 @@ export function ArticleRightPane({
   // Keep local note/reply drafts across tab switches; the page key resets them on navigation.
   const [detailsMounted, setDetailsMounted] = useState(() => activeInspectorView === 'details');
 
+  const notesScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
+    notesScrollTimer.current = null;
+  }, [id]);
+
   const scrollToNotesSection = useCallback(() => {
-    setTimeout(() => {
+    if (notesScrollTimer.current !== null) clearTimeout(notesScrollTimer.current);
+    notesScrollTimer.current = setTimeout(() => {
+      notesScrollTimer.current = null;
       const el = document.getElementById('details-notes-section');
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);

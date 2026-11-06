@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ImageAnalysisIdentitySchema } from './image-analysis.js';
+import { ProviderLocalitySchema } from './schemas/ai-policy.js';
 
 // ─── Use-cases (#1104 adds 'rerank' — see ADR-021 amendment: it targets a
 // /v1/rerank endpoint via a dedicated client, and UNASSIGNED means the
@@ -32,6 +33,13 @@ export const LlmProviderInputSchema = z.object({
   authType: LlmAuthTypeSchema,
   verifySsl: z.boolean(),
   defaultModel: z.string().trim().min(1).max(200).nullable().optional(),
+  /**
+   * #280 — provider locality declared by the admin together with the
+   * endpoint. Omitted means `external` (never `local` by default). A `local`
+   * declaration is bound to the configuration revision the write produces;
+   * any later endpoint edit invalidates it until it is re-declared.
+   */
+  locality: ProviderLocalitySchema.optional(),
 });
 export type LlmProviderInput = z.infer<typeof LlmProviderInputSchema>;
 
@@ -50,6 +58,13 @@ export const LlmProviderSchema = z.object({
   keyPreview: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** #280 — declared locality and the configuration revision it was declared against. */
+  locality: ProviderLocalitySchema,
+  configRevision: z.number().int().nonnegative(),
+  localityDeclaredAt: z.string().nullable(),
+  localityDeclaredBy: z.string().nullable(),
+  /** `locality = 'local'` AND declared against the CURRENT config revision. */
+  localConfirmed: z.boolean(),
 });
 export type LlmProvider = z.infer<typeof LlmProviderSchema>;
 

@@ -70,7 +70,7 @@ import {
   syncTableLayoutAttributes,
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
-import { InlineCompletionExtension } from './InlineCompletionExtension';
+import { InlineCompletionExtension, inlineCompletionPluginKey } from './InlineCompletionExtension';
 import { SpellcheckExtension } from './SpellcheckExtension';
 import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
 import { beginDraftEdit, persistDraft, type PendingDraft } from '../../lib/editor-drafts';
@@ -351,6 +351,9 @@ interface EditorProps {
   onSave?: () => void;
   /** #1417: resolved availability, personal controls, and page prompt metadata. */
   inlineCompletion?: {
+    articlePolicy?: import('@compendiq/contracts').AiPolicy;
+    articlePolicyRevision?: number;
+    articlePermission?: boolean;
     available: boolean;
     enabled: boolean;
     delay: InlineCompletionDelay;
@@ -889,7 +892,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       InlineCompletionExtension.configure({
         enabled: () => {
           const config = inlineCompletionRef.current;
-          if (editorRef.current?.isEditable !== true || !config?.enabled) return false;
+          if (editorRef.current?.isEditable !== true || !config?.enabled
+            || config.articlePermission !== true
+            || (config.articlePolicy !== 'all' && config.articlePolicy !== 'local_only')
+            || !Number.isSafeInteger(config.articlePolicyRevision)
+            || !pageIdRef.current) return false;
           return getClientInferenceManager().decideGhostAvailability(
             !!config.available,
             config.clientInferenceWithoutServer ?? true,
@@ -1076,6 +1083,51 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       editor.setEditable(editable, false);
     }
   }, [editor, editable]);
+
+  // Clear only ambient AI state, never the document, selection or draft.
+  useLayoutEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dispatch(editor.state.tr.setMeta(inlineCompletionPluginKey, { type: 'clear' }));
+  }, [editor, pageId, editable, inlineCompletion?.articlePolicy,
+    inlineCompletion?.articlePolicyRevision, inlineCompletion?.articlePermission,
+    inlineCompletion?.enabled, inlineCompletion?.available]);
+
+  useEffect(() => {
+    const clear = () => {
+      if (!editor || editor.isDestroyed) return;
+      editor.view.dispatch(editor.state.tr.setMeta(inlineCompletionPluginKey, { type: 'clear' }));
+    };
+    window.addEventListener('offline', clear);
+    return () => window.removeEventListener('offline', clear);
+  }, [editor]);
+
+  // Revalidate ambient AI only. A readable page is not llm:query authority.
+  // Poll while a request or ghost exists, and on focus; never mutate authored text.
+  useEffect(() => {
+    if (!editor || !pageId || !inlineCompletion?.enabled) return;
+    const controller = new AbortController();
+    let checking = false;
+    const check = async () => {
+      if (checking || editor.isDestroyed || controller.signal.aborted) return;
+      const state = inlineCompletionPluginKey.getState(editor.state);
+      if (!state?.loading && !state?.activeSuggestion) return;
+      checking = true;
+      try {
+        const revision = await getClientInferenceManager().articleRevision(Number(pageId), controller.signal);
+        if (!controller.signal.aborted && !editor.isDestroyed
+          && (revision === null || revision !== inlineCompletionRef.current?.articlePolicyRevision)) {
+          editor.view.dispatch(editor.state.tr.setMeta(inlineCompletionPluginKey, { type: 'clear' }));
+        }
+      } finally { checking = false; }
+    };
+    const timer = setInterval(() => void check(), 1000);
+    window.addEventListener('focus', check);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+      window.removeEventListener('focus', check);
+    };
+  }, [editor, pageId, inlineCompletion?.enabled]);
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {

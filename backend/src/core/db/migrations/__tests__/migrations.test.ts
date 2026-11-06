@@ -265,6 +265,30 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     });
   });
 
+  describe('llm_improvements durable provenance (migration 150, #282)', () => {
+    it('applies 150_direct_output_provenance.sql and adds the three provenance columns, unknown by default', async () => {
+      const applied = await query<{ name: string }>(
+        "SELECT name FROM _migrations WHERE name = '150_direct_output_provenance.sql'",
+      );
+      expect(applied.rows).toHaveLength(1);
+
+      const cols = await query<{ column_name: string; data_type: string; is_nullable: string; column_default: string | null }>(
+        `SELECT column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+         WHERE table_name = 'llm_improvements'
+           AND column_name IN ('ai_provenance', 'ai_provenance_complete', 'ai_provenance_version')`,
+      );
+      const byName = Object.fromEntries(cols.rows.map((r) => [r.column_name, r]));
+      expect(byName.ai_provenance?.data_type).toBe('jsonb');
+      expect(byName.ai_provenance?.is_nullable).toBe('YES');
+      expect(byName.ai_provenance_complete?.data_type).toBe('boolean');
+      expect(byName.ai_provenance_complete?.is_nullable).toBe('NO');
+      expect(byName.ai_provenance_complete?.column_default).toBe('false');
+      expect(byName.ai_provenance_version?.data_type).toBe('integer');
+      expect(byName.ai_provenance_version?.is_nullable).toBe('YES');
+    });
+  });
+
   describe('extensions', () => {
     it('should have pgvector extension', async () => {
       const result = await query<{ extname: string }>(

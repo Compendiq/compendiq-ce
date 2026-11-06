@@ -4,17 +4,25 @@ import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
 } from './page-baselines.js';
+import { AiPolicyInputSchema, PageAiPolicyDetailFieldsSchema } from './ai-policy.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
 
-export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
+/**
+ * Worker stage statuses. `policy_blocked` is the article-AI-policy outcome
+ * (#281, migration 135): the stage was refused by the page's `aiPolicy` or by
+ * provider locality and is NOT a failure to retry — the reason sits in
+ * `ai_policy_block_reason`. Every status CHECK on `pages` admits it, so the
+ * wire enums must too or a blocked page cannot be parsed at all.
+ */
+export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed', 'policy_blocked']);
 export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 
-export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']);
+export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped', 'policy_blocked']);
 export type PageQualityStatus = z.infer<typeof PageQualityStatusEnum>;
 
-export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped']);
+export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped', 'policy_blocked']);
 export type PageSummaryStatus = z.infer<typeof PageSummaryStatusEnum>;
 
 export const PageSourceEnum = z.enum(['confluence', 'standalone']);
@@ -152,6 +160,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
     baselineId: true,
     frozenVersion: true,
   }).shape,
+  /** Article AI policy (#280): `aiPolicy`, `aiPolicyRevision`, `canChangeAiPolicy`, `aiPolicyActivation`. */
+  ...PageAiPolicyDetailFieldsSchema.shape,
 });
 
 export const CreatePageSchema = z.object({
@@ -172,6 +182,12 @@ export const CreatePageSchema = z.object({
    * Bounds mirror the Markdown-import route the front-matter comes from.
    */
   labels: z.array(z.string().min(1).max(100)).max(50).optional(),
+  /**
+   * Explicit article AI policy at creation (#280). Stored in the same
+   * transaction as the row; never looser than what `labels` spell out.
+   * `no_ai` is accepted as an input alias of `none`.
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
 });
 
 export const UpdatePageSchema = z.object({
@@ -179,7 +195,24 @@ export const UpdatePageSchema = z.object({
   bodyHtml: z.string(),
   version: z.number().int().positive().optional(),
   visibility: PageVisibilityEnum.optional(),
+  /**
+   * Explicit article AI policy change applied in the same transaction as the
+   * content write (#280). Requires policy authority. `expectedRevision` is the
+   * frozen compare-and-set key shared with `PUT /pages/:id/ai-policy`
+   * (`aiPolicyRevision` from the page detail) and is REQUIRED whenever
+   * `aiPolicy` is sent — a stale value is 409 `ai_policy_conflict`. Sending
+   * one without the other is refused BY THE ROUTE as a 422
+   * `ai_policy_revision_required` (not a schema-shape 400), so the pairing
+   * is not enforced here; `isAiPolicyUpdatePaired` is the shared predicate.
+   */
+  aiPolicy: AiPolicyInputSchema.optional(),
+  expectedRevision: z.number().int().nonnegative().optional(),
 });
+
+/** True when `aiPolicy` and `expectedRevision` are both present or both absent. */
+export function isAiPolicyUpdatePaired(value: { aiPolicy?: unknown; expectedRevision?: unknown }): boolean {
+  return (value.aiPolicy === undefined) === (value.expectedRevision === undefined);
+}
 
 /**
  * Body for POST /api/pages/:id/versions/:version/restore.
@@ -240,7 +273,7 @@ export const PageListQuerySchema = z.object({
   embeddingStatus: z.enum(['pending', 'done']).optional(),
   qualityMin: z.coerce.number().int().min(0).max(100).optional(),
   qualityMax: z.coerce.number().int().min(0).max(100).optional(),
-  qualityStatus: z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']).optional(),
+  qualityStatus: PageQualityStatusEnum.optional(),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional(),
   dateFrom: z.string().optional(), // ISO date string

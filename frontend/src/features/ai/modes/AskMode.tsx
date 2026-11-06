@@ -189,7 +189,11 @@ function AskModeInputContent() {
       question,
       model,
       conversationId: conversationId ?? undefined,
-      pageId: pageId ?? undefined,
+      // #282: say what the question is about. A question composed beside an
+      // open article may quote it, so the backend admits that article before
+      // it reads the question; with no article open the question is declared
+      // the user's own. The backend refuses a body that says neither.
+      ...(pageId ? { inputKind: 'page', pageId } : { inputKind: 'independent' }),
       includeSubPages,
       ...(thinkingMode && { thinking: true }),
       // Same shape as `thinking` above: omitted entirely when off, so an

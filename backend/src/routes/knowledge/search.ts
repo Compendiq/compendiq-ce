@@ -142,7 +142,7 @@ async function generateSearchEmbedding(
     // file, so neither half can be added or dropped unnoticed — and dropping
     // the wrapper here while leaving the import behind is red, not green.
     const embeddings = await generateEmbedding(
-      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
+      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q), { kind: 'non_article', purpose: 'user_query' },
     );
     const embedding = embeddings[0];
     // `!embedding` alone would miss a zero-length inner vector ([[]]) — an
@@ -319,7 +319,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // the matching note on vectorSearch. Previously this call ignored
       // `spaceKey` entirely, so a user scoping semantic search to one space
       // silently got answers from the whole accessible corpus.
-      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey });
+      // #282: a page-search surface is read by a PERSON — the article AI
+      // policy does not filter authored text here (a `none` page's derived
+      // image text still never surfaces). Declared explicitly, because the
+      // default is the strictest AI reading.
+      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey, aiPolicy: { purpose: 'human' } });
 
       // Deduplicate by pageId (take best chunk per page). The wider fetch is
       // ranking headroom, not a bigger response: authorize the WHOLE deduped
@@ -410,6 +414,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
         deduped = await hybridSearch(userId, q, candidatePool, cov, {
           spaceKey,
+          // #282: human-read surface — see the semantic branch's note.
+          aiPolicy: { purpose: 'human' },
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: (meta) => {
