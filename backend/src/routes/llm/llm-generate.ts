@@ -163,7 +163,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
-    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken, aborted } = await checkCacheWithLock(llmCache, cacheKey, { request, reply });
+    if (aborted) return;
     if (cached) {
       sendCachedSSE(reply, cached.content);
       return;
@@ -182,9 +183,15 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, generateMessages, undefined, { thinking: body.thinking });
+      const generator = (signal: AbortSignal) =>
+        streamChat(chatConfig, resolvedModel, generateMessages, signal, { thinking: body.thinking });
 
-      const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
+      let streamFailed = false;
+      let streamError: unknown;
+      const accumulated = await streamSSE(request, reply, generator, genExtras, {
+        llmCache, cacheKey, lockToken, postProcess,
+        onStreamError: (error) => { streamFailed = true; streamError = error; },
+      });
 
       emitLlmAudit({
         userId,
@@ -197,7 +204,10 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         promptHash: fingerprintPrompt(generateMessages),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
-        status: 'success',
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
+          ? { errorMessage: streamError instanceof Error ? streamError.message : String(streamError) }
+          : {}),
         promptInjectionDetected,
         sanitized: wasSanitized,
       });
@@ -218,6 +228,13 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         promptInjectionDetected,
         sanitized: wasSanitized,
       });
+      if (reply.raw.headersSent) {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+          reply.raw.end();
+        }
+        return;
+      }
       throw err;
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
