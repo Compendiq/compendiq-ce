@@ -49,6 +49,14 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/POST /api/notifications/*` | User notifications |
 | `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
+`GET /api/pages/:id/duplicates` accepts a standalone page's internal numeric ID
+or a Confluence page's content ID. Both the source and candidates use the
+caller's page visibility, including restrictions; inaccessible, deleted,
+missing, or visibly ambiguous sources return an empty `duplicates` array.
+Standalone rows' historical Confluence IDs are not source identifiers.
+`GET /api/admin/duplicates` scans the same caller-visible corpus, but its
+pair cap and average-to-average scoring differ from the per-page candidate scan.
+
 ## Example Requests
 
 ### Health Check
@@ -132,6 +140,13 @@ curl -X POST http://localhost:3051/api/auth/refresh \
 curl http://localhost:3051/api/pages \
   -H "Authorization: Bearer <access-token>"
 ```
+
+The optional `visibility=private` or `visibility=shared` query parameter
+narrows the caller-visible rows by their stored visibility, including
+Confluence rows. It applies to the total and to search's substring fallback as
+well as the returned items. Omitting it leaves visibility unfiltered; access
+rules still apply in every case. Filter-based bulk selection uses the same
+visibility condition.
 
 ### Get a Page
 

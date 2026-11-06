@@ -408,6 +408,18 @@ jobs:
     defaults:
       run:
         working-directory: mcp-docs
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MCP_DOCS_TEST_REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 

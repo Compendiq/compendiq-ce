@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
+import { rootCertificates } from 'tls';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { logger } from './logger.js';
 import { unsafeDisableTlsVerification } from './unsafe-tls.js';
@@ -31,7 +32,15 @@ function loadCaBundle(): string | undefined {
       const contents = readFileSync(caPath, 'utf-8');
       if (contents.includes('-----BEGIN CERTIFICATE-----')) {
         logger.info({ caPath, size: contents.length }, 'LLM: Loaded custom CA bundle from NODE_EXTRA_CA_CERTS');
-        return contents;
+        // Explicit `ca` replaces Node's default roots; retain those and the
+        // image's system trust alongside the supplied private CA.
+        const systemPaths = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'];
+        let systemBundle = '';
+        for (const path of systemPaths) {
+          if (path === caPath || !existsSync(path)) continue;
+          try { systemBundle = readFileSync(path, 'utf-8'); break; } catch { /* Try the next system path. */ }
+        }
+        return [...rootCertificates, systemBundle, contents].join('\n');
       }
       logger.warn({ caPath }, 'LLM: CA bundle file exists but contains no PEM certificates');
     } catch (err) {
