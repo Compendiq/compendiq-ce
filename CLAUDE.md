@@ -10,6 +10,10 @@ Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
 
+Local space settings distinguish unresolved and failed list reads from an
+authoritative missing key. A failed refetch retains the cached form and its
+unsaved edits; keep form seeding once per space key, not per query result.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
