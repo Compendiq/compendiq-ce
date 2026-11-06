@@ -1,8 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { shouldRetry, createQueryClient } from './query-client';
-import { ApiError } from './api';
+import { ApiError, RefreshUnavailableError } from './api';
 
 describe('shouldRetry', () => {
+  it('does not retry an indeterminate refresh even though its status is 503', () => {
+    expect(shouldRetry(0, new RefreshUnavailableError())).toBe(false);
+  });
+
+  it('keeps marked busy refresh failures retry-safe within the normal limit', () => {
+    expect(shouldRetry(0, new RefreshUnavailableError(true))).toBe(true);
+    expect(shouldRetry(2, new RefreshUnavailableError(true))).toBe(false);
+  });
+
   it('returns false for 401 ApiError (unauthorized)', () => {
     const error = new ApiError(401, 'Session expired');
     expect(shouldRetry(0, error)).toBe(false);

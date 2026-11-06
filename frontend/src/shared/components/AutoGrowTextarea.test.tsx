@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { useState } from 'react';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 
@@ -51,6 +51,49 @@ describe('AutoGrowTextarea', () => {
     // The value is intact and readable — an <input> would render the same value
     // but show only the leading ~58 characters with no ellipsis.
     expect(screen.getByTestId('field')).toHaveValue(long);
+  });
+
+  it('remeasures on width and value changes, ignores height-only notifications and disconnects', () => {
+    const original = globalThis.ResizeObserver;
+    let notify: ResizeObserverCallback;
+    const disconnect = vi.fn();
+    const observe = vi.fn();
+    class Observer {
+      constructor(callback: ResizeObserverCallback) { notify = callback; }
+      observe = observe;
+      disconnect = disconnect;
+    }
+    globalThis.ResizeObserver = Observer as unknown as typeof ResizeObserver;
+    let width = 600;
+    let height = 80;
+    const widthGetter = vi.spyOn(HTMLTextAreaElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
+    const heightGetter = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height);
+    try {
+      const { unmount } = render(<Harness initial="A long title" />);
+      const el = screen.getByTestId('field');
+      expect(observe).toHaveBeenCalledWith(el);
+      expect(el.style.height).toBe('80px');
+      width = 300;
+      height = 160;
+      act(() => notify([], {} as ResizeObserver));
+      expect(el.style.height).toBe('160px');
+      const reads = heightGetter.mock.calls.length;
+      act(() => notify([], {} as ResizeObserver));
+      expect(heightGetter).toHaveBeenCalledTimes(reads);
+      width = 600;
+      height = 80;
+      act(() => notify([], {} as ResizeObserver));
+      expect(el.style.height).toBe('80px');
+      height = 40;
+      fireEvent.change(el, { target: { value: 'Short' } });
+      expect(el.style.height).toBe('40px');
+      unmount();
+      expect(disconnect).toHaveBeenCalledOnce();
+    } finally {
+      widthGetter.mockRestore();
+      heightGetter.mockRestore();
+      globalThis.ResizeObserver = original;
+    }
   });
 
   describe('Enter', () => {

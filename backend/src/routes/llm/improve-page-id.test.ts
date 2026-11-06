@@ -70,6 +70,11 @@ describe.skipIf(!available)('Improve page identity and persisted results', () =>
     expect(response.body).toContain('cached improved markdown');
     expect(fixture.requests).toHaveLength(1);
   });
+  it('does not leave an empty successful stream stuck in streaming', async () => {
+    fixture.output = '';
+    expect((await post()).statusCode).toBe(200);
+    expect((await improvements()).rows).toEqual([expect.objectContaining({ improved_content: '', status: 'cancelled' })]);
+  });
   it('missing mandatory identity creates no improvement and sends no bytes', async () => {
     expect((await post({ pageId: undefined })).statusCode).toBeGreaterThanOrEqual(400);
     expect((await improvements()).rows).toHaveLength(0);

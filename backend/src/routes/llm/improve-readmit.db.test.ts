@@ -126,7 +126,7 @@ describe.skipIf(!available)('POST /llm/improvements/:id/readmit re-admits a stor
     expect(response.statusCode).toBe(200);
     const { id } = (await query<{ id: string; status: string }>('SELECT id, status FROM llm_improvements')).rows[0]!;
     expect((await query('SELECT status, ai_provenance_complete FROM llm_improvements WHERE id = $1', [id])).rows[0])
-      .toEqual({ status: 'streaming', ai_provenance_complete: false });
+      .toEqual({ status: 'cancelled', ai_provenance_complete: false });
 
     const refused = await readmit(id);
     expect(refused.statusCode).toBe(409);

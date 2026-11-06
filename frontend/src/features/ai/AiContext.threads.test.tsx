@@ -1193,7 +1193,7 @@ describe('AiContext conversation state machine (#1361)', () => {
     });
     expect(screen.getByTestId('conversation-id')).toHaveTextContent('c-1');
     expect(screen.getByTestId('load-state')).toHaveTextContent('ready');
-    // Opening loads, never sends (#1176), and sets the action to Q&A…
+    // Opening loads, never sends (#1176), and sets the action to Q&A.
     expect(screen.getByTestId('mode')).toHaveTextContent('ask');
 
     // The draft it was fetched next to is untouched.

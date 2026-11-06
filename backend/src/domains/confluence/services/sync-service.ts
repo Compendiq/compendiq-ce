@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../../core/services/ai-policy-deferred-ingestion.js';
 import { randomUUID } from 'node:crypto';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { query, getPool } from '../../../core/db/postgres.js';
 import {
   ConfluenceClient,
@@ -50,6 +51,7 @@ import {
   admitAutomaticIngestionPolicy,
 } from '../../../core/services/ai-policy-ingestion.js';
 import { lockAiPolicyForPages, applyCanonicalAiPolicyLabel, policyFromLabels, purgeDerivedAiState, type AiPolicy } from '../../../core/services/ai-policy-service.js';
+
 
 interface SyncStatus {
   userId: string;
@@ -563,7 +565,7 @@ async function syncSpace(
   // that weren't in the modified list. This catches pages whose content
   // was synced previously but attachment downloads failed.
   if (lastSynced && (Date.now() - lastSynced.getTime()) < 24 * 60 * 60 * 1000) {
-    await syncMissingAttachments(client, userId, spaceKey);
+    await syncMissingAttachments(client, userId, spaceKey, syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
   }
 
   // Reconcile pages deleted in Confluence (#706). Runs on every sync — including
@@ -669,7 +671,7 @@ async function syncPage(
   client: ConfluenceClient,
   userId: string,
   spaceKey: string,
-  pageSummary: ConfluencePage,
+  pageSummary: Pick<ConfluencePage, 'id'>,
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   counts: SyncSpaceCounts,
@@ -704,9 +706,11 @@ async function syncPage(
   }
   const bodyStorage = page.body?.storage?.value ?? '';
 
-  // Convert to HTML
-  const bodyHtml = confluenceToHtml(bodyStorage, page.id, spaceKey);
-  const bodyText = htmlToText(bodyHtml);
+  // Resolve previews against cached bytes rather than the attachment name.
+  const convertedHtml = confluenceToHtml(bodyStorage, page.id, spaceKey);
+  let preview = await materializeDrawioPreviews(convertedHtml, page.id);
+  let bodyHtml = preview.html;
+  let bodyText = htmlToText(bodyHtml);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
@@ -780,34 +784,14 @@ async function syncPage(
   });
 
   if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
-    const existingRow = existing.rows[0]!;
-    const htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
-
-    // Labels and deferred policy intent are independent of body/version drift.
-    // The held-client publisher must run even when attachments and text are current.
-    await applyConflictPolicyForExistingPage({
-      userId, confluenceId: page.id, confluenceVersion: page.version.number,
-      pageDbTitle: page.title, bodyStorage, bodyHtml, bodyText, parentId,
-      labels, author, lastModified, syncRunId, counts,
-    });
-
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
     // Compare expected filenames (from XHTML) against files on disk, per-file.
-    const missing = await getMissingAttachments(page.id, bodyStorage, spaceKey);
-    if (missing.length === 0 && !htmlChanged) {
-      // Content + attachments both fully up to date. Still re-evaluate the
-      // Confluence-side view restrictions: they can change independently of
-      // page content (an admin adds/removes a user from the read list
-      // without editing the page), and the conditional-fetch optimization
-      // from the plan is not wired (see §1.4 TODO below). `syncPageRestrictions`
-      // is a no-op when the feature flag is disabled, so CE builds pay zero
-      // extra cost here.
-      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
-      return;
-    }
+    const missing = (await getMissingAttachments(page.id, bodyStorage, spaceKey))
+      .filter((filename) => !preview.missing.includes(filename));
+    const diagramMissing = preview.missing.length > 0 || preview.missingSources.length > 0;
 
-    if (missing.length > 0) {
+    if (missing.length > 0 || diagramMissing) {
       const redis = getRedisClient();
       // Filter out attachments that have exceeded the failure threshold
       const retriableChecks = await Promise.all(
@@ -820,16 +804,17 @@ async function syncPage(
         .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
         .map((c) => c.filename);
 
-      if (retriable.length > 0) {
-        logger.info({ pageId: page.id, missing: retriable.length }, 'Page unchanged but some attachments missing — re-syncing');
+      if (retriable.length > 0 || diagramMissing) {
+        logger.info({ pageId: page.id, missing: retriable.length, diagramMissing }, 'Page unchanged but some attachments missing — re-syncing');
         const { results: attachments } = await client.getPageAttachments(page.id);
         await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
         await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+        preview = await materializeDrawioPreviews(convertedHtml, page.id);
+        bodyHtml = preview.html;
+        bodyText = htmlToText(bodyHtml);
 
         // Track which are still missing
-        const stillMissing = new Set(
-          await getMissingAttachments(page.id, bodyStorage, spaceKey),
-        );
+        const stillMissing = new Set(await getMissingAttachments(page.id, bodyStorage, spaceKey));
         for (const f of retriable) {
           if (stillMissing.has(f)) {
             await recordAttachmentFailure(redis, page.id, f);
@@ -846,9 +831,22 @@ async function syncPage(
       }
     }
 
-    // Version-unchanged branch: still re-evaluate restrictions. See note at
-    // the earlier early-return above. Safe/cheap because `syncPageRestrictions`
-    // short-circuits on the feature flag.
+    // Labels and deferred policy intent are independent of body/version drift,
+    // so the held-client publisher runs even when attachments and text are
+    // current. It runs after the retry above so a newly downloaded draw.io
+    // source or preview is published in the same conflict-policy pass; the
+    // publisher re-tests the body under its row lock and never overwrites
+    // local edits.
+    await applyConflictPolicyForExistingPage({
+      userId, confluenceId: page.id, confluenceVersion: page.version.number,
+      pageDbTitle: page.title, bodyStorage, bodyHtml, bodyText, parentId,
+      labels, author, lastModified, syncRunId, counts,
+    });
+
+    // Version-unchanged branch: still re-evaluate restrictions. They can
+    // change independently of page content (an admin adds/removes a user
+    // from the read list without editing the page). Safe/cheap because
+    // `syncPageRestrictions` short-circuits on the feature flag.
     await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
     return;
   }
@@ -865,6 +863,9 @@ async function syncPage(
   const { results: attachments } = await client.getPageAttachments(page.id);
   await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
   await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+  preview = await materializeDrawioPreviews(convertedHtml, page.id);
+  bodyHtml = preview.html;
+  bodyText = htmlToText(bodyHtml);
 
   // Save current version snapshot before updating (for version history / semantic diff)
   if (existing.rows.length > 0) {
@@ -1716,6 +1717,11 @@ async function syncMissingAttachments(
   client: ConfluenceClient,
   userId: string,
   spaceKey: string,
+  syncRunStartedAt: Date = new Date(),
+  ancestorCache: Map<string, ConfluenceRestriction[]> = new Map(),
+  counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 },
+  syncRunId: string = 'attachment-repair',
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   const redis = getRedisClient();
 
@@ -1727,8 +1733,8 @@ async function syncMissingAttachments(
     // covers the drawio structured-macro. This cheap string pre-filter avoids
     // pulling every body into heap and JSDOM-parsing pages with no attachments
     // (#888). Batched LIMIT/OFFSET bounds peak memory on large spaces.
-    const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
-      `SELECT confluence_id, body_storage FROM pages
+    const pagesResult = await query<{ confluence_id: string; body_storage: string; body_html: string }>(
+      `SELECT confluence_id, body_storage, body_html FROM pages
        WHERE space_key = $1 AND source = 'confluence' AND deleted_at IS NULL
          AND body_storage IS NOT NULL
          AND (body_storage LIKE '%<ac:image%' OR body_storage LIKE '%drawio%')
@@ -1740,7 +1746,25 @@ async function syncMissingAttachments(
     if (pagesResult.rows.length === 0) break;
 
     for (const row of pagesResult.rows) {
-      const allMissing = await getMissingAttachments(row.confluence_id, row.body_storage, spaceKey);
+      let missingDiagrams: string[] = [];
+      if (row.body_storage.includes('drawio')) {
+        const preview = await materializeDrawioPreviews(
+          confluenceToHtml(row.body_storage, row.confluence_id, spaceKey), row.confluence_id,
+        );
+        missingDiagrams = preview.missing;
+        if (preview.missing.length > 0 || preview.missingSources.length > 0 || preview.html !== row.body_html) {
+          try {
+            // Reuse the page's conflict policy when a newly available source or
+            // preview changes its rendered body; never overwrite local edits here.
+            await syncPage(client, userId, spaceKey, { id: row.confluence_id },
+              syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
+          } catch (err) {
+            logger.error({ err, pageId: row.confluence_id }, 'Failed to retry draw.io attachments');
+          }
+        }
+      }
+      const allMissing = (await getMissingAttachments(row.confluence_id, row.body_storage, spaceKey))
+        .filter((filename) => !missingDiagrams.includes(filename));
       if (allMissing.length === 0) continue;
 
       // Filter out attachments that have exceeded the failure threshold
@@ -2394,11 +2418,11 @@ export const __internal = {
   // the per-page fetch is NOT re-materialised locally by the upsert path,
   // without having to drive an entire syncSpace/syncUser walk.
   syncPage,
+  // Exercise incremental attachment recovery through the real page policy.
+  syncMissingAttachments,
   // Exposed for the #860 incremental-vs-full decision test: prove that after a
   // completed sync the metadata upsert does not overwrite last_synced, so a
   // >24h-stale space still takes the full-sync branch (getAllPagesInSpace)
   // rather than the incremental one (getModifiedPages).
   syncSpace,
-  // Exposed for the #1799 missing-attachment repair integration tests.
-  syncMissingAttachments,
 };

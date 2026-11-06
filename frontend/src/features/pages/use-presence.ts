@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { PageLifecycleEventSchema, type PageLifecycleEvent } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
-import { refreshAccessTokenOnce } from '../../shared/lib/api';
+import { refreshAccessTokenOnce, RefreshUnavailableError } from '../../shared/lib/api';
 
 export interface PresenceViewer {
   userId: string;
@@ -75,6 +75,15 @@ export function usePresence(pageId: string | null | undefined): {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let backoffMs = 1000;
     let cancelled = false;
+    let pausedToken: string | null | undefined;
+
+    const resumeWithNewToken = () => {
+      const state = useAuthStore.getState();
+      if (cancelled || pausedToken === undefined || !state.accessToken ||
+          state.accessToken === pausedToken || state.user?.id !== selfUserId) return;
+      pausedToken = undefined;
+      void connect();
+    };
 
     const applyEvent = (ev: PresenceEvent) => {
       const withoutSelf = selfUserId
@@ -85,8 +94,9 @@ export function usePresence(pageId: string | null | undefined): {
 
     const connect = async () => {
       if (cancelled) return;
+      const { accessToken } = useAuthStore.getState();
       try {
-        const { accessToken } = useAuthStore.getState();
+        // Re-read the token on each connection, including after recovery.
         const res = await fetch(`/api/pages/${encodeURIComponent(pageId)}/presence`, {
           method: 'GET',
           headers: {
@@ -107,10 +117,8 @@ export function usePresence(pageId: string | null | undefined): {
           return;
         }
         if (res.status === 401) {
-          // Access token expired — attempt a silent refresh via the httpOnly
-          // cookie. On success, throw to fall through to the normal reconnect
-          // path (which re-reads the refreshed token from the store). Only give
-          // up permanently if the refresh itself fails.
+          // Only a successful refresh or retry-safe busy failure may reconnect.
+          // An indeterminate rotation parks until a replacement token arrives.
           const newToken = await refreshAccessTokenOnce();
           if (!newToken) {
             cancelled = true;
@@ -172,12 +180,18 @@ export function usePresence(pageId: string | null | undefined): {
           clearInterval(heartbeatTimer);
           heartbeatTimer = null;
         }
+        if (err instanceof RefreshUnavailableError && !err.retrySafe) {
+          pausedToken = accessToken;
+          resumeWithNewToken();
+          return;
+        }
         const delay = backoffMs;
         backoffMs = Math.min(backoffMs * 2, BACKOFF_CAP_MS);
         reconnectTimer = setTimeout(() => { void connect(); }, delay);
       }
     };
 
+    const unsubscribeAuth = useAuthStore.subscribe(resumeWithNewToken);
     void connect();
 
     const handleBeforeUnload = () => {
@@ -196,6 +210,7 @@ export function usePresence(pageId: string | null | undefined): {
 
     return () => {
       cancelled = true;
+      unsubscribeAuth();
       abort.abort();
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);

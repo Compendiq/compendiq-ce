@@ -2262,6 +2262,11 @@ existing reader's `=` predicate.
 
 ## ADR-013: Draw.io / Diagrams.net Support
 
+> Current implementation note (#1792): inline diagram editing now exists.
+> XML-only attachments remain editable `.drawio` source files; without a real
+> PNG the page shows an unavailable preview instead of labelling XML as an
+> image. This does not require a rasterizer or a vision-analysis provider.
+
 ### Context
 Confluence pages often contain draw.io diagrams. These are stored as Confluence macros (`ac:structured-macro` with `ac:name="drawio"`) with diagram data in page attachments.
 

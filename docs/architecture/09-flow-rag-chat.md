@@ -425,14 +425,16 @@ hold across all five:
    `admitArticleStage(provenance, userId, 'chat', publish, context,
    transport, model)` — after the live page rows, the caller's access, the
    provider row and the model assignment have been re-proved, before
-   COMMIT — and only for non-empty returned output. A refusal leaves the
-   row `streaming` with an empty body and is not a stream failure (the
+   COMMIT — and only for non-empty returned output. A refusal finalizes the
+   row as `cancelled` with an empty body and is not a stream failure (the
    client already has the text; the audit entry already recorded the
-   dispatch). Pinned in `stream-result-publication.test.ts`: a stream
-   that ends without `[DONE]` → no cache key, row stays `streaming`, one
-   `error` audit; a completed stream → cached, `completed`, one `success`;
-   a policy tightened while the provider was answering → text streamed and
-   audited, row NOT completed. The completed row is REUSABLE STATE (its
+   dispatch). Failed, truncated, abandoned and empty streams are finalized
+   the same way, so no row stays `streaming`. Pinned in
+   `stream-result-publication.test.ts`: a stream that ends without
+   `[DONE]` → no cache key, row `cancelled`, one `error` audit; a
+   completed stream → cached, `completed`, one `success`; a policy
+   tightened while the provider was answering → text streamed and
+   audited, row `cancelled`. The completed row is REUSABLE STATE (its
    text can be applied to the article later), so the same write retains
    the exact provenance it was generated under — migration 150 adds
    `ai_provenance JSONB`, `ai_provenance_complete BOOLEAN NOT NULL DEFAULT

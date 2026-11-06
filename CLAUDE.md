@@ -10,10 +10,19 @@ Trash distinguishes a failed read from a successful empty list. A failed
 refresh retains cached results with a stale warning; retry keeps its control
 mounted and focusable until the request settles, then rehomes orphaned focus.
 
+Local space settings distinguish unresolved and failed list reads from an
+authoritative missing key. A failed refetch retains the cached form and its
+unsaved edits; keep form seeding once per space key, not per query result.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
 - Enterprise design → `@docs/ENTERPRISE-ARCHITECTURE.md`
+
+The graph landing picker distinguishes search failures from successful empty
+results and retries the current query. Cached results may remain visible after
+a refetch failure only for their own query key; the two-character threshold,
+large-graph gate, and full-graph escape remain independent.
 
 ## Read these when relevant
 
@@ -76,6 +85,10 @@ Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boun
 
 Layout: `backend/src/{core,domains/{confluence,llm,knowledge},routes/{foundation,confluence,llm,knowledge}}` + `frontend/src/{features,shared,stores,providers}` + `packages/contracts/`. Detailed structure → `docs/architecture/03-backend-domains.md` and `04-frontend-structure.md`.
 
+The sidebar's space-home projection detaches the configured homepage from its
+actual parent before promoting its children to roots. Keep the original page
+IDs for keyboard navigation, and retain the sole-homepage fallback (#1815).
+
 ## Tech Stack (highlights, not a manifest)
 
 Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-dim `halfvec` measured/recommended — #1114) · BullMQ (toggleable via `USE_BULLMQ`) · jose / bcrypt · React 19 · TailwindCSS 4 · Radix · TanStack Query · TipTap v3 · Zustand · `turndown` + `jsdom` for content conversion · `pdf-lib` · `nodemailer`. Full deps in `package.json`.
@@ -123,9 +136,20 @@ it is not re-entrant, so hold it around the request only.
 (then `clearAuth()`). It retries only the backend's marked busy 503
 (`REFRESH_BUSY_CODE`, `code: "refresh_busy"`), taking the lock per attempt and
 adopting a sibling tab's token on each acquisition; network errors and other
-5xx/408/429 are never retried (the rotation may have committed). All of these
-reject with `RefreshUnavailableError` — callers must keep auth state on that
-rejection.
+5xx/408/429 are never retried (the rotation may have committed). Successful
+refresh bodies must pass `AuthResponseSchema` and contain a nonblank access
+token before `setAuth` mutates, persists or broadcasts anything (#1800).
+Unreadable bodies, invalid JSON and invalid success shapes (including JSON
+`null`) reject with `RefreshUnavailableError`, just like other indeterminate
+outcomes — callers must keep auth state on that rejection. The shared helper
+retains that failure for the unchanged auth-state snapshot: query retries,
+polling, focus/reconnect refetches, remounts and timers must not replay the
+cookie. Query retry and presence/collab reconnect distinguish `retrySafe`
+(exhausted marked busy only); indeterminate reconnects park until a replacement
+token arrives for the same account, preserving the collaborative draft.
+A new auth state (including a sibling's valid token) releases the local fence;
+an older rejected flight must not fence that newer state. Explicit reload
+starts a new attempt; preserve unsaved work first. No timeout clears the fence.
 
 **Editor drafts are per-account (GHSA-r652-53hc-h6jh).** Local editor drafts
 live in `localStorage`, shared by every account in the browser. Build and
@@ -142,6 +166,11 @@ Command-palette recent searches follow the same rules through
 never imported; deleted by `logoutApi()` on explicit sign-out). Any new
 per-user content kept in web storage and shown back in the UI belongs to the
 same class: scope it by user id the same way.
+
+Command-palette page results are bound to the exact query that produced them.
+Changing the input clears both the prior result and selection immediately; the
+pending state covers debounce as well as the request. Preserve the sequence
+guard for out-of-order responses and only select a result after it resolves.
 
 ## Enterprise (Open-Core)
 

@@ -507,13 +507,23 @@ function collectMediaSources(page: PageRow): MediaSource[] {
         'A Draw.io diagram has no stored diagram name',
       );
     }
-    addMediaSource(sources, mediaSource('confluence', pageKey, `${diagramName}.png`));
+    const sourceOnly = Array.from(document.querySelectorAll('.confluence-drawio')).some((diagram) => {
+      if (diagram.getAttribute('data-diagram-name') !== diagramName || diagram.querySelector('img')) return false;
+      const source = parseInternalAttachmentUrl(diagram.getAttribute('data-drawio-source') ?? '');
+      return source?.store === 'confluence' && source.pageKey === pageKey && source.filename === `${diagramName}.drawio`;
+    });
+    if (!sourceOnly) addMediaSource(sources, mediaSource('confluence', pageKey, `${diagramName}.png`));
     addMediaSource(sources, mediaSource('confluence', pageKey, `${diagramName}.drawio`));
   }
 
   for (const diagram of document.querySelectorAll('.confluence-drawio')) {
     const image = diagram.querySelector('img');
 
+    const source = parseInternalAttachmentUrl(diagram.getAttribute('data-drawio-source') ?? '');
+    if (!image && source) {
+      addMediaSource(sources, source);
+      continue;
+    }
     const rendered = image ? parseInternalAttachmentUrl(image.getAttribute('src') ?? '') : null;
     if (!rendered) {
       throw new PageBaselineManifestError(

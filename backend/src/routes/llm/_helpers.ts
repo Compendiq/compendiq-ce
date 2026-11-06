@@ -302,6 +302,10 @@ export async function streamSSE(
      * Publication holds the shared revision guard through the cache write.
      */
     cacheProvenance?: ConversationTurnAiProvenance;
+    /** Lets callers avoid persisting a partial response after a stream failure. */
+    onStreamError?: (error: unknown) => void;
+    /** Report whether the stream completed normally or was interrupted. */
+    onFinished?: (result: { status: 'success' | 'error' | 'aborted'; error?: unknown }) => void;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -324,10 +328,19 @@ export async function streamSSE(
   let fullContent = '';
   let outputCharacters = 0;
   let usage: StreamChunk['usage'];
+  let streamFailed = false;
   let streamError: unknown;
   const auditStart = Date.now();
   let dispatched = false;
-
+  const reportStreamError = (error: unknown): void => {
+    streamFailed = true;
+    streamError = error;
+    try {
+      options?.onStreamError?.(error);
+    } catch (callbackError) {
+      logger.error({ err: callbackError }, 'SSE stream error callback failed');
+    }
+  };
   try {
     if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
     const chunks = typeof generator === 'function' ? generator(controller.signal) : generator;
@@ -387,7 +400,7 @@ export async function streamSSE(
       );
     }
   } catch (err) {
-    streamError = err;
+    reportStreamError(err);
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
     } else if (err instanceof StreamIncompleteError) {
@@ -401,14 +414,17 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
     }
   } finally {
+    if (controller.signal.aborted && !streamFailed) {
+      reportStreamError(new DOMException('Client disconnected', 'AbortError'));
+    }
     if (options?.audit && dispatched && !(streamError instanceof ArticleStageRefusedError)) {
       emitLlmAudit({
         ...options.audit,
         inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
         outputTokens: usage?.completionTokens ?? Math.ceil(outputCharacters / 4),
         durationMs: Date.now() - auditStart,
-        status: streamError || controller.signal.aborted ? 'error' : 'success',
-        ...(streamError || controller.signal.aborted
+        status: streamFailed ? 'error' : 'success',
+        ...(streamFailed
           ? {
               errorMessage: controller.signal.aborted
                 ? 'Client disconnected'
@@ -417,6 +433,10 @@ export async function streamSSE(
           : {}),
       });
     }
+    options?.onFinished?.({
+      status: controller.signal.aborted ? 'aborted' : streamFailed ? 'error' : 'success',
+      ...(streamError !== undefined ? { error: streamError } : {}),
+    });
     reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }

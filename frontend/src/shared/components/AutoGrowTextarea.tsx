@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type TextareaHTMLAttributes } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, type TextareaHTMLAttributes } from 'react';
 import { cn } from '../lib/cn';
 
 type Props = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'rows' | 'onChange'> & {
@@ -23,11 +23,10 @@ type Props = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'rows' | 'onChang
  * author renaming a page was editing blind. Narrowing the column to the reading
  * measure made it worse, not better.
  *
- * Height is set from `scrollHeight` after every value change: reset to `auto`
- * first, or the box can only ever grow, because `scrollHeight` of an element
- * already sized to its content just reports that size back. `useLayoutEffect`
- * so the resize lands in the same frame as the keystroke and the caret never
- * sits below a stale box edge.
+ * Reset to `auto` before measuring so the height can shrink as well as grow.
+ * Value changes are measured before paint; width changes are observed on the
+ * field itself because adjacent panels can resize it without a viewport resize.
+ * Ignore height-only observer notifications to avoid a resize feedback loop.
  */
 export function AutoGrowTextarea({
   value,
@@ -39,12 +38,28 @@ export function AutoGrowTextarea({
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  useLayoutEffect(() => {
+  const resize = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
+  }, []);
+
+  useLayoutEffect(resize, [value, resize]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let lastWidth = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = el.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      resize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [resize]);
 
   return (
     <textarea

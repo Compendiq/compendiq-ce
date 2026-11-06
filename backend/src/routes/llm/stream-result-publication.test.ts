@@ -55,7 +55,7 @@ describe.skipIf(!available)('Improve publishes only a completed stream', () => {
 
     // Nothing reusable was written.
     expect(await fixture.redis.keys('kb:llm:*')).toEqual([]);
-    expect((await improvements()).rows).toEqual([{ improved_content: '', status: 'streaming' }]);
+    expect((await improvements()).rows).toEqual([{ improved_content: '', status: 'cancelled' }]);
 
     // The audit entry records the dispatch as a FAILED inference with the
     // output it actually produced — not a success, not nothing.
@@ -109,7 +109,7 @@ describe.skipIf(!available)('Improve publishes only a completed stream', () => {
       expect(mockEmitLlmAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'improve', status: 'success' }));
       // … but the row stays unpublished: the output was generated under a
       // binding the article no longer admits.
-      expect((await improvements()).rows).toEqual([{ improved_content: '', status: 'streaming' }]);
+      expect((await improvements()).rows).toEqual([{ improved_content: '', status: 'cancelled' }]);
       expect(await fixture.redis.keys('kb:llm:*')).toEqual([]);
     } finally {
       fixture.server.removeListener('request', onArrival);

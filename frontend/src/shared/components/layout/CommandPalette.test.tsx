@@ -188,6 +188,78 @@ describe('CommandPalette', () => {
     unmount();
   });
 
+  it('excludes resolved results and their selection as soon as the query changes', async () => {
+    const nextSearch = deferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      if (String(input).includes('search=second')) return nextSearch.promise;
+      return Promise.resolve(jsonResponse({
+        items: [{ id: 'first', title: 'First result', spaceKey: 'ONE' }],
+      }));
+    });
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+    const input = screen.getByLabelText('Find a page or command');
+    fireEvent.change(input, { target: { value: 'first' } });
+    const oldRow = await screen.findByRole('option', { name: /First result/ });
+    fireEvent.change(input, { target: { value: 'second' } });
+
+    expect(screen.queryByText('First result')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Searching');
+    expect(input).not.toHaveAttribute('aria-activedescendant');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(oldRow);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/pages?search=second&limit=8'), expect.any(Object),
+    ));
+    expect(screen.getByRole('status')).toHaveTextContent('Searching');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(oldRow);
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      nextSearch.resolve(jsonResponse({
+        items: [{ id: 'second', title: 'Second result', spaceKey: 'TWO' }],
+      }));
+      await nextSearch.promise;
+    });
+    expect(await screen.findByText('Second result')).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/second');
+    unmount();
+  });
+
+  it('does not revive an earlier result when returning to its query', async () => {
+    const repeatedSearch = deferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({
+        items: [{ id: 'old', title: 'Earlier result', spaceKey: 'ONE' }],
+      }))
+      .mockImplementationOnce(() => repeatedSearch.promise);
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+    const input = screen.getByLabelText('Find a page or command');
+    fireEvent.change(input, { target: { value: 'first' } });
+    await screen.findByText('Earlier result');
+    fireEvent.change(input, { target: { value: 'second' } });
+    fireEvent.change(input, { target: { value: 'first' } });
+    expect(screen.queryByText('Earlier result')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Searching');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockNavigate).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      repeatedSearch.resolve(jsonResponse({
+        items: [{ id: 'new', title: 'Refreshed result', spaceKey: 'ONE' }],
+      }));
+      await repeatedSearch.promise;
+    });
+    expect(await screen.findByText('Refreshed result')).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+    unmount();
+  });
+
   it('ignores stale search responses that resolve after the latest query', async () => {
     const oldSearch = deferred<Response>();
     const newSearch = deferred<Response>();

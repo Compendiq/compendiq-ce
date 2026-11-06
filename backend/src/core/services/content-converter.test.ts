@@ -155,7 +155,9 @@ describe('content-converter', () => {
       const html = confluenceToHtml(DRAWIO_PAGE, '99');
       expect(html).toContain('class="confluence-drawio"');
       expect(html).toContain('data-diagram-name="system-topology"');
-      expect(html).toContain('src="/api/attachments/99/system-topology.png"');
+      expect(html).toContain('data-drawio-source="/api/attachments/99/system-topology.drawio"');
+      expect(html).toContain('Draw.io preview unavailable: system-topology');
+      expect(html).not.toContain('<img');
       expect(html).toContain('Edit in Confluence');
       expect(html).toContain('data-diagram-name="data-flow"');
     });
