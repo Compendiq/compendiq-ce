@@ -439,6 +439,13 @@ export const AdminSettingsSchema = z.object({
    */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650),
   /**
+   * #1797 — retention (days) for `webhook_deliveries` attempt-ledger rows
+   * (only rows of terminal `done`/`dead` outbox items are purged). Consumed
+   * by `data-retention-service.ts :: runWebhookDeliveriesRetention`. Default
+   * 90, clamped to [7, 3650]. Never affects `webhook_outbox`.
+   */
+  webhookDeliveriesRetentionDays: z.number().int().min(7).max(3650),
+  /**
    * Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue
    * concurrency. Persisted in `admin_settings.llm_concurrency` and
    * broadcast via the `admin:llm:settings` cache-bus channel. Default 4
@@ -586,6 +593,8 @@ export const UpdateAdminSettingsSchema = z.object({
   imageAnalysisBatchSize: z.number().int().min(1).max(500).optional(),
   /** Issue #264 — optional on update; omitted → leave unchanged. */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
+  /** #1797 — optional on update; omitted → leave unchanged. */
+  webhookDeliveriesRetentionDays: z.number().int().min(7).max(3650).optional(),
   /**
    * Compendiq/compendiq-ee#113 Phase B-3 — optional on update; omitted →
    * leave the cluster-wide concurrency unchanged. Range mirrors the

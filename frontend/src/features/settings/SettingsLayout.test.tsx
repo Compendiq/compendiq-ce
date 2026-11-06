@@ -57,6 +57,7 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       inlineCompletionCodeOnly: false,
     },
     isLoading: false,
+    refetch: vi.fn().mockResolvedValue({}),
   }),
   useUpdateSettings: () => ({
     mutate: vi.fn(),

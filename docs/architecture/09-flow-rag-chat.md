@@ -127,6 +127,11 @@ sequenceDiagram
         BE-->>FE: SSE { done:true, conversationId, sources }
         BE->>CACHE: release with token<br/>(atomic compare-and-delete)
     end
+    alt EOF after done
+        Note over FE: Process later metadata before success
+    else EOF before done
+        Note over FE: Keep partial output and show interruption, no success callback
+    end
 ```
 
 ### Permission-check checkpoint
@@ -1371,6 +1376,11 @@ spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
 every descendant query, so cross-space, page-restricted (no ACE for the
 caller, in both editions) or soft-deleted sub-pages never reach
 the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
+The initial parent and every breadth-first queue step use the parent's
+source-aware key: Confluence ID for a Confluence page, internal ID as text
+for a standalone page, including one with a retained historical Confluence ID.
+No historical-ID alias is traversed. Existing visibility, cycle, depth, page
+count and context character limits remain in force.
 
 ## Image input flow (#1154)
 

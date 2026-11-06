@@ -32,9 +32,17 @@ export function SmtpSettingsTab() {
   const saveMutation = useMutation({
     mutationFn: (body: Partial<SmtpConfig>) =>
       apiFetch('/admin/smtp', { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: () => {
+    onSuccess: (_data, submitted) => {
       queryClient.invalidateQueries({ queryKey: ['smtp-config'] });
-      setForm({});
+      setForm((draft) => {
+        const remaining = { ...draft };
+        for (const key of Object.keys(draft) as (keyof SmtpConfig)[]) {
+          if (Object.hasOwn(submitted, key) && Object.is(draft[key], submitted[key])) {
+            delete remaining[key];
+          }
+        }
+        return remaining;
+      });
       toast.success('SMTP settings saved');
     },
     onError: (err) => toast.error(err.message),

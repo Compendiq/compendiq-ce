@@ -394,6 +394,7 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
     const before = await query<{ updated_at: Date; analysis_version: number }>(`SELECT updated_at, analysis_version FROM page_image_analyses WHERE page_id = $1`, [pageId]);
 
     const edited = '<img src="/api/attachments/1/a.png" alt="New caption"><p>Some prose on this page to embed.</p>';
+    await query('UPDATE pages SET title = $2, body_html = $3 WHERE id = $1', [pageId, 'New title', edited]);
     await embedPage(USER, pageId, 'New title', 'DEV', edited);
 
     const derived = (await chunksFor(pageId)).find((c) => c.metadata.source === 'image_analysis')!;
