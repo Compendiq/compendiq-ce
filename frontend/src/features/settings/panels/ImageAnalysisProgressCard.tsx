@@ -7,7 +7,7 @@ import { apiFetch } from '../../../shared/lib/api';
 import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { reanalyzeAllDisclosure } from './image-analysis-copy';
-import { useNoticeRetry } from './use-notice-retry';
+import { useNoticeRetry } from '../../../shared/hooks/use-notice-retry';
 import { COVERAGE_SENTENCE, imageAnalysisCoverage } from './image-analysis-coverage';
 
 /**
