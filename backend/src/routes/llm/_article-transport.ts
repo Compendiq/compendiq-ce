@@ -28,7 +28,7 @@ async function captureRoot(userId: string, pageId: string | undefined, config: P
     }
     snapshot.articles = [{ pageId: page.id, policy: null, policyRevision: null, contentRevision: null }];
     // Title and revisions belong to one snapshot, including when the body is a draft.
-    const result = await query('SELECT title, confluence_id, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL', [page.id]);
+    const result = await query('SELECT title, confluence_id, source, ai_policy, ai_policy_revision, content_revision FROM pages WHERE id = $1 AND deleted_at IS NULL', [page.id]);
     const row = result.rows[0];
     const policyRevision = asRevision(row?.ai_policy_revision);
     const contentRevision = asRevision(row?.content_revision);
@@ -45,7 +45,7 @@ async function captureRoot(userId: string, pageId: string | undefined, config: P
       provenance: { version: 1 as const, providerId: config.providerId, configRevision: provider.configRevision,
         locality: provider.effectiveLocality, pages: [{ pageId: page.id, policy: row.ai_policy, policyRevision, contentRevision }] },
       userId, usecase, context,
-    }, parentRef: { id: page.id, title: row.title as string, confluenceId: row.confluence_id as string | null } };
+    }, parentRef: { id: page.id, title: row.title as string, confluenceId: row.confluence_id as string | null, source: row.source as string } };
   })().catch((error: unknown) => {
     emitAiDecision({ ...snapshot, occurredAt: new Date().toISOString() });
     throw error;

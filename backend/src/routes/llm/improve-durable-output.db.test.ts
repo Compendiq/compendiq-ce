@@ -95,7 +95,7 @@ describe.skipIf(!available)('Improve retains durable transitive provenance on th
     expect(response.statusCode).toBe(200);
     expect(fixture.requests).toHaveLength(1);
     expect((await rows()).rows).toEqual([{
-      improved_content: '', status: 'streaming',
+      improved_content: '', status: 'cancelled',
       ai_provenance: null, ai_provenance_complete: false, ai_provenance_version: null,
     }]);
     expect(await fixture.redis.keys('kb:llm:*')).toEqual([]);
@@ -122,7 +122,7 @@ describe.skipIf(!available)('Improve retains durable transitive provenance on th
       await tightened;
       expect(fixture.requests).toHaveLength(1);
       expect((await rows()).rows).toEqual([{
-        improved_content: '', status: 'streaming',
+        improved_content: '', status: 'cancelled',
         ai_provenance: null, ai_provenance_complete: false, ai_provenance_version: null,
       }]);
     } finally {
