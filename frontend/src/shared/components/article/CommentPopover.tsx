@@ -152,7 +152,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
   const { activeComment, replies } = useMemo(() => {
     if (!activeCommentId || !comments) return { activeComment: null, replies: [] };
     const comment = comments.find((c) => String(c.id) === String(activeCommentId)) ?? null;
-    const commentReplies = comments.filter((c) => String(c.parentId) === String(activeCommentId));
+    const commentReplies = comment?.replies ?? [];
     return { activeComment: comment, replies: commentReplies };
   }, [activeCommentId, comments]);
 

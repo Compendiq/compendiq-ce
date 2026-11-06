@@ -394,4 +394,16 @@ describe('confluence-drawio turndown <-> markdownToHtml round-trip (#723 convert
     expect(back).toContain('class="confluence-drawio"');
     expect(back).toContain('data-diagram-name="Net Arch"');
   });
+
+  it('retains source-only diagrams and surrounding content through Markdown', async () => {
+    const html = '<p>Before</p><div class="confluence-drawio" data-diagram-name="Flow &amp; review" data-drawio-source="/api/attachments/5/Flow.drawio" data-drawio-xml="&lt;mxfile/&gt;"><span>Draw.io preview unavailable</span></div><p>After</p>';
+    const back = await markdownToHtml(htmlToMarkdown(html));
+    expect(back).toContain('data-diagram-name="Flow &amp; review"');
+    expect(back).toContain('data-drawio-source="/api/attachments/5/Flow.drawio"');
+    expect(back).toContain('data-drawio-xml="<mxfile/>"');
+    expect(back).toContain('Draw.io preview unavailable: Flow &amp; review');
+    expect(back).toContain('Before');
+    expect(back).toContain('After');
+    expect(back).not.toContain('<img');
+  });
 });

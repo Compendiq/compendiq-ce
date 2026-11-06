@@ -140,6 +140,10 @@ After configuring your Confluence connection:
 
 Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
 
+If local space settings cannot load, use **Try again** to retry the read. A
+failed refresh keeps the last loaded settings and any unsaved edits available;
+the missing-space message appears only after a successful list excludes it.
+
 ## Working with Pages
 
 ### Browsing Pages
@@ -473,6 +477,10 @@ The knowledge graph provides a visual map of relationships between pages:
 1. Go to **Graph** in the sidebar (or press `G G`).
 2. Explore connections between pages based on links, tags, and semantic similarity.
 3. Click on nodes to navigate to specific pages.
+
+Graph filter selections are included in the URL. Editing filters replaces the
+current history entry; selecting or clearing a focused article adds an entry,
+so browser Back and Forward restore the earlier graph and its filters.
 
 ## Trash
 

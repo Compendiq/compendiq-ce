@@ -16,7 +16,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementIdParamSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
   resolveReadablePageRef,
@@ -271,8 +271,10 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking, transportContext });
+      const generator = (signal: AbortSignal) =>
+        streamChat(chatConfig, resolvedModel, improveMessages, signal, { thinking: body.thinking, transportContext });
 
+      let streamStatus = 'success' as 'success' | 'error' | 'aborted';
       const accumulated = await streamSSE(request, reply, generator, improveExtras, {
         llmCache,
         cacheKey,
@@ -281,6 +283,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
           userId, action: 'improve', model: resolvedModel, provider: chatConfig.providerId,
           inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
           inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+          promptHash: fingerprintPrompt(improveMessages),
           retrievedChunkIds: [], promptInjectionDetected, sanitized: wasSanitized,
         },
         // Never cache a response that lost the layout tokens: the apply will
@@ -296,17 +299,19 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         // #282: the entry is written beside the binding it was generated
         // under, so a later hit is re-admitted against THAT, not guessed.
         cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
+        onFinished: (result) => {
+          streamStatus = result.status;
+        },
       });
 
       // Persist the full improved content now that streaming is done.
       // `accumulated` is '' for a failed, truncated or abandoned stream, so
-      // a prefix is never published as the completed improvement; the row
-      // stays `streaming` with no body. The write itself runs INSIDE the
-      // article-stage admission — on the held client, after the live page
-      // rows, the caller's access, the provider endpoint and the model
-      // assignment have been re-proved — so output generated under one
-      // binding cannot land as a durable row under another. A refusal
-      // leaves the row unpublished and is not a stream failure: the
+      // a prefix is never published as the completed improvement. The write
+      // itself runs INSIDE the article-stage admission — on the held client,
+      // after the live page rows, the caller's access, the provider endpoint
+      // and the model assignment have been re-proved — so output generated
+      // under one binding cannot land as a durable row under another. A
+      // refusal leaves the row unpublished and is not a stream failure: the
       // client already has the text and the audit entry already recorded
       // the dispatch.
       //
@@ -316,7 +321,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       // `ai_provenance_version`), the same shape the cache entry carries.
       // `ai_provenance_complete` is TRUE only on this path: a row written
       // any other way, or before the migration, stays unknown.
-      if (improvementId && accumulated && transportContext.kind === 'article') {
+      let published = false;
+      if (improvementId && streamStatus === 'success' && accumulated && transportContext.kind === 'article') {
         const { provenance } = transportContext.stage;
         try {
           await admitArticleStage(
@@ -332,12 +338,22 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
             },
             transportContext.stage.context, chatConfig, resolvedModel,
           );
+          published = true;
         } catch (err) {
           if (!(err instanceof ArticleStageRefusedError)) throw err;
           logger.warn({ improvementId, reason: err.reason }, 'Improvement not published: article binding no longer admits');
         }
       }
 
+      // A failed, truncated, abandoned, empty or refused stream must not stay
+      // `streaming`: finalize it as `cancelled`, still with no body and no
+      // provenance, so it is neither applied nor re-admitted as a result.
+      if (improvementId && !published) {
+        await query(
+          `UPDATE llm_improvements SET status = 'cancelled' WHERE id = $1 AND status = 'streaming'`,
+          [improvementId],
+        );
+      }
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }

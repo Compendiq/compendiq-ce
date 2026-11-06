@@ -191,7 +191,9 @@ export function ArticleViewer({
       Details,
       DetailsSummary,
       Panel,
-      DrawioDiagram,
+      // Read mode owns authenticated images and the admitted Edit Diagram
+      // callback below; the editable React node view hides those controls.
+      DrawioDiagram.extend({ addNodeView: () => null }),
       ConfluenceToc,
       ConfluenceStatus,
       ConfluenceChildren,
@@ -516,6 +518,7 @@ export function ArticleViewer({
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isReady || !onEditDiagram) return;
+    const buttons: HTMLButtonElement[] = [];
 
     const raf = requestAnimationFrame(() => {
       const drawioContainers = container.querySelectorAll<HTMLElement>('.confluence-drawio');
@@ -527,6 +530,7 @@ export function ArticleViewer({
 
         const btn = document.createElement('button');
         btn.className = 'drawio-inline-edit-btn';
+        btn.type = 'button';
         btn.textContent = 'Edit Diagram';
         btn.setAttribute('aria-label', 'Edit this draw.io diagram');
         btn.setAttribute('data-testid', 'drawio-edit-btn');
@@ -541,10 +545,14 @@ export function ArticleViewer({
         });
 
         drawioDiv.appendChild(btn);
+        buttons.push(btn);
       });
     });
 
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      buttons.forEach((button) => button.remove());
+    };
   }, [isReady, sanitizedContent, onEditDiagram]);
 
   return (

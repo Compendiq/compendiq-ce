@@ -154,6 +154,11 @@ sequenceDiagram
         BE->>CACHE: release with token<br/>(atomic compare-and-delete)
         BE->>PROV: generateConversationTitle (first turn, fire-and-forget) —<br/>the ANSWER ships to the titling model only after re-admission<br/>of the turn's pages against the provider answering NOW (#35;282)
     end
+    alt EOF after done
+        Note over FE: Process later metadata before success
+    else EOF before done
+        Note over FE: Keep partial output and show interruption, no success callback
+    end
 ```
 
 ### Article AI policy at retrieval (#282)
@@ -420,14 +425,16 @@ hold across all five:
    `admitArticleStage(provenance, userId, 'chat', publish, context,
    transport, model)` — after the live page rows, the caller's access, the
    provider row and the model assignment have been re-proved, before
-   COMMIT — and only for non-empty returned output. A refusal leaves the
-   row `streaming` with an empty body and is not a stream failure (the
+   COMMIT — and only for non-empty returned output. A refusal finalizes the
+   row as `cancelled` with an empty body and is not a stream failure (the
    client already has the text; the audit entry already recorded the
-   dispatch). Pinned in `stream-result-publication.test.ts`: a stream
-   that ends without `[DONE]` → no cache key, row stays `streaming`, one
-   `error` audit; a completed stream → cached, `completed`, one `success`;
-   a policy tightened while the provider was answering → text streamed and
-   audited, row NOT completed. The completed row is REUSABLE STATE (its
+   dispatch). Failed, truncated, abandoned and empty streams are finalized
+   the same way, so no row stays `streaming`. Pinned in
+   `stream-result-publication.test.ts`: a stream that ends without
+   `[DONE]` → no cache key, row `cancelled`, one `error` audit; a
+   completed stream → cached, `completed`, one `success`; a policy
+   tightened while the provider was answering → text streamed and
+   audited, row `cancelled`. The completed row is REUSABLE STATE (its
    text can be applied to the article later), so the same write retains
    the exact provenance it was generated under — migration 150 adds
    `ai_provenance JSONB`, `ai_provenance_complete BOOLEAN NOT NULL DEFAULT
@@ -1731,6 +1738,11 @@ spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
 every descendant query, so cross-space, page-restricted (no ACE for the
 caller, in both editions) or soft-deleted sub-pages never reach
 the LLM prompt on any route (`ask`, `improve`, `analyze-quality`, `summarize`).
+The initial parent and every breadth-first queue step use the parent's
+source-aware key: Confluence ID for a Confluence page, internal ID as text
+for a standalone page, including one with a retained historical Confluence ID.
+No historical-ID alias is traversed. Existing visibility, cycle, depth, page
+count and context character limits remain in force.
 
 **Article AI policy admission on this path (#280/#281).** A page is only
 dispatched to a provider that `admitPageForUsecase` /

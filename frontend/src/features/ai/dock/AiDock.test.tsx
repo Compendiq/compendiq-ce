@@ -733,6 +733,46 @@ describe('AiDock (#1126)', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Interrupted stream with partial output (#1801)
+  // -------------------------------------------------------------------------
+  describe('interrupted stream with partial output', () => {
+    async function askAndGetCutOff(...tail: Array<Record<string, unknown>>) {
+      streamSSEMock.mockImplementation(() => sse(
+        { content: '## Setup\n\nRun the **installer** first.\n\n```sh\nnpm ci\n```\n\nThen' },
+        ...tail,
+      ));
+      renderDock();
+      await openAndSettle();
+      fireEvent.change(composer(), { target: { value: 'how do I set it up?' } });
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      return screen.findByTestId('message-error');
+    }
+
+    it('keeps the partial as Markdown and puts the failure in a short notice beneath it', async () => {
+      // EOF without `done`.
+      const notice = await askAndGetCutOff();
+
+      expect(notice.textContent).toBe('The response was interrupted before completion. Try again.');
+      expect(notice.className).toContain('destructive');
+      // The partial is an answer body: headings, emphasis and code survive
+      // instead of collapsing into one red run inside the notice.
+      expect(screen.getByRole('heading', { name: 'Setup' })).toBeInTheDocument();
+      expect(screen.getByText('installer').tagName).toBe('STRONG');
+      expect(screen.getByText('npm ci').closest('pre')).not.toBeNull();
+      expect(notice.textContent).not.toContain('installer');
+    });
+
+    it('announces only the notice, never the partial', async () => {
+      const notice = await askAndGetCutOff({ error: 'provider failed' });
+
+      expect(notice.textContent).toBe('provider failed');
+      expect(screen.getByTestId('ai-dock-error-announcer').textContent).toBe('provider failed');
+      // A cut-off answer is not "ready" either.
+      expect(screen.getByTestId('ai-dock-answer-announcer').textContent).toBe('');
+    });
+  });
+
   describe('long message collapse/expand', () => {
     it('shows Show more / Show less toggle for long multi-line or lengthy user prompts', async () => {
       renderDock();

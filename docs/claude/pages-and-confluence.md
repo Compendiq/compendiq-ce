@@ -24,6 +24,12 @@ Panel usage goes through the authenticated collection path, without content in
 event metadata. Impression semantics and adoption evaluation are documented in
 `docs/ADMIN-GUIDE.md`.
 
+Graph shareable filters (`space`, `edgeTypes`, `minScore`, `labels`, `full`)
+are read directly from the current URL, including on Back/Forward while
+`GraphPage` remains mounted. Filter changes replace the entry; the sidebar
+clear-focus and picker selection push entries. Keep unrelated URL parameters
+when editing filters, and keep the local graph request keyed on restored filters.
+
 ## Standalone Trash Cascade (#1636)
 
 Trashing a standalone article takes its WHOLE subtree, so the delete, the
@@ -161,6 +167,13 @@ space-level by design (ADR-022/ADR-023) and gated per page only by the EE
 behind page ACEs are fenced in the database (migration 129 queues the pages;
 the page publication worker bumps the `pages` generation), so sync, relocate
 and the EE bulk route need no cache code of their own.
+
+Sub-page LLM context uses the parent's source at the initial lookup and every
+recursive step: Confluence ID for a Confluence page, internal ID as text for
+a standalone page, even if that standalone row retains a historical
+Confluence ID. Do not add that historical ID as an alternate traversal key.
+The caller's visibility filter and the existing breadth, depth and character
+limits still apply.
 
 Per-page duplicate lookup uses source-aware identity: a standalone page's
 internal ID, or a Confluence page's content ID, never a historical standalone

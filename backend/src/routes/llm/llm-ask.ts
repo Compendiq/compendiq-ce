@@ -59,7 +59,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { AskRequestSchema, type AskInputKind } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
+import { emitLlmAudit, estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix, SubPagePolicyError } from '../../domains/confluence/services/subpage-context.js';
 import {
@@ -68,6 +68,7 @@ import {
   sendCachedSSE,
   sanitizeLlmInput,
   resolvePageRef,
+  subPageParentKey,
   type ResolvedPageRef,
   resolveImagePart,
   LLM_STREAM_RATE_LIMIT,
@@ -800,7 +801,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         try {
           assembled = await assembleSubPageContext(
             userId,
-            openArticle.confluenceId ?? openArticle.requestedPageId,
+            subPageParentKey(resolved),
             openArticle.bodyHtml,
             openArticle.title,
             undefined,
@@ -1769,6 +1770,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
               role: m.role,
               contentLength: contentToText(m.content).length,
             })),
+            promptHash: fingerprintPrompt(messages),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'success',
@@ -1819,6 +1821,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
               role: m.role,
               contentLength: contentToText(m.content).length,
             })),
+            promptHash: fingerprintPrompt(messages),
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'error',

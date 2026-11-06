@@ -312,6 +312,7 @@ describe('AppLayout', () => {
   });
 
   it('mobile slide-over exposes dialog semantics and closes on Escape', async () => {
+    window.innerWidth = 390;
     render(
       <AppLayout>
         <div>content</div>
@@ -333,6 +334,7 @@ describe('AppLayout', () => {
   });
 
   it('mobile slide-over moves focus inside on open, traps Tab, and restores focus on close', async () => {
+    window.innerWidth = 390;
     render(
       <AppLayout>
         <div>content</div>
@@ -378,6 +380,34 @@ describe('AppLayout', () => {
       expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
     });
     expect(document.activeElement).toBe(toggle);
+  });
+
+  it('releases the navigation trap and resets the drawer when leaving mobile', async () => {
+    window.innerWidth = 390;
+    const { rerender } = render(
+      <AppLayout><button type="button">Outside control</button></AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    fireEvent.click(screen.getByLabelText('Open navigation menu'));
+    expect(screen.getByRole('dialog', { name: 'Navigation menu' })).toBeInTheDocument();
+
+    window.innerWidth = 1024;
+    rerender(<AppLayout><button type="button">Outside control</button></AppLayout>);
+    const outside = screen.getByRole('button', { name: 'Outside control' });
+    outside.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    document.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(false);
+
+    window.innerWidth = 390;
+    rerender(<AppLayout><button type="button">Outside control</button></AppLayout>);
+    expect(screen.getByLabelText('Open navigation menu')).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
   });
 
   it('shows the tree sidebar on /pages, swaps to the settings sidebar on /settings', () => {
@@ -430,6 +460,7 @@ describe('AppLayout', () => {
   });
 
   it('puts the pane in the mobile drawer and closes it on a New chat tap', async () => {
+    window.innerWidth = 390;
     render(
       <AppLayout>
         <div>ai page</div>

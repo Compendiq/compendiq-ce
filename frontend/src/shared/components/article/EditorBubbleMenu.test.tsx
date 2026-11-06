@@ -37,6 +37,7 @@ import {
 function gen(chunks: Array<Record<string, unknown>>) {
   return (async function* () {
     for (const c of chunks) yield c;
+    yield { done: true };
   })();
 }
 
@@ -720,6 +721,18 @@ describe('BubbleMenuContent — Floating UI repositioning on panel growth (#782)
 
 describe('BubbleMenuContent — error state', () => {
   beforeEach(() => streamSSE.mockReset());
+  it('keeps truncated output visible but prevents applying it', async () => {
+    streamSSE.mockReturnValue((async function* () { yield { content: 'Partial rewrite' }; })());
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/interrupted before completion/i);
+    expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Partial rewrite');
+    expect(screen.getByRole('button', { name: /replace/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /insert below/i })).toBeDisabled();
+  });
+
 
   it('surfaces the stream error with retry, inside the merged panel', async () => {
     streamSSE.mockReturnValue(gen([{ error: 'LLM unavailable' }]));

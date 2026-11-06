@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Refresh recovery (#1800):** keep authentication after an unusable successful
+  refresh and prevent query retries, polling, remounts and presence/collaboration
+  reconnects from repeating a possibly committed rotation. Marked busy responses
+  remain retry-safe; replacement tokens or an explicit reload permit recovery.
+  Preserve unsaved work before reloading.
+- Preserve persisted note replies and their counts in the article inspector,
+  comments sidebar, and anchored popover, including after refreshing a thread.
+- Page title fields now grow and shrink when the available article width changes,
+  keeping wrapped titles visible while resizing the viewport or adjacent panels.
+- Mobile navigation releases its focus trap and closes when the viewport
+  reaches desktop width, and stays closed when returning to mobile (#1813).
+- Nested custom space homepages are detached from their actual parent before
+  their children are promoted in the sidebar, preventing duplicate page rows.
+- **Graph history (#1805):** Back and Forward restore shareable graph filters
+  and their effective requests. Filter edits replace the current history entry;
+  changing the focused article still adds an entry.
+- Command palette results and selection now follow the current query immediately;
+  the debounce and search show a pending state instead of dispatching an earlier page.
+- **Graph article picker (#1804):** distinguish failed searches from empty
+  results and offer a retry, retaining cached results only for the same query.
+- **Incomplete AI streams (#1801):** retain interrupted text with an error
+  instead of treating EOF as completion or offering it for application. Cached
+  completions and metadata following a done event remain supported.
+- **LLM audit prompt identity (#1790):** fingerprint the ordered provider
+  messages and structured content rather than role/length summaries, without
+  passing prompt plaintext to audit hooks or persisting it in CE.
+- Sub-page AI context now follows standalone pages by internal ID even when
+  they retain a historical Confluence ID, including at recursive levels.
 - **Per-page duplicate detection (#1798):** resolve standalone sources by
   internal ID and Confluence sources by content ID under the same visibility
   rules as the full scan, including restricted and private pages.
