@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changing the focused article still adds an entry.
 - Command palette results and selection now follow the current query immediately;
   the debounce and search show a pending state instead of dispatching an earlier page.
+- **Graph article picker (#1804):** distinguish failed searches from empty
+  results and offer a retry, retaining cached results only for the same query.
 - **Incomplete AI streams (#1801):** retain interrupted text with an error
   instead of treating EOF as completion or offering it for application. Cached
   completions and metadata following a done event remain supported.

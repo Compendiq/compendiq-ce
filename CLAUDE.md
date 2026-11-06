@@ -19,6 +19,11 @@ Source-of-truth docs:
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
 - Enterprise design → `@docs/ENTERPRISE-ARCHITECTURE.md`
 
+The graph landing picker distinguishes search failures from successful empty
+results and retries the current query. Cached results may remain visible after
+a refetch failure only for their own query key; the two-character threshold,
+large-graph gate, and full-graph escape remain independent.
+
 ## Read these when relevant
 
 - `docs/claude/ui-ux.md`: REQUIRED before any frontend or styling change.
