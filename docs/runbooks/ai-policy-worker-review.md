@@ -18,16 +18,36 @@ checks all three averages and rollback of the purge transaction.
 Image-analysis batches containing only policy refusals record their last-run
 `policyBlocked` count, without incrementing processed or provider-failure counts.
 
-## Outstanding rollout checks
+## Recovery and shadow verification before rollout
 
-Do not use the current shadow readiness indicator as permission to relax article
-policy. The review still requires a locality eligibility gate independent of
-missing candidate vectors, including rollback and provider edits. Recovery must
-also stop depending on the shared page block reason: another successful stage
-can clear it while a different stage remains parked. Image reconciliation must
-not repeatedly re-pend still-forbidden work. Embedding blocked populations need
-explicit count-contract coverage. These are activation blockers, not operational
-workarounds to bypass with direct SQL policy changes.
+Recovery selects eligible rows by each stage's own `policy_blocked` status,
+not the shared page reason. It filters current policy and declared locality
+before applying the batch limit, so forbidden rows cannot starve eligible work.
+The real-PostgreSQL `ai-policy-worker-recovery.integration.test.ts` covers
+embedding, summary, quality and image rows, including a cleared shared reason
+and a second pass that leaves still-forbidden rows parked. Recovery is scheduling,
+not permission: each transport attempt rechecks its actual destination.
+
+Shadow readiness and swap check local-only eligibility even when candidate
+vectors are already filled or absent. Swap rechecks under schema/page and provider
+locks; rollback checks the provider it would restore, including inherited
+assignments. `shadow-policy-coverage.integration.test.ts` covers provider locality
+changes, both vector populations and rollback refusal. A refusal names the blocking
+count, not article titles. Select a permitted candidate or explicitly change policy
+through the authorized flow; never bypass the gate or rewrite policy with SQL.
+
+Check blocked populations separately from successful coverage and provider errors.
+The embedding status API exposes `policyBlockedPages` and `policyBlockedReasons`;
+`worker-policy-status.test.ts` preserves them through the shared wire schema.
+Image-only refusals must also remain visible in the last-run counters; see
+`image-worker-http-races.db.test.ts`. The recovery architecture is described in
+[Article-policy worker recovery and shadow coverage](../architecture/ai-policy-worker-recovery.md).
+
+These implemented safeguards do not replace the parent rollout gate. Before
+activation, run the backend, contracts, frontend and EE/overlay suites, lint and
+typechecks, drain old workers/replicas, and enforce the policy-aware browser
+handshake. A failed gate remains a deployment blocker, not a reason to weaken
+admission or mark excluded work complete.
 
 Each transport admission is short and does not hold a database transaction over
 inference. A restriction committed after admission cannot recall bytes already
