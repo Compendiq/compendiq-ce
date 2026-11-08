@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
+
 import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings, getAdminChunkSettings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
@@ -213,6 +214,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
             }
 
             const resolvedSpaceKey = cachedRow.rows[0].space_key ?? '';
+
 
             // Same admin chunk options the dirty-page worker passes — without
             // them the two paths chunk the same page differently, and the
