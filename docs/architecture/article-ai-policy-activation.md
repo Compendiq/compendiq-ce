@@ -230,7 +230,11 @@ build can tell them apart from a refused refresh:
   different account while still signed in (someone signed in through a tab it
   never heard sign out), `useClearCacheOnLogout` runs the #885 wipe and resets
   mounted queries so they refetch as the new account, and `ProtectedRoute`
-  (keyed by user id) remounts the shell so no component state carries over.
+  (keyed by user id) remounts the shell so its component state is discarded.
+  The remounted shell's first render can still read the previous account's
+  cache before the reset effect runs; a few admin forms that copy their
+  values once (organisation-wide settings, not per-account data) keep that
+  copy.
 
 **Residual risk.** A legacy tab keeps the content it already loaded, and its
 current access token, for at most one access-token lifetime
