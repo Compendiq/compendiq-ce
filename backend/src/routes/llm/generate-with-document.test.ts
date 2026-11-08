@@ -67,6 +67,7 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
     getCachedResponse = mockGetCachedResponse;
     setCachedResponse = mockSetCachedResponse;
     acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
+    startLockHeartbeat = vi.fn().mockReturnValue(() => {});
     releaseLock = vi.fn().mockResolvedValue(undefined);
     waitForCachedResponse = vi.fn().mockResolvedValue(null);
     clearAll = vi.fn();

@@ -168,7 +168,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalUserText, chatConfig.providerId, { thinking: body.thinking, imageHash });
-    const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
+    const { cached, lockToken, aborted } = await checkCacheWithLock(llmCache, cacheKey, { request, reply });
+    if (aborted) return;
     if (cached) {
       // Explicit empty provenance and provider revision must both revalidate.
       // Legacy absence is unknown, never evidence of independent input.
@@ -209,7 +210,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       // unconditional `success` emit after the helper returned recorded a
       // completed generation for every failed stream.
       await streamSSE(request, reply, generator, genExtras, {
-        llmCache, cacheKey, postProcess,
+        llmCache, cacheKey, lockToken, postProcess,
         cacheProvenance: generateTransport.kind === 'article' ? generateTransport.stage.provenance : undefined,
         audit: {
           userId, action: 'generate', model: resolvedModel, provider: chatConfig.providerId,
@@ -240,6 +241,13 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         promptInjectionDetected,
         sanitized: wasSanitized,
       });
+      if (reply.raw.headersSent) {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+          reply.raw.end();
+        }
+        return;
+      }
       throw err;
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);

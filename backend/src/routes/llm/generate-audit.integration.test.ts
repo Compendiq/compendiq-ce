@@ -2,13 +2,13 @@ import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { setupTestDb, teardownTestDb, isDbAvailable, waitForDatabaseCondition } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
-import { buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
+import { buildLlmCacheKey, LlmCache } from '../../domains/llm/services/llm-cache.js';
 
 const available = await isDbAvailable();
 
@@ -21,6 +21,16 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
   let priorAssignment: { provider_id: string | null; model: string | null } | undefined;
   let nextProviderResponse: string | undefined;
   const received: Array<Array<{ role: string; content: string }>> = [];
+  let controlledPrompt = '';
+  let controlledMode: 'slow' | 'fail-first' | undefined;
+  let controlledCalls = 0;
+
+  afterEach(() => {
+    controlledPrompt = '';
+    controlledMode = undefined;
+    controlledCalls = 0;
+    vi.restoreAllMocks();
+  });
 
   beforeAll(async () => {
     await setupTestDb();
@@ -29,7 +39,24 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
       req.setEncoding('utf8');
       req.on('data', (chunk: string) => { body += chunk; });
       req.on('end', () => {
-        received.push(JSON.parse(body).messages);
+        const messages = JSON.parse(body).messages as Array<{ role: string; content: string }>;
+        received.push(messages);
+        const prompt = messages.at(-1)?.content;
+        if (prompt === controlledPrompt && controlledMode) {
+          controlledCalls += 1;
+          if (controlledMode === 'slow' && controlledCalls === 1) {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            setTimeout(() => {
+              res.end('data: {"choices":[{"delta":{"content":"Single-flight answer"}}]}\n\ndata: [DONE]\n\n');
+            }, 1_600);
+            return;
+          }
+          if (controlledMode === 'fail-first' && controlledCalls === 1) {
+            res.writeHead(503, { 'content-type': 'application/json' });
+            setTimeout(() => res.end(JSON.stringify({ error: { message: 'synthetic provider failure' } })), 250);
+            return;
+          }
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(nextProviderResponse ?? 'data: {"choices":[{"delta":{"content":"Synthetic answer"}}]}\n\ndata: [DONE]\n\n');
         nextProviderResponse = undefined;
@@ -78,6 +105,14 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
     if (userId) await query('DELETE FROM users WHERE id = $1', [userId]);
     await teardownTestDb();
   });
+
+  async function waitForProviderCalls(expected: number): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (controlledCalls < expected && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(controlledCalls).toBe(expected);
+  }
 
   it('distinguishes equal-length prompts and repeats a stable fingerprint without cache replay', async () => {
     const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -133,4 +168,78 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
     );
     expect(audit.rows[0]?.status).toBe('error');
   }, 30_000);
+
+  it('flushes a waiting Generate response and reuses the live owner after a poll timeout', async () => {
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    controlledPrompt = `single-flight slow ${Date.now()}`;
+    controlledMode = 'slow';
+    const wait = LlmCache.prototype.waitForCachedResponse;
+    vi.spyOn(LlmCache.prototype, 'waitForCachedResponse').mockImplementation(function (
+      this: LlmCache,
+      cacheKey,
+      _pollIntervalMs,
+      _timeoutMs,
+      signal,
+    ) {
+      return wait.call(this, cacheKey, 20, 100, signal);
+    });
+
+    const body = JSON.stringify({ prompt: controlledPrompt });
+    const send = () => fetch(`${base}/api/llm/generate`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body,
+    });
+    const first = send();
+    await waitForProviderCalls(1);
+
+    const waitingStarted = Date.now();
+    const secondResponse = await send();
+    expect(secondResponse.status).toBe(200);
+    expect(Date.now() - waitingStarted).toBeLessThan(1_000);
+    expect(controlledCalls).toBe(1);
+
+    const [firstBody, secondBody] = await Promise.all([
+      first.then((response) => response.text()),
+      secondResponse.text(),
+    ]);
+    expect(firstBody).toContain('Single-flight answer');
+    expect(secondBody).toContain('Single-flight answer');
+    expect(controlledCalls).toBe(1);
+  }, 15_000);
+
+  it('reacquires the Generate lock after an owner fails without caching', async () => {
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    controlledPrompt = `single-flight recovery ${Date.now()}`;
+    controlledMode = 'fail-first';
+    const wait = LlmCache.prototype.waitForCachedResponse;
+    vi.spyOn(LlmCache.prototype, 'waitForCachedResponse').mockImplementation(function (
+      this: LlmCache,
+      cacheKey,
+      _pollIntervalMs,
+      _timeoutMs,
+      signal,
+    ) {
+      return wait.call(this, cacheKey, 20, 500, signal);
+    });
+
+    const body = JSON.stringify({ prompt: controlledPrompt });
+    const send = () => fetch(`${base}/api/llm/generate`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body,
+    });
+    const first = send();
+    await waitForProviderCalls(1);
+    const secondResponse = await send();
+    expect(secondResponse.status).toBe(200);
+
+    const [firstBody, secondBody] = await Promise.all([
+      first.then((response) => response.text()),
+      secondResponse.text(),
+    ]);
+    expect(firstBody).toContain('Stream error');
+    expect(secondBody).toContain('Synthetic answer');
+    expect(controlledCalls).toBe(2);
+  }, 15_000);
 });
