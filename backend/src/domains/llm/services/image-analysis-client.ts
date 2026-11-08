@@ -8,8 +8,10 @@ import {
   LlmHttpError,
   type ChatMessage,
   type ProviderConfig,
+  type ArticleTransportStage,
 } from './openai-compatible-client.js';
 import { z } from 'zod';
+import { ArticleStageRefusedError } from './article-stage-admission.js';
 import { loadProviderConfig } from './llm-provider-resolver.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -125,6 +127,8 @@ export interface ImageAnalysisIdentityTriple {
 }
 
 export interface AnalyzeImageInput {
+  /** Server-derived binding rechecked by the transport after queue wait. */
+  articleStage: ArticleTransportStage;
   /** The validated raster bytes (intake sniffed and bounded them; nothing here re-checks). */
   bytes: Buffer;
   /** `image/png` | `image/jpeg` | `image/webp` | `image/gif` — the data URL's media type. */
@@ -359,6 +363,7 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
   try {
     const result = await chatCompletion(cfg, identity.model, messages, {
       temperature: 0,
+      transportContext: { kind: 'article', stage: input.articleStage },
       maxTokens: maxOutputTokens,
       // ADR-027 D8 erratum (#1619): suppress provider-side reasoning. A
       // reasoning VL model spends 82.0–93.3 % of its output tokens thinking at
@@ -382,6 +387,7 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
     finishReason = result.finishReason;
     usage = result.usage;
   } catch (err) {
+    if (err instanceof ArticleStageRefusedError) throw err;
     if (err instanceof LlmHttpError) {
       const classed = classifyHttpStatus(err.status);
       // The provider's body stays out of the log line (D14): status and class only.

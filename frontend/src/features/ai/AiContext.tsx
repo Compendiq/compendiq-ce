@@ -2,8 +2,9 @@
 import { createContext, useContext, useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ConversationDetail, UsecaseDefault } from '@compendiq/contracts';
+import { usecaseAdmitsLocalOnly, type AiPolicy, type ConversationDetail, type UsecaseDefault, type UsecaseLocality } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { inlineArticlePolicy } from '../../shared/lib/article-ai-policy';
 import { streamSSE } from '../../shared/lib/sse';
 import { AI_HOME_PATH, isAiRoute, conversationIdFromPath, conversationPath } from '../../shared/lib/ai-routes';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
@@ -94,6 +95,30 @@ interface AiContextValue {
   mode: Mode;
   setMode: (m: Mode) => void;
 
+  policyRefusal: 'ai_history_not_replayable' | 'ai_policy_unavailable' | null;
+  clearPolicyRefusal: () => void;
+  /** #283 — the reason `runStream`'s local policy guard refused the last page-derived send, or null. */
+  policyDenial: string | null;
+  /**
+   * #283 — the open article's AI policy as the server states it, or
+   * `undefined` for no article / unknown. See `pageActionDenialReason`.
+   */
+  articlePolicy: AiPolicy | undefined;
+  /**
+   * #283 — the ONE verdict every page-derived assistant producer consults
+   * before dispatch (Ask-about-page, Improve, Diagram, Summarize, Quality,
+   * create skills seeded from the page). Returns the accessible reason the
+   * action is unavailable, or `null` when it may be sent. Fails closed:
+   * `none` refuses; an unreadable or missing policy on an open article
+   * refuses; `local_only` refuses when the resolved chat destination is not a
+   * confirmed declared-local provider (read off the server's use-case row,
+   * never inferred from the default chat model's name). With NO article open
+   * the action is the user's own input and is not gated here — the server
+   * still admits each dispatch independently.
+   */
+  pageActionDenialReason: string | null;
+  /** #283 — the resolved chat destination's declared locality verdict for display. */
+  chatAdmitsLocalOnly: boolean;
   // Conversation & messages
   messages: Message[];
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -241,6 +266,17 @@ interface AiContextValue {
   /** `page.version` the pending improvement was produced from — see `AiThread`. */
   diffBaseVersion: number | null;
   setDiffBaseVersion: (v: number | null) => void;
+  /**
+   * #282: the durable `llm_improvements` row behind `improvedContent`, named
+   * by the Improve stream's final frame. Apply hands THIS back to
+   * `POST /llm/improvements/:id/readmit` (`readmitImprovement`) so the text is
+   * re-admitted under its recorded provenance before it touches the article.
+   * `null` when the stream named no row — no readable page, an aborted
+   * stream, or a backend older than #282 — in which case there is nothing to
+   * re-admit against and Apply sends the text it has.
+   */
+  improvementId: string | null;
+  setImprovementId: (v: string | null) => void;
 
   // Create skill / generate state
   createSkill: CreateSkillId;
@@ -268,13 +304,42 @@ interface AiContextValue {
       onError?: (err: unknown) => boolean;
       userMessage?: string;
     },
-  ) => Promise<void>;
+  ) => Promise<RunStreamOutcome>;
+}
+
+/**
+ * #283: what a `runStream` call ended as, returned to the caller because
+ * runStream never rethrows and React state written inside it is not yet
+ * readable on the line after `await`. `policyRefusal` is set when the send
+ * was refused by article AI policy before anything was answered; the
+ * caller then leaves its per-send draft state (attachments, URLs) intact.
+ */
+export interface RunStreamOutcome {
+  policyRefusal: PolicyRefusalCode | null;
+}
+
+/**
+ * #283 — the two refusal codes that leave the typed prompt and the visible
+ * thread intact and offer a recovery (New chat / retry), whether they arrive
+ * as an HTTP refusal before the stream or as an in-band error frame after
+ * the 200 was already sent.
+ */
+export type PolicyRefusalCode = 'ai_history_not_replayable' | 'ai_policy_unavailable';
+export function policyRefusalCodeOf(value: unknown): PolicyRefusalCode | null {
+  return value === 'ai_history_not_replayable' || value === 'ai_policy_unavailable' ? value : null;
 }
 
 /** Shape of a single parsed SSE event from any `/llm/*` streaming route. */
 interface StreamChunk {
   content?: string;
   error?: string;
+  /**
+   * #283: a machine-readable code beside an in-band `error`. The policy
+   * refusal codes are matched here (and, for a server that spells the code
+   * in `error` itself, there too) so an in-band refusal gets the same
+   * draft-retaining recovery as the HTTP one.
+   */
+  code?: string;
   done?: boolean;
   final?: boolean;
   /**
@@ -291,6 +356,12 @@ interface StreamChunk {
   originalMarkdown?: string;
   /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
   layoutTokensLost?: boolean;
+  /**
+   * Improve route (#282): the durable `llm_improvements` row this output was
+   * published to, on the final frame. Absent when no row was created (no
+   * readable page) — the server never fabricates one.
+   */
+  improvementId?: string;
   /**
    * Ask route (#1105): this turn is the low-confidence refusal, not an answer.
    * Carried on the final frame beside `sources`, which on this path are the
@@ -311,7 +382,77 @@ export interface StreamMeta {
   originalMarkdown?: string;
   /** Improve route: backend verdict that the output lost the layout tokens beyond recovery. */
   layoutTokensLost?: boolean;
+  /** Improve route (#282): the durable row to re-admit before Apply. */
+  improvementId?: string;
 }
+
+/**
+ * #282 — the client half of `POST /llm/improvements/:id/readmit`.
+ *
+ * A pending improvement is REUSABLE STATE: its text sits in the thread until
+ * the user presses Apply, which may be long after the stream that produced
+ * it, under an article policy or a provider binding that has since moved.
+ * The text itself proves nothing about what it was generated under, so
+ * before it is applied the row is handed back BY REFERENCE and the server
+ * re-admits its recorded provenance — same provider at its current revision
+ * and locality, every page still at its recorded policy and content
+ * revision, still readable by this user. Only text the server has just
+ * re-proved is applied; a refusal is a decision, never an inference, and
+ * costs no provider call.
+ *
+ * Both Apply consumers (the dock's `DockDiffCard` and `/ai`'s
+ * `ImproveDiffView`) go through this one function so the two cannot drift
+ * on what a 409 or a 503 means:
+ *
+ * - `admitted` — apply `improvedMarkdown` (the row's bytes, which the caller
+ *   compares against what the user reviewed on screen).
+ * - `refused` with `retryable: false` — 409 `ai_history_not_replayable`
+ *   (the binding moved, or the row is unknown provenance) or a 404 (the row
+ *   is gone). The page is untouched and pressing Apply again cannot change
+ *   the verdict: the way forward is to run Improve again, which proves a
+ *   fresh binding.
+ * - `refused` with `retryable: true` — 503 `ai_policy_unavailable`. The
+ *   authority that would decide could not be read; says nothing about the
+ *   article. Apply again shortly.
+ *
+ * Anything else (network failure, a 5xx that is not the contract's 503, a
+ * 403) is thrown unchanged for the caller's ordinary failure handling.
+ */
+export type ReadmitImprovementResult =
+  | { outcome: 'admitted'; improvedMarkdown: string }
+  | { outcome: 'refused'; retryable: boolean };
+
+export async function readmitImprovement(improvementId: string): Promise<ReadmitImprovementResult> {
+  try {
+    const response = await apiFetch<{ improvedMarkdown: string }>(
+      `/llm/improvements/${encodeURIComponent(improvementId)}/readmit`,
+      { method: 'POST' },
+    );
+    return { outcome: 'admitted', improvedMarkdown: response.improvedMarkdown };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.statusCode === 409 || err.statusCode === 404) return { outcome: 'refused', retryable: false };
+      if (err.statusCode === 503) return { outcome: 'refused', retryable: true };
+    }
+    throw err;
+  }
+}
+
+/** The sentence both Apply consumers show for a non-retryable refusal. */
+export const IMPROVEMENT_NOT_REPLAYABLE_MESSAGE =
+  'This improvement can no longer be applied: the article’s AI policy or the provider it was generated with has changed since. Nothing was changed. Run Improve again to produce one under the current policy.';
+
+/** …and for a retryable one. */
+export const IMPROVEMENT_READMIT_UNAVAILABLE_MESSAGE =
+  'The AI policy for this article could not be checked right now, so nothing was changed. Try Apply again in a moment.';
+
+/**
+ * The row's bytes differ from the text the user reviewed. The stored copy is
+ * what the server re-proved, so the on-screen text is not applied either —
+ * the user has not seen what would land.
+ */
+export const IMPROVEMENT_TEXT_MISMATCH_MESSAGE =
+  'The stored copy of this improvement does not match the text shown here, so nothing was changed. Run Improve again.';
 
 const AiCtx = createContext<AiContextValue | null>(null);
 
@@ -339,6 +480,13 @@ export function useAiContext(): AiContextValue {
  * that follows the user across pages.
  */
 interface AiThread {
+  policyRefusal: 'ai_history_not_replayable' | 'ai_policy_unavailable' | null;
+  /**
+   * #283 — the accessible reason the last page-derived send was refused
+   * LOCALLY by `runStream`'s policy guard (nothing was sent), or null.
+   * Cleared on the next send attempt like `policyRefusal`.
+   */
+  policyDenial: string | null;
   messages: Message[];
   conversationId: string | null;
   input: string;
@@ -354,6 +502,8 @@ interface AiThread {
    * re-run and silently overwriting someone else's edit.
    */
   diffBaseVersion: number | null;
+  /** #282: the durable row behind `improvedContent`, or null — see the context value. */
+  improvementId: string | null;
   generatedDraft: string;
   /**
    * Stamped when the thread is FILED (#1361), never by a write.
@@ -378,6 +528,8 @@ interface AiThread {
  * identities start at 1 — so a writer that finds 0 has found nothing.
  */
 const EMPTY_THREAD: AiThread = {
+  policyRefusal: null,
+  policyDenial: null,
   messages: [],
   conversationId: null,
   input: '',
@@ -387,6 +539,7 @@ const EMPTY_THREAD: AiThread = {
   layoutTokensLost: undefined,
   diagramCode: '',
   diffBaseVersion: null,
+  improvementId: null,
   generatedDraft: '',
   identity: 0,
   loadState: 'ready',
@@ -628,7 +781,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const {
     messages, conversationId, input, showDiffView,
     improvedContent, originalMarkdown, layoutTokensLost, diagramCode, diffBaseVersion,
-    generatedDraft,
+    improvementId, generatedDraft,
     loadState, loadError, historyTruncated,
   } = activeThread;
   /**
@@ -750,6 +903,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     (v: number | null) => updateThread(threadKey, () => ({ diffBaseVersion: v })),
     [threadKey, updateThread],
   );
+  const setImprovementId = useCallback(
+    (v: string | null) => updateThread(threadKey, () => ({ improvementId: v })),
+    [threadKey, updateThread],
+  );
   const setGeneratedDraft = useCallback(
     (v: string) => updateThread(threadKey, () => ({ generatedDraft: v })),
     [threadKey, updateThread],
@@ -758,6 +915,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
+  // #283 — the current fail-closed verdict, readable at CALL time by
+  // `runStream` without rebuilding it on every policy/page change. Assigned
+  // where the verdict is computed, below the queries it depends on.
+  const pageActionDenialReasonRef = useRef<string | null>(null);
 
   // #747: rAF-batched display buffer for the in-flight assistant answer.
   // SSE chunks are appended to a ref and flushed to React state at most once
@@ -771,9 +932,32 @@ export function AiProvider({ children }: { children: ReactNode }) {
     finish: streamingFinish,
   } = streaming;
   const streamingDisplayContent = streaming.displayContent;
-  const { data: page, isLoading: isPageLoading } = usePage(hasConsumers ? pageId ?? undefined : undefined);
+  const pageQuery = usePage(hasConsumers ? pageId ?? undefined : undefined);
+  const { data: page, isLoading: isPageLoading } = pageQuery;
   const { data: embeddingStatus } = useEmbeddingStatus(hasConsumers);
   const pageHasChildren = page?.hasChildren ?? false;
+  /**
+   * #283 — the open article's AI policy as the SERVER states it, decoded from
+   * the page-detail wire. `undefined` when there is no open article, when the
+   * read failed, or when the server did not send a policy: unknown, never
+   * `all`. Every page-derived assistant action consults this through
+   * `pageActionDenialReason` below and fails closed on unknown.
+   */
+  const articlePolicy = useMemo(
+    () => (pageId && page ? inlineArticlePolicy(page).articlePolicy : undefined),
+    [pageId, page],
+  );
+  /**
+   * Whether the server that answered this page detail speaks the policy
+   * contract at all: `aiPolicyActivation` is on every #280+ detail
+   * (`active` or `foundation_only`). A detail WITHOUT it comes from a server
+   * (or a fixture) that predates article AI policy, where there is no policy
+   * to enforce and refusing every page-derived action would be a false
+   * restriction. A detail WITH it and no readable `aiPolicy` is a policy that
+   * could not be established, and that fails closed.
+   */
+  const policyContractPresent = !!page && typeof (page as { aiPolicyActivation?: unknown }).aiPolicyActivation === 'string';
+  const articlePolicyUnreadable = !!pageId && !isPageLoading && (pageQuery.isError || (policyContractPresent && articlePolicy === undefined));
 
   // Abort any in-flight stream on unmount
   useEffect(() => {
@@ -891,6 +1075,22 @@ export function AiProvider({ children }: { children: ReactNode }) {
     enabled: hasConsumers,
   });
   const chatDefault = chatDefaultQuery.data;
+
+  /**
+   * #283 — the chat destination's DECLARED locality, from its own non-admin
+   * route (`UsecaseLocalitySchema`), never inferred from `chatDefault`'s
+   * model or provider name. Fetched only while a `local_only` article is
+   * open: that is the one policy for which the answer changes a verdict.
+   * `retry: false` for the same reason as `chatDefaultQuery` — a 404 is "no
+   * chat provider", and that already denies. Unknown stays unknown.
+   */
+  const chatLocalityQuery = useQuery<UsecaseLocality>({
+    queryKey: ['llm', 'usecase-locality', 'chat'],
+    queryFn: () => apiFetch<UsecaseLocality>('/llm/usecase-locality?usecase=chat'),
+    retry: false,
+    staleTime: 30_000,
+    enabled: hasConsumers && articlePolicy === 'local_only',
+  });
 
   // Models for the chat use case. Finding 4: the backend route at
   // backend/src/routes/llm/llm-models.ts only parses ?usecase=… — it ignores
@@ -1334,8 +1534,22 @@ export function AiProvider({ children }: { children: ReactNode }) {
       onError?: (err: unknown) => boolean;
       userMessage?: string;
     },
-  ) => {
-    if (isStreamingRef.current) return;
+  ): Promise<RunStreamOutcome> => {
+    const outcome: RunStreamOutcome = { policyRefusal: null };
+    if (isStreamingRef.current) return outcome;
+    // #283 — the central fail-closed guard. A request that names an article
+    // (`pageId` in the body: Improve, Diagram, Summarize, Quality, an Ask
+    // about the page, create skills seeded from it) is refused HERE when the
+    // article's policy denies it or cannot be read, so every entry point —
+    // mouse, keyboard, programmatic — reaches the same verdict before any
+    // bytes leave. The reason is shown as the thread's refusal notice; the
+    // typed prompt is untouched. The server still admits independently.
+    const namesArticle = body.pageId !== undefined && body.pageId !== null && body.pageId !== '';
+    if (namesArticle && pageActionDenialReasonRef.current) {
+      const reason = pageActionDenialReasonRef.current;
+      setThreads((prev) => touchThread(prev, threadKeyRef.current, () => ({ policyDenial: reason, policyRefusal: null })));
+      return outcome;
+    }
 
     // Bind this stream to the thread that started it (#1361). The KEY is kept
     // for the fallback below; the IDENTITY is what every write dispatches on,
@@ -1383,6 +1597,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     if (seededUserMessage && seededUserMsgId) {
       setThreadMessages((prev) => [...prev, { id: seededUserMsgId, role: 'user', content: seededUserMessage }]);
     }
+    // #283: a new send is a fresh admission decision. The previous refusal
+    // notice comes down so the result of THIS send — an answer, or the same
+    // refusal again — is what the user sees; the draft is untouched.
+    writeOrigin((thread) => (thread.policyRefusal || thread.policyDenial ? { policyRefusal: null, policyDenial: null } : {}));
 
     opts?.onBeforeStream?.();
     isStreamingRef.current = true;
@@ -1397,6 +1615,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let finalSources: Source[] = [];
     let originalMarkdown: string | undefined;
     let streamLayoutTokensLost: boolean | undefined;
+    // #282: the durable row the Improve route published to, off the final
+    // frame. Local, like the two above: committed through `onComplete` with
+    // the content it names, never ahead of it.
+    let streamImprovementId: string | undefined;
     // #1119: the #1105 refusal verdict, read off the final frame. Local rather
     // than state because it is committed with the content in one update below.
     let refusedTurn = false;
@@ -1456,12 +1678,39 @@ export function AiProvider({ children }: { children: ReactNode }) {
       });
     };
 
+    /**
+     * #283 policy refusal recovery — ONE handler for both arrival paths.
+     * Nothing was answered: the placeholder and the turn this call seeded
+     * are withdrawn, the thread's own earlier turns stay visible, and the
+     * typed prompt is restored into the composer if it was cleared. A user
+     * turn the caller appended itself (Ask does) is restored through
+     * `restoreCallerTurn`, which the caller sets when it appended one.
+     * `policyRefusal` on the thread drives the notice with New chat (history
+     * refusal) or Retry (transient policy read failure); neither reclassifies
+     * the history as safe or sends anything.
+     */
+    const recoverFromPolicyRefusal = (refusal: PolicyRefusalCode) => {
+      outcome.policyRefusal = refusal;
+      const typed = typeof body.question === 'string' ? body.question
+        : typeof body.instruction === 'string' ? body.instruction
+        : typeof body.prompt === 'string' ? body.prompt : '';
+      writeOrigin((thread) => ({
+        policyRefusal: refusal,
+        input: thread.input || typed,
+        messages: thread.messages.filter((message) => message.id !== assistantMsgId && message.id !== seededUserMsgId),
+      }));
+    };
+
+    // The body keeps its early `return`s; the outcome is what the caller gets.
+    await (async () => {
     try {
       let streamError: string | null = null;
+      let streamRefusal: PolicyRefusalCode | null = null;
       let completed = false;
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
         if (chunk.error) {
           streamError = chunk.error;
+          streamRefusal = policyRefusalCodeOf(chunk.code) ?? policyRefusalCodeOf(chunk.error);
           break;
         }
         if (chunk.done === true) completed = true;
@@ -1525,6 +1774,19 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.layoutTokensLost !== undefined) {
           streamLayoutTokensLost = chunk.layoutTokensLost;
         }
+        if (typeof chunk.improvementId === 'string' && chunk.improvementId) {
+          streamImprovementId = chunk.improvementId;
+        }
+      }
+      if (streamRefusal && !accumulated) {
+        // #283: an in-band policy refusal BEFORE any content is the same
+        // event as the HTTP one — nothing was answered — and gets the same
+        // recovery. Once content has streamed the refusal is an
+        // interruption of a partially delivered answer and keeps the
+        // ordinary inline treatment below, because withdrawing text the user
+        // has already read would be its own silent loss.
+        recoverFromPolicyRefusal(streamRefusal);
+        return;
       }
       if (streamError) {
         // In-band SSE error events (HTTP 200 already established — the common
@@ -1562,8 +1824,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
       opts?.onComplete?.(
         accumulated,
         finalSources.length > 0 ? finalSources : undefined,
-        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined
-          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost }
+        originalMarkdown !== undefined || streamLayoutTokensLost !== undefined || streamImprovementId !== undefined
+          ? { originalMarkdown, layoutTokensLost: streamLayoutTokensLost, improvementId: streamImprovementId }
           : undefined,
       );
     } catch (err) {
@@ -1571,6 +1833,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
         // Keep whatever was streamed before the abort (matches the previous
         // per-chunk-commit behavior).
         commitToMessages();
+        return;
+      }
+      const httpRefusal = err instanceof ApiError ? policyRefusalCodeOf(err.code) : null;
+      if (httpRefusal) {
+        recoverFromPolicyRefusal(httpRefusal);
         return;
       }
       // #1361: a stale conversation id. The server refuses BEFORE any SSE
@@ -1627,9 +1894,42 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setIsThinking(false);
       setStreamingThreadId(null);
     }
+    })();
+    return outcome;
   }, [streamingStart, streamingAppend, streamingReplace, streamingFinish, updateThread, updateThreadByIdentity, completeExchange, queryClient]);
 
+  // #283 — see `AiContextValue.pageActionDenialReason`. Computed once here so
+  // the dock, the Ask composer and the programmatic callers read one verdict.
+  const chatLocality = chatLocalityQuery.data;
+  const chatAdmitsLocalOnly = usecaseAdmitsLocalOnly(chatLocality);
+  const pageActionDenialReason: string | null = (() => {
+    if (!pageId) return null;
+    if (isPageLoading) return 'Unavailable until this article\u2019s AI policy has been read.';
+    if (articlePolicyUnreadable) {
+      return 'Unavailable: this article\u2019s AI policy could not be read. Nothing derived from it is sent.';
+    }
+    // A pre-policy server: nothing to enforce (see `policyContractPresent`).
+    if (articlePolicy === undefined) return null;
+    if (articlePolicy === 'none') {
+      return 'Unavailable: this article\u2019s AI policy is No AI allowed. Nothing derived from it is sent to any provider.';
+    }
+    if (articlePolicy === 'local_only' && !chatAdmitsLocalOnly) {
+      if (chatLocalityQuery.isPending) return 'Unavailable until the assistant\u2019s provider locality has been read.';
+      return chatLocality === undefined
+        ? 'Unavailable: this article is Local AI only and the assistant\u2019s provider locality could not be read.'
+        : `Unavailable: this article is Local AI only and the assistant\u2019s resolved provider${chatLocality.providerName ? ` (${chatLocality.providerName})` : ''} is not a confirmed declared-local provider.`;
+    }
+    return null;
+  })();
+  pageActionDenialReasonRef.current = pageActionDenialReason;
+
   const value: AiContextValue = {
+    policyRefusal: activeThread.policyRefusal,
+    clearPolicyRefusal: () => updateThread(threadKey, () => ({ policyRefusal: null, policyDenial: null })),
+    policyDenial: activeThread.policyDenial,
+    articlePolicy,
+    pageActionDenialReason,
+    chatAdmitsLocalOnly,
     retainAi,
     pageId,
     page: page as PageData | undefined,
@@ -1686,6 +1986,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setLayoutTokensLost,
     diffBaseVersion,
     setDiffBaseVersion,
+    improvementId,
+    setImprovementId,
     createSkill,
     setCreateSkill,
     generatedDraft,

@@ -265,6 +265,7 @@ describe('ProviderEditModal — presets', () => {
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(init.body));
     expect(body).toEqual({
+      locality: 'external',
       name: 'Prod OpenAI',
       baseUrl: 'https://api.openai.com/v1',
       authType: 'bearer',

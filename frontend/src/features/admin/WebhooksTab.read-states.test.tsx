@@ -50,8 +50,9 @@ describe('webhook list read states', () => {
     const { client } = setup(async () => ++count === 2 ? json({ message: 'Unavailable' }, 500) : json({ subscriptions: [row] }));
     await screen.findByText('Example endpoint');
     await act(async () => { await client.invalidateQueries({ queryKey: ['admin', 'webhooks'] }); });
+    // Query completion can precede the batched observer notification/render.
+    expect(await screen.findByTestId('webhooks-read-error')).toHaveTextContent('Showing the last loaded list');
     expect(screen.getByText('Example endpoint')).toBeInTheDocument();
-    expect(screen.getByTestId('webhooks-read-error')).toHaveTextContent('Showing the last loaded list');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByTestId('webhooks-read-error')).not.toBeInTheDocument());
     expect(screen.getByText('Example endpoint')).toBeInTheDocument();

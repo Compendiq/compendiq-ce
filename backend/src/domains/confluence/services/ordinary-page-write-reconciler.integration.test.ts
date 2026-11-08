@@ -148,7 +148,7 @@ async function seedPendingLabelIntent(input: {
         pageId: pageRow.id,
         confluenceId: 'remote-label-page',
         priorLabels: ['before'],
-        targetLabels: ['after', 'reviewed'],
+        targetLabels: ['after', 'reviewed', 'all-ai'],
       }),
       input.remoteStarted,
       input.remoteCompleted,
@@ -437,7 +437,7 @@ describeDb('ordinary page-write reconciliation', () => {
   it('publishes terminal labels and invalidates cached reads with only one free database connection', async () => {
     const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
     mockRequest.mockResolvedValueOnce(jsonResponse({
-      results: [{ name: 'reviewed' }, { name: 'after' }],
+      results: [{ name: 'reviewed' }, { name: 'after' }, { name: 'all-ai' }],
     }) as never);
 
     cacheKey = `kb:${seeded.actorId}:pages:recovery`;
@@ -478,7 +478,7 @@ describeDb('ordinary page-write reconciliation', () => {
 
     expect(mockRequest).toHaveBeenCalledTimes(1);
     const page = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [seeded.pageId]);
-    expect(page.rows[0]!.labels).toEqual(['after', 'reviewed']);
+    expect(page.rows[0]!.labels).toEqual(['after', 'reviewed', 'all-ai']);
     const intent = await query<{ status: string; cache_invalidation_pending: boolean }>(
       'SELECT status, cache_invalidation_pending FROM page_write_intents WHERE id = $1',
       [seeded.intentId],
@@ -713,13 +713,13 @@ describeDb('ordinary page-write reconciliation', () => {
 
     await query('UPDATE users SET deactivated_at = NULL WHERE id = $1', [seeded.actorId]);
     mockRequest.mockResolvedValueOnce(jsonResponse({
-      results: [{ name: 'after' }, { name: 'reviewed' }],
+      results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }],
     }) as never);
     await expect(reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId, reason: 'The previous callback ended and the original actor is authorized again',
     })).resolves.toEqual({ intentId: seeded.intentId, status: 'reconciled_applied' });
     expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-      .toEqual([{ labels: ['after', 'reviewed'] }]);
+      .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
   });
 
 
@@ -764,7 +764,7 @@ describeDb('ordinary page-write reconciliation', () => {
     mockRequest.mockImplementationOnce(async () => {
       reading.resolve();
       await releaseRead.promise;
-      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }] }) as never;
     });
     const pending = reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId,
@@ -798,7 +798,7 @@ describeDb('ordinary page-write reconciliation', () => {
       await demoting;
       await demoter.query('COMMIT');
       expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-        .toEqual([{ labels: ['after', 'reviewed'] }]);
+        .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
       expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows)
         .toEqual([{ status: 'reconciled_applied' }]);
       expect((await query('SELECT role FROM users WHERE id = $1', [seeded.recoveryAdminId])).rows)
@@ -812,6 +812,73 @@ describeDb('ordinary page-write reconciliation', () => {
     }
   });
 
+  it.each([
+    ['all', [], 'all-ai'], ['all', ['ai:all'], 'all-ai'],
+    ['local_only', [], 'local-ai-only'], ['local_only', ['ai:local'], 'local-ai-only'],
+    ['none', [], 'no-ai'], ['none', ['ai:none'], 'no-ai'],
+  ] as const)('repairs legacy %s reserved slot %j without rewriting acknowledged evidence', async (policy, slot, canonical) => {
+    const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
+    // A genuine pre-cutover pending command: old target and terminal receipt
+    // remain immutable, including after recovery has aligned the remote mirror.
+    await query('UPDATE pages SET ai_policy = $2, labels = $3, body_html = $4, body_text = $5 WHERE id = $1',
+      [seeded.pageId, policy, ['before', ...slot], '<p>Authored recovery body</p>', 'Authored recovery body']);
+    const oldTarget = ['after', 'reviewed', ...slot];
+    await query(`UPDATE page_write_intents i SET effect = jsonb_set(effect, '{targetLabels}', $2::jsonb),
+      revisions = jsonb_build_object(p.id::text, jsonb_build_object('contentRevision', p.content_revision::text,
+      'lifecycleRevision', p.lifecycle_revision::text)) FROM pages p WHERE i.id = $1 AND p.id = $3`,
+    [seeded.intentId, JSON.stringify(oldTarget), seeded.pageId]);
+    const original = (await query('SELECT effect, remote_terminal_result FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0];
+    const content = (await query('SELECT ai_policy, ai_policy_revision, body_html, body_text FROM pages WHERE id = $1', [seeded.pageId])).rows[0];
+    let remote = [...oldTarget];
+    mockRequest.mockImplementation(async (_url, options) => {
+      if (options?.method === 'POST') {
+        const added = JSON.parse(String(options.body)) as Array<{ name: string }>;
+        expect(added).toEqual([{ prefix: 'global', name: canonical }]);
+        remote.push(...added.map((label) => label.name));
+      } else if (options?.method === 'DELETE') {
+        remote = remote.filter((label) => !String(_url).includes(encodeURIComponent(label)));
+      }
+      return jsonResponse({ results: remote.map((name) => ({ name })) }) as never;
+    });
+    const holders: PoolClient[] = [];
+    while (holders.length < getPool().options.max - 1) holders.push(await getPool().connect());
+    try {
+      await expect(reconcilePageWriteIntent(seeded.intentId, {
+        actorId: seeded.recoveryAdminId, reason: 'Repair the canonical reserved slot of the acknowledged legacy label target',
+      })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    } finally { holders.forEach((holder) => holder.release()); }
+    expect(remote.sort()).toEqual(['after', 'reviewed', canonical].sort());
+    expect((await query('SELECT effect, remote_terminal_result FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0]).toEqual(original);
+    expect((await query('SELECT ai_policy, ai_policy_revision, body_html, body_text FROM pages WHERE id = $1', [seeded.pageId])).rows[0]).toEqual(content);
+    const journal = (await query('SELECT plan, next_step, in_flight, outcomes, completed_at FROM page_label_canonical_repairs WHERE intent_id = $1', [seeded.intentId])).rows[0]!;
+    expect(journal.plan.before).toEqual([...oldTarget].sort());
+    expect(journal.plan.after).toEqual(remote);
+    expect(journal.in_flight).toBe(false);
+    expect(journal.outcomes).toHaveLength(slot.length + 1);
+    expect(journal.completed_at).toBeInstanceOf(Date);
+    await expect(withPageWriteTransaction([seeded.pageId], async (client) => {
+      await client.query('UPDATE pages SET title = $2 WHERE id = $1', [seeded.pageId, 'Fresh write after recovery']);
+    })).resolves.toBeUndefined();
+  });
+
+  it('refuses independent remote changes and retains unknown canonical request outcomes', async () => {
+    const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
+    await query(`UPDATE page_write_intents SET effect = jsonb_set(effect, '{targetLabels}', '["after","reviewed"]') WHERE id = $1`, [seeded.intentId]);
+    mockRequest.mockResolvedValue(jsonResponse({ results: [{ name: 'independent' }] }) as never);
+    const authorization = { actorId: seeded.recoveryAdminId, reason: 'Repair only a verified exact legacy terminal target' };
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' });
+    expect(mockRequest.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    mockRequest.mockImplementation(async (_url, options) => {
+      if (options?.method === 'POST') throw new Error('lost response after remote request');
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+    });
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toThrow('lost response');
+    const calls = mockRequest.mock.calls.length;
+    await expect(reconcilePageWriteIntent(seeded.intentId, authorization)).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' });
+    expect(mockRequest).toHaveBeenCalledTimes(calls);
+    expect((await query('SELECT status FROM page_write_intents WHERE id = $1', [seeded.intentId])).rows[0].status).toBe('pending');
+  });
+
   it('owns the production recovery callback until publication finishes before acknowledging quiescence', async () => {
     const seeded = await seedPendingLabelIntent({ remoteStarted: true, remoteCompleted: true });
     const quiescenceAdminId = await seedRecoveryAdmin('quiescence');
@@ -822,7 +889,7 @@ describeDb('ordinary page-write reconciliation', () => {
     mockRequest.mockImplementationOnce(async () => {
       enterRead();
       await readGate;
-      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }] }) as never;
+      return jsonResponse({ results: [{ name: 'after' }, { name: 'reviewed' }, { name: 'all-ai' }] }) as never;
     });
     const pending = reconcilePageWriteIntent(seeded.intentId, {
       actorId: seeded.recoveryAdminId, reason: 'Verify terminal labels on the recovering backend before publishing them',
@@ -871,7 +938,7 @@ describeDb('ordinary page-write reconciliation', () => {
         reason: 'Retry final acknowledgment after restoring administrator authority',
       });
       expect((await query('SELECT labels FROM pages WHERE id = $1', [seeded.pageId])).rows)
-        .toEqual([{ labels: ['after', 'reviewed'] }]);
+        .toEqual([{ labels: ['after', 'reviewed', 'all-ai'] }]);
       await expect(fencePageWriterRuntime({
         mode: 'owner_ack', runtimeId: ack.runtimeId, acknowledgmentId: ack.acknowledgmentId,
         actorId: quiescenceAdminId, reason: 'The recovering owner acknowledged only after its callback and publication settled',

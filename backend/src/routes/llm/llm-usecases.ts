@@ -4,6 +4,7 @@ import {
   LlmUsecaseSchema,
   UpdateUsecaseAssignmentsInputSchema,
   UsecaseDefaultSchema,
+  UsecaseLocalitySchema,
   VisionCapabilityDetailSchema,
   ImageAnalysisCapabilityDetailSchema,
   ImageAnalysisReanalysisScopeQuerySchema,
@@ -121,6 +122,47 @@ async function resolveChatPair(): Promise<{ providerId: string; model: string } 
   return resolved ? { providerId: resolved.config.providerId, model: resolved.model } : null;
 }
 
+/**
+ * #283 — the resolved provider's DECLARED locality for the non-admin
+ * default row. Read from the provider row itself (the same columns the
+ * admin list serves), never inferred from the URL, name or a probe.
+ * `localityConfirmed` mirrors `LlmProviderSchema.localConfirmed`: the
+ * declaration is `local` AND was made against the current configuration
+ * revision — a `local` left behind by an endpoint edit is reported as
+ * declared-but-unconfirmed and does not admit `local_only` content.
+ *
+ * Fails closed: an unreadable row answers `locality: null`, which no
+ * consumer may treat as local.
+ */
+export async function readDeclaredLocality(
+  providerId: string,
+): Promise<{ locality: 'local' | 'external' | null; localityConfirmed: boolean }> {
+  try {
+    const result = await query<{ row: Record<string, unknown> }>(
+      'SELECT to_jsonb(p) AS row FROM llm_providers p WHERE p.id = $1',
+      [providerId],
+    );
+    const row = result.rows[0]?.row;
+    if (!row) return { locality: null, localityConfirmed: false };
+    const locality = row.locality === 'local' || row.locality === 'external' ? row.locality : null;
+    if (locality !== 'local') return { locality, localityConfirmed: false };
+    // A `local` declaration is bound to the revision it was declared against.
+    // Both columns must be present and equal for the declaration to stand;
+    // a row that cannot prove the binding is unconfirmed.
+    const current = row.config_revision;
+    const declared = row.locality_declared_config_revision
+      ?? row.locality_config_revision
+      ?? row.locality_declared_revision
+      ?? row.locality_revision;
+    const confirmed = current !== undefined && current !== null && declared !== undefined && declared !== null
+      && String(current) === String(declared);
+    return { locality, localityConfirmed: confirmed };
+  } catch (err) {
+    logger.warn({ err, providerId }, 'Could not read declared provider locality; reporting unknown');
+    return { locality: null, localityConfirmed: false };
+  }
+}
+
 export async function llmUsecaseRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -165,6 +207,42 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       providerName: resolved.config.name,
       model: resolved.model,
       vision,
+    });
+  });
+
+  // GET /llm/usecase-locality?usecase=chat — non-admin (#283): the DECLARED
+  // locality of the provider a use case resolves to, so a `local_only`
+  // article surface can say whether THIS use case's destination is admitted
+  // without inferring it from the default chat row, a URL, a name or a probe.
+  //
+  // Its own route rather than two more keys on `/llm/usecase-default`: that
+  // object's exact key set is the pinned non-admin leak boundary (#1184,
+  // `llm-usecases-vision.test.ts`). This answers a category of the
+  // destination — the same two words the provider list shows — and nothing
+  // else; `UsecaseLocalitySchema` is strict so nothing else can ride along.
+  // Same resolution as the default route, so the two name the same provider.
+  fastify.get('/llm/usecase-locality', async (req, reply) => {
+    const { usecase } = z.object({ usecase: LlmUsecaseSchema }).parse(req.query);
+    let resolved;
+    try {
+      resolved = NON_INHERITING.has(usecase)
+        ? await resolveNonInheriting(usecase)
+        : await resolveUsecase(usecase);
+    } catch {
+      resolved = null;
+    }
+    if (!resolved) {
+      return reply.code(404).send({
+        error: `No provider resolved for use case "${usecase}". Configure one in Settings → AI Models.`,
+      });
+    }
+    const { locality, localityConfirmed } = await readDeclaredLocality(resolved.config.providerId);
+    return UsecaseLocalitySchema.parse({
+      usecase,
+      providerId: resolved.config.providerId,
+      providerName: resolved.config.name,
+      locality,
+      localityConfirmed,
     });
   });
 

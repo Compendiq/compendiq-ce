@@ -4,7 +4,9 @@ import {
   LlmProviderInputSchema,
   UsecaseAssignmentsSchema,
   UsecaseDefaultSchema,
+  UsecaseLocalitySchema,
   VisionCapabilityDetailSchema,
+  usecaseAdmitsLocalOnly,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -183,6 +185,34 @@ describe('UsecaseDefaultSchema vision tri-state (#1154)', () => {
 
   it.each([true, false, null])('accepts vision: %j', (vision) => {
     expect(() => UsecaseDefaultSchema.parse({ ...base, vision })).not.toThrow();
+  });
+
+  /**
+   * #283 — declared locality has its OWN non-admin route and schema rather
+   * than widening `UsecaseDefaultSchema`, whose exact key set is the pinned
+   * non-admin leak boundary (#1184). Nullable like `vision`: null is "could
+   * not read", never `local`; a consumer fails closed on null and on a
+   * missing row alike.
+   */
+  it('UsecaseLocalitySchema carries declared locality and its confirmation; unknown never admits local_only', () => {
+    const row = { usecase: 'chat' as const, providerId: base.providerId, providerName: 'local' };
+    expect(() => UsecaseLocalitySchema.parse({ ...row, locality: 'local', localityConfirmed: true })).not.toThrow();
+    expect(() => UsecaseLocalitySchema.parse({ ...row, locality: null, localityConfirmed: false })).not.toThrow();
+    expect(() => UsecaseLocalitySchema.parse({ ...row, locality: 'verified', localityConfirmed: true })).toThrow();
+    expect(() => UsecaseLocalitySchema.parse({ ...row, locality: 'local' })).toThrow();
+    // Strict: an endpoint, a key or a probe body can never ride along.
+    expect(() => UsecaseLocalitySchema.parse({ ...row, locality: 'local', localityConfirmed: true, baseUrl: 'http://x' })).toThrow();
+    // And the default row stays exactly as pinned — no locality keys.
+    expect(Object.keys(UsecaseDefaultSchema.parse({ ...base, vision: null })).sort()).toEqual(['model', 'providerId', 'providerName', 'usecase', 'vision']);
+
+    expect(usecaseAdmitsLocalOnly({ locality: 'local', localityConfirmed: true })).toBe(true);
+    // A declaration left behind by an endpoint edit is not admission.
+    expect(usecaseAdmitsLocalOnly({ locality: 'local', localityConfirmed: false })).toBe(false);
+    expect(usecaseAdmitsLocalOnly({ locality: 'external', localityConfirmed: true })).toBe(false);
+    expect(usecaseAdmitsLocalOnly({ locality: null, localityConfirmed: false })).toBe(false);
+    expect(usecaseAdmitsLocalOnly({})).toBe(false);
+    expect(usecaseAdmitsLocalOnly(null)).toBe(false);
+    expect(usecaseAdmitsLocalOnly(undefined)).toBe(false);
   });
 
   // null is a real verdict ("probed, couldn't tell") that the composer renders

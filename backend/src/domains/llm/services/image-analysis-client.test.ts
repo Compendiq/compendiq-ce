@@ -17,7 +17,12 @@ import {
   REFUSAL_PATTERNS,
   type ImageAnalysisFailure,
 } from './image-analysis-client.js';
-import type { ProviderConfig } from './openai-compatible-client.js';
+import type { ProviderConfig, ArticleTransportStage } from './openai-compatible-client.js';
+import { setupTestDb, teardownTestDb } from '../../../test-db-helper.js';
+import { query } from '../../../core/db/postgres.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { loadProviderConfig } from './llm-provider-resolver.js';
+let articleStage: ArticleTransportStage;
 
 /**
  * ADR-027 D8 — the client's classing, against a real local HTTP server so the
@@ -55,6 +60,7 @@ function chatReply(content: string, finishReason = 'stop', usage: Record<string,
 }
 
 beforeAll(async () => {
+  await setupTestDb();
   srv = createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
@@ -71,24 +77,38 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/v1`;
 });
 
-afterAll(() => new Promise<void>((r) => { srv.closeAllConnections(); srv.close(() => r()); }));
+afterAll(async () => {
+  await new Promise<void>((r) => { srv.closeAllConnections(); srv.close(() => r()); });
+  await teardownTestDb();
+});
 
 let seq = 0;
 let provider: ProviderConfig;
 let identity: { providerId: string; model: string; baseUrl: string };
 
-beforeEach(() => {
+beforeEach(async () => {
   received = [];
   logCalls.length = 0;
-  // A fresh provider id per case keeps one case's 5xx from opening the
-  // breaker on the next.
   const providerId = `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`;
-  provider = { providerId, baseUrl, apiKey: null, authType: 'none', verifySsl: true };
+  await query(`INSERT INTO llm_providers (id, name, base_url, auth_type, verify_ssl)
+    VALUES ($1::uuid, $1::text, $2, 'none', TRUE)`, [providerId, baseUrl]);
+  await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+    VALUES ('image_analysis', $1, 'qwen3-vl') ON CONFLICT (usecase)
+    DO UPDATE SET provider_id = EXCLUDED.provider_id, model = EXCLUDED.model`, [providerId]);
+  provider = await loadProviderConfig(providerId);
   identity = { providerId, model: 'qwen3-vl', baseUrl };
+  const page = (await query(`INSERT INTO pages (title, source, visibility)
+    VALUES ('Image fixture', 'standalone', 'shared') RETURNING id, ai_policy_revision, content_revision`)).rows[0];
+  articleStage = {
+    userId: null, usecase: 'image_analysis',
+    provenance: { version: 1, providerId, configRevision: provider.configRevision!, locality: 'external',
+      pages: [{ pageId: page.id, policy: 'all', policyRevision: Number(page.ai_policy_revision), contentRevision: Number(page.content_revision) }] },
+    context: { operation: newAiOperation('image_fixture', { kind: 'worker', id: 'image-client-test' }), stage: 'vision', attempt: 1 },
+  };
 });
 
 const run = (over: Partial<Parameters<typeof analyzeImage>[0]> = {}) =>
-  analyzeImage({ bytes: PNG, mimeType: 'image/png', identity, maxOutputTokens: 8192, provider, ...over });
+  analyzeImage({ bytes: PNG, mimeType: 'image/png', identity, maxOutputTokens: 8192, provider, articleStage, ...over });
 
 describe('analyzeImage — the request (ADR-027 D8 wire)', () => {
   it('sends temperature 0, max_tokens = the ceiling, no tools, a data-URL part and no page text', async () => {
@@ -337,6 +357,9 @@ describe('analyzeImage — the transient class and the provider-level default ar
   });
 
   it('a connection that is refused is unavailable with no status', async () => {
+    await query(`UPDATE llm_providers SET base_url = 'http://127.0.0.1:1/v1' WHERE id = $1`, [provider.providerId]);
+    provider = await loadProviderConfig(provider.providerId);
+    articleStage.provenance.configRevision = provider.configRevision!;
     const r = (await run({ provider: { ...provider, baseUrl: 'http://127.0.0.1:1/v1' }, identity: { ...identity, baseUrl: 'http://127.0.0.1:1/v1' } })) as ImageAnalysisFailure;
     expect(r).toMatchObject({ ok: false, class: 'unavailable', providerLevel: false });
     expect(r.httpStatus).toBeUndefined();

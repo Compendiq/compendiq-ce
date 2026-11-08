@@ -4,11 +4,33 @@ import type { AddressInfo } from 'node:net';
 import {
   INLINE_COMPLETION_STOP,
   normalizeInlineCompletion,
-  requestInlineCompletion,
+  requestInlineCompletion as sendInlineCompletion,
   supportsFim,
 } from './inline-completion-client.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
 import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
+
+import { setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
+import { query } from '../../../core/db/postgres.js';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import type { InlineCompletionRequest } from '@compendiq/contracts';
+
+async function requestInlineCompletion(config: ProviderConfig, model: string, input: InlineCompletionRequest,
+  signal: AbortSignal, options: { timeoutMs?: number } = {}) {
+  const user = (await query("INSERT INTO users (username, password_hash, role) VALUES ('inline', 'x', 'user') RETURNING id")).rows[0];
+  const page = (await query("INSERT INTO pages (title, source, visibility, owner_id, created_by_user_id) VALUES ('Inline', 'standalone', 'private', $1, $1) RETURNING id", [user.id])).rows[0];
+  const provider = (await query("INSERT INTO llm_providers (name, base_url, auth_type) VALUES ('Inline', $1, 'none') RETURNING id, config_revision", [config.baseUrl])).rows[0];
+  config.providerId = provider.id;
+  config.configRevision = Number(provider.config_revision);
+  await query("INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('inline_completion', $1, $2)", [provider.id, model]);
+  const current = (await query('SELECT ai_policy_revision, content_revision FROM pages WHERE id = $1', [page.id])).rows[0];
+  return sendInlineCompletion(config, model, { ...input, pageId: page.id }, signal, { ...options, stage: {
+    userId: user.id, usecase: 'inline_completion',
+    provenance: { version: 1, providerId: provider.id, configRevision: config.configRevision!, locality: 'external',
+      pages: [{ pageId: page.id, policy: 'all', policyRevision: Number(current.ai_policy_revision), contentRevision: Number(current.content_revision) }] },
+    context: { operation: newAiOperation('inline', { kind: 'user', id: user.id }), stage: 'inline_completion', attempt: 1 },
+  } });
+}
 
 let server: Server;
 let baseUrl: string;
@@ -18,6 +40,7 @@ let requestBodies: Array<Record<string, unknown>> = [];
 let responder: (res: import('node:http').ServerResponse) => void = () => {};
 
 beforeAll(async () => {
+  await setupTestDb();
   server = createServer((req, res) => {
     lastPath = req.url ?? '';
     let raw = '';
@@ -32,9 +55,13 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 });
 
-afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterAll(async () => {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await teardownTestDb();
+});
 
-beforeEach(() => {
+beforeEach(async () => {
+  await truncateAllTables();
   requestBodies = [];
 });
 
@@ -174,6 +201,35 @@ describe('inline-completion-client (#1417)', () => {
     expect(requestBodies).toHaveLength(2);
     expect(result.completion).toBe('');
     expect(getProviderBreaker(config.providerId).getStatus()).toMatchObject({ state: 'CLOSED', failureCount: 0 });
+  });
+
+  it.each(['policy', 'assignment', 'content', 'visibility', 'endpoint'])('refuses stale %s before retry without sending a second body', async (change) => {
+    responder = (res) => {
+      void (async () => {
+        if (change === 'policy') await query("UPDATE pages SET ai_policy = 'none'");
+        if (change === 'assignment') await query("UPDATE llm_usecase_assignments SET model = 'successor'");
+        if (change === 'content') await query('UPDATE pages SET content_revision = content_revision + 1');
+        if (change === 'visibility') await query('UPDATE pages SET deleted_at = NOW()');
+        if (change === 'endpoint') await query("UPDATE llm_providers SET base_url = base_url || '/changed'");
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: '' } }] }));
+      })();
+    };
+    await expect(requestInlineCompletion(cfg(), 'm', { prefix: 'private draft', maxTokens: 48 },
+      new AbortController().signal)).rejects.toThrow('changed or unavailable');
+    expect(requestBodies).toHaveLength(1);
+  });
+
+  it('discards text if policy tightens during the response', async () => {
+    responder = (res) => {
+      void query("UPDATE pages SET ai_policy = 'none'").then(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: 'stale suggestion' } }] }));
+      });
+    };
+    await expect(requestInlineCompletion(cfg(), 'm', { prefix: 'private draft', maxTokens: 48 },
+      new AbortController().signal)).rejects.toThrow('changed or unavailable');
+    expect(requestBodies).toHaveLength(1);
   });
 
   it('does not retry on the FIM path', async () => {

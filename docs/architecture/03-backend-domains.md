@@ -51,6 +51,260 @@ flowchart LR
     dK --> dC
 ```
 
+### Article AI policy — label writers, lock order, sub-page provenance (#281)
+
+The sub-page producer requires `contentRevision` on both `PageContent` and
+`IncludedPageRef`, decoded with canonical `asRevision` from the same SELECT
+as title, body, policy and policy revision. Invalid metadata fails closed.
+Only formatted descendants contribute refs (including truncated bodies).
+`llm-ask` preserves those tuples and validates them at consumption, never
+replaces them with current revisions. It reads the root title/body and policy
+metadata coherently and adds the root ref even without a retrieval hit.
+Conflicting duplicate readings refuse pre-SSE; compatible duplicates may
+collapse. Root restrictions therefore invalidate history grounded on an
+unindexed root. See [RAG chat flow](09-flow-rag-chat.md) for refusal semantics.
+
+`pages.ai_policy` has one mutation primitive, `applyAiPolicyOnClient`
+(`core/services/ai-policy-service.ts`), and every writer that can move it
+runs on the transaction it already holds:
+
+- **Label writers** (`PUT /labels`, `apply-tags`, `/pages/bulk/tag`,
+  `/pages/bulk/replace-tags`, `pages.create.labels`, the auto-tagger and the
+  Confluence `page.labels` recovery reconciler) call
+  `applyPageLabelsOnClient`, which re-plans the label/policy outcome from the
+  **locked** row via `planLabelPolicyChange`. Only a reserved label that is
+  *newly added* (no current label names the same policy) expresses intent: a
+  restrictive one tightens, `all-ai` (or a looser label) is an explicit
+  relaxation that needs `canMutateAiPolicy` (403 `ai_policy_not_authorized`).
+  A label carried over from the current set is inert, so a page relaxed by the
+  policy endpoint is never re-tightened by an unrelated label edit. Dropping
+  the canonical label of the current restrictive policy restores it. A
+  contradiction (422 `ai_policy_label_conflict`) is judged only among
+  **newly stated** policies — two *new* distinct identities in one write
+  (`no-ai` + `ai-local-only` on a page carrying neither). A carried label is
+  not a command: one fresh reserved label beside a carried one is that fresh
+  policy (`all` + carried `no-ai` + fresh `ai-local-only` ⇒ `local_only`;
+  `local_only` + carried `ai-local-only` + fresh `no-ai` ⇒ `none`), and the
+  carried label collapses onto the fresh canonical label. A row whose stored
+  labels already disagree (relaxed to `all` with `no-ai` and `ai-local-only`
+  left behind) stays writable for an ordinary tag and is never a 422 on its
+  own.
+  Remote-backed routes plan from the admitted row **before** the provider
+  call, so neither a contradiction nor an unauthorized relaxation reaches
+  Confluence, and the *planned* set is what Confluence receives. Bulk routes
+  re-plan on admission and refuse (409 `stale_content_revision`) if the
+  plan moved; on completion every Confluence-backed writer compares the
+  set the primitive stored with the set it published and answers 409
+  `ai_policy_label_diverged` if a concurrent authoritative policy write
+  made them differ. The later policy stands; the mirror is never rewritten
+  remotely to match and is never claimed as applied.
+- **First publication** of a created Confluence page carries the creator's
+  admitted policy: `POST /pages` resolves `initialLabels` (planned) and
+  `initialPolicy` (`resolveCreationAiPolicy`, stricter of default, choice
+  and labels) **before** any effect, stores both in the
+  `pages.create.confluence` intent effect, and `publishCreatedConfluencePage`
+  inserts `labels` and `ai_policy` in the same INSERT. Recovery reads them
+  through `initialPolicyFromEffect` (409 `intent_recovery_metadata_invalid`
+  when malformed; never looser than the labels it names), so neither an
+  undispatched label step nor a replayed create leaves the page at `all`.
+  When the row already exists (a replay, or the sync walker imported the
+  acknowledged page before the creator's local publication — the labels
+  step runs *after* publication, so such a sync-first row lands at the
+  ingestion default), identity (source, space, parent, title, storage,
+  body, version) must match **exactly** or the publication is refused with
+  409 `intent_local_identity_changed` and nothing moves. An exact match
+  that is *stricter* than `initialPolicy` is a later authoritative tighten
+  and is accepted untouched; an exact match that is *looser* is tightened
+  to `initialPolicy` through `applyAiPolicyOnClient` (attributed to the
+  creator, with the canonical label stored and the derived purge/re-queue
+  in the same transaction). The change records are handed back via
+  `onPolicyChanges`; `POST /pages` emits them after its publication
+  transaction has committed and the create reconciler returns them as
+  `afterCommit`. This closes the sync-first window at publication and at
+  recovery; the window itself (sync between remote acknowledgement and
+  local publication) is not otherwise prevented.
+- **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
+  `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
+  → `pages` row `FOR UPDATE`. Callers that lock the row themselves
+  (`loadAuthorizedContentWriteState`) take the policy lock first.
+- **Events** (`policy_changed`) are returned as `changes` and emitted only
+  after COMMIT. A reconciler's applied/not-applied result may carry an
+  `afterCommit` closure; `reconcilePageWriteIntent` invokes it strictly
+  after its settlement transaction resolves and never on rollback — the
+  `page.labels` reconciler uses it to emit its records (no polling of the
+  intent row). An explicit re-assertion of the same `all`/`local_only`
+  policy bumps the revision and emits, but re-queues no derived work; only
+  a real move re-queues, and `none` always purges.
+  An undispatched label intent is settled by restoring `priorLabels` only;
+  prior labels are never reinterpreted as a policy command. A dispatched one
+  re-plans from the row as it is **now**; if that plan no longer matches the
+  labels Confluence holds, recovery answers 409
+  `intent_terminal_evidence_mismatch` and the intent stays pending.
+- **Sub-page context** (`domains/confluence/services/subpage-context.ts`):
+  a provider-bound caller passes `policyContext { providerId, usecase,
+  expectedConfigRevision, expectedLocality }` — the last two straight from
+  its own `AiPolicyAdmission`. The walk binds the provider once and fails
+  closed (`SubPagePolicyError`) if its `config_revision` moved
+  (`ai_policy_provider_revision_mismatch`) **or** its effective locality
+  (local only when declared against the current revision) differs from the
+  admitted one (`ai_policy_provider_locality_mismatch` — a locality
+  declaration does not move `config_revision`, so the revision alone cannot
+  see it). Each descendant is decided with `decideAiPolicyAdmission` from
+  the same row that supplied the body; the walk reports `includedPageRefs`
+  (id, policy, policy revision) and `excludedByPolicy`. Excluded pages still
+  count toward `MAX_SUB_PAGES`.
+  A provider the walk cannot describe — no `llm_providers` row any more, a
+  read failure, or metadata that does not decode — is
+  `ai_policy_unavailable` (`SubPagePolicyError.retryable === true`): a fact
+  about the deployment, distinct from the two mismatches (#282 maps
+  mismatches to 409 and `ai_policy_unavailable` to 503, both before any SSE
+  stream opens). No default locality and no sentinel revision are ever
+  substituted.
+- **One effective-locality decoder** (`decodeProviderMetadata` /
+  `loadProviderMetadata` in `domains/llm/services/ai-policy-admission.ts`,
+  reading `PROVIDER_METADATA_COLUMNS`): `effectiveLocality` is `local` only
+  when the row says `local`, `locality_declared_by` still names an existing
+  administrator (the FK is `ON DELETE SET NULL` — a deleted declarer leaves
+  an unaccountable declaration, which reads `external`), the declaration is
+  dated, and `locality_config_revision = config_revision`. The decoder
+  returns `null` for a missing row or invalid metadata (non-integer
+  revision, unknown locality, `local` without its declaration columns).
+  `admitPageForProvider`, the admitted binding's `locality`, the provider
+  DTO's and `getProviderLocality`'s `localConfirmed`, the sub-page walk and
+  the shadow-migration policy-straggler count all consume it, so no two
+  surfaces can disagree about "local".
+- **Admission fails closed on provider metadata**: `admitPageForProvider`
+  refuses with the retryable `policy_unavailable` (one `blocked` event, no
+  provider call) when the policy/provider state cannot be read, when the
+  provider has no row, or when its metadata does not decode — under
+  **every** policy, `all` included. Precedence: unreadable state →
+  `policy_unavailable`; page gone → `not_found`; `none` → `policy_none`;
+  then the metadata decision. `admitPageForUsecase` maps a resolver that
+  throws (nothing configured, assignment pointing at a deleted provider,
+  undecryptable key) to the same `policy_unavailable`; a resolver answering
+  `null` for a dedicated stage stays `stage_disabled`. Neither retryable
+  reason is ever written to `*.ai_policy_block_reason` (the CHECK admits
+  only `policy_none` / `provider_not_local`): the summary, quality, image
+  and embedding workers leave such rows in their pending/dirty state for
+  the next pass.
+
+### Article AI policy — schema, provider locality, core endpoints (#280)
+
+```mermaid
+flowchart LR
+    subgraph wire["frozen wire contract (@compendiq/contracts ai-policy.ts)"]
+        direction TB
+        putOne["PUT /pages/:id/ai-policy<br/>{ aiPolicy, expectedRevision? }"]
+        putBulk["POST /pages/bulk/ai-policy<br/>{ aiPolicy, items[{ pageId, expectedRevision? }] }"]
+        crud["POST /pages { aiPolicy? }<br/>PUT /pages/:id { aiPolicy?, expectedRevision? } (both or neither)"]
+        detail["GET /pages/:id → aiPolicy, aiPolicyRevision,<br/>canChangeAiPolicy, aiPolicyActivation"]
+    end
+    subgraph svc["core/services/ai-policy-service.ts"]
+        direction TB
+        upd["updatePageAiPolicies<br/>(all-or-nothing)"]
+        prim["applyAiPolicyOnClient<br/>(single mutation primitive)"]
+        creation["resolveCreationAiPolicy<br/>stricter of hook default, choice, labels"]
+    end
+    subgraph adm["domains/llm/services/ai-policy-admission.ts"]
+        direction TB
+        byUsecase["admitPageForUsecase<br/>rerank / inline_completion / image_analysis use their<br/>dedicated resolvers; unassigned = stage_disabled"]
+        byProvider["admitPageForProvider<br/>missing page = not_found; unreadable state = policy_unavailable;<br/>none decided before the provider is read"]
+        decide["decideAiPolicyAdmission (pure)"]
+    end
+    putOne --> upd
+    putBulk --> upd
+    crud --> prim
+    upd --> prim
+    crud --> creation
+    byUsecase --> byProvider --> decide
+    prim --> events["emitAiPolicyEvent (inert CE sink)"]
+    byProvider --> events
+```
+
+- **Values.** Stored and wire value: `all | local_only | none`. `no_ai` is
+  accepted as *input* (`AiPolicyInputSchema`) and normalised to `none`; it is
+  never stored or returned. Labels are consulted at creation only, by the
+  frozen table in migration 136 / `AI_POLICY_LABEL_SYNONYMS`.
+- **Responses** are `{ pageId, aiPolicy, aiPolicyRevision }` (bulk:
+  `{ items: [...] }`). **Errors**: 404 for a page the caller cannot see,
+  403 `ai_policy_denied`, 409 `ai_policy_conflict` with
+  `reason: 'stale_revision'`, 422 `ai_policy_label_conflict` (an explicit
+  `aiPolicy` on create contradicting a reserved label), 409
+  `ai_policy_enforcement_unavailable` (restrictive value on a
+  foundation-only deployment; the detail's `aiPolicyActivation` reports
+  `active | foundation_only`), 503 `ai_policy_unavailable`.
+- **Create/update carry policy.** `POST /pages` resolves an explicit
+  `aiPolicy` through `resolveCreationAiPolicy` and writes `labels` and
+  `ai_policy` in the creating INSERT for standalone pages and in the
+  `pages.create.confluence` intent effect for Confluence pages — including a
+  space-root create, which migration 137 lets through the intent ledger with
+  an empty target set and `parentPageId: null` (every `initialLabels`
+  element must be a non-empty string ≤ 100 chars —
+  `page_write_intent_initial_labels_valid`). A chosen creation policy is
+  **authorised before any effect** by `canChoosePolicyAtCreation` (the
+  hook's `canMutateAiPolicy` for the target space / standalone context, run
+  inside the admission transaction): a creator who could not move the
+  policy afterwards cannot pick it at birth (403 `ai_policy_denied`); a
+  contradiction with a reserved initial label is 422
+  `ai_policy_label_conflict` and a restrictive value on a foundation-only
+  deployment 409 `ai_policy_enforcement_unavailable` — all before the
+  standalone INSERT or the Confluence egress. `PUT /pages/:id` carries
+  `aiPolicy` **only together with** `expectedRevision` (the same frozen key
+  as the dedicated endpoint; `UpdatePageSchema` refuses one without the
+  other), takes the policy lock before the row lock and applies the change
+  through `applyAiPolicyOnClient` on the **same** transaction as the content
+  write (local branch) or as the content-cache write of the completion
+  transaction (Confluence branch). The Confluence branch authorises and
+  CAS-checks the policy on the admitted row **before** egress, but the
+  authoritative write happens after the remote acknowledgement, so a
+  concurrent policy write in between is refused *there*: the content commit
+  stands (it matches the Confluence version already acknowledged) and the
+  response is the policy refusal body (409 `ai_policy_conflict`, 403
+  `ai_policy_denied`, …) extended with `published: { id, title, version,
+  source }` so the client learns both outcomes; the audit row carries
+  `aiPolicyRefused`. Every refusal body on these routes is the same frozen
+  shape the dedicated endpoint answers (`AiPolicyRefusalError` →
+  `sendAiPolicyRefusal`), never Fastify's generic error envelope.
+  `GET /pages/:id` computes `canChangeAiPolicy` with `canMutateAiPolicy`
+  inside its read-only transaction.
+- **Provider locality** is settable where providers are managed:
+  `LlmProviderInputSchema.locality` on `POST/PATCH /api/llm/providers`
+  (`createProvider(input, actorId)` / `updateProvider(id, patch, actorId)`)
+  binds `locality_declared_by/at` and `locality_config_revision` in the same
+  statement as any endpoint edit — for `local` **and** for an explicit
+  `external` — so the migration-135 trigger keeps the declaration rather
+  than resetting it; `declareProviderLocality` remains the revision-fenced
+  path. A declaration is **actor-bound**: a locality value without an
+  identified administrator is refused (401 `locality_actor_required`,
+  `LocalityActorRequiredError`) and never persisted; a `local` row whose
+  `locality_declared_by` is NULL is treated as undeclared by both the DTO
+  (`localConfirmed: false`) and admission. The DTO exposes `locality`,
+  `configRevision`, `localityDeclaredAt/By` and `localConfirmed` (declared
+  local *by someone* at the current revision).
+- **Admission fails closed.** `admitPageForUsecase` routes `rerank`,
+  `inline_completion` and `image_analysis` through their non-inheriting
+  resolvers (ADR-021/027) — an unassigned stage is `stage_disabled`, never
+  an admission against the default provider. `admitPageForProvider` opens
+  its own read-only transaction; **any** failure to connect or to read the
+  page or provider state (connection refused, missing locality columns,
+  cancelled statement) is logged and refused as `policy_unavailable` —
+  there is no savepoint that swallows a schema error into a synthesised
+  "external at revision 0". `none` is decided from the page row before the
+  provider is consulted. A provider id with **no row** (deleted between
+  resolution and admission, or a resolver-level assignment that is not a
+  persisted provider) carries no declaration and is undeclared external:
+  `provider_not_local` under `local_only` — a persistable block the
+  workers' per-pass re-check (`RECHECKABLE_BLOCK_SQL`) lifts once a
+  declared-local provider is assigned — and admitted as external at
+  revision 0 under `all`; nothing is ever inferred local. A missing page is `not_found`. `stage_disabled`
+  and `policy_unavailable` are `retryable` deployment facts and are never
+  persisted as an `ai_policy_block_reason` (`isPersistableBlockReason`);
+  only `policy_none` and `provider_not_local` are. Every refusal — including
+  `not_found`, `stage_disabled` and every `policy_unavailable` — is emitted
+  as exactly one `blocked` event whose `reason` union
+  (`core/enterprise/ai-policy-hooks.ts`) names all of them and whose
+  `policy` is `null` when the page row could not be read.
+
 ### Quality and summary batch execution
 
 ```mermaid
@@ -1028,3 +1282,119 @@ server, and `backup-restore.ts` exclusively owns its on-disk stage/validation
 and commit/rollback phases. It reuses the archive implementation and calls
 `core/db/postgres.ts` only after `pg_restore` succeeds so shipped migrations
 run from the same standalone process.
+
+## Article AI policy in workers (SPEC-WORK-001)
+
+`pages.ai_policy` (`all` | `local_only` | `none`, migration 135) is the single
+authority; every background worker that would send an article's content to a
+model admits the page first, against the **concrete provider it is about to
+call** — never through the use-case resolver when dispatch holds a different
+provider.
+
+```mermaid
+flowchart LR
+    subgraph admission["domains/llm/services/ai-policy-admission.ts"]
+        A["admitPageForProvider(pageId, usecase, providerId, model)"]
+        D["decideAiPolicyAdmission(policy, provider locality)"]
+        A --> D
+    end
+    E[embedding-service: embedPage + shadow dual-write] --> A
+    S[summary-worker: summarizePage] --> A
+    Q[quality-worker: analyzePageQuality] --> A
+    I[image-analysis-worker: analyze step] --> A
+    M[shadow-migration-service: backfill] --> A
+    D -- admit --> Call[provider call]
+    D -- policy_none / provider_not_local --> B["status = 'policy_blocked'
+    ai_policy_block_reason = reason
+    no call, no attempt, no error"]
+    subgraph policy["core/services/ai-policy-service.ts"]
+        W[updatePageAiPolicies] --> P["purgeDerivedAiState (→ none):
+        vectors, averages, summary, quality, image payloads"]
+        W --> R["requeueDerivedAiState (relax / all→local_only):
+        clear block, re-pend, raise dirty flags"]
+    end
+    Sync[confluence sync-service upsert landing on none] --> PP[purgeDerivedAiStateForPages] --> P
+```
+
+Rules the diagram encodes:
+
+- **Blocked is a third outcome.** A policy-blocked page is counted neither as
+  `processed` nor as an error; the `{processed, errors}` batch results are
+  unchanged and the block is visible through the status columns
+  (`*_status = 'policy_blocked'`, `ai_policy_block_reason`) and the status
+  endpoints' `policyBlockedPages` / `policyBlocked` counts.
+- **`policy_none` is lifted only by a policy write.** `provider_not_local` is
+  re-checked every pass (`RECHECKABLE_BLOCK_SQL`): declaring the provider local
+  at its current configuration revision is enough, no policy write needed.
+  Admission clears a stale reason on success.
+- **Unknown locality never authorizes `local_only`** — an unknown provider id,
+  a provider table without locality columns, or a declaration against an older
+  configuration revision all read as external or as unprovable; neither admits.
+- **ONE decoder, `decodeProviderMetadata`**, answers every consumer of a
+  provider's effective locality (admission, the admitted binding, the DTO's
+  `localConfirmed`, `getProviderLocality`, the sub-page walk and the shadow
+  straggler count), with three rules:
+  1. **Revisions are non-negative SAFE integers** (`asRevision`): a number
+     must satisfy `Number.isSafeInteger` (so `NaN`, `±Infinity`, negatives,
+     fractions and 2^53+ are refused); a PG bigint string is compared
+     textually against `Number.MAX_SAFE_INTEGER` before conversion, so
+     `'9007199254740993'` or a 400-digit string is unprovable rather than
+     rounded (or `Infinity`) into a false equality with the current revision.
+  2. **`undefined` ≠ `null`.** A declaration column that was not selected is
+     unprovable (`null` result → `policy_unavailable`); SQL NULL is a value.
+     An external row with NULL declaration columns is a legitimate undeclared
+     provider, and a `local` row whose declarer was deleted (`ON DELETE SET
+     NULL`) decodes as effective `external` — no longer accountable — not as
+     corrupt. A `local` row with NULL `locality_declared_at` or
+     `locality_config_revision` violates the schema invariant and is unprovable.
+  3. **Dates must be real**: a `Date` with NaN time or an unparseable string
+     is unprovable, never silently treated as undeclared.
+- **`none` purges in the policy write's transaction** under the same per-page
+  advisory lock the shared admission read takes, so a worker mid-batch cannot
+  commit a derived row after the policy flipped. The body, attachments, versions
+  and FTS stay.
+- **Ingestion** (`sync-service.ts`, `notion-import-service.ts`) can only
+  tighten through labels (`TIGHTEN_ONLY_POLICY_SQL`); a page that lands on
+  `none` through a label is purged through `purgeDerivedAiStateForPages`.
+- **Shadow re-embed**: the dual-write and backfill admit against the
+  candidate model separately from the live one; the swap refuses while
+  policy-blocked stragglers remain (`docs/runbooks/shadow-reembed.md`).
+- **An unreadable policy row is a block, not an admit.** `admitPageForProvider`
+  validates `ai_policy` / `ai_policy_revision` as read; a value outside the
+  enum or a non-numeric revision emits an early `blocked` event with reason
+  `policy_unavailable` and refuses. Likewise `llm-provider-service`'s
+  `rowToDto` never fabricates a locality: a provider row whose locality
+  metadata does not decode throws `ProviderMetadataUnreadableError` (503)
+  rather than answering `localConfirmed: false` with a made-up revision.
+
+### Policy refusals on the page write routes (#280)
+
+`routes/knowledge/page-ai-policy.ts` exports `sendAiPolicyRefusal`, the one
+serializer for every refusal body in `AiPolicyRefusalBody`. Three rules the
+routes in `pages-crud.ts` and `pages-tags.ts` follow:
+
+- **One label-conflict error for every writer.** `planLabelPolicyChange`
+  throws `AiPolicyLabelConflictError` — a `PageWriteError` (422,
+  `ai_policy_label_conflict`) carrying the frozen `{ error, policies }` body.
+  Page create, page update, `PUT /pages/:id/labels`, the bulk taggers and the
+  auto-tagger all go through the same planner, so a label set naming two
+  policies is refused identically wherever it is written. `isAiPolicyRefusal`
+  is the predicate the page routes use to route both refusal classes to the
+  serializer.
+- **`aiPolicy` ⇄ `expectedRevision` pairing is the ROUTE's 422.**
+  `UpdatePageSchema` accepts either field alone (shape-valid); `PUT /pages/:id`
+  answers 422 `ai_policy_revision_required` with `missing` naming the absent
+  half, using the contracts predicate `isAiPolicyUpdatePaired`. The global
+  schema 400 would hide a policy contract behind a shape error.
+- **Settlement after a Confluence publish.** A Confluence update's remote
+  effect is irreversible, so once the upstream write has been acknowledged the
+  route always commits the content row and the write-intent completion. If
+  the local authority reload then finds the caller no longer authorized
+  (403/404) or the explicit policy apply refuses (`AiPolicyRefusalError`, or a
+  concealed `page_not_found` 404), the content stays published, the single
+  post-commit block (collab invalidate, cache, audit with `aiPolicyRefused`
+  / `settledAfterPublish`, `page.updated` webhook) still runs once, and the
+  response is the refusal status with `published: true` so the client knows
+  the content landed while the policy did not. A 409 stale lifecycle/content
+  conflict still throws before commit — the ledger must see it. A concealed
+  404 reveals neither title nor version.

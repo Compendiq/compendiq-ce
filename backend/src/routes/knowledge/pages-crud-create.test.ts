@@ -65,6 +65,7 @@ const ConfluenceCreatePayloadSchema = z.object({
 const available = (await isDbAvailable()) && (await isRedisAvailable());
 const upstreamRequests: UpstreamRequest[] = [];
 const upstreamPageIds: string[] = [];
+const upstreamLabels = new Map<string, unknown>();
 
 let app: FastifyInstance;
 let redis: RedisClientType;
@@ -109,8 +110,9 @@ async function handleUpstream(request: IncomingMessage, response: ServerResponse
       return;
     }
 
-    if (recorded.method === 'POST' && /^\/rest\/api\/content\/[^/]+\/label$/.test(recorded.url)) {
-      sendJson(response, 200, {});
+    if (/^\/rest\/api\/content\/[^/]+\/label$/.test(recorded.url)) {
+      if (recorded.method === 'POST') upstreamLabels.set(recorded.url, payload);
+      sendJson(response, 200, { results: upstreamLabels.get(recorded.url) ?? [] });
       return;
     }
 
@@ -260,6 +262,7 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     await redis.flushDb();
     upstreamRequests.length = 0;
     upstreamPageIds.length = 0;
+    upstreamLabels.clear();
     currentUserId = await insertUser('create_route_user');
     otherUserId = await insertUser('create_route_other');
     await insertLocalSpace('LOCAL_A', currentUserId);
@@ -286,7 +289,7 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
       parent_id: null,
       path: `/${row.id}`,
       depth: 0,
-      labels: [],
+      labels: ['all-ai'],
     });
     expect(createRequests()).toEqual([]);
   });
@@ -528,8 +531,8 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     expect(labelled.statusCode).toBe(200);
     expect(plain.statusCode).toBe(200);
     expect(overflow.statusCode).toBe(400);
-    expect((await oneRowByTitle('Labelled local')).labels).toEqual(['api', 'guide']);
-    expect((await oneRowByTitle('Plain local')).labels).toEqual([]);
+    expect((await oneRowByTitle('Labelled local')).labels).toEqual(['api', 'guide', 'all-ai']);
+    expect((await oneRowByTitle('Plain local')).labels).toEqual(['all-ai']);
     expect(await rowsByTitle('Too many labels')).toEqual([]);
   });
 
@@ -585,9 +588,12 @@ describe.skipIf(!available)('POST /api/pages with real admission boundaries', ()
     const localResult = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [localId]);
     const remoteResult = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE confluence_id = $1', [String(localId)]);
     expect(localResult.rows[0]?.labels).toEqual([]);
-    expect(remoteResult.rows[0]?.labels).toEqual(['remote-label']);
-    const labelRequest = upstreamRequests.find((request) => request.url.endsWith('/label'));
-    expect(labelRequest?.body).toEqual([{ prefix: 'global', name: 'remote-label' }]);
+    expect(remoteResult.rows[0]?.labels).toEqual(['remote-label', 'all-ai']);
+    expect(response.json().synchronization).toEqual({ status: 'complete', pendingIntentIds: [] });
+    const labelRequest = upstreamRequests.find((request) => request.method === 'POST' && request.url.endsWith('/label'));
+    expect(labelRequest?.body).toEqual([
+      { prefix: 'global', name: 'remote-label' }, { prefix: 'global', name: 'all-ai' },
+    ]);
   });
 
   it('queues embedding and image analysis for standalone pages but not folders', async () => {

@@ -356,11 +356,13 @@ async function executeShadowCompare(
         live.config,
         live.model,
         formatQueryForEmbedding(live.model, text),
+        { kind: 'non_article', purpose: 'user_query' },
       );
       const [candidateVector] = await generateEmbedding(
         target.cfg,
         target.model,
         formatQueryForEmbedding(target.model, text),
+        { kind: 'non_article', purpose: 'user_query' },
       );
       if (!liveVector || !candidateVector) {
         throw new Error('The embedding provider answered without a vector');

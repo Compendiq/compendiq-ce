@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ConversationTurnAiProvenanceSchema } from './ai-policy.js';
 
 export const ImprovementTypeSchema = z.enum([
   'grammar',
@@ -125,10 +126,34 @@ export const SummarizeRequestSchema = z.object({
   searchQuery: z.string().max(500).optional(),
 });
 
+/**
+ * #282 — what an Ask question is ABOUT, stated by the caller.
+ *
+ * `page`: the question was composed beside an open article (`pageId` names
+ * it). Such a question may quote or paraphrase that article — a selection,
+ * an unsaved draft paragraph — so the article's AI policy governs the
+ * question text itself, with or without the sub-page tree. `independent`:
+ * no article is open and the text is the user's own. The route refuses a
+ * request that states neither (400 `ask_identity_required`) instead of
+ * downgrading it to a free-form question: the client that forgets to say is
+ * exactly the client whose question might carry article text.
+ */
+export const ASK_INPUT_KINDS = ['page', 'independent'] as const;
+export const AskInputKindSchema = z.enum(ASK_INPUT_KINDS);
+export type AskInputKind = z.infer<typeof AskInputKindSchema>;
+
 export const AskRequestSchema = z.object({
   question: z.string().min(1),
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   conversationId: z.string().uuid().optional(),
+  /**
+   * See {@link AskInputKindSchema}. Optional on the WIRE only so that the
+   * route can tell a declared-independent question from one that said
+   * nothing: a present `pageId` implies `page`; an absent `pageId` needs an
+   * explicit `independent`; `independent` beside a `pageId` is a
+   * contradiction. The route enforces all three (`askRequestIdentity`).
+   */
+  inputKind: AskInputKindSchema.optional(),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   thinking: z.boolean().optional(),
@@ -209,6 +234,29 @@ export const ApplyImprovementRequestSchema = z.object({
   version: z.number().int().positive().optional(),
   title: z.string().optional(),
 });
+
+/**
+ * #282 — `POST /llm/improvements/:id/readmit`. A completed improvement is
+ * reusable state: its text may be applied to the article long after the
+ * stream that produced it, and markdown carries no proof of the binding it
+ * was generated under. The readmit answers with the row's text ONLY after
+ * its recorded provenance has been re-admitted against the provider the
+ * `chat` use case resolves to now (same provider, current revision and
+ * locality, every page still at its recorded policy/content revision and
+ * readable by the caller). The id is the `improvementId` the Improve
+ * stream's final frame carries; the refusals are the `AiPolicyRefusal`
+ * contract (409 `ai_history_not_replayable`, 503 `ai_policy_unavailable`).
+ */
+export const ImprovementIdParamSchema = z.object({ id: z.string().uuid() });
+
+export const ReadmitImprovementResponseSchema = z.object({
+  improvementId: z.string().uuid(),
+  pageId: z.number().int().positive(),
+  improvedMarkdown: z.string().min(1),
+  /** The row's recorded binding, byte-for-byte what was re-admitted. */
+  aiProvenance: ConversationTurnAiProvenanceSchema,
+});
+export type ReadmitImprovementResponse = z.infer<typeof ReadmitImprovementResponseSchema>;
 
 /**
  * #1361 — conversation persistence contracts. `title_source` records who
@@ -392,6 +440,12 @@ export const OllamaModelSchema = z.object({
 });
 
 export const EmbeddingStatusSchema = z.object({
+  policyBlockedPages: z.number().int().nonnegative().optional(),
+  policyBlockedReasons: z.object({
+    policy_none: z.number().int().nonnegative(),
+    provider_not_local: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative(),
+  }).optional(),
   totalPages: z.number(),
   dirtyPages: z.number(),
   totalEmbeddings: z.number(),

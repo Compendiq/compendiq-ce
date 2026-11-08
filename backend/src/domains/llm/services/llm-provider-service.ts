@@ -3,6 +3,7 @@ import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
 import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
 import { invalidateProviderCapabilities } from './model-capabilities.js';
 import { PROVIDER_RESOURCE_SUFFIXES } from './provider-url.js';
+import { decodeProviderMetadata } from './ai-policy-admission.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -17,10 +18,17 @@ interface ProviderRow {
   is_default: boolean;
   created_at: Date;
   updated_at: Date;
+  /** #280 — locality columns (migration 135). */
+  locality: 'local' | 'external';
+  config_revision: string;
+  locality_config_revision: string | null;
+  locality_declared_by: string | null;
+  locality_declared_at: Date | null;
 }
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
 interface ProviderConfigRow {
+  configRevision: number | undefined;
   id: string;
   name: string;
   baseUrl: string;
@@ -31,8 +39,28 @@ interface ProviderConfigRow {
   isDefault: boolean;
 }
 
+/**
+ * A provider row whose locality metadata does not decode (#280). The DTO is
+ * never fabricated from missing/invalid columns: an operator surface that
+ * showed `external` / revision 0 for a row the schema cannot describe would
+ * invite a declaration against a revision that does not exist.
+ */
+export class ProviderMetadataUnreadableError extends Error {
+  readonly statusCode = 503;
+  readonly providerId: string;
+  constructor(providerId: string) {
+    super('Provider locality metadata is unreadable; migration 135 may be missing or the row is corrupt');
+    this.name = 'ProviderMetadataUnreadableError';
+    this.providerId = providerId;
+  }
+}
+
 function rowToDto(r: ProviderRow): LlmProvider {
   const preview = r.api_key ? ('…' + (decryptSafe(r.api_key)?.slice(-4) ?? '')) : null;
+  // ONE decoder, shared with admission: the DTO reports exactly what
+  // admission would decide, or refuses when it cannot decide.
+  const meta = decodeProviderMetadata(r);
+  if (!meta) throw new ProviderMetadataUnreadableError(r.id);
   return {
     id: r.id,
     name: r.name,
@@ -45,11 +73,20 @@ function rowToDto(r: ProviderRow): LlmProvider {
     keyPreview: preview,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
+    // The DECLARED locality (what the operator wrote) …
+    locality: r.locality,
+    configRevision: meta.configRevision,
+    localityDeclaredAt: meta.declaredAt ? meta.declaredAt.toISOString() : null,
+    localityDeclaredBy: meta.declaredBy,
+    // … and the EFFECTIVE one admission applies (declaration accountable,
+    // dated and made against the current config revision).
+    localConfirmed: meta.effectiveLocality === 'local',
   };
 }
 
 function rowToConfig(r: ProviderRow): ProviderConfigRow {
   return {
+    configRevision: decodeProviderMetadata(r)?.configRevision,
     id: r.id,
     name: r.name,
     baseUrl: r.base_url,
@@ -114,20 +151,69 @@ export function normalizeBaseUrl(raw: string): string {
   }
 }
 
-export async function createProvider(input: LlmProviderInput): Promise<LlmProvider> {
+/**
+ * A locality declaration without an identified administrator is refused
+ * (#280 review): `locality_declared_by` is the accountability record every
+ * `local_only` admission ultimately rests on.
+ */
+export class LocalityActorRequiredError extends Error {
+  readonly statusCode = 401;
+  readonly reason = 'locality_actor_required';
+  constructor() {
+    super('A provider locality declaration must be made by an identified administrator');
+    this.name = 'LocalityActorRequiredError';
+  }
+}
+
+function requireDeclaringActor(locality: 'local' | 'external' | undefined, actorId: string | undefined): string | null {
+  if (locality === undefined) return null;
+  if (typeof actorId !== 'string' || actorId.length === 0) throw new LocalityActorRequiredError();
+  return actorId;
+}
+
+/**
+ * `actorId` is the administrator declaring `input.locality` (#280) and is
+ * REQUIRED whenever a locality is declared — `local` or `external` alike:
+ * both are recorded with declarer, time and the configuration revision they
+ * were made against. Omitted locality means the column default `external`
+ * with no declaration. A `local` declaration is bound to the revision the
+ * insert produces, so the row satisfies `llm_providers_local_declared_check`
+ * from the first commit.
+ */
+export async function createProvider(input: LlmProviderInput, actorId?: string): Promise<LlmProvider> {
+  const declaringActor = requireDeclaringActor(input.locality, actorId);
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const apiKey = input.apiKey ? encryptPat(input.apiKey) : null;
-  const r = await query<ProviderRow>(
-    `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     RETURNING *`,
-    [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null],
-  );
+  const base = [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null];
+  // The locality columns are named only when a locality was declared, so the
+  // column default (`external`) answers for every other create.
+  const r = input.locality === undefined
+    ? await query<ProviderRow>(
+        `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING *`,
+        base,
+      )
+    : await query<ProviderRow>(
+        `INSERT INTO llm_providers
+           (name, base_url, api_key, auth_type, verify_ssl, default_model,
+            locality, locality_declared_by, locality_declared_at, locality_config_revision)
+         VALUES ($1,$2,$3,$4,$5,$6, $7, $8::uuid, clock_timestamp(), 1)
+         RETURNING *`,
+        [...base, input.locality, declaringActor],
+      );
   await bumpProviderCacheVersion();
   return rowToDto(r.rows[0]!);
 }
 
-export async function updateProvider(id: string, patch: LlmProviderUpdate): Promise<LlmProvider | null> {
+/**
+ * A `locality` in the patch is declared in the SAME UPDATE as any endpoint
+ * edit, so the migration-135 trigger sees a fresh `locality_declared_at` and
+ * binds the declaration to the new configuration revision rather than
+ * resetting it to `external`. The declaring administrator is required.
+ */
+export async function updateProvider(id: string, patch: LlmProviderUpdate, actorId?: string): Promise<LlmProvider | null> {
+  const declaringActor = requireDeclaringActor(patch.locality, actorId);
   const sets: string[] = [];
   const vals: unknown[] = [];
   let i = 1;
@@ -138,6 +224,12 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
   if (patch.authType !== undefined)     push('auth_type', patch.authType);
   if (patch.verifySsl !== undefined)    push('verify_ssl', patch.verifySsl);
   if (patch.defaultModel !== undefined) push('default_model', patch.defaultModel);
+  if (patch.locality !== undefined) {
+    push('locality', patch.locality);
+    push('locality_declared_by', declaringActor);
+    sets.push('locality_declared_at = clock_timestamp()');
+    sets.push('locality_config_revision = config_revision');
+  }
   if (sets.length === 0) {
     const row = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
     return row.rows[0] ? rowToDto(row.rows[0]) : null;
@@ -153,6 +245,83 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
   // are no longer trustworthy. Drop them and let the read path re-probe.
   await invalidateProviderCapabilities(id);
   return r.rows[0] ? rowToDto(r.rows[0]) : null;
+}
+
+export interface ProviderLocalityState {
+  providerId: string;
+  locality: 'local' | 'external';
+  configRevision: number;
+  /** True only when `local` was declared against the current configuration. */
+  localConfirmed: boolean;
+  declaredBy: string | null;
+  declaredAt: string | null;
+}
+
+interface LocalityRow {
+  id: string;
+  locality: 'local' | 'external';
+  config_revision: string;
+  locality_config_revision: string | null;
+  locality_declared_by: string | null;
+  locality_declared_at: Date | null;
+}
+
+function localityRowToState(r: LocalityRow): ProviderLocalityState {
+  // ONE decoder for "local" (ai-policy-admission): the state an admin reads
+  // back is the state admission and the sub-page walk decide against.
+  const decoded = decodeProviderMetadata(r);
+  if (!decoded) {
+    throw new Error(`Provider ${r.id} locality metadata is invalid and cannot be reported`);
+  }
+  return {
+    providerId: r.id,
+    locality: r.locality,
+    configRevision: decoded.configRevision,
+    localConfirmed: decoded.effectiveLocality === 'local',
+    declaredBy: decoded.declaredBy,
+    declaredAt: decoded.declaredAt ? decoded.declaredAt.toISOString() : null,
+  };
+}
+
+export async function getProviderLocality(id: string): Promise<ProviderLocalityState | null> {
+  const r = await query<LocalityRow>(
+    `SELECT id, locality, config_revision, locality_config_revision, locality_declared_by, locality_declared_at
+       FROM llm_providers WHERE id = $1`,
+    [id],
+  );
+  return r.rows[0] ? localityRowToState(r.rows[0]) : null;
+}
+
+/**
+ * Declare (or reconfirm) a provider's locality against the configuration
+ * revision the administrator inspected. A stale revision — the endpoint was
+ * edited meanwhile — is refused, so a declaration can never attach to an
+ * endpoint nobody looked at. Endpoint edits reset locality to `external` in
+ * the database trigger installed by migration 135.
+ */
+export async function declareProviderLocality(
+  id: string,
+  locality: 'local' | 'external',
+  expectedConfigRevision: number,
+  actorId: string,
+): Promise<{ ok: true; state: ProviderLocalityState } | { ok: false; reason: 'not_found' | 'stale_config_revision' }> {
+  const r = await query<LocalityRow>(
+    `UPDATE llm_providers
+        SET locality = $2,
+            locality_declared_by = $4,
+            locality_declared_at = clock_timestamp(),
+            locality_config_revision = config_revision,
+            updated_at = NOW()
+      WHERE id = $1 AND config_revision = $3
+      RETURNING id, locality, config_revision, locality_config_revision, locality_declared_by, locality_declared_at`,
+    [id, locality, expectedConfigRevision, actorId],
+  );
+  if (!r.rows[0]) {
+    const exists = await query(`SELECT 1 FROM llm_providers WHERE id = $1`, [id]);
+    return { ok: false, reason: exists.rowCount ? 'stale_config_revision' : 'not_found' };
+  }
+  await bumpProviderCacheVersion();
+  return { ok: true, state: localityRowToState(r.rows[0]) };
 }
 
 export async function deleteProvider(id: string): Promise<void> {

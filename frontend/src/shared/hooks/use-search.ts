@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { PageIcon, PageSource } from '@compendiq/contracts';
+import type { AiPolicyFilter, PageIcon, PageSource } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
 export interface SearchResultItem {
@@ -103,6 +103,14 @@ interface UseSearchParams {
   dateTo?: string;
   /** Comma-separated labels; sent to the backend as the `tags` param. */
   labels?: string;
+  /**
+   * #283 Library AI-policy filter — the validated contract value, sent as the
+   * real `aiPolicy` query parameter in EVERY mode (the backend narrows the
+   * authorized pool for semantic/hybrid) and part of both query keys, so a
+   * filtered result set is its own cache entry. `undefined` is "All
+   * articles": no filter, which is not the `all` policy.
+   */
+  aiPolicy?: AiPolicyFilter;
 }
 
 interface UseSearchResult {
@@ -152,7 +160,7 @@ const MIN_QUERY_LENGTH = 1;
  * staleTime: 0 on both — search results are query-specific and must not be
  * served from the TanStack Query cache between different search terms.
  */
-export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort = 'relevance', author, dateFrom, dateTo, labels }: UseSearchParams): UseSearchResult {
+export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort = 'relevance', author, dateFrom, dateTo, labels, aiPolicy }: UseSearchParams): UseSearchResult {
   // Debounce the query string
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -181,6 +189,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
     if (dateFrom) sp.set('dateFrom', dateFrom);
     if (dateTo) sp.set('dateTo', dateTo);
     if (labels) sp.set('tags', labels); // FE field `labels` → backend query param `tags`
+    if (aiPolicy) sp.set('aiPolicy', aiPolicy); // #283 — honoured in every mode
     // Sort only affects keyword results — semantic/hybrid arrive in the
     // server pipeline's order (stable-head fusion, #1103), which is
     // authoritative and never re-sorted client-side.
@@ -194,7 +203,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   const enhancedHasData = useRef(false);
 
   const immediateQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage, sort, author, dateFrom, dateTo, labels],
+    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage, sort, author, dateFrom, dateTo, labels, aiPolicy],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword', requestedPage)),
     enabled: isQueryEnabled && !enhancedHasData.current,
     staleTime: 30_000,
@@ -204,7 +213,7 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1, sort
   // ── Phase 2: Enhanced semantic/hybrid results ────────────────────────────
   // Only fires when mode is not 'keyword'
   const enhancedQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey, requestedPage, author, dateFrom, dateTo, labels],
+    queryKey: ['search', 'enhanced', trimmedQuery, mode, spaceKey, requestedPage, author, dateFrom, dateTo, labels, aiPolicy],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl(mode as 'semantic' | 'hybrid', requestedPage)),
     enabled: isQueryEnabled && mode !== 'keyword',
     staleTime: 0,

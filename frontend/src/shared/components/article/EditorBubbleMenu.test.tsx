@@ -7,6 +7,15 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import type { Editor as EditorType } from '@tiptap/react';
 import { useEffect } from 'react';
+import { EditorAiContext } from '../../lib/editor-ai-context';
+
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => new Response(JSON.stringify(
+    String(url).includes('browser-authorization')
+      ? { authorized: true, pageId: 7, aiPolicy: 'all', aiPolicyRevision: 2 }
+      : { active: false, mode: 'allowed' },
+  ), { headers: { 'Content-Type': 'application/json' } }));
+});
 
 // Mock the SSE transport so "Improve" actions don't hit the network.
 const streamSSE = vi.fn();
@@ -91,7 +100,9 @@ function Harness({
   return (
     <>
       <EditorContent editor={editor} />
-      <BubbleMenuContent editor={editor} />
+      <EditorAiContext.Provider value={{ pageId: '7', policy: 'all', revision: 2, permitted: true }}>
+        <BubbleMenuContent editor={editor} />
+      </EditorAiContext.Provider>
     </>
   );
 }
@@ -307,7 +318,7 @@ describe('BubbleMenuContent — inline AI improve replace-range', () => {
     await waitFor(() => expect(streamSSE).toHaveBeenCalled());
     const [, body] = streamSSE.mock.calls[0]!;
     expect((body as { content: string }).content).toBe('Hello');
-    expect(body).not.toHaveProperty('pageId');
+    expect(body).toHaveProperty('pageId', '7');
   });
 
   // #1179 made this a single click: the block menu can delete the very block
@@ -728,9 +739,9 @@ describe('BubbleMenuContent — error state', () => {
     fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
     fireEvent.click(await screen.findByText('Improve writing'));
     expect(await screen.findByRole('alert')).toHaveTextContent(/interrupted before completion/i);
-    expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Partial rewrite');
-    expect(screen.getByRole('button', { name: /replace/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /insert below/i })).toBeDisabled();
+    expect(screen.queryByTestId('bubble-ai-preview')).toBeNull();
+    expect(screen.queryByRole('button', { name: /replace/i })).toBeNull();
+    expect(editor.getHTML()).toBe('<p>Hello world</p>');
   });
 
 

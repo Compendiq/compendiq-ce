@@ -22,6 +22,10 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 | 11 | Content Format Pipeline | [`11-content-pipeline.md`](./11-content-pipeline.md) | Confluence XHTML ↔ HTML ↔ Markdown ↔ Editor |
 | 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs gateway, durable room owners, correlated cross-process snapshots and BYTEA persistence |
 
+| 13 | Article AI Policy Audit | [`13-flow-ai-policy-audit.md`](./13-flow-ai-policy-audit.md) | Transactional cascade evidence, best-effort decision observers and report limitations |
+
+| 14 | Typed Governance Evidence Schema | [`14-ai-governance-evidence-schema.md`](./14-ai-governance-evidence-schema.md) | Canonical event envelopes, complete JSON article associations and legacy coverage |
+
 ## Runbooks
 
 Operational procedures live in [`../runbooks/`](../runbooks/) and are the place
@@ -64,6 +68,7 @@ Quick reference for what to update when:
 | The legacy image space's retirement — migration `118_retire_image_embedding_space.sql` (applied), the dump set, or the restore procedure | `docs/runbooks/image-embedding-retirement.md` + ADR-027 "Retirement plan" |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
 | Immutable-baseline migrations `120`, `121`, `122`, `124`, `125`, `127`, `128`; `core/services/page-write-admission.ts`; `page-baseline-{manifest,service,outbox,governance}.ts`; `confluence-integration.ts`; `collab-{room-service,persistence,schema}.ts`; `page-subtree.ts`; `routes/knowledge/pages-collab.ts`; `domains/confluence/services/{collab-commit-intent-reconciler,page-put-intent-reconciler,ordinary-page-write-reconciler}.ts`; baseline/recovery routes; or retained `page-baselines/` bytes | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md`, `12-realtime-collaboration.md`, `docs/runbooks/immutable-page-baselines.md` |
+| Article AI policy in the workers (SPEC-WORK-001) — `domains/llm/services/ai-policy-admission.ts` (`admitPageForProvider`, `RECHECKABLE_BLOCK_SQL`), `core/services/ai-policy-service.ts` (`purgeDerivedAiState`, `requeueDerivedAiState`), the `policy_blocked` status / `ai_policy_block_reason` in `embedding-service.ts`, `summary-worker.ts`, `quality-worker.ts`, `image-analysis-worker.ts`, `shadow-migration-service.ts`, or the ingestion policy in `sync-service.ts` / `notion-import-service.ts` | `03-backend-domains.md` ("Article AI policy in workers"), `08-flow-sync.md`, `docs/runbooks/image-analysis.md` §9, `docs/runbooks/shadow-reembed.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |

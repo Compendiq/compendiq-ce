@@ -172,6 +172,7 @@ export async function probeVision(
     // a cached false negative. 512 tokens gives reasoning models enough room to
     // complete their thinking block and output the answer.
     const reply = await chat(cfg, model, messages, {
+      transportContext: { kind: 'non_article', purpose: 'provider_probe' },
       maxTokens: 512,
       ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
     });

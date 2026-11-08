@@ -64,4 +64,29 @@ export interface EnterprisePlugin {
    * always returns null.
    */
   resolveUsecaseOverride?(usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
+
+  /** Dispatch-only authoritative override. Read and fence policy using this
+   * transaction; no pool checkout, cached policy or network calls. */
+  resolveUsecaseOverrideOnClient?(client: import('pg').PoolClient, usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
+
+  /**
+   * Article AI policy creation default (SPEC-CORE-001). The CE noop returns
+   * `'all'`; creation still applies the stricter of this value and labels.
+   * An unrecognised value is treated as `'none'` (fail closed).
+   */
+  resolveAiPolicyCreationDefault?(ctx: { userId: string; spaceKey: string | null }): Promise<'all' | 'local_only' | 'none'>;
+
+  /**
+   * True only when EE workers enforce `local_only`/`none`. Absent or false
+   * (foundation-only deployment) means restrictive policies cannot be
+   * activated.
+   */
+  aiPolicyEnforcementAvailable?(): boolean;
+
+  /** Awaited on the mutation's transaction. Must use ONLY this client, never commit,
+   * perform network I/O, or swallow persistence failures. CE is a no-op. */
+  persistAiPolicyChange?(client: import('pg').PoolClient, event: import('@compendiq/contracts').AiPolicyChangeEvent): Promise<void>;
+
+  /** Complete stage decision captured at admission; never reconstruct from current settings. */
+  onAiDecision?(event: import('@compendiq/contracts').AiDecisionEvent): void | Promise<void>;
 }
