@@ -2,9 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { AI_POLICY_CLIENT_PROTOCOL_VERSION } from '@compendiq/contracts';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
-// Used only inside setAuth, so the import cycle (editor-drafts reads this
-// store) never touches an uninitialised binding.
-import { forgetDraftSignOut } from '../shared/lib/editor-drafts';
+// Used only at runtime (setAuth, the storage listener), so the import cycle
+// (editor-drafts reads this store) never touches an uninitialised binding.
+import { forgetDraftSignOut, SIGN_OUT_EPOCH_KEY } from '../shared/lib/editor-drafts';
 
 /**
  * The persisted auth key and the cross-tab channel carry the client protocol
@@ -25,18 +25,56 @@ adoptUnversionedAuthState();
 
 /**
  * Upgrade path: keep a signed-in user signed in by COPYING the unversioned
- * blob (user + isAuthenticated; the token never persists) to the versioned
- * key once. The unversioned key is left in place on purpose: removing it
- * would fire a `storage` event that signs out every pre-upgrade tab.
+ * blob (user + isAuthenticated) to the versioned key once. The unversioned
+ * key is left in place on purpose: removing it would fire a `storage` event
+ * that signs out every pre-upgrade tab. A blob from before the token stopped
+ * being persisted is scrubbed in place too (still signed in, so no legacy
+ * tab sees a logout), so no access token stays at rest under either key.
  */
 function adoptUnversionedAuthState(): void {
   try {
     if (localStorage.getItem(AUTH_STORAGE_KEY) !== null) return;
-    const unversioned = localStorage.getItem(UNVERSIONED_AUTH_STORAGE_KEY);
-    if (unversioned !== null) localStorage.setItem(AUTH_STORAGE_KEY, unversioned);
+    let unversioned = localStorage.getItem(UNVERSIONED_AUTH_STORAGE_KEY);
+    if (unversioned === null) return;
+    try {
+      const parsed = JSON.parse(unversioned) as { state?: Record<string, unknown> };
+      if (parsed.state && 'accessToken' in parsed.state) {
+        delete parsed.state.accessToken;
+        unversioned = JSON.stringify(parsed);
+        localStorage.setItem(UNVERSIONED_AUTH_STORAGE_KEY, unversioned);
+      }
+    } catch {
+      // Unparseable: copy as-is; the persist rehydrate treats it as empty.
+    }
+    localStorage.setItem(AUTH_STORAGE_KEY, unversioned);
   } catch {
     // localStorage unavailable — nothing to adopt
   }
+}
+
+// Send-only: this bundle never listens on the unversioned channel, so a
+// legacy tab's tokens and (refused-refresh) logouts never reach it.
+const unversionedAuthChannel: BroadcastChannel | null =
+  typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(UNVERSIONED_AUTH_STORAGE_KEY)
+    : null;
+
+/**
+ * Explicit sign-out only (`logoutApi`): tell tabs of a pre-handshake build
+ * too, through both channels they listen on. Neither message carries a
+ * token. Without this, a legacy tab would keep the signed-out account's
+ * session and cached data until its access token expired.
+ */
+export function announceExplicitSignOutToUnversionedTabs(): void {
+  try {
+    unversionedAuthChannel?.postMessage({ type: 'logout' });
+  } catch { /* channel closed — the storage write below still reaches them */ }
+  try {
+    localStorage.setItem(
+      UNVERSIONED_AUTH_STORAGE_KEY,
+      JSON.stringify({ state: { user: null, isAuthenticated: false }, version: 1 }),
+    );
+  } catch { /* storage unavailable */ }
 }
 
 /**
@@ -196,6 +234,14 @@ if (authChannel) {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
+    // Explicit sign-out in ANY build's tab advances the shared draft
+    // sign-out epoch (GHSA-r652; unversioned on purpose). Only `logoutApi`
+    // writes it — never a refused refresh — so this is the cross-build
+    // sign-out signal a pre-handshake tab can still deliver.
+    if (event.key === SIGN_OUT_EPOCH_KEY && event.newValue !== null) {
+      applyRemote(() => useAuthStore.getState().clearAuth());
+      return;
+    }
     if (event.key !== AUTH_STORAGE_KEY) return;
 
     if (event.newValue === null) {

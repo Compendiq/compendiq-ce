@@ -225,6 +225,40 @@ export async function insertTestRuntime(opts: {
   return runtimeId;
 }
 
+/**
+ * An ACTIVE pre-#1881 runtime that registered before migration 151 installed
+ * the binary door — the upgrade case and the only way such a row can coexist
+ * with the switch on or with stored restrictions. Inserted with the
+ * registration guard disabled inside one transaction that always ends
+ * (rollback on failure), so a failing fixture cannot leave the table's
+ * ACCESS EXCLUSIVE lock behind for later tests.
+ */
+export async function insertPreexistingLegacyRuntime(): Promise<string> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('ALTER TABLE page_writer_runtimes DISABLE TRIGGER guard_ai_policy_runtime_registration');
+    const runtimeId = await insertTestRuntime({ legacy: true, client });
+    await client.query('ALTER TABLE page_writer_runtimes ENABLE TRIGGER guard_ai_policy_runtime_registration');
+    await client.query('COMMIT');
+    return runtimeId;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Fence a fixture runtime the way verified local termination would. */
+export async function fenceTestRuntime(runtimeId: string): Promise<void> {
+  await getPool().query(
+    `UPDATE page_writer_runtimes SET fenced_at = NOW(), fence_reason = 'Test fixture: verified terminated writer',
+            fence_proof = '{"kind":"verified_local_termination"}'::jsonb WHERE runtime_id = $1`,
+    [runtimeId],
+  );
+}
+
 export async function teardownTestDb(): Promise<void> {
   await closePool();
   initialized = false;

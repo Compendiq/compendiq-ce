@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
-import { AUTH_STORAGE_KEY, peekPersistedSession, useAuthStore } from './auth-store';
+import {
+  announceExplicitSignOutToUnversionedTabs,
+  AUTH_STORAGE_KEY,
+  peekPersistedSession,
+  useAuthStore,
+} from './auth-store';
 
 // BroadcastChannel instances created by individual tests. Closed in afterEach
 // so a stray async message can't leak into the next test.
@@ -434,19 +439,51 @@ describe('auth-store — isolation from pre-#1881 tabs (unversioned names)', () 
     const heardByPeer: unknown[] = [];
     legacy.onmessage = (event: MessageEvent) => heardByLegacy.push(event.data);
     peer.onmessage = (event: MessageEvent) => heardByPeer.push(event.data);
+    // Every state the store passes through, so a legacy logout or token that
+    // was applied and then overwritten by the sentinel is still caught.
+    const seen: Array<{ accessToken: string | null; isAuthenticated: boolean }> = [];
+    const unsubscribe = useAuthStore.subscribe((state) => {
+      seen.push({ accessToken: state.accessToken, isAuthenticated: state.isAuthenticated });
+    });
 
-    legacy.postMessage({ type: 'logout' });
-    legacy.postMessage({ type: 'token', accessToken: 'legacy-token', user });
-    // Sentinels posted after the legacy messages: once both are observed,
-    // the earlier legacy deliveries have been dispatched too.
-    peer.postMessage({ type: 'token', accessToken: 'sentinel-token', user });
-    useAuthStore.getState().setAuth('rotated-token', user);
-    await waitFor(() => expect(heardByPeer).toContainEqual({ type: 'token', accessToken: 'rotated-token', user }));
-    await waitFor(() => expect(useAuthStore.getState().accessToken).toBe('sentinel-token'));
+    try {
+      legacy.postMessage({ type: 'logout' });
+      legacy.postMessage({ type: 'token', accessToken: 'legacy-token', user });
+      // Sentinels posted after the legacy messages: once both are observed,
+      // the earlier legacy deliveries have been dispatched too.
+      peer.postMessage({ type: 'token', accessToken: 'sentinel-token', user });
+      useAuthStore.getState().setAuth('rotated-token', user);
+      await waitFor(() => expect(heardByPeer).toContainEqual({ type: 'token', accessToken: 'rotated-token', user }));
+      await waitFor(() => expect(useAuthStore.getState().accessToken).toBe('sentinel-token'));
+    } finally {
+      unsubscribe();
+    }
 
-    // The legacy logout and legacy token were never applied.
-    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(seen.some((state) => !state.isAuthenticated)).toBe(false);
+    expect(seen.some((state) => state.accessToken === 'legacy-token')).toBe(false);
     expect(heardByLegacy).toEqual([]);
+  });
+
+  it('an explicit sign-out in a legacy tab (shared draft sign-out epoch) signs this tab out', () => {
+    useAuthStore.getState().setAuth('current-token', user);
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'compendiq-draft-signout-epoch', newValue: `${Date.now()}.0.5`,
+    }));
+    expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: false, accessToken: null });
+  });
+
+  it('announces an explicit sign-out to legacy tabs on both names they listen on, without a token', async () => {
+    useAuthStore.getState().setAuth('current-token', user);
+    localStorage.setItem(legacyName, JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 }));
+    const legacy = new BroadcastChannel(legacyName);
+    legacyChannels.push(legacy);
+    const heardByLegacy: unknown[] = [];
+    legacy.onmessage = (event: MessageEvent) => heardByLegacy.push(event.data);
+
+    announceExplicitSignOutToUnversionedTabs();
+
+    await waitFor(() => expect(heardByLegacy).toEqual([{ type: 'logout' }]));
+    expect(JSON.parse(localStorage.getItem(legacyName)!)).toEqual({ state: { user: null, isAuthenticated: false }, version: 1 });
   });
 
   it('ignores a legacy tab signing out through the unversioned storage key', () => {
@@ -471,6 +508,21 @@ describe('auth-store — isolation from pre-#1881 tabs (unversioned names)', () 
     expect(localStorage.getItem(fresh.AUTH_STORAGE_KEY)).toBe(unversioned);
     expect(localStorage.getItem(legacyName)).toBe(unversioned);
     expect(fresh.peekPersistedSession()).toBe(true);
+  });
+
+  it('scrubs a pre-#1054 access token from the unversioned blob it adopts, keeping both signed in', async () => {
+    localStorage.setItem(legacyName, JSON.stringify({
+      state: { accessToken: 'stale-jwt', user, isAuthenticated: true }, version: 0,
+    }));
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    vi.resetModules();
+    // Dynamic on purpose: the adoption runs at module load.
+    const fresh = await import('./auth-store');
+    for (const key of [legacyName, fresh.AUTH_STORAGE_KEY]) {
+      const blob = JSON.parse(localStorage.getItem(key)!);
+      expect(blob.state.accessToken).toBeUndefined();
+      expect(blob.state.isAuthenticated).toBe(true);
+    }
   });
 
   it('never overwrites an existing versioned blob with the unversioned one', async () => {

@@ -212,9 +212,13 @@ it neither adopts tokens refreshed by up-to-date tabs nor signs them out when
 its own refresh is refused and it clears its session. On first load the new
 bundle copies the unversioned blob (user + `isAuthenticated`, never a token)
 once and leaves it in place, so neither build's tabs are signed out by the
-upgrade. Consequence: during an upgrade, sign-in and sign-out do not propagate
-between tabs running different builds; an explicit sign-out still revokes the
-shared refresh-token family server-side.
+upgrade. Sign-in does not propagate between builds (each tab re-mints its own
+token behind the shared auth-cookie lock), but an **explicit sign-out does,
+in both directions**: `logoutApi()` also posts `logout` on the unversioned
+channel and writes a logged-out unversioned blob (no token in either), and
+every policy-aware tab treats a change of the shared draft sign-out epoch —
+written only by an explicit sign-out, in any build since GHSA-r652, never by
+a refused refresh — as a sign-out.
 
 **Residual risk.** A legacy tab keeps the content it already loaded, and its
 current access token, for at most one access-token lifetime

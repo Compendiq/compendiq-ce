@@ -17,13 +17,15 @@ import type { FastifyInstance, InjectOptions } from 'fastify';
 import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app.js';
-import { getPool, query } from '../../core/db/postgres.js';
+import { query } from '../../core/db/postgres.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { setAiPolicyEnforcementForTest } from '../../core/services/ai-policy-activation.js';
 import { getEnterprisePlugin } from '../../core/enterprise/loader.js';
 import { admitArticleStage } from '../../domains/llm/services/article-stage-admission.js';
 import { createProvider } from '../../domains/llm/services/llm-provider-service.js';
 import {
+  fenceTestRuntime,
+  insertPreexistingLegacyRuntime,
   insertTestRuntime,
   isDbAvailable,
   setupTestDb,
@@ -308,28 +310,14 @@ describe.skipIf(!available)('article AI policy activation over HTTP (#1881)', ()
     expect((await send('PUT', ACTIVATION, adminToken, { enabled: true })).statusCode).toBe(200);
     // An old binary registered before migration 151 installed the door: the
     // only way an active version-0 runtime can coexist with the switch on.
-    const client = await getPool().connect();
-    let oldRuntime: string;
-    try {
-      await client.query('BEGIN');
-      await client.query('ALTER TABLE page_writer_runtimes DISABLE TRIGGER guard_ai_policy_runtime_registration');
-      oldRuntime = await insertTestRuntime({ legacy: true, client });
-      await client.query('ALTER TABLE page_writer_runtimes ENABLE TRIGGER guard_ai_policy_runtime_registration');
-      await client.query('COMMIT');
-    } finally {
-      client.release();
-    }
+    const oldRuntime = await insertPreexistingLegacyRuntime();
 
     const refused = await send('PUT', `/api/pages/${pageId}/ai-policy`, editorToken, { aiPolicy: 'local_only', expectedRevision: 0 });
     expect(refused.statusCode, refused.body).toBe(409);
     expect(refused.json()).toMatchObject({ error: 'ai_policy_enforcement_unavailable', reason: 'incompatible_runtime_active' });
     expect(await pageRow(pageId)).toEqual({ ai_policy: 'all', ai_policy_revision: '0' });
 
-    await query(
-      `UPDATE page_writer_runtimes SET fenced_at = NOW(), fence_reason = 'Test fixture: verified terminated writer',
-              fence_proof = '{"kind":"verified_local_termination"}'::jsonb WHERE runtime_id = $1`,
-      [oldRuntime!],
-    );
+    await fenceTestRuntime(oldRuntime);
     const stored = await send('PUT', `/api/pages/${pageId}/ai-policy`, editorToken, { aiPolicy: 'local_only', expectedRevision: 0 });
     expect(stored.statusCode, stored.body).toBe(200);
   });

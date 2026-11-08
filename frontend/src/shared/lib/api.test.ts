@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSetAuth = vi.fn();
 const mockClearAuth = vi.fn();
+const mockAnnounceSignOut = vi.fn();
 let storeState: Record<string, unknown> = {};
 
 vi.mock('../../stores/auth-store', () => ({
@@ -11,6 +12,7 @@ vi.mock('../../stores/auth-store', () => ({
       getState: () => storeState,
     },
   ),
+  announceExplicitSignOutToUnversionedTabs: () => mockAnnounceSignOut(),
 }));
 
 // Import after mocks are set up
@@ -518,6 +520,7 @@ describe('logoutApi', () => {
     };
     mockSetAuth.mockClear();
     mockClearAuth.mockClear();
+    mockAnnounceSignOut.mockClear();
   });
 
   afterEach(() => {
@@ -543,6 +546,8 @@ describe('logoutApi', () => {
     // #1881: logout identifies the bundle like every other session route.
     expect(headers.get('X-Compendiq-Client-Protocol')).toBe('1');
     expect(mockClearAuth).toHaveBeenCalled();
+    // A completed explicit sign-out also reaches tabs of a pre-handshake build.
+    expect(mockAnnounceSignOut).toHaveBeenCalledTimes(1);
   });
 
   it('clears auth even when backend call fails', async () => {
@@ -561,6 +566,8 @@ describe('logoutApi', () => {
       message: 'Sign-out did not complete. Please try again.',
     });
     expect(mockClearAuth).not.toHaveBeenCalled();
+    // Nothing was revoked, so no other tab (of either build) is signed out.
+    expect(mockAnnounceSignOut).not.toHaveBeenCalled();
   });
 
   // GHSA-r652-53hc-h6jh: sign-out discards local editor drafts and recent

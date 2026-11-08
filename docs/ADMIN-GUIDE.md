@@ -220,7 +220,9 @@ Once on, editors with policy authority can set restrictive policies, builds
 without AI-policy enforcement can no longer start against this database, and
 **old browser tabs must reload**: their next login, token refresh or SSO
 exchange is refused with "Reload this page to continue" until they load the
-current bundle. Reloading is enough; drafts kept per user survive.
+current bundle. Reloading is enough; drafts kept per user survive. During an
+upgrade, signing in does not carry across tabs running different builds,
+while signing out still signs out every tab of the browser.
 
 **Turning off** needs no preconditions and is the emergency lever, not a
 routine state. Stored restrictions stay enforced on every AI path; only new
