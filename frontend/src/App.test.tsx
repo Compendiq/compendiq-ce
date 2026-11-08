@@ -166,8 +166,8 @@ describe('App – expired session must not hang on the loading fallback', () => 
   //
   // The sequence is a starvation, not a failed fetch. useSessionInit's refresh
   // 401s and calls clearAuth(); that true->false flip fires
-  // useClearCacheOnLogout, whose queryClient.clear() evicts the already-
-  // resolved ['setup-status'] entry. useSetupStatus then reports isLoading
+  // useClearCacheOnLogout, whose wipe (formerly a blanket queryClient.clear())
+  // evicted the already-resolved ['setup-status'] entry. useSetupStatus then reported isLoading
   // again with no data, and ProtectedRoute's `if (isLoading)` gate returns the
   // fallback *before* reaching its `<Navigate to="/login">` — with nothing left
   // to refetch the evicted query, the spinner never resolves.
