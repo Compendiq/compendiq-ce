@@ -217,10 +217,10 @@ token behind the shared auth-cookie lock). Session ends do, as far as each
 build can tell them apart from a refused refresh:
 
 - **Policy-aware → legacy:** every local session end in a policy-aware tab
-  (explicit sign-out, or a refresh that resolved null — this build is never
-  refused) also posts `logout` on the unversioned channel and writes a
-  logged-out unversioned blob; no token in either. A clear applied from
-  another tab is not re-sent.
+  (explicit sign-out, or a refresh that resolved null; a refused refresh,
+  409, rejects and keeps the session, so it never ends one) also posts
+  `logout` on the unversioned channel and writes a logged-out unversioned
+  blob; no token in either. A clear applied from another tab is not re-sent.
 - **Legacy → policy-aware:** a change of the shared draft sign-out epoch —
   written only by an explicit sign-out, in builds 0.9.0 and later, never by a
   refused refresh — signs policy-aware tabs out. A legacy tab's other session
@@ -229,7 +229,8 @@ build can tell them apart from a refused refresh:
 - **Account switch:** if a policy-aware tab refreshes or adopts a token for a
   different account while still signed in (someone signed in through a tab it
   never heard sign out), `useClearCacheOnLogout` runs the #885 wipe and resets
-  mounted queries so they refetch as the new account.
+  mounted queries so they refetch as the new account, and `ProtectedRoute`
+  (keyed by user id) remounts the shell so no component state carries over.
 
 **Residual risk.** A legacy tab keeps the content it already loaded, and its
 current access token, for at most one access-token lifetime

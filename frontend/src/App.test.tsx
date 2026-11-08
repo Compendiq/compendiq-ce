@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AUTH_STORAGE_KEY, useAuthStore } from './stores/auth-store';
 import { createQueryClient } from './shared/lib/query-client';
-import { App } from './App';
+import { App, ProtectedRoute } from './App';
 
 describe('App – ProtectedRoute token restoration', () => {
   let fetchSpy: MockInstance<typeof fetch>;
@@ -599,5 +600,49 @@ describe('App routes — the AI family (#1361)', () => {
     expect(code).toMatch(
       /path="\/ai\/c\/:conversationId"[\s\S]{0,80}element=\{<AiAssistantPage \/>\}/,
     );
+  });
+});
+
+// #885 via #1881: a refresh into a DIFFERENT account while signed in must not
+// leave the previous account's component state (AI threads, unsent drafts)
+// on screen under the new account; a same-account refresh keeps it.
+describe('ProtectedRoute — per-account shell state', () => {
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
+  });
+
+  function Notes() {
+    const [text, setText] = useState('');
+    return <input aria-label="notes" value={text} onChange={(e) => setText(e.target.value)} />;
+  }
+
+  function renderShell() {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(['setup-status'], { setupComplete: true, steps: { admin: true, llm: true, confluence: true } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ProtectedRoute><Notes /></ProtectedRoute>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('keeps shell state on a same-account refresh and drops it on an account switch', () => {
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a', { id: 'a', username: 'alice', role: 'user' });
+    });
+    renderShell();
+    fireEvent.change(screen.getByLabelText('notes'), { target: { value: 'alice private' } });
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a2', { id: 'a', username: 'alice', role: 'user' });
+    });
+    expect(screen.getByLabelText('notes')).toHaveValue('alice private');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: 'b', username: 'bob', role: 'user' });
+    });
+    expect(screen.getByLabelText('notes')).toHaveValue('');
   });
 });

@@ -65,7 +65,8 @@ const unversionedAuthChannel: BroadcastChannel | null =
  * from `clearAuth` on a local authenticated→unauthenticated transition: in
  * this build that only happens on an explicit sign-out or once a refresh
  * resolved null — the shared cookie session is gone either way (a refused
- * refresh keeps the session; only a legacy tab is ever refused). Without it a
+ * refresh, 409, rejects and keeps the session, so it never reaches
+ * `clearAuth`). Without it a
  * legacy tab keeps the ended account's session and cached data, and later
  * refreshes into whoever signs in next with no cache wipe (#885).
  */
