@@ -193,7 +193,7 @@ describe('App – expired session must not hang on the loading fallback', () => 
     // why the existing coverage never exercised this path.
     //
     // The ordering below is the whole bug. The refresh must fail while the
-    // setup-status request is still IN FLIGHT, so queryClient.clear() removes a
+    // setup-status request is still IN FLIGHT, so the logout wipe removes a
     // pending query: the response then arrives for a query that no longer
     // exists and is discarded, leaving the observer with no data and nothing to
     // trigger a refetch. If setup-status resolves first the app behaves
@@ -218,7 +218,7 @@ describe('App – expired session must not hang on the loading fallback', () => 
       }
       if (url.includes('/auth/refresh')) {
         // Let the 401 land, then release setup-status on a later macrotask so
-        // clearAuth's effect (and its clear()) has run first.
+        // clearAuth (and the logout wipe it triggers) has run first.
         setTimeout(() => refreshFailed(), 0);
         return new Response('Unauthorized', { status: 401 });
       }

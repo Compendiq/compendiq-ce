@@ -33,7 +33,8 @@ describe('useClearCacheOnLogout', () => {
     queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'SECRET' }] });
     queryClient.setQueryData(['permissions', 'manage', 'space', 'SECRET'], { allowed: true });
 
-    // Authenticated before the hook mounts, so the ref guard starts "was true".
+    // Authenticated before the hook mounts, so the clearAuth below is a real
+    // authenticated -> unauthenticated store transition.
     act(() => {
       useAuthStore.getState().setAuth('tok', { id: '1', username: 'a', role: 'admin' });
     });
@@ -59,12 +60,10 @@ describe('useClearCacheOnLogout', () => {
     queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'PRELOGIN' }] });
 
     // The store is logged out (beforeEach) BEFORE the hook mounts, so there is
-    // no authenticated -> unauthenticated transition. The ref guard starts
-    // "was false", so a correct implementation must leave the cache intact.
-    // A naive `if (!isAuthenticated) queryClient.clear()` on mount would wipe
-    // this pre-login data and fail here — this is the case the ref guard exists
-    // for (the live-session token-refresh test below does not exercise it,
-    // since isAuthenticated stays true and the effect never re-runs).
+    // no authenticated -> unauthenticated transition after it subscribes, and
+    // a correct implementation must leave the cache intact. A naive
+    // `if (!isAuthenticated) queryClient.clear()` on mount would wipe this
+    // pre-login data and fail here.
     renderProbe(queryClient);
 
     expect(queryClient.getQueryData(['pages', { page: 1 }])).toEqual({

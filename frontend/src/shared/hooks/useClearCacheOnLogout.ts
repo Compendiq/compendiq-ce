@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { useUiStore } from '../../stores/ui-store';
@@ -45,7 +45,9 @@ import { resetOnboardingSessionWrites } from './use-onboarding';
 export function useClearCacheOnLogout(): void {
   const queryClient = useQueryClient();
 
-  useEffect(() => useAuthStore.subscribe((state, previous) => {
+  // Layout effect: subscribed within the first commit, so a cross-tab logout
+  // or token message delivered before passive effects flush is not missed.
+  useLayoutEffect(() => useAuthStore.subscribe((state, previous) => {
     const loggedOut = previous.isAuthenticated && !state.isAuthenticated;
     const previousUserId = previous.user?.id ?? null;
     const userId = state.user?.id ?? null;
