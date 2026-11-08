@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { useUiStore } from '../../stores/ui-store';
@@ -25,9 +25,9 @@ import { resetOnboardingSessionWrites } from './use-onboarding';
  *
  * This is the single choke point for every clearAuth path — the logout button,
  * the api.ts token-expiry handlers, the cross-tab storage event, and a failed
- * session refresh — because they all flip `isAuthenticated` to false. The ref
- * guard ensures we only clear on a true→false transition: a token refresh
- * (setAuth while already authenticated) must NOT drop a live session's cache.
+ * session refresh — because they all flip `isAuthenticated` to false. Only a
+ * true→false transition clears: a token refresh (setAuth while already
+ * authenticated) must NOT drop a live session's cache.
  *
  * The one exception is a refresh or an adopted cross-tab token that carries a
  * DIFFERENT account while this tab stays authenticated: someone else signed
@@ -35,48 +35,49 @@ import { resetOnboardingSessionWrites } from './use-onboarding';
  * the other build — #1881). That is an account switch, so the same wipe runs;
  * active queries are reset rather than removed so mounted views refetch as
  * the new account instead of keeping the old account's data on screen.
+ *
+ * The wipe runs inside the store transition itself (a store subscription),
+ * not in a render effect: React renders the new session only afterwards, so
+ * the shell `ProtectedRoute` remounts for a new account never reads — and a
+ * form that copies its values once never keeps — the previous account's
+ * cache.
  */
 export function useClearCacheOnLogout(): void {
   const queryClient = useQueryClient();
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const userId = useAuthStore((s) => s.user?.id ?? null);
-  const wasAuthenticated = useRef(isAuthenticated);
-  const previousUserId = useRef(userId);
 
-  useEffect(() => {
-    const loggedOut = wasAuthenticated.current && !isAuthenticated;
-    const switchedAccount = isAuthenticated
-      && previousUserId.current !== null && userId !== null
-      && previousUserId.current !== userId;
-    if (loggedOut || switchedAccount) {
-      // Everything EXCEPT the setup-status query, which describes the
-      // deployment rather than any user and so is outside what this wipe
-      // protects. A blanket queryClient.clear() also removed it *mid-flight*:
-      // the in-flight response then arrived for a query that no longer existed
-      // and was discarded, leaving ProtectedRoute's `isLoading` gate stuck on
-      // the loading fallback with nothing left to trigger a refetch — an
-      // expired session rendered a permanent spinner instead of the login page.
-      const accountScoped = {
-        predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey[0] !== SETUP_STATUS_QUERY_KEY[0],
-      };
-      if (loggedOut) {
-        queryClient.removeQueries(accountScoped);
-      } else {
-        void queryClient.resetQueries(accountScoped);
-      }
-      // clear() dropped mutation state too; keep doing that so an interrupted
-      // mutation can't surface to whoever logs in next in this tab.
-      queryClient.getMutationCache().clear();
-      // The onboarding auto-mark dedupe is keyed by this same never-rebuilt
-      // client (#1402), so it is exactly as stale as the cache above: without
-      // this the next user in the tab has their milestones suppressed for the
-      // rest of the page load while their own flags are still false.
-      resetOnboardingSessionWrites(queryClient);
-      forgetLastConfluenceSpace();
-      forgetRecentLibrarySpaces();
-      useUiStore.getState().setTreeSidebarSpaceKey(undefined);
+  useEffect(() => useAuthStore.subscribe((state, previous) => {
+    const loggedOut = previous.isAuthenticated && !state.isAuthenticated;
+    const previousUserId = previous.user?.id ?? null;
+    const userId = state.user?.id ?? null;
+    const switchedAccount = previous.isAuthenticated && state.isAuthenticated
+      && previousUserId !== null && userId !== null && previousUserId !== userId;
+    if (!loggedOut && !switchedAccount) return;
+
+    // Everything EXCEPT the setup-status query, which describes the
+    // deployment rather than any user and so is outside what this wipe
+    // protects. A blanket queryClient.clear() also removed it *mid-flight*:
+    // the in-flight response then arrived for a query that no longer existed
+    // and was discarded, leaving ProtectedRoute's `isLoading` gate stuck on
+    // the loading fallback with nothing left to trigger a refetch — an
+    // expired session rendered a permanent spinner instead of the login page.
+    const accountScoped = {
+      predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey[0] !== SETUP_STATUS_QUERY_KEY[0],
+    };
+    if (loggedOut) {
+      queryClient.removeQueries(accountScoped);
+    } else {
+      void queryClient.resetQueries(accountScoped);
     }
-    wasAuthenticated.current = isAuthenticated;
-    previousUserId.current = userId;
-  }, [isAuthenticated, userId, queryClient]);
+    // clear() dropped mutation state too; keep doing that so an interrupted
+    // mutation can't surface to whoever logs in next in this tab.
+    queryClient.getMutationCache().clear();
+    // The onboarding auto-mark dedupe is keyed by this same never-rebuilt
+    // client (#1402), so it is exactly as stale as the cache above: without
+    // this the next user in the tab has their milestones suppressed for the
+    // rest of the page load while their own flags are still false.
+    resetOnboardingSessionWrites(queryClient);
+    forgetLastConfluenceSpace();
+    forgetRecentLibrarySpaces();
+    useUiStore.getState().setTreeSidebarSpaceKey(undefined);
+  }), [queryClient]);
 }

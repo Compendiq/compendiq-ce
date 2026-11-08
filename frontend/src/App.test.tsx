@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { AUTH_STORAGE_KEY, useAuthStore } from './stores/auth-store';
 import { createQueryClient } from './shared/lib/query-client';
 import { App, ProtectedRoute } from './App';
+import { useClearCacheOnLogout } from './shared/hooks/useClearCacheOnLogout';
 
 describe('App – ProtectedRoute token restoration', () => {
   let fetchSpy: MockInstance<typeof fetch>;
@@ -616,13 +617,19 @@ describe('ProtectedRoute — per-account shell state', () => {
     return <input aria-label="notes" value={text} onChange={(e) => setText(e.target.value)} />;
   }
 
-  function renderShell() {
-    const queryClient = new QueryClient();
+  function SessionWipe() {
+    useClearCacheOnLogout();
+    return null;
+  }
+
+  function renderShell(children: React.ReactNode = <Notes />) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(['setup-status'], { setupComplete: true, steps: { admin: true, llm: true, confluence: true } });
     return render(
       <QueryClientProvider client={queryClient}>
+        <SessionWipe />
         <MemoryRouter>
-          <ProtectedRoute><Notes /></ProtectedRoute>
+          <ProtectedRoute>{children}</ProtectedRoute>
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -644,5 +651,35 @@ describe('ProtectedRoute — per-account shell state', () => {
       useAuthStore.getState().setAuth('tok-b', { id: 'b', username: 'bob', role: 'user' });
     });
     expect(screen.getByLabelText('notes')).toHaveValue('');
+  });
+
+  // A form that copies its loaded values into local state once (the admin
+  // settings tabs do) must not copy the previous account's cached answer
+  // when the shell remounts for the new account.
+  it('a remounted copy-once form loads the new account, not the previous account\'s cache', async () => {
+    function CopyOnceForm() {
+      const { data } = useQuery({
+        queryKey: ['org-settings'],
+        queryFn: async () => `settings for ${useAuthStore.getState().user?.username}`,
+        staleTime: Infinity,
+      });
+      const [copied, setCopied] = useState<string | null>(null);
+      useEffect(() => {
+        if (copied === null && data !== undefined) setCopied(data);
+      }, [copied, data]);
+      return <p>{copied ?? 'loading'}</p>;
+    }
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a', { id: 'a', username: 'alice', role: 'user' });
+    });
+    renderShell(<CopyOnceForm />);
+    await screen.findByText('settings for alice');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: 'b', username: 'bob', role: 'user' });
+    });
+
+    await screen.findByText('settings for bob');
+    expect(screen.queryByText('settings for alice')).toBeNull();
   });
 });
