@@ -325,7 +325,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setMobileContextOpen(false);
   }, [location.pathname]);
 
-  useOverlayFocusTrap(mobileSidebarOpen, mobileSidebarRef, closeMobileSidebar);
+  // A drawer hidden by the md breakpoint must not keep its old open state.
+  useEffect(() => {
+    if (!isMobileLayout) setMobileSidebarOpen(false);
+  }, [isMobileLayout]);
+
+  useOverlayFocusTrap(isMobileLayout && mobileSidebarOpen, mobileSidebarRef, closeMobileSidebar);
   useOverlayFocusTrap(
     isArticleRoute && isMobileLayout && mobileContextOpen,
     mobileContextRef,
@@ -378,7 +383,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Mobile sidebar slide-over — chassis-level so it covers the inset
           and is not clipped by the shell's overflow:hidden. */}
-      <AnimatePresence>
+      {isMobileLayout && <AnimatePresence>
         {mobileSidebarOpen && (
           <>
             {/* Backdrop */}
@@ -419,7 +424,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </m.div>
           </>
         )}
-      </AnimatePresence>
+      </AnimatePresence>}
 
       {/* Mobile page inspector — Outline, Details, and Assistant together.
           Chassis-level so it is not clipped by the shell. Mirrors the left

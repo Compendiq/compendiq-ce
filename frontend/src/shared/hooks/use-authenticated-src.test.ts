@@ -119,7 +119,7 @@ describe('use-authenticated-src', () => {
             ok: true,
             json: () => Promise.resolve({
               accessToken: 'refreshed-token',
-              user: { id: '1', username: 'test', role: 'user' },
+              user: { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' },
             }),
           });
         }
@@ -215,7 +215,7 @@ describe('use-authenticated-src', () => {
             ok: true,
             json: () => Promise.resolve({
               accessToken: 'refreshed-token',
-              user: { id: '1', username: 'test', role: 'user' },
+              user: { id: '00000000-0000-4000-8000-000000000001', username: 'test', role: 'user' },
             }),
           });
         }

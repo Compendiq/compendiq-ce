@@ -25,8 +25,8 @@ function decodeJwtPayload(token: string): { exp?: number; [key: string]: unknown
  * before expiry, silently exchanges the refresh cookie for a new token, and
  * updates the store — which re-triggers this hook to schedule the next cycle.
  *
- * If the proactive refresh fails (e.g. no network), the reactive interceptor
- * in apiFetch will still catch the eventual 401 on the next API call.
+ * An indeterminate failure fences later refreshes too: an eventual reactive
+ * 401 surfaces the same error without replaying a possibly consumed cookie.
  */
 export function useTokenRefreshTimer() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -52,7 +52,7 @@ export function useTokenRefreshTimer() {
 
     const timer = setTimeout(() => {
       refreshAccessTokenOnce().catch(() => {
-        // Proactive refresh failed — reactive refresh will catch it on next API call
+        // Keep auth; apiFetch surfaces the failure without repeating unsafe rotation.
       });
     }, refreshInMs);
 

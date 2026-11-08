@@ -5,6 +5,7 @@ import {
   htmlToConfluence,
   htmlToText,
 } from '../../../core/services/content-converter.js';
+import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { invalidateCollabDocAfterBodyWrite } from '../../../core/services/collab-guard.js';
 import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
@@ -372,11 +373,10 @@ export async function publishConfluencePagePut(
   let bodyHtml: string;
   let bodyText: string;
   try {
-    bodyHtml = confluenceToHtml(
-      observed.bodyStorage,
+    bodyHtml = (await materializeDrawioPreviews(
+      confluenceToHtml(observed.bodyStorage, publication.confluenceId, page.space_key ?? ''),
       publication.confluenceId,
-      page.space_key ?? '',
-    );
+    )).html;
     bodyText = htmlToText(bodyHtml);
   } catch {
     throw new PageWriteError(

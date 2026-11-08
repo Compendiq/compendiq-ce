@@ -327,7 +327,6 @@ export async function streamSSE(
       logger.error({ err: callbackError }, 'SSE stream error callback failed');
     }
   };
-
   try {
     if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
     const chunks = typeof generator === 'function' ? generator(controller.signal) : generator;
