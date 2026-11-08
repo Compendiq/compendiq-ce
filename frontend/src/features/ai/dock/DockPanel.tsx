@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Network, PanelRightClose, Send, Sparkles, Square, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
+import { PolicyRefusalNotice } from '../PolicyRefusalNotice';
 import { StreamingMessage } from '../StreamingMessage';
 import { CitationChips } from '../CitationChips';
 import { DiagramPreview } from '../modes';
@@ -51,8 +52,13 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     streamingContent, streamingThreadId, activeThreadId, input, setInput, modelsError,
     refetchModels, model, chatVision, chatVisionModel, mode, setMode, improvementType,
     createSkill, setCreateSkill, abortRef, historyTruncated,
-    includeSubPages, setIncludeSubPages,
+    includeSubPages, setIncludeSubPages, pageActionDenialReason, articlePolicy,
   } = useAiContext();
+  // #283 — the same verdict `runStream` enforces, surfaced BEFORE the click
+  // as visible prose: a disabled-looking trigger is not enforcement, and a
+  // tooltip on a disabled control is unreachable. Every action here derives
+  // from the open article, so one reason covers the composer.
+  const pageDenied = !!page && pageActionDenialReason !== null;
 
   // #1361: the streaming buffer and both busy flags are provider-wide, and this
   // renderer decides "the last bubble is the in-flight answer" from
@@ -198,7 +204,8 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
     // established for the Ask composer, in the surface where it matters most.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void sendSelectedAction();
+      // Same verdict as the Send button and runStream's guard (#283).
+      if (!pageDenied) void sendSelectedAction();
     }
   };
 
@@ -338,6 +345,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           above it drew a second line 10px from the one the composer already
           has. */}
       <div className="shrink-0 px-3 pb-3 pt-2.5">
+        <PolicyRefusalNotice />
         {modelsError && (
           <button
             type="button"
@@ -434,6 +442,26 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
         {historyTruncated && (
           <p className="mb-2 text-[11px] text-muted-foreground" data-testid="ai-dock-history-truncated">
             Older messages in this conversation are no longer sent to the model.
+          </p>
+        )}
+
+        {/* #283 — the article's policy verdict for THIS composer, before any
+            send. Neutral prose (a category, not a fault), wired to the Send
+            control through aria-describedby. For Local AI only the line
+            names the resolved provider's declared locality rather than
+            inferring it from the default model row. */}
+        {page && (pageDenied || articlePolicy === 'local_only') && (
+          <p
+            id="ai-dock-policy-reason"
+            className="mb-2 rounded-md border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            data-testid="ai-dock-policy-reason"
+            data-denied={pageDenied ? 'true' : undefined}
+          >
+            {pageDenied
+              ? pageActionDenialReason
+              // Reached only when `chatAdmitsLocalOnly` is true — otherwise
+              // the verdict above denies. Declared, never "verified".
+              : 'This article is Local AI only. The assistant\u2019s resolved provider is declared local by an administrator (declared, not independently verified); the server admits each request independently.'}
           </p>
         )}
 
@@ -539,7 +567,13 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 type="button"
                 variant="primary"
                 size="sm"
-                onClick={() => void sendSelectedAction()}
+                // #283: a denied page keeps the control FOCUSABLE (aria-disabled,
+                // not disabled) so the reason it points at is reachable; the
+                // click is refused here AND again inside runStream, so mouse,
+                // Enter and programmatic callers all meet the same verdict.
+                onClick={() => { if (!pageDenied) void sendSelectedAction(); }}
+                aria-disabled={pageDenied || undefined}
+                aria-describedby={pageDenied ? 'ai-dock-policy-reason' : undefined}
                 disabled={
                   !model
                   || (selectedAction === 'ask' && !input.trim())

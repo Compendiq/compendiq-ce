@@ -131,6 +131,9 @@ erDiagram
         text freeze_provenance "manual_assertion | authenticated_approval"
         jsonb freeze_reported_signatories "caller assertions, not authenticated approvals"
         text freeze_reported_reference
+        text ai_policy "migration 135 (#280): all | local_only | none; DEFAULT all; the stored authority, labels never consulted after creation"
+        bigint ai_policy_revision "migration 135: monotonic; bumped by trigger on every ai_policy change; PUT expectedRevision fences on it"
+        text ai_policy_block_reason "migration 135: policy_none | provider_not_local | policy_changed; persisted only for article-level blocks"
     }
 
     page_collaborative_docs {
@@ -550,6 +553,11 @@ erDiagram
         bool is_default
         timestamptz created_at
         timestamptz updated_at
+        text locality "migration 135 (#280): local | external; DEFAULT external; never inferred"
+        bigint config_revision "migration 135: DEFAULT 1; trigger bumps on base_url/api_key/auth_type/verify_ssl edits"
+        bigint locality_config_revision "revision a local declaration was made against; local admits ONLY when = config_revision"
+        uuid locality_declared_by FK "users; ON DELETE SET NULL"
+        timestamptz locality_declared_at "fresh value in the same UPDATE keeps a declaration across an endpoint edit; otherwise the trigger resets to external"
     }
 
     llm_usecase_assignments {
@@ -586,6 +594,58 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**Article AI policy foundation (migrations 135–137; #280).** Migration 135
+adds `pages.ai_policy` (`all | local_only | none`, default `all`), the
+monotonic `ai_policy_revision` (a trigger advances it on every policy change
+and refuses a decrease) and `ai_policy_block_reason`, plus the provider
+locality columns above. No backfill ever infers `local`: unknown locality
+never satisfies `local_only`. Migration 136 freezes the label table —
+`all-ai | ai:all → all`, `local-ai-only | local_only | ai:local → local_only`,
+`no-ai | no_ai | ai:none → none`, lowercase + trim only, no regex — in
+`ai_policy_label_value` / `ai_policy_from_labels` / `ai_policy_apply_label`.
+"Trim" is `ai_policy_label_key`, a twin of JavaScript's
+`String.prototype.trim()` (TAB, VT, FF, NBSP, BOM, the Zs category and the
+line terminators — not `btrim`'s ASCII space alone), and "lowercase" is an
+ASCII-only `translate(... 'A'..'Z', 'a'..'z')`, never `lower()`: a locale
+fold such as `İ → i̇` (dotted capital I) would otherwise let SQL recognise a
+string JavaScript's `toLowerCase()` does not — or the reverse — so SQL and
+`normalizeAiPolicyLabel` recognise exactly the same strings. The migration
+also rewrites pre-freeze spellings in `pages.labels` to the canonical
+restrictive labels (`local-ai-only`, `no-ai`) without touching the stored
+policy, which remains the authority (labels are consulted at creation only;
+removing a tag never relaxes a page). The legacy keys are **exactly the four
+migration 135's regex reader accepted** after folding `[\s_:-]+` to `-`:
+`ai-none` and `no-ai` → `no-ai`, `ai-local-only` and `ai-local` →
+`local-ai-only`. So `no ai`, `no:ai`, `no__ai` and `ai_local` are repaired;
+`ai-all` / `ai all` were never 135 keys (135 only ever tightened) and are
+ordinary labels the migration does not select or rewrite. The repair touches
+**only unrecognised spellings**: a label the frozen table already reads
+(`ai:none`, `NO_AI`, `AI:Local`, …) is kept verbatim, because the stored
+spelling is the user's and the frozen reader already agrees with it. That repair collapses a rewrite onto a label
+the row already carries (first position wins, never a duplicate) and **skips
+frozen rows** (`baseline_id IS NOT NULL`): `labels` is a protected column
+under migration 121's trigger and the migration must not abort on a frozen
+page; such a row keeps its legacy spelling — cosmetic only — until it is
+thawed. Test databases that replay 135 by hand must also replay 136 (the
+`054_llm_providers` `repairSharedSchema` helper deletes the `_migrations`
+rows for 087, 135 and 136 so the loader re-applies the frozen table).
+The same table lives in `@compendiq/contracts` (`AI_POLICY_LABEL_SYNONYMS`)
+and in `core/services/ai-policy-service.ts`. The canonical stored and wire
+value for "no AI" is `none`; `no_ai` is accepted as request input only.
+Migration 137 lets a `pages.create.confluence` intent carry an EMPTY
+`page_ids` when its effect has `parentPageId: null` (a space-root create), so
+root creation goes through the same write-intent ledger as parented creation;
+the existing `page_write_intents_effect_policy_check` is re-read from the
+catalog and extended rather than restated. The root branch validates every
+`initialLabels` element (non-empty string ≤ 100 chars, ≤ 50 entries) through
+the IMMUTABLE `page_write_intent_initial_labels_valid(jsonb)` — a CHECK may
+not hold a subquery — and its presence in the catalog definition is the
+single idempotency marker: a database whose constraint does not yet name the
+function has the constraint dropped and rebuilt with the root branch; one
+that does is left untouched. There is no in-place "upgrade" of an earlier
+root branch — 137 shipped once, with the element rule, so the only two
+catalog states are "no root branch" and "this root branch".
 
 **Immutable baseline foundation and enforcement (migrations 120–122,
 124–125 and 127–128; #275/#276).** Migration 120 is additive: existing and
@@ -1327,3 +1387,44 @@ together, which matters most for #1114's query-side prefix.
   and persists them, so steady-state reads do zero XHTML parsing. NULL means
   "recompute"; an empty array means "computed, no assets". This trigger is
   independent of the migration 060 `local_modified` trigger (disjoint columns).
+
+## Enterprise article AI policy governance (EE migration 930, SPEC-EE-001)
+
+```mermaid
+erDiagram
+    spaces ||--o{ pages : "default seeds new pages while entitled"
+    pages ||--o{ ai_policy_enforcement_events : "recorded decisions; no FK, no content"
+
+    spaces {
+        text default_ai_policy "EE; NULL | all | local_only | none"
+    }
+
+    ai_policy_enforcement_events {
+        bigint id PK
+        timestamptz occurred_at
+        text event_type "admitted | blocked | policy_changed | cascade_committed"
+        int page_id "deliberately no FK"
+        text user_id
+        text usecase
+        text provider_id "destination actually named"
+        text reason
+        text policy
+        text from_policy
+        text to_policy
+        bigint revision
+        bigint config_revision
+    }
+```
+
+The EE-only overlay migration is idempotent and lives in the reserved 9xx
+range. Cascade events are inserted in the same transaction as the page rows
+they describe. The shared `applyAiPolicyOnClient` owns labels, policy revisions
+and derived-state purge/requeue; the EE caller publishes content revisions on
+the same held transaction. Lifecycle locks protect pending writers and frozen
+rows before AI-policy locks. A refusal rolls back the entire owner target set.
+Normal `policy_changed` events are emitted after commit through a best-effort
+observer, not a durable outbox. The table carries identifiers and policies only,
+never page content, prompts or completions. Missing locality and blocked-event
+revisions remain unknown; current provider settings cannot reconstruct them.
+See [policy audit flow](./13-flow-ai-policy-audit.md) for delivery and reporting
+boundaries; these rows have no cryptographic tamper protection.

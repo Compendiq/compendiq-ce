@@ -7,6 +7,12 @@ import { reservePageWriteIntent } from '../../core/services/page-write-admission
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { pageWriteRecoveryRoutes } from './page-write-recovery.js';
 
+import { request } from 'undici';
+import type * as Undici from 'undici';
+import { encryptPat } from '../../core/utils/crypto.js';
+import { registerOrdinaryPageWriteReconcilers } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
+
+vi.mock('undici', async (original) => ({ ...(await original<typeof Undici>()), request: vi.fn() }));
 const available = await isDbAvailable();
 
 describe.skipIf(!available)('page writer recovery administration', () => {
@@ -39,6 +45,45 @@ describe.skipIf(!available)('page writer recovery administration', () => {
   afterAll(async () => {
     await app.close();
     await teardownTestDb();
+  });
+
+  it('converges an acknowledged legacy canonical slot through the real administrator endpoint', async () => {
+    registerOrdinaryPageWriteReconcilers();
+    await query(`INSERT INTO user_settings (user_id, confluence_url, confluence_pat)
+      VALUES ($1, 'https://confluence.example.com', $2)`, [actorId, encryptPat('test-recovery-pat')]);
+    await query("INSERT INTO spaces (space_key, space_name) VALUES ('HTTPREC', 'Recovery')");
+    const page = (await query(`INSERT INTO pages (source, confluence_id, space_key, title, labels, body_text)
+      VALUES ('confluence', 'legacy-http-labels', 'HTTPREC', 'Preserved', ARRAY['before'], 'Authored lexical body')
+      RETURNING id, content_revision::text, lifecycle_revision::text`)).rows[0]!;
+    const runtimeId = `fenced-http-${randomUUID()}`;
+    await query(`INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+      VALUES ($1, '{}'::jsonb, NOW(), $2, 'Known terminated original writer', '{"kind":"verified_local_termination"}')`, [runtimeId, actorId]);
+    const intentId = randomUUID();
+    const effect = { effectClass: 'remote', pageId: page.id, confluenceId: 'legacy-http-labels', priorLabels: ['before'], targetLabels: ['after'] };
+    await query(`INSERT INTO page_write_intents (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode,
+      effect, effect_started_at, remote_effect_started_at, remote_effects_completed_at, remote_terminal_result)
+      VALUES ($1, $2, 'page.labels', $3, ARRAY[$4]::int[], $5::jsonb, 'remote_terminal_only', $6::jsonb, NOW(), NOW(), NOW(), '{}')`,
+    [intentId, runtimeId, actorId, page.id, JSON.stringify({ [page.id]: { contentRevision: page.content_revision, lifecycleRevision: page.lifecycle_revision } }), JSON.stringify(effect)]);
+    let remote = ['after'];
+    vi.mocked(request).mockImplementation(async (_url, options) => {
+      if (options?.method === 'POST') remote = ['after', 'all-ai'];
+      return { statusCode: 200, headers: {}, body: { text: async () => JSON.stringify({ results: remote.map((name) => ({ name })) }) } } as never;
+    });
+    const url = `/api/admin/page-write-recovery/intents/${intentId}/reconcile`;
+    const payload = { reason: 'Align only the canonical slot of the acknowledged historical label request' };
+    await query("UPDATE users SET role = 'user' WHERE id = $1", [actorId]);
+    expect((await app.inject({ method: 'POST', url, payload })).statusCode).toBe(403);
+    expect(request).not.toHaveBeenCalled();
+    await query("UPDATE users SET role = 'admin' WHERE id = $1", [actorId]);
+    const result = await app.inject({ method: 'POST', url, payload });
+    expect(result.statusCode, result.body).toBe(200);
+    expect((await query('SELECT effect, remote_terminal_result, status FROM page_write_intents WHERE id = $1', [intentId])).rows[0])
+      .toEqual({ effect, remote_terminal_result: {}, status: 'reconciled_applied' });
+    expect((await query('SELECT labels, ai_policy, body_text FROM pages WHERE id = $1', [page.id])).rows[0])
+      .toEqual({ labels: ['after', 'all-ai'], ai_policy: 'all', body_text: 'Authored lexical body' });
+    const calls = vi.mocked(request).mock.calls.length;
+    expect((await app.inject({ method: 'POST', url, payload })).statusCode).toBe(409);
+    expect(request).toHaveBeenCalledTimes(calls);
   });
 
   it('requires live admin authority and exact owner acknowledgment without accepting caller recovery proof', async () => {

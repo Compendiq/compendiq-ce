@@ -220,6 +220,7 @@ export function BubbleMenuContent({
   }, [onAiOpenChange]);
 
   const openAi = useCallback(() => {
+    if (stream.unavailableReason) { toast.info(stream.unavailableReason); return; }
     const { from, to } = editor.state.selection;
     if (from === to) return;
     // The gate itself, not a mirror of the render gate: Cmd/Ctrl+J reaches this
@@ -523,6 +524,7 @@ export function BubbleMenuContent({
         )}
       </EditorFormatBar>
 
+      {stream.unavailableReason && <p role="status" className="max-w-72 px-3 py-2 text-xs text-muted-foreground">{stream.unavailableReason}</p>}
       {!isExpanded && dropsMacros && (
         <p
           data-testid="bubble-menu-macro-notice"

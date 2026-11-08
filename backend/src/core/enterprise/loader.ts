@@ -33,17 +33,20 @@ export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
   try {
     // Dynamic import — the package is never in package.json dependencies.
     // It is installed separately via .npmrc + GitHub Packages registry.
-    const mod = await import('@compendiq/enterprise');
+    const mod = (await import('@compendiq/enterprise')) as { default?: unknown };
 
-    // Validate the module exports the expected interface
-    if (mod && typeof mod.validateLicense === 'function') {
-      cached = mod as unknown as EnterprisePlugin;
-      logger.info(
-        { version: (mod as { version?: string }).version },
-        'Enterprise plugin loaded',
-      );
+    // The plugin is the package's DEFAULT export — the one object that
+    // carries the required members AND the optional hooks (#280:
+    // `resolveAiPolicyCreationDefault`, `aiPolicyEnforcementAvailable`,
+    // `onAiDecision`, `persistAiPolicyChange`). The package also re-exports a few required members
+    // by name for convenience, but the optional hooks are only reachable on
+    // the default object, so the namespace is never used as the plugin.
+    const candidate = mod?.default as Partial<EnterprisePlugin> | undefined;
+    if (candidate && typeof candidate === 'object' && typeof candidate.validateLicense === 'function') {
+      cached = candidate as EnterprisePlugin;
+      logger.info({ version: candidate.version }, 'Enterprise plugin loaded');
     } else {
-      logger.warn('Enterprise package found but exports are invalid');
+      logger.warn('Enterprise package found but its default export is not a plugin');
       cached = null;
     }
   } catch (err) {

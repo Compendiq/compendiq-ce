@@ -644,3 +644,36 @@ SELECT count(*) FROM page_embeddings
 `status = 'analyzed'` with no derived chunk means the page is waiting on the
 text embedder (`pagesAwaitingEmbed` on the card); `pending` with a payload means
 the next sweep will flip it `reused`; `failed` names its own reason.
+
+---
+
+## 9. Article AI policy (SPEC-WORK-001)
+
+Every row the analyze step is about to send is first **admitted** against the
+article's `pages.ai_policy` and the RETAINED provider — the one the call would
+actually go to — under the same advisory lock the policy write takes
+(`admitPageForProvider` in `ai-policy-admission.ts`). A refused row is written
+`status = 'policy_blocked'` with `ai_policy_block_reason` set, its payload
+cleared, no attempt charged and no call spent. Blocked is **neither** `processed`
+nor `failed`: the batch result carries a separate `policyBlocked` count (only
+when non-zero), the card's row counts carry `policyBlocked`, and readiness
+treats the row as a verdict, not as pending work.
+
+| `ai_policy_block_reason` | Meaning | How it lifts |
+|---|---|---|
+| `policy_none` | The article is `none`: no AI processing at all | Only a policy write (`updatePageAiPolicies`) — nothing re-queues it |
+| `provider_not_local` | The article is `local_only` and the retained provider is not declared local at its CURRENT configuration revision | Re-checked every batch: the sweep returns such rows to `pending` once the provider is declared local (Settings → AI Models), no policy write needed |
+
+**Policy set to `none`** purges every derived artefact in the same transaction
+as the policy write (`purgeDerivedAiState`): vectors, the averaged embeddings,
+summary, quality scores and image-analysis payloads. The body, attachments and
+versions are untouched. **Relaxing** (`none → local_only/all`,
+`local_only → all`) and tightening `all → local_only` clear the block, flip each
+stage back to its queued state and raise the dirty flags; nothing is generated
+until the next pass admits the page again.
+
+```sql
+-- What is parked, and why?
+SELECT status, ai_policy_block_reason FROM page_image_analyses WHERE page_id = <id>;
+SELECT ai_policy, ai_policy_revision, ai_policy_block_reason FROM pages WHERE id = <id>;
+```

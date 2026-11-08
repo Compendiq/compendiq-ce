@@ -13,7 +13,7 @@ import {
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
-import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix, type IncludedPageRef, type SubPagePolicyContext } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import {
@@ -21,7 +21,9 @@ import {
   ImageStagingUnavailableError,
 } from '../../core/services/image-staging.js';
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
-import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
+import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -124,14 +126,14 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
-  opts?: { protectMedia?: boolean; layoutTokens?: boolean },
-): Promise<{ markdown: string; multiPageSuffix: string }> {
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean; policyContext?: SubPagePolicyContext; parentRef?: ResolvedPageRef },
+): Promise<{ markdown: string; multiPageSuffix: string; includedPageRefs: IncludedPageRef[] }> {
   // Resolve internal-vs-Confluence id: sub-page traversal is keyed on the
   // Confluence id (pages.parent_id; the DB id for standalone pages). A page
   // the caller cannot read, or that does not exist, contributes neither its
   // title nor its sub-page tree: the request falls back to the caller's own
   // content alone, so both cases produce the same prompt.
-  const resolved = includeSubPages && pageId ? await resolveReadablePageRef(userId, pageId) : undefined;
+  const resolved = includeSubPages && pageId ? opts?.parentRef ?? await resolveReadablePageRef(userId, pageId) : undefined;
   if (resolved) {
     const parentHtml = opts?.protectMedia ? protectMedia(content).html : content;
     const assembled = await assembleSubPageContext(
@@ -144,11 +146,12 @@ export async function assembleContextIfNeeded(
       // alignment runs against the parent, and without its tokens any
       // Improve of a multi-cell layout page is guaranteed unrecoverable.
       // Sub-page conversions stay token-free (see assembleSubPageContext).
-      { parentLayoutTokens: opts?.layoutTokens === true },
+      { parentLayoutTokens: opts?.layoutTokens === true, policyContext: opts?.policyContext },
     );
     return {
       markdown: assembled.markdown,
       multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+      includedPageRefs: assembled.includedPageRefs,
     };
   }
 
@@ -158,6 +161,7 @@ export async function assembleContextIfNeeded(
     // requests them.
     markdown: htmlToMarkdown(html, { layoutTokens: opts?.layoutTokens === true }),
     multiPageSuffix: '',
+    includedPageRefs: [],
   };
 }
 
@@ -362,6 +366,16 @@ export async function streamSSE(
      * pre-Accept warning.
      */
     finalExtras?: (content: string) => Record<string, unknown>;
+    /**
+     * #282: the article binding the streamed text was generated under —
+     * written beside the cached output so a later hit can be re-admitted
+     * against the SAME provider revision, locality and page revisions
+     * rather than against whatever the request's current context says.
+     * Independent input records an explicitly empty page set. Missing
+     * provenance is unknown: it cannot be published or replayed as safe.
+     * Publication holds the shared revision guard through the cache write.
+     */
+    cacheProvenance?: ConversationTurnAiProvenance;
     /** Lets callers avoid persisting a partial response after a stream failure. */
     onStreamError?: (error: unknown) => void;
     /** Report whether the stream completed normally or was interrupted. */
@@ -433,7 +447,23 @@ export async function streamSSE(
       options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted &&
       (options.shouldCache?.(fullContent) ?? true)
     ) {
-      await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
+      const { llmCache, cacheKey, cacheProvenance } = options;
+      if (cacheProvenance && options.audit?.userId) {
+        try {
+          // The short publication transaction serializes the SET with policy
+          // mutation. A check followed by an unlocked SET could repopulate
+          // purged output. Replay still revalidates if invalidation fails.
+          await admitArticleStage(cacheProvenance, options.audit.userId, 'chat', async () => {
+            await llmCache.setCachedResponse(cacheKey, fullContent, undefined, cacheProvenance);
+          });
+        } catch {
+          // Inference already completed: keep its usage accounting, but never
+          // publish reusable state when authority changed or is unreadable.
+          logger.info('Direct output cache publication refused');
+        }
+      }
+      // Missing provenance is unknown, including for independent input.
+      // Such output may be displayed, but must not become a reusable entry.
     }
 
     if ((extras || options?.finalExtras) && !controller.signal.aborted) {
@@ -445,6 +475,12 @@ export async function streamSSE(
     reportStreamError(err);
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
+    } else if (err instanceof StreamIncompleteError) {
+      // The provider closed the socket before `[DONE]`: the text the client
+      // already saw is a prefix. Say so on the wire rather than letting the
+      // stream merely stop, so the client never renders it as finished.
+      logger.warn({ receivedCharacters: err.receivedCharacters }, 'SSE stream ended before completion');
+      reply.raw.write(`data: ${JSON.stringify({ error: 'Stream ended before completion', done: true })}\n\n`);
     } else {
       logger.error({ err }, 'SSE stream error');
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
@@ -454,7 +490,7 @@ export async function streamSSE(
     if (controller.signal.aborted && !streamFailed) {
       reportStreamError(new DOMException('Client disconnected', 'AbortError'));
     }
-    if (options?.audit && dispatched) {
+    if (options?.audit && dispatched && !(streamError instanceof ArticleStageRefusedError)) {
       emitLlmAudit({
         ...options.audit,
         inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
@@ -462,7 +498,11 @@ export async function streamSSE(
         durationMs: Date.now() - auditStart,
         status: streamFailed ? 'error' : 'success',
         ...(streamFailed
-          ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
+          ? {
+              errorMessage: controller.signal.aborted
+                ? 'Client disconnected'
+                : streamError instanceof StreamIncompleteError ? 'Stream ended before completion' : 'Stream error',
+            }
           : {}),
       });
     }
@@ -474,7 +514,12 @@ export async function streamSSE(
     reply.raw.end();
   }
 
-  return fullContent;
+  // Only a COMPLETED stream is a result. A failed or truncated stream, or
+  // one the client abandoned, resolves to '' so no caller can persist the
+  // prefix as the finished output (the cache write above is gated the same
+  // way); callers that need the partial text for diagnostics have the
+  // audit entry's output-token count.
+  return streamError || controller.signal.aborted ? '' : fullContent;
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../../core/services/ai-policy-deferred-ingestion.js';
 import { randomUUID } from 'node:crypto';
 import { materializeDrawioPreviews } from '../../../core/services/drawio-previews.js';
 import { query, getPool } from '../../../core/db/postgres.js';
@@ -41,6 +42,15 @@ import {
   lockPageWrites,
 } from '../../../core/services/page-write-admission.js';
 import { PAGE_HIERARCHY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+import {
+  admitFreshConfluencePublication,
+  initialPolicyFromEffect,
+  FRESH_PUBLICATION_FENCE_ACTIVE_SQL,
+  FreshPublicationDeferredError,
+  resolveIngestionAiPolicy,
+  admitAutomaticIngestionPolicy,
+} from '../../../core/services/ai-policy-ingestion.js';
+import { lockAiPolicyForPages, applyCanonicalAiPolicyLabel, policyFromLabels, purgeDerivedAiState, type AiPolicy } from '../../../core/services/ai-policy-service.js';
 
 
 interface SyncStatus {
@@ -435,6 +445,13 @@ interface SyncSpaceCounts {
   pagesCreated: number;
   pagesUpdated: number;
   pagesDeleted: number;
+  /**
+   * #281 first-publication fence: fresh imports withheld because a
+   * dispatched outbound creation has no durably bound identity yet. A
+   * deferral is not a success: the space cursor does not advance and no
+   * `sync.completed` is emitted for the run.
+   */
+  pagesDeferred?: number;
 }
 
 async function syncSpace(
@@ -516,6 +533,16 @@ async function syncSpace(
       if (err instanceof ConfluenceError && err.statusCode === 401) {
         throw err;
       }
+      if (err instanceof FreshPublicationDeferredError) {
+        // #281: not a failure and not a success — the page is re-walked on
+        // the next cycle once the outbound creation binds its identity.
+        counts.pagesDeferred = (counts.pagesDeferred ?? 0) + 1;
+        logger.info(
+          { userId, spaceKey, pageId: page.id, reason: err.reason },
+          'Fresh Confluence import deferred behind an unbound outbound publication (#281)',
+        );
+        continue;
+      }
       pagesFailed++;
       logger.warn(
         {
@@ -555,11 +582,31 @@ async function syncSpace(
   // each is still gone upstream first (purge is irreversible — #766 review).
   await purgeDeletedPages(client, spaceKey);
 
-  // Update space sync timestamp (shared table)
-  await query(
-    'UPDATE spaces SET last_synced = NOW() WHERE space_key = $1',
-    [spaceKey],
-  );
+  // Update space sync timestamp (shared table).
+  //
+  // #281 first-publication fence: the cursor is shared by every principal
+  // syncing this space, and an acknowledged page can be moved into ANY space
+  // before its lost acknowledgment is settled. The UPDATE therefore
+  // re-checks the global fence in the same statement (not the walker's
+  // earlier in-memory view): while any dispatched outbound creation is
+  // unbound, or when this run withheld an import, `last_synced` stays where
+  // it was so the next cycle re-walks the window. An empty listing seen by
+  // a user without access does not advance it either.
+  const deferred = counts.pagesDeferred ?? 0;
+  const cursor = deferred > 0
+    ? { rowCount: 0 }
+    : await query(
+      `UPDATE spaces SET last_synced = NOW()
+        WHERE space_key = $1 AND NOT ${FRESH_PUBLICATION_FENCE_ACTIVE_SQL}`,
+      [spaceKey],
+    );
+  if ((cursor.rowCount ?? 0) === 0) {
+    logger.warn(
+      { userId, spaceKey, pagesDeferred: deferred, pagesCreated: counts.pagesCreated },
+      'Space sync did not complete: an outbound Confluence publication is awaiting its identity, cursor held (#281)',
+    );
+    return;
+  }
 
   // Emit sync.completed webhook for this space (#114). Aggregate counters
   // mean receivers don't need per-page page.created/updated/deleted from
@@ -706,8 +753,9 @@ async function syncPage(
     body_text: string;
     local_modified_at: Date | null;
     last_synced: Date | null;
+    ai_policy: AiPolicy;
   }>(
-    `SELECT id, source, version, title, body_html, body_text, local_modified_at, last_synced
+    `SELECT id, source, version, title, body_html, body_text, local_modified_at, last_synced, ai_policy
        FROM pages
       WHERE confluence_id = $1`,
     [page.id],
@@ -716,28 +764,32 @@ async function syncPage(
   // An old Confluence identifier does not transfer ownership of a local article.
   // Refuse before attachment cleanup/download, snapshots, or any inbound write.
   if (existing.rows[0] && existing.rows[0].source !== 'confluence') return;
+  const observedPolicy = existing.rows[0] ? policyFromLabels(labels)
+    : await resolveIngestionAiPolicy({ userId, spaceKey, labels });
+  // A deferred restriction survives later upstream removal. This transaction
+  // commits only the observation, never the refused article snapshot.
+  await observeIngestionAdmission({
+    source: 'confluence', sourceScope: 'shared', sourceId: page.id,
+    observedRevision: String(page.version.number), userId, policy: observedPolicy,
+  }, async (preflight, pendingPolicy) => {
+    if (existing.rows[0]) {
+      admitAutomaticIngestionPolicy({ identity: page.id,
+        currentPolicy: existing.rows[0].ai_policy, candidate: pendingPolicy });
+    } else {
+      await admitFreshConfluencePublication(preflight, {
+        confluenceId: page.id, resolvedPolicy: pendingPolicy, labels,
+        snapshot: { spaceKey, parentId, title: page.title, storage: bodyStorage, version: page.version.number },
+      });
+    }
+  });
 
   if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
-    const existingRow = existing.rows[0]!;
-    let htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
-
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
     // Compare expected filenames (from XHTML) against files on disk, per-file.
     const missing = (await getMissingAttachments(page.id, bodyStorage, spaceKey))
       .filter((filename) => !preview.missing.includes(filename));
     const diagramMissing = preview.missing.length > 0 || preview.missingSources.length > 0;
-    if (missing.length === 0 && !diagramMissing && !htmlChanged) {
-      // Content + attachments both fully up to date. Still re-evaluate the
-      // Confluence-side view restrictions: they can change independently of
-      // page content (an admin adds/removes a user from the read list
-      // without editing the page), and the conditional-fetch optimization
-      // from the plan is not wired (see §1.4 TODO below). `syncPageRestrictions`
-      // is a no-op when the feature flag is disabled, so CE builds pay zero
-      // extra cost here.
-      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
-      return;
-    }
 
     if (missing.length > 0 || diagramMissing) {
       const redis = getRedisClient();
@@ -760,7 +812,6 @@ async function syncPage(
         preview = await materializeDrawioPreviews(convertedHtml, page.id);
         bodyHtml = preview.html;
         bodyText = htmlToText(bodyHtml);
-        htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
 
         // Track which are still missing
         const stillMissing = new Set(await getMissingAttachments(page.id, bodyStorage, spaceKey));
@@ -780,26 +831,22 @@ async function syncPage(
       }
     }
 
-    if (htmlChanged) {
-      await applyConflictPolicyForExistingPage({
-        confluenceId: page.id,
-        confluenceVersion: page.version.number,
-        pageDbTitle: page.title,
-        bodyStorage,
-        bodyHtml,
-        bodyText,
-        parentId,
-        labels,
-        author,
-        lastModified,
-        syncRunId,
-        counts,
-      });
-    }
+    // Labels and deferred policy intent are independent of body/version drift,
+    // so the held-client publisher runs even when attachments and text are
+    // current. It runs after the retry above so a newly downloaded draw.io
+    // source or preview is published in the same conflict-policy pass; the
+    // publisher re-tests the body under its row lock and never overwrites
+    // local edits.
+    await applyConflictPolicyForExistingPage({
+      userId, confluenceId: page.id, confluenceVersion: page.version.number,
+      pageDbTitle: page.title, bodyStorage, bodyHtml, bodyText, parentId,
+      labels, author, lastModified, syncRunId, counts,
+    });
 
-    // Version-unchanged branch: still re-evaluate restrictions. See note at
-    // the earlier early-return above. Safe/cheap because `syncPageRestrictions`
-    // short-circuits on the feature flag.
+    // Version-unchanged branch: still re-evaluate restrictions. They can
+    // change independently of page content (an admin adds/removes a user
+    // from the read list without editing the page). Safe/cheap because
+    // `syncPageRestrictions` short-circuits on the feature flag.
     await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
     return;
   }
@@ -835,7 +882,88 @@ async function syncPage(
   // deleted_at = NULL restores pages that were previously soft-deleted
   // (e.g. page was restored from Confluence trash)
   const wasFreshCreate = existing.rows.length === 0;
-  const upsert = await query(
+  // SPEC-WORK-002: a fresh row takes the stricter of the creation-default
+  // hook and the incoming labels; an existing row only ever tightens (the
+  // ON CONFLICT branch below consults labels and never relaxes).
+  const ingestionPolicy = await resolveIngestionAiPolicy({ userId, spaceKey, labels });
+  // #281 first-publication fence. Decided on the SAME transaction as the
+  // publication statement and AFTER the upstream snapshot: an outbound
+  // create whose remote phase has started is durable before its HTTP call,
+  // so any page this snapshot can contain is already visible as dispatched.
+  // Unbound → defer (global, every space); bound to this exact id → seed no
+  // looser than the creator's durable statement with its canonical labels.
+  // An existing row never reaches this: it is tighten-only via ON CONFLICT.
+  let creationPolicy = ingestionPolicy;
+  let seededLabels = labels;
+  let admittedCurrentPolicy: AiPolicy | null = null;
+  let automaticFreshPublication = false;
+  const txClient = await getPool().connect();
+  type UpsertRow = { id: number; ai_policy: string; was_update: boolean };
+  let upsert: { rowCount: number | null; rows: UpsertRow[] };
+  try {
+    if (txClient) {
+      await txClient.query('BEGIN');
+      const target = await txClient.query<{ id: number }>(
+        'SELECT id FROM pages WHERE confluence_id = $1', [page.id],
+      );
+      await lockAiPolicyForPages(txClient, target.rows.map((row) => row.id));
+      const current = await txClient.query<{ ai_policy: AiPolicy }>(
+        'SELECT ai_policy FROM pages WHERE confluence_id = $1 FOR UPDATE', [page.id],
+      );
+      if (current.rows[0]) {
+        admittedCurrentPolicy = current.rows[0].ai_policy;
+        creationPolicy = admitAutomaticIngestionPolicy({
+          identity: page.id, currentPolicy: current.rows[0].ai_policy, candidate: policyFromLabels(labels),
+        });
+        seededLabels = applyCanonicalAiPolicyLabel(labels, creationPolicy);
+      } else {
+        const admitted = await admitFreshConfluencePublication(txClient, {
+          confluenceId: page.id, resolvedPolicy: ingestionPolicy, labels,
+          snapshot: { spaceKey, parentId, title: page.title, storage: bodyStorage, version: page.version.number },
+        });
+        creationPolicy = admitted.policy;
+        seededLabels = admitted.labels;
+        // A validated creator journal has its own recovery authority. Ordinary
+        // ingestion must instead start neutral and use the shared publisher,
+        // including any durable observations left by an earlier closed rollout.
+        const recovery = await txClient.query<{
+          id: string; actor_id: string; effect: Record<string, unknown>;
+        }>(
+          `SELECT id, actor_id, effect FROM page_write_intents
+            WHERE status = 'pending' AND kind = 'pages.create.confluence'
+              AND remote_effect_started_at IS NOT NULL
+              AND remote_terminal_result->>'confluenceId' = $1
+            ORDER BY id FOR SHARE`, [page.id],
+        );
+        // Admission above validated the exact remote snapshot, actor and
+        // referenced parent revisions/authority. Finish each acknowledged
+        // command through the same publisher as journal recovery: it inserts
+        // neutral, then atomically applies policy, revision, purge and evidence.
+        // Never attribute the creator's command to the unrelated sync walker.
+        for (const intent of recovery.rows) {
+          const { publishCreatedConfluencePage } = await import('./ordinary-page-write-reconciler.js');
+          await publishCreatedConfluencePage(txClient, {
+            confluenceId: page.id, spaceKey, parentConfluenceId: parentId,
+            title: page.title, storage: bodyStorage, version: page.version.number,
+            actorId: intent.actor_id, recoveryIntentId: intent.id,
+            ...initialPolicyFromEffect(intent.effect),
+          });
+        }
+        automaticFreshPublication = recovery.rows.length === 0;
+        if (!automaticFreshPublication) {
+          const recovered = await txClient.query<{ ai_policy: AiPolicy }>(
+            'SELECT ai_policy FROM pages WHERE confluence_id = $1 FOR UPDATE', [page.id],
+          );
+          admittedCurrentPolicy = recovered.rows[0]!.ai_policy;
+          // The subsequent content upsert preserves the published restriction;
+          // independently stricter upstream/default inputs still use ordinary
+          // ingestion admission, never the journal's recovery exception.
+        }
+      }
+    }
+    const run = (sql: string, params: unknown[]) =>
+      txClient ? txClient.query<UpsertRow>(sql, params) : query<UpsertRow>(sql, params);
+  upsert = await run(
     // ADR-027 D4 — `image_analysis_dirty` rides along with `embedding_dirty`
     // here and ONLY here in this statement: a new page version can move,
     // remove or add an `<img>`, and the reconcile pass is what makes the
@@ -846,8 +974,8 @@ async function syncPage(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
-        image_analysis_dirty, summary_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending')
+        image_analysis_dirty, summary_status, ai_policy)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending', $12)
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
@@ -855,22 +983,48 @@ async function syncPage(
        body_text = EXCLUDED.body_text,
        version = EXCLUDED.version,
        parent_id = EXCLUDED.parent_id,
-       labels = EXCLUDED.labels,
+       labels = ai_policy_apply_label(EXCLUDED.labels, pages.ai_policy),
        author = EXCLUDED.author,
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
        embedding_dirty = TRUE,
        image_analysis_dirty = TRUE,
-       summary_status = 'pending',
+       -- SPEC-WORK-001: a page parked by a 'none' policy stays parked; the
+       -- policy write is the only thing that lifts a policy_none block.
+       summary_status = CASE WHEN pages.ai_policy = 'none' THEN pages.summary_status ELSE 'pending' END,
        -- Clear local-edit markers (#305) — see matching note in the
        -- version-mismatch branch above.
        local_modified_at = NULL,
        local_modified_by = NULL,
        deleted_at = NULL
-     WHERE pages.source = 'confluence'`,
+     WHERE pages.source = 'confluence' AND pages.ai_policy = $13
+     RETURNING id, ai_policy, (xmax <> 0) AS was_update`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
-     page.version.number, parentId, labels, author, lastModified],
+     page.version.number, parentId,
+     automaticFreshPublication ? applyCanonicalAiPolicyLabel(seededLabels, 'all') : seededLabels,
+     author, lastModified, automaticFreshPublication ? 'all' : creationPolicy, admittedCurrentPolicy],
   );
+    if ((upsert.rowCount ?? 0) === 0) {
+      throw new FreshPublicationDeferredError(page.id, 'unbound_create');
+    }
+    if (automaticFreshPublication || admittedCurrentPolicy !== null) {
+      for (const inserted of upsert.rows) {
+        const published = await publishIngestionPolicyOnClient(txClient, {
+          source: 'confluence', sourceScope: 'shared', sourceId: page.id,
+          pageId: inserted.id, userId, candidate: creationPolicy,
+        });
+        inserted.ai_policy = published.policy;
+      }
+    }
+    const restricted = upsert.rows.filter((row) => row.ai_policy === 'none').map((row) => row.id);
+    if (restricted.length) await purgeDerivedAiState(txClient, restricted);
+    await txClient.query('COMMIT');
+  } catch (err) {
+    if (txClient) await txClient.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    txClient?.release();
+  }
   if ((upsert.rowCount ?? 0) === 0) return;
   if (wasFreshCreate) {
     counts.pagesCreated++;
@@ -899,6 +1053,8 @@ async function reconcileCollabAfterInboundBodyWrite(pageId: number, html: string
 }
 
 interface ApplyConflictPolicyArgs {
+  /** Required for any policy move; legacy internal neutral saves remain inert. */
+  userId?: string;
   confluenceId: string;
   /** Incoming Confluence version (`page.version.number`) — recorded on
    *  the queued pending-version row so the resolution UI knows which
@@ -964,6 +1120,11 @@ async function applyConflictPolicyForExistingPage(
   try {
     await conn.query('BEGIN');
 
+    const target = await conn.query<{ id: number }>(
+      `SELECT id FROM pages WHERE confluence_id = $1 AND source = 'confluence'`, [args.confluenceId],
+    );
+    await lockAiPolicyForPages(conn, target.rows.map((page) => page.id));
+
     // Re-read the row inside the lock. The outer SELECT (in `syncPage`)
     // was unlocked because we couldn't know yet whether to take the lock
     // — taking it on every page would serialise the entire sync against
@@ -977,8 +1138,9 @@ async function applyConflictPolicyForExistingPage(
       body_text: string;
       local_modified_at: Date | null;
       last_synced: Date | null;
+      ai_policy: AiPolicy;
     }>(
-      `SELECT id, version, body_html, body_text, local_modified_at, last_synced
+      `SELECT id, version, body_html, body_text, local_modified_at, last_synced, ai_policy
          FROM pages
         WHERE confluence_id = $1 AND source = 'confluence'
         FOR UPDATE`,
@@ -993,6 +1155,14 @@ async function applyConflictPolicyForExistingPage(
     }
 
     const row = locked.rows[0]!;
+    const admittedPolicy = admitAutomaticIngestionPolicy({
+      identity: args.confluenceId, currentPolicy: row.ai_policy, candidate: policyFromLabels(args.labels),
+    });
+    const admittedLabels = applyCanonicalAiPolicyLabel(args.labels, admittedPolicy);
+    const publishPolicy = () => publishIngestionPolicyOnClient(conn, {
+      source: 'confluence', sourceScope: 'shared', sourceId: args.confluenceId,
+      pageId: row.id, userId: args.userId ?? '', candidate: admittedPolicy,
+    });
 
     // Re-test htmlChanged inside the lock. A concurrent syncPage on the
     // same page may have already applied the incoming version; in that
@@ -1000,6 +1170,7 @@ async function applyConflictPolicyForExistingPage(
     const htmlChangedNow =
       row.body_html !== args.bodyHtml || row.body_text !== args.bodyText;
     if (!htmlChangedNow) {
+      await publishPolicy();
       await conn.query('COMMIT');
       return;
     }
@@ -1009,6 +1180,7 @@ async function applyConflictPolicyForExistingPage(
     // actually moved. Skip confluence-wins overwrite of the CRDT session.
     const live = await isLiveCollabRoom(row.id);
     if (live && args.confluenceVersion <= row.version) {
+      await publishPolicy();
       await conn.query('COMMIT');
       return;
     }
@@ -1046,6 +1218,7 @@ async function applyConflictPolicyForExistingPage(
           WHERE id = $1`,
         [row.id],
       );
+      await publishPolicy();
       await conn.query('COMMIT');
 
       // Fire-and-forget audit. logAuditEvent is fire-and-forget by design
@@ -1072,7 +1245,8 @@ async function applyConflictPolicyForExistingPage(
 
     if (policy === 'compendiq-wins' && hasLocalEdits) {
       // Keep the local row, do NOT apply the incoming Confluence content.
-      // No DB write — the COMMIT just closes the lock cleanly.
+      // Content conflict preference is not permission to ignore AI policy.
+      await publishPolicy();
       await conn.query('COMMIT');
 
       await logAuditEvent(
@@ -1144,11 +1318,16 @@ async function applyConflictPolicyForExistingPage(
         args.bodyHtml,
         args.bodyText,
         args.parentId,
-        args.labels,
+        applyCanonicalAiPolicyLabel(admittedLabels, row.ai_policy),
         args.author,
         args.lastModified,
       ],
     );
+    const published = await publishIngestionPolicyOnClient(conn, {
+      source: 'confluence', sourceScope: 'shared', sourceId: args.confluenceId,
+      pageId: row.id, userId: args.userId ?? '', candidate: admittedPolicy,
+    });
+    if (published.policy === 'none') await purgeDerivedAiState(conn, [row.id]);
     await conn.query('COMMIT');
     args.counts.pagesUpdated++;
     await reconcileCollabAfterInboundBodyWrite(row.id, args.bodyHtml);

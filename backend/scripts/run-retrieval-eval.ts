@@ -278,7 +278,9 @@ async function main(): Promise<void> {
     providerId: 'eval', id: 'eval', name: 'eval', baseUrl,
     apiKey: null, authType: 'none' as const, verifySsl: true, defaultModel: model,
   };
-  const probe = await generateEmbedding(evalProviderConfig, model, 'dimension probe');
+  const probe = await generateEmbedding(evalProviderConfig, model, 'dimension probe', {
+    kind: 'non_article', purpose: 'provider_probe',
+  });
   const dims = probe[0]?.length ?? 0;
   console.log(`model ${model} → ${dims} dimensions`);
 

@@ -1,208 +1,13 @@
 /**
- * Integration tests for the per-user concurrent-SSE-stream gate (#268).
- *
- * Parameterised across all six streaming handlers so every new LLM SSE
- * endpoint added in the future keeps protection when it copies the
- * existing slot.acquired / try / finally pattern.
- *
- * The gate's correctness properties we verify here:
- *   1. Over-cap requests return 429 with the documented body shape.
- *   2. `slot.release()` is invoked on the success path (stream completes).
- *   3. `slot.release()` is invoked on the error path (generator throws).
- *   4. `slot.release()` is invoked on the client-disconnect path.
- *   5. `slot.release()` is invoked on the timeout path (AbortError from the
- *      generator — same code path as an upstream timeout).
- *
- * The Lua/Redis atomicity is unit-tested in sse-stream-limiter.test.ts;
- * here we only care that the route wires the gate into the right place and
- * that the finally block fires on every exit.
+ * Route wiring for the per-user concurrent SSE gate. Article identities,
+ * provider assignments, ACLs, final admission and transport are real. The
+ * limiter seam isolates acquire/release symmetry from its separate Redis
+ * atomicity suite; the external HTTP peer supplies success and failure.
  */
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import type { FastifyInstance } from 'fastify';
-import sensible from '@fastify/sensible';
-
-// ─── Mocks (broad — every route tested below shares them) ──────────────
-
-const mockAcquireStreamSlot = vi.fn();
-const mockRelease = vi.fn();
-
-vi.mock('../../core/services/sse-stream-limiter.js', () => ({
-  acquireStreamSlot: (...args: unknown[]) => mockAcquireStreamSlot(...args),
-  getStreamCap: vi.fn().mockResolvedValue(3),
-  invalidateStreamCapCache: vi.fn(),
-  _resetStreamCapCache: vi.fn(),
-}));
-
-const mockGetSystemPrompt = vi.fn().mockReturnValue('sys prompt');
-vi.mock('../../domains/llm/services/prompts.js', () => ({
-  getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  LANGUAGE_PRESERVATION_INSTRUCTION: '',
-  // #1154: none of these routes attach an image in this suite, so content is
-  // always a bare string.
-  contentToText: (content: unknown) => content as string,
-}));
-
-vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
-  resolveUsecase: vi.fn().mockResolvedValue({
-    config: {
-      providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
-      authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
-    },
-    model: 'm',
-  }),
-}));
-
-const mockStreamChat = vi.fn();
-vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
-  streamChat: (...args: unknown[]) => mockStreamChat(...args),
-  chat: vi.fn(),
-  generateEmbedding: vi.fn(),
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  invalidateDispatcher: vi.fn(),
-}));
-
-// Closed stub (#1268 review): the ask route reads the #1105 confidence
-// formula from the retrieval-confidence leaf module (real, dependency-free),
-// so rag-service's heavy module graph stays out of this suite.
-//
-// The row is load-bearing: since #1114's prerequisite `/llm/ask` refuses an
-// EMPTY result set outright, and a refusal never reaches streamChat — with
-// the old `[]` the ask route's success/error/abort cases below would still
-// have gone green without ever exercising the generator they are about.
-vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn().mockResolvedValue([
-    {
-      pageId: 1, confluenceId: 'p1', chunkText: 'grounded text',
-      pageTitle: 'Doc', sectionTitle: 'Sec', spaceKey: 'DEV',
-      score: 0.032, vectorScore: 0.9, keywordRank: null,
-    },
-  ]),
-  buildRagContext: vi.fn().mockReturnValue('ctx'),
-}));
-
-// Explicit getter stubs (#1268 review): the real getters carry a
-// module-level 60s cache that pins whatever the first request resolved for
-// the life of the file — a later test exercising the gate against a DB row
-// would pass vacuously.
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getRagConfidenceThreshold: vi.fn(async () => 0),
-  getRagConfidenceThresholdRerank: vi.fn(async () => 0),
-  // #1270 m6: the ask route reads the assembly budget into its cache key.
-  getRagContextCharsPerPage: vi.fn(async () => 6000),
-  // #1115 P4: the answer-path image cap. The stub is CLOSED, so a getter the
-  // route starts reading has to be added here — which is the point: a missing
-  // one throws rather than silently resolving to `undefined` and turning a
-  // gate into a coin flip. 0 keeps this suite about the stream limiter: the
-  // fixture row carries no `imageHits`, so the value is unreachable either
-  // way, and 0 says so.
-  getRagAnswerMaxImages: vi.fn(async () => 0),
-}));
-
-vi.mock('../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToMarkdown: vi.fn((s: string) => s),
-  markdownToHtml: vi.fn((s: string) => s),
-  protectMedia: vi.fn((html: string) => ({ html, media: [] })),
-  restoreMedia: vi.fn((html: string) => html),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  getEmbeddingStatus: vi.fn(),
-  processDirtyPages: vi.fn(),
-  reEmbedAll: vi.fn(),
-  embedPage: vi.fn(),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
-}));
-
-vi.mock('../../domains/llm/services/llm-cache.js', () => {
-  class MockLlmCache {
-    getCachedResponse = vi.fn().mockResolvedValue(null);
-    setCachedResponse = vi.fn().mockResolvedValue(undefined);
-    acquireLock = vi.fn().mockResolvedValue('llm-lock-token');
-    releaseLock = vi.fn().mockResolvedValue(undefined);
-    waitForCachedResponse = vi.fn().mockResolvedValue(null);
-    clearAll = vi.fn();
-  }
-  return {
-    LlmCache: MockLlmCache,
-    buildLlmCacheKey: vi.fn().mockReturnValue('k'),
-    buildRagCacheKey: vi.fn().mockReturnValue('k'),
-  };
-});
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
-  const actual = await importActual<Record<string, unknown>>();
-  return { ...actual, emitLlmAudit: vi.fn() };
-});
-
-vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
-  sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
-}));
-
-vi.mock('../../core/services/ai-safety-service.js', () => ({
-  getAiGuardrails: vi.fn().mockResolvedValue({
-    noFabricationEnabled: false,
-    noFabricationInstruction: '',
-  }),
-  getAiOutputRules: vi.fn().mockResolvedValue({
-    stripReferences: false,
-    referenceAction: 'off',
-    swissSpelling: false,
-  }),
-  upsertAiGuardrails: vi.fn(),
-  upsertAiOutputRules: vi.fn(),
-  SWISS_SPELLING_INSTRUCTION: "Use Swiss orthography: never use the character 'ß' (eszett); always write 'ss' instead.",
-}));
-
-vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
-  assembleSubPageContext: vi.fn().mockResolvedValue({ markdown: '', pageCount: 0 }),
-  getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
-}));
-
-vi.mock('../../core/utils/rbac-guards.js', () => ({
-  requireGlobalPermission: () => async () => {
-    /* allow everything in tests */
-  },
-}));
-
-// Rate-limit service is not called directly by the route, but LLM_STREAM_RATE_LIMIT
-// lazy-resolves through it.
-vi.mock('../../core/services/rate-limit-service.js', () => ({
-  getRateLimits: vi.fn().mockResolvedValue({
-    global: { max: 100, timeWindow: '1 minute' },
-    auth: { max: 5, timeWindow: '1 minute' },
-    admin: { max: 20, timeWindow: '1 minute' },
-    llmStream: { max: 10_000, timeWindow: '1 minute' },
-    llmEmbedding: { max: 10_000, timeWindow: '1 minute' },
-  }),
-  upsertRateLimits: vi.fn(),
-  _resetCache: vi.fn(),
-}));
-
-// MCP docs client (used only by llm-ask, but safe to stub broadly).
-vi.mock('../../core/services/mcp-docs-client.js', () => ({
-  isEnabled: vi.fn().mockResolvedValue(false),
-  fetchDocumentation: vi.fn(),
-}));
-
-vi.mock('./_web-search-helper.js', () => ({
-  fetchWebSources: vi.fn().mockResolvedValue({ sources: [], injectionWarnings: [] }),
-  formatWebContext: vi.fn().mockReturnValue(''),
-}));
-
-// Imports must come after every vi.mock() above.
+import { ArticleRouteFixture } from './article-route-test-fixture.js';
+import { isDbAvailable } from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
 import { llmAskRoutes } from './llm-ask.js';
 import { llmGenerateRoutes } from './llm-generate.js';
 import { llmImproveRoutes } from './llm-improve.js';
@@ -210,200 +15,154 @@ import { llmSummarizeRoutes } from './llm-summarize.js';
 import { llmQualityRoutes } from './llm-quality.js';
 import { llmDiagramRoutes } from './llm-diagram.js';
 
-// ─── Fixtures ──────────────────────────────────────────────────────────
+const state = vi.hoisted(() => ({
+  pageId: 0,
+  contentRevision: 0,
+  mode: 'success' as 'success' | 'error' | 'abort',
+  dispatches: 0,
+  acquire: vi.fn(),
+  release: vi.fn(),
+}));
+vi.mock('../../core/services/sse-stream-limiter.js', () => ({
+  acquireStreamSlot: (...args: unknown[]) => state.acquire(...args),
+  getStreamCap: vi.fn().mockResolvedValue(3),
+  invalidateStreamCapCache: vi.fn(),
+  _resetStreamCapCache: vi.fn(),
+}));
 
-interface RouteFixture {
-  name: string;
-  path: string;
-  register: (fastify: FastifyInstance, opts: { prefix: string }) => Promise<void>;
-  payload: Record<string, unknown>;
-}
+// Abort at the outbound HTTP boundary, AFTER the real final admission. This
+// exercises the transport's AbortError path without shortening production
+// budgets or replacing its generator/admission with an always-allow stub.
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof actual.fetch>) => {
+      state.dispatches++;
+      if (state.mode === 'abort') return Promise.reject(new DOMException('aborted', 'AbortError'));
+      return actual.fetch(...args);
+    }) as typeof actual.fetch,
+  };
+});
 
-const ROUTES: RouteFixture[] = [
-  {
-    name: 'llm/ask',
-    path: '/api/llm/ask',
-    register: llmAskRoutes,
-    payload: { question: 'hi', model: 'm' },
-  },
-  {
-    name: 'llm/generate',
-    path: '/api/llm/generate',
-    register: llmGenerateRoutes,
-    payload: { prompt: 'hi', model: 'm' },
-  },
-  {
-    name: 'llm/improve',
-    path: '/api/llm/improve',
-    register: llmImproveRoutes,
-    payload: { content: 'hi', type: 'grammar', model: 'm' },
-  },
-  {
-    name: 'llm/summarize',
-    path: '/api/llm/summarize',
-    register: llmSummarizeRoutes,
-    payload: { content: 'hi', model: 'm' },
-  },
-  {
-    name: 'llm/analyze-quality',
-    path: '/api/llm/analyze-quality',
-    register: llmQualityRoutes,
-    payload: { content: 'hi', model: 'm' },
-  },
-  {
-    name: 'llm/generate-diagram',
-    path: '/api/llm/generate-diagram',
-    register: llmDiagramRoutes,
-    payload: { content: 'hi', model: 'm' },
-  },
+// A deterministic retrieval candidate backed by the actual saved article.
+// Policy/ACL reads and every dispatch admission remain unmocked.
+vi.mock('../../domains/llm/services/rag-service.js', () => ({
+  hybridSearch: vi.fn(async () => [{
+    pageId: state.pageId, confluenceId: 'conf-123', chunkText: 'Original text',
+    pageTitle: 'Article', sectionTitle: 'Sec', spaceKey: null,
+    score: 0.032, vectorScore: 0.9, keywordRank: null,
+    aiPolicy: 'all', aiPolicyRevision: 0, contentRevision: state.contentRevision,
+  }]),
+  buildRagContext: vi.fn(() => 'Original text'),
+}));
+
+const fixture = new ArticleRouteFixture();
+const dbAvailable = await isDbAvailable();
+const routes = [
+  { path: 'ask', payload: { question: 'hi', model: 'm' } },
+  { path: 'generate', payload: { prompt: 'hi', model: 'm' } },
+  { path: 'improve', payload: { content: 'hi', type: 'grammar', model: 'm' } },
+  { path: 'summarize', payload: { content: 'hi', model: 'm' } },
+  { path: 'analyze-quality', payload: { content: 'hi', model: 'm' } },
+  { path: 'generate-diagram', payload: { content: 'hi', model: 'm' } },
 ];
 
-async function* successGenerator() {
-  yield { content: 'ok', done: true };
+async function post(route: typeof routes[number]) {
+  const response = await fixture.post(route.path, { ...route.payload, pageId: fixture.pageId });
+  // Hijacked SSE ends before the handler's finally/audit work completes.
+  if (response.statusCode !== 429) await vi.waitFor(() => expect(state.release).toHaveBeenCalledTimes(1));
+  return response;
 }
 
-async function* throwingGenerator(): AsyncGenerator<{ content: string; done: boolean }> {
-  yield { content: 'partial', done: false };
-  throw new Error('upstream failure');
-}
-
-async function* abortingGenerator(): AsyncGenerator<{ content: string; done: boolean }> {
-  // ESLint require-yield requires at least one yield; this one never executes
-  // because the throw runs first, but it satisfies the linter and keeps the
-  // semantic intent (an async generator that aborts immediately) intact.
-  if (Math.random() < -1) yield { content: '', done: false };
-  const err = new Error('aborted') as Error & { name: string };
-  err.name = 'AbortError';
-  throw err;
-}
-
-async function buildAppForRoute(route: RouteFixture): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
-  await app.register(sensible);
-  app.decorate('authenticate', async () => { /* noop */ });
-  app.decorate('requireAdmin', async () => { /* noop */ });
-  app.decorate('redis', {});
-  app.decorateRequest('userId', '');
-  app.addHook('onRequest', async (request) => {
-    request.userId = 'user-A';
-    request.userCan = async () => true;
-  });
-  await app.register(route.register, { prefix: '/api' });
-  await app.ready();
-  return app;
-}
-
-// ─── Tests ─────────────────────────────────────────────────────────────
-
-describe('Per-user SSE-stream gate — parameterised across all six handlers', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockAcquireStreamSlot.mockReset();
-    mockRelease.mockReset();
-  });
-
-  describe.each(ROUTES)('$path', (route) => {
-    let app: FastifyInstance;
-
-    beforeAll(async () => {
-      app = await buildAppForRoute(route);
+describe.skipIf(!dbAvailable)('Per-user SSE-stream gate — parameterised across all six handlers', () => {
+  beforeAll(async () => {
+    await fixture.start(async (app) => {
+      await llmAskRoutes(app);
+      await llmGenerateRoutes(app);
+      await llmImproveRoutes(app);
+      await llmSummarizeRoutes(app);
+      await llmQualityRoutes(app);
+      await llmDiagramRoutes(app);
     });
-
-    afterAll(async () => {
-      await app.close();
+    fixture.server.removeAllListeners('request');
+    fixture.server.on('request', (request, response) => {
+      let raw = '';
+      request.on('data', (chunk) => { raw += chunk; });
+      request.on('end', () => {
+        fixture.requests.push(JSON.parse(raw));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (state.mode === 'error') {
+          // A real partial body followed by socket failure drives the
+          // generator error branch, rather than an early policy refusal.
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`);
+          setTimeout(() => response.destroy(new Error('upstream failure')), 10);
+        } else {
+          response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })}\n\ndata: [DONE]\n\n`);
+        }
+      });
     });
+  });
+  afterAll(async () => { await fixture.close(); });
+  beforeEach(async () => {
+    await fixture.reset();
+    state.pageId = Number(fixture.pageId);
+    state.mode = 'success';
+    state.dispatches = 0;
+    state.acquire.mockReset();
+    state.release.mockReset();
+    state.acquire.mockResolvedValue({ acquired: true, release: state.release });
+    state.contentRevision = Number((await query('SELECT content_revision FROM pages WHERE id = $1', [state.pageId])).rows[0]!.content_revision);
+    // Keep the deterministic retrieval candidate above the confidence gate.
+    await query(`INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rag_confidence_threshold', '0')
+      ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`);
+  });
 
+  describe.each(routes)('$path', (route) => {
     it('returns 429 with the documented body when the cap is hit', async () => {
-      mockAcquireStreamSlot.mockResolvedValue({
-        acquired: false,
-        release: mockRelease,
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: route.path,
-        payload: route.payload,
-      });
-
+      state.acquire.mockResolvedValue({ acquired: false, release: state.release });
+      const response = await post(route);
       expect(response.statusCode).toBe(429);
-      const body = JSON.parse(response.body);
+      const body = response.json();
       expect(body.error).toBe('too_many_concurrent_streams');
       expect(typeof body.message).toBe('string');
-      // The documented body shape is user-facing; guard against accidental
-      // renames breaking clients.
       expect(body.message.length).toBeGreaterThan(0);
-
-      // No release on the rejection path — the slot was never held.
-      expect(mockRelease).not.toHaveBeenCalled();
+      expect(state.release).not.toHaveBeenCalled();
+      expect(state.dispatches).toBe(0);
     });
 
     it('releases the slot on the SUCCESS path', async () => {
-      mockAcquireStreamSlot.mockResolvedValue({
-        acquired: true,
-        release: mockRelease,
-      });
-      mockStreamChat.mockReturnValue(successGenerator());
-
-      const response = await app.inject({
-        method: 'POST',
-        url: route.path,
-        payload: route.payload,
-      });
-
-      // A 2xx status or plain text/event-stream response is a normal finish.
-      expect(response.statusCode).toBe(200);
-      expect(mockRelease).toHaveBeenCalledTimes(1);
+      const response = await post(route);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.body).toContain('ok');
+      expect(fixture.requests.length).toBeGreaterThan(0);
+      expect(state.release).toHaveBeenCalledTimes(1);
     });
 
     it('releases the slot on the ERROR path (generator throws mid-stream)', async () => {
-      mockAcquireStreamSlot.mockResolvedValue({
-        acquired: true,
-        release: mockRelease,
-      });
-      mockStreamChat.mockReturnValue(throwingGenerator());
-
-      await app.inject({
-        method: 'POST',
-        url: route.path,
-        payload: route.payload,
-      });
-
-      // Regardless of whether the error frame is written to the SSE stream
-      // or bubbles as a 500, the slot must release.
-      expect(mockRelease).toHaveBeenCalledTimes(1);
+      state.mode = 'error';
+      const response = await post(route);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('partial');
+      expect(response.body).toContain('error');
+      expect(fixture.requests.length).toBeGreaterThan(0);
+      expect(state.release).toHaveBeenCalledTimes(1);
     });
 
-    it('releases the slot on the TIMEOUT/ABORT path (AbortError from generator)', async () => {
-      mockAcquireStreamSlot.mockResolvedValue({
-        acquired: true,
-        release: mockRelease,
-      });
-      mockStreamChat.mockReturnValue(abortingGenerator());
-
-      await app.inject({
-        method: 'POST',
-        url: route.path,
-        payload: route.payload,
-      });
-
-      expect(mockRelease).toHaveBeenCalledTimes(1);
+    it('releases the slot on the TIMEOUT/ABORT path (AbortError from transport)', async () => {
+      state.mode = 'abort';
+      await post(route);
+      expect(state.dispatches).toBeGreaterThan(0);
+      expect(fixture.requests).toHaveLength(0);
+      expect(state.release).toHaveBeenCalledTimes(1);
     });
 
     it('acquires once per request (exactly-one symmetry with release)', async () => {
-      mockAcquireStreamSlot.mockResolvedValue({
-        acquired: true,
-        release: mockRelease,
-      });
-      mockStreamChat.mockReturnValue(successGenerator());
-
-      await app.inject({
-        method: 'POST',
-        url: route.path,
-        payload: route.payload,
-      });
-
-      expect(mockAcquireStreamSlot).toHaveBeenCalledTimes(1);
-      expect(mockAcquireStreamSlot).toHaveBeenCalledWith('user-A');
+      const response = await post(route);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(state.acquire).toHaveBeenCalledTimes(1);
+      expect(state.acquire).toHaveBeenCalledWith(fixture.userId);
+      expect(state.release).toHaveBeenCalledTimes(1);
     });
   });
 });

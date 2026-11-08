@@ -8,6 +8,14 @@ const API_BASE = '/api';
 
 export class ApiError extends Error {
   /**
+   * The decoded JSON error body, when the response carried one (#283).
+   * Callers that need a typed refusal (article AI policy denial/conflict/
+   * label-conflict bodies) parse THIS with the contract schema rather than
+   * reconstructing the body from `code`/`reason`. `null` for non-JSON bodies.
+   */
+  public body: unknown = null;
+
+  /**
    * `reason` (#1615) — the category slug some admin routes send beside
    * `error` (the probe-gated assignment PUTs answer 422 `{ error, reason }`,
    * where `reason` is what a client branches on and `error` is the prose).
@@ -232,7 +240,7 @@ export async function apiFetch<T = unknown>(
       localVersion?: unknown;
       reason?: unknown;
     } | null;
-    throw new ApiError(
+    const error = new ApiError(
       res.status,
       messageFromErrorBody(raw, res),
       typeof raw?.code === 'string' ? raw.code : undefined,
@@ -240,6 +248,13 @@ export async function apiFetch<T = unknown>(
       typeof raw?.localVersion === 'number' ? raw.localVersion : undefined,
       typeof raw?.reason === 'string' ? raw.reason : undefined,
     );
+    // #283: the article-AI-policy refusals are typed bodies (`{error:
+    // 'ai_policy_denied', pageIds}`, `{error: 'ai_policy_conflict', reason,
+    // pageIds}`, `{error: 'ai_policy_label_conflict', policies}`) that a
+    // caller parses with the contract schemas. Carried verbatim; never
+    // interpreted here.
+    error.body = raw;
+    throw error;
   }
 
   const contentType = res.headers.get('content-type') ?? '';

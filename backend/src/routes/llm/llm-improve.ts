@@ -1,20 +1,24 @@
+import { assembleDirectArticleContext } from './_article-transport.js';
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import {
   SystemPromptKey, STRUCTURE_PRESERVATION_INSTRUCTION, contentToText,
   type ChatContentPart, type ChatMessage,
 } from '../../domains/llm/services/prompts.js';
-import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { resolveDirectArticleChat } from './_article-resolution.js';
+import { directRefusalResponse, DirectCacheReplayError, replayDirectOutput } from './_article-cache.js';
+import {
+  admitArticleStage, authorizeArticleDispatch, ArticleStageRefusedError,
+} from '../../domains/llm/services/article-stage-admission.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
-import { ImproveRequestSchema } from '@compendiq/contracts';
+import { ConversationTurnAiProvenanceSchema, ImproveRequestSchema, ImprovementIdParamSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
-import { emitLlmAudit, estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
+import { estimateTokens, fingerprintPrompt } from '../../domains/llm/services/llm-audit-hook.js';
 import { hasRecoverableLayoutTokens } from '../../core/services/content-converter.js';
 import {
-  assembleContextIfNeeded,
   resolveReadablePageRef,
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -47,7 +51,6 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     }
 
     try {
-    const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model, includeSubPages, instruction, referenceText, imageHandle } = body;
     const userId = request.userId;
@@ -58,7 +61,11 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // #765: layoutTokens applies only to the main-page conversion — the
     // sub-page branch inside assembleContextIfNeeded never emits tokens.
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
+    const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(userId, body.pageId);
+    const { markdown, multiPageSuffix, transportContext } = await assembleDirectArticleContext(
+      userId, body.pageId, content, includeSubPages, chatConfig, 'chat', resolvedModel,
+      { protectMedia: true, layoutTokens: true, operation },
+    );
 
     // Sanitize before sending to LLM. The two flags below are `let` because
     // the web-search block further down folds its own sanitizer detections
@@ -167,9 +174,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
 
-    // Resolve the `chat` use-case up-front so the cache key includes the
-    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
-    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    // Cache and transport retain the destination used for composition.
     logger.debug(
       { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
@@ -198,14 +203,22 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, finalSystemPrompt, finalImproveText, chatConfig.providerId, { thinking: body.thinking, imageHash });
     const { cached, lockToken } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
+      // #282: the hit is re-admitted under the provenance it was RECORDED
+      // with (see replayDirectOutput) — never under this request's current
+      // context alone — and a refusal is a status code, before any SSE
+      // header. A malformed or provenance-less entry is refused, not
+      // regenerated.
+      const replayed = await replayDirectOutput(cached, {
+        transport: chatConfig, transportContext, userId, usecase: 'chat', model: resolvedModel,
+      });
       // Echo back the markdown the model was given (#704) so the frontend can
       // diff like-for-like (original markdown vs improved markdown) instead of
       // comparing formatting-stripped bodyText against the markdown output.
       // layoutTokensLost: lossy responses are no longer cached, but entries
       // written before that guard may still be live for one cache TTL.
-      sendCachedSSE(reply, cached.content, {
+      sendCachedSSE(reply, replayed, {
         originalMarkdown: markdown,
-        layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(cached.content),
+        layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(replayed),
       });
       return;
     }
@@ -232,6 +245,12 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     // diff like-for-like (original markdown vs improved markdown). Web sources,
     // when present, ride along in the same final SSE event.
     const improveExtras: Record<string, unknown> = { originalMarkdown: markdown };
+    // #282: name the durable row on the wire so a later Apply can hand the
+    // IMPROVEMENT back by reference (`POST /llm/improvements/:id/readmit`)
+    // and have its recorded provenance re-admitted, instead of resubmitting
+    // text the server can no longer attribute to any binding. Absent when no
+    // row was created (no readable page) — never a fabricated id.
+    if (improvementId) improveExtras.improvementId = improvementId;
     if (webSources.length > 0) {
       // `url` marks these as links, not pages — see #1125 / llm-generate.ts.
       improveExtras.sources = webSources.map((s) => ({
@@ -253,17 +272,19 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
       const generator = (signal: AbortSignal) =>
-        streamChat(chatConfig, resolvedModel, improveMessages, signal, { thinking: body.thinking });
+        streamChat(chatConfig, resolvedModel, improveMessages, signal, { thinking: body.thinking, transportContext });
 
       let streamStatus = 'success' as 'success' | 'error' | 'aborted';
-      let streamError: unknown;
       const accumulated = await streamSSE(request, reply, generator, improveExtras, {
         llmCache,
         cacheKey,
         postProcess,
-        onStreamError: (error) => {
-          streamStatus = 'error';
-          streamError = error;
+        audit: {
+          userId, action: 'improve', model: resolvedModel, provider: chatConfig.providerId,
+          inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
+          inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
+          promptHash: fingerprintPrompt(improveMessages),
+          retrievedChunkIds: [], promptInjectionDetected, sanitized: wasSanitized,
         },
         // Never cache a response that lost the layout tokens: the apply will
         // 422 with "run AI Improve again", and a cached token-less response
@@ -275,71 +296,158 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         finalExtras: (out) => ({
           layoutTokensLost: inputHasLayoutTokens && !hasRecoverableLayoutTokens(out),
         }),
+        // #282: the entry is written beside the binding it was generated
+        // under, so a later hit is re-admitted against THAT, not guessed.
+        cacheProvenance: transportContext.kind === 'article' ? transportContext.stage.provenance : undefined,
         onFinished: (result) => {
           streamStatus = result.status;
-          if (result.error !== undefined) streamError = result.error;
         },
       });
 
-      // Persist the full improved content now that streaming is done
-      if (improvementId && streamStatus === 'success' && accumulated) {
-        await query(
-          `UPDATE llm_improvements SET improved_content = $1, status = 'completed' WHERE id = $2`,
-          [accumulated.slice(0, 50000), improvementId],
-        );
-      } else if (improvementId) {
-        await query(
-          `UPDATE llm_improvements SET improved_content = $1, status = 'cancelled' WHERE id = $2 AND status = 'streaming'`,
-          [accumulated.slice(0, 50000), improvementId],
-        );
+      // Persist the full improved content now that streaming is done.
+      // `accumulated` is '' for a failed, truncated or abandoned stream, so
+      // a prefix is never published as the completed improvement. The write
+      // itself runs INSIDE the article-stage admission — on the held client,
+      // after the live page rows, the caller's access, the provider endpoint
+      // and the model assignment have been re-proved — so output generated
+      // under one binding cannot land as a durable row under another. A
+      // refusal leaves the row unpublished and is not a stream failure: the
+      // client already has the text and the audit entry already recorded
+      // the dispatch.
+      //
+      // The row is REUSABLE STATE — its text may be applied to the article
+      // later — so it retains the exact provenance it was generated under
+      // (migration 150: `ai_provenance`, `ai_provenance_complete`,
+      // `ai_provenance_version`), the same shape the cache entry carries.
+      // `ai_provenance_complete` is TRUE only on this path: a row written
+      // any other way, or before the migration, stays unknown.
+      let published = false;
+      if (improvementId && streamStatus === 'success' && accumulated && transportContext.kind === 'article') {
+        const { provenance } = transportContext.stage;
+        try {
+          await admitArticleStage(
+            provenance, userId, 'chat',
+            async (client) => {
+              await client.query(
+                `UPDATE llm_improvements
+                 SET improved_content = $1, status = 'completed',
+                     ai_provenance = $3::jsonb, ai_provenance_complete = TRUE, ai_provenance_version = $4
+                 WHERE id = $2`,
+                [accumulated.slice(0, 50000), improvementId, JSON.stringify(provenance), provenance.version],
+              );
+            },
+            transportContext.stage.context, chatConfig, resolvedModel,
+          );
+          published = true;
+        } catch (err) {
+          if (!(err instanceof ArticleStageRefusedError)) throw err;
+          logger.warn({ improvementId, reason: err.reason }, 'Improvement not published: article binding no longer admits');
+        }
       }
 
-      const streamFailed = streamStatus !== 'success';
-      emitLlmAudit({
-        userId,
-        action: 'improve',
-        model: resolvedModel,
-        provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
-        outputTokens: estimateTokens(accumulated),
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
-        promptHash: fingerprintPrompt(improveMessages),
-        retrievedChunkIds: [],
-        durationMs: Date.now() - auditStart,
-        status: streamFailed ? 'error' : 'success',
-        ...(streamFailed
-          ? {
-              errorMessage: streamStatus === 'aborted'
-                ? 'Client disconnected'
-                : streamError instanceof Error ? streamError.message : String(streamError ?? 'Stream error'),
-            }
-          : {}),
-        promptInjectionDetected,
-        sanitized: wasSanitized,
-      });
-    } catch (err) {
-      emitLlmAudit({
-        userId,
-        action: 'improve',
-        model: resolvedModel,
-        provider: chatConfig.providerId,
-        inputTokens: estimateTokens(improveMessages.map(m => contentToText(m.content)).join('')),
-        outputTokens: 0,
-        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: contentToText(m.content).length })),
-        promptHash: fingerprintPrompt(improveMessages),
-        retrievedChunkIds: [],
-        durationMs: Date.now() - auditStart,
-        status: 'error',
-        errorMessage: err instanceof Error ? err.message : String(err),
-        promptInjectionDetected,
-        sanitized: wasSanitized,
-      });
-      throw err;
+      // A failed, truncated, abandoned, empty or refused stream must not stay
+      // `streaming`: finalize it as `cancelled`, still with no body and no
+      // provenance, so it is neither applied nor re-admitted as a result.
+      if (improvementId && !published) {
+        await query(
+          `UPDATE llm_improvements SET status = 'cancelled' WHERE id = $1 AND status = 'streaming'`,
+          [improvementId],
+        );
+      }
     } finally {
       if (lockToken) await llmCache.releaseLock(cacheKey, lockToken);
     }
+    } catch (err) {
+      // #282: a refusal raised before the SSE hijack — the page's policy
+      // denies this provider, its grounding moved, the authority could not
+      // be read, or a cache hit is not replayable — is a 409/503 with the
+      // contract's body, never a 500. After the hijack nothing can be sent
+      // here; `reply.sent` is the guard.
+      const refusal = reply.sent ? null : directRefusalResponse(err, 'chat');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     } finally {
       await slot.release();
+    }
+  });
+
+  // POST /api/llm/improvements/:id/readmit — re-admit a STORED improvement
+  // by reference before its text is reused (#282, the reuse half of the
+  // durable-provenance record).
+  //
+  // A completed `llm_improvements` row is reusable state: its text can be
+  // applied to the article long after the stream that produced it. The
+  // Apply consumer receives markdown, and markdown carries no proof of
+  // what it was generated under — so a client applies output that a since-
+  // tightened policy would never have let the provider see. This endpoint
+  // is that proof, decided the same way a cache hit is (`replayDirectOutput`):
+  //
+  // 1. The row must be the caller's, `completed`, and carry COMPLETE
+  //    provenance (`ai_provenance_complete`, a known `ai_provenance_version`,
+  //    a record that parses as `ConversationTurnAiProvenanceSchema`). A
+  //    truncated stream, a binding that moved during generation, or a
+  //    pre-migration row is unknown provenance and is refused — never
+  //    backfilled from `page_id`, an id is not a proof of what was fed.
+  // 2. The recorded provenance must name the provider the `chat` use case
+  //    resolves to NOW, at its CURRENT configuration revision and locality,
+  //    and is then re-admitted through `authorizeArticleDispatch` — live
+  //    page rows, the caller's current read access, the live
+  //    endpoint/credential/TLS and the live model assignment — exactly as
+  //    a fresh dispatch or a cache replay would be.
+  //
+  // A row that is not reusable is 409 `ai_history_not_replayable`;
+  // authority that cannot be read is 503 `ai_policy_unavailable`; a row the
+  // caller does not own is a 404 (the same answer a missing one gets). The
+  // success body is the text, its page and its recorded provenance — the
+  // client applies THAT text, which is byte-identical to the row.
+  fastify.post('/llm/improvements/:id/readmit', { preHandler: requireGlobalPermission('llm:improve') }, async (request, reply) => {
+    const { id } = ImprovementIdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const row = (await query<{
+      id: string; page_id: number | null; improved_content: string; status: string;
+      ai_provenance: unknown; ai_provenance_complete: boolean; ai_provenance_version: number | null;
+    }>(
+      `SELECT id, page_id, improved_content, status, ai_provenance, ai_provenance_complete, ai_provenance_version
+       FROM llm_improvements WHERE id = $1 AND user_id = $2`,
+      [id, userId],
+    )).rows[0];
+    if (!row) throw fastify.httpErrors.notFound('Improvement not found');
+
+    try {
+      const recorded = ConversationTurnAiProvenanceSchema.safeParse(row.ai_provenance);
+      if (row.status !== 'completed' || !row.improved_content
+        || row.ai_provenance_complete !== true || !recorded.success
+        || row.ai_provenance_version !== recorded.data.version
+        || row.page_id === null || !recorded.data.pages.some((p) => p.pageId === row.page_id)) {
+        throw new DirectCacheReplayError(409, 'ai_history_not_replayable');
+      }
+      // The destination that would receive the article today. An unresolved
+      // use case is unreadable authority, not a verdict about the row.
+      const { config: chatConfig, model: resolvedModel, operation } = await resolveDirectArticleChat(userId, String(row.page_id))
+        .catch(() => { throw new DirectCacheReplayError(503, 'ai_policy_unavailable'); });
+      if (recorded.data.providerId !== chatConfig.providerId) {
+        throw new DirectCacheReplayError(409, 'ai_history_not_replayable');
+      }
+      try {
+        await authorizeArticleDispatch(
+          chatConfig, recorded.data, userId, 'chat', { operation, stage: 'chat', attempt: 1 }, resolvedModel, true,
+        );
+      } catch (err) {
+        if (err instanceof ArticleStageRefusedError) {
+          throw err.reason === 'ai_policy_unavailable'
+            ? new DirectCacheReplayError(503, 'ai_policy_unavailable')
+            : new DirectCacheReplayError(409, 'ai_history_not_replayable');
+        }
+        logger.warn({ err, improvementId: id }, 'Stored improvement re-admission failed; refusing reuse');
+        throw new DirectCacheReplayError(503, 'ai_policy_unavailable');
+      }
+      return reply.send({
+        improvementId: row.id, pageId: row.page_id, improvedMarkdown: row.improved_content, aiProvenance: recorded.data,
+      });
+    } catch (err) {
+      const refusal = directRefusalResponse(err, 'chat');
+      if (!refusal) throw err;
+      return reply.code(refusal.statusCode).send(refusal.body);
     }
   });
 }

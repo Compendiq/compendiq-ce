@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { LlmProvider } from '@compendiq/contracts';
-import { apiFetch } from '../../../shared/lib/api';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { Button } from '../../../shared/components/Button';
 import { ProviderEditModal } from './ProviderEditModal';
+import { LocalityChip } from '../../../shared/components/badges/AiPolicyChips';
 
 /** Quiet inline action in a settings row — ordinary, reversible. */
 const ROW_ACTION =
@@ -15,10 +16,18 @@ const DESTRUCTIVE_ROW_ACTION = 'nm-action-destructive rounded-[var(--radius-sm)]
 
 export function ProviderListSection() {
   const qc = useQueryClient();
-  const { data: providers = [], isLoading } = useQuery<LlmProvider[]>({
+  const { data: cachedProviders = [], isLoading, isError, error, refetch } = useQuery<LlmProvider[]>({
     queryKey: ['llm-providers'],
     queryFn: () => apiFetch('/admin/llm-providers'),
   });
+  // #283 permission loss: a 401/403 on the admin read means this user may
+  // no longer administer providers. The cached rows (endpoints, declared
+  // locality, declaration actors) and their Edit/Delete/Test actions come
+  // off the screen rather than lingering from the stale cache; any open
+  // editor is closed. A transient failure (5xx, network) keeps the rows and
+  // marks locality unknown, as before.
+  const permissionLost = isError && error instanceof ApiError && [401, 403].includes(error.statusCode);
+  const providers = permissionLost ? [] : cachedProviders;
   const [editing, setEditing] = useState<LlmProvider | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -61,11 +70,20 @@ export function ProviderListSection() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Providers</h3>
-        <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
-          + Add
-        </Button>
+        {!permissionLost && (
+          <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
+            + Add
+          </Button>
+        )}
       </div>
       {isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {permissionLost ? (
+        <p role="alert" data-testid="providers-permission-lost">
+          Provider administration is no longer available to you. Cached provider details were removed.
+        </p>
+      ) : isError && (
+        <p role="alert">Provider data could not be refreshed; saved locality is unknown. <button className="nm-button-ghost" onClick={() => void refetch()}>Retry</button></p>
+      )}
       <ul className="divide-border/40 divide-y">
         {providers.map((p) => (
           <li key={p.id} className="flex items-center justify-between py-2">
@@ -79,6 +97,8 @@ export function ProviderListSection() {
                 )}
               </div>
               <div className="text-muted-foreground text-xs">{p.baseUrl}</div>
+              <LocalityChip locality={isError ? null : p.locality ?? null} />
+              {!isError && p.localityDeclaredBy && <p className="text-xs text-muted-foreground">Declared by {p.localityDeclaredBy}{p.localityDeclaredAt ? ` · ${p.localityDeclaredAt}` : ''}</p>}
             </div>
             {/* These four were bare, unstyled <button>s, so `Delete` carried
                 exactly the weight of `Edit` beside it — the least guarded
@@ -137,7 +157,7 @@ export function ProviderListSection() {
           onSaved={() => qc.invalidateQueries({ queryKey: ['llm-providers'] })}
         />
       )}
-      {editing && (
+      {editing && !permissionLost && (
         <ProviderEditModal
           mode="edit"
           initial={editing}

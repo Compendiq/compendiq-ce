@@ -57,6 +57,17 @@ describe.skipIf(!dbAvailable)('resolveUsecase — truth table', () => {
     expect(r.model).toBe('gpt-4o');
   });
 
+  it('refreshes transport from the authoritative revision without a cache-bus notification', async () => {
+    const { aId } = await seed();
+    const before = await resolveUsecase('chat');
+    await query(`UPDATE llm_providers SET base_url = 'http://changed/v1', verify_ssl = FALSE WHERE id = $1`, [aId]);
+    const after = await resolveUsecase('chat');
+    expect(after.config.baseUrl).toBe('http://changed/v1');
+    expect(after.config.verifySsl).toBe(false);
+    expect(after.config.configRevision).toBeGreaterThan(before.config.configRevision!);
+    expect(before.config.baseUrl).toBe('http://a/v1');
+  });
+
   it('throws when no default provider exists', async () => {
     await expect(resolveUsecase('chat')).rejects.toThrow(/no default/i);
   });

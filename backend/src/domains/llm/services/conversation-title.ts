@@ -1,8 +1,13 @@
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { chat, type ChatMessage } from './openai-compatible-client.js';
+import { ConversationTurnAiProvenanceSchema, type ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { admitArticleStage } from './article-stage-admission.js';
+import { loadProviderMetadata } from './ai-policy-admission.js';
+import { provenancePagesStillAdmitted } from './ai-policy-retrieval.js';
 
 /** Generated-title cap; the fallback may add `…`, while manual rename allows 200 chars. */
 export const CONVERSATION_TITLE_MAX = 80;
@@ -81,6 +86,17 @@ export interface GenerateConversationTitleOptions {
   question: string;
   answer: string;
   refused: boolean;
+  /**
+   * #282: the provenance of the turn whose answer is summarised. The title
+   * call is a SECOND model call over page-derived text, made later, so it
+   * is re-admitted against the provider resolved at THAT moment: every
+   * recorded page must still exist at its recorded policy revision and be
+   * admitted for that provider's effective locality, and the provider's
+   * metadata must decode. Otherwise the question-derived title stays.
+   * Absent provenance (a caller that recorded none) admits nothing: the
+   * answer is not shipped.
+   */
+  provenance?: ConversationTurnAiProvenance;
 }
 
 /** Compare-and-set the generated title without moving the conversation row. */
@@ -88,8 +104,9 @@ export async function persistGeneratedConversationTitle(
   conversationId: string,
   userId: string,
   title: string,
+  runQuery: typeof query = query,
 ): Promise<boolean> {
-  const result = await query<{ id: string }>(
+  const result = await runQuery<{ id: string }>(
     `UPDATE llm_conversations
         SET title = $3, title_source = 'generated'
       WHERE id = $1 AND user_id = $2 AND title_source = 'question'
@@ -114,11 +131,43 @@ export async function generateConversationTitle({
   question,
   answer,
   refused,
+  provenance,
 }: GenerateConversationTitleOptions): Promise<void> {
   try {
+    const parsed = ConversationTurnAiProvenanceSchema.safeParse(provenance);
+    if (!parsed.success) return;
     const { config, model } = await resolveUsecase('chat');
+    const destination = await loadProviderMetadata({ query }, config.providerId);
+    if (!destination || (config.configRevision !== undefined && config.configRevision !== destination.configRevision)) return;
+    const titleProvenance = { ...parsed.data, providerId: config.providerId,
+      configRevision: destination.configRevision, locality: destination.effectiveLocality };
+    const context = { operation: newAiOperation('conversation_title', { kind: 'user', id: userId }), stage: 'chat' as const, attempt: 1 };
+    const beforeDispatch = () => admitArticleStage(titleProvenance, userId, 'chat', undefined, context, undefined, undefined, true);
+    await beforeDispatch();
+    // #282: re-admission against the provider answering NOW. The answer
+    // (page-derived text) ships only when the provider's metadata decodes
+    // and every grounding page is still admitted for its effective
+    // locality at its recorded revision. Failed authority retains the
+    // existing fallback without inference. A refused turn omits its answer.
+    let shipAnswer = !refused;
+    if (shipAnswer) {
+      if (!provenance) {
+        shipAnswer = false;
+      } else {
+        const provider = await loadProviderMetadata({ query }, config.providerId);
+        shipAnswer = provider !== null
+          && (await provenancePagesStillAdmitted(provenance.pages, provider.effectiveLocality));
+      }
+      if (!shipAnswer) {
+        logger.info(
+          { conversationId, providerId: config.providerId },
+          'Conversation auto-title: grounding not re-admitted; keeping question fallback',
+        );
+        return;
+      }
+    }
     const safeQuestion = sanitizeLlmInput(question.slice(0, TITLE_QUESTION_MAX_CHARS)).sanitized;
-    const safeAnswer = refused
+    const safeAnswer = !shipAnswer
       ? null
       : sanitizeLlmInput(answer.slice(0, TITLE_ANSWER_MAX_CHARS)).sanitized;
 
@@ -133,6 +182,9 @@ export async function generateConversationTitle({
     const rawTitle = await chat(config, model, messages, {
       maxTokens: TITLE_MAX_TOKENS,
       timeoutMs: TITLE_TIMEOUT_MS,
+      beforeDispatch,
+      transportContext: { kind: 'article', stage: { provenance: titleProvenance, userId, usecase: 'chat',
+        context } },
     });
     const title = normalizeGeneratedTitle(rawTitle);
     if (!title) {
@@ -143,7 +195,9 @@ export async function generateConversationTitle({
       return;
     }
 
-    await persistGeneratedConversationTitle(conversationId, userId, title);
+    await admitArticleStage(titleProvenance, userId, 'chat', async (client) => {
+      await persistGeneratedConversationTitle(conversationId, userId, title, client.query.bind(client) as typeof query);
+    });
   } catch (err) {
     logger.warn(
       { err, conversationId },

@@ -228,8 +228,11 @@ export async function assertModelReadsFullChunk(
       `Truncation probe needs ${CHUNK_HARD_LIMIT} characters of real corpus text, got ${filler.length}`,
     );
   }
-  const [head] = await generateEmbedding(cfg, model, `${filler} ZEBRAQUIRK`);
-  const [tail] = await generateEmbedding(cfg, model, `${filler} OMEGADIFFER`);
+  // This probe uses the vendored evaluation fixture before article seeding;
+  // seeded page embeddings themselves still go through embedPage admission.
+  const context = { kind: 'non_article', purpose: 'synthetic_evaluation' } as const;
+  const [head] = await generateEmbedding(cfg, model, `${filler} ZEBRAQUIRK`, context);
+  const [tail] = await generateEmbedding(cfg, model, `${filler} OMEGADIFFER`, context);
   if (!head || !tail) {
     throw new TruncatingModelError(`Model ${model} returned no embedding for the truncation probe`);
   }

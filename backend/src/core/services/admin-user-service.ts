@@ -193,6 +193,10 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Take the membership guard before any target row lock. Otherwise one
+    // transaction can hold the guard while its actor FK waits on the target
+    // locked by a contender that is itself waiting for this guard.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ADMIN_GUARD_ADVISORY_LOCK]);
     // Lock the row being updated first (smaller fan-out than the admin set).
     const existingRes = await client.query<UserRow>(
       `${USER_SELECT} WHERE id = $1 FOR UPDATE`,
@@ -302,6 +306,10 @@ export async function deactivateUser(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Take the membership guard before any target row lock. Otherwise one
+    // transaction can hold the guard while its actor FK waits on the target
+    // locked by a contender that is itself waiting for this guard.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ADMIN_GUARD_ADVISORY_LOCK]);
     const existingRes = await client.query<UserRow>(
       `${USER_SELECT} WHERE id = $1 FOR UPDATE`,
       [targetUserId],
@@ -392,6 +400,10 @@ export async function deleteUser(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Take the membership guard before any target row lock. Otherwise one
+    // transaction can hold the guard while its actor FK waits on the target
+    // locked by a contender that is itself waiting for this guard.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ADMIN_GUARD_ADVISORY_LOCK]);
     const existingRes = await client.query<UserRow>(
       `${USER_SELECT} WHERE id = $1 FOR UPDATE`,
       [targetUserId],

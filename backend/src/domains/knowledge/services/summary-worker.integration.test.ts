@@ -160,6 +160,27 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     expect(await readPage(id)).toMatchObject({ summary_status: 'failed', summary_retry_count: 1, summary_text: null });
   });
 
+  it.each(['success', 'failure'] as const)('does not publish %s after the saved assignment changes', async (outcome) => {
+    const id = await seedPage('Assignment race');
+    let heldResponse: ServerResponse | undefined;
+    respond = (response) => { heldResponse = response; };
+    const running = runSummaryBatch();
+    try {
+      await vi.waitFor(() => expect(heldResponse).toBeDefined(), HELD_WAIT);
+      await query("UPDATE llm_usecase_assignments SET model = 'successor-model' WHERE usecase = 'summary'");
+    } finally {
+      if (heldResponse) {
+        if (outcome === 'success') sendSummary(heldResponse);
+        else { heldResponse.writeHead(400); heldResponse.end(PRIVATE_PROVIDER_BODY); }
+      }
+    }
+    expect(await running).toEqual({ processed: 0, errors: 0 });
+    expect(await readPage(id)).toMatchObject({
+      summary_status: 'summarizing', summary_text: null, summary_error: null, summary_retry_count: 0,
+    });
+    expect(calls).toBe(1);
+  });
+
   it.each(['direct', 'manual'] as const)('protects a live summarizing page when the owner is a %s batch', async (owner) => {
     const id = await seedPage('Live article');
     let heldResponse: ServerResponse | undefined;

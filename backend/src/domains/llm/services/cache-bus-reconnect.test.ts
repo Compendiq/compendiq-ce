@@ -36,15 +36,21 @@ describe('provider cache reconnect', () => {
       const unassignedDispatcher = providerRequestInfra.dispatcherFor(unassigned);
       const unassignedBreaker = getProviderBreaker(unassignedId);
       await query(`UPDATE llm_providers SET base_url = 'http://new/v1', default_model = 'new' WHERE id = $1`, [id]);
-      expect((await loadProviderConfig(id)).baseUrl).toBe('http://old/v1');
+      const revised = await loadProviderConfig(id);
+      expect(revised.baseUrl).toBe('http://new/v1');
+      expect(revised.configRevision).not.toBe(config.configRevision);
+      const revisedDispatcher = providerRequestInfra.dispatcherFor(revised);
+      const revisedBreaker = getProviderBreaker(id);
+      expect(revisedDispatcher).not.toBe(cachedDispatcher);
+      expect(revisedBreaker).not.toBe(cachedBreaker);
       const version = getProviderCacheVersion();
       expect(bus.reconnect).toBeTypeOf('function');
       bus.reconnect!();
       expect(getProviderCacheVersion()).toBe(version + 1);
       const refreshed = await loadProviderConfig(id);
       expect(refreshed).toMatchObject({ baseUrl: 'http://new/v1', defaultModel: 'new' });
-      expect(providerRequestInfra.dispatcherFor(refreshed)).not.toBe(cachedDispatcher);
-      expect(getProviderBreaker(id)).not.toBe(cachedBreaker);
+      expect(providerRequestInfra.dispatcherFor(refreshed)).not.toBe(revisedDispatcher);
+      expect(getProviderBreaker(id)).not.toBe(revisedBreaker);
       expect(providerRequestInfra.dispatcherFor(unassigned)).not.toBe(unassignedDispatcher);
       expect(getProviderBreaker(unassignedId)).not.toBe(unassignedBreaker);
     } finally {

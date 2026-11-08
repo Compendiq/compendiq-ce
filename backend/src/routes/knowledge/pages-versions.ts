@@ -438,7 +438,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const diff = await getSemanticDiff(ctx.id, v1, v2, model, ctx.confluenceId, client);
+    const diff = await getSemanticDiff(ctx.id, v1, v2, model, ctx.confluenceId, client, userId);
     return { diff, v1, v2, pageId: id };
   });
 

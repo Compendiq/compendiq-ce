@@ -24,7 +24,8 @@ sequenceDiagram
     participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
     participant CONV as llm_conversations
 
-    FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb, deepSearch }
+    FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId, inputKind, pageId,<br/>  includeSubPages, externalUrls, searchWeb, deepSearch }
+    note right of BE: #35;282 identity contract (askRequestIdentity), FIRST — before sanitization,<br/>audit or any read: a present pageId = page-bound#59; no pageId needs an explicit<br/>inputKind 'independent'#59; 'independent' beside a pageId, 'page' without one, or<br/>neither = 400 ask_identity_required. Never downgraded to a free-form question
     BE->>SAN: sanitize(question)
     SAN-->>BE: sanitized question (+ warnings)
     opt prompt-injection detected
@@ -37,19 +38,38 @@ sequenceDiagram
         PROV-->>BE: 2 paraphrases (unusable reply = no expansion)
         note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
     end
+    BE->>PROV: resolveUsecase('chat') → { config, model } (#35;282 — BEFORE retrieval)
+    BE->>PG: loadProviderMetadata(chat providerId)<br/>SELECT locality, locality_config_revision, config_revision, …
+    PG-->>BE: { configRevision, effectiveLocality } — unprovable row = 503 ai_policy_unavailable
+    opt conversationId (continuation guard, #35;282)
+        BE->>CONV: SELECT messages, ai_provenance_complete, ai_provenance_version<br/>WHERE id AND user_id (404 first, as before)
+        CONV-->>BE: row
+        note right of BE: every ASSISTANT turn must carry aiProvenance (complete row,<br/>known version) AND re-prove: same providerId + configRevision,<br/>same locality, every page still present at its recorded<br/>ai_policy_revision and admitted for THIS locality — else<br/>409 ai_history_not_replayable#59; DB failure = 503 ai_policy_unavailable
+    end
+    opt page-bound question (inputKind 'page' / pageId present — #35;282, BEFORE retrieval)
+        BE->>PG: resolvePageRef(pageId) (internal id, then confluence_id)
+        BE->>RBAC: userCanAccessPage(userId, pageId)
+        RBAC-->>BE: unresolved or denied → 409 ai_grounding_not_admissible (never NULL page_ref, never free-form)
+        BE->>PG: admitPageForProvider(pageId, 'chat', BOUND chat providerId, model, { preliminary })
+        PG-->>BE: retryable refusal = 503 ai_policy_unavailable#59; policy refusal = 409 ai_grounding_not_admissible#59;<br/>another configRevision → 409 ai_policy_provider_revision_mismatch#59;<br/>same revision, another locality → 409 ai_policy_provider_locality_mismatch
+        BE->>PG: SELECT body_html, title, ai_policy, ai_policy_revision, content_revision — ONE reading
+        PG-->>BE: openArticle { ref, title, bodyHtml } — decided again on the row read WITH the bytes
+        note right of BE: the question may carry the article's own text (a selection,<br/>an unsaved paragraph), so the article is admitted for the bound<br/>provider before the question is embedded, reranked or shown to anything —<br/>with or without the sub-page tree. Its ref joins the turn's provenance
+    end
     BE->>EMB: POST /v1/embeddings (question)
     EMB-->>BE: q_vector[N]
     BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
     RBAC-->>BE: readableSpaceKeys[] (request-scoped)
     note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
+    note right of RAG: #35;282 — aiPolicy: { purpose:'ai', destinationLocality }<br/>becomes a parameter-free predicate INSIDE every producer:<br/>external → cp.ai_policy IN ('all')#59; local → IN ('all','local_only')#59;<br/>never `<> 'none'` — an unknown value is never admitted.<br/>/api/search passes { purpose:'human' } (authored text unfiltered,<br/>a `none` page's image-analysis chunks still hidden)
     par vector + keyword
-        BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
-        RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
-        PG-->>RAG: top fetch-width chunks
+        BE->>RAG: vectorSearch(userId, q_vector, stageLimit, { aiPolicy })
+        RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) AND cp.ai_policy IN (…)<br/>SELECT … cp.ai_policy, cp.ai_policy_revision
+        PG-->>RAG: top fetch-width chunks (+ policy columns per row)
     and
-        BE->>RAG: keywordSearch(userId, question, stageLimit)
-        RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
-        PG-->>RAG: matches
+        BE->>RAG: keywordSearch(userId, question, stageLimit, { aiPolicy })
+        RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter<br/>+ policy predicate in the AUTHORED and the DERIVED arm#59;<br/>chunk LATERAL skips derived rows of a `none` page
+        PG-->>RAG: matches (+ policy columns per row)
     end
     note right of BE: TWO legs (#35;1618 stage 2 retired #35;1115 P3's image leg).<br/>A picture is retrieved as its derived image_analysis chunk<br/>inside these two — provenance-marked page_embeddings rows,<br/>ordinary text embedder, no second query embed
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
@@ -63,27 +83,28 @@ sequenceDiagram
         note right of BE: prior = mean of present terms, in [0,1]#59;<br/>quality/100 and 2^(-ageDays/365), future dates clamped#59;<br/>NO signal = NO adjustment (unscored is NEUTRAL, never<br/>penalised — it correlates with recently synced)#59;<br/>score += weight x prior, stable sort — demote, never exclude#59;<br/>rag.ranking_prior: reordered | no_change | off | bypassed#59; soft-fail
     end
     opt rerank use case assigned (#35;1104)
+        BE->>PG: loadProviderMetadata(rerank providerId) (#35;282 — a SECOND destination,<br/>its own locality, never inherited from chat#59; unprovable = no call)
+        note right of BE: any pooled row NOT admitted for the reranker's locality<br/>(local_only text + external reranker, or a row whose policy did not<br/>decode) = NO rerank call, fused order served,<br/>rag.rerank = 'policy_bypassed' + rag.rerank_policy_refused
         BE->>PROV2: POST /v1/rerank with query + candidate docs<br/>(dedicated rerank client — queue + breaker)
         PROV2-->>BE: relevance scores [0,1]
         note right of BE: pool = rag_rerank_candidates (default 30)<br/>docs sanitized + truncated to 2,000 chars<br/>timeout/failure = honest bypass to fused order
     end
     note right of BE: slice to topK after ranking —<br/>fetch width is ranking headroom the rerank stage spends
     opt assembleContext (#35;1106 PR 2 — chat path + eval)
-        BE->>PG: sibling chunks for surviving pages<br/>(main pool, ORDER BY page_id, chunk_index)
+        BE->>PG: sibling chunks for surviving pages<br/>(main pool, JOIN pages cp … AND cp.ai_policy IN (…) — #35;282 re-reads<br/>the policy, so a page that changed mid-request assembles nothing)
         PG-->>BE: rows
         note right of BE: per page: best-chunk-anchored window under<br/>rag_context_chars_per_page (0 = off)#59; seam-trimmed,<br/>holes marked#59; contextText read ONLY by buildRagContext —<br/>chunkText stays the best chunk#59; soft-fail to chunk-level#59;<br/>rag.page_merge: assembled | none | bypassed | off (+ pages count)
     end
     opt pinIdentifiers (#35;1107 — chat path + eval)
-        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
+        note right of BE: detectIdentifiers(question) — pure, cue/token-guarded#59;<br/>each detection VERIFIED by an indexed lookup under the<br/>same visibility + EE ACL + the SAME policy predicate (#35;282 —<br/>an exact title cannot resurrect a refused page)#59; ≤ 2 verified pins PREPENDED,<br/>fused order below never re-sorted#59; rag.pinned count#59;<br/>a pinned head keeps the confidence gate unmeasurable —<br/>a verified exact match is never auto-refused#59; soft-fail
     end
-    opt includeSubPages
-        BE->>RBAC: userCanAccessPage(userId, parentPageId)
-        RBAC-->>BE: allow / deny (#35;814 — skip tree on deny)
-        BE->>SP: assembleSubPageContext(rootPageId)
+    opt includeSubPages (page-bound only — the root is the openArticle reading admitted above, not a second read)
+        BE->>SP: assembleSubPageContext(openArticle.confluenceId, openArticle.bodyHtml, openArticle.title, …, { policyContext:<br/>{ providerId, usecase:'chat', expectedConfigRevision, expectedLocality } — the<br/>request's ONE binding, never the admission's })
         SP->>RBAC: getUserAccessibleSpacesMemoized(userId)
-        SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC)
+        SP->>CF: fetch child tree WHERE deleted_at IS NULL<br/>AND visible to user (space RBAC) AND admitted per page
         CF-->>SP: pages
-        SP-->>BE: tree context
+        SP-->>BE: tree context + includedPageRefs { id, policy, policyRevision }<br/>+ excludedByPolicy#59; SubPagePolicyError → 409 ai_policy_provider_revision_mismatch /<br/>ai_policy_provider_locality_mismatch by its code (retryable → 503 ai_policy_unavailable)
+        BE->>PG: readPagePolicies(included ids) — the content revision of each included page<br/>joins the turn's provenance beside the walk's policy reading
     end
     opt externalUrls provided
         BE->>MCP: fetch urls
@@ -107,25 +128,31 @@ sequenceDiagram
     note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL.<br/>#35;1115 P4 adds the ATTACHED-IMAGE identity for the same reason:<br/>the doc-id list cannot see whether the model could SEE those pages
     note right of BE: the key carries the PROMPT TEXT AS SENT (system + user),<br/>never the request's pageId: the page tree, custom prompt and<br/>fetched docs are assembled per caller, so a hit needs the<br/>same authorized text and never widens the caller's grounding
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
+    note right of BE: #35;282 adds three suffixes: prev:<chat configRevision>,<br/>loc:<chat locality>, pol:<pageId:policyRevision:contentRevision,…> — an endpoint<br/>edit, a locality change, ONE page's policy change or ONE page's BODY edit<br/>is a different key
+    BE->>PG: loadProviderMetadata(bound providerId) — re-prove the binding<br/>before the cache is consulted (#35;282)
+    PG-->>BE: unreadable → 503 ai_policy_unavailable#59; configRevision moved → 409<br/>ai_policy_provider_revision_mismatch#59; same revision, locality moved → 409<br/>ai_policy_provider_locality_mismatch
     BE->>CACHE: getCachedResponse(key)
     alt cache hit
         CACHE-->>BE: answer
+        BE->>PG: provenancePagesStillAdmitted(turn pages, locality) + userCanAccessPage per page (#35;282 — revalidate)
+        PG-->>BE: rows at the recorded policy AND content revision, admitted, readable → serve#59;<br/>otherwise 409 ai_grounding_not_admissible#59; unreadable 503 ai_policy_unavailable#59; never regenerate stale prompt
         BE-->>FE: SSE { content, done:true, fromCache:true }
     else miss (stampede lock)
         BE->>CACHE: SET lock UUID NX EX 120
         CACHE-->>BE: unique acquisition token<br/>(SET NX EX)
-        BE->>BE: resolveUsecase('chat')<br/>→ { config, model }
-        BE->>PROV: streamChat(config, resolvedModel, messages)
+        BE->>PG: loadProviderMetadata(bound providerId) — LAST re-proof, immediately<br/>before the provider call and the SSE hijack (same 503/409 codes)
+        BE->>PROV: streamChat(config, resolvedModel, messages)<br/>(the provider resolved at step 1 — no second resolution)
         loop chunks
             PROV-->>BE: delta
             BE-->>FE: SSE { content: delta }
         end
         PROV-->>BE: done
         BE->>CACHE: setCachedResponse(key, answer)<br/>(history-free asks only — a follow-up is<br/>grounded in the asker's own thread)
-        BE->>CONV: append user turn + answer + sources (atomic jsonb ||)
+        BE->>CONV: append user turn + answer + sources (atomic jsonb ||)<br/>assistant turn carries aiProvenance { version:1, providerId, configRevision,<br/>locality, pages[{pageId, policy, policyRevision, contentRevision}] } (#35;282)#59; row columns<br/>ai_provenance_complete=TRUE, ai_provenance_version, provider_config_revision, provider_locality
         BE->>PG: INSERT audit_log (tokens, latency, doc_ids)
         BE-->>FE: SSE { done:true, conversationId, sources }
         BE->>CACHE: release with token<br/>(atomic compare-and-delete)
+        BE->>PROV: generateConversationTitle (first turn, fire-and-forget) —<br/>the ANSWER ships to the titling model only after re-admission<br/>of the turn's pages against the provider answering NOW (#35;282)
     end
     alt EOF after done
         Note over FE: Process later metadata before success
@@ -133,6 +160,341 @@ sequenceDiagram
         Note over FE: Keep partial output and show interruption, no success callback
     end
 ```
+
+### Article AI policy at retrieval (#282)
+
+Every article carries `pages.ai_policy ∈ {all, local_only, none}` (migration
+135; `no_ai` is an input-only alias normalised to `none`, the canonical
+value). The flow above is where that policy is ENFORCED for chat, and the
+rules are few enough to state in full:
+
+1. **The destination is decided before anything is retrieved.** The route
+   resolves the chat use case and decodes its provider's effective locality
+   through `loadProviderMetadata` (`ai-policy-admission.ts` — the ONE
+   decoder; a `local` declaration counts only when made by a still-existing
+   user against the provider's CURRENT `config_revision`, so an endpoint
+   edit silently reads as `external` again). An unprovable row is a 503
+   `ai_policy_unavailable`, never a default. The resulting
+   `{ purpose: 'ai', destinationLocality }` is handed to `hybridSearch` as
+   `opts.aiPolicy`.
+2. **The policy is a predicate inside every candidate query, never a
+   post-filter.** `ai-policy-retrieval.ts` renders it as a parameter-free SQL
+   fragment over the closed contracts enum — `cp.ai_policy IN ('all')` for an
+   external destination, `IN ('all', 'local_only')` for a local one. It is
+   spelled as POSITIVE membership, never `<> 'none'`, so a value outside the
+   set admits nothing. The five producers that carry it: the vector leg, the
+   authored AND the derived arm of the keyword union, the exact-identifier
+   pin lookup, and the sibling-window fetch (which re-reads the policy, so a
+   page that changed between the legs and assembly contributes no window).
+   The per-page chunk `LATERAL` additionally never resolves a `none` page's
+   image-analysis chunk — derived text is AI output over the picture and
+   stays hidden even where the authored predicate does not apply.
+3. **A human-read surface declares itself.** `/api/search` (semantic and
+   hybrid) passes `{ purpose: 'human' }`: authored text is not filtered
+   (nothing leaves the database for a model), but the derived-arm rule from
+   point 2 still holds. A caller that declares nothing gets the EXTERNAL
+   predicate — the strictest reading, by construction.
+4. **The reranker is a second destination.** Its provider's locality is
+   decoded per stage and never inherited from chat. If any pooled row is not
+   admitted for it — `local_only` text with an external reranker, or a row
+   whose policy did not decode — the stage makes NO call and serves the fused
+   order with `rag.rerank = 'policy_bypassed'` and
+   `rag.rerank_policy_refused = <count>`; a trace can tell this apart from a
+   provider fault (`'bypassed'`). When the pool IS admitted, the call is
+   bound to the exact transport the client will use: `rag-service` hands
+   `rerankDocuments` the grounding set as `{ article: { provenance, userId } }`,
+   and `rerank-client` ITSELF proves it — `authorizeArticleDispatch(cfg,
+   provenance, userId, 'rerank', { operation, stage: 'rerank', attempt },
+   model)` against the very `cfg` and `model` its fetch reads — inside the
+   queue slot, after the wait, OUTSIDE the per-provider breaker. The saved
+   provider row's `config_revision`, `base_url`, credential and TLS setting
+   and the live `rerank` assignment's model are re-proved on a held client
+   immediately before HTTP; a retry is a new admission (`attempt`
+   increments under one `operation`). Binding in the client rather than at
+   the call site means no caller can hand the client one transport and
+   prove another. A refusal is a decision event, never a breaker failure
+   (`article-stage-admission.db.test.ts`: saved transport dispatches once;
+   a forged endpoint, an unassigned model and a later `local_only`
+   restriction are each refused with no request sent and `failureCount` 0;
+   `rerank-client.test.ts`: a transport without a config revision or
+   naming another provider is refused with no document byte leaving).
+5. **One binding per request, re-proved at every boundary.** The provider,
+   `configRevision` and effective locality decoded in point 1 are the
+   request's ONE destination (`bound`). Nothing downstream resolves its own:
+   the open article (rule 12 — every page-bound question, with or without
+   the tree) is admitted through `admitPageForProvider(rootId,
+   'chat', bound.providerId, model)` (a retryable refusal is a 503, a policy
+   refusal returns 409 `ai_grounding_not_admissible`) and an admission that comes back at a different
+   `configRevision` is a 409 `ai_policy_provider_revision_mismatch`, at the
+   same revision but a different locality a 409
+   `ai_policy_provider_locality_mismatch`; `assembleSubPageContext` receives
+   the binding as its `policyContext` `{ providerId, usecase,
+   expectedConfigRevision, expectedLocality }`, and a `SubPagePolicyError`
+   maps by its `code` to the same two 409s (or 503 when retryable). The
+   binding is then re-read through `loadProviderMetadata` TWICE more —
+   immediately before the cache is consulted and immediately before
+   `streamChat` / the SSE hijack — with the same verdicts: unreadable or
+   non-decoding → 503 `ai_policy_unavailable`; revision moved → 409
+   revision mismatch; locality moved at the same revision → 409 locality
+   mismatch. A provider edited mid-request is refused with a status code,
+   never silently served against whatever the row says now. The included
+   refs `{ id, policy, policyRevision, contentRevision }` retain the exact
+   tuple selected with each descendant's title/body. A readback validates
+   that tuple; it never stamps a newer revision onto older bytes. The root
+   title/body/policy/revisions are selected together and its explicit ref is
+   recorded even when retrieval omitted the root. Conflicting root/retrieval
+   tuples refuse rather than deduplicating away evidence. Missing or denied
+   roots and stale tree tuples return pre-SSE 409 `ai_grounding_not_admissible`;
+   unreadable metadata returns 503 `ai_policy_unavailable`. This consumption
+   check does not replace the independent final-dispatch checks owned by #282.
+6. **Each assistant turn records what it was grounded on.** `aiProvenance`
+   `{ version: 1, providerId, configRevision, locality, pages[{ pageId,
+   policy, policyRevision, contentRevision }] }` is stored on the turn (and
+   summarised on the row: `ai_provenance_complete`, `ai_provenance_version`,
+   `provider_config_revision`, `provider_locality`). Every retrieval row
+   selects `pages.content_revision` beside the policy columns; a row that
+   arrived without a decodable policy OR content revision refuses with
+   `409 ai_grounding_not_admissible`; revisions are never invented.
+   `selectReplayableHistory` returns selected source objects as well as stripped
+   wire messages. New provenance unions every selected assistant dependency
+   with fresh retrieval and explicit root/descendant tuples. Consistent
+   duplicates deduplicate; conflicting readings refuse.
+7. **A continuation replays history only if it can be re-proven.** Before
+   retrieval, every stored assistant turn must carry provenance that parses
+   as `ConversationTurnAiProvenanceSchema` (an incomplete row — pre-#282
+   history — or a legacy/malformed record fails), the row's own
+   `provider_config_revision` / `provider_locality` columns must equal the
+   binding, every turn must name the SAME provider at the SAME
+   `configRevision` and locality as the one answering now, that provider
+   must still be readable at that state (unreadable → 503, moved → 409), and
+   every recorded page must still exist at its recorded
+   `ai_policy_revision` AND `content_revision`, be admitted for that
+   locality, and still be readable by the caller. Otherwise 409
+   `ai_history_not_replayable` (the user starts a fresh conversation); a
+   database failure during the check is a 503 `ai_policy_unavailable`. The
+   404 for a conversation that is not the caller's still comes first.
+8. **The answer cache cannot outlive a policy or a body.** `buildRagCacheKey`
+   folds in `prev:<configRevision>`, `loc:<locality>` and
+   `pol:<pageId:policyRevision:contentRevision,…>`
+   (`policyRevisionsCacheComponent`), so a page body PUT inside the TTL is a
+   different key. A HIT is still revalidated before it is served:
+   `provenancePagesStillAdmitted` (rows exist at the recorded policy AND
+   content revision, admitted for the locality) plus `userCanAccessPage` for
+   every recorded page — a page deleted, edited, restricted or taken out of
+   the caller's read set inside the TTL refuses with 409
+   `ai_grounding_not_admissible`; unreadable authority returns 503
+   `ai_policy_unavailable`. Neither falls through to regeneration of a stale
+   prompt. Cache entries must also carry complete versioned provenance;
+   legacy or mismatching entries return `ai_history_not_replayable`.
+9. **Auto-title re-admits.** `generateConversationTitle` receives the turn's
+   provenance; the page-derived answer is sent to the titling model only when
+   the provider resolved at THAT moment decodes and every recorded page is
+   still admitted for its locality. Otherwise (and when no provenance was
+   recorded) the initial question-derived title stays, with no completion.
+   The independent title stage rechecks its actual destination and complete
+   source tuples after queue waits. After inference, it proves them again and
+   performs the manual-title compare-and-set on the same held PostgreSQL client.
+   A CACHE REPLAY never starts the title call: a replay is "an answer without
+   a model call" (no audit row, `cached: true` on the wire), and the title
+   would be exactly such a call — a second shipment of the page-derived
+   answer to whatever provider resolves at that moment, from a path that
+   promised none. Fresh answers and refusals keep the title path.
+10. **Publication is guarded, not merely checked before inference.** Cached
+    replay persistence and post-stream publication take shared policy locks in
+    page-ID order, page row share locks, then the provider row share lock.
+    Grounding and ACL are re-proved using that held client; conversation writes
+    use that transaction, and cache writes occur while the locks are held.
+    A failed proof produces no reusable exchange/cache output and no secondary
+    title. Already delivered stream bytes cannot be recalled. This is not a
+    distributed transaction between Redis and PostgreSQL.
+11. **A refusal is typed, and a refusal before dispatch is not an inference.**
+    `ArticleStageRefusedError` carries a `reason`:
+    `ai_policy_unavailable` (the authority could not be read — retryable),
+    `ai_policy_denied` (the page's CURRENT policy forbids this provider — a
+    known fact about the article) or `grounding_changed` (a recorded
+    revision, locality, model, endpoint or ACL moved — the caller re-proves).
+    Ask's `beforeDispatch` and its post-stream publication throw this type,
+    not a bare `Error`. In the route's catch, a refusal raised BEFORE any
+    text reached the provider (`fullAnswer === ''`) writes
+    `ai_policy_unavailable` / `ai_grounding_not_admissible` on the wire and
+    emits NO `llm_audit_log` inference row — its evidence is the admission's
+    own decision event, and an `error` row would count a policy refusal as
+    a failed model call in the usage attestation. A publication refused
+    AFTER the provider answered is recorded as an `error` row with the
+    tokens it actually produced (`Publication refused: <reason>`), because
+    the model did run. The same discriminator drives the direct-route cache
+    replay below. The Inline Completion route reads the same discriminator:
+    a decided `ai_policy_denied` (the article is `none`, or `local_only`
+    against a provider that is not effectively local) is the editor's
+    ordinary "no suggestion here" — **204**, the same answer an unassigned
+    stage gives, with no provider request, no usage and no error for the
+    editor to back off from; the decision event is the admission's.
+    `ai_policy_unavailable` and `grounding_changed` stay **503
+    `ai_policy_unavailable`**: the request could not be decided, not
+    decided against. Pinned in `llm-inline-completion.test.ts` (a `none`
+    and a `local_only` denial → 204, no request, no usage, no audit row;
+    the same `local_only` page beside an accountably-local provider → an
+    ordinary 200), and the enterprise suites
+    (`ai-policy-first-publication.test.ts`,
+    `department-quota-inference.integration.test.ts`) pin the same 204 for
+    a zero-dispatch denial and 503 for a policy that moved AFTER the first
+    send.
+12. **A question says what it is about, and a page-bound question admits
+    its article BEFORE retrieval.** `AskRequestSchema.inputKind ∈ { page,
+    independent }` (optional on the wire, so the route can tell a declared
+    question from one that said nothing): a present `pageId` implies `page`;
+    an absent `pageId` needs an explicit `independent`; `independent`
+    beside a `pageId`, `page` without one, or neither is **400
+    `ask_identity_required`** — raised by `askRequestIdentity` first thing,
+    before sanitization, the audit hook or any read, and never downgraded
+    to a free-form question, because the client that forgets to say is
+    exactly the client whose question text might carry article content.
+    Both composers declare (`AskMode.tsx`, `use-dock-actions.ts`: the open
+    article as `{ inputKind: 'page', pageId }`, otherwise `{ inputKind:
+    'independent' }`). For a page-bound question — `includeSubPages` or
+    not — the route then resolves the page, checks the caller's read access
+    and admits it for the bound provider (rule 5's codes) ahead of the
+    embedding call, reads title/body/policy/revisions ONCE and decides that
+    row again, records its ref in the turn's provenance beside the retrieval
+    rows, and hands that same reading to the sub-page walk; an
+    unresolvable, inaccessible or non-admitted page is a pre-SSE 409
+    `ai_grounding_not_admissible` (it used to be tolerated as a `NULL
+    page_ref` when the tree was off). Pinned in
+    `ask-identity-contract.db.test.ts` and `ask-page-input.db.test.ts`
+    (real route, real Postgres/Redis, synthetic provider: `none` /
+    `local_only` → 409 with no provider call, no conversation row and no
+    usage entry; unreadable and missing pages answer identically; the
+    article is recorded even with empty retrieval; a continuation after its
+    policy moved is 409 `ai_history_not_replayable`), and in the mocked
+    `llm-ask.test.ts` identity cells.
+
+### Direct routes: cached output, truncated streams, publication (#282)
+
+Improve, Summarize, Quality, Diagram and Generate share `streamSSE`
+(`routes/llm/_helpers.ts`) and the `kb:llm:*` output cache. Three rules
+hold across all five:
+
+1. **A cache entry carries the binding it was generated under, and a hit
+   is re-admitted against THAT.** `streamSSE` writes the article transport's
+   provenance beside the output (`cacheProvenance` →
+   `setCachedResponse(key, content, ttl, aiProvenance)`). On a hit,
+   `replayDirectOutput` (`routes/llm/_article-cache.ts`) runs BEFORE
+   `reply.hijack()`: the entry must be well-formed (non-empty string
+   `content`, positive safe-integer `cachedAt`); for an article transport
+   it must carry provenance naming the same provider at the same
+   `configRevision` and locality over the same
+   `(pageId, policyRevision, contentRevision)` set as the current request;
+   and that RECORDED provenance is then re-admitted through
+   `authorizeArticleDispatch` — page lock, live page rows, the caller's
+   current read access, the live endpoint/credential/TLS and the live model
+   assignment — exactly as a fresh dispatch would be. A malformed entry, an
+   entry without provenance (unknown provenance is never safe), a mismatch,
+   or a known denial / changed binding is a pre-SSE **409
+   `ai_history_not_replayable`** with the route's stage; unreadable
+   authority is **503 `ai_policy_unavailable`**. Neither falls through to
+   regeneration: the caller re-asks and the miss path proves its own
+   binding. Generate has no article (`non_article` / `user_query`), so only
+   the shape check applies, and an entry that carries provenance anyway is
+   refused. Every refusal raised before the hijack — including the one the
+   route's own article capture raises AHEAD of the cache lookup when the
+   page's policy was tightened — reaches the wire through
+   `directRefusalResponse` as the contract body `{ error, stage }`, never
+   as an unhandled 500 (which a client reads as "retry"): the live article
+   refusing is 409 `ai_grounding_not_admissible`, the entry refusing is 409
+   `ai_history_not_replayable`, and unreadable authority is 503. Pinned in
+   `direct-cache-policy.db.test.ts` (policy tightened, recorded grounding
+   stale, provider endpoint moved, seven malformed shapes, ownership
+   moved — each refused with no provider request; restoring the original
+   entry replays) and `generate-audit-outcome.db.test.ts`.
+2. **Only a completed stream is a result.** `streamChat`'s SSE parser no
+   longer manufactures `done: true` when the provider closes the socket
+   before `data: [DONE]` — it throws `StreamIncompleteError(received)`
+   outside the breaker (a silent `return` only when the caller's own signal
+   aborted). `streamSSE` catches it, writes
+   `{ error: 'Stream ended before completion', done: true }` so the client
+   never renders the prefix as finished, records the dispatch as a failed
+   inference with the output it actually produced, writes no cache entry,
+   and resolves to `''`. It resolves to `''` for every failure (thrown
+   stream, truncation, client disconnect) — a caller can no longer persist
+   a prefix as the finished output. Generate's audit entry comes from this
+   outcome (one `error` row for a truncated stream, one `success` for a
+   completed one, none for a replay); the route's own catch covers only a
+   failure before dispatch.
+3. **Durable output is written under admission, on the held client.**
+   Improve's `llm_improvements … status = 'completed'` write runs inside
+   `admitArticleStage(provenance, userId, 'chat', publish, context,
+   transport, model)` — after the live page rows, the caller's access, the
+   provider row and the model assignment have been re-proved, before
+   COMMIT — and only for non-empty returned output. A refusal finalizes the
+   row as `cancelled` with an empty body and is not a stream failure (the
+   client already has the text; the audit entry already recorded the
+   dispatch). Failed, truncated, abandoned and empty streams are finalized
+   the same way, so no row stays `streaming`. Pinned in
+   `stream-result-publication.test.ts`: a stream that ends without
+   `[DONE]` → no cache key, row `cancelled`, one `error` audit; a
+   completed stream → cached, `completed`, one `success`; a policy
+   tightened while the provider was answering → text streamed and
+   audited, row `cancelled`. The completed row is REUSABLE STATE (its
+   text can be applied to the article later), so the same write retains
+   the exact provenance it was generated under — migration 150 adds
+   `ai_provenance JSONB`, `ai_provenance_complete BOOLEAN NOT NULL DEFAULT
+   FALSE`, `ai_provenance_version INTEGER` to `llm_improvements`; the
+   write sets all three from the transport's
+   `ConversationTurnAiProvenance` (the same object the cache entry carries
+   as `aiProvenance`). `ai_provenance_complete` is TRUE only on that path:
+   a truncated stream or a binding that moved during generation leaves the
+   row unknown (NULL / FALSE / NULL), and historical rows are never
+   backfilled from `page_id` — an id is not a proof of what the output was
+   fed. Pinned in `improve-durable-output.db.test.ts`.
+   **Reuse is by reference, and a reference is re-admitted.** The final
+   SSE frame of a page-bound Improve names the row (`improvementId`), and
+   `POST /llm/improvements/:id/readmit` (`llm-improve.ts`) is the only
+   path that turns that id back into text: the row must be the caller's,
+   `completed`, with complete provenance (`ai_provenance_complete`,
+   `ai_provenance_version` equal to the record's `version`, a record that
+   parses as `ConversationTurnAiProvenanceSchema` and names the row's own
+   `page_id`); it must name the provider the `chat` use case resolves to
+   NOW; and that recorded provenance is then re-admitted through
+   `authorizeArticleDispatch` against the current revision, locality,
+   endpoint/credential/TLS, model assignment, live page rows and the
+   caller's read access — exactly the cache-replay check in rule 1. The
+   success body is `ReadmitImprovementResponseSchema` `{ improvementId,
+   pageId, improvedMarkdown, aiProvenance }`, the row's bytes. A row that
+   cannot be re-proved — policy tightened, body edited, endpoint moved,
+   assignment switched, stream never completed, provenance lost — is 409
+   `ai_history_not_replayable` with no provider call; unreadable authority
+   or an unresolvable use case is 503 `ai_policy_unavailable`; another
+   user's row is a 404. Pinned in `improve-readmit.db.test.ts`. The legacy
+   Apply consumer (`POST /llm/improvements/apply`, the route aggregator)
+   still accepts bare `improvedMarkdown`; a client that applies a stored
+   improvement must readmit first and apply the text the readmit returned.
+
+All valid recorded providers are checked for availability before comparing
+history with the current destination. Missing recorded authority yields 503,
+including after an assignment switch. Row summaries bind the newest turn;
+conflicting per-turn page/provider readings refuse, never merge by maximum.
+Human vector search excludes every `none` vector, even stale authored vectors;
+human lexical search still returns readable authored prose without model calls.
+The resolver selects transport and configuration revision together; its cache
+cannot reuse a transport from another revision merely because a cache-bus
+notification has not arrived. Chat, title and rerank compare that transport
+revision with admission authority rather than silently selecting a new provider.
+These guarantees do not identify arbitrary pasted copies, attest a browser or
+provider's residency, or establish zero egress.
+
+Refusal codes are the contracts constant `AI_POLICY_REFUSAL_CODES`
+(`ai_grounding_not_admissible`, `ai_history_not_replayable`, `ai_policy_unavailable`,
+`ai_policy_provider_revision_mismatch`,
+`ai_policy_provider_locality_mismatch` — there is no generic
+`ai_policy_provider_mismatch`; a client is always told which of the two
+moved); the provenance shape is
+`ConversationTurnAiProvenanceSchema` (`@compendiq/contracts`, `ai-policy.ts`).
+The matrix — three policies × external / local / human, both legs, the pin,
+the sibling window, the rerank bypass, the revision bump and the cache key —
+is pinned against real Postgres in
+`ai-policy-retrieval.integration.test.ts`; the route-level guards (provider
+before retrieval, 503/409 paths, provenance columns, cache revalidation) in
+`llm-ask.test.ts`.
 
 ### Permission-check checkpoint
 
@@ -1370,8 +1732,8 @@ what raises the effective width.
 The `includeSubPages` branch (#814) is gated independently of the RAG
 retrieval filters, since it injects a caller-supplied page tree rather than
 retrieved chunks. Before assembly, `/llm/ask` enforces the same access check
-as `GET /pages/:id` on the parent (`userCanAccessPage`) and skips the branch
-on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
+as `GET /pages/:id` on the parent (`userCanAccessPage`) and refuses fresh
+grounding with 409 `ai_grounding_not_admissible` on denial. `subpage-context.fetchSubPages` then resolves the caller's readable
 spaces once and applies `visiblePagesPredicate` plus `deleted_at IS NULL` to
 every descendant query, so cross-space, page-restricted (no ACE for the
 caller, in both editions) or soft-deleted sub-pages never reach
@@ -1381,6 +1743,21 @@ source-aware key: Confluence ID for a Confluence page, internal ID as text
 for a standalone page, including one with a retained historical Confluence ID.
 No historical-ID alias is traversed. Existing visibility, cycle, depth, page
 count and context character limits remain in force.
+
+**Article AI policy admission on this path (#280/#281).** A page is only
+dispatched to a provider that `admitPageForUsecase` /
+`admitPageForProvider` (`domains/llm/services/ai-policy-admission.ts`)
+admitted for the resolved `(provider, model)`; a provider-bound sub-page walk
+passes its own admission as `policyContext` and fails closed on a provider
+revision or locality move (`03-backend-domains.md`). Admission **fails
+closed**: any failure to connect or to read the page/provider rows is
+`policy_unavailable` (retryable, logged, never an admission), `none` is
+decided from the page row before the provider is consulted, and a `local`
+declaration is honoured only when it was made *by an identified
+administrator* against the provider's current `config_revision`. Every
+refusal — `policy_none`, `provider_not_local`, `not_found`, `stage_disabled`,
+`policy_unavailable` — emits exactly one `blocked` event to the enterprise
+sink; only the first two are ever persisted as a block reason.
 
 ## Image input flow (#1154)
 
@@ -1965,10 +2342,25 @@ in order:
 - **Stale id → 404, early.** A `conversationId` that is not the caller's answers
   404 before retrieval and before any SSE header (foreign ids get the same
   answer). The client drops the id; its next ask starts a fresh row.
-- **`page_ref` at INSERT.** The page a dock conversation started from, resolved
-  through `resolvePageRef` (internal id first, `confluence_id` second,
-  int4-safe) and authorised with `userCanAccessPage`; anything unresolved or
-  unauthorised stores `NULL`. The list joins `pages` (`deleted_at IS NULL`) for
+- **Continuation guard (#282), right after the 404.** The row is read with
+  `ai_provenance_complete` and `ai_provenance_version`; every stored assistant
+  turn's `aiProvenance` must re-prove against the provider answering now (same
+  `providerId` + `configRevision` + locality, every page still at its recorded
+  `ai_policy_revision` and admitted for that locality). Failure is 409
+  `ai_history_not_replayable`; a database failure is 503 `ai_policy_unavailable`.
+  Pre-#282 rows (`ai_provenance_complete = FALSE`) are honestly not replayable.
+- **Provenance per assistant turn (#282).** Each appended assistant message
+  carries `aiProvenance { version, providerId, configRevision, locality,
+  pages[] }`; the INSERT/UPDATE also sets `ai_provenance_complete = TRUE`,
+  `ai_provenance_version`, `provider_config_revision`, `provider_locality`
+  (migration 135's CHECK requires all three when complete). The replay
+  selector strips it before anything reaches the model or the wire.
+- **`page_ref` at INSERT.** The page a page-bound conversation started from,
+  resolved through `resolvePageRef` (internal id first, `confluence_id`
+  second, int4-safe) and authorised with `userCanAccessPage` — the SAME
+  resolution the open-article admission (rule 12) ran before retrieval, so
+  since #282 an unresolved or unauthorised page is a 409 and never stores
+  `NULL`; an `independent` question stores `NULL`. The list joins `pages` (`deleted_at IS NULL`) for
   `pageTitle`; a trashed page yields no chip. Retrieval never falls back to
   `page_ref` — origin, not live scope.
 - **Atomic append.** `UPDATE … SET messages = messages || $3::jsonb … RETURNING id`
@@ -1984,7 +2376,13 @@ in order:
   one fire-and-forget completion through the existing `chat` assignment after
   its streamed, cached, or refused response has completed. The question and
   non-refused answer are bounded and passed through `sanitizeLlmInput`; refused
-  answers title from the question alone. `normalizeGeneratedTitle` reduces the
+  answers title from the question alone. Since #282 the answer is also
+  RE-ADMITTED first: the turn's provenance pages must still be admitted for the
+  effective locality of the provider resolved at titling time (and that
+  provider must decode), else the initial question-derived title stays without
+  a completion. Authority is checked after the queue wait and after inference;
+  title persistence shares the final proof's held client and locks.
+  `normalizeGeneratedTitle` reduces the
   reply to one unquoted, unformatted line of at most 80 characters. The update
   is a compare-and-set on `title_source = 'question'`, so a concurrent manual
   rename (`'user'`) wins. Provider, timeout, parse, and database failures leave
@@ -2012,7 +2410,15 @@ deleting your own history is not model consumption, and a user stripped of
 ## Cache + stampede protection
 
 - **Key** = `hash(userId, model, normalizedQuestion, contextFingerprint)`.
-- Cache hit → answer returned immediately from Redis.
+  Since #282 the fingerprint also carries `prev:<chat provider configRevision>`,
+  `loc:<chat provider locality>` and `pol:<pageId@ai_policy_revision,…>`
+  (`policyRevisionsCacheComponent`), so an endpoint edit, a locality change
+  or one grounding page's policy change is a different key.
+- Cache hit → answer returned from Redis **after** `provenancePagesStillAdmitted`
+  confirms every grounding page still exists at its recorded revision and is
+  admitted for the current locality (#282), with complete recorded provenance
+  and current ACL. Failed proof refuses rather than regenerating the stale
+  prompt; unreadable authority is a retryable 503.
 - Cache miss → Redis stores a unique token with `SET NX EX`; concurrent
   identical requests wait for the first writer and then read the fresh entry,
   avoiding duplicate LLM calls.
@@ -2040,8 +2446,16 @@ All of these go through the same provider resolver and sanitization layer:
 
 ## Key files
 
-- `backend/src/routes/llm/llm-ask.ts`
+- `backend/src/routes/llm/llm-ask.ts` (`askRequestIdentity` — the #282 identity contract; open-article admission before retrieval)
+- `backend/src/routes/llm/ask-identity-contract.db.test.ts`, `ask-page-input.db.test.ts` (#282 — real-route pins for rule 12)
+- `backend/src/routes/llm/llm-inline-completion.ts` (#282 — a decided denial is 204, undecidable authority 503)
+- `backend/src/core/db/migrations/150_direct_output_provenance.sql` (#282 — durable provenance on `llm_improvements`; `improve-durable-output.db.test.ts`)
+- `backend/src/routes/llm/llm-improve.ts` (#282 — `POST /llm/improvements/:id/readmit`, a stored improvement re-admitted by reference; `improve-readmit.db.test.ts`)
 - `backend/src/domains/llm/services/rag-service.ts`
+- `backend/src/domains/llm/services/ai-policy-retrieval.ts` (#282 — the retrieval-time policy predicates, `readPagePolicies`, `provenancePagesStillAdmitted`)
+- `backend/src/domains/llm/services/ai-policy-admission.ts` (#282 — `loadProviderMetadata`, the one effective-locality decoder; `admitPageForUsecase`)
+- `backend/src/domains/llm/services/conversation-title.ts` (#1361 auto-title; #282 re-admission before the answer ships)
+- `packages/contracts/src/schemas/ai-policy.ts` (`AI_POLICY_REFUSAL_CODES`, `ConversationTurnAiProvenanceSchema`)
 - `backend/src/domains/llm/services/multi-query-search.ts` (#1112 deep search — expansion, the three-leg merge, and the skip rules)
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/domains/llm/services/llm-provider-resolver.ts` (per-use-case provider + model resolver)
