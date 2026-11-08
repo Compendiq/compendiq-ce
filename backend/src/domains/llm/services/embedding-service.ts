@@ -1,8 +1,15 @@
 import type { Job } from 'bullmq';
+import { newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { embeddingOperation, nextEmbeddingAttempt } from './embedding-operation.js';
+import { allocateEmbeddingAttempt, nextExplicitEmbeddingAttempt } from './embedding-stage-operation.js';
+import { emitUnresolvedDecision } from './ai-policy-admission.js';
+import type { AiOperationContext } from '@compendiq/contracts';
 import { query, getPool } from '../../../core/db/postgres.js';
 import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
+import { captureEmbeddingArticle, claimEmbeddingArticle, embeddingArticleStage, settleEmbeddingArticle, validateEmbeddingSourceOnClient, validateEmbeddingPublicationOnClient, type EmbeddingArticle } from './embedding-article-stage.js';
+import { admitArticleStage, ArticleStageRefusedError } from './article-stage-admission.js';
 import { LlmHttpError } from './llm-http-error.js';
 import {
   htmlToEmbeddingText,
@@ -29,7 +36,63 @@ import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.j
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { planDerivedChunks, type DerivedChunkMetadata } from './image-analysis-compose.js';
+import { admitPageForProvider, publishCurrentAiPolicyBlock, isPersistableBlockReason, type AiPolicyBlockReason } from './ai-policy-admission.js';
+import { recoverPolicyBlockedStage } from './ai-policy-worker-recovery.js';
 import pgvector from 'pgvector';
+
+/**
+ * Article AI policy (SPEC-WORK-001): the dirty-page scan skips rows parked
+ * `policy_blocked`, except a `provider_not_local` block, which is a fact
+ * about the provider and is re-checked each pass (a locality declaration or
+ * reassignment may have lifted it). A `policy_none` block is lifted only by
+ * the policy write, which clears the status itself.
+ */
+export const EMBED_WORK_POLICY_SQL =
+  `(embedding_status IS DISTINCT FROM 'policy_blocked')`;
+
+/**
+ * Pages `embedPage` parked in the current `processDirtyPages` run. A blocked
+ * page is neither processed nor an error (the invariant the status counters
+ * and the SSE stream must keep), so the loop consults this set to charge the
+ * page to neither bucket. Module-level because `embedPage`'s public return
+ * (`number` of chunks) is shared with the sync, route and test callers.
+ */
+const policyBlockedInRun = new Set<number>();
+
+/**
+ * Retryable admission refusal (`policy_unavailable` etc., #281 review): the
+ * deployment, not the article, declined. The page is neither processed nor
+ * failed in this run — it joins `policyBlockedInRun` so the loop charges it
+ * to neither bucket — and the batch-wide `embedding` in-progress status is
+ * reset so the row does not read as mid-flight between passes. No persistent
+ * block reason is written: the row stays plainly dirty for the next pass.
+ */
+async function markEmbeddingAdmissionDeferred(article: Awaited<ReturnType<typeof captureEmbeddingArticle>>): Promise<void> {
+  policyBlockedInRun.add(article.pageId);
+  await settleEmbeddingArticle(article, async (client) => {
+    await client.query(
+      `UPDATE pages SET embedding_status = 'not_embedded', embedding_error = NULL
+        WHERE id = $1 AND embedding_status = 'embedding'`,
+      [article.pageId],
+    );
+  });
+}
+
+async function markEmbeddingPolicyBlocked(
+  article: Awaited<ReturnType<typeof captureEmbeddingArticle>>, providerId: string, reason: AiPolicyBlockReason,
+): Promise<void> {
+  policyBlockedInRun.add(article.pageId);
+  await publishCurrentAiPolicyBlock({ pageId: article.pageId, providerId,
+    contentRevision: String(article.contentRevision), reason }, async (client) => {
+    await validateEmbeddingSourceOnClient(client, article);
+    const result = await client.query(
+      `UPDATE pages SET embedding_status = 'policy_blocked', embedding_error = NULL, ai_policy_block_reason = $2
+        WHERE id = $1 AND ai_policy_revision = $3 RETURNING id`,
+      [article.pageId, reason, article.policyRevision],
+    );
+    return result.rows.length > 0;
+  });
+}
 
 /**
  * The dimension the live `embedding` column accepts, or `null` when it cannot
@@ -88,6 +151,8 @@ interface ChunkMetadata {
 type PageChunkMetadata = ChunkMetadata | DerivedChunkMetadata;
 
 interface EmbeddingStatus {
+  policyBlockedPages: number;
+  policyBlockedReasons: { policy_none: number; provider_not_local: number; unknown: number };
   totalPages: number;
   embeddedPages: number;
   dirtyPages: number;
@@ -539,8 +604,44 @@ export async function embedPage(
   pageTitle: string,
   spaceKey: string,
   bodyHtml: string,
-  opts?: { chunkSize?: number; chunkOverlap?: number; contentRevision?: string },
+  opts?: { chunkSize?: number; chunkOverlap?: number; article?: EmbeddingArticle; operation?: AiOperationContext; contentRevision?: string },
 ): Promise<number> {
+  let operation = opts?.operation;
+  // Allocate at the explicit request boundary, before validating its bytes.
+  // A rejected capture consumes this attempt just like a rejected dispatch.
+  let explicitAttempt: number | undefined;
+  let article;
+  if (operation) {
+    const retainedOperation = operation;
+    try {
+      explicitAttempt = await allocateEmbeddingAttempt(pageId, operation, 'embedding',
+        () => nextExplicitEmbeddingAttempt({ pageId }, retainedOperation));
+    } catch {
+      policyBlockedInRun.add(pageId);
+      return 0;
+    }
+  }
+  try {
+    article = opts?.article ?? await captureEmbeddingArticle(pageId, pageTitle, spaceKey, bodyHtml);
+    operation ??= await embeddingOperation(article);
+  } catch (err) {
+    await emitUnresolvedDecision(pageId, 'embedding', {
+      operation: operation ?? newAiOperation('embedding', { kind: 'worker', id: 'embedding' }),
+      stage: 'embedding', attempt: explicitAttempt ?? null,
+    }, 'policy_unavailable');
+    if (!(err instanceof ArticleStageRefusedError)) throw err;
+    policyBlockedInRun.add(pageId);
+    return 0;
+  }
+  const nextAttempt = async (stage = 'embedding', destination?: { providerId: string; model: string }) => {
+    if (explicitAttempt !== undefined) {
+      const attempt = explicitAttempt;
+      explicitAttempt = undefined;
+      return attempt;
+    }
+    return allocateEmbeddingAttempt(pageId, operation, stage,
+      () => opts?.operation ? nextExplicitEmbeddingAttempt(article, operation) : nextEmbeddingAttempt(article, operation), destination);
+  };
   // Markdown-shaped, structure-preserving (#1265): this is what makes
   // chunkText's heading/paragraph splitting live code — htmlToText's
   // whitespace collapse made every page <= CHUNK_HARD_LIMIT a single chunk.
@@ -574,18 +675,32 @@ export async function embedPage(
     CHUNK_HARD_LIMIT,
   );
 
+  if (String(derived.revision) !== article.imageRevision) {
+    policyBlockedInRun.add(pageId);
+    return 0;
+  }
+
   if (authoredChars + derived.substantiveChars < MIN_EMBEDDABLE_TEXT_CHARS) {
+    // No inference is needed, but that is not permission to clear a stored
+    // policy block or mark a prohibited article as successfully processed.
+    if (article.policy === 'none') {
+      policyBlockedInRun.add(pageId);
+      return 0;
+    }
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     // ADR-027 D6.3 on the settle path too: an analysis committing between
     // `planDerivedChunks` and this write re-raised `embedding_dirty` with a
     // new revision; clearing it unconditionally would hide that page from the
     // next pass until another writer touched it. Same guard as the embed write.
-    await query(
-      `UPDATE pages SET embedding_dirty = CASE WHEN image_analysis_revision = $2 THEN FALSE ELSE embedding_dirty END,
-              embedding_status = 'not_embedded', embedding_error = NULL
-        WHERE id = $1`,
-      [pageId, derived.revision],
-    );
+    const settled = await settleEmbeddingArticle(article, async (client) => {
+      await client.query(
+        `UPDATE pages SET embedding_dirty = FALSE,
+                embedding_status = 'not_embedded', embedding_error = NULL
+          WHERE id = $1 AND image_analysis_revision = $2`,
+        [pageId, derived.revision],
+      );
+    });
+    if (!settled) policyBlockedInRun.add(pageId);
     return 0;
   }
 
@@ -636,7 +751,43 @@ export async function embedPage(
   // resolver cache on every batch. Rotating providers mid-page would mix
   // incompatible vectors in the same page's embeddings; resolving once
   // keeps all chunks of one page consistent.
-  const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
+  const firstAttempt = await nextAttempt();
+  let resolved;
+  try {
+    resolved = await resolveUsecase('embedding');
+  } catch {
+    await emitUnresolvedDecision(pageId, 'embedding', { operation, stage: 'embedding', attempt: firstAttempt }, 'policy_unavailable');
+    await markEmbeddingAdmissionDeferred(article);
+    return 0;
+  }
+  const { config: embedConfig, model: embedModel } = resolved;
+
+  // Article AI policy (SPEC-WORK-001): admit the page against the provider
+  // dispatch is about to use, BEFORE the first vector is requested. A block
+  // is neither a success nor a provider failure: the page is parked as
+  // `policy_blocked` with the reason recorded, its existing vectors are left
+  // untouched (a `none` page was already purged by the policy write), it
+  // stays dirty for the next admitted pass, and no HTTP call is made.
+  const admission = await admitPageForProvider(pageId, 'embedding', embedConfig.providerId, embedModel,
+    { operation, stage: 'embedding', attempt: firstAttempt, preliminary: true });
+  if (!admission.admitted) {
+    if (admission.reason === 'not_found') return 0;
+    if (!isPersistableBlockReason(admission.reason)) {
+      // Fail-closed, retryable (#280): the deployment — not the article —
+      // refused. The page stays dirty for the next pass; nothing is dispatched.
+      // Accounted like a policy park (#281 review): neither processed nor
+      // failed, and the batch's in-progress `embedding` status is handed
+      // back so no row is left mid-flight across passes.
+      await markEmbeddingAdmissionDeferred(article);
+      logger.warn({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding admission unavailable; page left dirty');
+      return 0;
+    }
+    await markEmbeddingPolicyBlocked(article, embedConfig.providerId, admission.reason);
+    logger.info({ pageId, reason: admission.reason, providerId: embedConfig.providerId }, 'Embedding blocked by article AI policy');
+    return 0;
+  }
+
+  const liveStage = embeddingArticleStage(article, admission, 'embedding', operation);
 
   // #1114 pre-flight: the width the live `embedding` column will actually
   // accept. Without this, a model whose vectors are the wrong length is only
@@ -662,7 +813,9 @@ export async function embedPage(
     const texts = batch.map((c) => c.text);
 
     try {
-      const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
+      const embeddings = await generateEmbedding(embedConfig, embedModel, texts, {
+        kind: 'article', stage: { ...liveStage, context: { ...liveStage.context, attempt: i === 0 ? firstAttempt : await nextAttempt('embedding', { providerId: embedConfig.providerId, model: embedModel }) } },
+      });
 
       // Checked before accumulating, so the failure names the model and both
       // widths instead of surfacing as a pgvector cast error many chunks later.
@@ -698,6 +851,10 @@ export async function embedPage(
         });
       }
     } catch (err) {
+      if (err instanceof ArticleStageRefusedError) {
+        policyBlockedInRun.add(pageId);
+        return 0;
+      }
       // HTTP 400 "input length exceeds context length" — skip this batch and
       // continue so the rest of the page's chunks are still embedded.
       if (isContextLengthError(err)) {
@@ -720,11 +877,20 @@ export async function embedPage(
   // existing embeddings intact, mark the page failed and keep it dirty so a
   // future retry (or content change) can re-embed it.
   if (allEmbeddings.length === 0 && skippedBatches) {
-    await query(
-      `UPDATE pages SET embedding_status = 'failed', embedding_dirty = TRUE, embedding_error = $2
-       WHERE id = $1`,
-      [pageId, 'all chunk batches exceeded embedding context length'],
-    );
+    try {
+      await admitArticleStage(liveStage.provenance, null, 'embedding', async (client) => {
+        await validateEmbeddingPublicationOnClient(client, article, liveStage, embedModel);
+        await client.query(
+          `UPDATE pages SET embedding_status = 'failed', embedding_dirty = TRUE, embedding_error = $2
+           WHERE id = $1`,
+          [pageId, 'all chunk batches exceeded embedding context length'],
+        );
+      }, liveStage.context);
+    } catch (err) {
+      if (!(err instanceof ArticleStageRefusedError)) throw err;
+      policyBlockedInRun.add(pageId);
+      return 0;
+    }
     logger.warn(
       { pageId, pageTitle },
       'All embedding batches exceeded context length — page left dirty, existing embeddings preserved',
@@ -739,9 +905,31 @@ export async function embedPage(
   // embedding_next stays NULL and the swap's straggler gate catches it.
   // Uses the epoch snapshot taken before Phase 1 — never a fresh read, which
   // would let a swap landing during the live-generate window go unnoticed.
-  const shadowTarget = shadowStateBefore?.status === 'active' ? await getActiveShadowTarget() : null;
+  const shadowTarget = shadowStateBefore?.status === 'active' ? await getActiveShadowTarget().catch(() => null) : null;
+  if (shadowStateBefore?.status === 'active' && !shadowTarget) {
+    await emitUnresolvedDecision(pageId, 'embedding',
+      { operation, stage: 'shadow_embedding', attempt: await nextAttempt('shadow_embedding') }, 'policy_unavailable');
+  }
   let shadowEmbeddings: Array<number[] | null> | null = null;
-  if (shadowTarget && allEmbeddings.length > 0) {
+  // The candidate provider is admitted SEPARATELY (SPEC-WORK-001): a
+  // `local_only` page whose live provider is local must not be sent to an
+  // external candidate just because a migration is running. A shadow block
+  // leaves the row's `embedding_next` NULL — the swap gate reports it as a
+  // policy straggler, apart from provider failures — and never fails the
+  // live embed.
+  const shadowAttempt = shadowTarget ? await nextAttempt('shadow_embedding',
+    { providerId: shadowTarget.cfg.providerId, model: shadowTarget.model }) : 0;
+  const shadowAdmission = shadowTarget
+    ? await admitPageForProvider(pageId, 'embedding', shadowTarget.cfg.providerId, shadowTarget.model,
+      { operation, stage: 'shadow_embedding', attempt: shadowAttempt, preliminary: true })
+    : null;
+  const shadowStage = shadowAdmission?.admitted
+    ? embeddingArticleStage(article, shadowAdmission, 'shadow_embedding', operation) : null;
+  const shadowAdmitted = shadowStage !== null;
+  if (shadowTarget && !shadowAdmitted) {
+    logger.info({ pageId, providerId: shadowTarget.cfg.providerId }, 'Shadow dual-write skipped — article AI policy does not admit the candidate provider');
+  }
+  if (shadowTarget && shadowStage && allEmbeddings.length > 0) {
     try {
       shadowEmbeddings = [];
       const shadowBatchSize = 10;
@@ -751,6 +939,7 @@ export async function embedPage(
           shadowTarget.cfg,
           shadowTarget.model,
           slice.map((e) => e.text),
+          { kind: 'article', stage: { ...shadowStage, context: { ...shadowStage.context, attempt: i === 0 ? shadowAttempt : await nextAttempt('shadow_embedding', { providerId: shadowTarget.cfg.providerId, model: shadowTarget.model }) } } },
         );
         for (let j = 0; j < slice.length; j++) shadowEmbeddings.push(vectors[j] ?? null);
       }
@@ -777,6 +966,20 @@ export async function embedPage(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    await client.query('LOCK TABLE page_embeddings, pages IN ROW EXCLUSIVE MODE');
+    await validateEmbeddingPublicationOnClient(client, article, liveStage, embedModel);
+    if (shadowStage && shadowEmbeddings && shadowTarget) {
+      try {
+        await validateEmbeddingPublicationOnClient(client, article, shadowStage, shadowTarget.model);
+      } catch (err) {
+        if (!(err instanceof ArticleStageRefusedError)) throw err;
+        // Live source/provider locks are already held. A candidate-only change
+        // invalidates its vectors, not valid live coverage. Epoch changes still
+        // defer the entire publication below.
+        shadowEmbeddings = null;
+      }
+    }
+    await client.query('SAVEPOINT embedding_vectors');
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
     // Schema-epoch recheck (review r1+r2): the vectors above were generated
     // against the models and columns of one migration epoch. The recheck runs
@@ -790,11 +993,15 @@ export async function embedPage(
     // recheck and the write (review r2).
     const epochNow = await shadowEpochFromClient(client);
     if (epochNow !== epochBefore) {
-      await client.query('ROLLBACK');
-      await query(
+      // Undo vector deletion, not the validated article/provider locks.
+      // A full rollback followed by a pool UPDATE could overwrite a newly
+      // committed restriction or a successor worker's result.
+      await client.query('ROLLBACK TO SAVEPOINT embedding_vectors');
+      await client.query(
         `UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
         [pageId],
       );
+      await client.query('COMMIT');
       logger.warn(
         { pageId, epochBefore, epochNow },
         'Shadow-migration epoch changed mid-embed — page re-queued for a clean embed',
@@ -918,6 +1125,10 @@ export async function embedPage(
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
+    if (err instanceof ArticleStageRefusedError) {
+      policyBlockedInRun.add(pageId);
+      return 0;
+    }
     throw err;
   } finally {
     client.release();
@@ -1059,11 +1270,13 @@ export async function processDirtyPages(
   try {
     // Fetch global chunk settings from admin_settings
     const chunkOpts = await getAdminChunkSettings();
+    const recoveryTarget = await resolveUsecase('embedding').catch(() => null);
+    if (recoveryTarget) await recoverPolicyBlockedStage('embedding', recoveryTarget.config.providerId, DIRTY_PAGE_BATCH_SIZE);
 
     // Get total count for logging purposes (global, not per-user)
     // Exclude folder-type pages which have no content to embed
     const countResult = await query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'",
+      `SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder' AND ${EMBED_WORK_POLICY_SQL}`,
     );
     const countRow = countResult.rows[0];
     if (!countRow) throw new Error('Expected a row from COUNT query');
@@ -1142,6 +1355,7 @@ export async function processDirtyPages(
          FROM pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
            AND COALESCE(page_type, 'page') != 'folder'
+           AND ${EMBED_WORK_POLICY_SQL}
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],
@@ -1155,12 +1369,9 @@ export async function processDirtyPages(
       let batchRemainingDirty = 0;
       const batchTotal = totalDirty; // Use totalDirty for progress percentage
 
-      // Batch-mark all pages in this DB batch as 'embedding' in a single UPDATE
+      // Selection is not a claim or an admission. Claim each live snapshot
+      // immediately before work rather than overwriting a whole stale batch.
       const batchPageIds = batch.rows.map((p) => p.id);
-      await query(
-        `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE id = ANY($1::int[])`,
-        [batchPageIds],
-      );
 
       // The reembed-all system caller consumes counts only and is no user,
       // so it gets no titles at all.
@@ -1199,9 +1410,32 @@ export async function processDirtyPages(
           pagesProcessedSinceGuardCheck = 0;
         }
 
+        let article: EmbeddingArticle | null;
+        try {
+          article = await claimEmbeddingArticle(await captureEmbeddingArticle(page.id, page.title, page.space_key, page.body_html));
+        } catch (err) {
+          if (!(err instanceof ArticleStageRefusedError)) throw err;
+          article = null;
+        }
+        if (!article) { batchRemainingDirty++; continue; }
+        const workOpts = { ...chunkOpts, article, contentRevision: page.content_revision };
+        const settleFailure = async (error: unknown): Promise<boolean> => settleEmbeddingArticle(article, async (client) => {
+          await client.query(`UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
+            [page.id, toUserFacingEmbeddingError(error)]);
+        });
         try {
 
-          const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, { ...chunkOpts, contentRevision: page.content_revision });
+          policyBlockedInRun.delete(page.id);
+          const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, workOpts);
+          if (policyBlockedInRun.has(page.id)) {
+            // Parked by the article AI policy: not a success, not a failure.
+            // The row left the work predicate (or is re-checked next pass),
+            // so the window advances past it exactly as for a still-dirty page.
+            policyBlockedInRun.delete(page.id);
+            batchRemainingDirty++;
+            pagesProcessedSinceGuardCheck++;
+            continue;
+          }
           // embedPage returns 0 without throwing when every chunk-batch was
           // skipped for exceeding the context window — the page stays
           // embedding_dirty = TRUE, so it must be skipped past or the same
@@ -1262,7 +1496,15 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
-                const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, { ...chunkOpts, contentRevision: page.content_revision });
+                policyBlockedInRun.delete(page.id);
+                const embeddedChunks = await embedPage(userId, page.id, page.title, page.space_key, page.body_html, workOpts);
+                if (policyBlockedInRun.has(page.id)) {
+                  policyBlockedInRun.delete(page.id);
+                  batchRemainingDirty++;
+                  pagesProcessedSinceGuardCheck++;
+                  cbSuccess = true;
+                  break;
+                }
                 // See the note on the initial embedPage call: a 0 return means
                 // every chunk-batch was skipped, leaving the page dirty.
                 if (embeddedChunks === 0) batchRemainingDirty++;
@@ -1291,10 +1533,11 @@ export async function processDirtyPages(
                   // text stays in the server log below; the user-facing column and
                   // SSE progress get a sanitized, category-based message only.
                   logger.error({ err: retryErr, pageId: page.id }, 'Failed to embed page after circuit breaker recovery');
-                  await query(
-                    `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-                    [page.id, toUserFacingEmbeddingError(retryErr)],
-                  ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
+                  if (!(await settleFailure(retryErr))) {
+                    batchRemainingDirty++;
+                    cbSuccess = true;
+                    break;
+                  }
                   totalErrors++;
                   batchRemainingDirty++;
                   consecutiveFailures++;
@@ -1323,10 +1566,10 @@ export async function processDirtyPages(
           // stays in the server log above; the user-facing column and SSE progress
           // get a sanitized, category-based message only.
           logger.error({ err, pageId: page.id }, 'Failed to embed page');
-          await query(
-            `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
-            [page.id, toUserFacingEmbeddingError(err)],
-          ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
+          if (!(await settleFailure(err))) {
+            batchRemainingDirty++;
+            continue;
+          }
           totalErrors++;
           batchRemainingDirty++;
           pagesProcessedSinceGuardCheck++;
@@ -1366,6 +1609,13 @@ export async function processDirtyPages(
               percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
             });
           }
+        } finally {
+          // A refusal or exhausted breaker leaves work eligible, never stuck
+          // in progress. A successor row/claim makes this a no-op.
+          await settleEmbeddingArticle(article, async (client) => {
+            await client.query(`UPDATE pages SET embedding_status = 'not_embedded', embedding_error = NULL
+              WHERE id = $1 AND embedding_status = 'embedding'`, [page.id]);
+          });
         }
       }
 
@@ -1458,6 +1708,10 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
   try {
     await client.query('BEGIN');
     await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
+    // Lock sources and possible neighbors before touching relationship rows.
+    // Policy purge already owns its page row before deleting edges, so this
+    // order prevents an old MVCC average from recreating a purged edge.
+    await client.query('SELECT id FROM pages ORDER BY id FOR SHARE');
     await client.query('SELECT pg_advisory_xact_lock($1)', [RELATIONSHIP_ADVISORY_LOCK_ID]);
     // The LATERAL kNN below is served by idx_pages_page_avg_embedding_hnsw, so
     // it is governed by hnsw.ef_search exactly as the RAG vector leg is. Without
@@ -1503,6 +1757,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
          SELECT p.id AS page_id, p.page_avg_embedding AS avg_embedding
          FROM pages p
          WHERE p.deleted_at IS NULL
+           AND p.ai_policy IN ('all', 'local_only')
            AND p.page_avg_embedding IS NOT NULL
            AND ($3::int[] IS NULL OR p.id = ANY($3))
        ),
@@ -1516,6 +1771,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
            SELECT p2.id, p2.page_avg_embedding
            FROM pages p2
            WHERE p2.deleted_at IS NULL
+             AND p2.ai_policy IN ('all', 'local_only')
              AND p2.page_avg_embedding IS NOT NULL
              AND p2.id != s.page_id
            ORDER BY s.avg_embedding <=> p2.page_avg_embedding
@@ -1570,9 +1826,13 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   const visibleWhere = `${visiblePagesPredicate(1, 2)} AND cp.deleted_at IS NULL`;
   const visibleParams = [statusSpaces, userId];
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
-    query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM pages cp
-       WHERE ${visibleWhere}`,
+    query<{ count: string; total: number; policy_none: number; provider_not_local: number; unknown: number }>(
+      `SELECT COUNT(*) as count,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked')::int AS total,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy = 'none')::int AS policy_none,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy = 'local_only')::int AS provider_not_local,
+        COUNT(*) FILTER (WHERE cp.embedding_status = 'policy_blocked' AND cp.ai_policy NOT IN ('none','local_only'))::int AS unknown
+       FROM pages cp WHERE ${visibleWhere}`,
       visibleParams,
     ),
     query<{ count: string }>(
@@ -1599,6 +1859,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   ]);
 
   const totalRow = totalResult.rows[0];
+  const blockedRow = totalRow;
   const embeddedPagesRow = embeddedPagesResult.rows[0];
   const dirtyRow = dirtyResult.rows[0];
   const embeddingRow = embeddingResult.rows[0];
@@ -1607,6 +1868,9 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   }
 
   return {
+    policyBlockedPages: blockedRow?.total ?? 0,
+    policyBlockedReasons: { policy_none: blockedRow?.policy_none ?? 0,
+      provider_not_local: blockedRow?.provider_not_local ?? 0, unknown: blockedRow?.unknown ?? 0 },
     totalPages: parseInt(totalRow.count, 10),
     embeddedPages: parseInt(embeddedPagesRow.count, 10),
     dirtyPages: parseInt(dirtyRow.count, 10),
@@ -1677,7 +1941,10 @@ export async function reEmbedAll(): Promise<void> {
   // A blanket `DELETE FROM page_embeddings` here would black out search for the
   // entire multi-hour run. This mirrors `runReembedAllJob`, which also relies
   // on per-page replacement rather than an up-front delete.
-  await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
+  // A `none` page has nothing to re-embed and must not be re-queued (its
+  // status stays `policy_blocked`); admission would refuse it anyway, but
+  // re-selecting it every run would be churn the status surfaces miscount.
+  await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL WHERE ai_policy IN ('all', 'local_only') AND deleted_at IS NULL AND embedding_status IS DISTINCT FROM 'policy_blocked'`);
   logger.info('All pages marked dirty for incremental re-embedding');
 
   // Use a system user ID for provider selection (pick any active user with settings)
@@ -1882,6 +2149,8 @@ export async function runReembedAllJob(job: Job): Promise<string> {
               embedded_at = NULL,
               embedding_error = NULL
         WHERE deleted_at IS NULL
+          AND ai_policy IN ('all', 'local_only')
+          AND embedding_status IS DISTINCT FROM 'policy_blocked'
           AND COALESCE(page_type, 'page') != 'folder'`,
     );
 

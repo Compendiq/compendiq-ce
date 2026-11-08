@@ -186,7 +186,7 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     expect(await connections(child)).toEqual({
       linked: [{ pageId: String(linked), title: 'Linked', reasons: [{ type: 'explicit_link', direction: 'outgoing' }] }],
       section: [{ pageId: String(parent), title: 'Parent', reasons: [{ type: 'parent_child', direction: 'parent' }] }],
-      related: [{ pageId: String(related), title: 'Related', reasons: [{ type: 'label_overlap', labels: ['runbook'], score: 0.5 }] }],
+      related: [{ pageId: String(related), title: 'Related', reasons: [{ type: 'label_overlap', labels: ['all-ai', 'runbook'], score: expect.closeTo(2 / 3, 6) }] }],
     });
     const graph = await app.inject({ method: 'GET', url: `/api/pages/${parent}/graph/local?hops=2` });
     expect(graph.statusCode).toBe(200);

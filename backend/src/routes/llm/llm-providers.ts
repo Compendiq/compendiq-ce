@@ -6,12 +6,14 @@ import {
   LlmProviderUpdateSchema,
 } from '@compendiq/contracts';
 import {
+  getProviderLocality,
   listProviders,
   getProviderById,
   createProvider,
   updateProvider,
   deleteProvider,
   setDefaultProvider,
+  LocalityActorRequiredError,
 } from '../../domains/llm/services/llm-provider-service.js';
 import {
   listModels as clientListModels,
@@ -267,13 +269,16 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       }
       let provider;
       try {
-        provider = await createProvider(input);
+        provider = await createProvider(input, request.userId);
       } catch (err) {
         // DB write failed (e.g. unique-name violation) — revoke the
         // speculative allowlist entry only if no other provider already
         // owns this origin. Prevents a concurrent successful sibling from
         // losing its allowlist.
         await revokeAllowlistIfUnused(input.baseUrl);
+        if (err instanceof LocalityActorRequiredError) {
+          return reply.code(err.statusCode).send({ error: err.reason, message: err.message });
+        }
         throw err;
       }
       emitLlmAudit({
@@ -319,9 +324,12 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       }
       let updated;
       try {
-        updated = await updateProvider(id, patch);
+        updated = await updateProvider(id, patch, request.userId);
       } catch (err) {
         if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
+        if (err instanceof LocalityActorRequiredError) {
+          return reply.code(err.statusCode).send({ error: err.reason, message: err.message });
+        }
         throw err;
       }
       if (!updated) {
@@ -344,6 +352,18 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         metadata: { providerId: id, fields: Object.keys(patch) },
       });
       return updated;
+    },
+  );
+
+  // GET /admin/llm-providers/:id/locality — declared locality + config revision
+  fastify.get(
+    '/admin/llm-providers/:id/locality',
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    async (request, reply) => {
+      const { id } = IdParamsSchema.parse(request.params);
+      const state = await getProviderLocality(id);
+      if (!state) return reply.code(404).send({ error: 'Provider not found' });
+      return state;
     },
   );
 

@@ -101,6 +101,7 @@ describe('POST /api/admin/embedding/probe', () => {
       expect.objectContaining({ providerId: 'p1', baseUrl: 'http://a/v1' }),
       'bge-m3',
       'probe',
+      { kind: 'non_article', purpose: 'provider_probe' },
     );
   });
 

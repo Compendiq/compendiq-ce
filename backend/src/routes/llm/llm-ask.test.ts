@@ -48,6 +48,10 @@ const mockQuery = vi.fn().mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
 
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getPool: () => ({ connect: async () => ({
+    query: (...args: unknown[]) => mockQuery(...args),
+    release: vi.fn(),
+  }) }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -68,7 +72,10 @@ const mockBuildRagContext = vi.fn().mockReturnValue('Relevant context from the k
 // list, not a spread.
 const mockTrackSearchAnalytics = vi.fn();
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
+  hybridSearch: async (...args: unknown[]) => {
+    const rows = await mockHybridSearch(...args);
+    return rows.map((row: Record<string, unknown>) => ({ aiPolicy: 'all', aiPolicyRevision: 1, contentRevision: 1, ...row }));
+  },
   buildRagContext: (...args: unknown[]) => mockBuildRagContext(...args),
   trackSearchAnalytics: (...args: unknown[]) => mockTrackSearchAnalytics(...args),
 }));
@@ -106,10 +113,20 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 // --- Mock: subpage-context (assembleSubPageContext / getMultiPagePromptSuffix) ---
 const mockAssembleSubPageContext = vi.fn();
 const mockGetMultiPagePromptSuffix = vi.fn();
-vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
-  assembleSubPageContext: (...args: unknown[]) => mockAssembleSubPageContext(...args),
-  getMultiPagePromptSuffix: (...args: unknown[]) => mockGetMultiPagePromptSuffix(...args),
-}));
+vi.mock('../../domains/confluence/services/subpage-context.js', () => {
+  // #282: the walk's typed refusal. The route maps it by `retryable`; the
+  // class stands in here so `instanceof` has a constructor on both sides.
+  class SubPagePolicyError extends Error {
+    constructor(public readonly code: string, message: string, public readonly retryable: boolean) {
+      super(message);
+    }
+  }
+  return {
+    assembleSubPageContext: (...args: unknown[]) => mockAssembleSubPageContext(...args),
+    getMultiPagePromptSuffix: (...args: unknown[]) => mockGetMultiPagePromptSuffix(...args),
+    SubPagePolicyError,
+  };
+});
 
 // --- Mock: embedding-service (defensive, not used by ask route directly) ---
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -138,8 +155,74 @@ vi.mock('../../domains/llm/services/llm-cache.js', () => {
     LlmCache: MockLlmCache,
     buildLlmCacheKey: vi.fn().mockReturnValue('test-llm-cache-key'),
     buildRagCacheKey: vi.fn().mockReturnValue('test-rag-cache-key'),
+    policyRevisionsCacheComponent: vi.fn().mockReturnValue(''),
   };
 });
+
+// --- Mock: article AI policy (#282) ---
+// The provider's effective locality and the page-policy re-admission are DB
+// reads behind the accepted shared decoder; this suite's `mockQuery` answers
+// SQL by shape, so they are stubbed at the module boundary. The real
+// predicates and the real decoder are exercised against Postgres in
+// `ai-policy-retrieval.integration.test.ts`.
+const mockLoadProviderMetadata = vi.fn();
+const mockAdmitPageForProvider = vi.fn();
+vi.mock('../../domains/llm/services/ai-policy-admission.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/ai-policy-admission.js')>();
+  return {
+    asRevision: actual.asRevision,
+    loadProviderMetadata: (...args: unknown[]) => mockLoadProviderMetadata(...args),
+    admitPageForProvider: (...args: unknown[]) => mockAdmitPageForProvider(...args),
+  };
+});
+const mockProvenancePagesStillAdmitted = vi.fn();
+const mockReadPagePolicies = vi.fn();
+vi.mock('../../domains/llm/services/ai-policy-retrieval.js', () => ({
+  pageAdmittedFor: (policy: string, locality: string) =>
+    policy === 'all' || (policy === 'local_only' && locality === 'local'),
+  provenancePagesStillAdmitted: (...args: unknown[]) => mockProvenancePagesStillAdmitted(...args),
+  readPagePolicies: (...args: unknown[]) => mockReadPagePolicies(...args),
+}));
+
+const EXTERNAL_PROVIDER = { configRevision: 3, effectiveLocality: 'external', declaredBy: null, declaredAt: null };
+function cachedAnswer(content: string, pageId: number, policyRevision = 1, contentRevision = 1) {
+  return { content, aiProvenance: { version: 1, providerId: 'p1', configRevision: 3, locality: 'external',
+    pages: [{ pageId, policy: 'all', policyRevision, contentRevision }] } };
+}
+const ROOT_ADMITTED = { admitted: true, providerId: 'p1', configRevision: 3, locality: 'external', policy: 'all', policyRevision: 1 };
+
+/** The SQL the #282 history load is recognised by. */
+const HISTORY_SQL = 'ai_provenance_version FROM llm_conversations';
+
+/**
+ * A conversation row as this route writes it since #282: every non-refused
+ * assistant turn carries its provenance and the row is marked complete at
+ * the current version. `pages` defaults to none, which is replayable under
+ * any provider without a page read.
+ */
+function historyRow(
+  messages: Array<Record<string, unknown>>,
+  pages: Array<{ pageId: number; policy: string; policyRevision: number; contentRevision?: number }> = [],
+  provenance: { providerId?: string; configRevision?: number; locality?: string } = {},
+  row: { provider_config_revision?: number | null; provider_locality?: string | null } = {},
+) {
+  const turnProvenance = {
+    version: 1,
+    providerId: provenance.providerId ?? 'p1',
+    configRevision: provenance.configRevision ?? 3,
+    locality: provenance.locality ?? 'external',
+    pages: pages.map((p) => ({ contentRevision: 1, ...p })),
+  };
+  return {
+    messages: messages.map((m) => (m.role === 'assistant' && !m.refused
+      ? { ...m, aiProvenance: turnProvenance }
+      : m)),
+    ai_provenance_complete: true,
+    ai_provenance_version: 1,
+    provider_config_revision: 'provider_config_revision' in row ? row.provider_config_revision : 3,
+    provider_locality: 'provider_locality' in row ? row.provider_locality : 'external',
+  };
+}
 
 // --- Mock: audit-service ---
 const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
@@ -208,7 +291,7 @@ vi.mock('../../core/services/image-staging.js', async (importOriginal) => {
 });
 
 // Import the route after all mocks are registered
-import { llmAskRoutes } from './llm-ask.js';
+import { llmAskRoutes, askRequestIdentity } from './llm-ask.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { buildPng, buildJpeg } from '../../core/services/test-image-fixtures.js';
@@ -322,6 +405,18 @@ describe('POST /api/llm/ask', () => {
       request.userId = 'test-user-123';
       request.userCan = async () => true;
     });
+    // #282: the route refuses a body that names neither an article nor an
+    // explicit `independent` question (400 `ask_identity_required`). The
+    // payloads in this suite predate the discriminator and are about other
+    // things, so the FIXTURE declares them independent — the route never
+    // does. The contract itself is pinned below (`ask identity contract`)
+    // with bodies sent RAW through the `x-ask-identity: raw` header, and
+    // against the real route in `ask-identity-contract.db.test.ts`.
+    app.addHook('preValidation', async (request) => {
+      if (request.headers['x-ask-identity'] === 'raw') return;
+      const b = request.body as Record<string, unknown> | null;
+      if (b && typeof b === 'object' && !('pageId' in b) && !('inputKind' in b)) b.inputKind = 'independent';
+    });
 
     await app.register(llmAskRoutes, { prefix: '/api' });
     await app.ready();
@@ -352,6 +447,15 @@ describe('POST /api/llm/ask', () => {
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
+    // #282 defaults: an external chat provider that decodes, an admitted
+    // sub-page root, and recorded pages that are still admitted.
+    mockLoadProviderMetadata.mockResolvedValue(EXTERNAL_PROVIDER);
+    mockAdmitPageForProvider.mockResolvedValue(ROOT_ADMITTED);
+    mockProvenancePagesStillAdmitted.mockResolvedValue(true);
+    // Readable by default: the cache-hit ACL re-check (#282) and the #814
+    // sub-page gate both consult it; tests about denial set false.
+    mockUserCanAccessPage.mockResolvedValue(true);
+    mockReadPagePolicies.mockResolvedValue(new Map());
     mockFetchWebSources.mockResolvedValue({ sources: [], injectionWarnings: [] });
     mockFormatWebContext.mockReturnValue('');
     mockGetVisionCapability.mockReset().mockResolvedValue(true);
@@ -832,8 +936,8 @@ describe('POST /api/llm/ask', () => {
         { role: 'assistant', content: '1. Kim, 2. Ada.' },
       ];
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: history }] };
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(history)] };
         }
         return { rows: [{ id: 'test-conv-id' }] };
       });
@@ -939,8 +1043,8 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'tree question', includeSubPages: true, pageId: '12345' },
       });
       expect(mockStreamChatClient).not.toHaveBeenCalled();
-      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
-      expect(events.find((f) => f.final === true)!.refused).toBe(true);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
     });
 
     it('refusal NAMES requested grounding that failed to materialise — the remedy must point at the real failure', async () => {
@@ -981,10 +1085,13 @@ describe('POST /api/llm/ask', () => {
       mockAssembleSubPageContext.mockResolvedValue({
         injectionWarnings: [],
         markdown: '--- Page: "Leaf" (Main Page) ---\n\nLeaf page content.',
+        includedPageRefs: [],
         pageCount: 1,
       });
       mockGetMultiPagePromptSuffix.mockReturnValue('');
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Grounded in the open page.'));
+      mockQuery.mockResolvedValue({ rows: [{ id: 12345, title: 'Leaf', body_html: '<p>Leaf</p>', ai_policy: 'all', ai_policy_revision: 0, content_revision: 0 }] });
+      mockReadPagePolicies.mockResolvedValue(new Map([[12345, { pageId: 12345, policy: 'all', policyRevision: 0, contentRevision: 0 }]]));
 
       const response = await app.inject({
         method: 'POST', url: '/api/llm/ask',
@@ -1028,14 +1135,12 @@ describe('POST /api/llm/ask', () => {
       // check, one Enter after any refusal replayed the refusal text as
       // model context and answered ungated.
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
           return {
-            rows: [{
-              messages: [
-                { role: 'user', content: 'what is our 2027 revenue target' },
-                { role: 'assistant', content: 'I could not find any knowledge-base content…', refused: true },
-              ],
-            }],
+            rows: [historyRow([
+              { role: 'user', content: 'what is our 2027 revenue target' },
+              { role: 'assistant', content: 'I could not find any knowledge-base content…', refused: true },
+            ])],
           };
         }
         return { rows: [{ id: 'test-conv-id' }] };
@@ -1058,16 +1163,14 @@ describe('POST /api/llm/ask', () => {
       // not reach the provider wire.
       mockConfidenceThreshold.mockResolvedValue(0);
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
           return {
-            rows: [{
-              messages: [
-                { role: 'user', content: 'weak question' },
-                { role: 'assistant', content: 'refusal text here', refused: true },
-                { role: 'user', content: 'what is the deployment process?' },
-                { role: 'assistant', content: 'It uses CI/CD.' },
-              ],
-            }],
+            rows: [historyRow([
+              { role: 'user', content: 'weak question' },
+              { role: 'assistant', content: 'refusal text here', refused: true },
+              { role: 'user', content: 'what is the deployment process?' },
+              { role: 'assistant', content: 'It uses CI/CD.' },
+            ])],
           };
         }
         return { rows: [{ id: 'test-conv-id' }] };
@@ -1091,7 +1194,7 @@ describe('POST /api/llm/ask', () => {
   describe('stale conversationId (#1361)', () => {
     it('answers 404 before retrieval or any SSE header when the conversation is not the caller\'s', async () => {
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
           return { rows: [] };
         }
         return { rows: [{ id: 'test-conv-id' }] };
@@ -1111,8 +1214,8 @@ describe('POST /api/llm/ask', () => {
   describe('persistence shape (#1361)', () => {
     it('appends a continuation turn atomically with jsonb || and RETURNING id', async () => {
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
         }
         return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
       });
@@ -1140,8 +1243,8 @@ describe('POST /api/llm/ask', () => {
 
     it('carries conversationId: null on the final frame when the append hits 0 rows (deleted mid-answer)', async () => {
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
         }
         if (typeof sql === 'string' && sql.includes('UPDATE llm_conversations')) {
           return { rows: [] };
@@ -1192,7 +1295,7 @@ describe('POST /api/llm/ask', () => {
     });
 
     it('persists sources on a cache-hit turn too', async () => {
-      mockGetCachedResponse.mockResolvedValueOnce({ content: 'cached answer' });
+      mockGetCachedResponse.mockResolvedValueOnce(cachedAnswer('cached answer', 7));
       mockHybridSearch.mockResolvedValue([{ pageId: 7, pageTitle: 'P', spaceKey: 'S', confluenceId: null, score: 0.5, vectorScore: 0.6, content: 'c' }]);
       mockBuildRagContext.mockReturnValue('ctx');
 
@@ -1214,8 +1317,8 @@ describe('POST /api/llm/ask', () => {
         history.push({ role: 'assistant', content: `A${n} ` + 'y'.repeat(3_996) });
       }
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: history }] };
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(history)] };
         }
         return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
       });
@@ -1236,8 +1339,8 @@ describe('POST /api/llm/ask', () => {
 
     it('omits historyTruncated when the whole history fits', async () => {
       mockQuery.mockImplementation(async (sql: string) => {
-        if (typeof sql === 'string' && sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }] }] };
+        if (typeof sql === 'string' && sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
         }
         return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
       });
@@ -1271,6 +1374,14 @@ describe('POST /api/llm/ask', () => {
   describe('page_ref at INSERT (#1361)', () => {
     function armInsertProbe(opts: { pageRow?: { id: number; confluence_id: string | null; title: string } | null; canAccess: boolean }) {
       mockQuery.mockImplementation(async (sql: string) => {
+        // #282: a page-bound ask reads the article's body and policy before
+        // retrieval; the row is admitted (`all`) so the subject here stays
+        // the INSERT.
+        if (typeof sql === 'string' && sql.includes('SELECT body_html, title, ai_policy')) {
+          return { rows: opts.pageRow
+            ? [{ body_html: '<p>doc</p>', title: opts.pageRow.title, ai_policy: 'all', ai_policy_revision: 1, content_revision: 1 }]
+            : [] };
+        }
         if (typeof sql === 'string' && sql.includes('FROM pages WHERE id = $1')) {
           return { rows: opts.pageRow ? [opts.pageRow] : [] };
         }
@@ -1299,17 +1410,23 @@ describe('POST /api/llm/ask', () => {
       expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
     });
 
-    it('writes NULL when the caller may not see the page (no title oracle through the list)', async () => {
+    it('refuses a page-bound ask on a page the caller may not see — nothing is inserted, no title oracle (#282)', async () => {
+      // Before #282 the ask answered free-form and wrote NULL; a page-bound
+      // question may carry that article's text, so an unreadable article is
+      // now a refusal before retrieval rather than a quietly dropped ref.
       armInsertProbe({ pageRow: { id: 42, confluence_id: '123', title: 'Doc' }, canAccess: false });
-      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
-      expect(insertParams()[4]).toBeNull();
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '42' } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'))).toBe(false);
     });
 
-    it('writes NULL for a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
+    it('refuses a Confluence-length id that resolves to nothing, and never int-parses it', async () => {
       armInsertProbe({ pageRow: null, canAccess: true });
       const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q', pageId: '12345678901' } });
-      expect(response.statusCode).toBe(200);
-      expect(insertParams()[4]).toBeNull();
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
       // resolvePageRef skips the int4 lookup for an 11-digit id
       expect(mockQuery.mock.calls.some((c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('FROM pages WHERE id = $1'))).toBe(false);
     });
@@ -1319,6 +1436,193 @@ describe('POST /api/llm/ask', () => {
       await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
       expect(insertParams()[4]).toBeNull();
       expect(mockUserCanAccessPage).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Ask identity contract (#282) ────────────────────────────────────────
+
+  describe('ask identity contract (#282)', () => {
+    /** Send the body exactly as written — the fixture's default is bypassed. */
+    const raw = (payload: Record<string, unknown>) => app.inject({
+      method: 'POST', url: '/api/llm/ask', payload, headers: { 'x-ask-identity': 'raw' },
+    });
+
+    it.each([
+      ['pageId alone', { pageId: '42' }, { kind: 'page', pageId: '42' }],
+      ['pageId with inputKind page', { pageId: '42', inputKind: 'page' }, { kind: 'page', pageId: '42' }],
+      ['a padded pageId', { pageId: '  42 ' }, { kind: 'page', pageId: '42' }],
+      ['inputKind independent alone', { inputKind: 'independent' }, { kind: 'independent' }],
+      ['nothing', {}, { kind: 'missing' }],
+      ['a blank pageId and nothing else', { pageId: '   ' }, { kind: 'missing' }],
+      ['independent beside a pageId', { pageId: '42', inputKind: 'independent' }, { kind: 'contradictory' }],
+      ['page without a pageId', { inputKind: 'page' }, { kind: 'contradictory' }],
+      ['page with a blank pageId', { pageId: '', inputKind: 'page' }, { kind: 'contradictory' }],
+    ])('askRequestIdentity classifies %s', (_label, body, expected) => {
+      expect(askRequestIdentity(body as { pageId?: string; inputKind?: 'page' | 'independent' })).toEqual(expected);
+    });
+
+    it('refuses 400 ask_identity_required, before any read, when the body states neither', async () => {
+      const response = await raw({ question: 'is this paragraph accurate?' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      // Nothing ran: no conversation read, no provider resolution, no
+      // retrieval, no audit row, no sanitization of the question.
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockResolveUsecase).not.toHaveBeenCalled();
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockLogAuditEvent).not.toHaveBeenCalled();
+      expect(vi.mocked(sanitizeLlmInput)).not.toHaveBeenCalled();
+    });
+
+    it('refuses 400 when independent is declared beside a pageId', async () => {
+      const response = await raw({ question: 'q', pageId: '42', inputKind: 'independent' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('refuses 400 when page is declared without a pageId', async () => {
+      const response = await raw({ question: 'q', inputKind: 'page' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'ask_identity_required' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('answers an explicitly independent question with no article read at all', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+      const response = await raw({ question: 'q', inputKind: 'independent' });
+      expect(response.statusCode).toBe(200);
+      expect(mockAdmitPageForProvider).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('SELECT body_html, title, ai_policy'))).toBe(false);
+    });
+
+    describe('page-bound input', () => {
+      function seedArticle(policy: 'all' | 'local_only' | 'none') {
+        mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('FROM pages WHERE id = $1') && !sql.includes('body_html')) {
+            return { rows: [{ id: 42, confluence_id: 'c42', source: 'confluence', title: 'Doc' }] };
+          }
+          if (sql.includes('SELECT body_html, title, ai_policy')) {
+            return { rows: [{ body_html: '<p>doc</p>', title: 'Doc', ai_policy: policy, ai_policy_revision: 6, content_revision: 9 }] };
+          }
+          return { rows: [{ id: 'test-conv-id' }] };
+        });
+      }
+
+      /**
+       * `groundedResult` IS the open article (page 42). The rag stub stamps
+       * rows at revisions 1/1 while `seedArticle` reads the article at 6/9,
+       * and the route refuses a retrieval row that disagrees with the
+       * reading it admitted (a conflict, 409) — so a cell whose subject is
+       * the happy path retrieves the article at the revisions it was read at.
+       */
+      const retrievedArticle = { ...groundedResult, aiPolicyRevision: 6, contentRevision: 9 };
+
+      it('admits the open article for the bound provider BEFORE retrieval, with the sub-page tree off', async () => {
+        seedArticle('all');
+        mockHybridSearch.mockResolvedValue([retrievedArticle]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        const response = await raw({ question: 'is this paragraph right? "…"', pageId: '42' });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockAdmitPageForProvider).toHaveBeenCalledWith(42, 'chat', 'p1', 'm', expect.objectContaining({ stage: 'chat', preliminary: true }));
+        expect(mockAdmitPageForProvider.mock.invocationCallOrder[0]).toBeLessThan(mockHybridSearch.mock.invocationCallOrder[0]!);
+        expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+      });
+
+      it('records the open article in the turn provenance even when retrieval never returned it', async () => {
+        seedArticle('all');
+        // Retrieval returns a DIFFERENT page: the open article enters the
+        // record on its own reading, not through a retrieval row.
+        mockHybridSearch.mockResolvedValue([{ ...groundedResult, pageId: 7, confluenceId: 'c7' }]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        await raw({ question: 'q', pageId: '42' });
+
+        const insert = mockQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+        )!;
+        const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
+        const prov = messages.find((m) => m.role === 'assistant')!.aiProvenance as { pages: unknown[] };
+        expect(prov.pages).toEqual(expect.arrayContaining([
+          { pageId: 42, policy: 'all', policyRevision: 6, contentRevision: 9 },
+          { pageId: 7, policy: 'all', policyRevision: 1, contentRevision: 1 },
+        ]));
+        expect((insert[1] as unknown[])[4]).toBe(42);
+      });
+
+      it('refuses 409 ai_grounding_not_admissible, before retrieval, when the article is excluded for this destination', async () => {
+        seedArticle('none');
+        mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: false, reason: 'policy_none' });
+        mockHybridSearch.mockResolvedValue([groundedResult]);
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+        expect(mockStreamChatClient).not.toHaveBeenCalled();
+      });
+
+      it('refuses 409 when the row read with the body is no longer admitted, even though the admission passed', async () => {
+        // Tightened between the admission and the body read: the reading
+        // the turn is grounded in is the one decided.
+        seedArticle('local_only');
+        mockHybridSearch.mockResolvedValue([groundedResult]);
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it('refuses 503 ai_policy_unavailable when the admission cannot read policy state', async () => {
+        seedArticle('all');
+        mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: true, reason: 'policy_unavailable' });
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['revision', { configRevision: 4 }, 'ai_policy_provider_revision_mismatch'],
+        ['locality', { locality: 'local' }, 'ai_policy_provider_locality_mismatch'],
+      ])('refuses 409 when the admission binds a different provider %s than the request', async (_label, over, expected) => {
+        seedArticle('all');
+        mockAdmitPageForProvider.mockResolvedValue({ ...ROOT_ADMITTED, ...over });
+
+        const response = await raw({ question: 'q', pageId: '42' });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({ error: expected, stage: 'chat' });
+        expect(mockHybridSearch).not.toHaveBeenCalled();
+      });
+
+      it('takes ONE article reading for the sub-page root and the open article', async () => {
+        seedArticle('all');
+        mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 6, contentRevision: 9 }]]));
+        mockAssembleSubPageContext.mockResolvedValue({ injectionWarnings: [], markdown: 'TREE', pageCount: 1, includedPageRefs: [] });
+        mockGetMultiPagePromptSuffix.mockReturnValue('');
+        mockHybridSearch.mockResolvedValue([retrievedArticle]);
+        mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+        const response = await raw({ question: 'q', pageId: '42', includeSubPages: true });
+
+        expect(response.statusCode).toBe(200);
+        expect(mockAdmitPageForProvider).toHaveBeenCalledTimes(1);
+        const bodyReads = mockQuery.mock.calls.filter((c) => String(c[0]).includes('SELECT body_html, title, ai_policy'));
+        expect(bodyReads).toHaveLength(1);
+        expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
+          'test-user-123', 'c42', '<p>doc</p>', 'Doc', undefined, expect.anything(),
+        );
+      });
     });
   });
 
@@ -1415,12 +1719,22 @@ describe('POST /api/llm/ask', () => {
         question: 'Name this conversation',
         answer: 'A streamed answer.',
         refused: false,
+        // #282: the title call re-admits the grounding set against the
+        // provider resolved at ITS moment, so it needs the turn's record.
+        provenance: {
+          version: 1, providerId: 'p1', configRevision: 3, locality: 'external',
+          pages: [{ pageId: 42, policy: 'all', policyRevision: 1, contentRevision: 1 }],
+        },
       });
     });
 
-    it('titles a new conversation created from an answer-cache hit', async () => {
+    it('does NOT title a new conversation created from an answer-cache hit (#282)', async () => {
+      // A replay is "an answer without a model call": no inference audit,
+      // `fromCache: true` on the wire. The title would be exactly such a
+      // call — a second shipment of the page-derived answer to whichever
+      // provider resolves at that moment, from a path that promised none.
       mockHybridSearch.mockResolvedValue([groundedResult]);
-      mockGetCachedResponse.mockResolvedValue({ content: 'A cached answer.' });
+      mockGetCachedResponse.mockResolvedValue(cachedAnswer('A cached answer.', 42));
       mockGenerateConversationTitle.mockReturnValue(neverResolves);
 
       const response = await app.inject({
@@ -1433,12 +1747,7 @@ describe('POST /api/llm/ask', () => {
       expect(parseSseBody(response.body)).toEqual(expect.arrayContaining([
         expect.objectContaining({ final: true, conversationId: 'test-conv-id' }),
       ]));
-      expect(mockGenerateConversationTitle).toHaveBeenCalledWith(expect.objectContaining({
-        conversationId: 'test-conv-id',
-        question: 'Cached question',
-        answer: 'A cached answer.',
-        refused: false,
-      }));
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
     });
 
     it('titles a newly persisted refusal from the question alone', async () => {
@@ -1465,8 +1774,8 @@ describe('POST /api/llm/ask', () => {
 
     it('does not retitle an existing conversation on a follow-up', async () => {
       mockQuery.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT messages FROM llm_conversations')) {
-          return { rows: [{ messages: [{ role: 'user', content: 'First question' }, { role: 'assistant', content: 'First answer' }] }] };
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'First question' }, { role: 'assistant', content: 'First answer' }])] };
         }
         return { rows: [{ id: '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a' }] };
       });
@@ -2541,7 +2850,8 @@ describe('POST /api/llm/ask', () => {
       // pass for the wrong reason.
       expect((sentUserContent() as Array<Record<string, unknown>>).filter((p) => p.type === 'image_url')).toHaveLength(1);
       expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
-      const identityReads = mockQuery.mock.calls.filter((c) => PAGE_IDENTITY_SQL.test(String(c[0])));
+      const identityReads = mockQuery.mock.calls.filter((c) =>
+        PAGE_IDENTITY_SQL.test(String(c[0])) && /confluence_id/.test(String(c[0])));
       expect(identityReads).toHaveLength(1);
     });
   });
@@ -2640,7 +2950,11 @@ describe('POST /api/llm/ask', () => {
       'How do I reset my password?',
       5,
       undefined,
-      { rerank: true, surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
+      {
+        rerank: true,
+        aiPolicy: { purpose: 'ai', destinationLocality: 'external' },
+        surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function),
+      },
     );
   });
 
@@ -2669,7 +2983,11 @@ describe('POST /api/llm/ask', () => {
       'how do I restart the ingest worker',
       5,
       undefined,
-      { rerank: true, surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function) },
+      {
+        rerank: true,
+        aiPolicy: { purpose: 'ai', destinationLocality: 'external' },
+        surface: 'ask', assembleContext: true, pinIdentifiers: true, onRetrievalMeta: expect.any(Function),
+      },
     );
     // The reformulation completion is the ONLY extra model call deep search
     // adds, so its absence is the whole "byte-identical" claim.
@@ -2820,7 +3138,7 @@ describe('POST /api/llm/ask', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockGetCachedResponse.mockResolvedValue({ content: 'Go to Settings > Security > Reset Password.' });
+    mockGetCachedResponse.mockResolvedValue(cachedAnswer('Go to Settings > Security > Reset Password.', 77));
 
     // Act
     const response = await app.inject({
@@ -2964,8 +3282,8 @@ describe('POST /api/llm/ask', () => {
         if (sql.includes('FROM pages WHERE confluence_id')) {
           return Promise.resolve({ rows: [{ id: 1, confluence_id: 'page-abc', source, title: 'Doc' }] });
         }
-        if (sql.includes('body_html FROM pages WHERE id')) {
-          return Promise.resolve({ rows: [{ body_html: '<p>secret</p>' }] });
+        if (sql.includes('SELECT body_html, title, ai_policy')) {
+          return Promise.resolve({ rows: [{ body_html: '<p>secret</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 4, content_revision: 11 }] });
         }
         if (typeof sql === 'string' && sql.includes('INSERT INTO llm_conversations')) {
           return Promise.resolve({ rows: [{ id: 'test-conv-id' }] });
@@ -2987,6 +3305,9 @@ describe('POST /api/llm/ask', () => {
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
       mockGetMultiPagePromptSuffix.mockReturnValue('');
       seedPageQueries();
+      mockReadPagePolicies.mockResolvedValue(new Map([
+        [1, { pageId: 1, policy: 'all', policyRevision: 4, contentRevision: 11 }],
+      ]));
     });
 
     it('does NOT inject sub-page context when the user cannot access the page', async () => {
@@ -3003,11 +3324,13 @@ describe('POST /api/llm/ask', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(409);
       expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 1);
       // The RBAC gate must short-circuit before any tree assembly.
       expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
-      expect(userMessage()).not.toContain('Page tree context');
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
     it('injects sub-page context when the user CAN access the page', async () => {
@@ -3018,6 +3341,7 @@ describe('POST /api/llm/ask', () => {
         pageCount: 2,
         wasTruncated: false,
         includedPages: [],
+        includedPageRefs: [],
       });
 
       const response = await app.inject({
@@ -3032,15 +3356,114 @@ describe('POST /api/llm/ask', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // #282: the root is admitted against the provider THIS request is
+      // bound to, and the walk carries that same binding, so a provider
+      // change mid-walk is detected by the walk.
       expect(mockAssembleSubPageContext).toHaveBeenCalledWith(
         'test-user-123',
         'page-abc',
         '<p>secret</p>',
         'Doc',
+        undefined,
+        { policyContext: { providerId: 'p1', usecase: 'chat', expectedConfigRevision: 3, expectedLocality: 'external' } },
       );
+      expect(mockAdmitPageForProvider).toHaveBeenCalledWith(1, 'chat', 'p1', 'm', expect.objectContaining({
+        stage: 'chat', attempt: 1, preliminary: true,
+        operation: expect.objectContaining({ source: 'ask', actor: { kind: 'user', id: 'test-user-123' } }),
+      }));
+      expect(mockStreamChatClient.mock.calls[0]![4].transportContext.stage.context.operation)
+        .toEqual(mockAdmitPageForProvider.mock.calls[0]![4].operation);
       const msg = userMessage();
       expect(msg).toContain('Page tree context');
       expect(msg).toContain('ASSEMBLED-TREE');
+    });
+
+    it('skips the tree, without refusing the turn, when the ROOT is not admitted for chat (#282)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: false, reason: 'policy_none' });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses 503 before any SSE header when the root admission cannot read policy state (#282)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAdmitPageForProvider.mockResolvedValue({ admitted: false, retryable: true, reason: 'unavailable' });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses 409 revision mismatch when the root admission binds a different provider revision than the request (#282)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAdmitPageForProvider.mockResolvedValue({ ...ROOT_ADMITTED, configRevision: 4 });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+      expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses 409 locality mismatch when the root admission binds the same revision at another locality (#282)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAdmitPageForProvider.mockResolvedValue({ ...ROOT_ADMITTED, locality: 'local' });
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_locality_mismatch', stage: 'chat' });
+      expect(mockAssembleSubPageContext).not.toHaveBeenCalled();
+    });
+
+    it('records the pages the walk INCLUDED, with their content revision, in the turn provenance (#282)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({
+        injectionWarnings: [], markdown: 'TREE', pageCount: 2, wasTruncated: false,
+        includedPageRefs: [{ id: 9, policy: 'all', policyRevision: 2, contentRevision: 5 }],
+        excludedByPolicy: 1,
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([
+        [1, { pageId: 1, policy: 'all', policyRevision: 4, contentRevision: 11 }],
+        [9, { pageId: 9, policy: 'all', policyRevision: 2, contentRevision: 5 }],
+      ]));
+
+      await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'summarise the tree', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(mockReadPagePolicies).toHaveBeenCalledWith([1, 9]);
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      const messages = JSON.parse((insert[1] as unknown[])[3] as string) as Array<Record<string, unknown>>;
+      const prov = messages.find((m) => m.role === 'assistant')!.aiProvenance as { pages: unknown[] };
+      expect(prov.pages).toEqual(expect.arrayContaining([
+        { pageId: 1, policy: 'all', policyRevision: 4, contentRevision: 11 },
+        { pageId: 9, policy: 'all', policyRevision: 2, contentRevision: 5 },
+      ]));
     });
 
     it('keys a standalone parent by its internal id even when a historical confluence_id is set (#1791)', async () => {
@@ -3052,6 +3475,7 @@ describe('POST /api/llm/ask', () => {
         pageCount: 2,
         wasTruncated: false,
         includedPages: [],
+        includedPageRefs: [],
       });
 
       const response = await app.inject({
@@ -3071,8 +3495,527 @@ describe('POST /api/llm/ask', () => {
         '1',
         '<p>secret</p>',
         'Doc',
+        undefined,
+        { policyContext: { providerId: 'p1', usecase: 'chat', expectedConfigRevision: 3, expectedLocality: 'external' } },
       );
       expect(userMessage()).toContain('ASSEMBLED-TREE');
+    });
+  });
+
+  // ─── Article AI policy at the chat boundary (#282) ───────────────────────
+
+  describe('article AI policy (#282)', () => {
+    const CONV = '5f0e8f9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a';
+
+    it('resolves the chat provider and its locality BEFORE retrieval, and hands retrieval the destination', async () => {
+      mockLoadProviderMetadata.mockResolvedValue({ ...EXTERNAL_PROVIDER, effectiveLocality: 'local' });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(mockLoadProviderMetadata).toHaveBeenCalledWith(expect.anything(), 'p1');
+      expect(mockLoadProviderMetadata.mock.invocationCallOrder[0]).toBeLessThan(mockHybridSearch.mock.invocationCallOrder[0]!);
+      const opts = mockHybridSearch.mock.calls[0]![4] as { aiPolicy?: unknown };
+      expect(opts.aiPolicy).toEqual({ purpose: 'ai', destinationLocality: 'local' });
+    });
+
+    it('refuses 503 ai_policy_unavailable, with no retrieval and no stream, when the provider does not decode', async () => {
+      mockLoadProviderMetadata.mockResolvedValue(null);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('persists provenance on the assistant turn and marks the row complete at INSERT', async () => {
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      const insert = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO llm_conversations'),
+      )!;
+      expect(insert[0]).toContain('ai_provenance_complete');
+      const params = insert[1] as unknown[];
+      expect(params.slice(5)).toEqual([1, 3, 'external']);
+      const messages = JSON.parse(params[3] as string) as Array<Record<string, unknown>>;
+      expect(messages.find((m) => m.role === 'assistant')!.aiProvenance).toEqual({
+        version: 1, providerId: 'p1', configRevision: 3, locality: 'external',
+        pages: [{ pageId: 42, policy: 'all', policyRevision: 7, contentRevision: 5 }],
+      });
+    });
+
+    it('refuses an incomplete retrieval tuple without inventing provenance', async () => {
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: undefined }]);
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('re-proves the bound provider before the cache lookup and before dispatch: 503 when it no longer decodes', async () => {
+      mockLoadProviderMetadata.mockResolvedValueOnce(EXTERNAL_PROVIDER).mockResolvedValue(null);
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockHybridSearch).toHaveBeenCalledTimes(1);
+      expect(mockGetCachedResponse).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses 409 ai_policy_provider_revision_mismatch when the provider configuration moved under the request', async () => {
+      mockLoadProviderMetadata
+        .mockResolvedValueOnce(EXTERNAL_PROVIDER)
+        .mockResolvedValue({ ...EXTERNAL_PROVIDER, configRevision: 4 });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses 409 ai_policy_provider_locality_mismatch when the locality moved at the same revision', async () => {
+      mockLoadProviderMetadata
+        .mockResolvedValueOnce(EXTERNAL_PROVIDER)
+        .mockResolvedValue({ ...EXTERNAL_PROVIDER, effectiveLocality: 'local' });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_locality_mismatch', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses at the dispatch boundary when the provider moves AFTER the cache lookup', async () => {
+      // Binding, pre-cache re-proof OK, then the dispatch re-proof sees a
+      // moved revision — after the lock is taken, before the SSE hijack.
+      mockLoadProviderMetadata
+        .mockResolvedValueOnce(EXTERNAL_PROVIDER)
+        .mockResolvedValueOnce(EXTERNAL_PROVIDER)
+        .mockResolvedValue({ ...EXTERNAL_PROVIDER, configRevision: 9 });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+      expect(mockGetCachedResponse).toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('does not serve a cached answer written under a binding the provider has since left', async () => {
+      mockGetCachedResponse.mockResolvedValue({ content: 'cached under revision 3' });
+      mockLoadProviderMetadata
+        .mockResolvedValueOnce(EXTERNAL_PROVIDER)
+        .mockResolvedValue({ ...EXTERNAL_PROVIDER, configRevision: 4 });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.body).not.toContain('cached under revision 3');
+    });
+
+    it('writes the provenance columns on a continuation UPDATE too', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
+        return { rows: [{ id: CONV }] };
+      });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      const update = mockQuery.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE llm_conversations'),
+      )!;
+      expect(update[0]).toContain('ai_provenance_complete = TRUE');
+      expect((update[1] as unknown[]).slice(3)).toEqual([1, 3, 'external']);
+    });
+
+    it('refuses a continuation 409 ai_history_not_replayable when the row was written before provenance', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [{ messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }], ai_provenance_complete: false, ai_provenance_version: null }] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('refuses a continuation 409 when a recorded page is no longer admitted for the provider answering now', async () => {
+      // Recorded under a local provider as local_only; the chat provider is
+      // external today. The page row is unchanged — the DESTINATION moved.
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(
+            [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            [{ pageId: 42, policy: 'local_only', policyRevision: 2 }],
+          )] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'local_only', policyRevision: 2, contentRevision: 1 }]]));
+      mockUserCanAccessPage.mockResolvedValue(true);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('ai_history_not_replayable');
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('refuses a continuation 409 when a recorded page moved policy revision', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(
+            [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            [{ pageId: 42, policy: 'all', policyRevision: 2 }],
+          )] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 3, contentRevision: 1 }]]));
+      mockUserCanAccessPage.mockResolvedValue(true);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a continuation 409 when a recorded page moved CONTENT revision', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(
+            [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            [{ pageId: 42, policy: 'all', policyRevision: 2, contentRevision: 1 }],
+          )] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 2, contentRevision: 2 }]]));
+      mockUserCanAccessPage.mockResolvedValue(true);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('ai_history_not_replayable');
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('refuses a continuation 409 when a recorded page lacks a content revision (legacy record)', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          const row = historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }]);
+          (row.messages[1] as { aiProvenance: { pages: unknown[] } }).aiProvenance.pages = [{ pageId: 42, policy: 'all', policyRevision: 2 }];
+          return { rows: [row] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 2, contentRevision: 1 }]]));
+      mockUserCanAccessPage.mockResolvedValue(true);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('ai_history_not_replayable');
+    });
+
+    it.each([
+      ['a different provider', { providerId: 'p2' }],
+      ['a different configuration revision', { configRevision: 2 }],
+      ['a different locality', { locality: 'local' }],
+    ])('refuses a continuation 409 when a turn was answered by %s than the one bound now', async (_label, prov) => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }], [], prov)] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_history_not_replayable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['provider_config_revision', { provider_config_revision: 2 }],
+      ['provider_locality', { provider_locality: 'local' }],
+      ['a NULL provider_config_revision (legacy row)', { provider_config_revision: null }],
+    ])('refuses a continuation 409 when the row-level %s disagrees with the bound provider', async (_label, row) => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }], [], {}, row)] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('ai_history_not_replayable');
+    });
+
+    it('refuses a continuation 503 when the bound provider cannot be re-read for the recorded turns', async () => {
+      mockLoadProviderMetadata.mockResolvedValueOnce(EXTERNAL_PROVIDER).mockResolvedValue(null);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+    });
+
+    it('refuses a continuation 409 when the bound provider moved revision since the recorded turns', async () => {
+      mockLoadProviderMetadata.mockResolvedValueOnce(EXTERNAL_PROVIDER).mockResolvedValue({ ...EXTERNAL_PROVIDER, configRevision: 4 });
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }])] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('ai_history_not_replayable');
+    });
+
+    it('replays a continuation whose recorded pages are unchanged, admitted and readable', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(
+            [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            [{ pageId: 42, policy: 'all', policyRevision: 2 }],
+          )] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockResolvedValue(new Map([[42, { pageId: 42, policy: 'all', policyRevision: 2, contentRevision: 1 }]]));
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicyRevision: 2 }]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('a2'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42);
+      const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, unknown, Array<{ content: string }>];
+      expect(messages.some((m) => m.content === 'a1')).toBe(true);
+    });
+
+    it('refuses 503 when the continuation policy read fails', async () => {
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) {
+          return { rows: [historyRow(
+            [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            [{ pageId: 42, policy: 'all', policyRevision: 2 }],
+          )] };
+        }
+        return { rows: [{ id: CONV }] };
+      });
+      mockReadPagePolicies.mockRejectedValue(new Error('connection terminated'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+    });
+
+    it('still answers 404 for a foreign conversation before any policy check', async () => {
+      mockLoadProviderMetadata.mockResolvedValue(null);
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(HISTORY_SQL)) return { rows: [] };
+        return { rows: [{ id: CONV }] };
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('reports missing recorded provider before an assignment mismatch', async () => {
+      mockLoadProviderMetadata.mockImplementation(async (_runner, id) => id === 'deleted-provider' ? null : EXTERNAL_PROVIDER);
+      mockQuery.mockImplementation(async (sql: string) => sql.includes(HISTORY_SQL)
+        ? { rows: [historyRow([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }], [], { providerId: 'deleted-provider' })] }
+        : { rows: [] });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q2', conversationId: CONV } });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+      expect(mockHybridSearch).not.toHaveBeenCalled();
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('does not publish or title a stream whose grounding changed during inference', async () => {
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockImplementation(async function* () {
+        yield { content: 'answer', done: false };
+        mockProvenancePagesStillAdmitted.mockResolvedValue(false);
+        yield { content: '', done: true };
+      });
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+      // #282: the refusal is TYPED on the wire — the client learns the
+      // grounding moved, not that "something went wrong" — and the bytes
+      // already streamed are followed by the refusal frame, never `final`.
+      const events = parseSseBody(response.body);
+      expect(events.at(-1)).toEqual({ error: 'ai_grounding_not_admissible', done: true });
+      expect(events.some((e) => e.final === true)).toBe(false);
+      expect(response.body).not.toContain('Stream error');
+      expect(mockSetCachedResponse).not.toHaveBeenCalled();
+      expect(mockGenerateConversationTitle).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('keys the answer cache on provider revision, locality and page policy + content revisions', async () => {
+      const { policyRevisionsCacheComponent } = await import('../../domains/llm/services/llm-cache.js');
+      vi.mocked(policyRevisionsCacheComponent).mockReturnValue('pol-digest');
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(policyRevisionsCacheComponent).toHaveBeenCalledWith([{ pageId: 42, policy: 'all', policyRevision: 7, contentRevision: 5 }]);
+      const opts = vi.mocked(buildRagCacheKey).mock.calls[0]![3] as Record<string, unknown>;
+      expect(opts).toMatchObject({ providerConfigRevision: 3, providerLocality: 'external', policyRevisions: 'pol-digest' });
+    });
+
+    it('refuses a stale cache proof without regenerating the stale prompt', async () => {
+      mockGetCachedResponse.mockResolvedValue({ content: 'stale cached answer' });
+      mockProvenancePagesStillAdmitted.mockResolvedValue(false);
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('fresh answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(response.body).not.toContain('stale cached answer');
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('INSERT INTO llm_conversations'))).toBe(false);
+    });
+
+    it('treats a cache hit over a page the caller can no longer read as a miss', async () => {
+      mockGetCachedResponse.mockResolvedValue({ content: 'stale cached answer' });
+      mockProvenancePagesStillAdmitted.mockResolvedValue(true);
+      mockUserCanAccessPage.mockResolvedValue(false);
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('fresh answer'));
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'ai_grounding_not_admissible', stage: 'chat' });
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-123', 42, undefined);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      expect(response.body).not.toContain('stale cached answer');
+    });
+
+    it('serves a cache hit whose pages, policy and content revisions and ACL all still hold', async () => {
+      mockGetCachedResponse.mockResolvedValue(cachedAnswer('still-good cached answer', 42, 7, 5));
+      mockProvenancePagesStillAdmitted.mockResolvedValue(true);
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockHybridSearch.mockResolvedValue([{ ...groundedResult, aiPolicy: 'all', aiPolicyRevision: 7, contentRevision: 5 }]);
+
+      const response = await app.inject({ method: 'POST', url: '/api/llm/ask', payload: { question: 'q' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      expect(events.some((e) => e.content === 'still-good cached answer')).toBe(true);
+    });
+
+    function seedSubPageQueries() {
+      mockReadPagePolicies.mockResolvedValue(new Map([[1, { pageId: 1, policy: 'all', policyRevision: 1, contentRevision: 0 }]]));
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM pages WHERE confluence_id')) return { rows: [{ id: 1, confluence_id: 'page-abc', source: 'confluence', title: 'Doc' }] };
+        if (sql.includes('SELECT body_html, title, ai_policy')) return { rows: [{ body_html: '<p>x</p>', title: 'Doc', ai_policy: 'all', ai_policy_revision: 1, content_revision: 0 }] };
+        return { rows: [{ id: 'test-conv-id' }] };
+      });
+    }
+
+    it.each([
+      ['ai_policy_provider_revision_mismatch', 'ai_policy_provider_revision_mismatch'],
+      ['ai_policy_provider_locality_mismatch', 'ai_policy_provider_locality_mismatch'],
+    ])('maps a sub-page walk %s to the matching 409', async (code, expected) => {
+      const { SubPagePolicyError } = await import('../../domains/confluence/services/subpage-context.js');
+      seedSubPageQueries();
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockRejectedValue(new SubPagePolicyError(code, 'moved', false));
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: expected, stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
+    });
+
+    it('maps a retryable sub-page walk refusal to 503 ai_policy_unavailable', async () => {
+      const { SubPagePolicyError } = await import('../../domains/confluence/services/subpage-context.js');
+      seedSubPageQueries();
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockRejectedValue(new SubPagePolicyError('ai_policy_unavailable', 'unreadable', true));
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_unavailable', stage: 'chat' });
+    });
+
+    it('binds the sub-page walk to the request destination even with includeSubPages, re-proving it before dispatch', async () => {
+      seedSubPageQueries();
+      mockUserCanAccessPage.mockResolvedValue(true);
+      mockAssembleSubPageContext.mockResolvedValue({ injectionWarnings: [], markdown: 'TREE', pageCount: 1, includedPageRefs: [] });
+      mockLoadProviderMetadata.mockResolvedValueOnce(EXTERNAL_PROVIDER).mockResolvedValue({ ...EXTERNAL_PROVIDER, configRevision: 4 });
+      mockHybridSearch.mockResolvedValue([groundedResult]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'q', includeSubPages: true, pageId: 'page-abc' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: 'ai_policy_provider_revision_mismatch', stage: 'chat' });
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
   });
 

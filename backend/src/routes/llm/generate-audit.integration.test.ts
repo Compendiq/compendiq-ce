@@ -122,7 +122,7 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('Partial answer');
-    expect(body).toContain('Stream error');
+    expect(body).toContain('Stream ended before completion');
     expect(await waitForDatabaseCondition(async () => {
       const rows = await query<{ count: string }>(`SELECT count(*) FROM llm_audit_log WHERE user_id = $1 AND action = 'generate'`, [userId]);
       return Number(rows.rows[0]!.count) === received.length;

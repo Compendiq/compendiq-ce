@@ -47,6 +47,10 @@
  * provider body (D14).
  */
 import { query } from '../../../core/db/postgres.js';
+import { recoverPolicyBlockedStage } from './ai-policy-worker-recovery.js';
+import { randomUUID } from 'node:crypto';
+import { emitAiDecision, newAiOperation } from '../../../core/enterprise/ai-policy-hooks.js';
+import { isAiPolicy } from '../../../core/services/ai-policy-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getWorkerBatchSize } from '../../../core/services/admin-settings-service.js';
 import {
@@ -76,7 +80,30 @@ import {
 import { intakePageImage, mimeTypeForImageFormat } from './image-intake.js';
 import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { assertNoShadowMigration, REEMBED_ALL_LOCK_USER } from './embedding-service.js';
-import type { ImageAnalysisBatchReason } from '@compendiq/contracts';
+import { admitPageForProvider, isPersistableBlockReason, publishCurrentAiPolicyBlock } from './ai-policy-admission.js';
+import type { ConversationTurnAiProvenance, ImageAnalysisBatchReason } from '@compendiq/contracts';
+import type { QueryResult, QueryResultRow } from 'pg';
+import { admitArticleStage, ArticleStageRefusedError } from './article-stage-admission.js';
+import { asRevision, decodeProviderMetadata, PROVIDER_METADATA_COLUMNS, type ProviderMetadataRow, emitUnresolvedDecision } from './ai-policy-admission.js';
+
+/** A stale completion (including a failure) owns no publication rights. */
+export async function publishImageAnalysisResult<T extends QueryResultRow>(
+  provenance: ConversationTurnAiProvenance,
+  sql: string,
+  params: unknown[],
+  assertLockHeld: () => Promise<void>,
+): Promise<QueryResult<T>> {
+  let result: QueryResult<T> = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
+  try {
+    await admitArticleStage(provenance, null, 'image_analysis', async (client) => {
+      await assertLockHeld();
+      result = await client.query<T>(sql, params);
+    });
+  } catch (err) {
+    if (!(err instanceof ArticleStageRefusedError)) throw err;
+  }
+  return result;
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -168,6 +195,12 @@ export interface ImageAnalysisBatchResult {
   unreadableRefs: number;
   /** Another process holds the worker lock; this call did nothing. */
   alreadyRunning?: boolean;
+  /**
+   * Rows the article AI policy parked as `policy_blocked` in this batch
+   * (SPEC-WORK-001): neither processed nor failed, no call spent. Present
+   * only when non-zero.
+   */
+  policyBlocked?: number;
 }
 
 function emptyResult(): ImageAnalysisBatchResult {
@@ -306,7 +339,18 @@ async function runBatchSteps(
 ): Promise<void> {
   // Read once per batch (D13): the retained identity every row will carry,
   // and the ceiling that sets `max_tokens` and re-opens `truncated` rows.
-  const [retained, maxOutputTokens] = await Promise.all([deps.getRetainedIdentity(), deps.getMaxOutputTokens()]);
+  let retained: ImageAnalysisIdentity | null;
+  let maxOutputTokens: number;
+  try {
+    [retained, maxOutputTokens] = await Promise.all([deps.getRetainedIdentity(), deps.getMaxOutputTokens()]);
+  } catch {
+    // No usable destination has been resolved yet. Keep work pending and its
+    // durable operation identity, but do not mistake unavailable settings for
+    // permission to run the sweep or inference with cached configuration.
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'policy_unavailable');
+    result.reason = 'unassigned';
+    return;
+  }
 
   // ── Step 1: invalidation sweep and its inverse ──────────────────────────
   const swept = await runInvalidationSweep(retained?.identityHash ?? null, maxOutputTokens, assertLockHeld);
@@ -324,22 +368,110 @@ async function runBatchSteps(
   result.skipped += sumSkips(reconciled);
 
   // ── Step 3: analyze, gated ──────────────────────────────────────────────
-  const resolved = await deps.resolveIdentity();
-  if (!resolved) {
+  let resolved: ResolvedImageAnalysisIdentity | null;
+  try { resolved = await deps.resolveIdentity(); } catch {
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'policy_unavailable');
     result.reason = 'unassigned';
     return;
   }
-  if ((await deps.getVisionCapability(resolved.providerId, resolved.model)) !== true) {
+  if (!resolved) {
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'stage_disabled');
+    result.reason = 'unassigned';
+    return;
+  }
+  let capability: boolean | null;
+  try {
+    capability = await deps.getVisionCapability(resolved.providerId, resolved.model);
+  } catch {
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'policy_unavailable', resolved);
+    result.reason = 'capability';
+    return;
+  }
+  if (capability !== true) {
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'capability', resolved);
     result.reason = 'capability';
     return;
   }
   if (!retained || retained.identityHash !== resolved.identityHash) {
+    await recordUnresolvedImageWork(deps, assertLockHeld, 'identity_drift', resolved);
     result.reason = 'identity_drift';
     return;
   }
 
   const batchSize = await deps.getBatchSize();
+  await assertLockHeld();
+  await recoverPolicyBlockedStage('image_analysis', resolved.providerId, batchSize);
   await analyzeWorkRows(result, deps, assertLockHeld, retained, maxOutputTokens, batchSize);
+}
+
+/** Claim failure is not admission: keep the selected job identity, but never
+ * guess an ordinal after an ambiguous write. A successor (zero rows) is silent. */
+async function claimImageAttempt(
+  row: { id: number; page_id: number; row_version: string; ai_operation_id: string | null },
+  destination?: { providerId: string; model: string },
+) {
+  const operation = newAiOperation('image_analysis', { kind: 'worker', id: IMAGE_ANALYSIS_WORKER_LOCK });
+  if (row.ai_operation_id) operation.operationId = row.ai_operation_id;
+  try {
+    const claim = await query<{ ai_operation_id: string; ai_attempt: number; row_version: string }>(
+      `UPDATE page_image_analyses a SET ai_operation_id = COALESCE(ai_operation_id, $2::uuid),
+         ai_attempt = ai_attempt + 1
+       WHERE a.id = $1 AND a.xmin::text = $3
+       RETURNING ai_operation_id, ai_attempt, a.xmin::text AS row_version`,
+      [row.id, operation.operationId, row.row_version],
+    );
+    const job = claim.rows[0];
+    if (!job) return null;
+    operation.operationId = job.ai_operation_id;
+    return { operation, stage: `vision:${row.id}`, attempt: job.ai_attempt, rowVersion: job.row_version };
+  } catch {
+    await emitUnresolvedDecision(row.page_id, 'image_analysis',
+      { operation, stage: `vision:${row.id}`, attempt: null }, 'policy_unavailable', destination);
+    return null;
+  }
+}
+
+async function recordUnresolvedImageWork(
+  deps: ImageAnalysisWorkerDeps, assertLockHeld: () => Promise<void>,
+  reason: 'stage_disabled' | 'policy_unavailable' | 'capability' | 'identity_drift',
+  resolved?: ResolvedImageAnalysisIdentity,
+): Promise<void> {
+  const rows = await query<{ id: number; page_id: number; row_version: string; ai_operation_id: string | null }>(
+    `SELECT a.id, a.page_id, a.ai_operation_id, a.xmin::text AS row_version FROM page_image_analyses a
+       JOIN pages p ON p.id = a.page_id
+      WHERE (a.status = 'pending' OR (a.status = 'failed' AND a.next_attempt_at <= NOW()))
+        AND p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'
+      ORDER BY a.id LIMIT $1`, [await deps.getBatchSize()],
+  );
+  for (const row of rows.rows) {
+    await assertLockHeld();
+    const context = await claimImageAttempt(row, resolved);
+    if (!context) continue;
+    const { operation } = context;
+    if (!resolved && (reason === 'stage_disabled' || reason === 'policy_unavailable')) {
+      await emitUnresolvedDecision(row.page_id, 'image_analysis', context, reason);
+    } else {
+      let article: { pageId: number; policy: 'all' | 'local_only' | 'none' | null; policyRevision: number | null; contentRevision: number | null } =
+        { pageId: row.page_id, policy: null, policyRevision: null, contentRevision: null };
+      let provider: import('@compendiq/contracts').AiDecisionEvent['provider'] = resolved
+        ? { providerId: resolved.providerId, model: resolved.model, configRevision: null, declaredLocality: null, effectiveLocality: null } : null;
+      try {
+        const current = (await query('SELECT ai_policy,ai_policy_revision,content_revision FROM pages WHERE id=$1 AND deleted_at IS NULL', [row.page_id])).rows[0];
+        article = { pageId: row.page_id, policy: isAiPolicy(current?.ai_policy) ? current.ai_policy : null,
+          policyRevision: asRevision(current?.ai_policy_revision), contentRevision: asRevision(current?.content_revision) };
+        if (resolved) {
+          const saved = (await query<ProviderMetadataRow>(`SELECT ${PROVIDER_METADATA_COLUMNS} FROM llm_providers WHERE id::text=$1`, [resolved.providerId])).rows[0];
+          const metadata = decodeProviderMetadata(saved);
+          provider = { providerId: resolved.providerId, model: resolved.model, configRevision: asRevision(saved?.config_revision),
+            declaredLocality: saved?.locality === 'local' || saved?.locality === 'external' ? saved.locality : null,
+            effectiveLocality: metadata?.effectiveLocality ?? null };
+        }
+      } catch { /* Retain only metadata actually read; a pause never dispatches. */ }
+      emitAiDecision({ ...operation, eventId: randomUUID(), occurredAt: new Date().toISOString(), type: 'decision',
+        usecase: 'image_analysis', stage: context.stage, attempt: context.attempt,
+        articles: [article], provider, decision: 'blocked', reason });
+    }
+  }
 }
 
 function sumSkips(counts: ReconcileCounts): number {
@@ -383,21 +515,53 @@ async function runInvalidationSweep(
   );
 
   await assertLockHeld();
-  // The inverse. The predicate's `identity_hash = $1` cannot match with no
-  // identity retained, so a never-assigned instance reuses nothing.
-  const reused = await query<{ n: number }>(
-    `WITH w AS (
-       UPDATE page_image_analyses a SET status = 'analyzed', updated_at = NOW()
-        WHERE a.status = 'pending' AND a.payload IS NOT NULL
-          AND a.identity_hash = $1 AND a.prompt_version = $2 AND a.schema_version = $3
-        RETURNING a.page_id
-     ), b AS (
-       UPDATE pages SET image_analysis_revision = image_analysis_revision + 1, embedding_dirty = TRUE
-        WHERE id IN (SELECT DISTINCT page_id FROM w)
-     )
-     SELECT COUNT(*)::int AS n FROM w`,
+  // Reuse is publication, not just an identity-cache hit. Re-admit every
+  // candidate and publish under the same page/provider locks as fresh results.
+  // Snapshot xmin also prevents a reconcile/successor from donating its payload
+  // to this decision. No transaction spans inference (reuse makes no call).
+  const candidates = await query<{
+    id: number; page_id: number; provider_id: string; model: string;
+    content_revision: string; row_version: string;
+  }>(
+    `SELECT a.id, a.page_id, a.provider_id, a.model,
+            p.content_revision::text, a.xmin::text AS row_version
+       FROM page_image_analyses a JOIN pages p ON p.id = a.page_id
+      WHERE a.status = 'pending' AND a.payload IS NOT NULL
+        AND a.identity_hash = $1 AND a.prompt_version = $2 AND a.schema_version = $3
+        AND a.provider_id IS NOT NULL AND a.model IS NOT NULL
+        AND p.deleted_at IS NULL AND COALESCE(p.page_type, 'page') <> 'folder'`,
     validity,
   );
+  let reused = 0;
+  for (const candidate of candidates.rows) {
+    await assertLockHeld();
+    const contentRevision = asRevision(candidate.content_revision);
+    if (contentRevision === null) continue;
+    const admission = await admitPageForProvider(candidate.page_id, 'image_analysis', candidate.provider_id, candidate.model,
+      { operation: newAiOperation('image_reuse', { kind: 'worker', id: IMAGE_ANALYSIS_WORKER_LOCK }),
+        stage: 'image_reuse', attempt: 1, preliminary: true });
+    if (!admission.admitted) continue;
+    const provenance: ConversationTurnAiProvenance = {
+      version: 1, providerId: admission.providerId, configRevision: admission.configRevision,
+      locality: admission.locality, pages: [{ pageId: candidate.page_id, policy: admission.policy,
+        policyRevision: admission.policyRevision, contentRevision }],
+    };
+    const published = await publishImageAnalysisResult<{ n: number }>(provenance,
+      `WITH w AS (
+         UPDATE page_image_analyses a SET status = 'analyzed', updated_at = NOW()
+          WHERE a.id = $1 AND a.xmin::text = $2 AND a.status = 'pending'
+            AND a.payload IS NOT NULL AND a.identity_hash = $3
+            AND a.prompt_version = $4 AND a.schema_version = $5
+            AND EXISTS (SELECT 1 FROM llm_providers provider
+                         WHERE provider.id = a.provider_id AND provider.base_url = a.base_url)
+          RETURNING a.page_id
+       ), b AS (
+         UPDATE pages SET image_analysis_revision = image_analysis_revision + 1, embedding_dirty = TRUE
+          WHERE id IN (SELECT page_id FROM w)
+       ) SELECT COUNT(*)::int AS n FROM w`,
+      [candidate.id, candidate.row_version, ...validity], assertLockHeld);
+    reused += published.rows[0]?.n ?? 0;
+  }
 
   await assertLockHeld();
   const returned = await query<{ n: number }>(
@@ -429,9 +593,10 @@ async function runInvalidationSweep(
     [maxOutputTokens],
   );
 
+
   return {
     repended: repended.rows[0]?.n ?? 0,
-    reused: reused.rows[0]?.n ?? 0,
+    reused,
     returned: returned.rows[0]?.n ?? 0,
     reopened: reopened.rows[0]?.n ?? 0,
   };
@@ -448,6 +613,9 @@ interface WorkRow {
   attempts: number;
   confluence_id: string | null;
   page_source: 'confluence' | 'standalone';
+  content_revision: string;
+  row_version: string;
+  ai_operation_id: string | null;
 }
 
 async function analyzeWorkRows(
@@ -460,8 +628,8 @@ async function analyzeWorkRows(
 ): Promise<void> {
   // D13's work predicate: pending first, then oldest due.
   const work = await query<WorkRow>(
-    `SELECT a.id, a.page_id, a.source, a.attachment_key, a.content_hash, a.attempts,
-            p.confluence_id, p.source AS page_source
+    `SELECT a.id, a.page_id, a.source, a.attachment_key, a.content_hash, a.attempts, a.ai_operation_id,
+            p.confluence_id, p.source AS page_source, p.content_revision::text, a.xmin::text AS row_version
        FROM page_image_analyses a
        JOIN pages p ON p.id = a.page_id
       WHERE (a.status = 'pending' OR (a.status = 'failed' AND a.next_attempt_at <= NOW()))
@@ -477,10 +645,64 @@ async function analyzeWorkRows(
   // Uniform-rejection tracking: the first N CALLS of the batch.
   let calls = 0;
   let succeeded = false;
-  const rejections: Array<{ rowId: number; status: number }> = [];
+  const rejections: Array<{ rowId: number; status: number; rowVersion: string; provenance: ConversationTurnAiProvenance; terminal: boolean }> = [];
 
   for (const row of work.rows) {
     await assertLockHeld();
+
+    // Article AI policy (SPEC-WORK-001): admitted against the RETAINED
+    // identity — the exact provider the call below names — before the bytes
+    // are even read. A block parks the row with its reason, spends no attempt
+    // and no call, and is neither a success nor a failure. The commit
+    // predicate keeps a concurrent reconcile's rewrite intact.
+    const context = await claimImageAttempt(row, retained);
+    if (!context) { result.skipped++; continue; }
+    row.row_version = context.rowVersion;
+    const admission = await admitPageForProvider(row.page_id, 'image_analysis', retained.providerId, retained.model,
+      { ...context, preliminary: true });
+    if (!admission.admitted) {
+      if (admission.reason !== 'not_found' && !isPersistableBlockReason(admission.reason)) {
+        // Retryable (deployment, not article): the row keeps its state and
+        // attempt budget for the next due batch; nothing is written or called.
+        logger.warn({ rowId: row.id, pageId: row.page_id, reason: admission.reason }, 'Image analysis admission unavailable; row left for the next batch');
+        result.skipped++;
+        continue;
+      }
+      if (admission.reason !== 'not_found') {
+        const published = await publishCurrentAiPolicyBlock({
+          pageId: row.page_id, providerId: retained.providerId,
+          contentRevision: row.content_revision, reason: admission.reason,
+        }, async (client) => {
+          await assertLockHeld();
+          const updated = await client.query(
+            `UPDATE page_image_analyses a
+                SET status = 'policy_blocked', ai_policy_block_reason = $3, payload = NULL,
+                    next_attempt_at = NULL, error = NULL, updated_at = NOW()
+              WHERE a.id = $1 AND a.content_hash = $2
+                AND (a.status = 'pending' OR (a.status = 'failed' AND a.next_attempt_at <= NOW()))`,
+            [row.id, row.content_hash, admission.reason],
+          );
+          return (updated.rowCount ?? 0) > 0;
+        });
+        if (published) {
+          result.policyBlocked = (result.policyBlocked ?? 0) + 1;
+          logger.info({ rowId: row.id, pageId: row.page_id, reason: admission.reason }, 'Image analysis blocked by article AI policy');
+        } else result.skipped++;
+      }
+      continue;
+    }
+
+    const contentRevision = asRevision(row.content_revision);
+    if (contentRevision === null) { result.skipped++; continue; }
+    const provenance: ConversationTurnAiProvenance = {
+      version: 1, providerId: admission.providerId, configRevision: admission.configRevision,
+      locality: admission.locality, pages: [{ pageId: row.page_id, policy: admission.policy,
+        policyRevision: admission.policyRevision, contentRevision }],
+    };
+    const publish = <T extends QueryResultRow>(sql: string, params: unknown[]) =>
+      publishImageAnalysisResult<T>(provenance,
+        sql.replace('WHERE a.id = $1', `WHERE a.xmin::text = $${params.length + 1} AND a.id = $1`),
+        [...params, row.row_version], assertLockHeld);
 
     const intake = await intakePageImage(
       { id: row.page_id, confluence_id: row.confluence_id, source: row.page_source },
@@ -497,7 +719,7 @@ async function analyzeWorkRows(
       // because nothing short of a page writer revisits it. The row records
       // the identity it failed under, as every failed row does, or the next
       // sweep would return it "stale" and due at once, every batch.
-      const failed = await query<{ n: number }>(
+      const failed = await publish<{ n: number }>(
         `WITH w AS (
            UPDATE page_image_analyses a
               SET status = 'failed', attempts = a.attempts + 1, next_attempt_at = ${BACKOFF_SQL},
@@ -522,7 +744,7 @@ async function analyzeWorkRows(
       // window as `skipped` with the intake's reason, hash and format by the
       // reconcile's convention, attempt budget untouched and no call spent.
       // The commit predicate keeps a concurrent reconcile's rewrite intact.
-      await query(
+      await publish(
         `UPDATE page_image_analyses a
             SET status = 'skipped', skip_reason = $3, content_hash = $4, format = '',
                 width = NULL, height = NULL, payload = NULL, attempts = 0, next_attempt_at = NULL, error = NULL,
@@ -550,8 +772,13 @@ async function analyzeWorkRows(
         identity: { providerId: retained.providerId, model: retained.model, baseUrl: retained.baseUrl },
         maxOutputTokens,
         timeoutMs: ANALYSIS_TIMEOUT_MS,
+        articleStage: { provenance, userId: null, usecase: 'image_analysis', context },
       });
     } catch (err) {
+      if (err instanceof ArticleStageRefusedError) {
+        result.skipped++;
+        continue;
+      }
       // A client that throws is a transport-class fact about the endpoint,
       // never a verdict about the image.
       logger.error({ err, rowId: row.id, pageId: row.page_id }, 'Image analysis call threw — row failed (unavailable)');
@@ -561,7 +788,7 @@ async function analyzeWorkRows(
 
     await assertLockHeld();
     if (outcome.ok) {
-      const committed = await query<{ n: number }>(
+      const committed = await publish<{ n: number }>(
         `WITH w AS (
            UPDATE page_image_analyses a
               SET status = 'analyzed', payload = $6::jsonb, analysis_version = a.analysis_version + 1,
@@ -592,7 +819,7 @@ async function analyzeWorkRows(
     }
 
     const deterministic = DETERMINISTIC_CLASSES.has(outcome.class);
-    const failed = await query<{ status: string }>(
+    const failed = await publish<{ status: string; row_version: string }>(
       `UPDATE page_image_analyses a
           SET attempts = a.attempts + 1,
               status = CASE WHEN $6::boolean AND a.attempts + 1 >= $7 THEN 'failed_terminal' ELSE 'failed' END,
@@ -602,7 +829,7 @@ async function analyzeWorkRows(
               identity_hash = $3, prompt_version = $4, schema_version = $5
         WHERE a.id = $1 AND a.content_hash = $2
           AND NOT (${validitySql('a', 3, 4, 5)})
-        RETURNING a.status`,
+        RETURNING a.status, a.xmin::text AS row_version`,
       [
         row.id,
         row.content_hash,
@@ -636,7 +863,8 @@ async function analyzeWorkRows(
     }
 
     if (outcome.class === 'rejected' && outcome.httpStatus !== undefined && !succeeded) {
-      rejections.push({ rowId: row.id, status: outcome.httpStatus });
+      rejections.push({ rowId: row.id, status: outcome.httpStatus, rowVersion: failed.rows[0]!.row_version, provenance,
+        terminal: written === 'failed_terminal' });
       const uniform =
         calls === IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT &&
         rejections.length === IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT &&
@@ -644,17 +872,16 @@ async function analyzeWorkRows(
       if (uniform) {
         const status = rejections[0]!.status;
         await assertLockHeld();
-        // One unconditional write per row, `attempts` unchanged, never
-        // terminal: the stop's rewrite takes precedence over the cap.
-        await query(
-          `UPDATE page_image_analyses a
-              SET status = 'failed', error = $2, next_attempt_at = ${BACKOFF_SQL}, updated_at = NOW()
-            WHERE a.id = ANY($1::bigint[])`,
-          [rejections.map((r) => r.rowId), `unavailable:${status}`],
-        );
-        // These three were the batch's only calls, so every row the cap took
-        // to `failed_terminal` in it has just been rewritten `failed`.
-        result.terminal = 0;
+        // The stop may reverse this batch's terminal writes, but never a
+        // successor's state. Count only reversals that actually committed.
+        for (const rejection of rejections) {
+          const rewritten = await publishImageAnalysisResult(rejection.provenance,
+            `UPDATE page_image_analyses a
+                SET status = 'failed', error = $2, next_attempt_at = ${BACKOFF_SQL}, updated_at = NOW()
+              WHERE a.id = $1 AND a.xmin::text = $3`,
+            [rejection.rowId, `unavailable:${status}`, rejection.rowVersion], assertLockHeld);
+          if (rejection.terminal && (rewritten.rowCount ?? 0) > 0) result.terminal--;
+        }
         result.reason = 'uniform_rejection';
         result.httpStatus = status;
         await reprobe(deps, retained);
@@ -691,7 +918,7 @@ async function recordLastRun(result: ImageAnalysisBatchResult): Promise<void> {
   const didSomething =
     result.processed + result.reused + result.skipped + result.failed + result.repended +
       result.returned + result.reopened + result.reconciledPages + result.removed +
-      result.pagesFailed > 0;
+      result.pagesFailed + (result.policyBlocked ?? 0) > 0;
   const stopped = result.reason === 'provider_status' || result.reason === 'uniform_rejection';
   if (!didSomething && !stopped) return;
   const run: ImageAnalysisLastRun = { ...result, at: new Date().toISOString() };
@@ -766,7 +993,8 @@ export async function reanalyzeAllImages(): Promise<number> {
   const r = await query<{ n: number }>(
     `WITH w AS (
        UPDATE page_image_analyses
-          SET status = 'pending', payload = NULL, attempts = 0, next_attempt_at = NULL, error = NULL, updated_at = NOW()
+          SET status = 'pending', payload = NULL, attempts = 0, next_attempt_at = NULL, error = NULL, updated_at = NOW(),
+              ai_operation_id = NULL, ai_attempt = 0
         WHERE status IN ('analyzed', 'failed', 'failed_terminal')
         RETURNING page_id
      ), b AS (

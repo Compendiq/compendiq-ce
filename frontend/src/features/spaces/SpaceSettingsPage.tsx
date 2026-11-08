@@ -8,6 +8,7 @@ import {
 } from '../../shared/hooks/use-standalone';
 import { getSpaceIcon } from '../../shared/components/spaces/space-icons';
 import { SpaceIconPicker } from './SpaceIconPicker';
+import { SpaceAiPolicySettings } from './SpaceAiPolicySettings';
 import { toast } from 'sonner';
 import { Button } from '../../shared/components/Button';
 import { useNoticeRetry } from '../../shared/hooks/use-notice-retry';
@@ -133,6 +134,7 @@ export function SpaceSettingsPage() {
     return (
       <div ref={focusTarget} tabIndex={-1} className="mx-auto max-w-lg text-center py-12">
         <p className="text-muted-foreground">Space not found or is not a local space.</p>
+        {key && <SpaceAiPolicySettings key={key} spaceKey={key} />}
         <button
           onClick={() => navigate(-1)}
           className="mt-4 text-sm text-action hover:text-action/80 transition-colors"
@@ -247,6 +249,8 @@ export function SpaceSettingsPage() {
             </Button>
           </div>
         </form>
+
+        <SpaceAiPolicySettings key={space.key} spaceKey={space.key} />
 
         {/* Danger zone */}
         <div className="mt-8 rounded-lg border border-destructive/30 p-4">

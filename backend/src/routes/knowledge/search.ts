@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema, type PageSource } from '@compendiq/contracts';
+import { SearchHybridQuerySchema, type AiPolicyFilter, type PageSource } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 // Use the request-scoped memoised wrapper so the search route and downstream
 // rag-service calls resolve the readable-space set once per request. See
@@ -142,7 +142,7 @@ async function generateSearchEmbedding(
     // file, so neither half can be added or dropped unnoticed — and dropping
     // the wrapper here while leaving the import behind is red, not green.
     const embeddings = await generateEmbedding(
-      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q),
+      resolved.config, resolved.model, formatQueryForEmbedding(resolved.model, q), { kind: 'non_article', purpose: 'user_query' },
     );
     const embedding = embeddings[0];
     // `!embedding` alone would miss a zero-length inner vector ([[]]) — an
@@ -187,6 +187,7 @@ async function getSearchPageMetadata(
   pageIds: number[],
   searchSpaces: string[],
   userId: string,
+  aiPolicy?: AiPolicyFilter,
 ): Promise<Map<number, {
   source: PageSource;
   isFrozen: boolean;
@@ -194,6 +195,11 @@ async function getSearchPageMetadata(
   frozenVersion: number | null;
 }>> {
   if (pageIds.length === 0) return new Map();
+  // #283: the Library AI-policy filter narrows the authorized set here for
+  // the retrieval-backed modes, so the three modes agree on what the filter
+  // means — an exact match on the stored policy. It is applied AFTER the
+  // visibility predicate as a plain narrowing; it never widens access.
+  const policyClause = aiPolicy ? 'AND cp.ai_policy = $4' : '';
   const { rows } = await query<{
     id: number;
     source: PageSource;
@@ -203,8 +209,9 @@ async function getSearchPageMetadata(
     `SELECT cp.id, cp.source, cp.baseline_id, cp.frozen_version
        FROM pages cp
       WHERE cp.id = ANY($1::int[])
-        AND ${visiblePagesPredicate(2, 3)}`,
-    [pageIds, searchSpaces, userId],
+        AND ${visiblePagesPredicate(2, 3)}
+        ${policyClause}`,
+    aiPolicy ? [pageIds, searchSpaces, userId, aiPolicy] : [pageIds, searchSpaces, userId],
   );
   return new Map(rows.map((row) => [row.id, { source: row.source, ...freezeSummary(row) }]));
 }
@@ -230,7 +237,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
   // GET /api/search — Enhanced full-text search with facets, plus semantic/hybrid mode support.
   fastify.get('/search', async (request, reply) => {
     const params = SearchQuerySchema.parse(request.query);
-    const { q, mode, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit, includeFacets } = params;
+    const { q, mode, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit, includeFacets, aiPolicy } = params;
     const userId = request.userId;
 
     const searchSpaces = await getUserAccessibleSpaces(userId);
@@ -319,7 +326,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       // the matching note on vectorSearch. Previously this call ignored
       // `spaceKey` entirely, so a user scoping semantic search to one space
       // silently got answers from the whole accessible corpus.
-      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey });
+      // #282: a page-search surface is read by a PERSON — the article AI
+      // policy does not filter authored text here (a `none` page's derived
+      // image text still never surfaces). Declared explicitly, because the
+      // default is the strictest AI reading.
+      const vectorResults = await vectorSearch(userId, questionEmbedding, candidatePool, { spaceKey, aiPolicy: { purpose: 'human' } });
 
       // Deduplicate by pageId (take best chunk per page). The wider fetch is
       // ranking headroom, not a bigger response: authorize the WHOLE deduped
@@ -332,7 +343,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         return true;
       });
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId, aiPolicy);
       // Pages removed since retrieval, or not readable by this caller, have no
       // canonical result to return.
       const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
@@ -410,6 +421,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
         // #1351: spaceKey narrows both legs — see HybridSearchOptions.spaceKey.
         deduped = await hybridSearch(userId, q, candidatePool, cov, {
           spaceKey,
+          // #282: human-read surface — see the semantic branch's note.
+          aiPolicy: { purpose: 'human' },
           surface: 'search',
           recordAnalytics: false,
           onRetrievalMeta: (meta) => {
@@ -436,7 +449,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId);
+      const metadata = await getSearchPageMetadata(deduped.map((r) => r.pageId), searchSpaces, userId, aiPolicy);
       const returned = deduped.filter((r) => metadata.has(r.pageId)).slice(0, limit);
 
       // Same row hybridSearch would write — max fused score (pinned NEW rows
@@ -554,6 +567,17 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // #283 Library AI-policy filter on the lexical path. An exact match on
+    // the stored policy, ANDed like every other filter. Deliberately absent
+    // from the base conditions: an UNFILTERED lexical search still finds a
+    // `none`/`local_only` page the caller may read — the policy restricts AI
+    // use, not reading or finding.
+    if (aiPolicy) {
+      conditions.push(`cp.ai_policy = $${paramIndex}`);
+      values.push(aiPolicy);
+      paramIndex++;
+    }
+
     const whereClause = conditions.join(' AND ');
 
     // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
@@ -644,13 +668,19 @@ export async function searchRoutes(fastify: FastifyInstance) {
          AND cp.title IS NOT NULL
          AND ${visiblePagesPredicate(2, 3)}
          AND cp.deleted_at IS NULL
+         ${aiPolicy ? 'AND cp.ai_policy = $6' : ''}
        ORDER BY rank DESC
        LIMIT $5`,
-      [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
+      aiPolicy
+        ? [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit, aiPolicy]
+        : [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
     );
 
     // Facet aggregation — opt-in via includeFacets (default: true).
     // Skipping facets avoids 3 UNION ALL subqueries when the caller doesn't need them.
+    // #283: facets describe the FILTERED set when an AI-policy filter is
+    // active, so a count never promises rows the list below will not show.
+    const facetPolicyClause = aiPolicy ? 'AND cp.ai_policy = $4' : '';
     const facetQueryPromise = includeFacets
       ? query<{ facet: string; value: string; count: string }>(
           `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
@@ -659,6 +689,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.space_key IS NOT NULL
+             ${facetPolicyClause}
            GROUP BY cp.space_key
            UNION ALL
            SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
@@ -667,6 +698,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
              AND cp.author IS NOT NULL
+             ${facetPolicyClause}
            GROUP BY cp.author
            UNION ALL
            SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
@@ -675,8 +707,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
            WHERE cp.tsv @@ ${parser}('${ftsLang}', $1)
              AND ${visiblePagesPredicate(2, 3)}
              AND cp.deleted_at IS NULL
+             ${facetPolicyClause}
            GROUP BY tag`,
-          [q, searchSpaces, userId],
+          aiPolicy ? [q, searchSpaces, userId, aiPolicy] : [q, searchSpaces, userId],
         )
       : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
 

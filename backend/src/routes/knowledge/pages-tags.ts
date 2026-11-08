@@ -3,6 +3,10 @@ import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { PageWriteError } from '../../core/services/page-write-admission.js';
+import { aiPolicyRefusalFromResult, isAiPolicyRefusal } from '../../core/services/ai-policy-service.js';
+import { sendAiPolicyRefusal } from './page-ai-policy.js';
+import { AiPolicyRefusalError } from '../../core/services/ai-policy-service.js';
+import { ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 import {
   autoTagPage,
   applyTags,
@@ -51,6 +55,15 @@ async function concealLabelWriteDenial<T>(fastify: FastifyInstance, write: Promi
     if (err instanceof PageWriteError && err.reason === LABEL_WRITE_DENIED_REASON) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    // Article AI policy (#281): a label set naming two policies is a client
+    // error; a relaxation label without policy authority is forbidden. The
+    // caller already passed `assertPageAccess`, so neither leaks existence.
+    // A label conflict (`AiPolicyLabelConflictError`) is answered by the
+    // route with its frozen body, so it is rethrown untouched here.
+    if (isAiPolicyRefusal(err)) throw err;
+    if (err instanceof PageWriteError && err.reason === 'ai_policy_not_authorized') {
+      throw aiPolicyRefusalFromResult({ reason: 'not_authorized', pageIds: [] });
+    }
     throw err;
   }
 }
@@ -78,7 +91,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   // of admin-configured (potentially paid) LLM calls becomes a concern, the
   // correct fix is rate-limiting or per-user quotas — not admin-gating one
   // endpoint while leaving chat/RAG unchanged.
-  fastify.post('/pages/:id/auto-tag', async (request) => {
+  fastify.post('/pages/:id/auto-tag', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
@@ -103,6 +116,11 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       const result = await autoTagPage(userId, id, model);
       return result;
     } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+      if (err instanceof ArticleStageRefusedError) {
+        return sendAiPolicyRefusal(reply, new AiPolicyRefusalError(503,
+          { error: 'ai_policy_unavailable', pageIds: [] }, err.message));
+      }
       const message = err instanceof Error ? err.message : String(err);
       const cause = err instanceof Error ? err.cause : undefined;
       const causeName = cause instanceof Error ? cause.name : '';
@@ -128,7 +146,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/apply-tags - apply specific tags to a page
-  fastify.post('/pages/:id/apply-tags', async (request) => {
+  fastify.post('/pages/:id/apply-tags', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { tags } = ApplyTagsBodySchema.parse(request.body);
@@ -143,7 +161,13 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`No valid tags. Allowed: ${ALLOWED_TAGS.join(', ')}`);
     }
 
-    const mergedLabels = await concealLabelWriteDenial(fastify, applyTags(userId, id, validTags));
+    let mergedLabels: string[];
+    try {
+      mergedLabels = await concealLabelWriteDenial(fastify, applyTags(userId, id, validTags));
+    } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+      throw err;
+    }
 
     // Invalidate cache
     await cache.invalidate(userId, 'pages');
@@ -152,7 +176,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/pages/:id/labels - add/remove labels on a single page
-  fastify.put('/pages/:id/labels', async (request) => {
+  fastify.put('/pages/:id/labels', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { addLabels, removeLabels } = UpdateLabelsBodySchema.parse(request.body);
@@ -165,10 +189,16 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     // effect. The service re-resolves the page, re-checks page-edit authority
     // for a local write, and performs the mutation under the lifecycle fence.
     await assertPageAccess(fastify, userId, id);
-    const labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
-      add: addLabels,
-      remove: removeLabels,
-    }));
+    let labels: string[];
+    try {
+      labels = await concealLabelWriteDenial(fastify, applyLabelChanges(userId, id, {
+        add: addLabels,
+        remove: removeLabels,
+      }));
+    } catch (err) {
+      if (isAiPolicyRefusal(err)) return sendAiPolicyRefusal(reply, err);
+      throw err;
+    }
 
     await cache.invalidate(userId, 'pages');
     return { labels };

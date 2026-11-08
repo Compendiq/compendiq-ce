@@ -603,7 +603,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
 
         expect(response.statusCode, response.body).toBe(200);
         expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
-        expect((await pageState(pageId))?.labels).toEqual(expected);
+        expect((await pageState(pageId))?.labels).toEqual([...expected, 'all-ai']);
         expect(externalRequests).toEqual([]);
         const intents = await query<{ count: string }>(
           `SELECT COUNT(*)::text AS count
@@ -804,7 +804,11 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
         'SELECT labels FROM pages WHERE id = $1',
         [pageId],
       );
-      expect(labels.rows[0]!.labels).toEqual(['right']);
+      expect(labels.rows[0]!.labels).toEqual(['right', 'all-ai']);
+      expect(JSON.parse(externalRequests[0]!.body)).toEqual([
+        { prefix: 'global', name: 'right' },
+        { prefix: 'global', name: 'all-ai' },
+      ]);
       expect(externalRequests).toEqual([
         expect.objectContaining({
           method: 'POST',

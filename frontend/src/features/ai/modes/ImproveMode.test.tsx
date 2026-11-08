@@ -368,6 +368,103 @@ describe('ImproveMode', () => {
     });
   });
 
+  // #282: the pending improvement is reusable state whose text proves nothing
+  // about the binding it was generated under. Accept hands the durable row the
+  // final frame named back BY REFERENCE; the server re-admits its recorded
+  // provenance, and only that re-proved text reaches the apply route.
+  describe('#282 Accept re-admits the stored improvement by reference', () => {
+    const IMPROVEMENT_ID = '3f0b2c4e-7a61-4d2b-9c58-1e4f6a8b0d21';
+    const READMIT_PATH = `/llm/improvements/${IMPROVEMENT_ID}/readmit`;
+    const IMPROVED = 'Hello, world.';
+
+    async function runImproveNaming(improvementId: string | undefined) {
+      async function* fakeStream() {
+        yield { content: IMPROVED };
+        yield { originalMarkdown: 'Hello world', done: true, final: true, ...(improvementId && { improvementId }) };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+      await waitFor(() => expect(screen.getByRole('button', { name: /Improve Page/i })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+      await waitFor(() => expect(screen.getByTestId('unified-diff')).toBeInTheDocument());
+    }
+
+    /** DiffView's accept control, by name — its exact label is DiffView's. */
+    function acceptButton(): HTMLElement {
+      return screen.getByRole('button', { name: /accept|apply/i });
+    }
+
+    function routesWithReadmit(readmit: (path: string) => Promise<unknown> | null) {
+      apiFetchMock.mockImplementation((path: string) => {
+        const handled = readmit(path);
+        if (handled) return handled;
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+    }
+
+    it('calls the readmit route before the apply route and applies the re-admitted text', async () => {
+      routesWithReadmit((path) => path === READMIT_PATH
+        ? Promise.resolve({ improvementId: IMPROVEMENT_ID, pageId: 1, improvedMarkdown: IMPROVED, aiProvenance: {} })
+        : null);
+      await runImproveNaming(IMPROVEMENT_ID);
+
+      fireEvent.click(acceptButton());
+
+      await waitFor(() => expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.anything()));
+      const calls = apiFetchMock.mock.calls.map(([path]) => path as string);
+      expect(calls.indexOf(READMIT_PATH)).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf(READMIT_PATH)).toBeLessThan(calls.indexOf('/llm/improvements/apply'));
+      expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.objectContaining({
+        body: JSON.stringify({ pageId: 'page-1', improvedMarkdown: IMPROVED, version: 1, title: 'Test Page' }),
+      }));
+    });
+
+    it('keeps a 409 ai_history_not_replayable on screen, applies nothing and withdraws Accept', async () => {
+      const { ApiError } = await import('../../../shared/lib/api');
+      routesWithReadmit((path) => path === READMIT_PATH ? Promise.reject(new ApiError(409, 'Conflict')) : null);
+      await runImproveNaming(IMPROVEMENT_ID);
+
+      fireEvent.click(acceptButton());
+
+      expect(await screen.findByTestId('improve-readmit-refused')).toHaveTextContent('can no longer be applied');
+      expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
+      // The diff stays — the verdict is about the binding, not the words.
+      expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /accept|apply/i })).not.toBeInTheDocument();
+      expect(toastErrorMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps a 503 ai_policy_unavailable on screen and leaves Accept available to retry', async () => {
+      const { ApiError } = await import('../../../shared/lib/api');
+      routesWithReadmit((path) => path === READMIT_PATH ? Promise.reject(new ApiError(503, 'Unavailable')) : null);
+      await runImproveNaming(IMPROVEMENT_ID);
+
+      fireEvent.click(acceptButton());
+
+      expect(await screen.findByTestId('improve-readmit-refused')).toHaveTextContent('Try Apply again');
+      expect(apiFetchMock).not.toHaveBeenCalledWith('/llm/improvements/apply', expect.anything());
+      expect(acceptButton()).toBeInTheDocument();
+    });
+
+    it('applies the text it has when the stream named no row', async () => {
+      routesWithReadmit(() => null);
+      await runImproveNaming(undefined);
+
+      fireEvent.click(acceptButton());
+
+      await waitFor(() => expect(apiFetchMock).toHaveBeenCalledWith('/llm/improvements/apply', expect.anything()));
+      expect(apiFetchMock.mock.calls.some(([path]) => String(path).endsWith('/readmit'))).toBe(false);
+    });
+  });
+
   it('disables textarea while streaming', async () => {
     // Create a stream that never resolves so isStreaming stays true
     let resolveStream: () => void;

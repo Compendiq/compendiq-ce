@@ -611,7 +611,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(additive.statusCode).toBe(200);
     expect(additive.json()).toMatchObject({ succeeded: 1, failed: 0 });
-    expect((await rowForPage(standalone))?.labels).toEqual(['keep', 'new']);
+    expect((await rowForPage(standalone))?.labels).toEqual(['keep', 'new', 'all-ai']);
 
     const replacement = await app.inject({
       method: 'POST',
@@ -620,7 +620,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(replacement.statusCode).toBe(200);
     expect(replacement.json()).toMatchObject({ succeeded: 1, failed: 0, cancelled: false });
-    expect((await rowForPage(standalone))?.labels).toEqual(['alpha', 'beta']);
+    expect((await rowForPage(standalone))?.labels).toEqual(['alpha', 'beta', 'all-ai']);
     expect(await auditMetadata('BULK_PAGE_TAGGED')).toHaveLength(1);
     expect(await auditMetadata('BULK_PAGE_TAGS_REPLACED')).toHaveLength(1);
   });
@@ -644,7 +644,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
     expect(response.json().errors[0]).toContain('labels rejected upstream');
-    expect((await rowForPage(goodId))?.labels).toEqual(['old', 'new']);
+    expect((await rowForPage(goodId))?.labels).toEqual(['old', 'new', 'all-ai']);
     expect((await rowForPage(badId))?.labels).toEqual(['old']);
     const pending = await query<{ page_ids: number[] }>(
       'SELECT page_ids FROM page_write_intents WHERE settled_at IS NULL',
@@ -669,8 +669,8 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(applied.statusCode).toBe(200);
     expect(applied.json()).toMatchObject({ succeeded: 2, failed: 0 });
-    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
-    expect((await rowForPage(matchingB))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered', 'all-ai']);
+    expect((await rowForPage(matchingB))?.labels).toEqual(['filtered', 'all-ai']);
     expect((await rowForPage(hidden))?.labels).toEqual([]);
 
     const drift = await app.inject({
@@ -685,7 +685,7 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     });
     expect(drift.statusCode).toBe(409);
     expect(drift.json()).toMatchObject({ error: 'CountDrift', expected: 20, actual: 2 });
-    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered']);
+    expect((await rowForPage(matchingA))?.labels).toEqual(['filtered', 'all-ai']);
   });
 
   it('does not expose or mutate a Confluence page outside the caller space assignment', async () => {

@@ -429,6 +429,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       );
       const pageId = page.rows[0]!.id;
 
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>fresh body text long enough to embed properly for the test</p>']);
       const chunks = await embedPage(USER, pageId, 'Fresh page', '', '<p>fresh body text long enough to embed properly for the test</p>');
       expect(chunks).toBeGreaterThan(0);
 
@@ -460,6 +461,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       );
       const pageId = page.rows[0]!.id;
 
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>fresh body text long enough to embed properly for the test</p>']);
       const chunks = await embedPage(USER, pageId, 'Fresh page', '', '<p>fresh body text long enough to embed properly for the test</p>');
       expect(chunks).toBeGreaterThan(0);
 
@@ -567,6 +569,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
         return texts.map((_, i) => Array.from({ length: model === SHADOW_MODEL ? 8 : 1024 }, (_2, j) => Math.sin((j + 1) * (i + 3)) * 0.01));
       });
 
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>racing body text long enough to embed properly</p>']);
       const chunks = await embedPage(USER, pageId, 'Racing page', '', '<p>racing body text long enough to embed properly</p>');
       expect(swapped).toBe(true);
       expect(chunks).toBe(0); // aborted, not written
@@ -587,6 +590,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       );
       const pageId = page.rows[0]!.id;
 
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>fresh body text long enough to embed properly for the test</p>']);
       const chunks = await embedPage(USER, pageId, 'Fresh page', '', '<p>fresh body text long enough to embed properly for the test</p>');
       expect(chunks).toBeGreaterThan(0);
 
@@ -620,6 +624,7 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
       await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, '<p>alpha content about hooks and plugins, long enough to embed properly</p>']);
 
       generateEmbeddingMock.mockClear();
+      await query("UPDATE pages SET space_key = 'SPACE', body_html = $2 WHERE id = $1", [pageId, '<p>alpha content about hooks and plugins, long enough to embed properly</p>']);
       await embedPage(USER, pageId, 'Doc A', 'SPACE', '<p>alpha content about hooks and plugins, long enough to embed properly</p>');
       const liveTexts = generateEmbeddingMock.mock.calls.flatMap((c) => c[2] as string[]);
       expect(liveTexts.length).toBeGreaterThan(0);

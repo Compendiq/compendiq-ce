@@ -28,4 +28,13 @@ export const noopPlugin: EnterprisePlugin = {
   version: 'community',
 
   resolveUsecaseOverride: async () => null,
+  persistAiPolicyChange: async () => {},
+  onAiDecision: () => {},
+
+  // Inert CE creation default (SPEC-CORE-001).
+  resolveAiPolicyCreationDefault: async () => 'all',
+
+  // Foundation-only: no worker enforcement, so restrictive policies cannot
+  // be activated.
+  aiPolicyEnforcementAvailable: () => false,
 };

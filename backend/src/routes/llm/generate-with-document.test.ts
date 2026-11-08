@@ -18,8 +18,8 @@ vi.mock('../../domains/llm/services/prompts.js', () => ({
 // Mock llm-provider-resolver (resolveUsecase)
 const mockResolveUsecase = vi.fn().mockResolvedValue({
   config: {
-    providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
-    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+    providerId: '11111111-1111-4111-8111-111111111111', baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm', configRevision: 1,
   },
   model: 'm',
 });
@@ -38,11 +38,8 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../core/db/postgres.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
+import { setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
 
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
@@ -131,6 +128,11 @@ describe('POST /api/llm/generate with documentText', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(`INSERT INTO llm_providers (id, name, base_url, auth_type, default_model)
+      VALUES ('11111111-1111-4111-8111-111111111111', 'X', 'http://x/v1', 'none', 'm'),
+             ('22222222-2222-4222-8222-222222222222', 'Custom', 'http://custom/v1', 'none', 'resolved-model')`);
     app = Fastify({ logger: false });
     await app.register(sensible);
 
@@ -139,7 +141,7 @@ describe('POST /api/llm/generate with documentText', () => {
     app.decorate('redis', {});
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
-      request.userId = 'test-user-123';
+      request.userId = '33333333-3333-4333-8333-333333333333';
       request.userCan = async () => true;
     });
 
@@ -149,6 +151,7 @@ describe('POST /api/llm/generate with documentText', () => {
 
   afterAll(async () => {
     await app.close();
+    await teardownTestDb();
   });
 
   beforeEach(() => {
@@ -159,8 +162,8 @@ describe('POST /api/llm/generate with documentText', () => {
     mockFormatWebContext.mockReturnValue('');
     mockResolveUsecase.mockResolvedValue({
       config: {
-        providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
-        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+        providerId: '11111111-1111-4111-8111-111111111111', baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm', configRevision: 1,
       },
       model: 'm',
     });
@@ -280,13 +283,13 @@ describe('POST /api/llm/generate with documentText', () => {
     mockStreamChat.mockReturnValue(mockGenerator());
     mockResolveUsecase.mockResolvedValue({
       config: {
-        providerId: 'custom-provider',
+        providerId: '22222222-2222-4222-8222-222222222222',
         baseUrl: 'http://custom/v1',
         apiKey: null,
         authType: 'none',
         verifySsl: true,
         name: 'Custom Provider',
-        defaultModel: 'resolved-model',
+        defaultModel: 'resolved-model', configRevision: 1,
       },
       model: 'resolved-model',
     });
@@ -304,7 +307,7 @@ describe('POST /api/llm/generate with documentText', () => {
       expect.objectContaining({
         action: 'generate',
         model: 'resolved-model',
-        provider: 'custom-provider',
+        provider: '22222222-2222-4222-8222-222222222222',
       }),
     );
   });
@@ -335,7 +338,7 @@ describe('POST /api/llm/generate with documentText', () => {
     });
 
     expect(logAuditEvent).toHaveBeenCalledWith(
-      'test-user-123',
+      '33333333-3333-4333-8333-333333333333',
       'PROMPT_INJECTION_DETECTED',
       'llm',
       undefined,
@@ -364,10 +367,10 @@ describe('POST /api/llm/generate with documentText', () => {
       payload: { prompt: 'Write about Docker', model: 'llama3', searchWeb: true, searchQuery: 'q' },
     });
 
-    expect(mockFetchWebSources).toHaveBeenCalledWith('q', 'test-user-123');
+    expect(mockFetchWebSources).toHaveBeenCalledWith('q', '33333333-3333-4333-8333-333333333333');
     expect(logAuditEvent).toHaveBeenCalledTimes(1);
     expect(logAuditEvent).toHaveBeenCalledWith(
-      'test-user-123',
+      '33333333-3333-4333-8333-333333333333',
       'PROMPT_INJECTION_DETECTED',
       'llm',
       undefined,

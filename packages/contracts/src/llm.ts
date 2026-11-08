@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ImageAnalysisIdentitySchema } from './image-analysis.js';
+import { ProviderLocalitySchema } from './schemas/ai-policy.js';
 
 // ─── Use-cases (#1104 adds 'rerank' — see ADR-021 amendment: it targets a
 // /v1/rerank endpoint via a dedicated client, and UNASSIGNED means the
@@ -32,6 +33,13 @@ export const LlmProviderInputSchema = z.object({
   authType: LlmAuthTypeSchema,
   verifySsl: z.boolean(),
   defaultModel: z.string().trim().min(1).max(200).nullable().optional(),
+  /**
+   * #280 — provider locality declared by the admin together with the
+   * endpoint. Omitted means `external` (never `local` by default). A `local`
+   * declaration is bound to the configuration revision the write produces;
+   * any later endpoint edit invalidates it until it is re-declared.
+   */
+  locality: ProviderLocalitySchema.optional(),
 });
 export type LlmProviderInput = z.infer<typeof LlmProviderInputSchema>;
 
@@ -50,6 +58,13 @@ export const LlmProviderSchema = z.object({
   keyPreview: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** #280 — declared locality and the configuration revision it was declared against. */
+  locality: ProviderLocalitySchema,
+  configRevision: z.number().int().nonnegative(),
+  localityDeclaredAt: z.string().nullable(),
+  localityDeclaredBy: z.string().nullable(),
+  /** `locality = 'local'` AND declared against the CURRENT config revision. */
+  localConfirmed: z.boolean(),
 });
 export type LlmProvider = z.infer<typeof LlmProviderSchema>;
 
@@ -135,8 +150,51 @@ export const UsecaseDefaultSchema = z.object({
   // NOTE (#1184): `probeError` / `probedAt` deliberately do NOT belong here.
   // This route is `fastify.authenticate`, not `requireAdmin`. The evidence
   // behind a verdict lives on `VisionCapabilityDetailSchema` below.
+  // NOTE (#283): declared locality does not belong here either — this
+  // object's exact key set is pinned by `llm-usecases-vision.test.ts` as the
+  // non-admin leak boundary. It has its own route and schema,
+  // `UsecaseLocalitySchema`, below.
 });
 export type UsecaseDefault = z.infer<typeof UsecaseDefaultSchema>;
+
+/**
+ * #283 — `GET /llm/usecase-locality?usecase=…`: the DECLARED locality of the
+ * provider a use case resolves to, so a `local_only` article surface can say
+ * whether THIS use case's destination is admitted without inferring it from
+ * the default chat row, a URL, a name or a probe.
+ *
+ * `locality` is `null` when the provider row could not be read: unknown is
+ * never `local`, and a consumer treats null as "not admitted for
+ * local_only". `localityConfirmed` is `LlmProviderSchema.localConfirmed` —
+ * `local` declared against the CURRENT configuration revision. A `local`
+ * declaration left behind by an endpoint edit is `locality: 'local',
+ * localityConfirmed: false` and does not admit `local_only` content.
+ *
+ * Authenticated, not admin: it names a category of the destination (the
+ * same two words the provider list shows every reader of Settings), never
+ * an endpoint, a key or a probe body.
+ */
+export const UsecaseLocalitySchema = z.object({
+  usecase: LlmUsecaseSchema,
+  providerId: z.string().uuid(),
+  providerName: z.string(),
+  locality: ProviderLocalitySchema.nullable(),
+  localityConfirmed: z.boolean(),
+}).strict();
+export type UsecaseLocality = z.infer<typeof UsecaseLocalitySchema>;
+
+/**
+ * Whether a use case's resolved destination may receive `local_only`
+ * article content, from a `UsecaseLocality` row. Fail closed: unknown
+ * locality, an unconfirmed declaration, a missing row or a server that
+ * predates the route all say no. This is a DISPLAY verdict for the shared
+ * frontend; the server admits or refuses each dispatch independently.
+ */
+export function usecaseAdmitsLocalOnly(
+  row: { locality?: 'local' | 'external' | null; localityConfirmed?: boolean } | null | undefined,
+): boolean {
+  return !!row && row.locality === 'local' && row.localityConfirmed === true;
+}
 
 // ─── Admin-only capability detail (#1184) ────────────────────────────────
 /**

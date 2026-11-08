@@ -1,15 +1,29 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { PageIcon, PageLifecycleState, SettablePageIcon } from '@compendiq/contracts';
-import { apiFetch } from '../lib/api';
+import {
+  AiPolicyConflictSchema,
+  AiPolicyDeniedSchema,
+  AiPolicyLabelConflictSchema,
+  type AiPolicy,
+  type AiPolicyFilter,
+  type PageIcon,
+  type PageLifecycleState,
+  type SettablePageIcon,
+  type PageAiPolicyDetailFields,
+  type PageAiPolicyWorkerFields,
+  type PageEmbeddingStatus,
+  type PageQualityStatus,
+  type PageSummaryStatus,
+} from '@compendiq/contracts';
+import { apiFetch, ApiError } from '../lib/api';
 import { useOnboardingActions } from './use-onboarding';
 
-export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
-export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
-export type SummaryStatus = 'pending' | 'summarizing' | 'summarized' | 'failed' | 'skipped';
+export type EmbeddingStatus = PageEmbeddingStatus;
+export type QualityStatus = PageQualityStatus;
+export type SummaryStatus = PageSummaryStatus;
 export type PageType = 'page' | 'folder';
 
-interface PageSummary {
+export interface PageSummary extends PageAiPolicyWorkerFields {
   id: string;
   confluenceId: string | null;
   // Standalone pages have no Confluence space — the list/detail routes return
@@ -50,9 +64,18 @@ interface PageSummary {
   isFrozen?: boolean;
   baselineId?: string | null;
   frozenVersion?: number | null;
+  /**
+   * #283: the stored article AI policy and its compare-and-set revision on
+   * the LIST wire, so a bulk policy action sends `expectedRevision` for every
+   * selected row. Absent on a server that predates the fields — unknown,
+   * never `all`, and a row without them cannot be included in a bulk policy
+   * request.
+   */
+  aiPolicy?: AiPolicy;
+  aiPolicyRevision?: number;
 }
 
-interface PageDetail extends PageSummary, Partial<PageLifecycleState> {
+interface PageDetail extends PageSummary, Partial<PageLifecycleState>, PageAiPolicyDetailFields {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
@@ -99,6 +122,13 @@ export interface PageFilters {
   qualityMax?: number;
   qualityStatus?: QualityStatus;
   source?: 'confluence' | 'standalone';
+  /**
+   * #283 Library AI-policy filter — the validated contract value sent as the
+   * real `aiPolicy` query parameter and included in the query key, so a
+   * filtered list is its own cache entry. `undefined` is "All articles" (no
+   * filter), which is NOT the `all` policy.
+   */
+  aiPolicy?: AiPolicyFilter;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -117,13 +147,13 @@ export function usePages(params: PageFilters = {}) {
   const {
     spaceKey, search, author, labels, freshness,
     embeddingStatus, qualityMin, qualityMax, qualityStatus,
-    source, dateFrom, dateTo, page, limit, sort,
+    source, aiPolicy, dateFrom, dateTo, page, limit, sort,
     enabled = true,
   } = params;
 
   const queryKey = useMemo(
-    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort }] as const,
-    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort],
+    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, aiPolicy, dateFrom, dateTo, page, limit, sort }] as const,
+    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, aiPolicy, dateFrom, dateTo, page, limit, sort],
   );
 
   const qs = useMemo(() => {
@@ -138,13 +168,14 @@ export function usePages(params: PageFilters = {}) {
     if (qualityMax !== undefined) sp.set('qualityMax', String(qualityMax));
     if (qualityStatus) sp.set('qualityStatus', qualityStatus);
     if (source) sp.set('source', source);
+    if (aiPolicy) sp.set('aiPolicy', aiPolicy);
     if (dateFrom) sp.set('dateFrom', dateFrom);
     if (dateTo) sp.set('dateTo', dateTo);
     if (page) sp.set('page', String(page));
     if (limit) sp.set('limit', String(limit));
     if (sort) sp.set('sort', sort);
     return sp.toString();
-  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort]);
+  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, aiPolicy, dateFrom, dateTo, page, limit, sort]);
 
   return useQuery<PaginatedPages>({
     queryKey,
@@ -345,6 +376,46 @@ export function useUploadPageIcon() {
   });
 }
 
+/**
+ * The typed outcome of an article-AI-policy refusal (#283), decoded from the
+ * frozen contract bodies the page/label/bulk routes answer with. Anything
+ * that is not one of those bodies is `null`, and the caller falls back to the
+ * generic message. No body is ever paraphrased into a different verdict.
+ */
+export type AiPolicyRefusal =
+  | { kind: 'denied'; pageIds: number[] }
+  | { kind: 'conflict'; pageIds: number[] }
+  | { kind: 'label_conflict'; policies: AiPolicy[] }
+  | { kind: 'enforcement_unavailable' }
+  | { kind: 'unavailable' };
+
+export function describeAiPolicyRefusal(error: unknown): AiPolicyRefusal | null {
+  if (!(error instanceof ApiError)) return null;
+  const denied = AiPolicyDeniedSchema.safeParse(error.body);
+  if (denied.success) return { kind: 'denied', pageIds: denied.data.pageIds };
+  const conflict = AiPolicyConflictSchema.safeParse(error.body);
+  if (conflict.success) return { kind: 'conflict', pageIds: conflict.data.pageIds };
+  const labels = AiPolicyLabelConflictSchema.safeParse(error.body);
+  if (labels.success) return { kind: 'label_conflict', policies: labels.data.policies };
+  const body = error.body as { error?: unknown } | null;
+  if (body?.error === 'ai_policy_enforcement_unavailable') return { kind: 'enforcement_unavailable' };
+  if (body?.error === 'ai_policy_unavailable' || error.statusCode === 503) return { kind: 'unavailable' };
+  return null;
+}
+
+/**
+ * Label writes go through the server's normalizer and policy authority
+ * (#283): a reserved label (`no-ai`, `local-ai-only`, `all-ai` and their
+ * synonyms) can tighten or — with authority — relax the article's policy, a
+ * contradictory set is a 422 `ai_policy_label_conflict`, and removing a
+ * reserved label alone leaves the policy and its canonical label in place.
+ *
+ * Therefore NO optimistic update: the label set the server commits is not
+ * the set the client asked for (synonyms normalize, a canonical policy label
+ * is restored, a refused write changes nothing), and painting the requested
+ * set first would show a policy indicator the server never agreed to. Only
+ * the committed response enters the cache.
+ */
 export function useUpdatePageLabels() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -353,27 +424,53 @@ export function useUpdatePageLabels() {
         method: 'PUT',
         body: JSON.stringify({ addLabels, removeLabels }),
       }),
-    onMutate: async ({ id, addLabels = [], removeLabels = [] }) => {
-      await queryClient.cancelQueries({ queryKey: ['pages', id] });
-      const previous = queryClient.getQueryData<PageDetail>(['pages', id]);
-      queryClient.setQueryData<PageDetail>(['pages', id], (old) => {
-        if (!old) return old;
-        const next = old.labels
-          .filter((l) => !removeLabels.includes(l))
-          .concat(addLabels.filter((l) => !old.labels.includes(l)));
-        return { ...old, labels: next };
-      });
-      return { previous };
-    },
-    onError: (_err, variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(['pages', variables.id], context.previous);
+    onSuccess: (data, variables) => {
+      if (Array.isArray(data?.labels)) {
+        queryClient.setQueryData<PageDetail>(['pages', variables.id], (old) =>
+          old ? { ...old, labels: data.labels } : old,
+        );
       }
     },
     onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
       queryClient.invalidateQueries({ queryKey: ['pages', 'filters'], refetchType: 'none' });
+    },
+  });
+}
+
+/** One selected row's compare-and-set key for the bulk policy request. */
+export interface BulkAiPolicyItem {
+  pageId: number;
+  expectedRevision: number;
+}
+
+/**
+ * The route's success body is not relied on for the UI's verdict: a 2xx
+ * means the server committed the policy on EVERY item (all-or-nothing), and
+ * the lists are re-read from the server rather than painted from this.
+ */
+export type BulkAiPolicyResult = Record<string, unknown> | undefined;
+
+/**
+ * `POST /pages/bulk/ai-policy` (#283): the all-or-nothing policy change for
+ * a Library selection. Every item carries the revision the list showed; the
+ * server refuses the WHOLE request on any unauthorized (403), stale (409) or
+ * inaccessible row, and the caller shows that verdict — never a partial
+ * success and never a title the caller could not otherwise read. No cache is
+ * touched until the server commits; on success every page query is
+ * invalidated so lists and details re-read the committed state.
+ */
+export function useBulkUpdateAiPolicy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ aiPolicy, items }: { aiPolicy: AiPolicy; items: BulkAiPolicyItem[] }) =>
+      apiFetch<BulkAiPolicyResult>('/pages/bulk/ai-policy', {
+        method: 'POST',
+        body: JSON.stringify({ aiPolicy, items }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }

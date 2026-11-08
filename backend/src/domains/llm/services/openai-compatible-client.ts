@@ -19,10 +19,55 @@ import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import type { ChatMessage } from './prompts.js';
 import { LlmHttpError, ERROR_BODY_MAX_CHARS } from './llm-http-error.js';
+import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { authorizeArticleDispatch, type ArticleStageContext } from './article-stage-admission.js';
+
+/** Server-derived article snapshot, retained across queue waits and retries. */
+export interface ArticleTransportStage {
+  provenance: ConversationTurnAiProvenance;
+  userId: string | null;
+  usecase: string;
+  context: ArticleStageContext;
+}
+
+export type TransportContext =
+  | { kind: 'article'; stage: ArticleTransportStage }
+  | { kind: 'non_article'; purpose: 'provider_probe' | 'user_query' | 'synthetic_evaluation' };
+
+async function authorizeTransport(cfg: ProviderConfig, model: string, context: TransportContext): Promise<void> {
+  if (!context || typeof context !== 'object') throw new Error('ai_policy_unavailable');
+  if (context.kind === 'non_article') {
+    if (!['provider_probe', 'user_query', 'synthetic_evaluation'].includes(context.purpose)) throw new Error('ai_policy_unavailable');
+    return;
+  }
+  if (context.kind !== 'article' || !context.stage?.provenance || !context.stage.context
+    || typeof context.stage.usecase !== 'string'
+    || (context.stage.userId !== null && typeof context.stage.userId !== 'string')) throw new Error('ai_policy_unavailable');
+  const stage = context.stage;
+  await authorizeArticleDispatch(cfg, stage.provenance, stage.userId, stage.usecase, stage.context, model);
+}
 export type { ChatMessage, ChatContentPart } from './prompts.js';
 export { LlmHttpError } from './llm-http-error.js';
 
+/**
+ * The provider closed a streaming response WITHOUT its `data: [DONE]`
+ * terminator. Whatever text arrived before the EOF is a PREFIX of unknown
+ * length, not a completion: a proxy timeout, a crashed worker or a dropped
+ * socket all look exactly like this. It is thrown rather than yielded as
+ * `done: true` so no consumer can cache, publish or audit the prefix as a
+ * successful result. Not an `LlmHttpError` (no status was involved) and not
+ * counted against the breaker (the dispatch itself succeeded).
+ */
+export class StreamIncompleteError extends Error {
+  constructor(public readonly receivedCharacters: number) {
+    super('streamChat: provider ended the stream before [DONE]');
+    this.name = 'StreamIncompleteError';
+  }
+}
+
 export interface ProviderConfig {
+  /** Revision read in the same SQL row as the resolved transport. */
+  configRevision?: number;
   providerId: string;
   baseUrl: string;           // OpenAI-compatible root (typically …/v1)
   apiKey: string | null;
@@ -273,6 +318,9 @@ export const __test_only__ = {
 };
 
 export interface StreamChatOptions {
+  transportContext: TransportContext;
+  /** Article authority recheck at the receiving stage, after queue waits. */
+  beforeDispatch?: () => Promise<void>;
   thinking?: boolean;
   /**
    * Caps the reply length, mapped straight to the standard `max_tokens`
@@ -496,7 +544,7 @@ export interface ChatCompletionOptions extends StreamChatOptions {
  * one, and the analysis path (D8) must not.
  */
 export async function chatCompletion(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: ChatCompletionOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: ChatCompletionOptions,
 ): Promise<ChatCompletionResult> {
   // Created BEFORE enqueue so the budget covers queue wait too (see
   // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
@@ -508,8 +556,12 @@ export async function chatCompletion(
   // disabled (withSpan passes straight through).
   return withSpan(
     'llm.chat',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
+    () => enqueue(async (signal) => {
+      await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal.throwIfAborted();
+      deadline?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
@@ -538,14 +590,14 @@ export async function chatCompletion(
               }
             : null,
         };
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
 }
 
 export async function chat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts: StreamChatOptions,
 ): Promise<string> {
   return (await chatCompletion(cfg, model, messages, opts)).text;
 }
@@ -560,14 +612,18 @@ export async function chat(
  * circuit subsequent calls.
  */
 export async function* streamChat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, opts?: StreamChatOptions,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal: AbortSignal | undefined, opts: StreamChatOptions,
 ): AsyncGenerator<StreamChunk> {
   // The span covers only the dispatch (breaker + initial HTTP request), not
   // the stream consumption — a span held open for the whole stream would
   // outlive minutes-long generations and skew duration percentiles.
   const res = await withSpan(
     'llm.stream_chat.dispatch',
-    () => getProviderBreaker(cfg.providerId).execute(async () => {
+    async () => {
+      await opts?.beforeDispatch?.();
+      await authorizeTransport(cfg, model, opts?.transportContext);
+      signal?.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
       const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),
@@ -577,7 +633,8 @@ export async function* streamChat(
       });
       if (!r.ok || !r.body) throw new LlmHttpError('streamChat', r.status, await boundedErrorDetail(r));
       return r;
-    }),
+      });
+    },
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
   const reader = res.body!.getReader();
@@ -589,6 +646,10 @@ export async function* streamChat(
   // Think-off drops it. The flag is closed on the first visible token or
   // at [DONE] so a reasoning-only stream still emits a well-formed block.
   let thinkOpen = false;
+  // Visible characters delivered so far — reported on the incomplete-stream
+  // error so an operator can tell a dropped-at-byte-zero stream from one
+  // cut mid-answer, without the error carrying any of the text itself.
+  let received = 0;
   let receivedDone = false;
   const onData = (rawData: string): void => {
     if (receivedDone) return;
@@ -631,6 +692,7 @@ export async function* streamChat(
         }
       }
       if (content) {
+        received += content.length;
         if (thinkOpen) {
           pendingChunks.push({ content: `</think>${content}`, done: false });
           thinkOpen = false;
@@ -664,20 +726,28 @@ export async function* streamChat(
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
   }
+  // EOF before `[DONE]`: the provider (or a proxy between us) closed the
+  // socket mid-answer. The text so far is a prefix, not a result — see
+  // StreamIncompleteError. A consumer that is itself being torn down by a
+  // client disconnect never reaches here (generator.return() exits the
+  // loop above through the finally), so this only fires on a real EOF.
   if (!receivedDone) {
     if (thinkOpen) yield { content: '</think>', done: false };
-    throw new Error('Provider stream ended before [DONE]');
+    if (signal?.aborted) return;
+    throw new StreamIncompleteError(received);
   }
 }
 
 export async function generateEmbedding(
-  cfg: ProviderConfig, model: string, text: string | string[],
+  cfg: ProviderConfig, model: string, text: string | string[], transportContext: TransportContext,
 ): Promise<number[][]> {
   const input = Array.isArray(text) ? text : [text];
   return withSpan(
     'llm.embeddings',
-    () => enqueue((signal) =>
-      getProviderBreaker(cfg.providerId).execute(async () => {
+    () => enqueue(async (signal) => {
+      await authorizeTransport(cfg, model, transportContext);
+      signal.throwIfAborted();
+      return getProviderBreaker(cfg.providerId).execute(async () => {
         const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
           method: 'POST',
           headers: headers(cfg),
@@ -703,8 +773,8 @@ export async function generateEmbedding(
         }
         const body = await res.json() as { data: Array<{ embedding: number[] }> };
         return body.data.map((d) => d.embedding);
-      }),
-    ),
+      });
+    }),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model, 'llm.input_count': input.length },
   );
 }

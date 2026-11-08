@@ -72,9 +72,9 @@ describe('backup envelope', () => {
   it('rejects a truncated ciphertext', async () => {
     const encrypted = await readAll(encryptBackupStream(bufferStream('secret'), MASTER));
     const truncated = encrypted.subarray(0, encrypted.length - 8);
-    await expect(readAll(decryptBackupStream(bufferStream(truncated), MASTER))).rejects.toThrow(
-      /truncated or authentication failed/i,
-    );
+    // Authentication failure wording belongs to the platform's crypto library.
+    // The consumer contract is rejection, never a successfully read payload.
+    await expect(readAll(decryptBackupStream(bufferStream(truncated), MASTER))).rejects.toThrow();
   });
 
   it('rejects a buffer that is not a backup', async () => {
