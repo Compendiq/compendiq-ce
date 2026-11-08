@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { focusManager, onlineManager, QueryObserver } from '@tanstack/react-query';
-import { useAuthStore } from '../../stores/auth-store';
+import { AUTH_STORAGE_KEY, useAuthStore } from '../../stores/auth-store';
 import { useSessionInit } from '../hooks/useSessionInit';
 import { apiFetch, refreshAccessTokenOnce, RefreshUnavailableError } from './api';
 import { createQueryClient } from './query-client';
@@ -58,7 +58,7 @@ describe.each(['direct', 'reactive', 'proactive'] as const)('%s refresh success 
       useAuthStore.getState().setAuth(`synthetic.${payload}.signature`, USER);
     }
     const before = useAuthStore.getState();
-    const persistedBefore = localStorage.getItem('compendiq-auth');
+    const persistedBefore = localStorage.getItem(AUTH_STORAGE_KEY);
     const mutations = vi.fn();
     const unsubscribe = useAuthStore.subscribe(mutations);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -72,7 +72,7 @@ describe.each(['direct', 'reactive', 'proactive'] as const)('%s refresh success 
       await expect(result).rejects.toBeInstanceOf(RefreshUnavailableError);
       await vi.advanceTimersByTimeAsync(5_000);
       expect(useAuthStore.getState()).toBe(before);
-      expect(localStorage.getItem('compendiq-auth')).toBe(persistedBefore);
+      expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBe(persistedBefore);
       expect(mutations).not.toHaveBeenCalled();
       expect(fetchSpy.mock.calls.filter(([url]) => url === '/api/auth/refresh')).toHaveLength(1);
       // The reactive caller may make its initial request, but never replays it.
@@ -137,7 +137,7 @@ describe('refresh safety at automatic consumer boundaries', () => {
     const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60 }));
     useAuthStore.getState().setAuth(`synthetic.${payload}.signature`, USER);
     const before = useAuthStore.getState();
-    const persistedBefore = localStorage.getItem('compendiq-auth');
+    const persistedBefore = localStorage.getItem(AUTH_STORAGE_KEY);
     const held = Promise.withResolvers<Response>();
     let refreshes = 0;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
@@ -178,7 +178,7 @@ describe('refresh safety at automatic consumer boundaries', () => {
       expect(queryFn.mock.calls.length).toBeGreaterThan(2);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(useAuthStore.getState()).toBe(before);
-      expect(localStorage.getItem('compendiq-auth')).toBe(persistedBefore);
+      expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBe(persistedBefore);
     } finally {
       client.unmount();
       client.clear();

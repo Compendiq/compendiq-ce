@@ -200,9 +200,13 @@ marker ≥ 1:
   `registerRoutes` (the `ipAllowlistHook` precedent), so EE's exchange route
   is covered without EE code. CORS: `@fastify/cors` has no `allowedHeaders`
   (`app.ts:150-163`), so requested headers are reflected; leave it unset.
+Cross-tab isolation (added after the Opus 5.5 PR review): the SPA's
+persisted auth key and `BroadcastChannel` are versioned
+(`compendiq-auth:p1`), so a legacy tab neither adopts tokens refreshed by
+policy-aware tabs nor signs them out when its own refresh is refused; the
+new bundle copies the unversioned blob once and leaves it in place.
 Residual risk (documented): a legacy tab keeps content it already loaded,
-and its current access token, for at most the access-token lifetime; a
-legacy tab may adopt a sibling new tab's token through shared storage. The
+and its current access token, for at most the access-token lifetime. The
 acknowledgement override accepts exactly that bounded window, and is
 recorded with the observed users in the audit event.
 

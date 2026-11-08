@@ -1,13 +1,43 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { AI_POLICY_CLIENT_PROTOCOL_VERSION } from '@compendiq/contracts';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 // Used only inside setAuth, so the import cycle (editor-drafts reads this
 // store) never touches an uninitialised binding.
 import { forgetDraftSignOut } from '../shared/lib/editor-drafts';
 
+/**
+ * The persisted auth key and the cross-tab channel carry the client protocol
+ * version (#1881). A pre-handshake bundle still open in another tab keeps
+ * using the unversioned `compendiq-auth` names, so it can neither adopt this
+ * bundle's access tokens (which would outlive its own one-token-lifetime
+ * residual) nor sign this bundle's tabs out when the server refuses its
+ * session with `client_reload_required`. Bump only together with
+ * `AI_POLICY_CLIENT_PROTOCOL_VERSION`.
+ */
+export const AUTH_STORAGE_KEY = `compendiq-auth:p${AI_POLICY_CLIENT_PROTOCOL_VERSION}`;
+const UNVERSIONED_AUTH_STORAGE_KEY = 'compendiq-auth';
+
 // One-time migrations for localStorage key renames
-migrateStorageKey('kb-auth', 'compendiq-auth');
-migrateStorageKey('atlasmind-auth', 'compendiq-auth');
+migrateStorageKey('kb-auth', UNVERSIONED_AUTH_STORAGE_KEY);
+migrateStorageKey('atlasmind-auth', UNVERSIONED_AUTH_STORAGE_KEY);
+adoptUnversionedAuthState();
+
+/**
+ * Upgrade path: keep a signed-in user signed in by COPYING the unversioned
+ * blob (user + isAuthenticated; the token never persists) to the versioned
+ * key once. The unversioned key is left in place on purpose: removing it
+ * would fire a `storage` event that signs out every pre-upgrade tab.
+ */
+function adoptUnversionedAuthState(): void {
+  try {
+    if (localStorage.getItem(AUTH_STORAGE_KEY) !== null) return;
+    const unversioned = localStorage.getItem(UNVERSIONED_AUTH_STORAGE_KEY);
+    if (unversioned !== null) localStorage.setItem(AUTH_STORAGE_KEY, unversioned);
+  } catch {
+    // localStorage unavailable — nothing to adopt
+  }
+}
 
 /**
  * Zustand persist rehydrates asynchronously. ProtectedRoute's boot skeleton
@@ -17,7 +47,7 @@ migrateStorageKey('atlasmind-auth', 'compendiq-auth');
  */
 export function peekPersistedSession(): boolean {
   try {
-    const raw = localStorage.getItem('compendiq-auth');
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) return false;
     const parsed = JSON.parse(raw) as { state?: { isAuthenticated?: boolean } };
     return parsed.state?.isAuthenticated === true;
@@ -56,7 +86,7 @@ type AuthBroadcast =
 // persists) — each tab then re-mints its own token from the refresh cookie.
 const authChannel: BroadcastChannel | null =
   typeof BroadcastChannel !== 'undefined'
-    ? new BroadcastChannel('compendiq-auth')
+    ? new BroadcastChannel(AUTH_STORAGE_KEY)
     : null;
 
 // Re-entrancy guard: while applying a message received from another tab we must
@@ -106,7 +136,7 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: 'compendiq-auth',
+      name: AUTH_STORAGE_KEY,
       // Bumped 0→1 to strip a legacy on-disk access token on first load after
       // upgrade (see `migrate`).
       version: 1,
@@ -133,7 +163,7 @@ export const useAuthStore = create<AuthState>()(
 /**
  * Cross-tab coordination:
  *
- * 1. BroadcastChannel('compendiq-auth') — in-memory, same-origin. Carries the
+ * 1. BroadcastChannel(AUTH_STORAGE_KEY) — in-memory, same-origin. Carries the
  *    access token (token adoption) and logout between tabs WITHOUT persisting
  *    the token. Received messages are applied with the re-entrancy guard so we
  *    don't echo them back.
@@ -166,7 +196,7 @@ if (authChannel) {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    if (event.key !== 'compendiq-auth') return;
+    if (event.key !== AUTH_STORAGE_KEY) return;
 
     if (event.newValue === null) {
       // localStorage was cleared (logout in another tab). Apply under the

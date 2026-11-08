@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useAuthStore } from './stores/auth-store';
+import { AUTH_STORAGE_KEY, useAuthStore } from './stores/auth-store';
 import { createQueryClient } from './shared/lib/query-client';
 import { App } from './App';
 
@@ -437,7 +437,7 @@ describe('App – boot loading chrome', () => {
 
   afterEach(() => {
     useAuthStore.getState().clearAuth();
-    localStorage.removeItem('compendiq-auth');
+    localStorage.removeItem(AUTH_STORAGE_KEY);
   });
 
   function renderApp(initialPath = '/') {
@@ -488,7 +488,7 @@ describe('App – boot loading chrome', () => {
       isAuthenticated: false,
     });
     localStorage.setItem(
-      'compendiq-auth',
+      AUTH_STORAGE_KEY,
       JSON.stringify({
         state: {
           isAuthenticated: true,

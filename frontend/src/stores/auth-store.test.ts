@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
-import { peekPersistedSession, useAuthStore } from './auth-store';
+import { AUTH_STORAGE_KEY, peekPersistedSession, useAuthStore } from './auth-store';
 
 // BroadcastChannel instances created by individual tests. Closed in afterEach
 // so a stray async message can't leak into the next test.
@@ -40,7 +40,7 @@ describe('auth-store', () => {
     expect(useAuthStore.getState().accessToken).toBe('test-token-123');
 
     // Absent from the persisted localStorage blob; only non-sensitive state persists.
-    const stored = JSON.parse(localStorage.getItem('compendiq-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
     expect(stored.state.accessToken).toBeUndefined();
     expect(stored.state.isAuthenticated).toBe(true);
     expect(stored.state.user.username).toBe('alice');
@@ -49,11 +49,11 @@ describe('auth-store', () => {
   it('peeks a persisted session without waiting for rehydrate', () => {
     expect(peekPersistedSession()).toBe(false);
     localStorage.setItem(
-      'compendiq-auth',
+      AUTH_STORAGE_KEY,
       JSON.stringify({ state: { isAuthenticated: true, user: { id: '1', username: 'a', role: 'user' } }, version: 1 }),
     );
     expect(peekPersistedSession()).toBe(true);
-    localStorage.setItem('compendiq-auth', 'not-json');
+    localStorage.setItem(AUTH_STORAGE_KEY, 'not-json');
     expect(peekPersistedSession()).toBe(false);
   });
 
@@ -92,14 +92,14 @@ describe('auth-store', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().user).toBeNull();
 
-    const stored = JSON.parse(localStorage.getItem('compendiq-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
     expect(stored.state.accessToken).toBeUndefined();
     expect(stored.state.isAuthenticated).toBe(false);
     expect(stored.state.user).toBeNull();
   });
 
   it('broadcasts the token to other tabs on setAuth (in-memory, not via storage)', async () => {
-    const peer = new BroadcastChannel('compendiq-auth');
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
     channels.push(peer);
     const received: Array<Record<string, unknown>> = [];
     peer.onmessage = (e: MessageEvent) => received.push(e.data);
@@ -126,7 +126,7 @@ describe('auth-store', () => {
     });
 
     // Attach the peer listener AFTER setAuth so it only observes the logout.
-    const peer = new BroadcastChannel('compendiq-auth');
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
     channels.push(peer);
     const received: Array<Record<string, unknown>> = [];
     peer.onmessage = (e: MessageEvent) => received.push(e.data);
@@ -140,7 +140,7 @@ describe('auth-store', () => {
 
   it('does NOT broadcast logout when already unauthenticated (no storm)', async () => {
     // Already logged out from beforeEach.
-    const peer = new BroadcastChannel('compendiq-auth');
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
     channels.push(peer);
     const received: Array<Record<string, unknown>> = [];
     peer.onmessage = (e: MessageEvent) => received.push(e.data);
@@ -155,7 +155,7 @@ describe('auth-store', () => {
   it('adopts a token broadcast from another tab via BroadcastChannel (not storage)', async () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
 
-    const peer = new BroadcastChannel('compendiq-auth');
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
     channels.push(peer);
     peer.postMessage({
       type: 'token',
@@ -170,7 +170,7 @@ describe('auth-store', () => {
     expect(useAuthStore.getState().user?.username).toBe('bob');
 
     // Adopted in memory only — the token never lands in storage.
-    const stored = JSON.parse(localStorage.getItem('compendiq-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
     expect(stored.state?.accessToken).toBeUndefined();
   });
 
@@ -182,7 +182,7 @@ describe('auth-store', () => {
     });
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
 
-    const peer = new BroadcastChannel('compendiq-auth');
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
     channels.push(peer);
     peer.postMessage({ type: 'logout' });
 
@@ -205,7 +205,7 @@ describe('auth-store', () => {
     // Simulate another tab clearing localStorage (logout)
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: null,
       }),
     );
@@ -231,7 +231,7 @@ describe('auth-store', () => {
     };
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: JSON.stringify(loggedOutState),
       }),
     );
@@ -255,7 +255,7 @@ describe('auth-store', () => {
     };
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: JSON.stringify(blobWithToken),
       }),
     );
@@ -294,7 +294,7 @@ describe('auth-store', () => {
     // Simulate malformed JSON in storage event
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: 'not-valid-json{{{',
       }),
     );
@@ -307,7 +307,7 @@ describe('auth-store', () => {
   it('scrubs a legacy persisted access token on rehydrate (upgrade path)', async () => {
     // Simulate an older install that persisted the token at version 0.
     localStorage.setItem(
-      'compendiq-auth',
+      AUTH_STORAGE_KEY,
       JSON.stringify({
         state: {
           accessToken: 'legacy-on-disk-token',
@@ -326,7 +326,7 @@ describe('auth-store', () => {
     // ...but the legacy token is gone from memory...
     expect(useAuthStore.getState().accessToken).toBeNull();
     // ...and scrubbed from storage on the migration write-back.
-    const stored = JSON.parse(localStorage.getItem('compendiq-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || '{}');
     expect(stored.version).toBe(1);
     expect(stored.state.accessToken).toBeUndefined();
     expect(stored.state.isAuthenticated).toBe(true);
@@ -358,7 +358,7 @@ describe('auth-store — storage login-sync fallback (BroadcastChannel unavailab
     const user = { id: '7', username: 'carol', role: 'user' as const };
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 }),
       }),
     );
@@ -384,7 +384,7 @@ describe('auth-store — storage login-sync fallback (BroadcastChannel unavailab
 
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'compendiq-auth',
+        key: AUTH_STORAGE_KEY,
         newValue: JSON.stringify({
           state: { user: { id: '2', username: 'bob', role: 'user' }, isAuthenticated: true },
           version: 1,
@@ -395,5 +395,92 @@ describe('auth-store — storage login-sync fallback (BroadcastChannel unavailab
     // Already authenticated → branch is skipped; the live token is untouched.
     expect(freshStore.getState().accessToken).toBe('live-token');
     expect(freshStore.getState().user?.username).toBe('alice');
+  });
+});
+
+/**
+ * #1881: a pre-handshake bundle still open in another tab speaks the
+ * unversioned `compendiq-auth` names. When the server refuses its refresh
+ * (409 client_reload_required) it clears its auth and broadcasts a logout;
+ * that must not sign out this bundle's tabs, and it must never adopt this
+ * bundle's fresh tokens.
+ */
+describe('auth-store — isolation from pre-#1881 tabs (unversioned names)', () => {
+  const legacyName = 'compendiq-auth';
+  const legacyChannels: BroadcastChannel[] = [];
+  const user = { id: '1', username: 'alice', role: 'user' as const };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useAuthStore.setState({ accessToken: null, user: null, isAuthenticated: false });
+  });
+
+  afterEach(() => {
+    while (legacyChannels.length) legacyChannels.pop()?.close();
+    localStorage.clear();
+    useAuthStore.setState({ accessToken: null, user: null, isAuthenticated: false });
+  });
+
+  it('versions the persisted key and the channel name with the client protocol', () => {
+    expect(AUTH_STORAGE_KEY).toBe('compendiq-auth:p1');
+  });
+
+  it('ignores a legacy tab\'s logout and token broadcasts, and never sends its own token there', async () => {
+    useAuthStore.getState().setAuth('current-token', user);
+    const legacy = new BroadcastChannel(legacyName);
+    const peer = new BroadcastChannel(AUTH_STORAGE_KEY);
+    legacyChannels.push(legacy, peer);
+    const heardByLegacy: unknown[] = [];
+    const heardByPeer: unknown[] = [];
+    legacy.onmessage = (event: MessageEvent) => heardByLegacy.push(event.data);
+    peer.onmessage = (event: MessageEvent) => heardByPeer.push(event.data);
+
+    legacy.postMessage({ type: 'logout' });
+    legacy.postMessage({ type: 'token', accessToken: 'legacy-token', user });
+    // Sentinels posted after the legacy messages: once both are observed,
+    // the earlier legacy deliveries have been dispatched too.
+    peer.postMessage({ type: 'token', accessToken: 'sentinel-token', user });
+    useAuthStore.getState().setAuth('rotated-token', user);
+    await waitFor(() => expect(heardByPeer).toContainEqual({ type: 'token', accessToken: 'rotated-token', user }));
+    await waitFor(() => expect(useAuthStore.getState().accessToken).toBe('sentinel-token'));
+
+    // The legacy logout and legacy token were never applied.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(heardByLegacy).toEqual([]);
+  });
+
+  it('ignores a legacy tab signing out through the unversioned storage key', () => {
+    useAuthStore.getState().setAuth('current-token', user);
+    window.dispatchEvent(new StorageEvent('storage', { key: legacyName, newValue: null }));
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: legacyName,
+      newValue: JSON.stringify({ state: { user: null, isAuthenticated: false }, version: 1 }),
+    }));
+    expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: true, accessToken: 'current-token' });
+  });
+
+  it('adopts an unversioned signed-in blob once on upgrade and leaves the unversioned key for open legacy tabs', async () => {
+    const unversioned = JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 });
+    localStorage.setItem(legacyName, unversioned);
+    // beforeEach's reset of the statically imported store persisted a
+    // logged-out blob under the versioned key; a real upgrade has none.
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    vi.resetModules();
+    // Dynamic on purpose: the adoption runs at module load.
+    const fresh = await import('./auth-store');
+    expect(localStorage.getItem(fresh.AUTH_STORAGE_KEY)).toBe(unversioned);
+    expect(localStorage.getItem(legacyName)).toBe(unversioned);
+    expect(fresh.peekPersistedSession()).toBe(true);
+  });
+
+  it('never overwrites an existing versioned blob with the unversioned one', async () => {
+    const current = JSON.stringify({ state: { user: null, isAuthenticated: false }, version: 1 });
+    localStorage.setItem(AUTH_STORAGE_KEY, current);
+    localStorage.setItem(legacyName, JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 }));
+    vi.resetModules();
+    // Dynamic on purpose: the adoption runs at module load.
+    const fresh = await import('./auth-store');
+    expect(localStorage.getItem(fresh.AUTH_STORAGE_KEY)).toBe(current);
+    expect(fresh.peekPersistedSession()).toBe(false);
   });
 });

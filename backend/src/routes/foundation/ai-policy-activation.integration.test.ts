@@ -17,7 +17,7 @@ import type { FastifyInstance, InjectOptions } from 'fastify';
 import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { setAiPolicyEnforcementForTest } from '../../core/services/ai-policy-activation.js';
 import { getEnterprisePlugin } from '../../core/enterprise/loader.js';
@@ -302,5 +302,52 @@ describe.skipIf(!available)('article AI policy activation over HTTP (#1881)', ()
     expect(acknowledged.json().blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['legacy_clients_active']);
     expect(await activationAudits()).toEqual([{ user_id: adminId, action: 'AI_POLICY_ENFORCEMENT_ACTIVATED' }]);
     expect((await send('GET', `/api/pages/${pageId}`, adminToken)).json()).toMatchObject({ aiPolicyActivation: 'active' });
+  });
+
+  it('a tightening while an old runtime is active is a 409 incompatible_runtime_active over HTTP that writes nothing, and succeeds once it is fenced (N24)', async () => {
+    expect((await send('PUT', ACTIVATION, adminToken, { enabled: true })).statusCode).toBe(200);
+    // An old binary registered before migration 151 installed the door: the
+    // only way an active version-0 runtime can coexist with the switch on.
+    const client = await getPool().connect();
+    let oldRuntime: string;
+    try {
+      await client.query('BEGIN');
+      await client.query('ALTER TABLE page_writer_runtimes DISABLE TRIGGER guard_ai_policy_runtime_registration');
+      oldRuntime = await insertTestRuntime({ legacy: true, client });
+      await client.query('ALTER TABLE page_writer_runtimes ENABLE TRIGGER guard_ai_policy_runtime_registration');
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+
+    const refused = await send('PUT', `/api/pages/${pageId}/ai-policy`, editorToken, { aiPolicy: 'local_only', expectedRevision: 0 });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toMatchObject({ error: 'ai_policy_enforcement_unavailable', reason: 'incompatible_runtime_active' });
+    expect(await pageRow(pageId)).toEqual({ ai_policy: 'all', ai_policy_revision: '0' });
+
+    await query(
+      `UPDATE page_writer_runtimes SET fenced_at = NOW(), fence_reason = 'Test fixture: verified terminated writer',
+              fence_proof = '{"kind":"verified_local_termination"}'::jsonb WHERE runtime_id = $1`,
+      [oldRuntime!],
+    );
+    const stored = await send('PUT', `/api/pages/${pageId}/ai-policy`, editorToken, { aiPolicy: 'local_only', expectedRevision: 0 });
+    expect(stored.statusCode, stored.body).toBe(200);
+  });
+
+  it('the assembled app refuses a legacy browser session request while enabled, before credentials are checked', async () => {
+    const legacy = { 'sec-fetch-mode': 'cors', 'content-type': 'application/json' };
+    const login = { username: 'nobody', password: 'not-a-real-password' };
+    // Off: the legacy request reaches the handler (401 for bad credentials).
+    expect((await app.inject({ method: 'POST', url: '/api/auth/login', headers: legacy, payload: login })).statusCode).toBe(401);
+
+    expect((await send('PUT', ACTIVATION, adminToken, { enabled: true })).statusCode).toBe(200);
+    const refused = await app.inject({ method: 'POST', url: '/api/auth/login', headers: legacy, payload: login });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: 'client_reload_required' });
+    const marked = await app.inject({
+      method: 'POST', url: '/api/auth/login', payload: login,
+      headers: { ...legacy, 'x-compendiq-client-protocol': '1' },
+    });
+    expect(marked.statusCode).toBe(401);
   });
 });

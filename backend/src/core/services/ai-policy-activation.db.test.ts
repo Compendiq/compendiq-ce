@@ -10,7 +10,6 @@
  * writer reload, test seam).
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import type { RedisClientType } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getPool, query } from '../db/postgres.js';
@@ -480,22 +479,6 @@ describe.skipIf(!available)('article AI policy activation switch (#1881)', () =>
       vi.stubEnv('COMPENDIQ_AI_POLICY_ENFORCEMENT', '');
       warnIfAiPolicyEnforcementEnvSet();
       expect(warn).not.toHaveBeenCalled();
-    });
-
-    it('is wired into buildApp beside the cold load, after the cache bus and before any route', () => {
-      const source = readFileSync(new URL('../../app.ts', import.meta.url), 'utf8');
-      const notice = source.indexOf('warnIfAiPolicyEnforcementEnvSet();');
-      const load = source.indexOf('await loadAiPolicyActivation();');
-      const bus = source.indexOf('await initCacheBus(app.redis);');
-      const firstRoute = source.indexOf('await app.register(healthRoutes');
-      const guard = source.indexOf('registerLegacyClientGuard(app);');
-      const enterpriseRoutes = source.indexOf('await enterprise.registerRoutes(app, license);');
-      expect(notice).toBeGreaterThan(0);
-      expect(load).toBeGreaterThan(bus);
-      expect(load).toBeLessThan(firstRoute);
-      expect(source).toContain('registerAiPolicyActivationReadiness();');
-      expect(guard).toBeGreaterThan(0);
-      expect(guard).toBeLessThan(enterpriseRoutes);
     });
   });
 });

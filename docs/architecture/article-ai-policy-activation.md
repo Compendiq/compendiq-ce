@@ -205,11 +205,22 @@ inference). The marker closes that gap as far as the server can:
 - CORS: `@fastify/cors` has no `allowedHeaders`, so requested headers are
   reflected; leave it unset.
 
+**Cross-tab isolation.** The persisted auth state and the cross-tab
+`BroadcastChannel` are named `compendiq-auth:p1` (versioned with the client
+protocol). A pre-handshake tab still uses the unversioned `compendiq-auth`, so
+it neither adopts tokens refreshed by up-to-date tabs nor signs them out when
+its own refresh is refused and it clears its session. On first load the new
+bundle copies the unversioned blob (user + `isAuthenticated`, never a token)
+once and leaves it in place, so neither build's tabs are signed out by the
+upgrade. Consequence: during an upgrade, sign-in and sign-out do not propagate
+between tabs running different builds; an explicit sign-out still revokes the
+shared refresh-token family server-side.
+
 **Residual risk.** A legacy tab keeps the content it already loaded, and its
 current access token, for at most one access-token lifetime
-(`ACCESS_TOKEN_EXPIRY`, ≤ 24 h); it may also adopt a sibling new tab's token
-through shared storage. The acknowledgement override accepts exactly that
-bounded window and is recorded with the observed users in the audit event.
+(`ACCESS_TOKEN_EXPIRY`, ≤ 24 h). The acknowledgement override accepts exactly
+that bounded window and is recorded with the observed users in the audit
+event.
 
 ## Failure handling
 
@@ -232,36 +243,38 @@ bounded window and is recorded with the observed users in the audit event.
 3. **`incompatible_ai_policy_runtime`.** Retire every listed runtime through
    the baseline runbook (`docs/runbooks/immutable-page-baselines.md`, *Runtime
    retirement and fencing*). A live old process is drained with owner
-   quiescence and then fenced with its acknowledgement; a dead process whose
-   epoch has no started effects takes the server-verified
-   `durable_no_started_effects` fence. Every historical pre-#1881 runtime row
-   needs this once, because older binaries never wrote
-   `ai_policy_enforcement_version` and therefore sit at `0`. For many
-   long-dead rows, loop over the blocker (the GET lists at most 50 at a time;
-   repeat until it is gone):
+   quiescence, fenced with its acknowledgement, **and then terminated**:
+   quiescence closes page writes, not sign-in, so a quiesced process that
+   keeps running keeps issuing sessions the legacy-client observer never
+   sees. A dead process whose epoch has no started effects takes the
+   server-verified `durable_no_started_effects` fence; that mode proves only
+   "no started effects", **not** that the process is gone, so it is the
+   operator's job to confirm termination first (prefer
+   `verified_local_termination` where the server can check it). Every
+   historical pre-#1881 runtime row needs this once, because older binaries
+   never wrote `ai_policy_enforcement_version` and therefore sit at `0`. For
+   many long-dead rows, fence an explicit list of runtime ids you have
+   confirmed dead (for example, read from the blocker and checked against
+   your orchestrator), stopping at the first refusal:
 
    ```sh
-   # Fence ONLY runtimes whose processes are verifiably gone. The server
-   # refuses (409 runtime_effects_started) any epoch with started work;
-   # those need quiescence or a kind-specific reconciliation instead.
-   while ids=$(curl -sS -H "Authorization: Bearer $TOKEN" \
-       "$BASE/api/admin/ai-policy/activation" \
-     | jq -r '.blockers[] | select(.code=="incompatible_ai_policy_runtime") | .runtimes[].runtimeId') \
-     && [ -n "$ids" ]; do
-     for id in $ids; do
-       curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
-         -H 'Content-Type: application/json' \
-         "$BASE/api/admin/page-write-recovery/runtimes/$id/fence" \
-         -d '{"mode":"durable_no_started_effects","reason":"Historical pre-#1881 runtime; process gone, no started effects"}'
-       echo
-     done
-   done
+   # dead-runtimes.txt: one runtime id per line, each confirmed terminated.
+   while read -r id; do
+     status=$(curl -sS -o /tmp/fence.json -w '%{http_code}' -X POST \
+       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+       "$BASE/api/admin/page-write-recovery/runtimes/$id/fence" \
+       -d '{"mode":"durable_no_started_effects","reason":"Historical pre-#1881 runtime; process confirmed terminated"}')
+     # 409 runtime_effects_started, 429 or any other refusal: stop and
+     # investigate (quiescence or a kind-specific reconciliation instead).
+     [ "$status" -ge 200 ] && [ "$status" -lt 300 ] || { echo "$id: HTTP $status"; cat /tmp/fence.json; break; }
+   done < dead-runtimes.txt
    ```
 
-   Fencing a long-dead row does not restart the legacy-client window;
-   quiescing a live old process does (its `quiesced_at` feeds
-   `legacy_client_window_open`), because that process may have issued tokens
-   the observer never saw.
+   The GET lists at most 50 runtimes per call with the `total`; re-read it
+   after each batch. Fencing a long-dead row does not restart the
+   legacy-client window; quiescing a live old process does (its `quiesced_at`
+   feeds `legacy_client_window_open`), because that process may have issued
+   tokens the observer never saw.
 4. **`legacy_clients_active` / `legacy_client_window_open`.** Either wait
    until `clearsAt` or, in the UI, tick the acknowledgement and enable. On a
    fresh install `legacy_client_window_open` is expected for one token
