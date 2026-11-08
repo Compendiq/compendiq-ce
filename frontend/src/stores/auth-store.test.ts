@@ -1,11 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
-import {
-  announceExplicitSignOutToUnversionedTabs,
-  AUTH_STORAGE_KEY,
-  peekPersistedSession,
-  useAuthStore,
-} from './auth-store';
+import { AUTH_STORAGE_KEY, peekPersistedSession, useAuthStore } from './auth-store';
 
 // BroadcastChannel instances created by individual tests. Closed in afterEach
 // so a stray async message can't leak into the next test.
@@ -464,15 +459,19 @@ describe('auth-store — isolation from pre-#1881 tabs (unversioned names)', () 
     expect(heardByLegacy).toEqual([]);
   });
 
-  it('an explicit sign-out in a legacy tab (shared draft sign-out epoch) signs this tab out', () => {
+  it('an explicit sign-out in a legacy tab (shared draft sign-out epoch) signs this tab out without echoing it back', () => {
     useAuthStore.getState().setAuth('current-token', user);
+    const legacyBlob = JSON.stringify({ state: { user: null, isAuthenticated: false }, version: 0 });
+    localStorage.setItem(legacyName, legacyBlob);
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'compendiq-draft-signout-epoch', newValue: `${Date.now()}.0.5`,
     }));
     expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: false, accessToken: null });
+    // Applied from another tab: not re-announced to the legacy names.
+    expect(localStorage.getItem(legacyName)).toBe(legacyBlob);
   });
 
-  it('announces an explicit sign-out to legacy tabs on both names they listen on, without a token', async () => {
+  it('a local session end reaches legacy tabs on both names they listen on, without a token', async () => {
     useAuthStore.getState().setAuth('current-token', user);
     localStorage.setItem(legacyName, JSON.stringify({ state: { user, isAuthenticated: true }, version: 1 }));
     const legacy = new BroadcastChannel(legacyName);
@@ -480,7 +479,7 @@ describe('auth-store — isolation from pre-#1881 tabs (unversioned names)', () 
     const heardByLegacy: unknown[] = [];
     legacy.onmessage = (event: MessageEvent) => heardByLegacy.push(event.data);
 
-    announceExplicitSignOutToUnversionedTabs();
+    useAuthStore.getState().clearAuth();
 
     await waitFor(() => expect(heardByLegacy).toEqual([{ type: 'logout' }]));
     expect(JSON.parse(localStorage.getItem(legacyName)!)).toEqual({ state: { user: null, isAuthenticated: false }, version: 1 });

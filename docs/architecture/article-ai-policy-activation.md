@@ -213,12 +213,23 @@ its own refresh is refused and it clears its session. On first load the new
 bundle copies the unversioned blob (user + `isAuthenticated`, never a token)
 once and leaves it in place, so neither build's tabs are signed out by the
 upgrade. Sign-in does not propagate between builds (each tab re-mints its own
-token behind the shared auth-cookie lock), but an **explicit sign-out does,
-in both directions**: `logoutApi()` also posts `logout` on the unversioned
-channel and writes a logged-out unversioned blob (no token in either), and
-every policy-aware tab treats a change of the shared draft sign-out epoch —
-written only by an explicit sign-out, in any build since GHSA-r652, never by
-a refused refresh — as a sign-out.
+token behind the shared auth-cookie lock). Session ends do, as far as each
+build can tell them apart from a refused refresh:
+
+- **Policy-aware → legacy:** every local session end in a policy-aware tab
+  (explicit sign-out, or a refresh that resolved null — this build is never
+  refused) also posts `logout` on the unversioned channel and writes a
+  logged-out unversioned blob; no token in either. A clear applied from
+  another tab is not re-sent.
+- **Legacy → policy-aware:** a change of the shared draft sign-out epoch —
+  written only by an explicit sign-out, in builds 0.9.0 and later, never by a
+  refused refresh — signs policy-aware tabs out. A legacy tab's other session
+  ends (expiry, revocation) are indistinguishable from a refused refresh and
+  are ignored.
+- **Account switch:** if a policy-aware tab refreshes or adopts a token for a
+  different account while still signed in (someone signed in through a tab it
+  never heard sign out), `useClearCacheOnLogout` runs the #885 wipe and resets
+  mounted queries so they refetch as the new account.
 
 **Residual risk.** A legacy tab keeps the content it already loaded, and its
 current access token, for at most one access-token lifetime

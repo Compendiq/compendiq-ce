@@ -4,6 +4,7 @@ import { request } from 'undici';
 import type * as Undici from 'undici';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  insertPreexistingLegacyRuntime,
   insertTestRuntime,
   isDbAvailable,
   setupTestDb,
@@ -67,29 +68,6 @@ async function fenceRuntime(runtimeId: string): Promise<void> {
       WHERE runtime_id = $1`,
     [runtimeId],
   );
-}
-
-/**
- * A version-0 row that existed BEFORE migration 151 installed the door (the
- * upgrade case): the only way an active old runtime and a stored restriction
- * can coexist. Installed with the registration guard switched off, as the
- * migration test does by dropping the schema.
- */
-async function insertPreexistingOldRuntime(): Promise<string> {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('ALTER TABLE page_writer_runtimes DISABLE TRIGGER guard_ai_policy_runtime_registration');
-    const runtimeId = await insertTestRuntime({ legacy: true, client });
-    await client.query('ALTER TABLE page_writer_runtimes ENABLE TRIGGER guard_ai_policy_runtime_registration');
-    await client.query('COMMIT');
-    return runtimeId;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
 }
 
 /**
@@ -293,7 +271,7 @@ describe.skipIf(!dbAvailable)('article AI policy binary door (migration 151) —
 
     it('admits relaxations and unchanged writes beside a pre-151 old-binary runtime, refuses only what is stricter', async () => {
       const pageId = await insertPage('none', { labels: ['no-ai'] });
-      await insertPreexistingOldRuntime();
+      await insertPreexistingLegacyRuntime();
       // Relaxations never lock the activation row either.
       await completesWithoutLockingActivationRow(async (client) => {
         await client.query(`UPDATE pages SET ai_policy = 'local_only' WHERE id = $1`, [pageId]);

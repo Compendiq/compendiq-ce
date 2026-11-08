@@ -60,12 +60,16 @@ const unversionedAuthChannel: BroadcastChannel | null =
     : null;
 
 /**
- * Explicit sign-out only (`logoutApi`): tell tabs of a pre-handshake build
- * too, through both channels they listen on. Neither message carries a
- * token. Without this, a legacy tab would keep the signed-out account's
- * session and cached data until its access token expired.
+ * Tell tabs of a pre-handshake build that this browser's session ended,
+ * through both names they listen on. Neither message carries a token. Sent
+ * from `clearAuth` on a local authenticated→unauthenticated transition: in
+ * this build that only happens on an explicit sign-out or once a refresh
+ * resolved null — the shared cookie session is gone either way (a refused
+ * refresh keeps the session; only a legacy tab is ever refused). Without it a
+ * legacy tab keeps the ended account's session and cached data, and later
+ * refreshes into whoever signs in next with no cache wipe (#885).
  */
-export function announceExplicitSignOutToUnversionedTabs(): void {
+function announceSignOutToUnversionedTabs(): void {
   try {
     unversionedAuthChannel?.postMessage({ type: 'logout' });
   } catch { /* channel closed — the storage write below still reaches them */ }
@@ -169,8 +173,12 @@ export const useAuthStore = create<AuthState>()(
         const wasAuthenticated = get().isAuthenticated;
         set({ accessToken: null, user: null, isAuthenticated: false });
         // Only broadcast on a genuine authenticated→unauthenticated transition
-        // to avoid a logout-broadcast storm across tabs.
-        if (wasAuthenticated) postAuthMessage({ type: 'logout' });
+        // to avoid a logout-broadcast storm across tabs; a clear applied from
+        // another tab (or a legacy tab's explicit sign-out) is not re-sent.
+        if (wasAuthenticated && !applyingRemote) {
+          postAuthMessage({ type: 'logout' });
+          announceSignOutToUnversionedTabs();
+        }
       },
     }),
     {

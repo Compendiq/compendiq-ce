@@ -1,5 +1,5 @@
 import { AuthResponseSchema, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
-import { announceExplicitSignOutToUnversionedTabs, useAuthStore } from '../../stores/auth-store';
+import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
 import {
   CLIENT_RELOAD_REQUIRED_MESSAGE,
@@ -378,7 +378,5 @@ export async function logoutApi(): Promise<void> {
   }
   discardDraftsOnSignOut(user?.id ?? null);
   discardRecentSearchesOnSignOut(user?.id ?? null);
-  // Tabs of a pre-handshake build listen only on the unversioned auth names.
-  announceExplicitSignOutToUnversionedTabs();
   useAuthStore.getState().clearAuth();
 }
