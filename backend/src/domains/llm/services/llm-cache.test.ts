@@ -238,6 +238,7 @@ describe('LlmCache', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -360,6 +361,43 @@ describe('LlmCache', () => {
     });
   });
 
+  describe('renewLock', () => {
+    it('renews only while the supplied token owns the lock', async () => {
+      mockRedis.eval.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await expect(cache.renewLock('kb:llm:abc123', 'owner-token', 30)).resolves.toBe(true);
+      expect(mockRedis.eval).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+        {
+          keys: ['llm:lock:kb:llm:abc123'],
+          arguments: ['owner-token', '30'],
+        },
+      );
+      await expect(cache.renewLock('kb:llm:abc123', 'stale-token')).resolves.toBe(false);
+    });
+
+    it('does not throw when Redis is unavailable', async () => {
+      mockRedis.eval.mockRejectedValue(new Error('Redis down'));
+      await expect(cache.renewLock('kb:llm:abc123', 'owner-token')).resolves.toBe(false);
+    });
+  });
+
+  describe('startLockHeartbeat', () => {
+    it('renews periodically until stopped', async () => {
+      vi.useFakeTimers();
+      const renewLock = vi.spyOn(cache, 'renewLock').mockResolvedValue(true);
+      const stop = cache.startLockHeartbeat('kb:llm:abc123', 'owner-token');
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(renewLock).toHaveBeenCalledTimes(2);
+
+      stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(renewLock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('waitForCachedResponse', () => {
     it('should return cached response on first poll if available', async () => {
       const cached = { content: 'Generated answer', cachedAt: Date.now() };
@@ -413,6 +451,17 @@ describe('LlmCache', () => {
 
       const result = await cache.waitForCachedResponse('kb:llm:abc123', 10, 5000);
       expect(result).toEqual(cached);
+    });
+
+    it('stops polling when the waiting request is aborted', async () => {
+      mockRedis.get.mockResolvedValue(null);
+      mockRedis.exists.mockResolvedValue(1);
+      const controller = new AbortController();
+      const waiting = cache.waitForCachedResponse('kb:llm:abc123', 10_000, 60_000, controller.signal);
+
+      controller.abort();
+
+      await expect(waiting).resolves.toBeNull();
     });
   });
 
