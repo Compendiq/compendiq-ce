@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat as transportChat, streamChat as transportStreamChat, generateEmbedding as transportEmbedding, invalidateBreaker, __test_only__, LlmHttpError, StreamIncompleteError, type ProviderConfig, type ChatMessage, type StreamChatOptions } from './openai-compatible-client.js';
 
 // This suite sends only synthetic literals (hi, 2+2, a/b) to its HTTP servers.
 // Keep its queue/breaker/wire assertions on the real transport, with an explicit
@@ -251,6 +251,68 @@ describe('openai-compatible-client — chat', () => {
     }
     expect(out.filter(Boolean).join('')).toBe('hello');
     expect(done).toBe(true);
+  });
+});
+
+describe('openai-compatible-client — SSE framing (#1722)', () => {
+  async function collectStream(
+    parts: readonly Uint8Array[],
+    chunks: Array<{ content: string; done: boolean }> = [],
+  ): Promise<Array<{ content: string; done: boolean }>> {
+    const sseServer = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      void (async () => {
+        for (const part of parts) {
+          res.write(part);
+          await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        }
+        res.end();
+      })();
+    });
+    await new Promise<void>((resolve) => sseServer.listen(0, '127.0.0.1', resolve));
+    const { port } = sseServer.address() as AddressInfo;
+    try {
+      for await (const chunk of streamChat(
+        { ...cfg, providerId: `sse-1722-${Math.random().toString(36).slice(2)}`, baseUrl: `http://127.0.0.1:${port}/v1` },
+        'm1', [{ role: 'user', content: 'hi' }],
+      )) {
+        chunks.push(chunk);
+      }
+      return chunks;
+    } finally {
+      await new Promise<void>((resolve) => sseServer.close(() => resolve()));
+    }
+  }
+
+  it('accepts CRLF, named events, and keepalive comments across CRLF and UTF-8 chunk boundaries', async () => {
+    const payload = Buffer.from(
+      `: keepalive\r\nevent: message\r\ndata: ${JSON.stringify({ choices: [{ delta: { content: '你好🌍' } }] })}\r\n\r\ndata: [DONE]\r\n\r\n`,
+    );
+    const crlfBoundary = payload.indexOf(Buffer.from('\r\n')) + 1;
+    const utf8Boundary = payload.indexOf(Buffer.from('好')) + 1;
+    const cutPoints = [crlfBoundary, utf8Boundary].sort((a, b) => a - b);
+    const parts = [
+      payload.subarray(0, cutPoints[0]!),
+      payload.subarray(cutPoints[0]!, cutPoints[1]!),
+      payload.subarray(cutPoints[1]!),
+    ];
+
+    const chunks = await collectStream(parts);
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('你好🌍');
+    expect(chunks.at(-1)).toEqual({ content: '', done: true });
+  });
+
+  it('rejects an unterminated terminal event instead of reporting successful completion', async () => {
+    const payload = Buffer.from(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\ndata: [DONE]`,
+    );
+    const chunks: Array<{ content: string; done: boolean }> = [];
+
+    await expect(collectStream([payload], chunks)).rejects.toBeInstanceOf(StreamIncompleteError);
+
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('partial');
+    expect(chunks.some((chunk) => chunk.done)).toBe(false);
   });
 });
 

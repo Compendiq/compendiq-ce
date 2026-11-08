@@ -1,3 +1,4 @@
+import { createParser } from 'eventsource-parser';
 import { Agent, fetch as undiciFetch } from 'undici';
 // Named import, not the ambient global: `lib: ["ES2022"]` (no `dom`) means the
 // global `ReadableStream` comes from `@types/node`'s own declaration, which
@@ -638,7 +639,7 @@ export async function* streamChat(
   );
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
-  let buf = '';
+  const pendingChunks: StreamChunk[] = [];
   // Hosted reasoners stream CoT on `delta.reasoning_content` before any
   // `delta.content`. Think-on wraps that pass in `<think>` so the rest of
   // the app sees the same channel local Qwen already writes into `content`.
@@ -649,6 +650,63 @@ export async function* streamChat(
   // error so an operator can tell a dropped-at-byte-zero stream from one
   // cut mid-answer, without the error carrying any of the text itself.
   let received = 0;
+  let receivedDone = false;
+  const onData = (rawData: string): void => {
+    if (receivedDone) return;
+    const data = rawData.trim();
+    if (data === '[DONE]') {
+      receivedDone = true;
+      if (thinkOpen) {
+        pendingChunks.push({ content: '</think>', done: false });
+        thinkOpen = false;
+      }
+      pendingChunks.push({ content: '', done: true });
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(data) as {
+        choices?: Array<{ delta?: CompletionText }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+      if (parsed.usage) {
+        const promptTokens = parsed.usage.prompt_tokens;
+        const completionTokens = parsed.usage.completion_tokens;
+        pendingChunks.push({
+          content: '', done: false,
+          usage: {
+            ...(Number.isSafeInteger(promptTokens) && promptTokens! >= 0 ? { promptTokens } : {}),
+            ...(Number.isSafeInteger(completionTokens) && completionTokens! >= 0 ? { completionTokens } : {}),
+          },
+        });
+      }
+      const delta = parsed.choices?.[0]?.delta;
+      const reasoning = opts?.thinking ? reasoningText(delta) : '';
+      const content = visibleText(delta);
+      if (reasoning) {
+        if (!thinkOpen) {
+          pendingChunks.push({ content: `<think>${reasoning}`, done: false });
+          thinkOpen = true;
+        } else {
+          pendingChunks.push({ content: reasoning, done: false });
+        }
+      }
+      if (content) {
+        received += content.length;
+        if (thinkOpen) {
+          pendingChunks.push({ content: `</think>${content}`, done: false });
+          thinkOpen = false;
+        } else {
+          pendingChunks.push({ content, done: false });
+        }
+      }
+    } catch { /* ignore malformed JSON data events */ }
+  };
+  const parser = createParser({ onEvent: ({ data }) => onData(data) });
+  const feed = (text: string): StreamChunk[] => {
+    if (text) parser.feed(text);
+    return pendingChunks.splice(0);
+  };
   // The try/finally guarantees teardown on ANY exit — including the early
   // generator.return() the runtime triggers when a consumer stops iterating
   // (e.g. streamSSE breaks its loop on client disconnect). reader.cancel()
@@ -658,56 +716,12 @@ export async function* streamChat(
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 2);
-        if (!frame.startsWith('data:')) continue;
-        const data = frame.slice(5).trim();
-        if (data === '[DONE]') {
-          if (thinkOpen) { yield { content: '</think>', done: false }; thinkOpen = false; }
-          yield { content: '', done: true }; return;
-        }
-        try {
-          const parsed = JSON.parse(data) as {
-            choices?: Array<{ delta?: CompletionText }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number };
-          };
-          if (parsed.usage) {
-            const promptTokens = parsed.usage.prompt_tokens;
-            const completionTokens = parsed.usage.completion_tokens;
-            yield {
-              content: '', done: false,
-              usage: {
-                ...(Number.isSafeInteger(promptTokens) && promptTokens! >= 0 ? { promptTokens } : {}),
-                ...(Number.isSafeInteger(completionTokens) && completionTokens! >= 0 ? { completionTokens } : {}),
-              },
-            };
-          }
-          const delta = parsed.choices?.[0]?.delta;
-          const reasoning = opts?.thinking ? reasoningText(delta) : '';
-          const content = visibleText(delta);
-          if (reasoning) {
-            if (!thinkOpen) {
-              yield { content: `<think>${reasoning}`, done: false };
-              thinkOpen = true;
-            } else {
-              yield { content: reasoning, done: false };
-            }
-          }
-          if (content) {
-            received += content.length;
-            if (thinkOpen) {
-              yield { content: `</think>${content}`, done: false };
-              thinkOpen = false;
-            } else {
-              yield { content, done: false };
-            }
-          }
-        } catch { /* ignore parse errors on malformed frames */ }
+      const text = done ? dec.decode() : dec.decode(value, { stream: true });
+      for (const chunk of feed(text)) {
+        yield chunk;
+        if (chunk.done) return;
       }
+      if (done) break;
     }
   } finally {
     await reader.cancel().catch(() => { /* already closed / benign cancel race */ });
@@ -717,8 +731,11 @@ export async function* streamChat(
   // StreamIncompleteError. A consumer that is itself being torn down by a
   // client disconnect never reaches here (generator.return() exits the
   // loop above through the finally), so this only fires on a real EOF.
-  if (signal?.aborted) return;
-  throw new StreamIncompleteError(received);
+  if (!receivedDone) {
+    if (thinkOpen) yield { content: '</think>', done: false };
+    if (signal?.aborted) return;
+    throw new StreamIncompleteError(received);
+  }
 }
 
 export async function generateEmbedding(

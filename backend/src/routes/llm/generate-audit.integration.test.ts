@@ -19,6 +19,7 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
   let providerId: string;
   let token: string;
   let priorAssignment: { provider_id: string | null; model: string | null } | undefined;
+  let nextProviderResponse: string | undefined;
   const received: Array<Array<{ role: string; content: string }>> = [];
   let controlledPrompt = '';
   let controlledMode: 'slow' | 'fail-first' | undefined;
@@ -57,7 +58,8 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
           }
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end('data: {"choices":[{"delta":{"content":"Synthetic answer"}}]}\n\ndata: [DONE]\n\n');
+        res.end(nextProviderResponse ?? 'data: {"choices":[{"delta":{"content":"Synthetic answer"}}]}\n\ndata: [DONE]\n\n');
+        nextProviderResponse = undefined;
       });
     });
     provider.listen(0, '127.0.0.1');
@@ -142,6 +144,29 @@ describe.skipIf(!available)('Generate prompt audit fingerprint', () => {
     expect(expected[0]).not.toBe(expected[1]);
     expect(expected[0]).toBe(expected[2]);
     for (const row of result.rows) expect(row.row).not.toContain('private prompt');
+  }, 30_000);
+
+  it('records an incomplete provider stream as an audit error', async () => {
+    nextProviderResponse = 'data: {"choices":[{"delta":{"content":"Partial answer"}}]}\n\ndata: [DONE]';
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    const response = await fetch(`${base}/api/llm/generate`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'incomplete stream audit prompt' }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('Partial answer');
+    expect(body).toContain('Stream ended before completion');
+    expect(await waitForDatabaseCondition(async () => {
+      const rows = await query<{ count: string }>(`SELECT count(*) FROM llm_audit_log WHERE user_id = $1 AND action = 'generate'`, [userId]);
+      return Number(rows.rows[0]!.count) === received.length;
+    })).toBe(true);
+    const audit = await query<{ status: string | null }>(
+      `SELECT to_jsonb(a)->>'status' AS status FROM llm_audit_log a
+       WHERE user_id = $1 AND action = 'generate' ORDER BY id DESC LIMIT 1`, [userId],
+    );
+    expect(audit.rows[0]?.status).toBe('error');
   }, 30_000);
 
   it('flushes a waiting Generate response and reuses the live owner after a poll timeout', async () => {
