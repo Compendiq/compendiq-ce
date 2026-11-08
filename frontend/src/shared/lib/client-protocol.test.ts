@@ -167,7 +167,10 @@ describe('legacy-client marker coverage (#1881)', () => {
       'features/auth/OidcCallbackPage.tsx',
       'features/setup/steps/AdminStep.tsx',
     ]));
-    // refresh and logout in api.ts, the OIDC exchange, setup-admin.
+    // refresh and logout in api.ts, the OIDC exchange, setup-admin. The
+    // GET /api/auth/oidc/callback is a browser navigation that sets the
+    // cookie and cannot carry a header; it is deliberately not covered (the
+    // exchange that follows it is). Do not "fix" it by adding the marker.
     expect(covered).toHaveLength(4);
   });
 

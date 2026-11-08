@@ -198,7 +198,9 @@ ignored and logged once at startup.
 
 The panel shows the state (off, or on since *date* by *name*), the current
 blockers and **Turn on enforcement…**. Enabling is refused while a blocker
-stands:
+stands. If another switch change, an old runtime's registration or a long
+restrictive policy write holds the switch row, the change answers 503
+`ai_policy_activation_busy` after 5 seconds and nothing changes; retry it.
 
 | Blocker | Meaning | What to do |
 |---|---|---|
