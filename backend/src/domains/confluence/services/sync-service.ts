@@ -51,6 +51,7 @@ import {
   admitAutomaticIngestionPolicy,
 } from '../../../core/services/ai-policy-ingestion.js';
 import { lockAiPolicyForPages, applyCanonicalAiPolicyLabel, policyFromLabels, purgeDerivedAiState, type AiPolicy } from '../../../core/services/ai-policy-service.js';
+import { isAiPolicyRuntimeGuardError } from '../../../core/services/ai-policy-runtime-guard.js';
 
 
 interface SyncStatus {
@@ -1021,6 +1022,13 @@ async function syncPage(
     await txClient.query('COMMIT');
   } catch (err) {
     if (txClient) await txClient.query('ROLLBACK').catch(() => undefined);
+    // #1881 N24: the migration-151 guard refused the restriction because a
+    // pre-#1881 writer is still active. That is a refused tightening, not a
+    // page failure: the snapshot is withheld and re-walked once that runtime
+    // is fenced, exactly like a closed rollout defers it.
+    if (isAiPolicyRuntimeGuardError(err)) {
+      throw new FreshPublicationDeferredError(page.id, 'ai_policy_enforcement_unavailable');
+    }
     throw err;
   } finally {
     txClient?.release();
@@ -1349,6 +1357,12 @@ async function applyConflictPolicyForExistingPage(
     }
   } catch (err) {
     try { await conn.query('ROLLBACK'); } catch { /* ignore */ }
+    // #1881 N24: see the fresh-publication path above — a guard-refused
+    // tightening of an existing row is deferred, not failed, so the cursor
+    // holds and the snapshot is re-walked once the old runtime is fenced.
+    if (isAiPolicyRuntimeGuardError(err)) {
+      throw new FreshPublicationDeferredError(args.confluenceId, 'ai_policy_enforcement_unavailable');
+    }
     throw err;
   } finally {
     conn.release();

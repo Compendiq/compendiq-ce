@@ -115,9 +115,9 @@ describe.skipIf(!available)('page writer recovery administration', () => {
     expect(state.json().limitPerCollection).toBe(500);
     expect(state.json().truncated).toEqual({ intents: false, admissions: false, runtimes: false });
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
        SELECT gen_random_uuid()::text,
-              jsonb_build_object('host', 'status-boundary-fixture', 'pid', 1, 'startedAt', $1::text)
+              jsonb_build_object('host', 'status-boundary-fixture', 'pid', 1, 'startedAt', $1::text), 1
        FROM generate_series(1, 501)`,
       [new Date().toISOString()],
     );
@@ -152,8 +152,8 @@ describe.skipIf(!available)('page writer recovery administration', () => {
 
     const guardedRuntimeId = `route-guard-${randomUUID()}`;
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, 1)`,
       [
         guardedRuntimeId,
         JSON.stringify({ host: 'route-guard-fixture', pid: 999999, startedAt: new Date().toISOString() }),
@@ -236,8 +236,8 @@ describe.skipIf(!available)('page writer recovery administration', () => {
 
     const idleRuntime = 'another-runtime-with-no-started-effects';
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-       VALUES ($1, $2::jsonb)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, 1)`,
       [idleRuntime, JSON.stringify({ host: 'another-host', pid: 1, startedAt: new Date().toISOString() })],
     );
     const idleFence = await app.inject({

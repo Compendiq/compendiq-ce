@@ -14,9 +14,11 @@ import { listErrors, resolveError, getErrorSummary } from '../../core/services/e
 import { assertNoShadowMigration } from '../../domains/llm/services/embedding-service.js';
 import { logger } from '../../core/utils/logger.js';
 import {
+  AI_POLICY_RESERVED_LABEL,
   UpdateAdminSettingsSchema,
   FtsLanguageEnum,
   FTS_LANGUAGES,
+  isReservedAiPolicyLabel,
   type RagConfidenceCalibrationWrite,
   type UpdateAdminSettingsResult,
 } from '@compendiq/contracts';
@@ -114,6 +116,25 @@ const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRat
  * in-flight page write. Exported for the test that pins the pairing.
  */
 export const FTS_REBUILD_LOCK_TIMEOUT_MS = 30_000;
+
+/**
+ * #1881 (design §2.5, gap G1): the global rename/delete rewrites `labels`
+ * with `array_replace` / `array_remove` and never consults the article AI
+ * policy primitive, so renaming `foo → no-ai` would store a reserved label on
+ * rows whose `ai_policy` stays `all`, and deleting `no-ai` would strip the
+ * canonical slot of a stored restriction. Both are refused before any lock or
+ * write, in both switch states; policy-bearing label changes go through the
+ * per-page policy endpoints, which check authority and revisions. Sent as an
+ * explicit reply so the error handler's `safeErrorName` cannot rewrite the
+ * machine-readable code.
+ */
+function reservedAiPolicyLabelRefusal(): { error: string; message: string } {
+  return {
+    error: AI_POLICY_RESERVED_LABEL,
+    message:
+      'This label sets an article AI policy and cannot be renamed or removed globally. Change the policy of the affected articles instead.',
+  };
+}
 
 /**
  * Global label changes are one authored mutation, not a partial bulk operation.
@@ -370,8 +391,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/admin/labels/rename - rename a label across all pages
-  fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request) => {
+  fastify.put('/admin/labels/rename', ADMIN_RATE_LIMIT, async (request, reply) => {
     const { oldName, newName } = LabelRenameSchema.parse(request.body);
+    if (isReservedAiPolicyLabel(oldName) || isReservedAiPolicyLabel(newName)) {
+      return reply.code(409).send(reservedAiPolicyLabelRefusal());
+    }
 
     const affectedPages = await updateLabelAcrossPages(oldName, newName);
 
@@ -391,8 +415,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // DELETE /api/admin/labels/:name - remove a label from all pages
-  fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request) => {
+  fastify.delete('/admin/labels/:name', ADMIN_RATE_LIMIT, async (request, reply) => {
     const { name } = LabelNameParamSchema.parse(request.params);
+    if (isReservedAiPolicyLabel(name)) {
+      return reply.code(409).send(reservedAiPolicyLabelRefusal());
+    }
 
     const affectedPages = await updateLabelAcrossPages(name, null);
 

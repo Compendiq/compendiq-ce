@@ -8,7 +8,7 @@ import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { encryptPat } from '../../core/utils/crypto.js';
-import { getEnterprisePlugin } from '../../core/enterprise/loader.js';
+import { setAiPolicyEnforcementForTest } from '../../core/services/ai-policy-activation.js';
 import { reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
 import { registerOrdinaryPageWriteReconcilers } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
 
@@ -32,7 +32,9 @@ describe('policy label durable synchronization', () => {
   });
   beforeEach(async () => {
     await truncateAllTables();
-    vi.spyOn(getEnterprisePlugin(), 'aiPolicyEnforcementAvailable').mockReturnValue(true);
+    // truncateAllTables reseeds the switch row disabled; reopen the real
+    // switch (#1881) for every case — no plugin spy.
+    await setAiPolicyEnforcementForTest(true);
     actor = (await query<{ id: string }>("INSERT INTO users (username,password_hash,role) VALUES ('policy-sync','x','admin') RETURNING id")).rows[0]!.id;
     token = await generateAccessToken({ sub: actor, username: 'policy-sync', role: 'admin' });
     await query("INSERT INTO spaces (space_key,space_name,source) VALUES ('SYNC','Sync','confluence')");

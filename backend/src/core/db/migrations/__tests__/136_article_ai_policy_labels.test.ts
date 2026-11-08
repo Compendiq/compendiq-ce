@@ -166,8 +166,8 @@ describe.skipIf(!dbAvailable)('Migration 136 — frozen AI policy label table (#
     await query(`UPDATE pages SET labels = ARRAY['ai-local-only'] WHERE id = ANY($1::int[])`, [[frozen, live]]);
     // A published baseline freezes the page (migration 121 shape).
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-       VALUES ('rt-136', '{"test":true}'::jsonb, 1) ON CONFLICT (runtime_id) DO NOTHING`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+       VALUES ('rt-136', '{"test":true}'::jsonb, 1, 1) ON CONFLICT (runtime_id) DO NOTHING`,
     );
     const intent = await query<{ id: string }>(
       `INSERT INTO page_write_intents (runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect)

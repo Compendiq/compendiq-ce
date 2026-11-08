@@ -4,6 +4,7 @@ import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-
 import { getPool } from '../db/postgres.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
+import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
 import {
   capturePageWriterDeploymentIdentity,
   verifyLocalPageWriterTermination,
@@ -691,11 +692,21 @@ async function registerRuntimeOnClient(client: PoolClient, runtimeId: string): P
   if (runtimeId.length === 0 || runtimeId.length > 200) {
     throw new PageWriteError(400, 'invalid_runtime_id', 'Runtime id is invalid');
   }
+  // Both protocol versions this build enforces are declared at registration:
+  // the protected-writer protocol (#276, migration 124) and the article AI
+  // policy protocol (#1881, migration 151). Each has a BEFORE INSERT guard
+  // that refuses an older version once its feature is active.
   await client.query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-     VALUES ($1, $2::jsonb, $3)
+    `INSERT INTO page_writer_runtimes
+       (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+     VALUES ($1, $2::jsonb, $3, $4)
      ON CONFLICT (runtime_id) DO NOTHING`,
-    [runtimeId, JSON.stringify(await processDeploymentIdentity), PAGE_WRITER_ENFORCEMENT_VERSION],
+    [
+      runtimeId,
+      JSON.stringify(await processDeploymentIdentity),
+      PAGE_WRITER_ENFORCEMENT_VERSION,
+      AI_POLICY_ENFORCEMENT_VERSION,
+    ],
   );
   const result = await client.query<{
     fenced_at: Date | null;

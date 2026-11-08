@@ -265,6 +265,15 @@ enters the viewport, not on ordinary re-renders or background refetches.
   cluster, and once baselines exist a non-enforcing build is not a rollback
   path. The article inspector links admins here when a policy is refusing
   their direct freeze (`BASELINE_SETTINGS_PATH`).
+- **Settings → Governance → Article AI policy** (`ArticleAiPolicyActivationTab`,
+  #1881) turns the CE-owned enforcement switch on or off through
+  `PUT /admin/ai-policy/activation`. Blockers render by code with their
+  details; the legacy-client acknowledgement appears only when every blocker
+  is overridable; both transitions confirm first and actions stay mounted with
+  `aria-disabled`. Session-issuing fetches (`apiFetch`, refresh, logout, OIDC
+  exchange, setup-admin) carry `X-Compendiq-Client-Protocol` through
+  `shared/lib/client-protocol.ts`, and a `client_reload_required` refusal is
+  shown as a reload prompt, never a login failure.
 - Library rows and search results carry the same compact lock as the trees,
   fed by the freeze summary fields the contract puts on every page shape.
   Freezing does not bump `pages.version`, so `PageListItem`'s memo comparator

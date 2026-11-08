@@ -64,7 +64,6 @@ describe('Enterprise loader', () => {
           requireFeature: vi.fn(),
           registerRoutes: vi.fn(async () => undefined),
           resolveAiPolicyCreationDefault,
-          aiPolicyEnforcementAvailable: () => true,
         };
         // The shim re-exports the required members by name but NOT the
         // optional hooks; only `default` carries the whole plugin.
@@ -82,7 +81,6 @@ describe('Enterprise loader', () => {
 
         expect(loaded).toBe(plugin);
         expect(loaded.resolveAiPolicyCreationDefault).toBe(resolveAiPolicyCreationDefault);
-        expect(loaded.aiPolicyEnforcementAvailable?.()).toBe(true);
         expect(getEnterprisePlugin()).toBe(plugin);
       });
 

@@ -51,8 +51,8 @@ async function pendingRootCreate(input: {
 }): Promise<string> {
   const runtimeId = `creator-${randomUUID()}`;
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-     VALUES ($1, $2::jsonb, $3)`,
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+     VALUES ($1, $2::jsonb, $3, 1)`,
     [runtimeId, JSON.stringify({ host: 'creator', pid: 1, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
   );
   const id = randomUUID();

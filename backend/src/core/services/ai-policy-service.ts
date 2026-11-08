@@ -5,6 +5,7 @@ import { getPool } from '../db/postgres.js';
 import { exactAiPolicyRevision, safeAiPolicyRevision } from './ai-policy-revision.js';
 import { isSystemAdmin, userCanAccessPage, userHasPermission } from './rbac-service.js';
 import { getEnterprisePlugin } from '../enterprise/loader.js';
+import { isAiPolicyEnforcementEnabledCached } from './ai-policy-activation.js';
 import { PageWriteError, withAiPolicyWriteTransaction } from './page-write-admission.js';
 
 /**
@@ -256,12 +257,14 @@ export function aiPolicyRefusalFromResult(
 }
 
 /**
- * Foundation-only deployments (no EE enforcement hook) refuse to ACTIVATE a
- * restrictive policy: storing `local_only`/`none` without workers that honour
- * it would be a false promise. Relaxing back to `all` is always allowed.
+ * Whether NEW restrictive policies may be chosen: the CE-owned enforcement
+ * switch (#1881, `ai-policy-activation.ts`), read from its process cache.
+ * Admission never consults this — stored restrictions are enforced in both
+ * states. While off, storing `local_only`/`none` is refused; relaxing back to
+ * `all` is always allowed. No licence or plugin hook participates.
  */
 export function isAiPolicyEnforcementAvailable(): boolean {
-  return getEnterprisePlugin().aiPolicyEnforcementAvailable?.() === true;
+  return isAiPolicyEnforcementEnabledCached();
 }
 
 export type AiPolicyMutationResult =

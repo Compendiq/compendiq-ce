@@ -18,6 +18,8 @@ erDiagram
     users ||--o{ comments : "authors"
     users ||--o{ templates : "authors"
     users o|--o{ page_writer_runtimes : "fences; SET NULL"
+    users o|--o| ai_policy_activation_state : "last changed by; SET NULL"
+    users ||--o| ai_policy_legacy_client_observations : "legacy session seen; CASCADE"
     users o|--o{ page_runtime_admissions : "acts; SET NULL"
     users o|--o{ page_write_intents : "acts/settles; SET NULL"
     users o|--o{ page_baselines : "prepares/publishes; SET NULL"
@@ -162,6 +164,7 @@ erDiagram
         text runtime_id PK "one backend process epoch"
         jsonb deployment_identity "immutable host/pid/start identity"
         int enforcement_version "migration 124; DEFAULT 0, current protocol = 1"
+        int ai_policy_enforcement_version "migration 151; DEFAULT 0 CHECK >= 0, current = 1"
         timestamptz started_at "DEFAULT NOW"
         timestamptz quiesced_at
         uuid quiescence_ack
@@ -169,6 +172,23 @@ erDiagram
         uuid fenced_by FK "users; ON DELETE SET NULL"
         text fence_reason
         jsonb fence_proof "closed server-verified proof kinds"
+    }
+
+    ai_policy_activation_state {
+        boolean singleton PK "DEFAULT TRUE CHECK (singleton); one seeded row"
+        boolean enabled "DEFAULT FALSE; the enforcement switch"
+        timestamptz changed_at "nullable until the first transition"
+        uuid changed_by_user_id FK "users; ON DELETE SET NULL"
+        text changed_by_name "actor snapshot"
+        boolean legacy_clients_acknowledged "set by enable, reset by disable"
+        timestamptz observing_since "DEFAULT NOW; legacy-client observer installed"
+    }
+
+    ai_policy_legacy_client_observations {
+        uuid user_id PK,FK "users; ON DELETE CASCADE"
+        timestamptz last_seen_at
+        timestamptz token_expires_at "issuance + access-token lifetime"
+        int observations "DEFAULT 1"
     }
 
     page_runtime_admissions {
@@ -667,6 +687,38 @@ register version 1, and the database rejects an incompatible registration once
 creation is enabled or any published baseline exists. The activation
 transaction locks the feature row before checking active, non-quiesced
 runtimes, closing the registration/readiness race.
+
+**Article AI policy activation (migration 151; #1881).** The enforcement
+switch is the `ai_policy_activation_state` singleton (`singleton BOOLEAN PK
+DEFAULT TRUE CHECK (singleton)`), seeded `enabled = false` with NULL actor and
+time; `observing_since` records when the legacy-client observer was
+installed, and `legacy_clients_acknowledged` is set only by an enabling
+transition and reset by every disable. `ai_policy_legacy_client_observations`
+keeps one attributed row per user who obtained a session from a pre-marker
+browser bundle (`token_expires_at` is fixed at issuance, so a later
+`ACCESS_TOKEN_EXPIRY` change cannot mis-measure the window); expired rows are
+swept by the token-cleanup job. `page_writer_runtimes` gains
+`ai_policy_enforcement_version INTEGER NOT NULL DEFAULT 0 CHECK (>= 0)`;
+this build registers `1` beside `enforcement_version`, older binaries omit
+the column and stay `0`. Two triggers form the one-way door on binaries and
+serialise in both orders through the state row:
+`guard_ai_policy_runtime_registration` (BEFORE INSERT OR UPDATE OF
+`ai_policy_enforcement_version`) lets version 1, re-registrations and already
+fenced/quiesced rows through without a lock, and for a genuinely new active
+version-0 row takes `FOR UPDATE` on the state row and raises SQLSTATE `55000`
+when the switch is on or any page — soft-deleted included — has `ai_policy <>
+'all'`; `guard_ai_policy_tightening` (AFTER INSERT … WHEN `ai_policy <>
+'all'`, AFTER UPDATE … WHEN `ai_policy IS DISTINCT FROM OLD`) takes `FOR
+SHARE` on the state row for a stricter value and raises `55000` with
+constraint `ai_policy_incompatible_runtime_active` while any active runtime
+has a version other than 1. Both take the lock and run the existence check as
+separate statements; a missing state row raises. Partial indexes `pages (id)
+WHERE ai_policy <> 'all'` and `page_writer_runtimes (runtime_id) WHERE
+fenced_at IS NULL AND quiesced_at IS NULL AND ai_policy_enforcement_version
+<> 1` keep both probes indexed. `truncateAllTables` reseeds the singleton with
+`observing_since = NOW() - interval '2 days'`. See
+`article-ai-policy-activation.md`.
+
 `page_runtime_admissions` retains writable-room and request tokens until clean
 release or proven runtime fencing. Migration 127 distinguishes durable
 `collab_room` owners from short-lived `collab_request` Save admissions; unknown

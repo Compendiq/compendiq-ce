@@ -46,7 +46,10 @@ export type CacheBusChannel =
   | 'license:changed'
   | 'user:security:changed'
   | 'collab:enabled:changed'
-  | 'page:lifecycle';
+  | 'page:lifecycle'
+  // #1881: reload signal for the article AI policy enforcement switch; the
+  // payload is ignored and every receiver re-reads ai_policy_activation_state.
+  | 'ai_policy:activation:changed';
 
 type Handler<T = unknown> = (payload: T) => void | Promise<void>;
 

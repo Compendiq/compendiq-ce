@@ -44,6 +44,17 @@ if (ACCESS_TOKEN_EXPIRY !== CONFIGURED_ACCESS_TOKEN_EXPIRY) {
 }
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
 
+/**
+ * Effective (post-cap) access-token lifetime in whole seconds. The AI-policy
+ * activation's legacy-client window and the legacy-client observer's
+ * `token_expires_at` (#1881) must measure with the lifetime this process
+ * actually signs, never with the configured string.
+ */
+export function getAccessTokenLifetimeSeconds(): number {
+  const match = /^(\d+)([smhd])$/.exec(ACCESS_TOKEN_EXPIRY)!;
+  return Number(match[1]) * EXPIRY_UNIT_SECONDS[match[2]!]!;
+}
+
 // Access and refresh tokens share one HS256 secret and issuer, so each
 // carries an explicit `typ` header naming its purpose (RFC 8725 §3.11), and
 // each verifier requires its own: a refresh token, live or revoked, must
@@ -516,10 +527,24 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
 }
 
 /**
- * Cleans up expired tokens from the database.
+ * Cleans up expired tokens from the database. Returns the number of expired
+ * refresh tokens removed.
+ *
+ * #1881 (design N27): the same job sweeps legacy-client observations
+ * (`core/plugins/legacy-client-guard.ts`) whose access token expired more than
+ * a day ago. The activation readiness read only counts rows with
+ * `token_expires_at` in the future (plus throttle slack), so a stale row is
+ * already inert; the day of grace keeps recently expired rows visible to an
+ * operator diagnosing a `legacy_clients_active` refusal.
  */
 export async function cleanupExpiredTokens(): Promise<number> {
   const result = await query('DELETE FROM refresh_tokens WHERE expires_at < NOW()');
+  const observations = await query(
+    "DELETE FROM ai_policy_legacy_client_observations WHERE token_expires_at < NOW() - interval '1 day'",
+  );
+  if ((observations.rowCount ?? 0) > 0) {
+    logger.info({ deleted: observations.rowCount }, 'Swept expired legacy-client observations');
+  }
   return result.rowCount ?? 0;
 }
 

@@ -10,7 +10,7 @@ imports enforced by `eslint-plugin-boundaries` (see
 flowchart LR
     subgraph routes["routes/ (HTTP entry points)"]
         direction TB
-        rF["foundation<br/>health, auth, settings,<br/>admin, page-write recovery,<br/>admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
+        rF["foundation<br/>health, auth, settings,<br/>admin, page-write recovery,<br/>admin-embedding-locks,<br/>ai-policy-activation (#1881),<br/>backup admin + public download,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
         rK["knowledge<br/>pages CRUD, baselines, relocate,<br/>versions, tags, embeddings,<br/>duplicates, pinned, templates,<br/>comments, search, analytics,<br/>export/import, notion connection,<br/>tree/import, pages-collab (WS gateway)"]
@@ -26,8 +26,8 @@ flowchart LR
     subgraph core["core/ (infrastructure)"]
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry,<br/>page lifecycle advisory namespace"]
-        cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, confluence-integration,<br/>page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service/persistence/schema,<br/>collab-flag/tombstone/guard"]
+        cPlug["plugins/ — auth, correlation-id, redis,<br/>legacy-client-guard (#1881)"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty, confluence-integration,<br/>page-write-admission,<br/>page-baseline-manifest/service/outbox/governance,<br/>ai-policy-service/activation/runtime-guard,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service/persistence/schema,<br/>collab-flag/tombstone/guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -198,12 +198,14 @@ flowchart LR
         putBulk["POST /pages/bulk/ai-policy<br/>{ aiPolicy, items[{ pageId, expectedRevision? }] }"]
         crud["POST /pages { aiPolicy? }<br/>PUT /pages/:id { aiPolicy?, expectedRevision? } (both or neither)"]
         detail["GET /pages/:id → aiPolicy, aiPolicyRevision,<br/>canChangeAiPolicy, aiPolicyActivation"]
+        activation["GET/PUT /admin/ai-policy/activation (#1881)<br/>{ enabled, acknowledgeLegacyClients? }"]
     end
     subgraph svc["core/services/ai-policy-service.ts"]
         direction TB
         upd["updatePageAiPolicies<br/>(all-or-nothing)"]
         prim["applyAiPolicyOnClient<br/>(single mutation primitive)"]
         creation["resolveCreationAiPolicy<br/>stricter of hook default, choice, labels"]
+        avail["isAiPolicyEnforcementAvailable<br/>→ ai-policy-activation.ts process cache"]
     end
     subgraph adm["domains/llm/services/ai-policy-admission.ts"]
         direction TB
@@ -219,6 +221,10 @@ flowchart LR
     byUsecase --> byProvider --> decide
     prim --> events["emitAiPolicyEvent (inert CE sink)"]
     byProvider --> events
+    activation --> switch["core/services/ai-policy-activation.ts<br/>setAiPolicyEnforcementEnabled / readiness"]
+    switch --> avail
+    upd --> avail
+    creation --> avail
 ```
 
 - **Values.** Stored and wire value: `all | local_only | none`. `no_ai` is
@@ -230,9 +236,33 @@ flowchart LR
   403 `ai_policy_denied`, 409 `ai_policy_conflict` with
   `reason: 'stale_revision'`, 422 `ai_policy_label_conflict` (an explicit
   `aiPolicy` on create contradicting a reserved label), 409
-  `ai_policy_enforcement_unavailable` (restrictive value on a
-  foundation-only deployment; the detail's `aiPolicyActivation` reports
-  `active | foundation_only`), 503 `ai_policy_unavailable`.
+  `ai_policy_enforcement_unavailable` (restrictive value while the
+  enforcement switch is off, or `reason: 'incompatible_runtime_active'`
+  when a version-0 runtime is still registered; the detail's
+  `aiPolicyActivation` reports `active | foundation_only`), 503
+  `ai_policy_unavailable`.
+- **Activation switch (#1881).** `aiPolicyActivation` and every tightening
+  gate read `isAiPolicyEnforcementAvailable()`, which delegates to the
+  process cache in `core/services/ai-policy-activation.ts`
+  (`isAiPolicyEnforcementEnabledCached`, loaded from
+  `ai_policy_activation_state` before routes and workers, reloaded on the
+  `ai_policy:activation:changed` bus channel, on reconnect and by a 30 s
+  poll). No enterprise hook participates: the switch is CE-owned and
+  licence-independent. `routes/foundation/ai-policy-activation.ts` (core-only
+  imports, admin rate limit) serves `GET /api/admin/ai-policy/activation`
+  and `PUT` `{ enabled, acknowledgeLegacyClients? }` → 200 state, 409
+  `ai_policy_activation_refused { blockers }`, 503
+  `ai_policy_activation_busy`. `core/services/ai-policy-runtime-guard.ts`
+  recognises the migration-151 trigger refusal (`55000`,
+  `ai_policy_incompatible_runtime_active`) so routes map it to 409 and
+  recovery/deferred ingestion keep the work pending.
+  `core/plugins/legacy-client-guard.ts` is the global `onRequest`/`onSend`
+  pair registered before CE routes and the EE plugin that observes or, while
+  enabled, refuses (409 `client_reload_required`) session-issuing POSTs from
+  browsers without `X-Compendiq-Client-Protocol`. The global label
+  rename/delete in `routes/foundation/admin.ts` refuses reserved policy labels
+  with 409 `ai_policy_reserved_label`. Mechanism, blockers and operator
+  procedure: `article-ai-policy-activation.md`.
 - **Create/update carry policy.** `POST /pages` resolves an explicit
   `aiPolicy` through `resolveCreationAiPolicy` and writes `labels` and
   `ai_policy` in the creating INSERT for standalone pages and in the

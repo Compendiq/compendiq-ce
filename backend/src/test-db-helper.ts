@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import type { PoolClient } from 'pg';
 import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
 
 const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'core', 'db', 'migrations');
@@ -153,6 +155,14 @@ export async function truncateAllTables(): Promise<void> {
       IF to_regclass('public.page_baseline_capacity') IS NOT NULL THEN
         INSERT INTO page_baseline_capacity (singleton, reserved_bytes) VALUES (TRUE, 0);
       END IF;
+      -- #1881: enforcement disabled, no actor. The legacy-client observer is
+      -- treated as two days old so the one-lifetime blind window a FRESH
+      -- install shows (legacy_client_window_open) does not fire for every
+      -- test; window tests set observing_since explicitly.
+      IF to_regclass('public.ai_policy_activation_state') IS NOT NULL THEN
+        INSERT INTO ai_policy_activation_state (singleton, enabled, observing_since)
+        VALUES (TRUE, FALSE, NOW() - interval '2 days');
+      END IF;
     END $$;
   `;
   // Parallel files on one worker DB are gone, but a leftover collab persist
@@ -170,6 +180,49 @@ export async function truncateAllTables(): Promise<void> {
     }
   }
   throw lastErr;
+}
+
+/**
+ * Register a `page_writer_runtimes` fixture at BOTH protocol versions this
+ * build enforces (`enforcement_version` #276, `ai_policy_enforcement_version`
+ * #1881), active unless told otherwise. Returns the runtime id.
+ *
+ * `legacy: true` is a pre-#1881 binary: `ai_policy_enforcement_version = 0`
+ * (it enforces the protected-writer protocol, version 1, but not the article
+ * AI policy protocol). Migration 151 refuses such a row while enforcement is
+ * enabled or any restricted page exists, and refuses every tightening while
+ * one is active — ask for it only in tests of that door; everywhere else a
+ * default fixture keeps the test's own policy writes admissible.
+ */
+export async function insertTestRuntime(opts: {
+  runtimeId?: string;
+  legacy?: boolean;
+  fenced?: boolean;
+  quiesced?: boolean;
+  client?: PoolClient;
+} = {}): Promise<string> {
+  const runtimeId = opts.runtimeId ?? `test-runtime-${randomUUID()}`;
+  const runner = opts.client ?? getPool();
+  await runner.query(
+    `INSERT INTO page_writer_runtimes
+       (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version,
+        quiesced_at, quiescence_ack, fenced_at, fence_reason, fence_proof)
+     VALUES ($1, $2::jsonb, 1, $3,
+             CASE WHEN $4::boolean THEN NOW() END,
+             CASE WHEN $4::boolean THEN gen_random_uuid() END,
+             CASE WHEN $5::boolean THEN NOW() END,
+             CASE WHEN $5::boolean THEN 'Test fixture: verified terminated writer' END,
+             CASE WHEN $5::boolean THEN '{"kind":"verified_local_termination"}'::jsonb END)
+     ON CONFLICT (runtime_id) DO NOTHING`,
+    [
+      runtimeId,
+      JSON.stringify({ host: 'test-fixture', pid: process.pid, startedAt: new Date().toISOString() }),
+      opts.legacy ? 0 : 1,
+      opts.quiesced === true,
+      opts.fenced === true,
+    ],
+  );
+  return runtimeId;
 }
 
 export async function teardownTestDb(): Promise<void> {
