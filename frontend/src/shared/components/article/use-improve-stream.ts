@@ -1,139 +1,95 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { streamSSE } from '../../lib/sse';
 import type { ImprovementType } from '@compendiq/contracts';
 import { getClientInferenceManager } from '../../lib/client-inference/client-inference-manager';
-
-/**
- * #708 — Lightweight SSE consumer for the editor bubble menu's inline AI
- * improve. Deliberately separate from `AiContext.runStream`, which is scoped
- * to the `/ai` page (it owns conversation/message/thinking state and a single
- * shared abort controller). The editor only needs to stream the improved
- * fragment for the current selection into a popover preview — so this hook
- * keeps just the accumulated text, a status, and its own abort controller.
- *
- * The request sends ONLY the selected fragment as `content`, with `pageId` /
- * `includeSubPages` omitted, so the backend skips whole-page/sub-page context
- * assembly and never writes an `llm_improvements` row (selection edits are
- * ephemeral previews, not page-level improvements).
- */
+import { EditorAiContext } from '../../lib/editor-ai-context';
+import { editorAiUnavailableReason } from '../../lib/article-ai-policy';
 
 type ImproveStreamStatus = 'idle' | 'streaming' | 'done' | 'error';
-
-/** SSE chunk shapes emitted by `/llm/improve` (see `streamSSE` on the backend). */
-interface ImproveChunk {
-  content?: string;
-  finalContent?: string;
-  error?: string;
-  done?: boolean;
-}
-
+interface ImproveChunk { content?: string; finalContent?: string; error?: string; done?: boolean }
 export interface UseImproveStreamResult {
   status: ImproveStreamStatus;
-  /** Accumulated improved Markdown streamed so far. */
   output: string;
   error: string | null;
-  /** Start a stream for the given selection text + improvement type. */
+  unavailableReason: string | null;
   run: (content: string, type: ImprovementType, instruction?: string) => Promise<void>;
-  /** Abort the in-flight stream (no-op if idle). */
   abort: () => void;
-  /** Reset back to idle, clearing output/error. */
   reset: () => void;
 }
 
-// The backend resolves the `chat` use-case itself and ignores the request's
-// `model` beyond logging; the schema only requires a non-empty string. We send
-// a sentinel so validation passes without the editor needing model state.
-const SELECTION_MODEL = 'selection';
-
+/** Selection and block rewrites retain their article identity, including unsaved text. */
 export function useImproveStream(): UseImproveStreamResult {
+  const context = useContext(EditorAiContext);
+  const { pageId, policy, revision, permitted } = context;
+  const unavailableReason = editorAiUnavailableReason(policy)
+    ?? (!pageId || permitted !== true || !Number.isSafeInteger(revision) ? 'Unavailable: article identity or AI permission could not be checked.' : null);
   const [status, setStatus] = useState<ImproveStreamStatus>('idle');
   const [output, setOutput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  const abort = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-  }, []);
-
-  const reset = useCallback(() => {
-    abort();
-    setStatus('idle');
-    setOutput('');
-    setError(null);
-  }, [abort]);
+  const abort = useCallback(() => { abortRef.current?.abort(); abortRef.current = null; }, []);
+  const reset = useCallback(() => { abort(); setStatus('idle'); setOutput(''); setError(null); }, [abort]);
+  useEffect(() => { reset(); return abort; }, [pageId, policy, revision, permitted, reset, abort]);
+  useEffect(() => {
+    window.addEventListener('offline', reset);
+    return () => window.removeEventListener('offline', reset);
+  }, [reset]);
 
   const run = useCallback(async (content: string, type: ImprovementType, instruction?: string) => {
-    abort();
+    reset();
+    if (unavailableReason) { setError(unavailableReason); setStatus('error'); return; }
     const controller = new AbortController();
     abortRef.current = controller;
-
+    const live = () => !controller.signal.aborted && abortRef.current === controller;
+    const manager = getClientInferenceManager();
     setStatus('streaming');
-    setOutput('');
-    setError(null);
-
-    const task = type === 'grammar'
-      ? 'grammar'
-      : type === 'completeness'
-        ? 'completeness'
-        : 'clarity';
-    const local = await getClientInferenceManager().decideRewrite({
-      text: content,
-      task,
-      instruction,
-      signal: controller.signal,
-    });
-    if (local.kind === 'local') {
-      setOutput(local.text);
-      setStatus('done');
-      return;
-    }
-
-    let accumulated = '';
-    let completed = false;
     try {
-      for await (const chunk of streamSSE<ImproveChunk>(
-        '/llm/improve',
-        {
-          content,
-          type,
-          model: SELECTION_MODEL,
-          // pageId / includeSubPages intentionally omitted — selection-only.
-          ...(instruction ? { instruction } : {}),
-        },
-        controller.signal,
-      )) {
-        if (chunk.error) {
-          setError(chunk.error);
-          setStatus('error');
-          return;
+      const admitted = await manager.articleRevision(Number(pageId), controller.signal);
+      if (!live()) return;
+      if (admitted === null || admitted !== revision) throw new Error('Article AI policy changed or could not be checked. Refresh and retry.');
+      const local = await manager.decideRewrite({
+        text: content, task: type === 'grammar' ? 'grammar' : type === 'completeness' ? 'completeness' : 'clarity',
+        instruction, signal: controller.signal, pageId: Number(pageId),
+      });
+      if (!live()) return;
+      let accumulated = '';
+      if (local.kind === 'local') accumulated = local.text;
+      else {
+        let completed = false;
+        for await (const chunk of streamSSE<ImproveChunk>('/llm/improve', {
+          content, type, pageId, model: 'selection', ...(instruction ? { instruction } : {}),
+        }, controller.signal)) {
+          if (!live()) return;
+          if (chunk.error) throw new Error(chunk.error);
+          if (chunk.done) completed = true;
+          if (chunk.finalContent !== undefined) accumulated = chunk.finalContent;
+          else if (chunk.content) accumulated += chunk.content;
         }
-        if (chunk.done === true) completed = true;
-        // Post-processing may emit a cleaned full replacement.
-        if (chunk.finalContent !== undefined) {
-          accumulated = chunk.finalContent;
-          setOutput(accumulated);
-        } else if (chunk.content) {
-          accumulated += chunk.content;
-          setOutput(accumulated);
-        }
+        if (!completed) throw new Error('The response was interrupted before completion. Retry to generate a new preview.');
       }
-      if (controller.signal.aborted) return;
-      if (!completed) {
-        setError('The response was interrupted before completion. Copy the partial output or try again.');
-        setStatus('error');
-        return;
-      }
+      const current = await manager.articleRevision(Number(pageId), controller.signal);
+      if (!live()) return;
+      if (current !== admitted) throw new Error('Article AI policy changed. The stale preview was discarded.');
+      setOutput(accumulated);
       setStatus('done');
     } catch (err) {
-      // Aborts are intentional (user discarded / retried) — stay silent.
-      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (!live()) return;
+      setOutput('');
       setError(err instanceof Error ? err.message : 'Improve request failed');
       setStatus('error');
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [abort]);
+  }, [reset, unavailableReason, pageId, revision]);
 
-  return { status, output, error, run, abort, reset };
+  // Completed previews are still reusable AI output: retire them when authorization changes.
+  useEffect(() => {
+    if (status !== 'done' && status !== 'streaming') return;
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      void getClientInferenceManager().articleRevision(Number(pageId), controller.signal).then((current) => {
+        if (!controller.signal.aborted && current !== revision) reset();
+      });
+    }, 1000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [status, pageId, revision, reset]);
+  return { status, output: unavailableReason ? '' : output, error, unavailableReason, run, abort, reset };
 }

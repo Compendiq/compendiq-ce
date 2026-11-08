@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { ApiError } from '../../../shared/lib/api';
 import { useOnboardingActions } from '../../../shared/hooks/use-onboarding';
-import { useAiContext, nextMessageId } from '../AiContext';
+import { useAiContext } from '../AiContext';
 import { chipUserMessage, type DockChipId } from './dock-chips';
 import { getCreateSkill, CREATE_SKILLS, type CreateSkillId } from '../create-skills';
 
@@ -90,7 +90,7 @@ export function useDockActions({
 }: DockActionOptions = {}) {
   const {
     page, pageId, model, includeSubPages, thinkingMode, isStreaming, conversationId,
-    improvementType, diagramType, createSkill, input, setInput, setMessages, runStream,
+    improvementType, diagramType, createSkill, input, setInput, runStream,
     setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     setDiffBaseVersion, setImprovementId, setDiagramCode, setGeneratedDraft,
   } = useAiContext();
@@ -125,10 +125,20 @@ export function useDockActions({
     const useDeepSearch = deepSearch;
     setInput('');
     onDeepSearchConsumed?.();
-    if (imageHandle) onImageConsumed?.();
-    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
+    // #283: the image is released once the server has ACCEPTED the request
+    // (first content or completion), not at submit — a policy refusal or the
+    // local policy guard sends nothing, and the staged attachment is part of
+    // the draft they must leave intact. The user turn is seeded THROUGH
+    // runStream (`userMessage`) so a refusal that answers nothing withdraws
+    // it with the placeholder; runStream only removes turns it added.
+    let imageConsumed = false;
+    const consumeImage = () => {
+      if (imageConsumed || !imageHandle) return;
+      imageConsumed = true;
+      onImageConsumed?.();
+    };
 
-    await runStream(
+    const outcome = await runStream(
       '/llm/ask',
       {
         question,
@@ -147,9 +157,12 @@ export function useDockActions({
         ...(useDeepSearch && { deepSearch: true }),
       },
       {
+        userMessage: question,
+        onContent: consumeImage,
         onError: (err) => {
           if (!imageHandle) return false;
           if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
+          consumeImage();
           onImageExpired?.();
           setInput(question);
           toast.error('The image expired — attach it again.');
@@ -157,11 +170,14 @@ export function useDockActions({
         },
         // Success only: runStream returns before `onComplete` on an abort, a
         // thrown request error and an in-band SSE error frame (#1402).
-        onComplete: () => markComplete('firstAiQueryMade'),
+        onComplete: () => { consumeImage(); markComplete('firstAiQueryMade'); },
       },
     );
+    // A policy refusal sent nothing: the staged image stays with the draft.
+    // Every other outcome consumed the request (#283).
+    if (!outcome.policyRefusal) consumeImage();
   }, [
-    input, canRun, isBusy, setInput, onDeepSearchConsumed, imageHandle, onImageConsumed, setMessages, runStream,
+    input, canRun, isBusy, setInput, onDeepSearchConsumed, imageHandle, onImageConsumed, runStream,
     model, conversationId, pageId, includeSubPages, thinkingMode, deepSearch, referenceText, onImageExpired,
     markComplete,
   ]);

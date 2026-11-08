@@ -238,3 +238,40 @@ export const BLOCK_REASON_LABEL: Record<AiPolicyBlockReason, string> = {
   provider_not_local: 'Blocked by policy: the assigned provider is not declared local',
   policy_changed: 'Blocked by policy: the article AI policy changed before this work was published',
 };
+
+/**
+ * The decoded shape of a policy-route refusal body (mirrors
+ * `describeAiPolicyRefusal` in `hooks/use-pages`, which owns the decoding so
+ * this module stays free of network types).
+ */
+export type DecodedAiPolicyRefusal =
+  | { kind: 'denied'; pageIds: number[] }
+  | { kind: 'conflict'; pageIds: number[] }
+  | { kind: 'label_conflict'; policies: AiPolicy[] }
+  | { kind: 'enforcement_unavailable' }
+  | { kind: 'unavailable' };
+
+/**
+ * The user-facing verdict for a refused bulk policy request (#283). The
+ * server refuses the WHOLE request, so every message says that nothing
+ * changed; a denial/conflict names how many rows were involved, never which
+ * — an inaccessible target is indistinguishable from a missing one, and no
+ * title the caller could not otherwise read is disclosed.
+ */
+export function bulkPolicyFailureMessage(refusal: DecodedAiPolicyRefusal | null, count: number): string {
+  const noun = count === 1 ? 'page' : 'pages';
+  switch (refusal?.kind) {
+    case 'denied':
+      return `No policy was changed. You are not authorized to change the AI policy on ${refusal.pageIds.length} of the ${count} selected ${noun}.`;
+    case 'conflict':
+      return `No policy was changed. The AI policy of ${refusal.pageIds.length} of the ${count} selected ${noun} changed since the list was read. Refresh and review before trying again.`;
+    case 'label_conflict':
+      return 'No policy was changed. The request conflicts with the pages\u2019 reserved policy labels.';
+    case 'enforcement_unavailable':
+      return 'No policy was changed. Policy enforcement is not activated on this deployment yet.';
+    case 'unavailable':
+      return 'No policy was changed. The AI policy service could not be reached; try again.';
+    default:
+      return 'No policy was changed. The request failed; your selection is kept.';
+  }
+}

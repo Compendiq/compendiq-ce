@@ -18,9 +18,31 @@ import {
   useDeletePage,
   useUpdatePageIcon,
   useUploadPageIcon,
+  describeAiPolicyRefusal,
+  type AiPolicyRefusal,
 } from '../../shared/hooks/use-pages';
+
+/**
+ * #283 — the visible reason a label write was refused for article-AI-policy
+ * reasons. Says what the server decided; never that a policy changed.
+ */
+function labelRefusalMessage(refusal: AiPolicyRefusal): string {
+  switch (refusal.kind) {
+    case 'label_conflict':
+      return `The labels name more than one AI policy (${refusal.policies.map((p) => AI_POLICY_CHIP_LABEL[p]).join(' and ')}). Keep one reserved policy label, or change the policy explicitly in Details → AI policy. Your other tag edits are kept.`;
+    case 'denied':
+      return 'You are not authorized to change this article\u2019s AI policy through its labels. The reserved label was not applied; your other tag edits are kept.';
+    case 'conflict':
+      return 'The article\u2019s AI policy changed since this page was read. Refresh and review before applying reserved labels again; your tag edits are kept.';
+    case 'enforcement_unavailable':
+      return 'AI-policy labels cannot be applied until policy enforcement is activated on this deployment. Your other tag edits are kept.';
+    case 'unavailable':
+      return 'The article\u2019s AI policy could not be read, so the reserved label was not applied. Try again; your tag edits are kept.';
+  }
+}
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { FrozenBadge } from '../../shared/components/badges/FrozenBadge';
+import { AiPolicyChip } from '../../shared/components/badges/AiPolicyChips';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
 import { CollabCommitResponseSchema, type CollabConfig, type SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
@@ -31,7 +53,7 @@ import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
-import { inlineArticlePolicy } from '../../shared/lib/article-ai-policy';
+import { inlineArticlePolicy, AI_POLICY_CHIP_LABEL } from '../../shared/lib/article-ai-policy';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { Editor, EditorToolbar, EditorContextToolbars } from '../../shared/components/article/Editor';
 import { clearDraft, pageDraftKey, readDraft } from '../../shared/lib/editor-drafts';
@@ -149,6 +171,9 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  // #283: the server's reserved-label verdict on the last refused label
+  // write, shown inside the tag control; null once a write commits.
+  const [labelPolicyNotice, setLabelPolicyNotice] = useState<string | null>(null);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
   // State-backed pending flags update on the next render, which leaves a
@@ -798,7 +823,23 @@ export function PageViewPage() {
         const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
         const removeLabels = currentLabels.filter((l) => !draftLabels.includes(l));
         if (addLabels.length > 0 || removeLabels.length > 0) {
-          await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+          try {
+            await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+            setLabelPolicyNotice(null);
+          } catch (labelError) {
+            // #283: a reserved-label verdict from the server (contradictory
+            // policy labels, a relaxation without policy authority,
+            // enforcement not activated) is not a save failure — the content
+            // save above already committed. Keep the edit session and the
+            // draft labels so the user can resolve the conflict, and say
+            // exactly what the server refused and why, inside the tag
+            // control. Anything else is an ordinary label-write error.
+            const refusal = describeAiPolicyRefusal(labelError);
+            if (!refusal || editSessionRef.current !== session) throw labelError;
+            setLabelPolicyNotice(labelRefusalMessage(refusal));
+            toast.warning('Content saved; the label change was not applied. See the tag control for the reason.');
+            return;
+          }
         }
       }
       if (editSessionRef.current !== session) return;
@@ -957,7 +998,15 @@ export function PageViewPage() {
     }
     labelsMutation.mutate(
       { id, addLabels: [tag] },
-      { onError: () => toast.error('Failed to add tag.') },
+      {
+        onSuccess: () => setLabelPolicyNotice(null),
+        // #283: a policy verdict is named in the tag control, not toasted away.
+        onError: (error) => {
+          const refusal = describeAiPolicyRefusal(error);
+          if (refusal) setLabelPolicyNotice(labelRefusalMessage(refusal));
+          else toast.error('Failed to add tag.');
+        },
+      },
     );
   }, [editing, draftLabels, id, labelsMutation]);
 
@@ -971,7 +1020,14 @@ export function PageViewPage() {
     }
     labelsMutation.mutate(
       { id, removeLabels: [tag] },
-      { onError: () => toast.error('Failed to remove tag.') },
+      {
+        onSuccess: () => setLabelPolicyNotice(null),
+        onError: (error) => {
+          const refusal = describeAiPolicyRefusal(error);
+          if (refusal) setLabelPolicyNotice(labelRefusalMessage(refusal));
+          else toast.error('Failed to remove tag.');
+        },
+      },
     );
   }, [editing, id, labelsMutation]);
 
@@ -1172,6 +1228,7 @@ export function PageViewPage() {
       suggestions={filterOptions?.labels}
       isLoading={labelsMutation.isPending}
       iconOnly={editing}
+      policyNotice={labelPolicyNotice}
     />
   );
   const saving = saveInFlight || updateMutation.isPending;
@@ -1239,6 +1296,9 @@ export function PageViewPage() {
           below it. The height stays 48 — the sidebar's chrome row and the
           inspector's tab row still start their content on that same y. */}
       <div className="relative z-30 shrink-0">
+        {!isError && (inlineArticlePolicy(page).articlePolicy === 'none' || inlineArticlePolicy(page).articlePolicy === 'local_only') && (
+          <div className="px-3 py-1"><AiPolicyChip compact policy={inlineArticlePolicy(page).articlePolicy!} /></div>
+        )}
         {confluenceModified && (
           <ConfluenceModifiedAlert
             remoteVersion={confluenceModified.remoteVersion}

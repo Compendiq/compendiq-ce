@@ -22,7 +22,9 @@ import {
   LOCALITY_HELP_TEXT,
   NO_AI_CONFIRMATION,
   BLOCK_REASON_LABEL,
+  bulkPolicyFailureMessage,
 } from './article-ai-policy';
+import { resolvePageState } from '../components/badges/page-state';
 
 describe('article AI policy UI logic', () => {
   it('decodes live inline policy without granting permission for missing detail', () => {
@@ -183,5 +185,46 @@ describe('article AI policy UI logic', () => {
       ...Object.values(LOCALITY_CHIP_LABEL),
     ].join(' ');
     expect(all).not.toMatch(/verified|secure|protected|guarantee/i);
+  });
+
+  it('bulk policy failure copy says nothing changed and names counts, never titles (#283)', () => {
+    const denied = bulkPolicyFailureMessage({ kind: 'denied', pageIds: [4, 9] }, 5);
+    expect(denied).toMatch(/^No policy was changed\./);
+    expect(denied).toContain('2 of the 5 selected pages');
+    expect(denied).not.toMatch(/\b4\b|\b9\b/);
+    expect(bulkPolicyFailureMessage({ kind: 'conflict', pageIds: [1] }, 1)).toContain('1 of the 1 selected page changed');
+    expect(bulkPolicyFailureMessage(null, 3)).toMatch(/^No policy was changed\./);
+    for (const kind of ['label_conflict', 'enforcement_unavailable', 'unavailable'] as const) {
+      const message = bulkPolicyFailureMessage(kind === 'label_conflict' ? { kind, policies: ['none'] } : { kind }, 2);
+      expect(message).toMatch(/^No policy was changed\./);
+      expect(message).not.toMatch(/applied|succeeded|partially/i);
+    }
+  });
+});
+
+describe('Library page-state ladder with worker policy fields (#281/#283)', () => {
+  it('a policy-blocked stage outranks everything and carries the server reason', () => {
+    const state = resolvePageState({
+      embeddingStatus: 'policy_blocked', embeddingDirty: true, summaryStatus: 'failed', qualityStatus: 'failed',
+      aiPolicyBlockReason: 'provider_not_local',
+    });
+    expect(state).toMatchObject({ tone: 'policy', label: 'Indexing: policy blocked' });
+    expect(state!.title).toContain(BLOCK_REASON_LABEL.provider_not_local);
+    expect(state!.title).toContain('keyword search remain available');
+  });
+  it('a blocked stage without a server reason never invents one', () => {
+    const state = resolvePageState({ summaryStatus: 'policy_blocked', qualityStatus: 'policy_blocked' });
+    expect(state).toMatchObject({ tone: 'policy', label: 'Summary & Quality: policy blocked' });
+    expect(state!.title).toContain('article AI policy or provider locality');
+    for (const reason of Object.values(BLOCK_REASON_LABEL)) expect(state!.title).not.toContain(reason);
+  });
+  it('recovering is its own tone, distinct from pending, success and failure', () => {
+    const recovering = resolvePageState({ embeddingDirty: true, summaryStatus: 'pending', aiPolicyRecovering: true });
+    expect(recovering).toMatchObject({ tone: 'recovering', label: 'AI work recovering' });
+    expect(recovering!.title).toContain('not completed');
+    const pending = resolvePageState({ embeddingDirty: true, summaryStatus: 'pending', aiPolicyRecovering: false });
+    expect(pending).toMatchObject({ tone: 'working', label: 'AI work pending' });
+    expect(resolvePageState({ summaryStatus: 'summarized', qualityStatus: 'analyzed', aiPolicyRecovering: false })).toBeNull();
+    expect(resolvePageState({ summaryStatus: 'failed' })).toMatchObject({ tone: 'failed' });
   });
 });

@@ -15,6 +15,8 @@ interface StatusConfig {
 
 function getConfig(status: SummaryStatus): StatusConfig {
   switch (status) {
+    case 'policy_blocked':
+      return { label: 'Policy blocked', title: 'Summary is blocked by article policy or provider locality', dotClass: 'bg-muted-foreground', animate: false };
     case 'summarized':
       return {
         label: 'Summarized',

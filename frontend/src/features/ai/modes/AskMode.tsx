@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Send, Link2, X, Plus } from 'lucide-react';
-import { useAiContext, nextMessageId } from '../AiContext';
+import { useAiContext } from '../AiContext';
+import { PolicyRefusalNotice } from '../PolicyRefusalNotice';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { DeepSearchToggle } from '../DeepSearchToggle';
@@ -41,7 +42,7 @@ export function AskModeInput() {
 function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
-    includeSubPages, thinkingMode, setThinkingMode, setMessages, runStream,
+    includeSubPages, thinkingMode, setThinkingMode, runStream,
     chatVision, chatVisionModel, historyTruncated,
     activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
@@ -182,9 +183,20 @@ function AskModeInputContent() {
     const imageHandle = image?.handle;
     setInput('');
     setDeepSearch(false);
-    if (imageHandle) removeImage();
-    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
-
+    // #283: the image is released only once the server has ACCEPTED the
+    // request (first content frame or completion). A policy refusal before
+    // any answer (`ai_history_not_replayable`, `ai_policy_unavailable`) sends
+    // nothing to a provider, and the user's staged attachment is part of the
+    // draft the refusal must leave intact — see `onContent`/`onComplete`.
+    let imageConsumed = false;
+    const consumeImage = () => {
+      if (imageConsumed || !imageHandle) return;
+      imageConsumed = true;
+      removeImage();
+    };
+    // The user turn is seeded THROUGH runStream (`userMessage`) rather than
+    // appended here so a refusal that answers nothing withdraws it together
+    // with the placeholder — runStream only removes turns it added itself.
     const body: Record<string, unknown> = {
       question,
       model,
@@ -207,14 +219,21 @@ function AskModeInputContent() {
       body.externalUrls = externalUrls;
     }
 
-    await runStream('/llm/ask', body, {
+    // runStream never rethrows; its outcome says whether this send was
+    // refused by article AI policy, which decides whether the per-send state
+    // (external URLs, image) was consumed or must stay as the draft.
+    const outcome = await runStream('/llm/ask', body, {
+      userMessage: question,
+      onContent: consumeImage,
       onError: (err) => {
         if (!imageHandle || !(err instanceof ApiError) || err.statusCode !== 410) return false;
+        consumeImage();
         setInput(question);
         toast.error('The image expired — attach it again.');
         return true;
       },
       onComplete: () => {
+        consumeImage();
         // Sources are attached by runStream automatically.
         //
         // #1402, milestone 3. `onComplete` fires on runStream's normal path
@@ -225,12 +244,16 @@ function AskModeInputContent() {
       },
     });
 
-    // Clear external URLs after sending
+    // #283: a policy refusal sent nothing, so the per-send draft state stays
+    // exactly as submitted — URLs, URL bar, image. Every other outcome (an
+    // answer, an abort, an ordinary error) consumed the request as before.
+    if (outcome.policyRefusal) return;
+    consumeImage();
     setExternalUrls([]);
     setShowUrlInput(false);
   }, [
     input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
-    deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
+    deepSearch, documents, image, externalUrls, setInput, removeImage, runStream,
     threadLoadState, markComplete,
   ]);
 
@@ -248,6 +271,7 @@ function AskModeInputContent() {
 
   return (
     <div className="mt-3 border-t border-border pt-3">
+      <PolicyRefusalNotice />
       {documents.length > 0 && image && (
         <p className="mb-2 flex items-center gap-1.5 text-xs text-warning" data-testid="ask-attachment-context-warning">
           <AlertTriangle size={12} className="shrink-0" aria-hidden />

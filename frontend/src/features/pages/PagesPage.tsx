@@ -5,8 +5,10 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, ChevronLeft, ChevronRight, ChevronDown, FolderOpen, Filter, X, List, Loader2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
+import { type AiPolicy, type AiPolicyBlockReason, type AiPolicyFilter, type PageSource, type PageIcon as PageIconValue } from '@compendiq/contracts';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type EmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
+import { AI_POLICY_CHIP_LABEL } from '../../shared/lib/article-ai-policy';
+import type { BulkAiPolicySelection } from './BulkActionBar';
 import { useSpaces, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
@@ -102,6 +104,19 @@ const EMBEDDING_OPTIONS: readonly FilterDropdownOption[] = [
 ];
 
 /**
+ * #283 Library AI-policy filter. The first option is NO filter — it is
+ * deliberately not spelled `all`, because `all` is the All-AI-allowed policy
+ * and would list only those articles. The three values are the contract's
+ * stored policies, in restriction order, named with the inspector's words.
+ */
+const AI_POLICY_OPTIONS: readonly FilterDropdownOption[] = [
+  { value: '', label: 'All articles' },
+  { value: 'all', label: AI_POLICY_CHIP_LABEL.all },
+  { value: 'local_only', label: AI_POLICY_CHIP_LABEL.local_only },
+  { value: 'none', label: AI_POLICY_CHIP_LABEL.none },
+];
+
+/**
  * "A, B" for up to 3 labels; "A, B, C, and N more" beyond that. Shared by the
  * #945 semantic-search honesty notice and the filtered-to-zero empty state
  * (harden pass, 2026-08-17) so both describe the same active-filter set the
@@ -188,6 +203,10 @@ interface PageListItemProps {
     lastModifiedAt: string | null;
     labels: string[];
     embeddingDirty: boolean;
+    /** #283: lets the row's pipeline badge show a policy-blocked index, not just dirty/clean. */
+    embeddingStatus?: EmbeddingStatus;
+    aiPolicyBlockReason?: AiPolicyBlockReason | null;
+    aiPolicyRecovering?: boolean;
     qualityScore: number | null;
     qualityStatus: QualityStatus | null;
     qualityCompleteness: number | null;
@@ -367,8 +386,11 @@ const PageListItem = memo(function PageListItem({
               is suppressed on this list. Failures still show. */}
           <PageStateBadge
             embeddingDirty={pageItem.embeddingDirty}
+            embeddingStatus={pageItem.embeddingStatus}
             summaryStatus={pageItem.summaryStatus}
             qualityStatus={pageItem.qualityStatus}
+            aiPolicyBlockReason={pageItem.aiPolicyBlockReason}
+            aiPolicyRecovering={pageItem.aiPolicyRecovering}
             showIdleEmbedding={showIdleEmbedding}
           />
         </button>
@@ -387,6 +409,9 @@ const PageListItem = memo(function PageListItem({
   if (prev.pageItem.visibility !== next.pageItem.visibility) return false;
   if (prev.pageItem.spaceKey !== next.pageItem.spaceKey) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
+  if (prev.pageItem.embeddingStatus !== next.pageItem.embeddingStatus) return false;
+  if (prev.pageItem.aiPolicyBlockReason !== next.pageItem.aiPolicyBlockReason) return false;
+  if (prev.pageItem.aiPolicyRecovering !== next.pageItem.aiPolicyRecovering) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
   if (prev.pageItem.qualityError !== next.pageItem.qualityError) return false;
@@ -430,7 +455,7 @@ export function PagesPage() {
   // is the part a Zustand store could not do.
   const filters = useMemo(() => readFilterState(searchParams), [searchParams]);
   const { space: spaceKey, author, labels, freshness, quality: qualityFilter,
-    from: dateFrom, to: dateTo, source: sourceFilter, sort, mode: searchMode, page } = filters;
+    from: dateFrom, to: dateTo, source: sourceFilter, aiPolicy: aiPolicyFilter, sort, mode: searchMode, page } = filters;
   const embeddingStatus = filters.embedding;
 
   /**
@@ -613,6 +638,7 @@ export function PagesPage() {
     embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
     ...qualityRange,
     source: sourceFilter || undefined,
+    aiPolicy: (aiPolicyFilter || undefined) as AiPolicyFilter | undefined,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,
@@ -627,6 +653,10 @@ export function PagesPage() {
     mode: searchMode,
     spaceKey: spaceKey || undefined,
     page,
+    // #283: unlike the other advanced filters, the AI-policy filter is
+    // honoured by every search mode (the backend narrows the authorized pool
+    // for semantic/hybrid), so it is forwarded rather than paused.
+    aiPolicy: (aiPolicyFilter || undefined) as AiPolicyFilter | undefined,
   });
   const isKeywordUpdating = searchMode === 'keyword' && hasActiveQuery
     && (searchInput !== debouncedSearch || isFetchingPages);
@@ -709,8 +739,9 @@ export function PagesPage() {
     if (dateFrom) filters.push({ key: 'from', label: `From: ${dateFrom}` });
     if (dateTo) filters.push({ key: 'to', label: `To: ${dateTo}` });
     if (sourceFilter) filters.push({ key: 'source', label: `Source: ${SOURCE_LABELS[sourceFilter]}` });
+    if (aiPolicyFilter) filters.push({ key: 'aiPolicy', label: `AI policy: ${AI_POLICY_CHIP_LABEL[aiPolicyFilter as AiPolicy]}` });
     return filters;
-  }, [spaceKey, selectedSpace, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
+  }, [spaceKey, selectedSpace, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter, aiPolicyFilter]);
 
   const activeFilterCount = activeFilters.length;
 
@@ -781,8 +812,11 @@ export function PagesPage() {
   // describe only the filters STILL ignored — author/date/labels/freshness/
   // embedding/quality/source — or it would tell a scoped-to-a-space semantic
   // search that its scoping is being dropped when it no longer is.
+  // #283: the AI-policy filter is honoured in every mode too (the backend
+  // applies it to the authorized pool for semantic/hybrid), so it joins Space
+  // outside the "paused" notice.
   const ignoredFilters = useMemo(
-    () => activeFilters.filter((f) => f.key !== 'space'),
+    () => activeFilters.filter((f) => f.key !== 'space' && f.key !== 'aiPolicy'),
     [activeFilters],
   );
   const advancedFilterCount = ignoredFilters.length;
@@ -810,7 +844,7 @@ export function PagesPage() {
   const clearIgnoredFilters = useCallback(() => {
     setFilters({
       author: '', labels: '', freshness: '', embedding: '', quality: '',
-      from: '', to: '', source: '', page: 1,
+      from: '', to: '', source: '', aiPolicy: '', page: 1,
     });
   }, [setFilters]);
 
@@ -836,6 +870,7 @@ export function PagesPage() {
       from: dateFrom,
       to: dateTo,
       source: sourceFilter,
+      aiPolicy: aiPolicyFilter,
     };
     setFilters({
       space: '',
@@ -847,13 +882,14 @@ export function PagesPage() {
       from: '',
       to: '',
       source: '',
+      aiPolicy: '',
       page: 1,
     });
     toast('Filters cleared', {
       duration: 5000,
       action: { label: 'Undo', onClick: () => setFilters(previousFilters) },
     });
-  }, [setFilters, spaceKey, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
+  }, [setFilters, spaceKey, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter, aiPolicyFilter]);
 
   const navigateToPage = useCallback((id: string) => {
     navigate(`/pages/${id}`);
@@ -978,6 +1014,32 @@ export function PagesPage() {
     () => currentAddressableItems.filter((p) => selectedIds.has(p.id) && p.source === 'confluence').length,
     [currentAddressableItems, selectedIds],
   );
+  /**
+   * #283 — the bulk policy action's compare-and-set items. Built from the
+   * LIST rows, which carry `aiPolicy`/`aiPolicyRevision` (internal numeric
+   * page id + revision — a different authority contract from the Confluence
+   * wire ids the other bulk routes take). A selected row the list does not
+   * carry a revision for (search-result rows, or a server predating the
+   * fields) is counted in `missing`, and the bar refuses to send a partial
+   * request rather than guess a revision.
+   */
+  const bulkPolicySelection = useMemo<BulkAiPolicySelection>(() => {
+    const items: BulkAiPolicySelection['items'] = [];
+    let missing = 0;
+    const rows = useSemanticSearch ? [] : pageItems;
+    const byId = new Map(rows.map((p) => [p.id, p]));
+    for (const addressable of currentAddressableItems) {
+      if (!selectedIds.has(addressable.id)) continue;
+      const row = byId.get(addressable.id);
+      const pageId = Number(addressable.id);
+      if (!row || row.aiPolicy === undefined || row.aiPolicyRevision === undefined || !Number.isSafeInteger(pageId)) {
+        missing += 1;
+        continue;
+      }
+      items.push({ pageId, expectedRevision: row.aiPolicyRevision, aiPolicy: row.aiPolicy });
+    }
+    return { items, missing };
+  }, [useSemanticSearch, pageItems, currentAddressableItems, selectedIds]);
   const allVisibleSelected = currentIds.length > 0 && visibleSelectedIds.length === currentIds.length;
 
   const toggleSelectAll = useCallback(() => {
@@ -1571,6 +1633,26 @@ export function PagesPage() {
                   </div>
 
                   <div className="min-w-0">
+                    <label htmlFor="filter-ai-policy-select" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                      AI policy
+                    </label>
+                    {/* #283. "All articles" is no filter. The policy restricts
+                        AI use, never reading or finding: a restricted article
+                        is still listed and lexically searchable without this
+                        filter, so the control narrows, it does not reveal. */}
+                    <LibraryFilterDropdown
+                      id="filter-ai-policy-select"
+                      label="AI policy"
+                      ariaLabel="Filter by article AI policy"
+                      value={aiPolicyFilter}
+                      options={AI_POLICY_OPTIONS}
+                      onChange={(val) => setFilters({ aiPolicy: val as AiPolicyFilter | '', page: 1 })}
+                      placeholder="All articles"
+                      testId="filter-ai-policy"
+                    />
+                  </div>
+
+                  <div className="min-w-0">
                     <label htmlFor="filter-date-from-input" className="mb-1.5 block text-xs font-medium text-muted-foreground">
                       Modified from
                     </label>
@@ -1628,7 +1710,7 @@ export function PagesPage() {
             data-inactive={filtersIgnoredMessage ? 'true' : undefined}
           >
             {activeFilters.map((f) => {
-              const ignoredBySemanticSearch = useSemanticSearch && f.key !== 'space';
+              const ignoredBySemanticSearch = useSemanticSearch && f.key !== 'space' && f.key !== 'aiPolicy';
               return (
                 <button
                   key={f.key}
@@ -1842,6 +1924,7 @@ export function PagesPage() {
                   <BulkActionBar
                     selectedIds={visibleSelectedIds}
                     confluenceCount={selectedConfluenceCount}
+                    policySelection={bulkPolicySelection}
                     onClear={clearSelection}
                   />
 
@@ -2093,6 +2176,7 @@ export function PagesPage() {
                 <BulkActionBar
                   selectedIds={visibleSelectedIds}
                   confluenceCount={selectedConfluenceCount}
+                  policySelection={bulkPolicySelection}
                   onClear={clearSelection}
                 />
 

@@ -117,7 +117,7 @@ import {
   type AiPolicyChangeRecord,
   type LabelPolicyPlan,
 } from '../../core/services/ai-policy-service.js';
-import { aiPolicyLabelConflict, isAiPolicyUpdatePaired } from '@compendiq/contracts';
+import { aiPolicyLabelConflict, deriveAiPolicyWorkerFields, isAiPolicyUpdatePaired } from '@compendiq/contracts';
 import { sendAiPolicyRefusal } from './page-ai-policy.js';
 import { publishBulkPolicyLabels } from './bulk-policy-labels.js';
 import { reservePolicyLabelSynchronization, synchronizePolicyLabels, type PolicyLabelWrite } from './policy-label-synchronization.js';
@@ -751,14 +751,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages', async (request) => {
     const userId = request.userId;
     const params = PageListQuerySchema.parse(request.query);
-    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, visibility, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
+    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, visibility, aiPolicy, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
     // Cache all page list queries. Filtered queries use a shorter TTL (2 min) vs
     // unfiltered (15 min) since filter results change more frequently (e.g. search
     // results after edits, embedding status during processing).
-    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || visibility || dateFrom || dateTo);
-    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', visibility ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
-    const cacheKey = `list:v4:${filterParts}`;
+    // #283: `aiPolicy` is part of the key (and the version is bumped because
+    // the row shape gained policy/worker fields) so a filtered list can never
+    // be served from an unfiltered cache entry or vice versa.
+    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || visibility || aiPolicy || dateFrom || dateTo);
+    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', visibility ?? '', aiPolicy ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
+    const cacheKey = `list:v5:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
     const { value: cached, generation } = await cache.getWithGeneration(userId, 'pages', cacheKey);
@@ -864,6 +867,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       values.push(visibility);
     }
 
+    // #283 Library AI-policy filter. An exact match on the stored policy;
+    // absent means every readable page. This narrows a list the caller may
+    // already read — it is not an access rule, and the unfiltered list (and
+    // the FTS/ILIKE search above) still returns `none` and `local_only` pages.
+    if (aiPolicy) {
+      whereParts.push(`cp.ai_policy = $${paramIdx++}`);
+      values.push(aiPolicy);
+    }
+
     if (dateFrom) {
       whereParts.push(`cp.last_modified_at >= $${paramIdx++}`);
       values.push(dateFrom);
@@ -935,6 +947,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_filled: boolean | null;
       baseline_id: string | null;
       frozen_version: number | null;
+      ai_policy: string | null;
+      ai_policy_revision: string | null;
+      ai_policy_block_reason: string | null;
     };
 
     async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
@@ -964,7 +979,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
                cp.summary_status, cp.source, cp.visibility,
                cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
-               cp.baseline_id, cp.frozen_version
+               cp.baseline_id, cp.frozen_version,
+               cp.ai_policy, cp.ai_policy_revision::text, cp.ai_policy_block_reason
         FROM pages cp
         LEFT JOIN pages parent_page ON (
           parent_page.confluence_id = cp.parent_id
@@ -1045,6 +1061,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         visibility: row.visibility,
         icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
         ...freezeSummary(row),
+        // #283: the stored policy and its compare-and-set revision, so a bulk
+        // policy action can send `expectedRevision` per selected row; omitted
+        // (never defaulted to `all`) when the column is unreadable.
+        ...(isAiPolicy(row.ai_policy) && row.ai_policy_revision !== null
+          ? { aiPolicy: row.ai_policy, aiPolicyRevision: Number(row.ai_policy_revision) }
+          : {}),
+        // #281/#283: the ACTUAL worker block reason and the stages refused
+        // now, derived by the shared contract helper the detail route uses.
+        ...deriveAiPolicyWorkerFields({
+          embeddingStatus: row.embedding_status,
+          summaryStatus: row.summary_status,
+          qualityStatus: row.quality_status,
+          blockReason: row.ai_policy_block_reason,
+        }),
       })),
       total,
       page,
@@ -1297,10 +1327,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       frozen_version: number | null;
       ai_policy: AiPolicy;
       ai_policy_revision: string;
+      ai_policy_block_reason: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
-              cp.ai_policy, cp.ai_policy_revision::text,
+              cp.ai_policy, cp.ai_policy_revision::text, cp.ai_policy_block_reason,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
@@ -1453,6 +1484,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       aiPolicyRevision: Number(row.ai_policy_revision),
       canChangeAiPolicy,
       aiPolicyActivation: isAiPolicyEnforcementAvailable() ? 'active' : 'foundation_only',
+      // #281/#283: the persisted worker block reason, the stages refused
+      // NOW, and whether requeued work is recovering — so the inspector names
+      // the server's reason instead of guessing from a bare status.
+      ...deriveAiPolicyWorkerFields({
+        embeddingStatus: row.embedding_status,
+        summaryStatus: row.summary_status,
+        qualityStatus: row.quality_status,
+        blockReason: row.ai_policy_block_reason,
+      }),
     };
   });
 

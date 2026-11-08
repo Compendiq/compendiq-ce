@@ -231,11 +231,14 @@ export class ClientInferenceManager {
   }
 
   async decideRewrite(args: {
+    pageId?: number;
     text: string;
     task: 'grammar' | 'clarity' | 'completeness';
     instruction?: string;
     signal: AbortSignal;
   }): Promise<RewriteDecision> {
+    const revision = await this.articleRevision(args.pageId, args.signal);
+    if (revision === null || args.signal.aborted) throw new Error('Article AI policy is unavailable or denies this rewrite.');
     await this.ensureOrgPolicy();
     if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).active
       && (this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only') {
@@ -254,6 +257,8 @@ export class ClientInferenceManager {
       instruction: args.instruction,
       text: args.text,
     }, args.signal);
+    const current = await this.articleRevision(args.pageId, args.signal);
+    if (args.signal.aborted || current !== revision) throw new Error('Article AI policy changed during the rewrite.');
     if (text == null) return { kind: 'server' };
     if (/<[a-z][\s\S]*>/i.test(text) || /^\s*(sure|here|i have rewritten)/i.test(text)) {
       return { kind: 'server' };

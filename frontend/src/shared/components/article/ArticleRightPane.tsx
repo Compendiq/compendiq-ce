@@ -38,6 +38,7 @@ import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { PageLifecycleSection } from './PageLifecycleSection';
+import { ArticleAiPolicySection } from './ArticleAiPolicySection';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { neutralChipInk, statusChipClass } from '../badges/neutral-chip';
 import { formatDateStamp } from '../../lib/format-relative-time';
@@ -68,8 +69,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useExportPdf, useVerifyPage } from '../../hooks/use-standalone';
 import { usePermission } from '../../hooks/use-permission';
 import { useSettings } from '../../hooks/use-settings';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import { BLOCK_REASON_LABEL } from '../../lib/article-ai-policy';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../lib/trash-copy';
 import { formatRelativeTime } from '../../lib/format-relative-time';
@@ -394,7 +396,30 @@ export function ArticleRightPane({
   const editing = useArticleViewStore((s) => s.editing);
 
   const queryClient = useQueryClient();
-  const { data: page } = usePage(id);
+  const pageQuery = usePage(id);
+  // #283 permission loss. A 401/403/404 on the page read means the caller may
+  // no longer see this article: the cached detail (source, health, labels,
+  // policy) must not keep rendering from the stale cache, so `page` is
+  // undefined for the rest of this component and the Details tab shows an
+  // unavailable notice instead. The cached entry is removed so a later
+  // mount cannot re-paint it. Only the inspector's own cache is touched —
+  // the editor's collaborative document and drafts live elsewhere and are
+  // deliberately left alone.
+  const pageReadDenied = !!pageQuery.error
+    && pageQuery.error instanceof ApiError
+    && [401, 403, 404].includes(pageQuery.error.statusCode);
+  const page = pageReadDenied ? undefined : pageQuery.data;
+  // Evict the denied entry when this observer lets go of it (navigation or
+  // unmount). Removing it while an observer is still subscribed would make
+  // TanStack recreate and refetch the query, and a 403 would loop; while
+  // mounted the gate above already keeps the stale detail off the screen.
+  const pageReadDeniedRef = useRef(false);
+  pageReadDeniedRef.current = pageReadDenied;
+  useEffect(() => () => {
+    if (pageReadDeniedRef.current && id) {
+      queryClient.removeQueries({ queryKey: ['pages', id], exact: true });
+    }
+  }, [id, queryClient]);
   const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
   const deleteMutation = useDeletePage();
@@ -418,6 +443,15 @@ export function ArticleRightPane({
   const overallHealth = useMemo((): { label: string; tone: 'warning' | 'active' | 'neutral'; remedy: HealthRemedy } => {
     const indexing = page?.embeddingStatus
       ?? (page?.embeddingDirty ? 'not_embedded' : undefined);
+    if (indexing === 'policy_blocked' || page?.qualityStatus === 'policy_blocked' || page?.summaryStatus === 'policy_blocked') {
+      return { label: 'AI stages are policy blocked — not completed. Reading and keyword search remain available.', tone: 'neutral', remedy: null };
+    }
+    // #283: requeued-after-block is its own state — not "not yet indexed"
+    // (which offers Index now, a remedy the queue is already applying) and
+    // not a completed result.
+    if (page?.aiPolicyRecovering) {
+      return { label: 'AI work recovering — requeued after a policy or provider change, not completed.', tone: 'active', remedy: null };
+    }
     if (indexing === 'failed') {
       return {
         label: page?.qualityStatus === 'failed'
@@ -457,7 +491,7 @@ export function ArticleRightPane({
       tone: 'neutral',
       remedy: null,
     };
-  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore]);
+  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore, page?.summaryStatus, page?.aiPolicyRecovering]);
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -1793,11 +1827,20 @@ export function ArticleRightPane({
           activeInspectorView !== 'details' && 'hidden',
         )}
       >
+      {id && <ArticleAiPolicySection key={id} pageId={id} />}
       {isNewPage ? (
         <div className="px-3 py-4">
           <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
           <p className="mt-2 text-xs text-muted-foreground">
             Configure space, title, and content, then click Create Page to publish.
+          </p>
+        </div>
+      ) : pageReadDenied ? (
+        <div className="px-3 py-4" data-testid="details-unavailable">
+          <h3 className="text-xs font-semibold text-foreground">Details unavailable</h3>
+          <p className="mt-2 text-xs text-muted-foreground" role="status">
+            This article&apos;s details are no longer available to you. Cached source, health and label
+            information has been removed; anything you typed in the editor is kept.
           </p>
         </div>
       ) : page ? (
@@ -1954,6 +1997,26 @@ export function ArticleRightPane({
               )}
               <span data-testid="document-health-summary">{overallHealth.label}</span>
             </div>
+            {/* #281/#283: the server's OWN block reason and the stages it
+                refused now, or the recovering verdict after a policy/provider
+                change — visible prose, never a tooltip, and never inferred
+                from a bare status. */}
+            {page.aiPolicyBlockedStages && page.aiPolicyBlockedStages.length > 0 && (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
+                {page.aiPolicyBlockReason
+                  ? BLOCK_REASON_LABEL[page.aiPolicyBlockReason]
+                  : 'Blocked by article AI policy or provider locality (reason not reported by the server)'}
+                {' — '}
+                {page.aiPolicyBlockedStages.map((s) => ({ embedding: 'indexing', summary: 'summary', quality: 'quality' })[s]).join(', ')}
+                {' not completed. Relaxing the policy or assigning a declared-local provider requeues eligible work.'}
+              </p>
+            )}
+            {page.aiPolicyRecovering && (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-recovering">
+                Recovering: previously policy-blocked work was requeued after a policy or provider change and has
+                not completed yet. This is not a completed result.
+              </p>
+            )}
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5" data-testid="document-health-actions">
               {overallHealth.remedy === 'index' && (
                 <HealthAction

@@ -15,6 +15,7 @@ import { SearchAndReplace } from './SearchAndReplace';
 import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Columns2, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
+import { EditorAiContext } from '../../lib/editor-ai-context';
 import { apiFetch } from '../../lib/api';
 import { MIME_TO_EXT, uploadPastedImage } from './editor-image-upload';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
@@ -1166,12 +1167,14 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
+      <EditorAiContext.Provider value={{ pageId, policy: inlineCompletion?.articlePolicy, revision: inlineCompletion?.articlePolicyRevision, permitted: inlineCompletion?.articlePermission }}>
       {editable && editor && <EditorBubbleMenu editor={editor} pageId={pageId} />}
       {editor && <CommentPopover editor={editor} pageId={pageId} />}
       {/* #49 drag handle, #1179 its block context menu. The handle and its
           menu live together in EditorBlockMenu: they share the hovered-node
           tracking, the handle lock and the target marker. */}
       {editable && editor && <EditorBlockHandle editor={editor} />}
+      </EditorAiContext.Provider>
       {editable && editor && <EditorSlashMenu editor={editor} />}
       <EditorContent
         editor={editor}

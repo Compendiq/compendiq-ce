@@ -277,6 +277,103 @@ describe.skipIf(!(dbAvailable && redisAvailable))('article AI policy — page ro
     expect((await query('SELECT * FROM page_write_intents ORDER BY id')).rows).toEqual(intents.rows);
   });
 
+  /**
+   * #283 — the Library AI-policy filter and the worker-state wire fields,
+   * against real rows. The filter is an exact match on the stored policy and
+   * ABSENT means every readable page: a `none` page the caller may read is
+   * still listed and still found by lexical search with no filter. The list
+   * carries each row's policy and revision (for bulk compare-and-set) and
+   * the persisted block reason / blocked stages / recovering verdict.
+   */
+  describe('Library aiPolicy filter and worker fields (#283)', () => {
+    let nonePage: number;
+    let localPage: number;
+
+    beforeAll(async () => {
+      nonePage = await insertStandalonePage('Zebra restricted no-ai article', 'private', userId, LOCAL_SPACE);
+      localPage = await insertStandalonePage('Zebra local-only article', 'private', userId, LOCAL_SPACE);
+      // Written directly: rollout is closed in this suite (see the 409 cases
+      // above), so the rows are seeded the way an already-active deployment
+      // would have stored them. The worker's own columns are set the way
+      // #281's blocked path writes them.
+      await query(
+        `UPDATE pages SET ai_policy = 'none', embedding_status = 'policy_blocked', summary_status = 'policy_blocked',
+                quality_status = 'policy_blocked', ai_policy_block_reason = 'policy_none'
+          WHERE id = $1`,
+        [nonePage],
+      );
+      await query(
+        `UPDATE pages SET ai_policy = 'local_only', embedding_status = 'not_embedded', summary_status = 'pending',
+                quality_status = 'pending', ai_policy_block_reason = 'provider_not_local'
+          WHERE id = $1`,
+        [localPage],
+      );
+    });
+
+    async function listIds(qs: string): Promise<number[]> {
+      const res = await app.inject({ method: 'GET', url: `/api/pages${qs}` });
+      expect(res.statusCode).toBe(200);
+      return (res.json().items as Array<{ id: string }>).map((i) => Number(i.id));
+    }
+
+    it('GET /pages?aiPolicy= narrows to the exact stored policy and absence lists every readable page', async () => {
+      const all = await listIds('?search=Zebra');
+      expect(all).toEqual(expect.arrayContaining([nonePage, localPage]));
+      expect(await listIds('?search=Zebra&aiPolicy=none')).toEqual([nonePage]);
+      expect(await listIds('?search=Zebra&aiPolicy=local_only')).toEqual([localPage]);
+      expect(await listIds('?search=Zebra&aiPolicy=all')).toEqual([]);
+    });
+
+    it('GET /pages refuses a filter value outside the stored policy set', async () => {
+      for (const bad of ['any', 'no_ai', 'all%20articles']) {
+        const res = await app.inject({ method: 'GET', url: `/api/pages?aiPolicy=${bad}` });
+        expect(res.statusCode).toBe(400);
+      }
+    });
+
+    it('filtered and unfiltered lists are distinct cache entries', async () => {
+      // Same search, two filters, back to back: a shared cache entry would
+      // answer the second request with the first's rows.
+      expect(await listIds('?search=Zebra&aiPolicy=none')).toEqual([nonePage]);
+      expect(await listIds('?search=Zebra&aiPolicy=local_only')).toEqual([localPage]);
+      expect(await listIds('?search=Zebra&aiPolicy=none')).toEqual([nonePage]);
+    });
+
+    it('list rows carry policy, revision and the actual worker block state', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/pages?search=Zebra' });
+      const items = res.json().items as Array<Record<string, unknown>>;
+      const blocked = items.find((i) => Number(i.id) === nonePage)!;
+      expect(blocked).toMatchObject({
+        aiPolicy: 'none',
+        aiPolicyRevision: expect.any(Number),
+        embeddingStatus: 'policy_blocked',
+        aiPolicyBlockReason: 'policy_none',
+        aiPolicyBlockedStages: ['embedding', 'summary', 'quality'],
+        aiPolicyRecovering: false,
+      });
+      const recovering = items.find((i) => Number(i.id) === localPage)!;
+      expect(recovering).toMatchObject({
+        aiPolicy: 'local_only',
+        aiPolicyBlockReason: 'provider_not_local',
+        aiPolicyBlockedStages: [],
+        aiPolicyRecovering: true,
+      });
+    });
+
+    it('GET /pages/:id carries the same worker fields as the list', async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/pages/${nonePage}` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        aiPolicy: 'none',
+        aiPolicyBlockReason: 'policy_none',
+        aiPolicyBlockedStages: ['embedding', 'summary', 'quality'],
+        aiPolicyRecovering: false,
+      });
+      const other = await app.inject({ method: 'GET', url: `/api/pages/${localPage}` });
+      expect(other.json()).toMatchObject({ aiPolicyBlockReason: 'provider_not_local', aiPolicyBlockedStages: [], aiPolicyRecovering: true });
+    });
+  });
+
   it('POST /pages/bulk/replace-tags naming two policies is the frozen 422 body and writes nothing', async () => {
     const response = await app.inject({
       method: 'POST',

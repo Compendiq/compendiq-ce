@@ -4,7 +4,13 @@ import {
   PageFreezeDetailFieldsSchema,
   PageFreezeSummaryFieldsSchema,
 } from './page-baselines.js';
-import { AiPolicyInputSchema, PageAiPolicyDetailFieldsSchema } from './ai-policy.js';
+import {
+  AiPolicyFilterSchema,
+  AiPolicyInputSchema,
+  AiPolicySchema,
+  PageAiPolicyDetailFieldsSchema,
+  PageAiPolicyWorkerFieldsSchema,
+} from './ai-policy.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
@@ -123,6 +129,16 @@ export const PageSummarySchema = z.object({
   confluenceId: z.string().nullable().optional(),
   icon: PageIconSchema.nullable().optional(),
   ...PageFreezeSummaryFieldsSchema.shape,
+  /**
+   * Article AI policy on the LIST wire (#283): the stored policy and its
+   * revision, so a bulk policy action can send the compare-and-set key for
+   * every selected row without a detail round-trip each. Optional: a server
+   * that predates the fields sends none, and absent is unknown, never `all`.
+   */
+  aiPolicy: AiPolicySchema.optional(),
+  aiPolicyRevision: z.number().int().nonnegative().optional(),
+  /** Worker block reason / blocked stages / recovering (#281/#283). */
+  ...PageAiPolicyWorkerFieldsSchema.shape,
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
@@ -249,6 +265,13 @@ export const SearchHybridQuerySchema = z.object({
   mode: SearchModeEnum.default('keyword'),
   spaceKey: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  /**
+   * #283 Library AI-policy filter. Absent = all articles (no filter). This
+   * narrows WHICH readable pages come back; it never changes whether a
+   * `none`/`local_only` page is readable or lexically findable — an
+   * unfiltered search still returns them.
+   */
+  aiPolicy: AiPolicyFilterSchema.optional(),
 });
 export type SearchHybridQuery = z.infer<typeof SearchHybridQuerySchema>;
 
@@ -276,6 +299,8 @@ export const PageListQuerySchema = z.object({
   qualityStatus: PageQualityStatusEnum.optional(),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional(),
+  /** #283 — see SearchHybridQuerySchema.aiPolicy. Absent means no filter. */
+  aiPolicy: AiPolicyFilterSchema.optional(),
   dateFrom: z.string().optional(), // ISO date string
   dateTo: z.string().optional(),   // ISO date string
   page: z.coerce.number().int().min(1).default(1),

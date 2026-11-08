@@ -355,6 +355,66 @@ describe('Search Routes', () => {
       expect(dataCall![1] as unknown[]).toContain('Alice');
     });
 
+    /**
+     * #283 — the Library AI-policy filter on the lexical path. It is ANDed
+     * into every keyword leg (FTS data, fuzzy title, facets) as an exact
+     * match on `pages.ai_policy`, and it is ABSENT from every leg when the
+     * parameter is absent: "All articles" is no filter, not the `all`
+     * policy, and an unfiltered lexical search still finds a readable
+     * `none` page. An unknown value is a 400, never an ignored parameter.
+     */
+    describe('aiPolicy filter (#283)', () => {
+      const legs = (sql: string) => sql.includes('ts_rank') || sql.includes('similarity(cp.title') || sql.includes('UNION ALL');
+
+      it('ANDs an exact ai_policy match into the FTS, fuzzy-title and facet legs', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        const res = await app.inject({ method: 'GET', url: '/api/search?q=test&aiPolicy=none' });
+        expect(res.statusCode).toBe(200);
+        const calls = mockQueryFn.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && legs(c[0] as string));
+        expect(calls).toHaveLength(3);
+        for (const [sql, params] of calls) {
+          expect(sql as string).toMatch(/cp\.ai_policy = \$\d+/);
+          expect(params as unknown[]).toContain('none');
+          // The placeholder names a bound value, not a string the SQL spells out.
+          expect(sql as string).not.toContain("'none'");
+        }
+        // The facet UNION filters all three arms, or a count could promise
+        // rows the filtered list does not show.
+        const facetSql = calls.find(([sql]) => (sql as string).includes('UNION ALL'))![0] as string;
+        expect(facetSql.match(/cp\.ai_policy = \$4/g)).toHaveLength(3);
+      });
+
+      it('applies no policy predicate at all when the parameter is absent — restricted pages remain findable', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        await app.inject({ method: 'GET', url: '/api/search?q=test' });
+        const calls = mockQueryFn.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && legs(c[0] as string));
+        expect(calls).toHaveLength(3);
+        for (const [sql] of calls) expect(sql as string).not.toContain('ai_policy');
+      });
+
+      it('refuses a value outside the stored policy set with 400', async () => {
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        for (const bad of ['any', 'all articles', 'no_ai', '']) {
+          const res = await app.inject({ method: 'GET', url: `/api/search?q=test&aiPolicy=${encodeURIComponent(bad)}` });
+          expect(res.statusCode).toBe(400);
+        }
+        expect(mockQueryFn).not.toHaveBeenCalled();
+      });
+
+      it('narrows the authorized pool in semantic mode through the metadata read, after retrieval', async () => {
+        mockProviderGenerateEmbedding.mockResolvedValue([[0.1, 0.2]]);
+        mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'A'), makeSearchResult(2, 'B')]);
+        mockQueryFn.mockResolvedValue({ rows: [] });
+        const res = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=semantic&aiPolicy=local_only' });
+        expect(res.statusCode).toBe(200);
+        // Retrieval itself is unchanged: the policy filter is not an access
+        // rule and the human-read purpose stays declared.
+        expect(mockVectorSearch).toHaveBeenCalledWith(
+          'test-user-id', [0.1, 0.2], expect.any(Number), expect.objectContaining({ aiPolicy: { purpose: 'human' } }),
+        );
+      });
+    });
+
     it('should filter by date range', async () => {
       mockQueryFn.mockResolvedValue({ rows: [] });
 

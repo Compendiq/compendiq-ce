@@ -17,7 +17,7 @@ describe('readFilterState', () => {
       new URLSearchParams(
         'space=DEV&search=runbook&author=Alice&labels=howto&freshness=stale' +
           '&embedding=pending&quality=poor&from=2025-01-01&to=2025-02-01' +
-          '&source=confluence&sort=title&mode=hybrid&page=3',
+          '&source=confluence&aiPolicy=local_only&sort=title&mode=hybrid&page=3',
       ),
     );
 
@@ -32,10 +32,33 @@ describe('readFilterState', () => {
       from: '2025-01-01',
       to: '2025-02-01',
       source: 'confluence',
+      aiPolicy: 'local_only',
       sort: 'title',
       mode: 'hybrid',
       page: 3,
     });
+  });
+
+  // #283: the AI-policy filter is a contract enum. `all` is the All-AI-allowed
+  // POLICY and a real filter value; "All articles" is the ABSENCE of the key.
+  it.each([
+    ['aiPolicy=all', 'all'],
+    ['aiPolicy=local_only', 'local_only'],
+    ['aiPolicy=none', 'none'],
+    ['aiPolicy=any', ''],
+    ['aiPolicy=no_ai', ''],
+    ['aiPolicy=All%20articles', ''],
+    ['', ''],
+  ])('reads %s as the validated AI-policy filter', (queryString, expected) => {
+    expect(readFilterState(new URLSearchParams(queryString)).aiPolicy).toBe(expected);
+  });
+
+  it('writes the AI-policy filter to the URL and deletes it when cleared to All articles', () => {
+    const withFilter = applyFilterPatch(new URLSearchParams(), { aiPolicy: 'none' });
+    expect(withFilter.get('aiPolicy')).toBe('none');
+    const cleared = applyFilterPatch(withFilter, { aiPolicy: '' });
+    expect(cleared.has('aiPolicy')).toBe(false);
+    expect(hasAdvancedFilters(readFilterState(withFilter))).toBe(true);
   });
 
   // A hand-edited or stale link is ordinary input. An unrecognised enum handed

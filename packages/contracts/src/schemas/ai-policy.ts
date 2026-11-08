@@ -180,6 +180,69 @@ export const PageAiPolicyDetailFieldsSchema = z.object({
 });
 export type PageAiPolicyDetailFields = z.infer<typeof PageAiPolicyDetailFieldsSchema>;
 
+/**
+ * Library filter value for `GET /api/pages?aiPolicy=` and
+ * `GET /api/search?aiPolicy=` (#283). Only the three stored policies are
+ * accepted; "All articles" is the ABSENCE of the parameter, never a value —
+ * `all` here means the `all` policy, not "no filter". Validated as a schema
+ * enum so a hand-edited query string is a 400, not an ignored parameter.
+ */
+export const AiPolicyFilterSchema = AiPolicySchema;
+export type AiPolicyFilter = z.infer<typeof AiPolicyFilterSchema>;
+
+/**
+ * Worker-state fields carried by every page shape (list, detail) so a
+ * consumer can render the ACTUAL server reason beside a `policy_blocked`
+ * stage, not a guess (#281/#283). All optional: a reader that predates the
+ * fields omits them, and absent means unknown — never "not blocked".
+ *
+ * - `aiPolicyBlockReason`: `pages.ai_policy_block_reason`, the reason the
+ *   worker persisted beside the most recent `policy_blocked` status. Null
+ *   when no stage has been refused.
+ * - `aiPolicyBlockedStages`: the stages whose CURRENT status is
+ *   `policy_blocked`, derived server-side from the status columns so the UI
+ *   never has to map column names to stages itself.
+ * - `aiPolicyRecovering`: true when a block reason is still recorded but no
+ *   stage is currently `policy_blocked` and at least one stage is queued
+ *   again — i.e. eligible work was requeued after a policy/provider change
+ *   and has not yet completed. Distinct from success (nothing finished yet)
+ *   and from failure (nothing failed).
+ */
+export const PageAiPolicyWorkerFieldsSchema = z.object({
+  aiPolicyBlockReason: AiPolicyBlockReasonSchema.nullable().optional(),
+  aiPolicyBlockedStages: z.array(z.enum(['embedding', 'summary', 'quality'])).optional(),
+  aiPolicyRecovering: z.boolean().optional(),
+});
+export type PageAiPolicyWorkerFields = z.infer<typeof PageAiPolicyWorkerFieldsSchema>;
+
+/**
+ * Map the three persisted stage statuses to the blocked-stage list and the
+ * recovering verdict. Shared by the list and detail producers so the two
+ * wires cannot disagree. Unknown statuses (older rows, values this build
+ * does not know) count as neither blocked nor queued.
+ */
+export function deriveAiPolicyWorkerFields(input: {
+  embeddingStatus: string | null | undefined;
+  summaryStatus: string | null | undefined;
+  qualityStatus: string | null | undefined;
+  blockReason: string | null | undefined;
+}): Required<PageAiPolicyWorkerFields> {
+  const blocked: Array<'embedding' | 'summary' | 'quality'> = [];
+  if (input.embeddingStatus === 'policy_blocked') blocked.push('embedding');
+  if (input.summaryStatus === 'policy_blocked') blocked.push('summary');
+  if (input.qualityStatus === 'policy_blocked') blocked.push('quality');
+  const reason = AiPolicyBlockReasonSchema.safeParse(input.blockReason);
+  const aiPolicyBlockReason = reason.success ? reason.data : null;
+  const queued = input.embeddingStatus === 'not_embedded' || input.embeddingStatus === 'embedding'
+    || input.summaryStatus === 'pending' || input.summaryStatus === 'summarizing'
+    || input.qualityStatus === 'pending' || input.qualityStatus === 'analyzing';
+  return {
+    aiPolicyBlockReason,
+    aiPolicyBlockedStages: blocked,
+    aiPolicyRecovering: aiPolicyBlockReason !== null && blocked.length === 0 && queued,
+  };
+}
+
 /** Error codes the policy routes answer with. */
 export const AI_POLICY_ERROR_CODES = {
   denied: 'ai_policy_denied',                                  // 403

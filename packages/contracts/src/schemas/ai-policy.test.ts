@@ -4,7 +4,10 @@ import {
   AI_POLICY_LABEL_SYNONYMS,
   AI_POLICY_REFUSAL_CODES,
   AiPolicyConflictSchema,
+  AiPolicyFilterSchema,
   AiPolicyRefusalSchema,
+  PageAiPolicyWorkerFieldsSchema,
+  deriveAiPolicyWorkerFields,
   ConversationTurnAiProvenancePageSchema,
   AiPolicySchema,
   AiPolicyInputSchema,
@@ -17,7 +20,7 @@ import {
   normalizeAiPolicyLabel,
   normalizeAiPolicyValue,
 } from './ai-policy.js';
-import { UpdatePageSchema, isAiPolicyUpdatePaired } from './pages.js';
+import { PageListQuerySchema, SearchHybridQuerySchema, UpdatePageSchema, isAiPolicyUpdatePaired } from './pages.js';
 
 describe('ai-policy contracts', () => {
   it('accepts only the closed label set', () => {
@@ -125,5 +128,44 @@ describe('ai-policy contracts', () => {
 
   it('never accepts an unknown locality', () => {
     expect(DeclareProviderLocalitySchema.safeParse({ locality: 'unknown', expectedConfigRevision: 1 }).success).toBe(false);
+  });
+
+  it('the Library filter accepts only stored policies — "all articles" is absence, not a value (#283)', () => {
+    expect(AiPolicyFilterSchema.safeParse('all').success).toBe(true);
+    expect(AiPolicyFilterSchema.safeParse('local_only').success).toBe(true);
+    expect(AiPolicyFilterSchema.safeParse('none').success).toBe(true);
+    expect(AiPolicyFilterSchema.safeParse('any').success).toBe(false);
+    expect(AiPolicyFilterSchema.safeParse('').success).toBe(false);
+    expect(AiPolicyFilterSchema.safeParse('no_ai').success).toBe(false);
+    expect(PageListQuerySchema.parse({}).aiPolicy).toBeUndefined();
+    expect(PageListQuerySchema.parse({ aiPolicy: 'none' }).aiPolicy).toBe('none');
+    expect(PageListQuerySchema.safeParse({ aiPolicy: 'any' }).success).toBe(false);
+    expect(SearchHybridQuerySchema.parse({ q: 'x' }).aiPolicy).toBeUndefined();
+    expect(SearchHybridQuerySchema.parse({ q: 'x', aiPolicy: 'local_only' }).aiPolicy).toBe('local_only');
+    expect(SearchHybridQuerySchema.safeParse({ q: 'x', aiPolicy: 'all articles' }).success).toBe(false);
+  });
+
+  it('derives blocked stages and the recovering verdict from the persisted statuses (#281/#283)', () => {
+    // Blocked: the reason stands beside the stages that are refused now.
+    expect(deriveAiPolicyWorkerFields({
+      embeddingStatus: 'policy_blocked', summaryStatus: 'policy_blocked', qualityStatus: 'analyzed', blockReason: 'provider_not_local',
+    })).toEqual({ aiPolicyBlockReason: 'provider_not_local', aiPolicyBlockedStages: ['embedding', 'summary'], aiPolicyRecovering: false });
+    // Recovering: the reason is still recorded, nothing is blocked now, and work is queued again.
+    expect(deriveAiPolicyWorkerFields({
+      embeddingStatus: 'not_embedded', summaryStatus: 'pending', qualityStatus: 'pending', blockReason: 'policy_changed',
+    })).toEqual({ aiPolicyBlockReason: 'policy_changed', aiPolicyBlockedStages: [], aiPolicyRecovering: true });
+    // Completed after recovery: nothing queued, so not recovering — and not a false "blocked" either.
+    expect(deriveAiPolicyWorkerFields({
+      embeddingStatus: 'embedded', summaryStatus: 'summarized', qualityStatus: 'analyzed', blockReason: 'policy_changed',
+    })).toEqual({ aiPolicyBlockReason: 'policy_changed', aiPolicyBlockedStages: [], aiPolicyRecovering: false });
+    // Ordinary queued work with no reason ever recorded is pending, not recovering.
+    expect(deriveAiPolicyWorkerFields({
+      embeddingStatus: 'not_embedded', summaryStatus: 'pending', qualityStatus: null, blockReason: null,
+    })).toEqual({ aiPolicyBlockReason: null, aiPolicyBlockedStages: [], aiPolicyRecovering: false });
+    // A reason this build does not know is unknown, never invented.
+    expect(deriveAiPolicyWorkerFields({
+      embeddingStatus: 'policy_blocked', summaryStatus: null, qualityStatus: null, blockReason: 'future_reason',
+    })).toEqual({ aiPolicyBlockReason: null, aiPolicyBlockedStages: ['embedding'], aiPolicyRecovering: false });
+    expect(PageAiPolicyWorkerFieldsSchema.safeParse({ aiPolicyBlockedStages: ['vision'] }).success).toBe(false);
   });
 });
