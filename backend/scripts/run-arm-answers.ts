@@ -26,10 +26,9 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { buildApp } from '../src/app.js';
 import { closePool, closeVectorPool, query, runMigrations } from '../src/core/db/postgres.js';
 import { generateAccessToken } from '../src/core/plugins/auth.js';
-import { invalidateRagAnswerMaxImagesCache } from '../src/core/services/admin-settings-service.js';
 import { assertKnownFlags, flagValue, wantsHelp, ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_USAGE, ARM_ANSWERS_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
-import { EVAL_ARMS, commandLine, parseArmRunReport, querySetSha, readHeldFixedProvenance, readRevisionSha, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { EVAL_ARMS, commandLine, establishTextOnlyAnswerCap, parseArmRunReport, querySetSha, readHeldFixedProvenance, readRevisionSha, type EvalArm } from '../src/domains/llm/eval/arms.js';
 import { askThroughRoute, generateArmAnswers, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
 import { EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
@@ -78,15 +77,10 @@ async function main(): Promise<void> {
   }
 
   await runMigrations();
-  // rag_answer_max_images = 0 in EVERY arm (ADR-027 O10): no image byte
-  // reaches the chat model, so the endpoint measures text-only grounding.
-  // Written to the run's database and the reader's cache dropped, so the
-  // first request already sees it.
-  await query(
-    `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('rag_answer_max_images', '0', NOW())
-     ON CONFLICT (setting_key) DO UPDATE SET setting_value = '0', updated_at = NOW()`,
-  );
-  invalidateRagAnswerMaxImagesCache();
+  // rag_answer_max_images = 0 in EVERY arm (ADR-027 O10), written through
+  // the same writer the retrieval report's run used, the reader's cache
+  // dropped, so the first request already sees it.
+  await establishTextOnlyAnswerCap();
   await query(
     `INSERT INTO users (id, username, email, role, password_hash)
      VALUES ($1::uuid, 'eval-runner', 'eval@local', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,

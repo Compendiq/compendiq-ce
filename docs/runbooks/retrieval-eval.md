@@ -1208,7 +1208,14 @@ with one, is not a report. The answer side is held to the same standard —
 `--unblind` re-reads every `provenance-<runId>.json` behind the sheet and
 refuses an answer run whose revision, corpus or query-set sha, hardware,
 answer model, `rag_answer_max_images` or any held-fixed retrieval knob
-differs from its arm's retrieval report.
+differs from its arm's retrieval report. That cap is written and read back
+by BOTH scripts through one writer, `establishTextOnlyAnswerCap` (`arms.ts`):
+`run-retrieval-eval.ts --arm` establishes it before the report reads its
+held-fixed provenance, `run-arm-answers.ts` before the app is built — so the
+C-retrieval → C-answers → B sequence records the same 0 on both sides from a
+fresh database, whose reader default is 2 (#1822). A report captured before
+that fix (the `eval/artifacts/1611/arm-*.json` captures record 2) cannot
+pair with an answer run; re-run its retrieval.
 
 ### Endpoints and the decision rule
 
@@ -1360,8 +1367,10 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
   `google/gemma-4-26b-a4b-qat`, vision verdict unconfirmed) — **assign one
   before the #1615 smoke test and before this run.** Answer model = the
   production `chat` assignment at freeze time, text-only via
-  `rag_answer_max_images = 0` (written to the eval database by
-  `run-arm-answers.ts` and read back before the first question), production
+  `rag_answer_max_images = 0` (written to the eval database and read back by
+  `establishTextOnlyAnswerCap` in both `run-retrieval-eval.ts --arm`, before
+  the report records it, and `run-arm-answers.ts`, before the first
+  question), production
   context budgets, and the temperature at the **provider default, recorded
   in provenance** (ADR erratum: the ask path exposes no temperature option;
   pin it on the provider server-side if a fixed value is wanted).
