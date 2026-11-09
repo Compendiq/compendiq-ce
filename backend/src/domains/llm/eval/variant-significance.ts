@@ -3,7 +3,8 @@
  *
  * The compare-embedding-variants.mts script iterates canonical variant pairs,
  * but the ONLY_VARIANTS filter may exclude some variants from execution.
- * This module exports a pure function that emits significance comparisons.
+ * This module exports a pure function that emits significance comparisons
+ * only for pairs where both variants were actually executed (both in results).
  */
 
 import type { PairedSignificance, QueryRun } from './metrics.js';
@@ -25,12 +26,14 @@ const CANONICAL_PAIRS: Array<[string, string, string]> = [
 ];
 
 /**
- * Format significance lines for embedding variant pairs.
+ * Format significance lines for executed variant pairs only.
+ * Emits comparisons in canonical order, skipping pairs where one or both
+ * variants have no results (e.g., filtered via ONLY_VARIANTS).
  *
  * @param models — array of model configurations
  * @param results — keyed by "modelId/Vx" (e.g., "bge-m3/V1"), values have runs array
  * @param deps — { pairedSignificance, score } functions
- * @returns array of formatted lines, one per pair
+ * @returns array of formatted lines, one per executable pair
  */
 export function significanceLines(
   models: ModelCfg[],
@@ -44,9 +47,17 @@ export function significanceLines(
 
   for (const model of models) {
     for (const [from, to, what] of CANONICAL_PAIRS) {
+      const baselineKey = `${model.id}/${from}`;
+      const candidateKey = `${model.id}/${to}`;
+
+      // Skip pair if either variant was not executed
+      if (!results[baselineKey] || !results[candidateKey]) {
+        continue;
+      }
+
       const v = deps.pairedSignificance(
-        results[`${model.id}/${from}`]!.runs,
-        results[`${model.id}/${to}`]!.runs,
+        results[baselineKey].runs,
+        results[candidateKey].runs,
         deps.score,
       );
 
