@@ -10,20 +10,16 @@
 import type { PairedSignificance, QueryRun } from './metrics.js';
 
 export interface ModelCfg {
-  id: string;
-  label: string;
-  model: string;
-  dimensions?: number;
-  prefix: boolean;
+  readonly id: string;
 }
 
 /** Canonical variant pair order (V1→V2, V1→V3, V1→V4, V3→V4). */
-const CANONICAL_PAIRS: Array<[string, string, string]> = [
+const CANONICAL_PAIRS = [
   ['V1', 'V2', 'title prefix @500'],
   ['V1', 'V3', 'bigger chunk, no prefix'],
   ['V1', 'V4', 'both'],
   ['V3', 'V4', 'title prefix @667'],
-];
+] as const;
 
 /**
  * Format significance lines for executed variant pairs only.
@@ -66,6 +62,10 @@ export function significanceLines(
         `${model.id.padEnd(5)} ${from}→${to} (${what}): ${v.wins}W/${v.losses}L · p=${v.pValue?.toFixed(4)} · ${direction}`,
       );
     }
+  }
+
+  if (lines.length === 0 && models.length > 0) {
+    lines.push('(no comparable variant pair executed)');
   }
 
   return lines;

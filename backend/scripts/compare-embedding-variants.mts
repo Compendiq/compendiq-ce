@@ -8,6 +8,8 @@
  *
  *   EMBED_URL=http://localhost:1234/v1/embeddings \
  *   ONLY_MODEL=lms ONLY_VARIANTS=V1,V2 npx tsx scripts/compare-embedding-variants.mts
+ * With ONLY_VARIANTS, the paired-significance section lists only canonical pairs
+ * (V1→V2, V1→V3, V1→V4, V3→V4) where both variants ran; e.g., V2,V4 prints nothing.
  *
  * It isolates the vector leg deliberately: a keyword leg identical in every
  * arm can only mask the effect being measured. That also means its numbers are
