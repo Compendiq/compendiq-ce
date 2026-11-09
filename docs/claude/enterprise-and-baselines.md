@@ -30,6 +30,27 @@ by backend availability. Supplied artifact observations and current-registry
 checksum agreement are not execution or air-gap attestation; never infer an
 observation from a model name or invent missing browser audit coverage.
 
+## Article AI Policy Activation
+
+The enforcement switch for restrictive article AI policies is CE-owned and
+licence-independent: one `ai_policy_activation_state` row, changed by an
+active system administrator through `PUT /api/admin/ai-policy/activation`,
+cached per process in `core/services/ai-policy-activation.ts` and reloaded
+from PostgreSQL on the `ai_policy:activation:changed` bus signal, reconnect
+and a 30 s poll. `isAiPolicyEnforcementAvailable()` delegates to that cache;
+no `EnterprisePlugin` hook, env flag or licence opens or closes it, and
+admission never reads it (stored restrictions are enforced in both states).
+Enabling refuses with named blockers (active version-0 runtimes,
+unacknowledged legacy browser sessions) and is reversible; the one-way door
+is on binaries: the registration trigger refuses a new active version-0
+runtime while the switch is on or any restriction exists, and the tightening
+trigger refuses a stricter `ai_policy` while a version-0 runtime is active.
+Tests that need an open switch write the real row
+(`setAiPolicyEnforcementForTest` / `setAiPolicyEnforcementEnabled`), never a
+plugin spy; tests that insert runtimes use `insertTestRuntime` (current
+versions by default, `legacy: true` deliberately). Design and operator
+procedure: `docs/architecture/article-ai-policy-activation.md`.
+
 ## Immutable Page Baselines
 
 `core/services/page-baseline-service.ts` owns the CE lifecycle; the canonical
@@ -46,7 +67,9 @@ Install the protected-page trigger in migration 121, after `baseline_id` exists,
 so independently committed migration 120 does not break legacy writes.
 
 Writer lock order is runtime epoch, sorted lifecycle locks, then subsystem and
-page locks. A durable intent precedes external mutation; its effect gate must
+page locks, then, for restrictive policy writes, activation-state `FOR SHARE`
+(taken by the migration-151 tightening trigger after the writer's page
+locks). A durable intent precedes external mutation; its effect gate must
 finish before settlement. Unknown outcomes stay pending without TTL expiry.
 Recovery requires server-observed fencing evidence, never a caller's assertion,
 a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable

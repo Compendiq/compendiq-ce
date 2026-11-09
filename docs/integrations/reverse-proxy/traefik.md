@@ -182,8 +182,8 @@ curl -I https://compendiq.corp.example.com/api/health
 # Expect: 200 OK, valid TLS cert
 
 # 2. SSE streaming through the dedicated SSE router. Grab a JWT from the
-#    browser (DevTools → Application → Local Storage → `compendiq-auth`
-#    → state.accessToken) and replace <TOKEN>. The presence route is
+#    browser (DevTools → Network → any /api request → the
+#    `Authorization: Bearer …` request header) and replace <TOKEN>. The presence route is
 #    the easiest to verify because it streams without needing an LLM.
 curl -N -H "Authorization: Bearer <TOKEN>" \
      https://compendiq.corp.example.com/api/pages/<pageId>/presence

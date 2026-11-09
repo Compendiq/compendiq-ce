@@ -33,8 +33,4 @@ export const noopPlugin: EnterprisePlugin = {
 
   // Inert CE creation default (SPEC-CORE-001).
   resolveAiPolicyCreationDefault: async () => 'all',
-
-  // Foundation-only: no worker enforcement, so restrictive policies cannot
-  // be activated.
-  aiPolicyEnforcementAvailable: () => false,
 };

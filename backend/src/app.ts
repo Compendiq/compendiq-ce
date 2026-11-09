@@ -27,6 +27,7 @@ import { backupDownloadRoutes } from './routes/foundation/backup-download.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 import { pageWriteRecoveryRoutes } from './routes/foundation/page-write-recovery.js';
+import { aiPolicyActivationRoutes } from './routes/foundation/ai-policy-activation.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -112,6 +113,14 @@ import {
 import { getPageWriterRuntimeId, PageWriteError } from './core/services/page-write-admission.js';
 import { PageSubtreeFrozenError } from './core/services/page-subtree.js';
 import { registerPageBaselineEnforcementReadiness } from './core/services/page-baseline-governance.js';
+import {
+  loadAiPolicyActivation,
+  registerAiPolicyActivationReadiness,
+  stopAiPolicyActivation,
+  warnIfAiPolicyEnforcementEnvSet,
+} from './core/services/ai-policy-activation.js';
+import { isAiPolicyRuntimeGuardError } from './core/services/ai-policy-runtime-guard.js';
+import { registerLegacyClientGuard } from './core/plugins/legacy-client-guard.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
   initIpAllowlistService,
@@ -250,6 +259,14 @@ export async function buildApp() {
   await app.register(redisPlugin);
   await app.register(authPlugin);
 
+  // ── Legacy-client marker (#1881) ─────────────────────────────────
+  // Global hooks on the session-issuing POSTs: observe pre-handshake
+  // browser bundles while the AI policy switch is off, refuse them with
+  // 409 `client_reload_required` while it is on. Registered BEFORE the
+  // enterprise plugin's routes and before every CE route so EE's OIDC
+  // exchange is covered without EE code (the ipAllowlistHook precedent).
+  registerLegacyClientGuard(app);
+
   // ── Enterprise Plugin Bootstrap ──────────────────────────────────
   const enterprise = await loadEnterprisePlugin();
   const licenseKey = process.env.COMPENDIQ_LICENSE_KEY ?? process.env.ATLASMIND_LICENSE_KEY;
@@ -306,6 +323,19 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  // ── Article AI policy enforcement switch (#1881) ─────────────────
+  // Cold-load the durable switch from PostgreSQL before any route or
+  // worker can consult `isAiPolicyEnforcementAvailable()`; a failed first
+  // read starts this process disabled (fail closed). Subscribes the
+  // reload-signal channel (so it must run AFTER initCacheBus), the
+  // reconnect handler and an unref'd 30 s poll. The retired EE env flag is
+  // reported once as ignored.
+  warnIfAiPolicyEnforcementEnvSet();
+  await loadAiPolicyActivation();
+  app.addHook('onClose', async () => {
+    stopAiPolicyActivation();
+  });
   const teardownCollabLifecycleBus = await initCollabLifecycleBus();
   app.addHook('onClose', async () => {
     await teardownCollabLifecycleBus();
@@ -322,6 +352,7 @@ export async function buildApp() {
 
   await initCollabFlag();
   registerPageBaselineEnforcementReadiness();
+  registerAiPolicyActivationReadiness();
 
   // ── User security cache bus (#737) ───────────────────────────────
   // Subscribes the per-user liveness/role cache (checked by `authenticate`
@@ -350,10 +381,12 @@ export async function buildApp() {
   // runs for blocked IPs. This file registers it AFTER authPlugin, which
   // is functionally equivalent because authPlugin only decorates Fastify
   // with `authenticate` / `requireAdmin` — it does NOT install a global
-  // onRequest hook. The only global onRequest hooks in the chain are
-  // correlationIdPlugin (above) and ipAllowlistHook (here), so a blocked
-  // IP short-circuits with 403 before any per-route `authenticate`
-  // preHandler runs. No JWT decode, no business logic, same result.
+  // onRequest hook. The global onRequest hooks in the chain are
+  // correlationIdPlugin (above), the legacy-client guard (#1881, above; it
+  // acts only on the session-issuing POSTs and never decodes a JWT) and
+  // ipAllowlistHook (here), so a blocked IP short-circuits with 403 before
+  // any per-route `authenticate` preHandler runs. No JWT decode, no
+  // business logic, same result.
   await initIpAllowlistService();
   if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.IP_ALLOWLISTING, license)) {
     await app.register(ipAllowlistHook);
@@ -440,6 +473,20 @@ export async function buildApp() {
       return;
     }
 
+    // #1881: migration 151's tightening trigger refused a restrictive policy
+    // because a policy-unaware runtime is still active. Recognized by its
+    // constraint name; the same refusal shape every tightening gate answers.
+    if (isAiPolicyRuntimeGuardError(error)) {
+      logger.warn({ err: error }, 'AI policy tightening refused: incompatible runtime active');
+      reply.status(409).send({
+        error: 'ai_policy_enforcement_unavailable',
+        reason: 'incompatible_runtime_active',
+        message: 'Restrictive AI policies are unavailable while a runtime without AI policy enforcement is active; retire it first.',
+        pageIds: [],
+      });
+      return;
+    }
+
     if (error instanceof PageBaselineError || error instanceof PageWriteError) {
       const statusCode = error.statusCode;
       if (statusCode >= 500) {
@@ -515,6 +562,7 @@ export async function buildApp() {
   await app.register(rbacRoutes, { prefix: '/api' });
   await app.register(adminUsersRoutes, { prefix: '/api' });
   await app.register(pageWriteRecoveryRoutes, { prefix: '/api' });
+  await app.register(aiPolicyActivationRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.
   // Skip if the enterprise plugin registered its own richer version via registerRoutes().

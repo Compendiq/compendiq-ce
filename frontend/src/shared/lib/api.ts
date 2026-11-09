@@ -1,6 +1,11 @@
 import { AuthResponseSchema, LOGOUT_BUSY_CODE, REFRESH_BUSY_CODE } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { withAuthCookieLock } from './auth-cookie-lock';
+import {
+  CLIENT_RELOAD_REQUIRED_MESSAGE,
+  isClientReloadRequired,
+  withClientProtocol,
+} from './client-protocol';
 import { discardDraftsOnSignOut } from './editor-drafts';
 import { discardRecentSearchesOnSignOut } from './recent-searches';
 
@@ -39,10 +44,13 @@ export class ApiError extends Error {
  * every other outcome may have consumed the cookie. Callers keep the session.
  */
 export class RefreshUnavailableError extends ApiError {
-  constructor(public readonly retrySafe = false) {
-    super(503, retrySafe
+  constructor(
+    public readonly retrySafe = false,
+    message = retrySafe
       ? 'Your session could not be refreshed right now. Please try again.'
-      : 'Your session could not be refreshed safely. Save your work, then reload to try again.');
+      : 'Your session could not be refreshed safely. Save your work, then reload to try again.',
+  ) {
+    super(503, message);
     this.name = 'RefreshUnavailableError';
   }
 }
@@ -66,12 +74,22 @@ const REFRESH_BUSY = Symbol('refresh busy');
  * every other indeterminate failure without retrying: after a network error,
  * proxy 5xx or unusable success body the rotation may already have committed,
  * and presenting the consumed cookie again would be treated as token reuse.
+ *
+ * A 409 `client_reload_required` (#1881) is the one determinate refusal that
+ * is NOT "session gone": the backend answers it in `onRequest`, before any
+ * rotation, because this bundle did not identify itself as policy-aware (a
+ * header-stripping proxy, or a tab that outlived a deployment). The cookie is
+ * intact and a reloaded page refreshes fine, so this rejects like an
+ * unavailable refresh — auth state and drafts kept, no replay until a new
+ * auth state or an explicit reload — with the distinct reload message rather
+ * than clearing the session into a generic login failure.
  */
 async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/auth/refresh`, {
       method: 'POST',
+      headers: withClientProtocol(),
       credentials: 'include',
     });
   } catch {
@@ -91,6 +109,9 @@ async function refreshAttempt(): Promise<string | null | typeof REFRESH_BUSY> {
     return accessToken;
   }
   if (await isMarkedBusy(res, REFRESH_BUSY_CODE)) return REFRESH_BUSY;
+  if (res.status === 409 && isClientReloadRequired(await res.json().catch(() => null))) {
+    throw new RefreshUnavailableError(false, CLIENT_RELOAD_REQUIRED_MESSAGE);
+  }
   if (res.status >= 500 || res.status === 408 || res.status === 429) throw new RefreshUnavailableError();
   return null;
 }
@@ -198,7 +219,10 @@ export async function apiFetch<T = unknown>(
     }
   }
 
-  const headers = new Headers(options.headers);
+  // Every SPA request identifies itself as policy-aware (#1881); the backend
+  // reads the marker only on the session-issuing routes, which includes the
+  // `/auth/login` and `/auth/register` calls that come through here.
+  const headers = withClientProtocol(options.headers);
   if (accessToken) {
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
@@ -339,15 +363,11 @@ export async function logoutApi(): Promise<void> {
   const { accessToken, user } = useAuthStore.getState();
   let res: Response | null = null;
   try {
-    const headers: HeadersInit = {};
-    if (accessToken) {
-      headers['Authorization'] = `Bearer ${accessToken}`;
-    }
     // Logout clears the refresh cookie; keep it from overlapping another
     // tab's refresh of the same cookie.
     res = await withAuthCookieLock(() => fetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
-      headers,
+      headers: withClientProtocol(accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined),
       credentials: 'include',
     }));
   } catch {

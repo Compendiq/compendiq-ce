@@ -12,6 +12,7 @@ import { query } from '../../../core/db/postgres.js';
 import { runSummaryBatch, stopSummaryWorker, getSummaryStatus } from './summary-worker.js';
 import { processBatch as processQualityBatch, getQualityStatus, stopQualityWorker } from './quality-worker.js';
 import { updatePageAiPolicies, purgeDerivedAiStateForPages } from '../../../core/services/ai-policy-service.js';
+import { _resetAiPolicyActivationForTests, setAiPolicyEnforcementForTest } from '../../../core/services/ai-policy-activation.js';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { loadEnterprisePlugin, _resetForTesting } from '../../../core/enterprise/loader.js';
@@ -23,7 +24,6 @@ let server: Server;
 let baseUrl: string;
 let calls = 0;
 let enterprise = false;
-const oldReadiness = process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT;
 import { generateKeyPairSync, sign } from 'node:crypto';
 
 // Resolve the genuine plugin into the same Vitest graph as its license service.
@@ -88,7 +88,9 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
       const payload = `CQEE1-enterprise-200-${expiry}-CPQabcdef12-paid-${issued}`;
       expect((await license.setLicenseKey(`${payload}.${sign(null, Buffer.from(payload), keys.privateKey).toString('base64url')}`)).isValid).toBe(true);
     }
-    process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT = 'enabled';
+    // The CE-owned switch (#1881) opens new tightening in both editions; the
+    // licence above only exercises EE's own policy extensions.
+    await setAiPolicyEnforcementForTest(true);
     calls = 0;
     const external = await query<{ id: string }>(
       `INSERT INTO llm_providers (name, base_url, auth_type, default_model, is_default)
@@ -121,8 +123,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
     stopSummaryWorker();
     stopQualityWorker();
     await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
-    if (oldReadiness === undefined) delete process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT;
-    else process.env.COMPENDIQ_AI_POLICY_ENFORCEMENT = oldReadiness;
+    _resetAiPolicyActivationForTests();
     if (enterprise) {
       const license = await import(licensePath);
       await license.clearLicenseKey();
@@ -135,15 +136,7 @@ describe.skipIf(!dbAvailable)('article AI policy — worker admission (SPEC-WORK
 
   async function restrictPage(page: number) {
     const result = await updatePageAiPolicies(userId, 'none', [{ pageId: page, expectedRevision: 0 }]);
-    if (enterprise) {
-      expect(result.ok).toBe(true);
-    } else {
-      // Foundation-only CE refuses new activation. Seed an already-active
-      // restriction for worker/purge recovery, never fake an available hook.
-      expect(result).toMatchObject({ ok: false, reason: 'enforcement_unavailable' });
-      await query("UPDATE pages SET ai_policy = 'none' WHERE id = $1", [page]);
-      await purgeDerivedAiStateForPages([page]);
-    }
+    expect(result.ok).toBe(true);
   }
 
   async function insertPage(confluenceId: string, policy: 'all' | 'local_only' | 'none'): Promise<number> {

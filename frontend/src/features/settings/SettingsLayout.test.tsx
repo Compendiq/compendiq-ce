@@ -125,6 +125,7 @@ describe('SettingsSidebar — rail visibility', () => {
     expect(screen.getByTestId('nav-settings-spaces')).toBeInTheDocument();
     expect(screen.queryByTestId('nav-settings-labels')).not.toBeInTheDocument();
     expect(screen.queryByTestId('nav-settings-models')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('nav-settings-ai-policy')).not.toBeInTheDocument();
   });
 
   it('reveals all five groups for admin users (CE mode), but hides EE-only items', async () => {
@@ -147,6 +148,9 @@ describe('SettingsSidebar — rail visibility', () => {
     expect(screen.getByTestId('nav-settings-license')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-backup')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-diagnostics')).toBeInTheDocument();
+    // Governance: Article baselines and Article AI policy (#1881) are both CE.
+    expect(screen.getByTestId('nav-settings-baselines')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-ai-policy')).toBeInTheDocument();
 
     // Data & Compliance is an all-EE wrapper — hidden in CE.
     expect(screen.queryByTestId('nav-settings-compliance')).not.toBeInTheDocument();

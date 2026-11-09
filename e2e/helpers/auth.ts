@@ -70,7 +70,8 @@ export async function authenticateContext(
   session: E2eUser,
 ): Promise<void> {
   await context.addInitScript((payload: string) => {
-    localStorage.setItem('compendiq-auth', payload);
+    // Versioned with the client protocol (#1881): frontend AUTH_STORAGE_KEY.
+    localStorage.setItem('compendiq-auth:p1', payload);
   }, persistAuthState(session.user));
 }
 

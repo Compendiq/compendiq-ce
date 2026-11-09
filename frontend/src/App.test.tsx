@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { useEffect, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useAuthStore } from './stores/auth-store';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { AUTH_STORAGE_KEY, useAuthStore } from './stores/auth-store';
 import { createQueryClient } from './shared/lib/query-client';
-import { App } from './App';
+import { App, ProtectedRoute } from './App';
+import { useClearCacheOnLogout } from './shared/hooks/useClearCacheOnLogout';
 
 describe('App – ProtectedRoute token restoration', () => {
   let fetchSpy: MockInstance<typeof fetch>;
@@ -164,8 +166,8 @@ describe('App – expired session must not hang on the loading fallback', () => 
   //
   // The sequence is a starvation, not a failed fetch. useSessionInit's refresh
   // 401s and calls clearAuth(); that true->false flip fires
-  // useClearCacheOnLogout, whose queryClient.clear() evicts the already-
-  // resolved ['setup-status'] entry. useSetupStatus then reports isLoading
+  // useClearCacheOnLogout, whose wipe (formerly a blanket queryClient.clear())
+  // evicted the already-resolved ['setup-status'] entry. useSetupStatus then reported isLoading
   // again with no data, and ProtectedRoute's `if (isLoading)` gate returns the
   // fallback *before* reaching its `<Navigate to="/login">` — with nothing left
   // to refetch the evicted query, the spinner never resolves.
@@ -191,7 +193,7 @@ describe('App – expired session must not hang on the loading fallback', () => 
     // why the existing coverage never exercised this path.
     //
     // The ordering below is the whole bug. The refresh must fail while the
-    // setup-status request is still IN FLIGHT, so queryClient.clear() removes a
+    // setup-status request is still IN FLIGHT, so the logout wipe removes a
     // pending query: the response then arrives for a query that no longer
     // exists and is discarded, leaving the observer with no data and nothing to
     // trigger a refetch. If setup-status resolves first the app behaves
@@ -216,7 +218,7 @@ describe('App – expired session must not hang on the loading fallback', () => 
       }
       if (url.includes('/auth/refresh')) {
         // Let the 401 land, then release setup-status on a later macrotask so
-        // clearAuth's effect (and its clear()) has run first.
+        // clearAuth (and the logout wipe it triggers) has run first.
         setTimeout(() => refreshFailed(), 0);
         return new Response('Unauthorized', { status: 401 });
       }
@@ -437,7 +439,7 @@ describe('App – boot loading chrome', () => {
 
   afterEach(() => {
     useAuthStore.getState().clearAuth();
-    localStorage.removeItem('compendiq-auth');
+    localStorage.removeItem(AUTH_STORAGE_KEY);
   });
 
   function renderApp(initialPath = '/') {
@@ -488,7 +490,7 @@ describe('App – boot loading chrome', () => {
       isAuthenticated: false,
     });
     localStorage.setItem(
-      'compendiq-auth',
+      AUTH_STORAGE_KEY,
       JSON.stringify({
         state: {
           isAuthenticated: true,
@@ -599,5 +601,85 @@ describe('App routes — the AI family (#1361)', () => {
     expect(code).toMatch(
       /path="\/ai\/c\/:conversationId"[\s\S]{0,80}element=\{<AiAssistantPage \/>\}/,
     );
+  });
+});
+
+// #885 via #1881: a refresh into a DIFFERENT account while signed in must not
+// leave the previous account's component state (AI threads, unsent drafts)
+// on screen under the new account; a same-account refresh keeps it.
+describe('ProtectedRoute — per-account shell state', () => {
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
+  });
+
+  function Notes() {
+    const [text, setText] = useState('');
+    return <input aria-label="notes" value={text} onChange={(e) => setText(e.target.value)} />;
+  }
+
+  function SessionWipe() {
+    useClearCacheOnLogout();
+    return null;
+  }
+
+  function renderShell(children: React.ReactNode = <Notes />) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['setup-status'], { setupComplete: true, steps: { admin: true, llm: true, confluence: true } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <SessionWipe />
+        <MemoryRouter>
+          <ProtectedRoute>{children}</ProtectedRoute>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('keeps shell state on a same-account refresh and drops it on an account switch', () => {
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a', { id: 'a', username: 'alice', role: 'user' });
+    });
+    renderShell();
+    fireEvent.change(screen.getByLabelText('notes'), { target: { value: 'alice private' } });
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a2', { id: 'a', username: 'alice', role: 'user' });
+    });
+    expect(screen.getByLabelText('notes')).toHaveValue('alice private');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: 'b', username: 'bob', role: 'user' });
+    });
+    expect(screen.getByLabelText('notes')).toHaveValue('');
+  });
+
+  // A form that copies its loaded values into local state once (the admin
+  // settings tabs do) must not copy the previous account's cached answer
+  // when the shell remounts for the new account.
+  it('a remounted copy-once form loads the new account, not the previous account\'s cache', async () => {
+    function CopyOnceForm() {
+      const { data } = useQuery({
+        queryKey: ['org-settings'],
+        queryFn: async () => `settings for ${useAuthStore.getState().user?.username}`,
+        staleTime: Infinity,
+      });
+      const [copied, setCopied] = useState<string | null>(null);
+      useEffect(() => {
+        if (copied === null && data !== undefined) setCopied(data);
+      }, [copied, data]);
+      return <p>{copied ?? 'loading'}</p>;
+    }
+    act(() => {
+      useAuthStore.getState().setAuth('tok-a', { id: 'a', username: 'alice', role: 'user' });
+    });
+    renderShell(<CopyOnceForm />);
+    await screen.findByText('settings for alice');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: 'b', username: 'bob', role: 'user' });
+    });
+
+    await screen.findByText('settings for bob');
+    expect(screen.queryByText('settings for alice')).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { useClearCacheOnLogout } from './useClearCacheOnLogout';
 import { useAuthStore } from '../../stores/auth-store';
@@ -33,7 +33,8 @@ describe('useClearCacheOnLogout', () => {
     queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'SECRET' }] });
     queryClient.setQueryData(['permissions', 'manage', 'space', 'SECRET'], { allowed: true });
 
-    // Authenticated before the hook mounts, so the ref guard starts "was true".
+    // Authenticated before the hook mounts, so the clearAuth below is a real
+    // authenticated -> unauthenticated store transition.
     act(() => {
       useAuthStore.getState().setAuth('tok', { id: '1', username: 'a', role: 'admin' });
     });
@@ -59,12 +60,10 @@ describe('useClearCacheOnLogout', () => {
     queryClient.setQueryData(['pages', { page: 1 }], { items: [{ title: 'PRELOGIN' }] });
 
     // The store is logged out (beforeEach) BEFORE the hook mounts, so there is
-    // no authenticated -> unauthenticated transition. The ref guard starts
-    // "was false", so a correct implementation must leave the cache intact.
-    // A naive `if (!isAuthenticated) queryClient.clear()` on mount would wipe
-    // this pre-login data and fail here — this is the case the ref guard exists
-    // for (the live-session token-refresh test below does not exercise it,
-    // since isAuthenticated stays true and the effect never re-runs).
+    // no authenticated -> unauthenticated transition after it subscribes, and
+    // a correct implementation must leave the cache intact. A naive
+    // `if (!isAuthenticated) queryClient.clear()` on mount would wipe this
+    // pre-login data and fail here.
     renderProbe(queryClient);
 
     expect(queryClient.getQueryData(['pages', { page: 1 }])).toEqual({
@@ -90,6 +89,35 @@ describe('useClearCacheOnLogout', () => {
     expect(queryClient.getQueryData(['pages', { page: 1 }])).toEqual({
       items: [{ title: 'SECRET' }],
     });
+  });
+
+  // #885 via #1881: a tab of the other build ended A's session and B signed
+  // in there; this tab never saw a logout and refreshes straight into B.
+  it('wipes the previous account on a refresh into a DIFFERENT account, and mounted views refetch as the new one', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['permissions', 'manage', 'space', 'SECRET'], { allowed: true });
+    act(() => {
+      useAuthStore.getState().setAuth('tok', { id: '1', username: 'alice', role: 'admin' });
+    });
+    function PagesView() {
+      useClearCacheOnLogout();
+      const { data } = useQuery({
+        queryKey: ['pages', 'mine'],
+        queryFn: async () => `pages of ${useAuthStore.getState().user?.username}`,
+        staleTime: Infinity,
+      });
+      return createElement('p', null, data ?? 'loading');
+    }
+    const view = render(createElement(QueryClientProvider, { client: queryClient }, createElement(PagesView)));
+    await view.findByText('pages of alice');
+
+    act(() => {
+      useAuthStore.getState().setAuth('tok-b', { id: '2', username: 'bob', role: 'user' });
+    });
+
+    expect(queryClient.getQueryData(['permissions', 'manage', 'space', 'SECRET'])).toBeUndefined();
+    await view.findByText('pages of bob');
+    expect(view.queryByText('pages of alice')).toBeNull();
   });
 
   // The remembered New Page space lives in localStorage, not the query cache,

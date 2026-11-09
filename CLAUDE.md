@@ -184,6 +184,14 @@ CE-side extension points (must remain inert in community mode):
 
 The CE fallback `GET /api/admin/license` route registers **only** when `enterprise.version === 'community'` to avoid duplicate-route errors when EE registers its own.
 
+**Article AI policy activation (#1881)** is CE-owned and licence-independent:
+the `ai_policy_activation_state` row, changed only through
+`PUT /api/admin/ai-policy/activation`, decides whether restrictive policies
+can be chosen; admission never reads it and a lapsed licence never closes it.
+Never reintroduce a plugin activation hook or env flag for it. See
+`docs/claude/enterprise-and-baselines.md` and
+`docs/architecture/article-ai-policy-activation.md`.
+
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
 
 **Access Control user caches (#1809).** `['admin', 'users']` stores the

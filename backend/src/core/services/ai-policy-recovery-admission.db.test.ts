@@ -1,22 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getPool, query } from '../db/postgres.js';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { applyAiPolicyOnClient, assertLabelPolicyChangeOnClient } from './ai-policy-service.js';
-
-const seam = vi.hoisted(() => ({ ready: false }));
-vi.mock('../enterprise/loader.js', async (original) => {
-  const actual = await original<typeof import('../enterprise/loader.js')>();
-  return { ...actual, getEnterprisePlugin: () => ({ ...actual.getEnterprisePlugin(),
-    aiPolicyEnforcementAvailable: () => seam.ready }) };
-});
+import { _resetAiPolicyActivationForTests, setAiPolicyEnforcementForTest } from './ai-policy-activation.js';
 
 const available = await isDbAvailable();
 describe.skipIf(!available)('recovery policy admission always validates the journal', () => {
   beforeAll(async () => { await setupTestDb(); await truncateAllTables(); });
-  afterAll(async () => { await teardownTestDb(); });
+  afterAll(async () => { _resetAiPolicyActivationForTests(); await teardownTestDb(); });
   it.each([false, true])('rejects an unknown journal even for unchanged policy (ready=%s)', async (ready) => {
-    seam.ready = ready;
+    // The real switch row, not a plugin spy (#1881): the journal check must
+    // not depend on whether new tightening is open.
+    await setAiPolicyEnforcementForTest(ready);
     const actor = randomUUID();
     await query(`INSERT INTO users (id, username, password_hash, role) VALUES ($1::uuid,$1::text,'x','admin')`, [actor]);
     const inserted = await query<{ id: number }>(`INSERT INTO pages

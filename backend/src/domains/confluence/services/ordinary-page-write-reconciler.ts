@@ -183,6 +183,16 @@ export { initialPolicyFromEffect };
  * Publish an acknowledged upstream create into the local corpus. Re-running
  * after an acknowledgement loss accepts only the exact already-published row;
  * an unrelated collision is never overwritten.
+ *
+ * A validated creator journal carries its own authority to finish a
+ * restriction while the switch is closed, but not past the migration-151
+ * guard: while a pre-#1881 writer is still active the tightening statement
+ * raises 55000 `ai_policy_incompatible_runtime_active`. That error is
+ * deliberately NOT caught or reclassified here — it propagates as-is, the
+ * caller's transaction rolls back and the intent stays pending (never
+ * terminal, never `intent_recovery_metadata_invalid`); the same recovery
+ * succeeds once that runtime is fenced. The sync walker defers the snapshot
+ * on it (`sync-service.ts`), HTTP maps it centrally to 409.
  */
 export async function publishCreatedConfluencePage(
   client: PoolClient,

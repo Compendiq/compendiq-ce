@@ -137,8 +137,8 @@ async function freezePageForAdmission(pageId: number, actorId: string, remoteId:
   );
   const runtimeId = `frozen-fixture-${randomUUID()}`;
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-     VALUES ($1, $2::jsonb)`,
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+     VALUES ($1, $2::jsonb, 1)`,
     [runtimeId, JSON.stringify({ host: 'attachment-test', pid: 1, startedAt: new Date().toISOString() })],
   );
   ownedRuntimes.add(runtimeId);

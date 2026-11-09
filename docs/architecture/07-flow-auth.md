@@ -214,7 +214,7 @@ rotates the already-updated cookie in turn.
 #### Cross-tab coordination (#1054)
 
 Token adoption and logout are propagated between tabs over an **in-memory,
-same-origin `BroadcastChannel('compendiq-auth')`** — the access token is
+same-origin `BroadcastChannel('compendiq-auth:p1')`** — the access token is
 **never** broadcast through Web Storage. When one tab refreshes/logs in, it
 posts the new token to peers; on logout it posts a `logout` message that clears
 in-memory auth (and, via `useClearCacheOnLogout`, the cached user data) in every
@@ -222,6 +222,10 @@ other tab. The `BroadcastChannel` is feature-guarded; where it is unavailable
 the retained `localStorage` `storage` event still coordinates **logout**
 (because `isAuthenticated` persists), and each tab otherwise re-mints its own
 token from the refresh cookie, one tab at a time behind the auth-cookie lock.
+Both the channel and the persisted key carry the client protocol version
+(`AUTH_STORAGE_KEY`, #1881), so tabs of a pre-handshake build neither receive
+these tokens nor deliver their logouts; see
+`article-ai-policy-activation.md` (cross-tab isolation).
 Received messages are applied under a re-entrancy guard so a tab never echoes
 a change it just received.
 

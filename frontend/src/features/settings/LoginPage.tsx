@@ -9,6 +9,7 @@ import {
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { CLIENT_RELOAD_REQUIRED_MESSAGE, isClientReloadRequired } from '../../shared/lib/client-protocol';
 import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
@@ -31,10 +32,16 @@ const OIDC_ERROR_MESSAGES: Record<string, string> = {
 
 interface SubmitError {
   message: string;
-  kind: 'credentials' | 'registration-policy' | 'request';
+  kind: 'credentials' | 'registration-policy' | 'request' | 'reload-required';
 }
 
 function submitErrorFor(error: unknown, isRegister: boolean): SubmitError {
+  // #1881: the backend refused BEFORE checking credentials because this
+  // bundle did not identify itself as policy-aware. Never a login failure —
+  // the recovery is a reload, and the panel offers it.
+  if (error instanceof ApiError && error.statusCode === 409 && isClientReloadRequired(error.body)) {
+    return { message: CLIENT_RELOAD_REQUIRED_MESSAGE, kind: 'reload-required' };
+  }
   if (isRegister) {
     return {
       message: error instanceof ApiError ? error.message : 'Registration failed. Please try again.',
@@ -306,6 +313,7 @@ export function LoginPage() {
     confirmError,
     loginError: submitError?.message ?? null,
     credentialsInvalid: submitError?.kind === 'credentials',
+    reloadRequired: submitError?.kind === 'reload-required',
     loading,
     oidcProbe,
     onRetryOidc: recheckServerState,

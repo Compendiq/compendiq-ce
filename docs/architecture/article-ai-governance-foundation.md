@@ -118,7 +118,7 @@ Sync-first create recovery passes the actual journal ID. The primitive checks
 acknowledgment, actor, remote identity/version, space/parent, initial policy and
 content hashes; supplying only an actor no longer permits tightening. These
 checks do not complete the automatic-ingestion and fresh-insert migration or
-the whole-selection publication contract. Activation remains closed.
+the whole-selection publication contract.
 
 ## Shared label refusal contract
 
@@ -163,7 +163,7 @@ durable Confluence intent. Thus ordinary creation includes `all-ai` without
 mistaking that generated label for a conflicting input choice. Existing-row
 planner changes still require coordinated writer and recovery handling: a canonical label cannot
 be silently added to an already acknowledged remote target and then reported
-as synchronized. Activation remains closed.
+as synchronized.
 
 ## Interactive creation admission
 
@@ -238,7 +238,7 @@ unused reservations. Recovery never restores prior labels for this local-first
 shape. Terminal remote acknowledgment can settle without a second policy move;
 unknown or undispatched remote outcomes remain explicitly pending for operator
 reconciliation. They continue fencing later content writes rather than silently
-overwriting newer revisions. Restrictive activation remains closed.
+overwriting newer revisions.
 
 ## Exact mutation revisions
 
@@ -293,18 +293,36 @@ regression covers no journal, an unbound less-restrictive journal, and a bound
 `all` journal beside a new `no-ai` label; existing exact restrictive recovery
 and snapshot-substitution tests remain applicable.
 
-This closes the fresh Confluence readiness gap only. It does not complete the
-unified automatic-ingestion admission: Notion and existing-row SQL writers still
-need migration, and the planner remains planning-only. Activation stays closed.
+This closes the fresh Confluence readiness gap. Notion fresh and existing
+ingestion were migrated separately through `resolveCreationAiPolicy` and
+deferred ingestion; the planner remains planning-only.
 
-## Rollout and coverage limits
+## Rollout and coverage
 
-These interfaces are not complete enforcement. Existing embedding, shadow and
-image worker callers still need their dispatch/publication migration. Optional
-transport arguments do not migrate callers. Whole-selection tag preflight,
-policy authority in both directions, canonical label normalization, and closed
-activation for creation and label writes remain required. No activation flag
-is enabled by this change.
+Every worker and interactive path now enforces stored restrictions through
+the shared admission primitives: embedding dispatch and publication
+(`authorizeArticleDispatch`, `admitArticleStage`,
+`validateEmbeddingPublicationOnClient`), shadow embedding (separate admission
+and candidate check), image analysis (dispatch, block and success/failure
+publication through `admitArticleStage`), summary/quality/auto-tag
+(`admitArticleStage` + `publishCurrentAiPolicyBlock`), Notion fresh and
+existing ingestion (`resolveCreationAiPolicy` / deferred ingestion) and
+Confluence sync (`ordinary-page-write-reconciler`, fresh-publication fence).
+The only existing-row SQL writer of `ai_policy` is `applyAiPolicyOnClient`.
+The global admin label rename/delete refuses a reserved AI-policy label with
+409 `ai_policy_reserved_label` in both switch states, so a rename can no
+longer store `no-ai` beside an `ai_policy` of `all`. Pre-handshake browser
+bundles are detected and, while enforcement is on, refused a new session
+(`client_reload_required`).
+
+Activation is the CE-owned enforcement switch described in
+[`article-ai-policy-activation.md`](./article-ai-policy-activation.md): off
+by default, enabled by an active system administrator once the observable
+preconditions (no active version-0 runtime, no unacknowledged legacy browser
+sessions) are met, reversible, and backed by a one-way door on binaries in
+PostgreSQL. No environment flag or licence opens it. Every
+`isAiPolicyEnforcementAvailable()` call site gates only new tightening or
+deferred-observation consumption; admission never reads the switch.
 
 A committed restriction blocks new admissions, not bytes already sent.
 Supported application pathways cannot identify arbitrary pasted copies, attest

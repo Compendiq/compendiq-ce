@@ -3,6 +3,12 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../stores/auth-store';
 import { withAuthCookieLock } from '../../../shared/lib/auth-cookie-lock';
+import {
+  CLIENT_RELOAD_REQUIRED_MESSAGE,
+  isClientReloadRequired,
+  reloadPage,
+  withClientProtocol,
+} from '../../../shared/lib/client-protocol';
 
 interface AdminStepProps {
   onNext: () => void;
@@ -15,6 +21,10 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  // Set by a 409 `client_reload_required` (#1881): this bundle predates the
+  // policy-aware build the backend now requires for a new session. Rendered
+  // inline rather than toasted so the recovery stays on screen.
+  const [reloadRequired, setReloadRequired] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -30,13 +40,17 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
       // refreshes (see auth-cookie-lock).
       const res = await withAuthCookieLock(() => fetch('/api/setup/admin', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withClientProtocol({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ username, password }),
       }));
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({ message: 'Failed to create admin account' }));
+        if (res.status === 409 && isClientReloadRequired(data)) {
+          setReloadRequired(true);
+          return;
+        }
         throw new Error(data.message);
       }
 
@@ -119,6 +133,23 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
             data-testid="setup-confirm-password"
           />
         </div>
+
+        {reloadRequired && (
+          <div
+            className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-foreground"
+            data-testid="setup-reload-required"
+          >
+            <p role="alert">{CLIENT_RELOAD_REQUIRED_MESSAGE}</p>
+            <button
+              type="button"
+              onClick={reloadPage}
+              className="nm-button-ghost mt-2 h-8 px-3 text-xs"
+              data-testid="setup-reload"
+            >
+              Reload page
+            </button>
+          </div>
+        )}
 
         <div className="flex items-center justify-between pt-2">
           <button

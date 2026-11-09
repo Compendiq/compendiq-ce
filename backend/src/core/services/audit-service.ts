@@ -174,6 +174,11 @@ export type AuditAction =
   | 'PAGE_THAWED'
   | 'PAGE_BASELINE_ACTIVATION_CHANGED'
   | 'PAGE_GOVERNANCE_POLICY_CHANGED'
+  // #1881: the article AI policy enforcement switch. Metadata carries the
+  // blockers observed at the transition and whether the legacy-client
+  // residual was acknowledged (with the observed users, count and window).
+  | 'AI_POLICY_ENFORCEMENT_ACTIVATED'
+  | 'AI_POLICY_ENFORCEMENT_DEACTIVATED'
   // #278: the multi-party sign-off workflow. Metadata carries the proposal,
   // the expected manifest digest and the approving role — never a signing key
   // and never the signed bytes.

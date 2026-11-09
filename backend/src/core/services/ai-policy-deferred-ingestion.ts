@@ -5,6 +5,7 @@ import { PageWriteError, withPageWriteTransaction } from './page-write-admission
 import { applyAiPolicyOnClient, aiPolicyRefusalFromResult, isAiPolicyEnforcementAvailable,
   lockAiPolicyForPages, stricterPolicy, type AiPolicy } from './ai-policy-service.js';
 import { admitAutomaticIngestionPolicy, FreshPublicationDeferredError } from './ai-policy-ingestion.js';
+import { isAiPolicyRuntimeGuardError } from './ai-policy-runtime-guard.js';
 
 /** Notion's dashed/undashed, case-insensitive IDs name the same source.
  * Confluence IDs are opaque and must never receive Notion normalization.
@@ -76,6 +77,11 @@ type IngestionTarget = {
  * ordinary labels first, on this same transaction. The shared primitive owns
  * authority, revision, purge and evidence; a sink failure rolls back both the
  * article and observation consumption. No network work belongs here.
+ *
+ * A tightening the migration-151 guard refuses leaves here as the raw 55000
+ * error (`isAiPolicyRuntimeGuardError`) so each caller classifies it on its
+ * own terms: the Confluence sync defers the page and holds its cursor, a
+ * Notion item fails and stays retryable, HTTP maps it centrally to 409.
  */
 export async function publishIngestionPolicyOnClient(
   client: PoolClient,
@@ -126,11 +132,20 @@ export async function publishIngestionPolicyOnClient(
 /** Explicit activation reconciliation uses the same held-client publisher as
  * fresh ingestion. Repeated calls consume no applied observations, so a later
  * explicit relaxation wins. Missing fresh rows remain pending for ingestion.
+ * A tightening the migration-151 guard refuses (a pre-#1881 writer is still
+ * active) is a refused tightening like a closed switch: the transaction has
+ * rolled back, nothing was consumed, and the observation stays pending until
+ * that runtime is fenced or quiesced and the reconciliation is retried.
  */
 export async function reconcileDeferredIngestionPolicy(input: IngestionTarget): Promise<number> {
   if (!isAiPolicyEnforcementAvailable()) return 0;
-  return withPageWriteTransaction([input.pageId], async (client) => {
-    if (!isAiPolicyEnforcementAvailable()) return 0;
-    return (await publishIngestionPolicyOnClient(client, input)).consumed;
-  });
+  try {
+    return await withPageWriteTransaction([input.pageId], async (client) => {
+      if (!isAiPolicyEnforcementAvailable()) return 0;
+      return (await publishIngestionPolicyOnClient(client, input)).consumed;
+    });
+  } catch (err) {
+    if (isAiPolicyRuntimeGuardError(err)) return 0;
+    throw err;
+  }
 }

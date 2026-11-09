@@ -185,6 +185,53 @@ manifest, media coverage, rollout gate, authority model, retention/backup rules,
 and conservative writer recovery procedure, see
 [`docs/runbooks/immutable-page-baselines.md`](runbooks/immutable-page-baselines.md).
 
+### Article AI policy enforcement (Settings → Governance → Article AI policy)
+
+Restrictive article AI policies (`local_only`, `none`) can be chosen only
+while the **enforcement switch** is on. It is off by default on every new and
+upgraded install, is turned on and off by an active system administrator at
+**Settings → Governance → Article AI policy** (or `PUT
+/api/admin/ai-policy/activation`), and is independent of edition and licence:
+CE and EE behave identically, and a lapsed licence never turns it off. There
+is no environment variable; a leftover `COMPENDIQ_AI_POLICY_ENFORCEMENT` is
+ignored and logged once at startup.
+
+The panel shows the state (off, or on since *date* by *name*), the current
+blockers and **Turn on enforcement…**. Enabling is refused while a blocker
+stands. If another switch change, an old runtime's registration or a long
+restrictive policy write holds the switch row, the change answers 503
+`ai_policy_activation_busy` after 5 seconds and nothing changes; retry it.
+
+| Blocker | Meaning | What to do |
+|---|---|---|
+| Incompatible runtime | A backend process without AI-policy enforcement is still registered (the list shows runtime id, host, pid, start time and the total). Includes every runtime row left by builds before this release. | Deploy this release everywhere, then retire each listed runtime through the baseline runbook: drain a live process with quiescence and fence it with its acknowledgement; fence a dead process with the server-verified no-started-effects mode. Never fence a process that may still be running. |
+| Legacy browser sessions | Users still hold sessions issued to a pre-upgrade browser tab; the list names them with last-seen time and when the blocker clears. | Wait until it clears (at most one access-token lifetime), ask those users to reload, or tick the acknowledgement. |
+| Legacy-client window open | The server could not yet observe every pre-upgrade session (just after the migration, or after an old replica was drained). | Wait until the shown time, or acknowledge. On a fresh install acknowledging is appropriate: nobody can hold a pre-upgrade session. |
+| Enforcement not registered / readiness unavailable | This process did not install its readiness provider, or the readiness read failed. | Check backend logs and the deployment; not overridable. |
+
+**Acknowledging legacy clients** means accepting a bounded residual: a tab
+running the old bundle keeps what it already loaded, and its current access
+token, for at most one access-token lifetime (`ACCESS_TOKEN_EXPIRY`). The
+acknowledgement is recorded in the audit log with the observed users, applies
+to that one enable only, and is cleared when enforcement is turned off. The
+checkbox appears only when legacy sessions are the sole blocker.
+
+Once on, editors with policy authority can set restrictive policies, builds
+without AI-policy enforcement can no longer start against this database, and
+**old browser tabs must reload**: their next login, token refresh or SSO
+exchange is refused with "Reload this page to continue" until they load the
+current bundle. Reloading is enough; drafts kept per user survive. During an
+upgrade, signing in does not carry across tabs running different builds; an
+explicit sign-out (from builds 0.9.0 and later) still signs out every tab of
+the browser.
+
+**Turning off** needs no preconditions and is the emergency lever, not a
+routine state. Stored restrictions stay enforced on every AI path; only new
+restrictive choices (and relaxing a stored restriction from the UI) are
+closed while it is off. Every transition records actor and time
+(`AI_POLICY_ENFORCEMENT_ACTIVATED` / `…_DEACTIVATED` in the audit log).
+Details, failure handling and the bulk runtime-retirement loop:
+[`docs/architecture/article-ai-policy-activation.md`](architecture/article-ai-policy-activation.md).
 
 ### Client inference (on-device editor model)
 

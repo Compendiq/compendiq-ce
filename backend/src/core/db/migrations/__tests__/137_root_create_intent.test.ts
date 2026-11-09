@@ -16,8 +16,8 @@ const RUNTIME = 'test-runtime-137';
 
 async function ensureRuntime(): Promise<void> {
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-     VALUES ($1, '{"test": true}'::jsonb, 1)
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+     VALUES ($1, '{"test": true}'::jsonb, 1, 1)
      ON CONFLICT (runtime_id) DO NOTHING`,
     [RUNTIME],
   );

@@ -116,8 +116,8 @@ async function seedStandaloneTree(owner: string, visibility: 'private' | 'shared
 
 async function freezePage(pageId: number, actorId: string, secretTitle = 'FROZEN PRIVATE TITLE'): Promise<void> {
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
-     VALUES ('cascade-freeze-fixture', '{"kind":"test"}'::jsonb)
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, ai_policy_enforcement_version)
+     VALUES ('cascade-freeze-fixture', '{"kind":"test"}'::jsonb, 1)
      ON CONFLICT (runtime_id) DO NOTHING`,
   );
   const fixture = await query<{ intent_id: string; baseline_id: string }>(

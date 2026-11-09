@@ -133,8 +133,8 @@ curl -I https://compendiq.corp.example.com/api/health
 # Expect: 200 OK, valid TLS (from Let's Encrypt or Caddy's internal CA).
 
 # SSE streaming (presence is the fastest sanity check — no LLM required).
-# Grab a JWT from the browser (DevTools → Application → Local Storage →
-# `compendiq-auth` → state.accessToken), substitute <TOKEN>.
+# Grab a JWT from the browser (DevTools → Network → any /api request →
+# the `Authorization: Bearer …` request header), substitute <TOKEN>.
 curl -N -H "Authorization: Bearer <TOKEN>" \
      https://compendiq.corp.example.com/api/pages/<pageId>/presence
 # Expect: one `event: presence` frame every few seconds, streamed live.

@@ -1,8 +1,8 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { setupTestDb, teardownTestDb, truncateAllTables } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
-import { getEnterprisePlugin } from '../../core/enterprise/loader.js';
+import { setAiPolicyEnforcementForTest } from '../../core/services/ai-policy-activation.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken } from '../../core/plugins/auth.js';
 import { insertUser } from './pages.test-helpers.js';
@@ -17,13 +17,14 @@ describe('interactive creation policy and ordinary labels', () => {
     await query('INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)', [userId]);
     app = await buildApp();
     await app.ready();
+    // Open the real switch (#1881) so an explicit restrictive choice is
+    // admitted; no plugin spy.
+    await setAiPolicyEnforcementForTest(true);
     token = await generateAccessToken({ sub: userId, username: 'policy-create-labels', role: 'user' });
   });
-  afterEach(() => vi.restoreAllMocks());
   afterAll(async () => { await app?.close(); await teardownTestDb(); });
 
   it.each(['local_only', 'none'] as const)('honors explicit %s with unrelated labels', async (policy) => {
-    vi.spyOn(getEnterprisePlugin(), 'aiPolicyEnforcementAvailable').mockReturnValue(true);
     const response = await app.inject({
       method: 'POST', url: '/api/pages', headers: { authorization: `Bearer ${token}` },
       payload: { source: 'standalone', title: 'Explicit choice', bodyHtml: '<p>Authored</p>', labels: ['ordinary'], aiPolicy: policy },
@@ -34,7 +35,6 @@ describe('interactive creation policy and ordinary labels', () => {
   });
 
   it('still rejects a real explicit-policy/label contradiction without creating a row', async () => {
-    vi.spyOn(getEnterprisePlugin(), 'aiPolicyEnforcementAvailable').mockReturnValue(true);
     const before = await query('SELECT id FROM pages ORDER BY id');
     const response = await app.inject({
       method: 'POST', url: '/api/pages', headers: { authorization: `Bearer ${token}` },

@@ -19,8 +19,16 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
+import {
+  fenceTestRuntime,
+  insertPreexistingLegacyRuntime,
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
+import { setAiPolicyEnforcementForTest } from '../../../core/services/ai-policy-activation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from '../../../core/services/page-baseline-governance.js';
 import {
   boundConfluenceId,
@@ -51,8 +59,8 @@ async function pendingRootCreate(input: {
 }): Promise<string> {
   const runtimeId = `creator-${randomUUID()}`;
   await query(
-    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-     VALUES ($1, $2::jsonb, $3)`,
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+     VALUES ($1, $2::jsonb, $3, 1)`,
     [runtimeId, JSON.stringify({ host: 'creator', pid: 1, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
   );
   const id = randomUUID();
@@ -538,5 +546,48 @@ describe.skipIf(!dbAvailable)('sync walker first-publication fence (#281)', () =
     await __internal.syncSpace(stubClient([page]), creator, 'FP', undefined, new Date(), new Map(), randomUUID());
     expect(await row('cf-late')).toMatchObject({ ai_policy: 'none', labels: ['no-ai'] });
     expect(await lastSynced('FP')).not.toBeNull();
+  });
+
+  it('defers a fresh restrictive import while an old runtime is active even with the switch on, and publishes it once fenced (#1881 N24)', async () => {
+    const actor = await user();
+    await setAiPolicyEnforcementForTest(true);
+    try {
+      // Registered before migration 151 installed the door (the upgrade case).
+      const oldRuntime = await insertPreexistingLegacyRuntime();
+      const page = remotePage({ id: 'cf-guarded', title: 'Guarded', storage: '<p>g</p>', labels: ['no-ai'] });
+      await expect(walkOne(actor, 'FP', page)).rejects.toMatchObject({
+        name: 'FreshPublicationDeferredError', reason: 'ai_policy_enforcement_unavailable',
+      });
+      expect(await row('cf-guarded')).toBeUndefined();
+
+      await fenceTestRuntime(oldRuntime);
+      await walkOne(actor, 'FP', page);
+      expect(await row('cf-guarded')).toMatchObject({ ai_policy: 'none', labels: ['no-ai'] });
+    } finally {
+      await setAiPolicyEnforcementForTest(false);
+    }
+  });
+
+  it.each([1, 2])('defers tightening an EXISTING row at version %s while an old runtime is active even with the switch on, and applies it once fenced (#1881 N24)', async (version) => {
+    const actor = await user();
+    await setAiPolicyEnforcementForTest(true);
+    try {
+      const page = remotePage({ id: 'cf-existing-guarded', title: 'Original', storage: '<p>original</p>' });
+      await walkOne(actor, 'FP', page);
+      const before = await query('SELECT * FROM pages WHERE confluence_id = $1', [page.id]);
+      const oldRuntime = await insertPreexistingLegacyRuntime();
+      const incoming = remotePage({ id: page.id, title: 'Changed', storage: '<p>changed</p>', labels: ['ops', 'no-ai'] });
+      incoming.version.number = version;
+      await expect(walkOne(actor, 'FP', incoming)).rejects.toMatchObject({
+        name: 'FreshPublicationDeferredError', reason: 'ai_policy_enforcement_unavailable',
+      });
+      expect((await query('SELECT * FROM pages WHERE confluence_id = $1', [page.id])).rows).toEqual(before.rows);
+
+      await fenceTestRuntime(oldRuntime);
+      await walkOne(actor, 'FP', incoming);
+      expect(await row(page.id)).toMatchObject({ ai_policy: 'none' });
+    } finally {
+      await setAiPolicyEnforcementForTest(false);
+    }
   });
 });

@@ -694,6 +694,20 @@ elapsed time, and process age do not expire it.
 
 ## Runtime retirement and fencing
 
+Runtime rows gate two activations. Besides the baseline `enforcement_version`,
+migration 151 (#1881) records `ai_policy_enforcement_version` on every
+`page_writer_runtimes` row; an active (not fenced, not quiesced) row at
+version `0` — every row left by a pre-#1881 build — reports
+`incompatible_ai_policy_runtime` on `GET /api/admin/ai-policy/activation` and
+blocks the article AI policy switch until it is retired by one of the
+procedures below. The choice matters for the legacy-client window: quiescing
+a live old process sets its `quiesced_at`, which restarts the
+`legacy_client_window_open` clock for one access-token lifetime (that process
+may have issued browser sessions the new observer never saw); fencing a
+long-dead row with `durable_no_started_effects` does not. Fence only rows
+whose processes are verifiably gone; the bulk loop for many historical rows
+is in `docs/architecture/article-ai-policy-activation.md`.
+
 ### Preferred: owning-process quiescence
 
 Quiescence must reach the backend process that owns the displayed `runtimeId`.

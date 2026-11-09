@@ -696,8 +696,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const pageId = await insertPage(actor);
     const runtimeId = `partitioned-${randomUUID()}`;
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-       VALUES ($1, $2::jsonb, $3)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, $3, 1)`,
       [runtimeId, JSON.stringify({ host: 'partitioned-pod', pid: 41, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
     );
     await query(
@@ -732,8 +732,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const runtimeId = `crashed-pre-effect-${randomUUID()}`;
     const intentId = randomUUID();
     await query(
-      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-       VALUES ($1, $2::jsonb, $3)`,
+      `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+       VALUES ($1, $2::jsonb, $3, 1)`,
       [runtimeId, JSON.stringify({ host: 'same-db-runtime', pid: 42, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
     );
     await query(
@@ -805,8 +805,8 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       const runtimeId = `race-${effectStarted ? 'started' : 'reserved'}-${randomUUID()}`;
       const intentId = randomUUID();
       await query(
-        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version)
-         VALUES ($1, $2::jsonb, $3)`,
+        `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity, enforcement_version, ai_policy_enforcement_version)
+         VALUES ($1, $2::jsonb, $3, 1)`,
         [runtimeId, JSON.stringify({ host: 'partitioned-live', pid: 43, startedAt: new Date().toISOString() }), PAGE_WRITER_ENFORCEMENT_VERSION],
       );
       const writer = await getPool().connect();

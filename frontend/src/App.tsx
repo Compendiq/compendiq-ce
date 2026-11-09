@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { Fragment, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { LazyMotion, MotionConfig, domAnimation } from 'framer-motion';
 import { peekPersistedSession, useAuthStore } from './stores/auth-store';
@@ -143,8 +143,9 @@ export function PagesAliasRedirect() {
   return <Navigate to={{ pathname: '/', search }} replace />;
 }
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const userId = useAuthStore((s) => s.user?.id);
   const { setupComplete, isLoading, error } = useSetupStatus();
 
   // While checking setup status, stay inside the product chrome for a
@@ -169,7 +170,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // refreshes an expired one transparently — so an authenticated user is not
   // bounced to /login just because the in-memory token isn't present yet.
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  return <>{children}</>;
+  // Keyed by account: a refresh or adopted token for a DIFFERENT account
+  // (someone signed in through a tab this one never heard sign out — #1881)
+  // remounts the shell, so state outside the query cache (AI threads,
+  // drafts in component state) is not shown as the new account's. A token
+  // refresh for the same account keeps everything mounted.
+  return <Fragment key={userId}>{children}</Fragment>;
 }
 
 export function App() {

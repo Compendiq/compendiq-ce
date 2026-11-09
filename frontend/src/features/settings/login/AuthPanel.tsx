@@ -1,6 +1,7 @@
 import { useEffect, useRef, type FormEvent, type RefObject } from 'react';
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from 'lucide-react';
 import { ssoNoticeCopy, type OidcProbe } from './sso-notice';
+import { reloadPage } from '../../../shared/lib/client-protocol';
 
 export interface AuthPanelProps {
   usernameInputRef: RefObject<HTMLInputElement | null>;
@@ -12,6 +13,13 @@ export interface AuthPanelProps {
   confirmError: string | null;
   loginError: string | null;
   credentialsInvalid: boolean;
+  /**
+   * The error is a 409 `client_reload_required` (#1881): this bundle predates
+   * the build the backend requires for a new session. The message is the
+   * reload copy and the slot grows a reload control; the credentials are
+   * neither invalid nor at fault.
+   */
+  reloadRequired: boolean;
   loading: boolean;
   oidcProbe: OidcProbe;
   onRetryOidc: () => void;
@@ -50,6 +58,7 @@ export function AuthPanel({
   confirmError,
   loginError,
   credentialsInvalid,
+  reloadRequired,
   loading,
   oidcProbe,
   onRetryOidc,
@@ -248,9 +257,19 @@ export function AuthPanel({
 
 
         {loginError && (
-          <p id="login-error" className="text-sm font-medium text-destructive" role="alert">
-            {loginError}
-          </p>
+          <div id="login-error" className="text-sm font-medium text-destructive" role="alert">
+            <p>{loginError}</p>
+            {reloadRequired && (
+              <button
+                type="button"
+                onClick={reloadPage}
+                className="nm-button-ghost mt-2 h-8 px-3 text-xs"
+                data-testid="login-reload"
+              >
+                Reload page
+              </button>
+            )}
+          </div>
         )}
         <button
           type="submit"

@@ -27,6 +27,7 @@ export * from './schemas/pii-policy.js';
 export * from './schemas/compliance-reports.js';
 export * from './schemas/backup.js';
 export * from './schemas/ai-policy.js';
+export * from './schemas/ai-policy-activation.js';
 export * from './schemas/ai-governance.js';
 export * from './schemas/ai-policy-cascade.js';
 export * from './types/common.js';

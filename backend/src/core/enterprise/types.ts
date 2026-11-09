@@ -76,13 +76,6 @@ export interface EnterprisePlugin {
    */
   resolveAiPolicyCreationDefault?(ctx: { userId: string; spaceKey: string | null }): Promise<'all' | 'local_only' | 'none'>;
 
-  /**
-   * True only when EE workers enforce `local_only`/`none`. Absent or false
-   * (foundation-only deployment) means restrictive policies cannot be
-   * activated.
-   */
-  aiPolicyEnforcementAvailable?(): boolean;
-
   /** Awaited on the mutation's transaction. Must use ONLY this client, never commit,
    * perform network I/O, or swallow persistence failures. CE is a no-op. */
   persistAiPolicyChange?(client: import('pg').PoolClient, event: import('@compendiq/contracts').AiPolicyChangeEvent): Promise<void>;
