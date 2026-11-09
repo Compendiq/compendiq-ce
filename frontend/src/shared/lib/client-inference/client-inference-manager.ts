@@ -83,11 +83,10 @@ export function resetClientInferenceManager(): void {
 export class ClientInferenceManager {
   private worker: Worker | null = null;
   // The model the worker has loaded and reported ready, and the one load it
-  // may still answer for (#1812). A `ready` for any other load is stale, and
-  // so is an error for a load in `supersededLoads`.
+  // may still answer for (#1812). A `ready` or error for any other load id is
+  // stale and ignored.
   private loadedModelId: ClientModelId | null = null;
   private inFlight: { id: string; modelId: ClientModelId; promise: Promise<void> } | null = null;
-  private readonly supersededLoads = new Set<string>();
   private probeCache: DeviceGpuProfile | null = null;
   private lastError: { code: ClientInferenceErrorCode; at: number } | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,7 +114,9 @@ export class ClientInferenceManager {
     this.adminEnabled = flags.adminEnabled;
     this.userEnabled = flags.userEnabled;
     void this.refreshOrgPolicy();
-    if (!this.canUseGpu()) this.teardownWorker();
+    // Before the probe resolves, canUseGpu() is false for every device; an
+    // in-flight load re-checks it after probing, so only tear down once known.
+    if (this.probeCache && !this.canUseGpu()) this.teardownWorker();
   }
 
   orgPolicySnapshot(): ClientInferenceOrgPolicy {
@@ -209,13 +210,16 @@ export class ClientInferenceManager {
     if (!mandated && !args.assigned && !args.withoutServer) return { kind: 'off' };
     await this.ensureProbed();
     if (!this.canUseGpu()) return serverFallback();
-    const model = this.loadedModelId;
-    if (model === null) {
+    if (this.loadedModelId === null) {
       void this.maybeStartLoad();
       return serverFallback();
     }
     const revision = await this.articleRevision(args.input.pageId, args.signal);
     if (revision === null || args.signal.aborted) return { kind: 'off' };
+    // Read the model when the request is posted: the worker runs messages in
+    // order, so this model answers even if a switch is queued behind it.
+    const model = this.loadedModelId;
+    if (model === null) return serverFallback();
     const text = await this.requestWorker({
       id: this.nextId(),
       type: 'complete',
@@ -228,7 +232,7 @@ export class ClientInferenceManager {
     if (text == null) return serverFallback();
     const completion = normalizeInlineCompletion(text);
     if (!completion) return serverFallback();
-    this.armIdleUnload();
+    if (this.loadedModelId === model) this.armIdleUnload();
     return {
       kind: 'local',
       response: {
@@ -272,7 +276,7 @@ export class ClientInferenceManager {
     if (/<[a-z][\s\S]*>/i.test(text) || /^\s*(sure|here|i have rewritten)/i.test(text)) {
       return { kind: 'server' };
     }
-    this.armIdleUnload();
+    if (this.loadedModelId !== null) this.armIdleUnload();
     return { kind: 'local', text };
   }
 
@@ -348,13 +352,16 @@ export class ClientInferenceManager {
     if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only'
       && (this.orgPolicy ?? INACTIVE_ORG_POLICY).active) return;
     if (this.loadFailed || this.cacheMissing) return;
-    if (this.inFlight) return this.inFlight.promise;
     const modelId = this.opts.fetchManifest
       ? activeOnnxId(await this.opts.fetchManifest())
       : CLIENT_INFERENCE_MODEL_ID;
     const cached = this.opts.hasCache
       ? await this.opts.hasCache()
       : await hasOpfsModel(modelId);
+    // Only the passive path: never replace a load or model that appeared
+    // while the manifest and cache were being read.
+    if (this.inFlight) return this.inFlight.promise;
+    if (this.loadedModelId !== null) return;
     if (cached) await this.startLoad(modelId);
     else this.cacheMissing = true;
   }
@@ -432,7 +439,7 @@ export class ClientInferenceManager {
       this.orgPolicy = status === 404 ? INACTIVE_ORG_POLICY : FAIL_CLOSED_ORG_POLICY;
     }
     this.orgPolicyFetched = true;
-    if (!this.canUseGpu()) this.teardownWorker();
+    if (this.probeCache && !this.canUseGpu()) this.teardownWorker();
   }
 
 
@@ -462,24 +469,27 @@ export class ClientInferenceManager {
 
   private onWorkerEvent(event: WorkerEvent): void {
     if (event.type === 'ready') {
-      this.supersededLoads.delete(event.id);
       const load = this.inFlight;
-      if (!load || load.id !== event.id || load.modelId !== event.modelId) return;
+      if (!load || load.id !== event.id) return;
       this.loadedModelId = load.modelId;
       this.inFlight = null;
       this.settleLoad();
       return;
     }
     if (event.type === 'error') {
+      const pending = this.pending.get(event.id);
+      // While a load is in flight only its own error is about the model being
+      // loaded; otherwise a request's error is about the loaded model. Errors
+      // from superseded loads are neither.
+      const current = this.inFlight ? this.inFlight.id === event.id : pending !== undefined;
+      if (!current && !pending) return;
       this.lastError = { code: event.code, at: Date.now() };
-      const superseded = this.supersededLoads.delete(event.id);
-      if (!superseded && (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom')) {
+      if (current && (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom')) {
         this.loadedModelId = null;
         this.inFlight = null;
         this.loadFailed = true;
         this.settleLoad();
       }
-      const pending = this.pending.get(event.id);
       if (pending) {
         this.pending.delete(event.id);
         pending.reject(new Error(event.message));
@@ -526,7 +536,6 @@ export class ClientInferenceManager {
   }
 
   private unload(): void {
-    if (this.inFlight) this.supersededLoads.add(this.inFlight.id);
     this.loadedModelId = null;
     this.inFlight = null;
     this.post({ id: this.nextId(), type: 'unload' });
@@ -543,7 +552,6 @@ export class ClientInferenceManager {
     this.settleLoad();
     this.worker?.terminate();
     this.worker = null;
-    this.supersededLoads.clear();
   }
 
   private armIdleUnload(): void {

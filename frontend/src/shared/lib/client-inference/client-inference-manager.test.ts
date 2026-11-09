@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClientInferenceManager, type ClientInferenceOrgPolicy } from './client-inference-manager';
+import {
+  ClientInferenceManager,
+  type ClientInferenceManagerOptions,
+  type ClientInferenceOrgPolicy,
+} from './client-inference-manager';
+import type { ClientAssetManifest } from '@compendiq/contracts';
 import type { WorkerEvent, WorkerRequest } from './worker-protocol';
 import { CLIENT_INFERENCE_MODEL_ID, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
 import type { DeviceGpuProfile } from './device-gpu-profile';
@@ -711,27 +716,35 @@ describe('ClientInferenceManager active-model switch (#1812)', () => {
     wordMode: false,
   };
 
-  function switchableManager(worker: FakeWorker) {
+  const manifestFor = (active: string): ClientAssetManifest => ({
+    enabled: true,
+    activeModelId: active,
+    models: [MODEL_A, MODEL_B].map((id) => ({
+      id, kind: 'onnx' as const, bytes: 1, installed: true, available: true,
+      files: [{ name: 'config.json', bytes: 1 }],
+    })),
+  });
+
+  function switchableManager(
+    worker: FakeWorker,
+    overrides: (selection: { active: string }) => Partial<ClientInferenceManagerOptions> = () => ({}),
+  ) {
     const selection = { active: MODEL_A };
     const mgr = new ClientInferenceManager({
       fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
       createWorker: () => worker as unknown as Worker,
       probe: async () => COMPACT,
       hasCache: async () => true,
-      fetchManifest: async () => ({
-        enabled: true,
-        activeModelId: selection.active,
-        models: [MODEL_A, MODEL_B].map((id) => ({
-          id, kind: 'onnx' as const, bytes: 1, installed: true, available: true,
-          files: [{ name: 'config.json', bytes: 1 }],
-        })),
-      }),
+      fetchManifest: async () => manifestFor(selection.active),
       downloadFile: async () => new Blob(['x']),
       fetchOrgPolicy: async () => INACTIVE_POLICY,
+      ...overrides(selection),
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     return { mgr, selection };
   }
+
+  const lastLoad = (worker: FakeWorker) => worker.messages.filter((m) => m.type === 'load').at(-1)!;
 
   const summary = (worker: FakeWorker) => worker.messages
     .filter((m) => m.type !== 'abort')
@@ -784,6 +797,113 @@ describe('ClientInferenceManager active-model switch (#1812)', () => {
     await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
     await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
     await mgr.predownload();
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_A);
+  });
+
+  it('does not let a request error cancel the newly requested load', async () => {
+    const worker = new FakeWorker({ autoResult: null });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    const completing = mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(summary(worker)).toContain('complete'));
+    const complete = worker.messages.find((m) => m.type === 'complete')!;
+
+    worker.autoReady = false;
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    worker.emit({ id: complete.id, type: 'error', code: 'oom', message: 'out of memory' });
+    expect(await completing).toEqual({ kind: 'server' });
+
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await expect(downloading).resolves.toBeUndefined();
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('ignores a superseded load failure', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    const loadA = await waitForLoad(worker);
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+
+    worker.emit({ id: loadA.id, type: 'error', code: 'oom', message: 'out of memory' });
+    expect(mgr.lastErrorCategory()).toBeNull();
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await expect(downloading).resolves.toBeUndefined();
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('does not let a stale passive load replace a newer one', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const firstManifest = Promise.withResolvers<ClientAssetManifest>();
+    let manifestCalls = 0;
+    const { mgr, selection } = switchableManager(worker, (current) => ({
+      fetchManifest: () => (++manifestCalls === 1
+        ? firstManifest.promise
+        : Promise.resolve(manifestFor(current.active))),
+    }));
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(manifestCalls).toBe(1));
+
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toEqual([`load:${MODEL_B}`]));
+    firstManifest.resolve(manifestFor(MODEL_A));
+    await vi.waitFor(() => expect(manifestCalls).toBe(2));
+    await Promise.resolve();
+
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+    expect(summary(worker)).toEqual([`load:${MODEL_B}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('does not report a model that was replaced during the policy read', async () => {
+    const worker = new FakeWorker();
+    let hold: PromiseWithResolvers<unknown> | null = null;
+    const { mgr, selection } = switchableManager(worker, () => ({
+      fetchArticlePolicy: () => hold?.promise
+        ?? Promise.resolve({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+    }));
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+
+    hold = Promise.withResolvers<unknown>();
+    const completing = mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    worker.autoReady = false;
+    selection.active = MODEL_B;
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    const policy = hold;
+    hold = null;
+    policy.resolve({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 });
+
+    expect(await completing).toEqual({ kind: 'server' });
+    expect(summary(worker)).not.toContain('complete');
+    worker.emit({ id: lastLoad(worker).id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+  });
+
+  it('keeps a load that started before the device probe resolved', async () => {
+    const worker = new FakeWorker();
+    const probe = Promise.withResolvers<DeviceGpuProfile>();
+    let probing = false;
+    const { mgr } = switchableManager(worker, () => ({
+      probe: () => {
+        probing = true;
+        return probe.promise;
+      },
+    }));
+    const downloading = mgr.predownload();
+    await vi.waitFor(() => expect(probing).toBe(true));
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    probe.resolve(COMPACT);
+    await downloading;
     expect(summary(worker)).toEqual([`load:${MODEL_A}`]);
     expect(mgr.loadedModel()).toBe(MODEL_A);
   });
