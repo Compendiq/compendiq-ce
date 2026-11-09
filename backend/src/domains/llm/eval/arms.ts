@@ -140,6 +140,13 @@ export const ARM_SAMPLE = {
   imageEvidencePsi: 0.15,
 } as const;
 
+/**
+ * O4: the pooled text control is exactly one EN and one DE block per arm,
+ * each of `ARM_SAMPLE.controlPerLanguage` queries (pooled n = 394). The
+ * expected set, not whatever languages a report happens to carry (#1821).
+ */
+export const CONTROL_LANGUAGES = ['en', 'de'] as const;
+
 /** ≈ 0.44 at δ = 0 for the O5 guardrail; stated in the report beside the verdict. */
 export function imageEvidenceGuardrailPower(n: number): number {
   return mcnemarPower({
