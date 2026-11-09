@@ -1215,7 +1215,8 @@ held-fixed provenance, `run-arm-answers.ts` before the app is built — so the
 C-retrieval → C-answers → B sequence records the same 0 on both sides from a
 fresh database, whose reader default is 2 (#1822). A report captured before
 that fix (the `eval/artifacts/1611/arm-*.json` captures record 2) cannot
-pair with an answer run; re-run its retrieval.
+pair with an answer run, nor with a retrieval report captured after it
+(--baseline refuses the knob mismatch); re-run its retrieval.
 
 ### Endpoints and the decision rule
 
