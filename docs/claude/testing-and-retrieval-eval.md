@@ -19,15 +19,6 @@ about a sixth of each one, so `assertModelReadsFullChunk` now refuses any
 model that returns the same vector for two chunk-sized texts differing only in
 their final word. It is a dedicated
 job, scoped to PRs that touch retrieval, so the fast path never waits on it.
-
-**Retrieval eval classifier (#1820):** The job runs when changes touch these files and directories:
-- `backend/src/domains/llm/services/(rag-service|embedding-service|llm-provider-resolver|sibling-assembly|identifier-shortcircuit)` — core services
-- `backend/src/domains/llm/eval/` — eval infrastructure
-- `backend/src/core/services/content-converter` — embedding input preprocessing (htmlToEmbeddingText / htmlToMarkdown)
-- `backend/scripts/run-retrieval-eval` — the harness itself
-- `.github/workflows/pr-check.yml` — the classifier
-
-The `sibling-assembly` and `identifier-shortcircuit` modules are included because they implement default-enabled evaluation stages: `assembleContext` (fetches contextual siblings; #1106 PR 2) and `pinIdentifiers` (exact-identifier short-circuit; #1107). Changes to these modules affect every run's core behavior and must be evaluated. **The classifier does not measure complete assembly-quality coverage** — `sibling-assembly` behavior is measured indirectly through page-ranking metrics, not page-merge metrics, and identifier-detection success is counted by query matching, not pinning rate (review #1107 r3). Coverage for new assembly strategies or identifier shapes requires explicit classification extension.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:
 those comparisons need the real candidates, run locally through the same script
@@ -242,6 +233,56 @@ the first query instead of being counted as a skipped query and reported as
 by 2-of-4 completes / 3-of-4 fails) trips. Lifecycle step 3b in
 `docs/runbooks/shadow-reembed.md`.
 There is no separate model-comparison harness — #1113 was closed without one.
+
+**Which changes schedule the retrieval eval (#1820).** The `flag retrieval`
+pattern in `pr-check.yml`'s "Classify changed paths" step is derived from the
+code the default run executes: each stage `stageFlags()` in
+`backend/scripts/run-retrieval-eval.ts` turns on by default (`assembleContext`,
+`pinIdentifiers`) followed into the code it runs, plus the always-on pipeline
+(`runner.ts` → `hybridSearch` → vector and keyword legs; seeding →
+`embedPage`). The set is `DERIVED_RETRIEVAL_DEPENDENCIES` in
+`backend/src/docker-compose-invariants.test.ts`, one comment per entry naming
+the stage that reaches it. That test runs the step's own bash (the real
+`grep -qE`, a stubbed `git diff`) and fails when an entry stops matching or is
+renamed. In short:
+
+- base pipeline: `run-retrieval-eval`, `eval/`, `rag-service`,
+  `embedding-service`, `content-converter`, `core/db/vector-column-tier` (HNSW
+  build params), `llm-provider-resolver`, `openai-compatible-client`,
+  `query-instruction`, `query-article-transport`, `hnsw-ef-search`,
+  `ai-policy-retrieval`, `derived-provenance`, `page-visibility`,
+  `admin-settings-service` (the `rag_*` defaults every stage reads),
+  `retrieval-confidence`, and `mmr` (the runner's redundancy figures use its
+  `trigrams`/`jaccard`);
+- `pinIdentifiers`: `identifier-shortcircuit`, `lexical-chunk-resolution`,
+  `core/utils/lexical-query`, `fts-language` (the last three are also the
+  keyword leg's);
+- `assembleContext`: `sibling-assembly`.
+
+Deliberately not listed: modules of optional stages CI never runs
+(`rerank-client`, `sanitize-llm-input`, `multi-query-search`, and
+`ranking-prior`, whose default weight is 0); `page-identity` and
+`image-references` (imported by `derived-provenance`, but only its
+`buildDerivedImageSources`, the chat citation path, calls them); the
+`image-analysis-*` modules (CI measures the text axis, which seeds no image
+analyses); admission (`ai-policy-admission`, `article-stage-admission`,
+`ai-policy-service`), which decides yes/no rather than ranking, and a refused
+query embedding makes `runEval` refuse the run; `rbac-service` and
+`core/enterprise/*` (authorization and EE flags shared by every route); the
+embedding job's bookkeeping (`embedding-article-stage`, `embedding-operation`,
+locks, queue); and infra (`postgres`, `logger`, `telemetry`,
+`circuit-breaker`, `llm-queue`, `provider-url`, `llm-http-error`).
+
+Two limits. Classifier coverage decides only WHETHER the job runs; it does not
+enable optional stages, so the job still measures `--rerank`, `--deep-search`
+and `--mmr` as off. And a scheduled run is not assembly-quality coverage:
+`sibling-assembly`'s effect is not measured by the runner's page-ranking
+metrics, which score `pageId`s only. The stage is participation-guarded
+(`runEval` refuses an assembly-on run in which it never assembled), and its
+text reaches only the redundancy figures (`redundantSlots`,
+`meanPairwiseSimilarity`, computed over `contextText`). Pins are counted
+directly by `runner.ts` (`pinParticipatingQueries`: queries with a
+`pinned === true` result).
 
 **A run states which FTS configuration it measured, and the default is
 `simple` for every language (#1114).** Hybrid retrieval has a lexical leg, and
