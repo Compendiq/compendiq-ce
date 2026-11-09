@@ -10,7 +10,7 @@
  * fresh token for the eval user per question (#1824: a run outlives one
  * `ACCESS_TOKEN_EXPIRY`), and injects `POST /api/llm/ask` per fixture label
  * with `rag_answer_max_images = 0` written to admin_settings for the run,
- * `deepSearch: false` and no conversation — the answer model is text-only by
+ * `deepSearch: false`, `inputKind: 'independent'` (#282) and no conversation — the answer model is text-only by
  * construction in every arm (ADR-027 O10), at the provider's default
  * temperature (the ask path exposes none; recorded, not set).
  *
