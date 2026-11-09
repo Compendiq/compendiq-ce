@@ -1,9 +1,12 @@
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isDbAvailable,
   setupTestDb,
@@ -11,6 +14,7 @@ import {
   truncateAllTables,
 } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { setClientModelAssetPolicy } from '../../core/services/client-model-asset-policy.js';
 import { llmClientAssetRoutes } from './llm-client-assets.js';
 
 const dbAvailable = await isDbAvailable();
@@ -215,5 +219,139 @@ describe('GET /api/models/client-assets unauthenticated (#1418 SPEC-045)', () =>
       method: 'HEAD', url: '/api/models/client-assets/hunspell-en_US/en_US.aff',
     });
     expect(response.statusCode).toBe(401);
+  });
+});
+
+describe('verified client-asset lifetime (#1793)', () => {
+  const app = Fastify({ logger: false });
+  const url = '/api/models/client-assets/hunspell-en_US/en_US.dic';
+  const BODY = ['AAAA', 'BBBB', 'CCCC'];
+  const SIZE = BODY.join('').length;
+  let events: string[];
+  let mode: 'delayed' | 'error' | 'throw';
+  let unregister: () => void;
+  let base: string;
+
+  const count = (event: string) => events.filter((e) => e === event).length;
+
+  beforeAll(async () => {
+    await app.register(sensible);
+    app.decorate('authenticate', async () => {});
+    app.decorateRequest('userId', '');
+    app.addHook('onRequest', async (request) => {
+      request.userId = '00000000-0000-4000-8000-000000001793';
+      request.userCan = async () => true;
+    });
+    await app.register(llmClientAssetRoutes, { prefix: '/api' });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => app.close());
+
+  beforeEach(() => {
+    events = [];
+    mode = 'delayed';
+    unregister = setClientModelAssetPolicy({
+      beforeHubRequest: async () => {},
+      listAssets: async () => [],
+      resolveFile: async () => ({
+        size: SIZE,
+        etag: '"verified"',
+        async stream() {
+          if (mode === 'throw') throw new Error('verified stream unavailable');
+          events.push('stream');
+          let next = 0;
+          // Real 20 ms gaps over a real socket: the bug is dispose running
+          // before Fastify reads a body that is still being produced.
+          const body = new Readable({
+            read() {
+              events.push(events.includes('dispose') ? 'read-after-dispose' : 'read');
+              setTimeout(() => {
+                if (mode === 'error' && next === 1) {
+                  this.destroy(new Error('verified source failed'));
+                  return;
+                }
+                this.push(next < BODY.length ? BODY[next++] : null);
+              }, 20);
+            },
+          });
+          body.once('close', () => events.push('closed'));
+          return body;
+        },
+        async dispose() {
+          events.push('dispose');
+        },
+      }),
+    });
+  });
+
+  afterEach(() => unregister());
+
+  // Both release triggers (response end and stream close) have fired once the
+  // stream is closed and dispose ran; one more macrotask exposes a double call.
+  async function settled(): Promise<void> {
+    await vi.waitFor(() => {
+      expect(count('dispose')).toBeGreaterThan(0);
+      expect(count('closed')).toBe(1);
+    }, { timeout: 2000 });
+    await new Promise(setImmediate);
+  }
+
+  it('keeps the resource until a delayed body is fully sent', async () => {
+    const response = await fetch(`${base}${url}`);
+    expect(await response.text()).toBe(BODY.join(''));
+    await settled();
+    expect(events[0]).toBe('stream');
+    expect(events.indexOf('dispose')).toBeGreaterThan(events.lastIndexOf('read'));
+    expect(count('read')).toBeGreaterThanOrEqual(BODY.length);
+    expect(count('read-after-dispose')).toBe(0);
+    expect(count('dispose')).toBe(1);
+  });
+
+  it('releases once when the client disconnects mid-body', async () => {
+    const disconnected = Promise.withResolvers<void>();
+    const request = http.get(`${base}${url}`, (response) => {
+      response.once('data', () => {
+        request.destroy();
+        disconnected.resolve();
+      });
+    });
+    request.on('error', (err) => {
+      if (!request.destroyed) disconnected.reject(err);
+    });
+    await disconnected.promise;
+    await settled();
+    expect(count('read')).toBeGreaterThan(0);
+    expect(count('read-after-dispose')).toBe(0);
+    expect(count('dispose')).toBe(1);
+  });
+
+  it('releases once when the verified stream fails mid-body', async () => {
+    mode = 'error';
+    await fetch(`${base}${url}`).then((response) => response.text()).catch(() => undefined);
+    await settled();
+    expect(count('read')).toBeGreaterThan(0);
+    expect(count('read-after-dispose')).toBe(0);
+    expect(count('dispose')).toBe(1);
+  });
+
+  it('releases once when opening the verified stream fails', async () => {
+    mode = 'throw';
+    const response = await app.inject({ method: 'GET', url });
+    expect(response.statusCode).toBe(500);
+    expect(count('dispose')).toBe(1);
+  });
+
+  it.each([
+    ['HEAD', { method: 'HEAD' as const, headers: {} }, 200, ''],
+    ['304', { method: 'GET' as const, headers: { 'if-none-match': '"verified"' } }, 304, ''],
+    ['416', { method: 'GET' as const, headers: { range: 'bytes=50-60' } }, 416, undefined],
+  ])('releases %s immediately without opening the body', async (_name, request, status, body) => {
+    const response = await app.inject({ ...request, url });
+    expect(response.statusCode).toBe(status);
+    if (body !== undefined) expect(response.body).toBe(body);
+    if (request.method === 'HEAD') expect(response.headers['content-length']).toBe(String(SIZE));
+    expect(events).toEqual(['dispose']);
   });
 });

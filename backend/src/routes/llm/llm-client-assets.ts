@@ -38,10 +38,14 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.get<{ Params: { modelId: string; '*': string } }>(
-    '/models/client-assets/:modelId/*',
-    { preHandler: requireGlobalPermission('llm:query') },
-    async (request, reply) => {
+  // GET and HEAD are registered together so HEAD never goes through Fastify's
+  // implicit HEAD route, which drains a stream payload (reading the whole
+  // asset) and rewrites an empty payload's Content-Length to 0.
+  fastify.route<{ Params: { modelId: string; '*': string } }>({
+    method: ['GET', 'HEAD'],
+    url: '/models/client-assets/:modelId/*',
+    preHandler: requireGlobalPermission('llm:query'),
+    handler: async (request, reply) => {
       const file = request.params['*'] ?? '';
       const parsedId = ClientAssetIdSchema.safeParse(request.params.modelId);
       if (parsedId.success && clientAssetKind(parsedId.data) === 'onnx' && !(await slmEnabled())) {
@@ -50,6 +54,21 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
       const resolved = resolveClientAssetPath(request.params.modelId, file);
       if (!resolved.ok) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
       const verified = await resolvePolicyClientAsset(resolved.modelId, resolved.file);
+      // A verified asset's stream may depend on a resource that dispose()
+      // frees, so it lives until the body is finished, aborted or failed and
+      // is released exactly once (#1793). Responses without a body release it
+      // when the handler returns.
+      let released = false;
+      const release = async (): Promise<void> => {
+        if (released || !verified) return;
+        released = true;
+        try {
+          await verified.dispose();
+        } catch (err) {
+          request.log.warn({ err }, 'Failed to release verified client asset');
+        }
+      };
+      let streaming = false;
       try {
         const local = verified ? null : await statClientAsset(resolved.modelId, resolved.file);
         const found = verified ?? (local && {
@@ -77,16 +96,21 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
 
         if (range === 'full') {
           reply.header('Content-Length', found.size);
-          return reply.send(await found.stream());
+        } else {
+          reply.code(206);
+          reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
+          reply.header('Content-Length', range.end - range.start + 1);
         }
+        if (request.method === 'HEAD') return reply.send();
 
-        reply.code(206);
-        reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
-        reply.header('Content-Length', range.end - range.start + 1);
-        return reply.send(await found.stream(range));
+        const body = await found.stream(range === 'full' ? undefined : range);
+        streaming = true;
+        body.once('close', () => void release());
+        reply.then(() => void release(), () => void release());
+        return reply.send(body);
       } finally {
-        await verified?.dispose();
+        if (!streaming) await release();
       }
     },
-  );
+  });
 }
