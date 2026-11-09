@@ -76,7 +76,7 @@ jobs:
           # content-converter is in the list because the EMBEDDING INPUT goes
           # through it since #1265 (htmlToEmbeddingText / htmlToMarkdown) — a
           # turndown-rule change moves retrieval as surely as a rag-service one.
-          flag retrieval '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver)|eval/)|^backend/src/core/services/content-converter|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'
+          flag retrieval '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver|sibling-assembly|identifier-shortcircuit)|eval/)|^backend/src/core/services/content-converter|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'
           flag e2e '^(frontend/|backend/|packages/contracts/|e2e/|docker/|scripts/|configs?/|package(-lock)?\.json$|playwright\.config\.|[^/]*config[^/]*$|tsconfig[^/]*\.json$|\.env[^/]*$|\.npmrc$|build-info\.json$|\.github/workflows/)'
 
   typecheck-lint:

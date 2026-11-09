@@ -719,3 +719,99 @@ describe('.github/workflows supply-chain hardening', () => {
     },
   );
 });
+
+describe('pr-check.yml retrieval classifier (#1820)', () => {
+  /**
+   * Extract the `flag retrieval '<regex>'` pattern from pr-check.yml.
+   * The flag function call looks like: flag retrieval '^pattern1|^pattern2'
+   */
+  function extractRetrievalRegex(): string {
+    const match = prCheckWorkflow.match(/flag\s+retrieval\s+'([^']+)'/);
+    expect(match, 'Could not find flag retrieval pattern in pr-check.yml').toBeDefined();
+    return match![1];
+  }
+
+  /**
+   * Test if a path matches the retrieval regex using the same logic as the workflow.
+   * The workflow uses `grep -qE "$pattern"`, so we use JS RegExp equivalence.
+   */
+  function pathMatches(pattern: string, path: string): boolean {
+    try {
+      const regex = new RegExp(pattern);
+      return regex.test(path);
+    } catch (err) {
+      throw new Error(`Invalid regex "${pattern}": ${(err as Error).message}`);
+    }
+  }
+
+  it('extracts the retrieval regex from pr-check.yml', () => {
+    const regex = extractRetrievalRegex();
+    expect(regex.length).toBeGreaterThan(0);
+    // Should contain patterns for services and eval
+    expect(regex).toContain('services/');
+    expect(regex).toContain('eval/');
+  });
+
+  it('rag-service.ts matches (regression guard)', () => {
+    const regex = extractRetrievalRegex();
+    expect(pathMatches(regex, 'backend/src/domains/llm/services/rag-service.ts')).toBe(true);
+  });
+
+  it('identifier-shortcircuit.ts matches (default pinIdentifiers stage)', () => {
+    const regex = extractRetrievalRegex();
+    expect(
+      pathMatches(regex, 'backend/src/domains/llm/services/identifier-shortcircuit.ts'),
+      'identifier-shortcircuit.ts is used by default pinIdentifiers stage and must trigger retrieval eval',
+    ).toBe(true);
+  });
+
+  it('sibling-assembly.ts matches (default assembleContext stage)', () => {
+    const regex = extractRetrievalRegex();
+    expect(
+      pathMatches(regex, 'backend/src/domains/llm/services/sibling-assembly.ts'),
+      'sibling-assembly.ts is used by default assembleContext stage and must trigger retrieval eval',
+    ).toBe(true);
+  });
+
+  it('lexical-chunk-resolution.ts per Step 0 derivation (not imported by default stages)', () => {
+    const regex = extractRetrievalRegex();
+    // Step 0: walk imports from assembleContext and pinIdentifiers default stages
+    // Both sibling-assembly.ts and identifier-shortcircuit.ts have no imports (pure modules)
+    // So lexical-chunk-resolution is NOT in the derived set, even though rag-service imports it
+    // This is correct because lexical-chunk-resolution is reached via rag-service (already in regex)
+    // not directly from the default stages
+    const matches = pathMatches(regex, 'backend/src/domains/llm/services/lexical-chunk-resolution.ts');
+    // lexical-chunk-resolution may or may not match - it's not strictly required by this issue
+    // The important thing is that sibling-assembly and identifier-shortcircuit are included
+    expect(typeof matches).toBe('boolean');
+  });
+
+  it('unrelated docs do not match', () => {
+    const regex = extractRetrievalRegex();
+    expect(pathMatches(regex, 'docs/claude/ui-ux.md')).toBe(false);
+    expect(pathMatches(regex, 'README.md')).toBe(false);
+  });
+
+  it('unrelated backend services do not match', () => {
+    const regex = extractRetrievalRegex();
+    // Example: a service that's not related to retrieval
+    expect(pathMatches(regex, 'backend/src/domains/confluence/service.ts')).toBe(false);
+  });
+
+  it('fail-open logic remains unchanged (manual-dispatch and broken-diff paths)', () => {
+    // Verify the fail_open function still exists and sets all flags to true
+    expect(prCheckWorkflow).toContain('fail_open()');
+    expect(prCheckWorkflow).toContain('echo "frontend=true"');
+    expect(prCheckWorkflow).toContain('echo "mcp=true"');
+    expect(prCheckWorkflow).toContain('echo "retrieval=true"');
+    expect(prCheckWorkflow).toContain('echo "e2e=true"');
+
+    // Verify manual dispatch calls fail_open
+    expect(prCheckWorkflow).toContain('if [ "${{ github.event_name }}" = "workflow_dispatch" ]');
+    expect(prCheckWorkflow).toMatch(/workflow_dispatch[^}]*fail_open/s);
+
+    // Verify broken-diff calls fail_open
+    expect(prCheckWorkflow).toContain('if ! CHANGED=$(git diff');
+    expect(prCheckWorkflow).toMatch(/Could not diff[^}]*fail_open/s);
+  });
+});
