@@ -19,6 +19,15 @@ about a sixth of each one, so `assertModelReadsFullChunk` now refuses any
 model that returns the same vector for two chunk-sized texts differing only in
 their final word. It is a dedicated
 job, scoped to PRs that touch retrieval, so the fast path never waits on it.
+
+**Retrieval eval classifier (#1820):** The job runs when changes touch these files and directories:
+- `backend/src/domains/llm/services/(rag-service|embedding-service|llm-provider-resolver|sibling-assembly|identifier-shortcircuit)` — core services
+- `backend/src/domains/llm/eval/` — eval infrastructure
+- `backend/src/core/services/content-converter` — embedding input preprocessing (htmlToEmbeddingText / htmlToMarkdown)
+- `backend/scripts/run-retrieval-eval` — the harness itself
+- `.github/workflows/pr-check.yml` — the classifier
+
+The `sibling-assembly` and `identifier-shortcircuit` modules are included because they implement default-enabled evaluation stages: `assembleContext` (fetches contextual siblings; #1106 PR 2) and `pinIdentifiers` (exact-identifier short-circuit; #1107). Changes to these modules affect every run's core behavior and must be evaluated. **The classifier does not measure complete assembly-quality coverage** — `sibling-assembly` behavior is measured indirectly through page-ranking metrics, not page-merge metrics, and identifier-detection success is counted by query matching, not pinning rate (review #1107 r3). Coverage for new assembly strategies or identifier shapes requires explicit classification extension.
 The rule above still holds everywhere else — and note this model is for
 detecting *regressions in retrieval logic*, never for judging a model upgrade:
 those comparisons need the real candidates, run locally through the same script
