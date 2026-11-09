@@ -258,5 +258,25 @@ describe('writeClientAssetChunk', () => {
       expect(await fs.readFile(dic(), 'utf8')).toBe('NEW!');
       expect((await fs.readdir(path.join(tmp, id))).sort()).toEqual(['en_US.dic']);
     });
+
+    it('trusts recorded coverage, not a .part a crash extended with unwritten bytes', async () => {
+      await chunk('AB', 0, 6);
+      await fs.appendFile(`${dic()}.part`, Buffer.alloc(2));
+      await expect(chunk('EF', 4, 6)).rejects.toThrow(/not contiguous/i);
+      await chunk('CD', 2, 6);
+      await expect(chunk('EF', 4, 6)).resolves.toEqual({ complete: true, bytes: 6 });
+      expect(await fs.readFile(dic(), 'utf8')).toBe('ABCDEF');
+    });
+
+    it('serializes concurrent chunks and survives a rejected one in the queue', async () => {
+      const results = await Promise.allSettled([
+        chunk('AB', 0, 6),
+        chunk('ZZ', 4, 6),
+        chunk('CD', 2, 6),
+        chunk('EF', 4, 6),
+      ]);
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled', 'fulfilled']);
+      expect(await fs.readFile(dic(), 'utf8')).toBe('ABCDEF');
+    });
   });
 });
