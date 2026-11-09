@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import Fastify from 'fastify';
+import compress from '@fastify/compress';
 import sensible from '@fastify/sensible';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -214,7 +215,7 @@ describe('GET /api/models/client-assets unauthenticated (#1418 SPEC-045)', () =>
     expect(response.statusCode).toBe(401);
   });
 
-  it('requires authentication on implicit HEAD file requests too', async () => {
+  it('requires authentication on HEAD file requests too', async () => {
     const response = await app.inject({
       method: 'HEAD', url: '/api/models/client-assets/hunspell-en_US/en_US.aff',
     });
@@ -236,6 +237,8 @@ describe('verified client-asset lifetime (#1793)', () => {
 
   beforeAll(async () => {
     await app.register(sensible);
+    // Production registers compression globally (app.ts); this route opts out.
+    await app.register(compress, { threshold: 4096 });
     app.decorate('authenticate', async () => {});
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
@@ -258,9 +261,10 @@ describe('verified client-asset lifetime (#1793)', () => {
       resolveFile: async () => ({
         size: SIZE,
         etag: '"verified"',
-        async stream() {
+        async stream(range?: { start: number; end: number }) {
           if (mode === 'throw') throw new Error('verified stream unavailable');
-          events.push('stream');
+          events.push(range ? `stream:${range.start}-${range.end}` : 'stream');
+          const chunks = range ? [BODY.join('').slice(range.start, range.end + 1)] : BODY;
           let next = 0;
           // Real 20 ms gaps over a real socket: the bug is dispose running
           // before Fastify reads a body that is still being produced.
@@ -272,7 +276,7 @@ describe('verified client-asset lifetime (#1793)', () => {
                   this.destroy(new Error('verified source failed'));
                   return;
                 }
-                this.push(next < BODY.length ? BODY[next++] : null);
+                this.push(next < chunks.length ? chunks[next++] : null);
               }, 20);
             },
           });
@@ -323,7 +327,20 @@ describe('verified client-asset lifetime (#1793)', () => {
     await disconnected.promise;
     await settled();
     expect(count('read')).toBeGreaterThan(0);
-    expect(count('read-after-dispose')).toBe(0);
+    // The body is destroyed before its resource is released.
+    expect(events.indexOf('closed')).toBeLessThan(events.indexOf('dispose'));
+    expect(count('dispose')).toBe(1);
+  });
+
+  it('keeps the resource for a delayed ranged body and serves it uncompressed', async () => {
+    const response = await fetch(`${base}${url}`, { headers: { range: 'bytes=4-7', 'accept-encoding': 'gzip' } });
+    expect(response.status).toBe(206);
+    expect(response.headers.get('content-encoding')).toBeNull();
+    expect(response.headers.get('content-length')).toBe('4');
+    expect(await response.text()).toBe('BBBB');
+    await settled();
+    expect(events[0]).toBe('stream:4-7');
+    expect(events.indexOf('closed')).toBeLessThan(events.indexOf('dispose'));
     expect(count('dispose')).toBe(1);
   });
 
@@ -345,6 +362,7 @@ describe('verified client-asset lifetime (#1793)', () => {
 
   it.each([
     ['HEAD', { method: 'HEAD' as const, headers: {} }, 200, ''],
+    ['HEAD with Range', { method: 'HEAD' as const, headers: { range: 'bytes=0-3' } }, 200, ''],
     ['304', { method: 'GET' as const, headers: { 'if-none-match': '"verified"' } }, 304, ''],
     ['416', { method: 'GET' as const, headers: { range: 'bytes=50-60' } }, 416, undefined],
   ])('releases %s immediately without opening the body', async (_name, request, status, body) => {
