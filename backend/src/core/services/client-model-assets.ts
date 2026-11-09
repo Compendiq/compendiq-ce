@@ -207,25 +207,74 @@ export async function writeClientAssetChunk(opts: {
     );
   }
   await fs.mkdir(path.dirname(resolved.abs), { recursive: true });
-  if (start === 0 && start + opts.body.length === total) {
-    await fs.writeFile(resolved.abs, opts.body);
-    return { complete: true, bytes: total };
-  }
-  const part = `${resolved.abs}.part`;
-  let handle: fs.FileHandle;
+  return serializeUpload(resolved.abs, () =>
+    writeContiguousChunk(resolved.abs, opts.body, start, total));
+}
+
+// Concurrent PUTs for one file would interleave the `.part` bytes and its
+// session record; uploads of the same target run one chunk at a time.
+const uploadQueues = new Map<string, Promise<unknown>>();
+
+async function serializeUpload<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const current = (uploadQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(run);
+  uploadQueues.set(key, current);
   try {
-    handle = await fs.open(part, 'r+');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    handle = await fs.open(part, 'w+');
-  }
-  try {
-    await handle.truncate(total);
-    await handle.write(opts.body, 0, opts.body.length, start);
+    return await current;
   } finally {
-    await handle.close();
+    if (uploadQueues.get(key) === current) uploadQueues.delete(key);
   }
-  const complete = start + opts.body.length === total;
-  if (complete) await fs.rename(part, resolved.abs);
-  return { complete, bytes: start + opts.body.length };
+}
+
+/**
+ * Bytes the current upload session has received contiguously from 0, or null
+ * when there is no session for this `total` (#1784). The `.part` file only
+ * ever grows by contiguous writes, so its size is the verified coverage.
+ */
+async function sessionCoverage(part: string, session: string, total: number): Promise<number | null> {
+  try {
+    const record = JSON.parse(await fs.readFile(session, 'utf8')) as { total?: unknown };
+    if (record.total !== total) return null;
+    return (await fs.stat(part)).size;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ranged uploads must arrive contiguously (#1784). A chunk at byte 0 starts a
+ * fresh session, discarding any earlier `.part`; every later chunk must start
+ * at or before the bytes already received for the same `total`. The installed
+ * file is replaced only by renaming a fully covered `.part`, so a gap or an
+ * interrupted upload can never publish zero-filled or inherited bytes.
+ */
+async function writeContiguousChunk(
+  abs: string,
+  body: Buffer,
+  start: number,
+  total: number,
+): Promise<{ complete: boolean; bytes: number }> {
+  const part = `${abs}.part`;
+  const session = `${part}.json`;
+  const end = start + body.length;
+  let received: number;
+  if (start === 0) {
+    await fs.rm(session, { force: true });
+    await fs.writeFile(part, body);
+    received = end;
+    if (received < total) await fs.writeFile(session, JSON.stringify({ total }));
+  } else {
+    const covered = await sessionCoverage(part, session, total);
+    if (covered === null || start > covered) throw new Error('Upload range is not contiguous');
+    const handle = await fs.open(part, 'r+');
+    try {
+      await handle.write(body, 0, body.length, start);
+    } finally {
+      await handle.close();
+    }
+    received = Math.max(covered, end);
+  }
+  if (received < total) return { complete: false, bytes: received };
+  await fs.rename(part, abs);
+  await fs.rm(session, { force: true });
+  return { complete: true, bytes: total };
 }

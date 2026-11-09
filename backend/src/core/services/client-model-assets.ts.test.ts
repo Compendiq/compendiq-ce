@@ -197,4 +197,66 @@ describe('writeClientAssetChunk', () => {
       root: tmp,
     })).rejects.toThrow(/1 GiB/i);
   });
+
+  describe('ranged upload coverage (#1784)', () => {
+    const id = 'hunspell-en_US';
+    const dic = () => path.join(tmp, id, 'en_US.dic');
+    const chunk = (body: string, start: number, total: number) => writeClientAssetChunk({
+      modelId: id, file: 'en_US.dic', body: Buffer.from(body), start, total, root: tmp,
+    });
+    const installed = async () =>
+      (await listClientAssetManifest(false, tmp)).models.find((m) => m.id === id)?.installed;
+
+    it('never publishes a final-only range', async () => {
+      await writeAsset(id, 'en_US.aff', 'AFF');
+      await expect(chunk('BC', 2, 4)).rejects.toThrow(/not contiguous/i);
+      await expect(fs.stat(dic())).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await installed()).toBe(false);
+    });
+
+    it('rejects a gap and leaves nothing published', async () => {
+      await writeAsset(id, 'en_US.aff', 'AFF');
+      await expect(chunk('AB', 0, 6)).resolves.toEqual({ complete: false, bytes: 2 });
+      await expect(chunk('EF', 4, 6)).rejects.toThrow(/not contiguous/i);
+      await expect(fs.stat(dic())).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await installed()).toBe(false);
+    });
+
+    it('restarting at byte 0 discards the earlier upload', async () => {
+      await chunk('AB', 0, 4);
+      await chunk('XY', 0, 4);
+      await expect(chunk('CD', 2, 4)).resolves.toEqual({ complete: true, bytes: 4 });
+      expect(await fs.readFile(dic(), 'utf8')).toBe('XYCD');
+    });
+
+    it('rejects a continuation that changes the total', async () => {
+      await chunk('AB', 0, 4);
+      await expect(chunk('CD', 2, 6)).rejects.toThrow(/not contiguous/i);
+      await expect(chunk('CD', 2, 4)).resolves.toEqual({ complete: true, bytes: 4 });
+      expect(await fs.readFile(dic(), 'utf8')).toBe('ABCD');
+    });
+
+    it('accepts a retried chunk without duplicating bytes', async () => {
+      await chunk('AB', 0, 6);
+      await chunk('CD', 2, 6);
+      await chunk('CD', 2, 6);
+      await expect(chunk('EF', 4, 6)).resolves.toEqual({ complete: true, bytes: 6 });
+      expect(await fs.readFile(dic(), 'utf8')).toBe('ABCDEF');
+    });
+
+    it('rejects a continuation with no upload in progress', async () => {
+      await writeAsset(id, 'en_US.dic', 'OLD!');
+      await expect(chunk('CD', 2, 4)).rejects.toThrow(/not contiguous/i);
+      expect(await fs.readFile(dic(), 'utf8')).toBe('OLD!');
+    });
+
+    it('keeps the published file until a replacement upload completes', async () => {
+      await writeAsset(id, 'en_US.dic', 'OLD!');
+      await chunk('NE', 0, 4);
+      expect(await fs.readFile(dic(), 'utf8')).toBe('OLD!');
+      await chunk('W!', 2, 4);
+      expect(await fs.readFile(dic(), 'utf8')).toBe('NEW!');
+      expect((await fs.readdir(path.join(tmp, id))).sort()).toEqual(['en_US.dic']);
+    });
+  });
 });
