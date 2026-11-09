@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClientInferenceManager, type ClientInferenceOrgPolicy } from './client-inference-manager';
 import type { WorkerEvent, WorkerRequest } from './worker-protocol';
-import { LOCAL_COMPLETION_MODEL, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
+import { CLIENT_INFERENCE_MODEL_ID, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
 import type { DeviceGpuProfile } from './device-gpu-profile';
 import { ApiError } from '../api';
 
@@ -118,7 +118,7 @@ describe('ClientInferenceManager (#1418)', () => {
       kind: 'local',
       response: {
         completion: ' hello',
-        model: LOCAL_COMPLETION_MODEL,
+        model: `client:${CLIENT_INFERENCE_MODEL_ID}`,
         provider: LOCAL_COMPLETION_PROVIDER,
       },
     });
@@ -698,5 +698,93 @@ describe('ClientInferenceManager (#1418)', () => {
     expect(() => mgr.setFlags({ adminEnabled: true, userEnabled: true })).not.toThrow();
     await mgr.refreshOrgPolicy();
     expect(mgr.orgPolicySnapshot()).toEqual(INACTIVE_POLICY);
+  });
+});
+
+describe('ClientInferenceManager active-model switch (#1812)', () => {
+  const MODEL_A = 'onnx-community--Qwen2.5-0.5B-Instruct';
+  const MODEL_B = 'HuggingFaceTB--SmolLM2-135M-Instruct';
+  const COMPLETE = {
+    input: { pageId: 42, prefix: 'Rotate the', maxTokens: 48 },
+    assigned: true,
+    withoutServer: true,
+    wordMode: false,
+  };
+
+  function switchableManager(worker: FakeWorker) {
+    const selection = { active: MODEL_A };
+    const mgr = new ClientInferenceManager({
+      fetchArticlePolicy: async () => ({ authorized: true, pageId: 42, aiPolicy: 'all', aiPolicyRevision: 0 }),
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchManifest: async () => ({
+        enabled: true,
+        activeModelId: selection.active,
+        models: [MODEL_A, MODEL_B].map((id) => ({
+          id, kind: 'onnx' as const, bytes: 1, installed: true, available: true,
+          files: [{ name: 'config.json', bytes: 1 }],
+        })),
+      }),
+      downloadFile: async () => new Blob(['x']),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    return { mgr, selection };
+  }
+
+  const summary = (worker: FakeWorker) => worker.messages
+    .filter((m) => m.type !== 'abort')
+    .map((m) => (m.type === 'load' ? `load:${m.modelId}` : m.type));
+
+  it('reloads the newly active model, unloads the old one and reports it', async () => {
+    const worker = new FakeWorker();
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    expect(mgr.loadedModel()).toBe(MODEL_A);
+
+    selection.active = MODEL_B;
+    await mgr.predownload();
+    expect(mgr.isReady()).toBe(true);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+
+    const decision = await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    expect(decision).toMatchObject({ kind: 'local', response: { model: `client:${MODEL_B}` } });
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`, 'unload', `load:${MODEL_B}`, 'complete']);
+  });
+
+  it('never lets a superseded in-flight load become ready', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const { mgr, selection } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    const loadA = await waitForLoad(worker);
+
+    selection.active = MODEL_B;
+    let downloaded = false;
+    const downloading = mgr.predownload().then(() => { downloaded = true; });
+    await vi.waitFor(() => expect(summary(worker)).toContain(`load:${MODEL_B}`));
+    const loadB = worker.messages.filter((m) => m.type === 'load').at(-1)!;
+
+    worker.emit({ id: loadA.id, type: 'ready', modelId: MODEL_A });
+    await Promise.resolve();
+    expect(mgr.isReady()).toBe(false);
+    expect(mgr.loadedModel()).toBeNull();
+    expect(downloaded).toBe(false);
+
+    worker.emit({ id: loadB.id, type: 'ready', modelId: MODEL_B });
+    await downloading;
+    expect(mgr.isReady()).toBe(true);
+    expect(mgr.loadedModel()).toBe(MODEL_B);
+  });
+
+  it('keeps a ready model when the active selection did not change', async () => {
+    const worker = new FakeWorker();
+    const { mgr } = switchableManager(worker);
+    await mgr.decideComplete({ ...COMPLETE, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+    await mgr.predownload();
+    expect(summary(worker)).toEqual([`load:${MODEL_A}`]);
+    expect(mgr.loadedModel()).toBe(MODEL_A);
   });
 });
