@@ -426,9 +426,12 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
     expect(flat).toContain('if (held.retrieval.rag_answer_max_images !== 0)');
   });
 
-  it('asks through the real route with a signed token and records the provenance from what was written', () => {
-    expect(flat).toContain('generateArmAnswers(askThroughRoute(app, token), fixture, {');
-    expect(flat).toContain("generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' })");
+  it('asks through the real route with a token signed per request and records the provenance from what was written', () => {
+    // #1824: the bearer is minted at the request boundary — one token minted
+    // before the loop expires mid-run (ACCESS_TOKEN_EXPIRY, default 1h).
+    expect(flat).toContain('generateArmAnswers(askThroughRoute(app, bearer), fixture, {');
+    expect(flat).toContain("const bearer: BearerSource = () => generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });");
+    expect(flat).not.toMatch(/const token = await generateAccessToken/);
     expect(flat).toContain('answersSha256: written.answersSha256');
     expect(flat).toContain('mappingSha256: written.mappingSha256');
     expect(flat).toContain("temperature: 'provider default'");

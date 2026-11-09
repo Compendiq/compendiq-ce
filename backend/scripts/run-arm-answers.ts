@@ -7,7 +7,8 @@
  * (`run-retrieval-eval.ts --images --arm X`): the pages, the index state and
  * the assignments are that arm's, so what this script measures is what the
  * ask route does with them. It builds the real app (`buildApp()`), signs a
- * token for the eval user, and injects `POST /api/llm/ask` per fixture label
+ * fresh token for the eval user per question (#1824: a run outlives one
+ * `ACCESS_TOKEN_EXPIRY`), and injects `POST /api/llm/ask` per fixture label
  * with `rag_answer_max_images = 0` written to admin_settings for the run,
  * `deepSearch: false` and no conversation — the answer model is text-only by
  * construction in every arm (ADR-027 O10), at the provider's default
@@ -30,7 +31,7 @@ import { invalidateRagAnswerMaxImagesCache } from '../src/core/services/admin-se
 import { assertKnownFlags, flagValue, wantsHelp, ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_USAGE, ARM_ANSWERS_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { EVAL_ARMS, commandLine, parseArmRunReport, querySetSha, readHeldFixedProvenance, readRevisionSha, type EvalArm } from '../src/domains/llm/eval/arms.js';
-import { askThroughRoute, generateArmAnswers, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance } from '../src/domains/llm/eval/answers.js';
+import { askThroughRoute, generateArmAnswers, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance, type BearerSource } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
 import { EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -104,9 +105,11 @@ async function main(): Promise<void> {
   const app = await buildApp();
   await app.ready();
   try {
-    const token = await generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });
+    // #1824: minted per request — a token signed once here expires after
+    // ACCESS_TOKEN_EXPIRY (default 1h) and the rest of the run would 401.
+    const bearer: BearerSource = () => generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });
     console.log(`arm ${arm} · run ${runId} · ${fixture.labels.length} questions · answer model ${held.answerModel.identity} · revision ${sha}`);
-    const generated = await generateArmAnswers(askThroughRoute(app, token), fixture, {
+    const generated = await generateArmAnswers(askThroughRoute(app, bearer), fixture, {
       arm,
       onProgress: (done, total) => {
         if (done % 10 === 0 || done === total) console.log(`  answered ${done}/${total}`);
