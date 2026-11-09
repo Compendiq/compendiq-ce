@@ -29,7 +29,7 @@ const CANONICAL_PAIRS = [
  * @param models — array of model configurations
  * @param results — keyed by "modelId/Vx" (e.g., "bge-m3/V1"), values have runs array
  * @param deps — { pairedSignificance, score } functions
- * @returns array of formatted lines, one per executable pair
+ * @returns array of formatted lines: one per executable pair, or "(no comparable variant pair executed)" if no pairs
  */
 export function significanceLines(
   models: ModelCfg[],

@@ -51,8 +51,7 @@ describe('significanceLines', () => {
     const score = (r: QueryRun) => recallAtK([r], 5);
     const lines = significanceLines(dummyModels, results, { pairedSignificance, score });
 
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('V1→V3');
+    expect(lines).toEqual(['bge-m3 V1→V3 (bigger chunk, no prefix): 0W/0L · p=1.0000 · no credible change']);
   });
 
   it('emits one pair for V3,V4 only', () => {
@@ -64,8 +63,7 @@ describe('significanceLines', () => {
     const score = (r: QueryRun) => recallAtK([r], 5);
     const lines = significanceLines(dummyModels, results, { pairedSignificance, score });
 
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('V3→V4');
+    expect(lines).toEqual(['bge-m3 V3→V4 (title prefix @667): 0W/0L · p=1.0000 · no credible change']);
   });
 
   it('emits explanatory line when V2 and V4 only (no canonical pair)', () => {
@@ -95,38 +93,48 @@ describe('significanceLines', () => {
   });
 
   it('preserves output format for full four-variant path with varied fixture', () => {
-    // Create varied fixture: 30 queries with different win ratios per variant
-    // to ensure the output format is correct (W/L counts and p-values)
+    // Fixture with two models (a, b) and 30 queries, varied wins/losses per variant
+    // to exercise padding, IMPROVEMENT/REGRESSION branches, and p-value formatting
     const queries = Array.from({ length: 30 }, (_, i) => `q${i + 1}`);
-    const v1Runs = queries.map((q, i) => run(q, i < 20 ? [1] : [], [1])); // 20W / 10L
-    const v2Runs = queries.map((q, i) => run(q, i < 18 ? [1] : [], [1])); // 18W / 12L
-    const v3Runs = queries.map((q, i) => run(q, i < 22 ? [1] : [], [1])); // 22W / 8L
-    const v4Runs = queries.map((q, i) => run(q, i < 17 ? [1] : [], [1])); // 17W / 13L
+    
+    // Model a: V1 i<10, V2 i<11&&i!==3, V3 i<22, V4 i<10||i>=27
+    const aV1 = queries.map((q, i) => run(q, i < 10 ? [1] : [], [1]));
+    const aV2 = queries.map((q, i) => run(q, i < 11 && i !== 3 ? [1] : [], [1]));
+    const aV3 = queries.map((q, i) => run(q, i < 22 ? [1] : [], [1]));
+    const aV4 = queries.map((q, i) => run(q, i < 10 || i >= 27 ? [1] : [], [1]));
+    
+    // Model b: V1 i%2===0, V2 i%3===0, V3 always, V4 never
+    const bV1 = queries.map((q, i) => run(q, i % 2 === 0 ? [1] : [], [1]));
+    const bV2 = queries.map((q, i) => run(q, i % 3 === 0 ? [1] : [], [1]));
+    const bV3 = queries.map((q) => run(q, [1], [1]));
+    const bV4 = queries.map((q) => run(q, [], [1]));
 
     const results: Record<string, { runs: QueryRun[] }> = {
-      'bge-m3/V1': { runs: v1Runs },
-      'bge-m3/V2': { runs: v2Runs },
-      'bge-m3/V3': { runs: v3Runs },
-      'bge-m3/V4': { runs: v4Runs },
+      'a/V1': { runs: aV1 },
+      'a/V2': { runs: aV2 },
+      'a/V3': { runs: aV3 },
+      'a/V4': { runs: aV4 },
+      'b/V1': { runs: bV1 },
+      'b/V2': { runs: bV2 },
+      'b/V3': { runs: bV3 },
+      'b/V4': { runs: bV4 },
     };
 
     const score = (r: QueryRun) => recallAtK([r], 5);
-    const lines = significanceLines(dummyModels, results, { pairedSignificance, score });
+    const models = [{ id: 'a' }, { id: 'b' }];
+    const lines = significanceLines(models, results, { pairedSignificance, score });
 
-    // Should have 4 lines: V1→V2, V1→V3, V1→V4, V3→V4
-    expect(lines).toHaveLength(4);
-    
-    // Check order and format
-    expect(lines[0]).toMatch(/^bge-m3\s+V1→V2.*:\s+\d+W\/\d+L · p=[\d.]+/);
-    expect(lines[1]).toMatch(/^bge-m3\s+V1→V3.*:\s+\d+W\/\d+L · p=[\d.]+/);
-    expect(lines[2]).toMatch(/^bge-m3\s+V1→V4.*:\s+\d+W\/\d+L · p=[\d.]+/);
-    expect(lines[3]).toMatch(/^bge-m3\s+V3→V4.*:\s+\d+W\/\d+L · p=[\d.]+/);
-
-    // Verify exact order of pairs
-    expect(lines[0]).toContain('V1→V2');
-    expect(lines[1]).toContain('V1→V3');
-    expect(lines[2]).toContain('V1→V4');
-    expect(lines[3]).toContain('V3→V4');
+    // Assert exact output lines from dev's loop
+    expect(lines).toEqual([
+      'a     V1→V2 (title prefix @500): 1W/1L · p=1.0000 · no credible change',
+      'a     V1→V3 (bigger chunk, no prefix): 12W/0L · p=0.0005 · IMPROVEMENT',
+      'a     V1→V4 (both): 3W/0L · p=0.2500 · no credible change',
+      'a     V3→V4 (title prefix @667): 3W/12L · p=0.0352 · REGRESSION',
+      'b     V1→V2 (title prefix @500): 5W/10L · p=0.3018 · no credible change',
+      'b     V1→V3 (bigger chunk, no prefix): 15W/0L · p=0.0001 · IMPROVEMENT',
+      'b     V1→V4 (both): 0W/15L · p=0.0001 · REGRESSION',
+      'b     V3→V4 (title prefix @667): 0W/30L · p=0.0000 · REGRESSION',
+    ]);
   });
 
   it('handles multiple models where one is missing a variant', () => {
