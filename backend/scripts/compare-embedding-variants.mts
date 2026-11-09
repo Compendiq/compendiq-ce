@@ -32,6 +32,7 @@ const { markdownToHtml, htmlToText } = await import(`${REPO}/src/core/services/c
 const { chunkText } = await import(`${REPO}/src/domains/llm/services/embedding-service.js`) as typeof import('../src/domains/llm/services/embedding-service.js');
 const { recallAtK, meanReciprocalRank, pairedSignificance } = await import(`${REPO}/src/domains/llm/eval/metrics.js`) as typeof import('../src/domains/llm/eval/metrics.js');
 const { formatQueryForEmbedding, wantsInstructionPrefix } = await import(`${REPO}/src/domains/llm/services/query-instruction.js`) as typeof import('../src/domains/llm/services/query-instruction.js');
+const { significanceLines } = await import(`${REPO}/src/domains/llm/eval/variant-significance.js`) as typeof import('../src/domains/llm/eval/variant-significance.js');
 
 interface Variant { id: string; label: string; titlePrefix: boolean; chunkTokens: number }
 const VARIANTS: Variant[] = [
@@ -160,9 +161,7 @@ for (const m of MODELS) {
 
 console.log('\n=== PAIRED SIGNIFICANCE (McNemar exact, Recall@5) ===');
 const score = (r: { queryId: string; retrieved: number[]; expected: number[] }) => recallAtK([r], 5);
-for (const m of MODELS) {
-  for (const [from, to, what] of [['V1', 'V2', 'title prefix @500'], ['V1', 'V3', 'bigger chunk, no prefix'], ['V1', 'V4', 'both'], ['V3', 'V4', 'title prefix @667']] as const) {
-    const v = pairedSignificance(results[`${m.id}/${from}`]!.runs, results[`${m.id}/${to}`]!.runs, score);
-    console.log(`${m.id.padEnd(5)} ${from}→${to} (${what}): ${v.wins}W/${v.losses}L · p=${v.pValue?.toFixed(4)} · ${v.significant ? v.direction.toUpperCase() : 'no credible change'}`);
-  }
+const significanceLinesList = significanceLines(MODELS, results, { pairedSignificance, score });
+for (const line of significanceLinesList) {
+  console.log(line);
 }
