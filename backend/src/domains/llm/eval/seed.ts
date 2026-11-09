@@ -33,7 +33,7 @@ export interface SeedResult {
   skipped: string[];
 }
 
-async function currentVectorDimensions(): Promise<number | null> {
+export async function currentVectorDimensions(): Promise<number | null> {
   const r = await query<{ atttypmod: number }>(
     `SELECT atttypmod FROM pg_attribute
      WHERE attrelid = 'page_embeddings'::regclass AND attname = 'embedding'`,

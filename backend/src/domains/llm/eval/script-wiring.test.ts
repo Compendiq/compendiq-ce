@@ -427,7 +427,7 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
   });
 
   it('asks through the real route with a signed token and records the provenance from what was written', () => {
-    expect(flat).toContain('generateArmAnswers(askThroughRoute(app, token), fixture, {');
+    expect(flat).toContain('generateLiveArmAnswers(askThroughRoute(app, token), fixture, {');
     expect(flat).toContain("generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' })");
     expect(flat).toContain('answersSha256: written.answersSha256');
     expect(flat).toContain('mappingSha256: written.mappingSha256');
@@ -435,6 +435,15 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
     expect(flat).toContain('deepSearch: false');
     // The chat model is never mocked here: no vi, no stub, no fake ask.
     expect(body).not.toMatch(/\b(mock|stub|fake)\b/i);
+  });
+
+  it('certifies the live arm state and binds --report to it before the first question (#1823)', () => {
+    // No answer is generated outside the certification: a bare
+    // generateArmAnswers call would ask without asserting the arm's state.
+    expect(body).not.toMatch(/\bgenerateArmAnswers\(/);
+    expect(flat).toContain("import { generateLiveArmAnswers } from '../src/domains/llm/eval/arm-live-state.js';");
+    expect(flat).toContain('const report = reportPath ? parseArmRunReport(');
+    expect(flat).toContain('generateLiveArmAnswers(askThroughRoute(app, token), fixture, { arm, report, userId: EVAL_USER_ID,');
   });
 });
 
