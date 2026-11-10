@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { DataRetentionTab } from './DataRetentionTab';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -23,24 +24,11 @@ vi.mock('../../shared/enterprise/use-enterprise', () => ({
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return function Wrapper({ children }: { children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          <LazyMotion features={domMax}>
-            {children}
-          </LazyMotion>
-        </MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
+  return createWrapperWithClient().wrapper;
 }
 
-// #1875 — same providers, but the client is returned so a test can drive a
-// background refetch of the shared ['admin-settings'] query.
+// #1875 — the client is returned too, so a test can drive a background
+// refetch of the shared ['admin-settings'] query.
 function createWrapperWithClient() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -494,6 +482,11 @@ describe('DataRetentionTab', () => {
           fireEvent.click(screen.getByTestId(row.save));
         });
         expect(settingsPutCalls(fetchSpy)).toHaveLength(0);
+
+        // The next edit retracts the message until the field is left again.
+        fireEvent.change(input, { target: { value: '7' } });
+        expect(screen.queryByText(VALIDATION_MESSAGE)).not.toBeInTheDocument();
+        expect(input).not.toHaveAttribute('aria-invalid');
       });
     });
 
@@ -561,6 +554,31 @@ describe('DataRetentionTab', () => {
       await waitFor(() => expect(settingsPutCalls(fetchSpy)).toHaveLength(2));
       await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
       expect(mockAdminSettings.webhookDeliveriesRetentionDays).toBe(120);
+    });
+
+    it('reports a failure that lands after the row unmounted as a toast', async () => {
+      mockAdminSettings = { adminAccessDeniedRetentionDays: 90, webhookDeliveriesRetentionDays: 90 };
+      const pendingPut = Promise.withResolvers<Response>();
+      settingsPutResponse = () => pendingPut.promise;
+      const toastError = vi.spyOn(toast, 'error');
+      mockFetch();
+      const { wrapper } = createWrapperWithClient();
+      const { unmount } = render(<DataRetentionTab />, { wrapper });
+      await screen.findByTestId(WEBHOOK_INPUT);
+
+      fireEvent.change(screen.getByTestId(WEBHOOK_INPUT), { target: { value: '120' } });
+      fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
+      await waitFor(() => expect(screen.getByTestId(WEBHOOK_SAVE)).toHaveAttribute('aria-busy', 'true'));
+      unmount();
+
+      await act(async () => {
+        pendingPut.resolve(new Response(JSON.stringify({ message: 'Database unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      });
+      await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+      expect(toastError.mock.calls[0]![0]).toContain('Database unavailable.');
     });
 
     it('sends one PUT for two activations in the same tick and shows the pending state', async () => {

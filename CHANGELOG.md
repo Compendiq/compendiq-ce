@@ -20,11 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Admin access-denied retention control (#1875):** now shares the retention
-  windows row: empty, fractional and out-of-range values are rejected inline
-  instead of being sent, Enter saves, a failed save keeps the typed value and
-  shows the server's reason inline (previously a toast), and an unreadable
-  settings response shows a Retry notice instead of a fabricated 90-day value.
+- **Admin access-denied retention control (#1875):** now sits in the shared
+  *Retention windows* section: empty, fractional and out-of-range values are
+  rejected inline instead of being sent, Enter saves, a failed save keeps the
+  typed value and shows the server's reason inline (previously a toast), and
+  an unreadable settings response shows a Retry notice instead of a
+  fabricated 90-day value.
 
 ### Fixed
 

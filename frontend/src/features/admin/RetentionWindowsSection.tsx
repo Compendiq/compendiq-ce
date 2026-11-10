@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ShieldAlert, Webhook, type LucideIcon } from 'lucide-react';
@@ -106,6 +106,15 @@ function RetentionDaysRow({ config, serverValue }: { config: RetentionRowConfig;
   // `isPending` re-renders through react-query's notify scheduler, not
   // synchronously, so a second activation in the same tick needs this guard.
   const inFlight = useRef(false);
+  // A save can outlive the row (the admin switches tab mid-request); its
+  // failure must then still be reported somewhere.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const save = useMutation({
     mutationFn: ({ days }: { days: number; submitted: string }) =>
@@ -113,7 +122,7 @@ function RetentionDaysRow({ config, serverValue }: { config: RetentionRowConfig;
         method: 'PUT',
         body: JSON.stringify({ [config.field]: days }),
       }),
-    onSuccess: async (_result, { days, submitted }) => {
+    onSuccess: (_result, { days, submitted }) => {
       // The write is confirmed even if the follow-up read fails. Merge only
       // this field: the key is shared with other settings panels.
       queryClient.setQueryData<AdminSettings>(['admin-settings'], (current) =>
@@ -122,10 +131,14 @@ function RetentionDaysRow({ config, serverValue }: { config: RetentionRowConfig;
       // Keep an edit typed while the request was out.
       setDraft((current) => (current === submitted ? undefined : current));
       toast.success(config.successToast);
-      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      // Not awaited: "Saving…" describes the write, which is done; a slow or
+      // failing refetch is the section's refresh notice, not this button's.
+      void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
     },
     onError: (err) => {
-      setSaveError(err instanceof Error && err.message ? err.message : 'The change could not be saved');
+      const message = err instanceof Error && err.message ? err.message : 'The change could not be saved';
+      if (mounted.current) setSaveError(message);
+      else toast.error(`${config.label}: ${withTerminalPunctuation(message)} The change was not saved.`);
     },
     onSettled: () => {
       inFlight.current = false;
@@ -195,7 +208,7 @@ function RetentionDaysRow({ config, serverValue }: { config: RetentionRowConfig;
           )}
         </div>
       </div>
-      <div className="ml-[30px] flex shrink-0 items-center gap-2 sm:ml-0">
+      <div className="ml-[30px] flex shrink-0 items-center gap-2">
         <input
           id={inputId}
           data-testid={inputId}
@@ -250,7 +263,7 @@ export function RetentionWindowsSection() {
         id="retention-windows-heading"
         ref={headingRef}
         tabIndex={-1}
-        className="text-lg font-semibold focus:outline-none"
+        className="nm-focus-ring text-lg font-semibold"
       >
         Retention windows
       </h2>
