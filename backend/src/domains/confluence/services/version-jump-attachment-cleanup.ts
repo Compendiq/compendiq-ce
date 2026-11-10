@@ -20,7 +20,9 @@
  *    name: `/api/attachments/…` URLs through the #1349 collector
  *    (`collectAttachmentUrlReferences`), storage refs through
  *    `getExpectedAttachmentFilenames`. A diagram any of them names keeps all
- *    three of its files.
+ *    three of its files. HTML names a diagram by its `data-diagram-name`
+ *    wrapper; only HTML written since 2026-10-28 also carries the
+ *    `<name>.drawio` source locator.
  *
  * A cached file goes when it is incoming or not in localKeep; every other file
  * stays. Dot-files are not cached files (no reader can address them) and are
@@ -51,6 +53,25 @@ import { collectAttachmentUrlReferences, type AttachmentKeepSets } from './attac
 const CACHE_URL_PREFIX = '/api/attachments/';
 const DRAWIO_SOURCE_SUFFIX = '.drawio';
 const DRAWIO_PREVIEW_SUFFIX = '.drawio.png';
+/** The diagram name on a converted draw.io wrapper; every HTML generation writes it. */
+const DIAGRAM_NAME_MARKER = 'data-diagram-name';
+const DIAGRAM_NAME_ATTRIBUTE = /\bdata-diagram-name\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+/** The character references an HTML serializer can write into an attribute value. */
+const ATTRIBUTE_ENTITY = /&(?:amp|quot|apos|lt|gt|nbsp|#\d{1,7}|#[xX][0-9a-fA-F]{1,6});/g;
+const NAMED_ENTITIES: Record<string, string> = {
+  '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>', '&nbsp;': '\u00a0',
+};
+
+/** An attribute value as written in HTML, back to the text it encodes. */
+function decodeAttributeValue(value: string): string {
+  return value.replace(ATTRIBUTE_ENTITY, (entity) => {
+    const named = NAMED_ENTITIES[entity];
+    if (named !== undefined) return named;
+    const hex = entity[2] === 'x' || entity[2] === 'X';
+    const code = Number.parseInt(entity.slice(hex ? 3 : 2, -1), hex ? 16 : 10);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
 
 /** One page's local content, as read before any delete. */
 export interface VersionJumpLocalSources {
@@ -101,6 +122,7 @@ export function selectVersionJumpCacheDeletions(input: VersionJumpSelectionInput
   // Storage columns get the URL pass too: storage can carry `/api/attachments/…`
   // URLs verbatim (the sweep's keep-set reads them the same way).
   const urls: AttachmentKeepSets = { confluence: new Set(), local: new Set() };
+  const htmlDiagramNames = new Set<string>();
   for (const text of [
     local.bodyHtml,
     local.draftBodyHtml,
@@ -109,10 +131,18 @@ export function selectVersionJumpCacheDeletions(input: VersionJumpSelectionInput
     ...local.versionBodiesHtml,
   ]) {
     collectAttachmentUrlReferences(text, urls);
+    if (!text) continue;
+    for (const match of text.matchAll(DIAGRAM_NAME_ATTRIBUTE)) {
+      htmlDiagramNames.add(decodeAttributeValue(match[1] ?? match[2] ?? ''));
+    }
   }
   const localKeep = new Set(urls.confluence);
-  // A diagram in HTML always carries its `<name>.drawio` source locator, and
-  // its preview files go with it.
+  // A diagram in HTML keeps its three files. Since 2026-10-28 the HTML also
+  // carries the `<name>.drawio` source locator; older HTML names the diagram
+  // only by `data-diagram-name`, with at most its `<name>.png` preview.
+  for (const name of htmlDiagramNames) {
+    if (name) addDiagramFiles(localKeep, name);
+  }
   for (const name of urls.confluence) {
     if (name.endsWith(DRAWIO_PREVIEW_SUFFIX)) {
       addDiagramFiles(localKeep, name.slice(0, -DRAWIO_PREVIEW_SUFFIX.length));
@@ -173,9 +203,12 @@ async function readLocalSources(pageId: number): Promise<VersionJumpLocalSources
        FROM pages WHERE id = $1`,
     [pageId],
   );
+  // A row can name a cached file by URL, or name a diagram only by its wrapper:
+  // HTML converted from Markdown before 2026-10-28 carries no URL at all.
   const versions = await query<{ body_html: string }>(
-    `SELECT body_html FROM page_versions WHERE page_id = $1 AND strpos(body_html, $2) > 0`,
-    [pageId, CACHE_URL_PREFIX],
+    `SELECT body_html FROM page_versions
+      WHERE page_id = $1 AND (strpos(body_html, $2) > 0 OR strpos(body_html, $3) > 0)`,
+    [pageId, CACHE_URL_PREFIX, DIAGRAM_NAME_MARKER],
   );
   const row = page.rows[0];
   return {

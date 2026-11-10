@@ -88,6 +88,25 @@ describe('selectVersionJumpCacheDeletions (#1773 delete/keep rule)', () => {
     expect(removed).toEqual([...diagramFiles('arch'), ...diagramFiles('gone')]);
   });
 
+  it('keeps all three files of a diagram that HTML written before 2026-10-28 names only by data-diagram-name', () => {
+    const removed = selectVersionJumpCacheDeletions({
+      cached: [...diagramFiles('old & flow'), ...diagramFiles('bare'), ...diagramFiles('gone')],
+      incomingStorage: '<p>v8</p>',
+      spaceKey: 'DEV',
+      local: {
+        ...noLocalContent,
+        // The converter's older output: a preview image, no source locator.
+        versionBodiesHtml: [
+          `<div class="confluence-drawio" data-diagram-name="old &amp; flow"><img src="/api/attachments/${K}/old%20%26%20flow.png" alt="Draw.io diagram: old &amp; flow"></div>`,
+        ],
+        // The older Markdown round trip: the wrapper alone, no cache URL at all.
+        draftBodyHtml: '<div class="confluence-drawio" data-diagram-name="bare"></div>',
+      },
+    });
+
+    expect(removed).toEqual(diagramFiles('gone'));
+  });
+
   it('names cross-page and external images the way their download named them', () => {
     const crossPage = (spaceKey: string) => getLocalFilenameForImageSource({
       kind: 'attachment',
