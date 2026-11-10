@@ -120,7 +120,19 @@ vi.mock('undici', async (importOriginal) => {
           const start = Number(parsed.searchParams.get('start') ?? 0);
           const limit = Number(parsed.searchParams.get('limit') ?? 100);
           const results = inventory.results.slice(start, start + limit);
-          value = { ...inventory, results, start, limit, size: results.length };
+          const nextStart = start + results.length;
+          value = {
+            ...inventory,
+            results,
+            start,
+            limit,
+            size: results.length,
+            // Like Confluence DC: a further page is advertised by `_links.next`,
+            // which is what the client follows (#1777).
+            _links: nextStart < inventory.results.length
+              ? { next: `${parsed.pathname}?limit=${limit}&start=${nextStart}` }
+              : {},
+          };
         } else if (method === 'GET' && match) {
           h.getAuthorization(
             (options.headers as Record<string, string> | undefined)?.Authorization,

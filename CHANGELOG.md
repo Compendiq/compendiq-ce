@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
+  and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
+  edits unconditionally. They apply the configured conflict policy like the
+  scheduled sync: `Compendiq wins` keeps the local page, `Manual review` queues
+  the Confluence version for review, and `Confluence wins` first stores the
+  local text in the page's version history, then audits
+  `SYNC_OVERWROTE_LOCAL_EDITS`. The local version number no longer goes
+  backwards, so a page edited while the integration was off stays ahead of
+  Confluence's number until Confluence catches up. A live collaborative session
+  is not overwritten when Confluence has nothing newer, and the collaborative
+  document is refreshed whenever the body is replaced.
 - **Version-jump sync honours the conflict policy (#1772):** when a synced
   page's Confluence version moved and the page carries a local edit
   (`local_modified_at > last_synced`; a local rename counts even when the body
@@ -51,6 +62,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason instead of answering "Nothing to re-embed." The tag editor's
   reserved-label note, the provider editor's help text and the inspector's
   collapsed-rail menu headings now meet the 13px floor.
+- **Confluence attachment and version lists no longer truncate capped pages
+  (#1777):** `getPageAttachments` and `getPageVersions` now page the way every
+  other Confluence listing has since #903 — they follow `_links.next` and advance
+  `start` by the number of results each response actually returned. A server
+  that answers with fewer than the requested 100 (e.g. 25 per response) used
+  to cut a page's attachment list after the first response, so sync skipped
+  the images and diagrams missing from it, and made the version list jump
+  past the rest of each window, so the Version History import lost versions.
+  Images already given up on (after three consecutive failures on unchanged
+  pages) remain missing until their 7-day failure counter expires or the page
+  is next edited.
+  A full page without a `next` link is now the last one (no extra request);
+  an empty page still ends the loop and the version list keeps its
+  1000-request cap.
 - **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
   fresh access token per question instead of one before the run, so a run
   longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the
@@ -62,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconnects from repeating a possibly committed rotation. Marked busy responses
   remain retry-safe; replacement tokens or an explicit reload permit recovery.
   Preserve unsaved work before reloading.
+- **Manual sync takes the worker lock (#1775):** `POST /api/sync` now
+  atomically claims the deployment-global `sync:worker:lock` the scheduler
+  holds, renews it every 200 s and releases it when the background run ends,
+  success or failure. A concurrent request, or any request while a scheduled or
+  another user's sync is running, answers 409 *A Confluence sync is currently
+  running. Wait for it to finish and try again.* with the caller's status
+  unchanged, and **Sync Now** shows that message as an error toast. The
+  scheduler skips its tick during a manual run, and relocate now refuses during
+  a manual sync as it already did during a scheduled one. Without Redis the
+  manual run proceeds unlocked, as the scheduler does.
 - Preserve persisted note replies and their counts in the article inspector,
   comments sidebar, and anchored popover, including after refreshing a thread.
 - Page title fields now grow and shrink when the available article width changes,

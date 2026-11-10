@@ -430,8 +430,11 @@ export function SyncTab({ confluenceEnabled = true }: SyncTabProps) {
           >
             {isFetching ? 'Refreshing...' : 'Refresh'}
           </button>
+          {/* A refusal — 409 while another user's or the scheduled sync holds
+              the deployment-global lock (#1775) — reaches this user only
+              through the server's message. */}
           <button
-            onClick={() => syncMutation.mutate()}
+            onClick={() => syncMutation.mutate(undefined, { onError: (err) => toast.error(err.message) })}
             disabled={syncMutation.isPending || data.sync.status === 'syncing'}
             className="nm-button-primary"
             data-testid="sync-overview-sync-now"
