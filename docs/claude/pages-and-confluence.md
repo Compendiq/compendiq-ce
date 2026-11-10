@@ -300,7 +300,7 @@ meaning — creating a page *in* a Confluence space, `POST /pages/bulk/sync`,
 directions: it is defined as create-upstream / delete-upstream) — all with
 `Confluence integration is disabled`, never `Confluence not configured`.
 `POST /api/sync` answers **200** with that same sentence (no status flicker, no
-`SYNC_STARTED` audit row), `GET /api/spaces/available` answers **409**, and a
+`SYNC_STARTED` audit row, no worker-lock claim), `GET /api/spaces/available` answers **409**, and a
 `selectedSpaces` write arriving while the integration is off answers **422**;
 the **400 `Confluence not configured`** is now reachable only by an enabled user
 whose credentials are missing or broken. Re-enabling needs no new reconciliation

@@ -60,6 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconnects from repeating a possibly committed rotation. Marked busy responses
   remain retry-safe; replacement tokens or an explicit reload permit recovery.
   Preserve unsaved work before reloading.
+- **Manual sync takes the worker lock (#1775):** `POST /api/sync` now
+  atomically claims the deployment-global `sync:worker:lock` the scheduler
+  holds, renews it every 200 s and releases it when the background run ends,
+  success or failure. A concurrent request, or any request while a scheduled or
+  another user's sync is running, answers 409 *A Confluence sync is currently
+  running. Wait for it to finish and try again.* with the caller's status
+  unchanged, and **Sync Now** shows that message as an error toast. The
+  scheduler skips its tick during a manual run, and relocate now refuses during
+  a manual sync as it already did during a scheduled one. Without Redis the
+  manual run proceeds unlocked, as the scheduler does.
 - Preserve persisted note replies and their counts in the article inspector,
   comments sidebar, and anchored popover, including after refreshing a thread.
 - Page title fields now grow and shrink when the available article width changes,
