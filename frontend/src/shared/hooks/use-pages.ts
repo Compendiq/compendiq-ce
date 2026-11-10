@@ -4,6 +4,7 @@ import {
   AiPolicyConflictSchema,
   AiPolicyDeniedSchema,
   AiPolicyLabelConflictSchema,
+  UpdatePageSchema,
   type AiPolicy,
   type AiPolicyFilter,
   type PageIcon,
@@ -285,15 +286,29 @@ export function useCreatePage() {
   });
 }
 
+/**
+ * A successful `PUT /pages/:id` answers the version the row now has. The page
+ * editor sends it back as the next Save's optimistic-concurrency base (#1746),
+ * so it must satisfy the request contract that carries it: a positive integer.
+ */
+const SavedPageVersionSchema = UpdatePageSchema.pick({ version: true }).required();
+
 export function useUpdatePage() {
   const queryClient = useQueryClient();
   const { markComplete } = useOnboardingActions();
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: string; title: string; bodyHtml: string; version?: number }) =>
-      apiFetch<{ id: string; title: string; version: number }>(`/pages/${id}`, {
+    mutationFn: async ({ id, ...data }: { id: string; title: string; bodyHtml: string; version?: number }) => {
+      const saved = SavedPageVersionSchema.safeParse(await apiFetch(`/pages/${id}`, {
         method: 'PUT',
         body: JSON.stringify(data),
-      }),
+      }));
+      // Without a usable version this tab cannot tell what it wrote: report the
+      // save as unconfirmed instead of guessing the next base.
+      if (!saved.success) {
+        throw new Error('The server did not confirm which version was saved. Reload the page before saving again.');
+      }
+      return saved.data;
+    },
     onMutate: async ({ id, title, bodyHtml }) => {
       await queryClient.cancelQueries({ queryKey: ['pages', id] });
       const previous = queryClient.getQueryData<PageDetail>(['pages', id]);

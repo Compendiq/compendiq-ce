@@ -176,6 +176,14 @@ export function PageViewPage() {
   const [labelPolicyNotice, setLabelPolicyNotice] = useState<string | null>(null);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
+  // #1746: the page version this editing session's content is based on, sent
+  // as the ordinary PUT's `version`. Set where a session seeds the editor
+  // (Edit, Restore draft, Edit published version) and replaced only by this
+  // session's own successful PUT. Never send the live `page.version`: focus,
+  // remount and invalidation refetches move it mid-edit and would rebase a
+  // stale draft onto someone else's version. 0 = no session; no page has
+  // version 0 and UpdatePageSchema refuses it, so an unset base fails closed.
+  const editBaseVersionRef = useRef(0);
   // State-backed pending flags update on the next render, which leaves a
   // same-tick Ctrl/Cmd+S window. Claim the ref synchronously so every entry
   // path shares one flight, including draw.io draining and collab commit; keep
@@ -485,6 +493,7 @@ export function PageViewPage() {
       return;
     }
     editSessionRef.current += 1;
+    editBaseVersionRef.current = page.version;
     setEditingBlocked(false);
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
@@ -515,6 +524,9 @@ export function PageViewPage() {
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     captureScrollOffset();
+    // A localStorage draft records no base version: the version on screen when
+    // the user chooses to restore it is the best available one (#1746).
+    if (page) editBaseVersionRef.current = page.version;
     setEditHtml(pendingDraft);
     if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
@@ -528,6 +540,7 @@ export function PageViewPage() {
     setPendingDraft(null);
     captureScrollOffset();
     if (!page) return;
+    editBaseVersionRef.current = page.version;
     setEditHtml(page.bodyHtml);
     setDraftLabels(page.labels ?? []);
     setIsDirty(false);
@@ -810,12 +823,15 @@ export function PageViewPage() {
           return;
         }
         const bodyToSave = editorInstance.getHTML();
-        await updateMutation.mutateAsync({
+        const saved = await updateMutation.mutateAsync({
           id,
           title: editTitle,
           bodyHtml: bodyToSave,
-          version: page.version,
+          version: editBaseVersionRef.current,
         });
+        // This session's own write is its new base: a Save that stays open
+        // (a refused label write below) must not 409 against it (#1746).
+        if (editSessionRef.current === session) editBaseVersionRef.current = saved.version;
       }
       if (editSessionRef.current !== session) return;
       if (editing) {
