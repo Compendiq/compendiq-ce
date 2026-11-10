@@ -1225,6 +1225,21 @@ Confluence is the system of record for synced pages, but Compendiq supports loca
 
 **Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
 
+**Where the policy applies**: a page's **Re-sync** / **Force re-sync** (`POST /api/pages/bulk/sync`), and the scheduled or manual space sync, including when Confluence's version of the page moved ahead of the local one (see *Upstream version jumps* below). Edits made while the Confluence integration was switched off are local edits too.
+
+**Upstream version jumps (#1772)**: the policy also applies when the Confluence version moved since the last sync. On such a version jump a local rename counts as a local edit even when the body still matches Confluence; a local save that left title and body equal to Confluence's new version does not. When the version moved and the policy keeps or queues the local edit, sync also leaves the page's cached attachments alone and downloads nothing. The kept row keeps its older version, so every later sync run that fetches the page records the conflict again: one `SYNC_CONFLICT_DETECTED` per run under `Compendiq wins`, one more queued version per run under `Manual review`. Incremental runs re-fetch pages edited in Confluence during the last 24 hours. Pages with draw.io diagrams are also re-walked by the missing-attachment retry on every incremental run, so they can record the conflict twice per run and keep recording it, beyond those 24 hours, until it is resolved. Under `Confluence wins`, the overwritten local version is saved to the page's version history first, unless that version number is already taken there (for example by a Confluence version that opening Version History imported); then no history entry is added.
+
+**Rename-only conflicts under Manual review**: the conflicts queue stores page bodies, not titles. A rename-only conflict (the local title differs, the bodies match) therefore appears in the queue with an empty body diff. **Keep local** keeps the local title. **Take Confluence** applies the queued body (the same text) and Confluence's version number and clears the local-edit markers, but it does not apply Confluence's title: the local title stays until Confluence's next edit of the page brings its title in. No content is lost either way; rename the page by hand to adopt Confluence's title sooner.
+
+**Re-sync specifics**: a re-sync sets the page's version number to Confluence's, unless the local number is higher, which it keeps (the number never goes down). Under `Confluence wins` it first stores the local text in the page's version history (`page_versions`) and then applies the Confluence text. When Confluence's version was ahead of the local one, that entry is listed in **Version history** and can be viewed. When Confluence was behind or at the same number — for example right after an edit made while the integration was off — the entry carries the page's current version number, and **Version history** does not list it until the page's version changes again; an administrator can read it from `page_versions` (by page id and version number) in the meantime. Restoring the entry, like saving the page, publishes to Confluence and is subject to the next paragraph. If the history already holds other content under the local version number, the re-sync leaves that page unchanged and lists it among the failed pages (the request itself still succeeds); saving the page with the Confluence integration off gives the edit a new version number for the next re-sync. A page the policy kept or queued still counts as re-synced, and the audit rows of a re-sync carry the user who triggered it (`user_id`; null for the scheduled sync).
+
+**Publishing after local edits**: an edit made while the integration was off moves the page's version number ahead of Confluence's, and a re-sync does not move it back. Until Confluence's version catches up with the local one:
+
+- Publishing the page from Compendiq fails and blocks it. The editor save (and a version restore) sends the number after the local one without checking Confluence first, and Confluence accepts only its own next number. The refused write stays unresolved and blocks every later change to the page — re-sync included — until a system administrator resolves it under page-write recovery. The collaborative editor's commit refuses the mismatch up front (409 "modified in Confluence") and blocks nothing.
+- The scheduled sync treats a newer Confluence version that is still at or below the local number as "not newer": its content is applied through the conflict policy, cached attachments are downloaded only when missing (a changed attachment with the same file name is not refreshed), and an open collaborative session keeps the change out.
+
+Once Confluence's version passes the local one, the scheduled sync realigns the number when the conflict policy lets Confluence's version in; under `Compendiq wins` and `Manual review` a kept or queued local edit keeps the local number until it is resolved (see *Upstream version jumps* above).
+
 **Resolution flow (manual-review)**
 
 1. Sync detects a conflict; the page lands in the conflicts list.
@@ -1255,7 +1270,7 @@ Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus ch
 
 **Lost-update guard**
 
-The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
+The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes. When the Confluence version moved, the policy decision takes the same lock before the cached attachments are touched, and the later write re-reads the row under its own lock. If a local save landed while attachments were downloading, that run writes nothing and the next sync decides on the new edit.
 
 ### AI Review Policy (Enterprise, v0.4+)
 
@@ -1591,8 +1606,11 @@ use: the Confluence cache `<confluence_id | page id>/<file>` (synced
 attachments, pasted images — standalone pages key by numeric id, so the
 keyspace is shared with Confluence ids) and the local store
 `local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
-rows in `local_attachments`). Sync and page deletes clean their own pages;
-everything else is covered by the observability card and the sweep shipped in
+rows in `local_attachments`). Page deletes clean their own pages. A sync that
+brings in a newer upstream version removes the cached files that version
+references (so they are fetched fresh) and the ones nothing references, but
+keeps images still named by the page's draft, body or version history.
+Everything else is covered by the observability card and the sweep shipped in
 #1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
 store** for uploaded page marks: it is reserved by name, never walked and never
 swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's

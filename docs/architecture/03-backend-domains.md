@@ -903,8 +903,9 @@ Three things survive the deletion and are described below:
   its column (`pages.image_analysis_dirty`, ADR-027 D6.2). It still exists in
   `core` for the same reason: `core` may not import a domain, and its
   ATTACHMENT-writer callers — the two sync attachment writers,
-  `fetchAndCachePageImage`, `writeAttachmentCache`, `cleanPageAttachments`
-  (all `domains/confluence`) and `putLocalAttachment` (`core`) — include one
+  `fetchAndCachePageImage`, `writeAttachmentCache`, `cleanPageAttachments`,
+  `pruneVersionJumpAttachmentCache` (all `domains/confluence`) and
+  `putLocalAttachment` (`core`) — include one
   that lives there. The **body** writers still do not go through it: each is
   already issuing an UPDATE (or INSERT) on the row and raises the column
   inline as one more clause — **unconditionally** where the statement rewrites

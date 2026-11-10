@@ -25,7 +25,8 @@ sequenceDiagram
     participant AS as attachment-store
     participant VL as vision model (/chat/completions)
 
-    T->>S: syncUser(userId)
+    T->>S: startManualSync(userId) via POST /api/sync, or runScheduledSync() via the scheduler
+    Note over T,S: POST /api/sync, in the route before startManualSync claims the lock: own status syncing → 409, integration off → 200 Confluence integration is disabled (#35;1775)
     S->>CI: isConfluenceEnabled(userId)
     alt explicit confluence_enabled = false
         CI-->>S: false
@@ -35,7 +36,7 @@ sequenceDiagram
         S->>R: SETEX NX sync:worker:lock (TTL 600s)
     alt already locked
         R-->>S: nil
-        S-->>T: skip (another run in progress)
+        S-->>T: scheduler skips the cycle#59; API answers 409 with message and status, status and audit untouched
     else acquired
         R-->>S: OK
         Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#35;906)
@@ -52,15 +53,26 @@ sequenceDiagram
             CL-->>S: page
             S->>CC: confluenceToHtml(XHTML)
             CC-->>S: body_html + body_text
+            opt existing row behind the upstream version (#35;1772)
+                S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
+                alt local edit under compendiq-wins / manual-review
+                    S->>DB: manual-review only: INSERT pending_sync_versions,<br/>SET conflict_pending#59; COMMIT
+                    S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
+                    Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
+                else incoming wins (confluence-wins, or no local edit)
+                    S->>DB: COMMIT (nothing written)#59; cleanup + download follow,<br/>then a snapshot of the locked row and the upsert below
+                end
+            end
             S->>AH: downloadAttachments(page)
+            Note over S,AH: version jump on an existing row (#35;1773): before downloading, the cache is pruned —<br/>files the incoming body references (fetched fresh) or no local source references go#59;<br/>files only body_html / draft / page_versions name (pasted images) stay
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
+            S->>DB: version jump: INSERT page_versions (snapshot of the locked row)
             S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
+            S->>DB: version jump: audit SYNC_OVERWROTE_LOCAL_EDITS<br/>only if a local edit was overwritten (#35;1772)
             S->>R: HSET sync:status:{user} progress
         end
-
-        S->>DB: INSERT/UPDATE page_versions (snapshot)
 
         Note over S,DB: Deletion reconciliation (#35;706) — every sync, incremental too
         S->>CL: getAllPageIds(spaceKey)
@@ -86,7 +98,7 @@ sequenceDiagram
             S->>DB: DELETE stale source='confluence' page ACEs (synced_at older than run start)<br/>only on pages with restrictions_synced_at at/after run start, in the run's spaces
         end
 
-        S->>R: DEL sync:worker:lock
+        S->>R: DEL sync:worker:lock if still owned, in finally (API: the finally of the detached run)
         S-->>T: done
     end
     end
@@ -130,7 +142,7 @@ sequenceDiagram
 
 | Trigger | Source | Cadence |
 |---------|--------|---------|
-| Manual sync | `POST /api/sync` | on demand |
+| Manual sync | `POST /api/sync` → `startManualSync` | on demand; answers 409 while any run holds `sync:worker:lock` |
 | Scheduled sync | In-process sync scheduler in `backend/src/index.ts` (`startQueueWorkers`) | every `SYNC_INTERVAL_MIN` (default 15 min) |
 | Webhook (future) | not yet implemented | — |
 
@@ -144,10 +156,23 @@ sequenceDiagram
   baseline mutation/activation transactions that must hold an existing
   explicit-off row stable through commit.
 - **Redis lock (`sync:worker:lock`)** — one active sync per shared Redis
-  namespace, across backend processes. The 600s TTL acts as a dead-man's switch;
-  ownership-checked heartbeat re-`EXPIRE`s the key every TTL/3 (200s) so a sync
-  that outlasts one TTL can't lapse and admit a second concurrent worker
-  (#906). The heartbeat is cleared alongside the lock release in `finally`.
+  namespace, across backend processes, whichever trigger started it. The
+  scheduler (`runScheduledSync` / `startSyncWorker`) skips its cycle while the
+  key is held. `POST /api/sync` claims it through `startManualSync` (#1775):
+  after the caller's own-status check and the integration check comes an
+  atomic `SET NX EX` claim, and only then is `SYNC_STARTED` written (if that fails,
+  the claim is released and the status is left alone) and the status flipped to `syncing` — a refused claim answers
+  `409 { message, status }` and leaves the status, the audit log and the
+  holder's key untouched. The lock is **deployment-global, not per-user**:
+  user B's manual sync is refused while user A's manual or scheduled run is
+  active, and a running manual sync makes the scheduler skip its tick. The
+  600s TTL acts as a dead-man's switch; ownership-checked heartbeat
+  re-`EXPIRE`s the key every TTL/3 (200s) so a sync that outlasts one TTL
+  can't lapse and admit a second concurrent worker (#906). The heartbeat is
+  cleared alongside the lock release in `finally` — for a manual sync, the
+  `finally` of the background run the route detaches, success or failure.
+  Without a Redis client every trigger proceeds unlocked; a Redis error
+  during the claim counts as held.
 - **Per-user PAT scope** — each sync decrypts the PAT just-in-time, uses it
   for the duration of the run, and never logs it.
 - **Source-aware ordinary sync.** The existing-row lookup checks `pages.source`
@@ -158,6 +183,46 @@ sequenceDiagram
   body or lifecycle mutation cannot overwrite a frozen row. That enforcement
   and explicit thaw are independent of the user's current integration mode;
   re-enabling the integration does not auto-thaw or remove evidence.
+- **Conflict policy on an upstream version jump (#1772).** When an existing
+  `source = 'confluence'` row is behind the fetched upstream version, `syncPage`
+  applies the sync-conflict policy *before* it cleans the page's attachment
+  cache or downloads anything. One short transaction takes the AI-policy lock and
+  `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). A local edit
+  (`local_modified_at > last_synced`) counts when the local body differs from
+  Confluence's new version, and also when the bodies are equal but the local
+  title differs (a local rename); a local save that left title and body equal to
+  Confluence's new version is routine. With a local edit, `compendiq-wins` keeps
+  the row (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues
+  the incoming version (`pending_sync_versions`, `conflict_pending`,
+  `queued_for_review`). The queue stores bodies, not titles, so a rename-only
+  conflict is an entry with an empty body diff: *Keep local* keeps the local
+  title, and *Take Confluence* applies the (equal) body, Confluence's version
+  number and cleared markers but not Confluence's title, which reaches the page
+  only with Confluence's next edit of it; nothing is lost. Neither policy
+  cleans, downloads, snapshots, upserts or resets collaborative state, and
+  restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
+  which is a routine update with no audit) the cache is cleaned and
+  re-downloaded, the locked row is saved to `page_versions`, and the upsert
+  replaces it with Confluence's version number, which is above the saved local
+  one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit, and before the
+  collaborative document is reconciled, only if a local edit was overwritten.
+  The snapshot uses `ON CONFLICT DO NOTHING`: if that version number is already
+  taken in the history (for example by a body-less row that opening Version
+  History imported), no entry is added. Two checks leave the page to the next
+  walk. The upsert re-reads the row under `FOR UPDATE` and writes no content if
+  its `version` or `local_modified_at` moved since the decision (for example a
+  local save during the download); it still publishes the AI policy this walk
+  observed, as every exit does. The decision itself stops if the locked row is
+  no longer behind upstream, so a concurrent newer write is never moved back. A
+  kept or queued row keeps its older version, so
+  every walk of the page re-enters this branch: `compendiq-wins` audits again
+  and `manual-review` queues another version on each such run. Incremental runs
+  re-fetch pages modified upstream in the last 24 hours, and the
+  missing-attachment retry re-walks a draw.io page on every incremental run
+  (its stored storage renders differently from the kept local body), so such a
+  page records the conflict twice per run inside that window and once per run
+  after it, until the conflict is resolved. This is deliberate and matches the
+  steady state for diverged local content at an unchanged upstream version.
 - **No candidate side channel.** A normal Confluence fetch remains a normal
   sync. The unshipped frozen-Confluence capture/refresh/preview/accept/retention
   workflow and its EE adapter were removed; this flow must not recreate them.
@@ -174,8 +239,10 @@ sequenceDiagram
   `confluence_id` key and mutate only `source = 'confluence'`; the upstream
   version guard prevents duplicate writes.
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
-  only liveness advice. Inbound sync skips snapshot-HTML drift unless the
-  remote version increased; a real increase applies the inbound HTML, rebuilds
+  only liveness advice. Inbound sync — the scheduled run and the bulk refresh
+  alike — skips snapshot-HTML drift unless the remote version is ahead of the
+  local one; a remote version ahead of it applies the inbound HTML (unless the
+  conflict policy keeps or queues a local edit, see above), rebuilds
   BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
@@ -195,8 +262,9 @@ sequenceDiagram
   over-fetching is a no-op because the `version` idempotency guard above skips
   any re-fetched page whose stored version is already current.
 - **Relocate exclusion (#1123)** — `POST /api/pages/:id/relocate` refuses with
-  `409` while `sync:worker:lock` is held. It mutates `source` / `confluence_id`,
-  which the upsert and deletion reconciliation both key off; see
+  `409` while `sync:worker:lock` is held, by a scheduled run or (since #1775) a
+  manual one. It mutates `source` / `confluence_id`, which the upsert and
+  deletion reconciliation both key off; see
   [Page relocate across the boundary](#page-relocate-across-the-boundary-1123).
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
@@ -207,6 +275,119 @@ sequenceDiagram
   pages, deletion reconciliation, and the space `last_synced` update still run.
   Only a connection-fatal `ConfluenceError` (401 — revoked/expired PAT) rethrows
   to abort the whole run fast rather than grinding through every page.
+
+## Local edits and the conflict policy (EE #118, #1779)
+
+A page carries a local edit when `local_modified_at > last_synced` — an editor
+save, an AI write-back or a draft publish, including every write made while
+the integration was off. When an inbound Confluence body meets such a page,
+the configured policy (`getSyncConflictPolicy()`, **Settings → Knowledge →
+Spaces & Sync → Conflict policy**) decides through one function,
+`decideConflictPolicyOnClient` in `sync-service.ts`, for the three writers
+listed below. The function runs on the writer's own open transaction (the writer
+owns `BEGIN`/`COMMIT`), takes the AI-policy lock, re-reads the row
+`FOR UPDATE` (`source = 'confluence'` only) and returns one outcome, first
+match wins:
+
+| Outcome | When | What happens |
+|---|---|---|
+| `unchanged` | stored `body_html` and `body_text` equal the incoming ones | nothing to resolve |
+| `live_collab_hold` | live collab room, upstream version not ahead of the local one | row untouched: snapshot-HTML drift is a false conflict |
+| `queued_for_review` | `manual-review` + local edit | incoming version queued in `pending_sync_versions`, `conflict_pending = TRUE`; `SYNC_CONFLICT_DETECTED` (`queued_for_review`) |
+| `kept_local` | `compendiq-wins` + local edit | row untouched; `SYNC_CONFLICT_DETECTED` (`kept_local`) |
+| `apply_incoming` | `confluence-wins`, or no local edit | the writer stores the incoming body and clears the local-edit markers; `SYNC_OVERWROTE_LOCAL_EDITS` only when a local edit was overwritten |
+
+The decision never writes the body, publishes the AI policy or audits by
+itself; its only writes are the manual-review queue row and flags. The writer
+publishes the policy once on the same transaction for every outcome, writes
+the body for `apply_incoming`, and after COMMIT calls
+`recordConflictPolicyAudit` and — only when it replaced the body —
+`reconcileCollabAfterInboundBodyWrite` (a live room is reset from the new
+HTML, otherwise the stored collab document is dropped). Repeated runs
+re-evaluate on purpose: a kept page is re-audited and a queued page stacks
+another `pending_sync_versions` row on every run.
+
+Callers:
+
+- **Scheduled sync, version-unchanged branch**
+  (`applyConflictPolicyForExistingPage`, its own transaction): `apply_incoming`
+  overwrites without a `page_versions` snapshot and leaves `version` alone.
+- **Bulk refresh** (`POST /api/pages/bulk/sync`: a page's **Re-sync** and
+  **Force re-sync**): inside `withPageWriteTransaction`, after
+  `lockAiPolicyForPages` and `loadAuthorizedContentWriteState` re-checked the
+  authority and revisions captured before the upstream GET.
+  - `apply_incoming` and `unchanged`, each without a local edit, run the
+    routine refresh. A local edit whose body already matches upstream (a
+    title-only rename) is left alone, as in the scheduled version-unchanged
+    branch.
+  - Before it overwrites a local edit (`confluence-wins`), the route stores the
+    local version as a `page_versions` snapshot on the same transaction. A
+    body-less row that opening Version History imported at that number is
+    claimed for the snapshot; a row that already holds other content (title or
+    body) refuses the page instead: it is reported in `errors` (HTTP 200,
+    `failed` + 1) and nothing is written.
+  - Every write sets `version = GREATEST(version, upstream)`: Confluence's
+    number, or the local one when that is higher, so it never decreases.
+    When Confluence is ahead of the local number the snapshot is ordinary
+    history below the live version. When Confluence is behind or at the same
+    number, the snapshot shares the live version number, and Version History
+    — which shows that number as the current version — does not list or serve
+    it until the page's version moves on. The row stays readable in
+    `page_versions` meanwhile; listing it needs a separate upstream-version
+    column (deferred follow-up, user decision on #1779 review r2).
+  - One `sync_run_id` per request stamps queued rows and audit metadata, and
+    the audits carry the requesting user. Every committed outcome — kept,
+    queued and held included — counts as `succeeded`; the
+    `{ succeeded, failed, errors }` shape is unchanged.
+- **Scheduled sync, version-jump branch** (Confluence's version ahead of the
+  local row; `gateVersionJumpByConflictPolicy`, #1772): decides in its own short
+  transaction *before* the page's attachment cache is cleaned or anything is
+  downloaded. On this branch a local edit whose body equals the incoming one
+  but whose title differs (a local rename) is decided like a diverged body,
+  and a locked row that is no longer behind upstream is left to the newer write.
+  - `queued_for_review`, `kept_local` and held rows skip cleanup, download,
+    snapshot and upsert; restriction sync still runs.
+  - `apply_incoming`, and `unchanged` unless it is a local rename, clean and
+    download, save the locked local version to `page_versions` with
+    `ON CONFLICT DO NOTHING`, and upsert Confluence's version number, which is
+    above the saved local one, so the snapshot is ordinary history. The upsert
+    first re-reads the row `FOR UPDATE` and writes no content if its `version`
+    or `local_modified_at` moved since the decision; it still publishes the AI
+    policy the walk observed.
+  - The overwrite audit is written before the collab reconcile; counts change
+    only after a committed upsert.
+
+**Snapshot asymmetry.** The scheduled version-unchanged branch is the only
+writer that overwrites a local edit without a `page_versions` snapshot. The
+bulk refresh snapshots it on the overwrite's own transaction, claiming a
+body-less imported row or refusing the page when that number holds other
+content. The scheduled version-jump branch saves the locked local version with
+`ON CONFLICT DO NOTHING`, so it skips the snapshot silently when that number
+is already taken in history, for example by a row imported from Confluence.
+
+**Version alignment.** A local edit made while the integration was off moves
+`pages.version` ahead of Confluence's version, and a Re-sync no longer moves
+it back (the version never decreases). Until Confluence's version catches up:
+
+- Publishing from Compendiq fails and fences the page. The editor push (and a
+  Confluence-mode version restore) sends `pages.version + 1` without reading
+  Confluence's version first, and Confluence accepts only its current version
+  plus one [per Atlassian's REST documentation; not run against a real DC].
+  The refused write leaves a pending page-write intent, which blocks every
+  later writer of the page, Re-sync included, until a system administrator
+  resolves it through page-write recovery. The collaborative commit refuses a
+  mismatch up front (409 `confluence_modified`) without leaving an intent.
+- The scheduled sync decides "Confluence moved" by comparing version numbers,
+  so a newer Confluence version at or below the local number takes the
+  version-unchanged branch: its content is applied through the conflict
+  policy, cached attachments are only fetched when missing (a changed
+  attachment under the same file name is not refreshed), and a live
+  collaborative session holds the change back as "not newer".
+
+Once Confluence's version passes the local one, the scheduled sync's
+version-jump branch realigns `pages.version` when the conflict policy lets
+Confluence's version in; under `compendiq-wins` and `manual-review` a kept or
+queued local edit keeps the local number until it is resolved.
 
 ## Deletion reconciliation (#706)
 
@@ -325,6 +506,32 @@ window — never a live orphan. The bulk path applies the same shape per batch
 (intent for all candidates up front, per-page restore for upstream failures,
 one cleanup transaction for the upstream-deleted set).
 
+## Listing pagination (#903, #1777)
+
+Every multi-page Confluence listing in `confluence-client.ts` pages the same
+way: spaces (`getAllSpaces`), the audit log (`getAuditRecords`), the
+incremental CQL search (`getModifiedPages`), child pages (`getAllChildPages`),
+a space's pages and page ids (`getAllPagesInSpace`, `getAllPageIds`), a page's
+attachments (`getPageAttachments`) and its version list (`getPageVersions`).
+Each one requests a `limit`, continues **only while the response carries
+`_links.next`**, and advances `start` by the number of results that response
+actually returned. Confluence DC may return fewer results than the
+requested `limit` while more remain; the client relies only on `_links.next`
+to detect pagination end, regardless of whether a page is full or partial.
+Before #1777 the attachment list still stopped at the first
+short page — a server capping responses at 25 cut a page's attachments to the
+first 25, and sync then skipped every image or diagram whose attachment was not
+in that list — and the version list advanced by the requested 100, so after a
+short page it jumped to the next window and the Version History import lost
+the versions in between.
+
+A response without `_links.next` is the last page even when it is full, so no
+extra request probes past it. An empty page also ends the loop (the guard
+against a `next` link that never advances), and `getPageVersions` keeps its
+1000-request cap for a `next` link that never ends. Whether the version
+endpoint caps its page size in practice has not been verified against a real
+instance; the rule is correct either way.
+
 ## Page restriction mirror and the stale-ACE sweep (EE, #859, #1771)
 
 Only with the Enterprise `rag_permission_enforcement` flag; CE and unflagged
@@ -393,7 +600,9 @@ serves for the version list — on DC, `/rest/api/content/{id}/version` has no G
 collection (only DELETE of a single version), which used to 404 every backfill and
 collapse the dialog to just the current version (#780). A 404/405 on the
 experimental path falls back to the Cloud-style stable path for forward
-compatibility; whichever path answers is reused for the remaining pagination pages. The historical body (`body_html`) for each old version is fetched even
+compatibility; whichever path answers is reused for the remaining pagination pages,
+which follow `_links.next` and advance by the number of versions each page
+returned (see [Listing pagination](#listing-pagination-903-1777)). The historical body (`body_html`) for each old version is fetched even
 more lazily — only when a user previews or compares that specific version
 (`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
 `body_html IS NULL`). Both calls are best-effort: failures never fail the request,
@@ -545,15 +754,16 @@ The corrected value therefore remains transient for Confluence-sourced children
   that flavour.
 - **Relocate is blocked by an in-flight sync; sync is never blocked by
   relocate.** The route refuses with `409` while `sync:worker:lock` is held
-  (`isSyncRunning()`). The sync upsert and deletion reconciliation both key off
+  (`isSyncRunning()`), which every sync run does — scheduled, or manual through
+  `POST /api/sync` (#1775). The sync upsert and deletion reconciliation both key off
   `confluence_id` and run on unlocked pooled connections, so there is no lock a
   route could join; refusing for the duration of a run is cheap, whereas making
   the whole sync pipeline lockable is not.
 
   This is a **best-effort guard, not mutual exclusion.** The probe runs once at
   the start of the request, so a sync that begins mid-relocate is not excluded,
-  and it fails **open** when Redis is unavailable (the sync worker itself
-  proceeds unlocked in that case, so refusing every relocate would be strictly
+  and it fails **open** when Redis is unavailable (every sync, scheduled or
+  manual, proceeds unlocked in that case, so refusing every relocate would be strictly
   worse). What actually protects the data is the commit ordering above: the
   worst outcome of a lost race is one junk row — a Confluence page re-imported
   as a second row — which is recoverable and self-healing, never a lost article.
@@ -694,9 +904,12 @@ Key properties:
     unsyncing a space never silently destroys user work. The artifact is
     retained, just unscoped.
 - **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
-  **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a
-  cleanup failure is logged, never fatal, and never aborts the transaction. Worst case
-  is a few orphaned files (preferable to dangling DB rows), swept again on re-run.
+  **outside** the DB transaction; filesystem deletes can't be rolled back, so a
+  cleanup failure is never fatal and never aborts the transaction. Worst case is a
+  few orphaned files (preferable to dangling DB rows), which the #1349 sweep
+  collects. Removing the whole directory is for paths that remove the page; a
+  newer upstream version of a live page prunes selectively instead — see
+  [Version-jump attachment cleanup (#1773)](#version-jump-attachment-cleanup-1773).
 - **Audit** — every removal emits a `SPACE_UNSYNCED` audit event.
 - **RBAC invalidation** — both the in-process RBAC cache and the per-user query cache are flushed so subsequent requests reflect the removal immediately.
 
@@ -842,10 +1055,11 @@ every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
 per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
 the same rule, because it is the recovery path for a `missing` skip: a skip is
 terminal (the page still clears its flag), so nothing else would re-queue the
-page once the bytes finally land. Three more go through the same module —
+page once the bytes finally land. More go through the same module —
 `writeAttachmentCache`, `putLocalAttachment` (which is why the module is in
-`core`: `core` may not import a domain, and one of its callers lives there) and
-`cleanPageAttachments`. A CLEANUP raising the flag looks backwards and is not:
+`core`: `core` may not import a domain, and one of its callers lives there),
+`cleanPageAttachments` and the version-jump cleanup
+`pruneVersionJumpAttachmentCache`. A CLEANUP raising the flag looks backwards and is not:
 it **re-queues the page for a re-read and never shrinks the index**, because the
 reconcile's keep-set is the BODY's references and deleting cached files never
 touches `body_html` — so every image comes back as a `missing` skip whose row is
@@ -867,12 +1081,48 @@ sync upsert, both relocate directions and both `pages-crud.ts` create arms raise
 it **unconditionally** — each is writing the body wholesale and there is nothing
 to diff against. The conflict-policy update, the four `body_html` writers in
 `routes/knowledge/pages-crud.ts` (the editor save, the app-side Confluence push,
-publish-draft, the bulk refresh), `restoreVersion` and both branches of
+publish-draft, the bulk refresh — which writes only when the conflict policy
+lets the incoming body land, see
+[Local edits and the conflict policy](#local-edits-and-the-conflict-policy-ee-118-1779)),
+`restoreVersion` and both branches of
 `POST /llm/improvements/apply` are **gated on `body_html IS DISTINCT FROM $n`**.
 That gate is the whole point on the edit paths: `body_text` alone cannot move an
 `img src`, and those paths are the *only* trigger for a page whose image was
 DELETED — that writes no attachment at all, so without them the index keeps a
 row for a picture the page no longer shows.
+
+## Version-jump attachment cleanup (#1773)
+
+When an existing Confluence page arrives with a newer upstream version,
+`syncPage` prunes the page's cache directory `attachmentCacheDir(<confluence_id>)`
+(`pruneVersionJumpAttachmentCache` in `version-jump-attachment-cleanup.ts`)
+before it downloads anything. That directory is not only a Confluence cache:
+images pasted or imported into the page's editor (`POST /api/pages/:id/images`,
+`/images/import`) land there too under the same key (`imageAttachmentPageKey`),
+and until the page is published they have no upstream copy. So the cleanup is
+selective:
+
+| Set | Read from | Effect |
+|---|---|---|
+| **incoming** | the new upstream `body_storage`: `getExpectedAttachmentFilenames` (image refs, draw.io `<name>.png`) plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
+| **localKeep** | this page's `body_html`, `draft_body_html`, `body_storage`, `draft_body_storage` and its `page_versions.body_html` rows: `/api/attachments/…` URLs (`collectAttachmentUrlReferences`), draw.io wrappers' `data-diagram-name` (HTML written before 2026-10-28 has no `<name>.drawio` locator, Markdown-converted HTML no URL at all) and storage refs (`getExpectedAttachmentFilenames`); a diagram any of them names keeps all three files | kept, unless also incoming |
+
+A cached file is removed when it is in *incoming* or not in *localKeep*; every
+other file stays. The directory is listed first (regular files only: dot-files
+such as draw.io classification receipts or an upload's staging file are never
+cached files and are never touched), then the keep-set is read with two
+per-page SELECTs (`pages` by id; `page_versions` by `page_id`, the rows that
+carry a cache URL or a draw.io wrapper; never the #1349 corpus-wide keep-set),
+then the selected files are removed one by one through
+`removeCachedAttachmentFile` (`validateFilename` + containment). The Redis
+failure counters and `markPageImagesDirtyByAttachmentKey` follow exactly as in
+`cleanPageAttachments`. The delete is best-effort and outside any transaction:
+an unreadable directory or a refused delete is logged at `warn` and the page
+sync continues. The cleanup runs only when the conflict-policy gate (#1772)
+applies the incoming version; a kept or queued local row leaves the cache
+untouched. Paths that remove the page — a vanished or trashed page, deletion
+reconciliation, the 30-day purge, unsync, the delete routes — still remove the
+whole directory with `cleanPageAttachments`.
 
 ## Content pipeline hand-off
 
@@ -882,9 +1132,11 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 
 ## Key files
 
-- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`
+- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`; `decideConflictPolicyOnClient` / `recordConflictPolicyAudit`, the conflict policy shared by the version-unchanged branch and the bulk refresh
+- `backend/src/routes/knowledge/pages-crud.ts` — `POST /api/pages/bulk/sync`, the bulk refresh
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
+- `backend/src/domains/confluence/services/version-jump-attachment-cleanup.ts` — the selective cache cleanup on an upstream version jump (#1773)
 - `backend/src/domains/confluence/services/attachment-sweep-service.ts` — the #1349 orphan sweep (keep-set, walk, live delete, index-row prune)
 - `backend/src/routes/confluence/attachments-sweep.ts` — stats + dry-run/live sweep + status (all `requireAdmin`)
 - `backend/src/core/services/standalone-attachment-cleanup.ts` — the event-driven half (hard delete / purge)
@@ -894,7 +1146,7 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/llm/services/image-analysis-worker.ts` — `runImageAnalysisBatch` (#1616, ADR-027 D13)
 - `backend/src/core/services/image-analysis-dirty.ts` — `pages.image_analysis_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-027)
 - `backend/src/routes/llm/llm-image-analysis.ts` — status, process, retry-failed, reanalyze-all (all `requireAdmin`)
-- `backend/src/routes/confluence/sync.ts`
+- `backend/src/routes/confluence/sync.ts` — `POST /api/sync` → `startManualSync` (claim, heartbeat, release in the run's `finally`)
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview
 - `backend/src/domains/knowledge/services/page-relocate-service.ts` — the move transaction and ordering, and `parentKeyFor()`

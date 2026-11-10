@@ -14,8 +14,9 @@
  *  - An **attachment** write is its own event — bytes appear, change or go
  *    with no statement against `pages` in flight — so it calls one of the two
  *    functions below. Its callers are `syncImageAttachments`,
- *    `syncDrawioAttachments`, `fetchAndCachePageImage`, `writeAttachmentCache`
- *    and `cleanPageAttachments` in `domains/confluence`, plus
+ *    `syncDrawioAttachments`, `fetchAndCachePageImage`, `writeAttachmentCache`,
+ *    `cleanPageAttachments` and `pruneVersionJumpAttachmentCache` in
+ *    `domains/confluence`, plus
  *    `putLocalAttachment` here in `core`.
  *  - A **body** write already owns a statement against the very row, so it
  *    raises the column inline as one more clause. Routing those through a
