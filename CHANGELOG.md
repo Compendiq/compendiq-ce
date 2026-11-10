@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason instead of answering "Nothing to re-embed." The tag editor's
   reserved-label note, the provider editor's help text and the inspector's
   collapsed-rail menu headings now meet the 13px floor.
+- **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
+  fresh access token per question instead of one before the run, so a run
+  longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the
+  route still authenticates every request and the lifetime is unchanged. The
+  harness also states `inputKind: "independent"`, which the ask route has
+  required since #282 (it answered `400 ask_identity_required` otherwise).
 - **Refresh recovery (#1800):** keep authentication after an unusable successful
   refresh and prevent query retries, polling, remounts and presence/collaboration
   reconnects from repeating a possibly committed rotation. Marked busy responses
@@ -89,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   envelope now fails with a stable `BackupCryptoError('Backup truncated or
   authentication failed')` instead of the raw OpenSSL message, which differs
   between OpenSSL versions ("unable to authenticate data" vs "bad decrypt").
+- **Arm answers certify the live arm (#1823):** `run-arm-answers.ts` re-asserts
+  arm C's state or arm B's completed backfill on the database immediately
+  before the first question, and binds `--report` to the live vision model,
+  output-token ceiling, analysis version pair, embedder and FTS configuration.
+  A wrong, incomplete or reconfigured arm state is refused before any
+  completion request instead of being answered under the `--arm` label.
 
 ## [0.9.2] - 2026-10-29
 

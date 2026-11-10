@@ -6,10 +6,15 @@
  * Runs on the SAME disposable database the arm's retrieval run seeded
  * (`run-retrieval-eval.ts --images --arm X`): the pages, the index state and
  * the assignments are that arm's, so what this script measures is what the
- * ask route does with them. It builds the real app (`buildApp()`), signs a
- * token for the eval user, and injects `POST /api/llm/ask` per fixture label
+ * ask route does with them — and that is CERTIFIED, not assumed (#1823):
+ * immediately before the first question the arm's state is asserted on the
+ * database (`assertArmCState`, or arm B's completed backfill) and `--report`
+ * is bound to the live vision model, ceiling, version pair, embedder and FTS
+ * configuration (`generateLiveArmAnswers`). It builds the real app (`buildApp()`), signs a
+ * fresh token for the eval user per question (#1824: a run outlives one
+ * `ACCESS_TOKEN_EXPIRY`), and injects `POST /api/llm/ask` per fixture label
  * with `rag_answer_max_images = 0` written to admin_settings for the run,
- * `deepSearch: false` and no conversation — the answer model is text-only by
+ * `deepSearch: false`, `inputKind: 'independent'` (#282) and no conversation — the answer model is text-only by
  * construction in every arm (ADR-027 O10), at the provider's default
  * temperature (the ask path exposes none; recorded, not set).
  *
@@ -29,8 +34,9 @@ import { generateAccessToken } from '../src/core/plugins/auth.js';
 import { assertKnownFlags, flagValue, wantsHelp, ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_USAGE, ARM_ANSWERS_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
 import { EVAL_ARMS, commandLine, establishTextOnlyAnswerCap, parseArmRunReport, querySetSha, readHeldFixedProvenance, readRevisionSha, type EvalArm } from '../src/domains/llm/eval/arms.js';
-import { askThroughRoute, generateArmAnswers, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance } from '../src/domains/llm/eval/answers.js';
+import { askThroughRoute, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance, type BearerSource } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
+import { generateLiveArmAnswers } from '../src/domains/llm/eval/arm-live-state.js';
 import { EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 
@@ -66,8 +72,10 @@ async function main(): Promise<void> {
 
   // The retrieval report of the same arm on the same database, when given:
   // the answers are only that arm's if they were made in that arm's state.
-  if (reportPath) {
-    const report = parseArmRunReport(JSON.parse(readFileSync(reportPath, 'utf8')), reportPath);
+  // The local facts are compared here; the live index configuration is
+  // compared by `generateLiveArmAnswers` right before the first question.
+  const report = reportPath ? parseArmRunReport(JSON.parse(readFileSync(reportPath, 'utf8')), reportPath) : null;
+  if (report) {
     const problems: string[] = [];
     if (report.arm !== arm) problems.push(`report is arm ${report.arm}, this run is --arm ${arm}`);
     if (report.revisionSha !== sha) problems.push(`report revision ${report.revisionSha}, this checkout ${sha}`);
@@ -98,10 +106,17 @@ async function main(): Promise<void> {
   const app = await buildApp();
   await app.ready();
   try {
-    const token = await generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });
+    // #1824: minted per request — a token signed once here expires after
+    // ACCESS_TOKEN_EXPIRY (default 1h) and the rest of the run would 401.
+    const bearer: BearerSource = () => generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });
     console.log(`arm ${arm} · run ${runId} · ${fixture.labels.length} questions · answer model ${held.answerModel.identity} · revision ${sha}`);
-    const generated = await generateArmAnswers(askThroughRoute(app, token), fixture, {
+    // #1823: the arm's state is certified on THIS database (assertArmCState /
+    // arm B's completed backfill) and --report bound to its live index
+    // configuration before a single completion request is made.
+    const generated = await generateLiveArmAnswers(askThroughRoute(app, bearer), fixture, {
       arm,
+      report,
+      userId: EVAL_USER_ID,
       onProgress: (done, total) => {
         if (done % 10 === 0 || done === total) console.log(`  answered ${done}/${total}`);
       },
