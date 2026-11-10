@@ -6,22 +6,24 @@ import { fileURLToPath } from 'node:url';
 /**
  * Static-source hardening invariants for the mcp-docs entrypoint (issue #1050).
  *
- * These assertions read index.ts as text (mirroring Dockerfile.test.ts) rather
- * than booting the Express app, so they stay fast and dependency-free while
- * pinning two defence-in-depth guarantees:
+ * These assertions read the entrypoint sources as text (mirroring
+ * Dockerfile.test.ts) rather than booting the Express app, so they stay fast
+ * and dependency-free while pinning two defence-in-depth guarantees:
  *
- *  1. `x-powered-by` is disabled so the sidecar never advertises its framework.
- *  2. The /mcp guard is wired to fail closed in production: makeMcpAuth is
- *     invoked with `process.env.NODE_ENV === 'production'` as the production
- *     flag, so a production sidecar with no MCP_DOCS_TOKEN returns 401.
+ *  1. `x-powered-by` is disabled (in the app factory, app.ts) so the sidecar
+ *     never advertises its framework.
+ *  2. The /mcp guard is wired to fail closed in production: index.ts invokes
+ *     makeMcpAuth with `process.env.NODE_ENV === 'production'` as the
+ *     production flag, so a production sidecar with no MCP_DOCS_TOKEN returns 401.
  */
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 const indexSource = readFileSync(join(srcDir, 'index.ts'), 'utf8');
+const appSource = readFileSync(join(srcDir, 'app.ts'), 'utf8');
 
 describe('mcp-docs index.ts — #1050 hardening', () => {
   it("disables the x-powered-by header", () => {
-    expect(indexSource).toMatch(/app\.disable\(\s*['"]x-powered-by['"]\s*\)/);
+    expect(appSource).toMatch(/app\.disable\(\s*['"]x-powered-by['"]\s*\)/);
   });
 
   it('wires the /mcp guard to fail closed in production', () => {
