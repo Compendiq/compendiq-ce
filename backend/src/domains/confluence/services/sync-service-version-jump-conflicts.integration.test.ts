@@ -4,9 +4,10 @@
  * and decide BEFORE the attachment cache is cleaned or anything is downloaded.
  *
  * Real PostgreSQL, the real `ConfluenceClient` against an in-process HTTP
- * fixture (the only mocked boundary), a real attachment cache under a temp
- * ATTACHMENTS_DIR, and the real sync-conflict-policy service loaded from
- * `admin_settings` (no service-layer mocks).
+ * fixture (the mocked Confluence boundary), a real attachment cache under a
+ * temp ATTACHMENTS_DIR, and the real sync-conflict-policy service loaded from
+ * `admin_settings`. The only other stub turns on the Enterprise RAG permission
+ * flag so restriction sync is observable.
  *
  * Fixture = finding F9: page synced at v5, Bob saves locally while his
  * integration is off (PUT /api/pages/:id shape: body_html/body_text,
@@ -19,13 +20,32 @@ import { join } from 'node:path';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
+import type * as EnterpriseFeatures from '../../../core/enterprise/features.js';
+import type * as EnterpriseLoader from '../../../core/enterprise/loader.js';
 import {
   _resetForTests as resetSyncConflictPolicy,
   initSyncConflictPolicyService,
   type SyncConflictPolicy,
 } from '../../../core/services/sync-conflict-policy-service.js';
 import { ConfluenceClient, type ConfluencePage } from './confluence-client.js';
+import { setRateLimit } from './confluence-rate-limiter.js';
 import { __internal } from './sync-service.js';
+
+// `syncPageRestrictions` is gated on the Enterprise RAG permission flag, which
+// the CE no-op plugin always reports off. Turn that one feature on (the loader
+// stub of sync-service.integration.test.ts) so every exit can be seen to run
+// restriction sync; the fixture answers 404 for restrictions ("none").
+vi.mock('../../../core/enterprise/loader.js', async () => {
+  const actual = await vi.importActual<typeof EnterpriseLoader>('../../../core/enterprise/loader.js');
+  const { ENTERPRISE_FEATURES } = await vi.importActual<typeof EnterpriseFeatures>(
+    '../../../core/enterprise/features.js',
+  );
+  return {
+    ...actual,
+    isFeatureEnabled: (feature: string) =>
+      feature === ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT || actual.isFeatureEnabled(feature),
+  };
+});
 
 // The ordinary Confluence cache captures its root at module initialisation,
 // so the fixture root must exist before the production import graph loads.
@@ -137,9 +157,9 @@ async function bobSavesLocally(pageId: number, html = BOB_HTML, text = BOB_TEXT)
   );
 }
 
-function upstreamPage(confluenceId: string, version = 7): ConfluencePage {
+function upstreamPage(confluenceId: string, version = 7, title = 'Runbook'): ConfluencePage {
   return {
-    id: confluenceId, title: 'Runbook', status: 'current', type: 'page',
+    id: confluenceId, title, status: 'current', type: 'page',
     version: { number: version, when: '2026-11-10T10:00:00.000Z', by: { displayName: 'Alice' } },
     body: { storage: { value: UPSTREAM_STORAGE } },
     ancestors: [],
@@ -166,11 +186,12 @@ async function cached(confluenceId: string, file: string): Promise<string | null
 
 async function row(pageId: number) {
   const r = await query<{
-    body_html: string; body_text: string; version: number;
+    title: string; body_html: string; body_text: string; version: number;
     local_modified_at: Date | null; local_modified_by: string | null;
     conflict_pending: boolean; conflict_detected_at: Date | null;
   }>(
-    `SELECT body_html, body_text, version, local_modified_at, local_modified_by, conflict_pending, conflict_detected_at
+    `SELECT title, body_html, body_text, version, local_modified_at, local_modified_by,
+            conflict_pending, conflict_detected_at
        FROM pages WHERE id = $1`,
     [pageId],
   );
@@ -205,6 +226,14 @@ async function snapshots(pageId: number) {
   return r.rows;
 }
 
+async function snapshotTitles(pageId: number) {
+  const r = await query<{ version_number: number; title: string }>(
+    'SELECT version_number, title FROM page_versions WHERE page_id = $1 ORDER BY version_number',
+    [pageId],
+  );
+  return r.rows;
+}
+
 async function collabDocStored(pageId: number): Promise<boolean> {
   const r = await query<{ present: boolean }>(
     'SELECT EXISTS (SELECT 1 FROM page_collaborative_docs WHERE page_id = $1) AS present',
@@ -220,6 +249,22 @@ async function runSync(page: ConfluencePage, runId: string) {
 }
 
 const attachmentList = (confluenceId: string) => `/rest/api/content/${confluenceId}/child/attachment`;
+const restrictionFetch = (confluenceId: string) => `/rest/api/content/${confluenceId}/restriction`;
+
+/** Synced through a routine v6 jump, then renamed locally only (PUT shape: title, version + 1, markers). */
+async function seedRenamedLocally(confluenceId: string): Promise<number> {
+  const id = await seedSyncedV5(confluenceId);
+  const v6 = upstreamPage(confluenceId, 6);
+  upstreamPages.set(confluenceId, v6);
+  await runSync(v6, RUN_1);
+  await query(
+    `UPDATE pages SET title = 'Bob local title', version = version + 1,
+            local_modified_at = last_synced + INTERVAL '1 second', local_modified_by = $2
+      WHERE id = $1`,
+    [id, bobId],
+  );
+  return id;
+}
 
 describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflict policy', () => {
   beforeAll(async () => {
@@ -230,6 +275,8 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     const address = upstream.address();
     if (!address || typeof address === 'string') throw new Error('Confluence fixture did not bind TCP');
     client = new ConfluenceClient(`http://127.0.0.1:${address.port}`, 'fixture-pat');
+    // Every walk also fetches restrictions; the 60/min default bucket would stall the file.
+    setRateLimit(600);
   }, 30_000);
 
   beforeEach(async () => {
@@ -261,6 +308,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     upstream.close((error) => (error ? closed.reject(error) : closed.resolve()));
     await closed.promise;
     await teardownTestDb();
+    setRateLimit(60);
     if (originalAttachmentsRoot === undefined) delete process.env.ATTACHMENTS_DIR;
     else process.env.ATTACHMENTS_DIR = originalAttachmentsRoot;
     await rm(attachmentsRoot, { recursive: true, force: true });
@@ -290,6 +338,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await cached('vj-keep', 'bob-pasted.png')).toBe('bob pasted bytes');
     expect(await cached('vj-keep', 'diagram.png')).toBe('stale v5 bytes');
     expect(requestedPaths).not.toContain(attachmentList('vj-keep'));
+    expect(requestedPaths).toContain(restrictionFetch('vj-keep'));
     expect(await collabDocStored(id)).toBe(true);
     expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
   });
@@ -321,6 +370,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await cached('vj-queue', 'bob-pasted.png')).toBe('bob pasted bytes');
     expect(await cached('vj-queue', 'diagram.png')).toBe('stale v5 bytes');
     expect(requestedPaths).not.toContain(attachmentList('vj-queue'));
+    expect(requestedPaths).toContain(restrictionFetch('vj-queue'));
     expect(await collabDocStored(id)).toBe(true);
     expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
   });
@@ -445,6 +495,7 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     expect(await row(id)).toMatchObject({ version: 6 });
     expect(await syncAudits(id)).toEqual([]);
     expect(first).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
+    expect(requestedPaths).toContain(restrictionFetch('vj-race'));
 
     beforeAttachmentList = null;
     const second = await runSync(page, RUN_2);
@@ -486,12 +537,99 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
       await blocker.query('COMMIT');
       await syncing;
     } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
       blocker.release();
+      await syncing?.catch(() => undefined);
     }
 
     expect((await row(id)).version).toBe(8);
     expect((await row(id)).body_html).toBe('<p>A v8 from another run</p>');
     expect(requestedPaths).not.toContain(attachmentList('vj-advanced'));
+    expect(requestedPaths).toContain(restrictionFetch('vj-advanced'));
     expect(await cached('vj-advanced', 'diagram.png')).toBe('stale v5 bytes');
+  });
+
+  it.each([
+    ['compendiq-wins', 'kept_local'],
+    ['manual-review', 'queued_for_review'],
+  ] as const)('a title-only local edit with an equal body is a local edit on a version jump: %s gives %s', async (policy, resolution) => {
+    await usePolicy(policy);
+    const cid = `vj-title-${policy}`;
+    const id = await seedRenamedLocally(cid);
+    requestedPaths.length = 0;
+    const page = upstreamPage(cid, 8, 'Alice upstream title');
+    upstreamPages.set(cid, page);
+
+    const counts = await runSync(page, RUN_2);
+
+    const after = await row(id);
+    expect(after).toMatchObject({ title: 'Bob local title', version: 7, conflict_pending: policy === 'manual-review' });
+    expect(after.local_modified_at).not.toBeNull();
+    expect((await syncAudits(id)).map((a) => [a.action, a.metadata.policy, a.metadata.resolution, a.metadata.sync_run_id]))
+      .toEqual([['SYNC_CONFLICT_DETECTED', policy, resolution, RUN_2]]);
+    expect((await pending(id)).map((p) => [p.confluence_version, p.sync_run_id]))
+      .toEqual(policy === 'manual-review' ? [[8, RUN_2]] : []);
+    expect(requestedPaths).not.toContain(attachmentList(cid));
+    expect(requestedPaths).toContain(restrictionFetch(cid));
+    expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
+  });
+
+  it('a title-only local edit with an equal body is overwritten with SYNC_OVERWROTE_LOCAL_EDITS under confluence-wins', async () => {
+    await usePolicy('confluence-wins');
+    const id = await seedRenamedLocally('vj-title-overwrite');
+    const page = upstreamPage('vj-title-overwrite', 8, 'Alice upstream title');
+    upstreamPages.set(page.id, page);
+
+    const counts = await runSync(page, RUN_2);
+
+    expect((await syncAudits(id)).map((a) => [a.action, a.metadata.sync_run_id]))
+      .toEqual([['SYNC_OVERWROTE_LOCAL_EDITS', RUN_2]]);
+    expect(await row(id)).toMatchObject({ title: 'Alice upstream title', version: 8, local_modified_at: null });
+    expect(await snapshotTitles(id)).toContainEqual({ version_number: 7, title: 'Bob local title' });
+    expect(counts.pagesUpdated).toBe(1);
+  });
+
+  it('a local save that left body and title equal to upstream stays a routine version jump with no audit', async () => {
+    await usePolicy('compendiq-wins');
+    const id = await seedSyncedV5('vj-unchanged-save');
+    const v6 = upstreamPage('vj-unchanged-save', 6);
+    upstreamPages.set(v6.id, v6);
+    await runSync(v6, RUN_1);
+    // Bob saves without changing title or body (e.g. an edit he reverted).
+    await query(
+      `UPDATE pages SET version = version + 1,
+              local_modified_at = last_synced + INTERVAL '1 second', local_modified_by = $2
+        WHERE id = $1`,
+      [id, bobId],
+    );
+    const page = upstreamPage('vj-unchanged-save', 8);
+    upstreamPages.set(page.id, page);
+
+    const counts = await runSync(page, RUN_2);
+
+    expect(await row(id)).toMatchObject({ title: 'Runbook', version: 8, local_modified_at: null });
+    expect(await syncAudits(id)).toEqual([]);
+    expect(counts.pagesUpdated).toBe(1);
+  });
+
+  it('writes the overwrite audit before the collab reconcile, so a failing reconcile cannot drop it', async () => {
+    await usePolicy('confluence-wins');
+    const id = await seedSyncedV5('vj-collab-fault');
+    await bobSavesLocally(id);
+    const page = upstreamPage('vj-collab-fault');
+    upstreamPages.set(page.id, page);
+    await query(`CREATE FUNCTION vj_fail_collab_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'collab invalidate fault'; END $$;
+      CREATE TRIGGER vj_fail_collab_invalidate BEFORE DELETE ON page_collaborative_docs
+      FOR EACH STATEMENT EXECUTE FUNCTION vj_fail_collab_invalidate()`);
+    try {
+      await expect(runSync(page, RUN_1)).rejects.toThrow('collab invalidate fault');
+    } finally {
+      await query('DROP TRIGGER vj_fail_collab_invalidate ON page_collaborative_docs; DROP FUNCTION vj_fail_collab_invalidate()');
+    }
+
+    // The upsert committed before the reconcile failed: the overwrite is on record.
+    expect(await row(id)).toMatchObject({ version: 7, local_modified_at: null });
+    expect((await syncAudits(id)).map((a) => a.action)).toEqual(['SYNC_OVERWROTE_LOCAL_EDITS']);
   });
 });

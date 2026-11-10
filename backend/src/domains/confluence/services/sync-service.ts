@@ -858,7 +858,7 @@ async function syncPage(
   let versionJumpDecision: AppliedConflictDecision | null = null;
   if (existing.rows.length > 0) {
     const gate = await gateVersionJumpByConflictPolicy({
-      userId, confluenceId: page.id, confluenceVersion: page.version.number,
+      userId, title: page.title, confluenceId: page.id, confluenceVersion: page.version.number,
       bodyStorage, bodyHtml, bodyText, labels, syncRunId,
     });
     if (gate.kind === 'missing') return;
@@ -1082,12 +1082,14 @@ async function syncPage(
     counts.pagesCreated++;
   } else {
     counts.pagesUpdated++;
-    await reconcileCollabAfterInboundBodyWrite(existing.rows[0]!.id, bodyHtml);
     // #1772: SYNC_OVERWROTE_LOCAL_EDITS iff this upsert replaced a local edit
-    // the policy let the incoming version win over.
+    // the policy let the incoming version win over. Written before the collab
+    // reconcile, which can still throw after the commit (logAuditEvent never
+    // does), so the record of an overwrite cannot be lost.
     if (versionJumpDecision) {
       await recordConflictPolicyAudit(versionJumpDecision, { confluenceId: page.id, syncRunId, actorUserId: null });
     }
+    await reconcileCollabAfterInboundBodyWrite(existing.rows[0]!.id, bodyHtml);
   }
 
   // Sync Confluence view restrictions → access_control_entries. Runs after
@@ -1486,6 +1488,13 @@ async function applyConflictPolicyForExistingPage(
 /** A conflict-policy decision that found a Confluence-owned row. */
 type AppliedConflictDecision = Exclude<ConflictPolicyDecision, { kind: 'missing' }>;
 
+/** What the conflict policy does with a local edit (decideConflictPolicyOnClient's mapping). */
+const LOCAL_EDIT_OUTCOME: Record<SyncConflictPolicy, ConflictPolicyOutcome> = {
+  'confluence-wins': 'apply_incoming',
+  'compendiq-wins': 'kept_local',
+  'manual-review': 'queued_for_review',
+};
+
 /**
  * What `syncPage`'s version-jump branch may do after the policy decision (#1772):
  *   - 'missing': no `source = 'confluence'` row under the lock — nothing to do.
@@ -1513,9 +1522,14 @@ type VersionJumpGate =
  * live_collab_hold) is left to that writer, so the upsert never moves
  * `version` backwards. Every outcome that ends here publishes the AI policy
  * once; on 'proceed' the upsert transaction publishes it beside the content.
+ *
+ * The helper compares bodies only. A local edit whose body already equals the
+ * incoming one but whose title differs (a local rename) is still a local edit
+ * on a version jump, so the policy decides it here exactly as for a diverged
+ * body; a local save that changed neither stays a routine update.
  */
 async function gateVersionJumpByConflictPolicy(
-  input: ConflictPolicyInput & { userId: string },
+  input: ConflictPolicyInput & { userId: string; title: string },
 ): Promise<VersionJumpGate> {
   const conn = await getPool().connect();
   let decision: ConflictPolicyDecision;
@@ -1523,12 +1537,29 @@ async function gateVersionJumpByConflictPolicy(
   try {
     await conn.query('BEGIN');
     decision = await decideConflictPolicyOnClient(conn, input);
+    const behind = decision.kind !== 'missing' && decision.row.version < input.confluenceVersion;
+    if (behind && decision.kind === 'unchanged' && decision.hasLocalEdits && decision.row.title !== input.title) {
+      decision = { ...decision, kind: LOCAL_EDIT_OUTCOME[decision.policy] };
+      if (decision.kind === 'queued_for_review') {
+        // The same queue write decideConflictPolicyOnClient makes for manual-review.
+        await conn.query(
+          `INSERT INTO pending_sync_versions
+             (page_id, confluence_version, body_storage, body_html, body_text, sync_run_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [decision.row.id, input.confluenceVersion, input.bodyStorage, input.bodyHtml, input.bodyText, input.syncRunId],
+        );
+        await conn.query(
+          `UPDATE pages
+              SET conflict_pending = TRUE,
+                  conflict_detected_at = NOW()
+            WHERE id = $1`,
+          [decision.row.id],
+        );
+      }
+    }
     if (decision.kind === 'missing') {
       gate = { kind: 'missing' };
-    } else if (
-      (decision.kind === 'apply_incoming' || decision.kind === 'unchanged')
-      && decision.row.version < input.confluenceVersion
-    ) {
+    } else if (behind && (decision.kind === 'apply_incoming' || decision.kind === 'unchanged')) {
       gate = { kind: 'proceed', decision };
     } else {
       await publishIngestionPolicyOnClient(conn, {
