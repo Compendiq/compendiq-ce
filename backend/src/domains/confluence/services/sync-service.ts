@@ -13,6 +13,7 @@ import {
 import { getRestrictionChangeSet, type RestrictionChangeSet } from './restriction-change-tracker.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
+import { pruneVersionJumpAttachmentCache } from './version-jump-attachment-cleanup.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
@@ -855,7 +856,12 @@ async function syncPage(
   // Clear stale attachment cache when an existing page has a new version,
   // so updated diagrams/images are re-downloaded rather than served from cache.
   if (existing.rows.length > 0) {
-    await cleanPageAttachments(page.id);
+    await pruneVersionJumpAttachmentCache({
+      pageId: existing.rows[0]!.id,
+      attachmentKey: page.id,
+      incomingStorage: bodyStorage,
+      spaceKey,
+    });
     // Reset failure tracking — new version may have fixed broken attachments
     await clearPageFailures(page.id);
   }
