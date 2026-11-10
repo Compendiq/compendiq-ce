@@ -26,7 +26,7 @@ sequenceDiagram
     participant VL as vision model (/chat/completions)
 
     T->>S: startManualSync(userId) via POST /api/sync, or runScheduledSync() via the scheduler
-    Note over T,S: POST /api/sync first answers 409 when the own status of the caller is syncing (#35;1775)
+    Note over T,S: POST /api/sync, in the route before startManualSync claims the lock: own status syncing → 409, integration off → 200 Confluence integration is disabled (#35;1775)
     S->>CI: isConfluenceEnabled(userId)
     alt explicit confluence_enabled = false
         CI-->>S: false
