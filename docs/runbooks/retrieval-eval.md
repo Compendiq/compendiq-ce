@@ -1064,7 +1064,10 @@ labelling pass reaches decides which of O2's two modes `--unblind` runs in:
 
 The other counts are not power-continuous and are refused at any N: 48
 image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
-197 control queries per language on every control given.
+exactly one EN and one DE control block of 197 queries each on every control
+given. The audit walks the expected EN + DE set, not the languages a control
+happens to carry, so a missing, duplicate or unknown language block is a
+shortfall and the sample decides nothing (#1821).
 
 **The pilot readout needs those labels too.** `judge-arms.ts --check
 --mapping` can only report `pilot: 0/30` against the shipped fixture, and
@@ -1217,7 +1220,15 @@ with one, is not a report. The answer side is held to the same standard —
 `--unblind` re-reads every `provenance-<runId>.json` behind the sheet and
 refuses an answer run whose revision, corpus or query-set sha, hardware,
 answer model, `rag_answer_max_images` or any held-fixed retrieval knob
-differs from its arm's retrieval report.
+differs from its arm's retrieval report. That cap is written and read back
+by BOTH scripts through one writer, `establishTextOnlyAnswerCap` (`arms.ts`):
+`run-retrieval-eval.ts --arm` establishes it before the report reads its
+held-fixed provenance, `run-arm-answers.ts` before the app is built — so the
+C-retrieval → C-answers → B sequence records the same 0 on both sides from a
+fresh database, whose reader default is 2 (#1822). A report captured before
+that fix (the `eval/artifacts/1611/arm-*.json` captures record 2) cannot
+pair with an answer run, nor with a retrieval report captured after it
+(--baseline refuses the knob mismatch); re-run its retrieval.
 
 ### Endpoints and the decision rule
 
@@ -1289,7 +1300,9 @@ pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
 top-5 row carrying D11's `derived.attachmentKey` for an expected image — the
 same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
 reports **none**, never 0). Controls: the EN and DE text suites (197 each
-per arm, enforced), non-inferiority — **B vs C** and **C vs A** (the latter
+per arm, enforced; each side must carry exactly one EN and one DE report —
+`scoreControls` refuses a missing, duplicate or unknown language, #1821),
+non-inferiority — **B vs C** and **C vs A** (the latter
 was supplied through `--control-a`, a flag A-3 REMOVED in favour of
 `--control-legacy-c`); a pair whose language, FTS
 configuration, corpus sha or text embedder differs is refused. Of the two,
@@ -1369,8 +1382,10 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
   `google/gemma-4-26b-a4b-qat`, vision verdict unconfirmed) — **assign one
   before the #1615 smoke test and before this run.** Answer model = the
   production `chat` assignment at freeze time, text-only via
-  `rag_answer_max_images = 0` (written to the eval database by
-  `run-arm-answers.ts` and read back before the first question), production
+  `rag_answer_max_images = 0` (written to the eval database and read back by
+  `establishTextOnlyAnswerCap` in both `run-retrieval-eval.ts --arm`, before
+  the report records it, and `run-arm-answers.ts`, before the first
+  question), production
   context budgets, and the temperature at the **provider default, recorded
   in provenance** (ADR erratum: the ask path exposes no temperature option;
   pin it on the provider server-side if a fixed value is wanted).

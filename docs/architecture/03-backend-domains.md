@@ -1066,8 +1066,8 @@ entrypoints, still nothing the server loads: `arms.ts` (the `--arm B|C`
 flag — arm A is refused like any unknown arm since #1618 stage 2 retired its
 index — `ArmRunReportSchema`, the provenance the ADR refuses a report
 without, `assertComparableArms` over the "Held fixed" list, the per-arm
-evidence rule reading D11's `derived.attachmentKey`, and the owner decisions
-O1–O7 as constants), `answers.ts` (one arm's answers through the real
+evidence rule reading D11's `derived.attachmentKey`, the owner decisions
+O1–O7 as constants, and the protocol's zero answer-image cap writer), `answers.ts` (one arm's answers through the real
 `POST /api/llm/ask` — `buildApp()` + `inject`, `rag_answer_max_images = 0`,
 SSE parsed — written arm-blinded with a structural key walk that refuses a
 leak) and `judgments.ts` (`JudgmentRowSchema`, the blinded sheet merge with

@@ -83,7 +83,7 @@ import { parseFtsLanguageArg, assertComparableFtsLanguage } from '../src/domains
 import { ARM_AXIS, IMAGE_AXIS_CORPUS_CLAIM, TEXT_AXIS, assertComparableAxis, assertImageAxisStagesPairable, parseImageAxisLanguage, wantsImageAxis, type EvalAxis } from '../src/domains/llm/eval/images-axis.js';
 import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runArmEval } from '../src/domains/llm/eval/runner-images.js';
-import { assertArmCState, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { assertArmCState, commandLine, compareArmRetrieval, establishTextOnlyAnswerCap, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
 import { driveArmBBackfill } from '../src/domains/llm/eval/arm-b-backfill.js';
 import { percentile } from '../src/domains/llm/eval/latency-stats.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -663,6 +663,10 @@ async function measureArmAxis(
   // C's state on the database itself, not only on the top-K each query
   // returns: a derived row outside every window is invisible to the runner.
   if (arm === 'C') await assertArmCState();
+
+  // The protocol's zero answer-image cap (O10), written and read back BEFORE
+  // the report records it: the answer run of this arm records 0 (#1822).
+  await establishTextOnlyAnswerCap();
 
   const held = await readHeldFixedProvenance();
   console.log(`rerank ${held.rerank} · answer model ${held.answerModel?.identity ?? 'none assigned'} · knobs ${JSON.stringify(held.retrieval)}`);

@@ -34,6 +34,7 @@ import { z } from 'zod';
 import {
   ARM_MARGINS,
   ARM_SAMPLE,
+  CONTROL_LANGUAGES,
   EVAL_ARMS,
   HELD_FIXED_KNOBS,
   absoluteLeakAt1,
@@ -608,10 +609,24 @@ export interface ControlEndpoints {
 }
 
 /**
+ * What keeps a side's control languages from being O4's expected set — one
+ * block per `CONTROL_LANGUAGES` entry and nothing else — as `missing de`,
+ * `duplicate en`, `unknown fr`. Empty when the set is exactly right (#1821).
+ */
+function controlLanguageProblems(languages: readonly string[]): string[] {
+  const expected: readonly string[] = CONTROL_LANGUAGES;
+  const missing = expected.filter((l) => !languages.includes(l)).map((l) => `missing ${l}`);
+  const duplicate = [...new Set(languages.filter((l, i) => languages.indexOf(l) !== i))].map((l) => `duplicate ${l}`);
+  const unknown = [...new Set(languages.filter((l) => !expected.includes(l)))].map((l) => `unknown ${l}`);
+  return [...missing, ...duplicate, ...unknown];
+}
+
+/**
  * The pooled EN + DE control (O4): the same text-gate reports the #1102 gate
- * writes, one per language per arm, paired by query id within a language and
- * clustered by the query's first expected page. Refuses a pair whose language,
- * FTS configuration, corpus or text embedder differ.
+ * writes, exactly one per language in `CONTROL_LANGUAGES` per arm, paired by
+ * query id within a language and clustered by the query's first expected
+ * page. Refuses a side with a missing, duplicate or unknown language (#1821),
+ * and a pair whose FTS configuration, corpus or text embedder differ.
  */
 export function scoreControls(
   baseline: readonly TextGateControl[],
@@ -619,8 +634,14 @@ export function scoreControls(
   opts: { seed: number; iterations?: number },
   pair: ControlPairLabel = CONTROL_PAIRS.bVsC,
 ): ControlEndpoints {
-  if (baseline.length !== candidate.length || baseline.length === 0) {
-    throw new Error('Controls need the same languages on both arms, at least one');
+  for (const [side, blocks] of [['baseline', baseline], ['candidate', candidate]] as const) {
+    const problems = controlLanguageProblems(blocks.map((b) => b.language));
+    if (problems.length > 0) {
+      throw new Error(
+        `Controls (${side}): ${problems.join(', ')} — O4 pools exactly one ${CONTROL_LANGUAGES.join(' and one ')} ` +
+          'text-gate report per arm',
+      );
+    }
   }
   const binaryRows: Array<{ queryId: string; cluster: string; baseline: 0 | 1; candidate: 0 | 1 }> = [];
   const gradedRows: Array<{ queryId: string; cluster: string; baseline: number; candidate: number }> = [];
@@ -955,8 +976,10 @@ export interface SampleAudit {
  * The other four checks are not power-continuous and stay hard: 48
  * image-negative labels (O7's margin is literally 2 of 48), ≥ 45 pages and
  * ≤ 5 image-dependent labels per page (the m = 5 and ρ = 0.10 the design
- * effect is computed under, O3), and 197 queries per language on every
- * control given (O4's pooled n = 394).
+ * effect is computed under, O3), and on every control given exactly one EN
+ * and one DE block of 197 queries each (O4's pooled n = 394). The control
+ * check walks the EXPECTED languages, so a missing, duplicate or unknown
+ * block is a shortfall rather than silently absent (#1821).
  */
 export function auditSample(fixture: ImageFixture, controls: readonly ControlEndpoints[]): SampleAudit {
   const dependent = fixture.labels.filter((l) => l.imageDependent === true);
@@ -986,7 +1009,13 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
     shortfalls.push(`${Object.values(perPage).filter((n) => n > ARM_SAMPLE.maxLabelsPerPage).length} page(s) carry more than ${ARM_SAMPLE.maxLabelsPerPage} image-dependent labels (O2/O3: ≤ ${ARM_SAMPLE.maxLabelsPerPage}, the m the design effect assumes)`);
   }
   for (const control of controls) {
-    for (const [language, n] of Object.entries(control.perLanguage)) {
+    for (const problem of controlLanguageProblems(control.languages)) {
+      shortfalls.push(`control languages (${control.pair}): ${problem} (O4: exactly one ${CONTROL_LANGUAGES.join(' and one ')} block per arm)`);
+    }
+    for (const language of CONTROL_LANGUAGES) {
+      // A missing language is already named above; its count says nothing more.
+      if (!control.languages.includes(language)) continue;
+      const n = control.perLanguage[language] ?? 0;
       if (n !== ARM_SAMPLE.controlPerLanguage) shortfalls.push(`control ${language} (${control.pair}) pairs ${n} queries (O2: ${ARM_SAMPLE.controlPerLanguage})`);
     }
   }
