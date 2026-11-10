@@ -199,7 +199,10 @@ Collaborative Save posts a bounded base64 Yjs Snapshot containing clocks **and
 the delete set**, not document content. The server obtains a freshly correlated
 cross-process room snapshot, rechecks the exact active-owner set, transport
 generation, lifecycle and current authority, and refuses if the Save-start
-snapshot is not covered. A successful acknowledgment covers only that captured
+snapshot is not covered. A Confluence commit pins the lifecycle through its room
+admission and the local and remote version, never a `content_revision` read
+before the snapshot, because the room's own 2 s persist may land during the
+provider read (#1762). A successful acknowledgment covers only that captured
 snapshot; later local edits keep the editor open. Dirty connected and offline
 drafts are navigation/unload guarded. Lifecycle/freeze/permission/document loss
 disconnects the provider but keeps an inert recoverable Y.Doc with **Download
