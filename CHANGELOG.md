@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason instead of answering "Nothing to re-embed." The tag editor's
   reserved-label note, the provider editor's help text and the inspector's
   collapsed-rail menu headings now meet the 13px floor.
+- **Version-jump sync keeps pasted images (#1773):** when a synced page arrives
+  with a newer Confluence version, sync no longer empties the page's attachment
+  cache. It removes the cached files the new version references, so same-name
+  attachments changed upstream are fetched fresh, plus the files nothing
+  references. Images pasted into the page's draft, local body or version history
+  stay and keep loading. A draw.io diagram's preview, source and `.drawio.png`
+  are removed or kept together. A file the cleanup cannot delete is logged, and
+  the sync continues.
 - **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
   fresh access token per question instead of one before the run, so a run
   longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the

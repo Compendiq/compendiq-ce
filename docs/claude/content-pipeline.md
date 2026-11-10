@@ -52,6 +52,10 @@ source is not preserved as XML in its prepared attachments. Open/save the
 diagram first, then retry the move; never rewrite an unpreserved source.
 Extensionless previews are classified even beside an existing XML source;
 classification receipts suppress repeated downloads of unchanged bare sources.
+A version-jump sync removes a diagram's cached `<name>.png`, `<name>.drawio`
+and `<name>.drawio.png` together when the incoming body references it, keeps
+all three when only local content (body, draft, history) does, and never
+removes dot-file receipts.
 Attachment saves and their recovery publish newly valid previews into existing
 HTML under the same writer fence, never by reconverting stale storage. Update
 plain text and invalidate persisted collaborative bytes with that presentation.
