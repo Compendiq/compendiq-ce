@@ -217,6 +217,8 @@ attempt is re-sent depends on the HTTP method (`isTransientError(err, method)`):
 | GET / HEAD, including `downloadAttachment` | retry | retry | retry |
 | POST / PUT / DELETE: `createPage`, `updatePage`, `deletePage`, `addLabels`, `removeLabel` | retry | **one attempt** | **one attempt** |
 
+**Note on transport error matching:** Transport errors are recognised by message via `isTransientError(err, method)` in `confluence-client.ts:1243-1249`. Undici's `ConnectTimeoutError` carries `code: 'UND_ERR_CONNECT_TIMEOUT'` but its message is `'Connect Timeout Error …'`, which does not match the message comparison; a real connect timeout is not retried on GETs today (pre-existing, deferred).
+
 - **A 429 is re-sent for every method.** Confluence (or its proxy) refused the
   request before processing it, so re-sending is safe; the Notion client
   applies the same rule.

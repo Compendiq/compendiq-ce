@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that had landed as definite failures (`400 A page with this title already
   exists`, `409 Version must be incremented`) and could repeat their side
   effect; the caller now gets the original error. A 429 is still retried for
-  every request, and reads still retry all of these.
+  every method, and reads keep their existing retries.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads

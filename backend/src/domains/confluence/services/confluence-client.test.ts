@@ -1018,6 +1018,7 @@ describe('ConfluenceClient', () => {
       { label: 'HTTP 504', statusCode: 504, landed: true },
       { label: 'ECONNRESET', code: 'ECONNRESET', message: 'read ECONNRESET', landed: true },
       { label: 'ETIMEDOUT', code: 'ETIMEDOUT', message: 'read ETIMEDOUT', landed: true },
+      // Message is synthetic: undici's ConnectTimeoutError carries this code but message 'Connect Timeout Error …'; see isTransientError message match
       { label: 'UND_ERR_CONNECT_TIMEOUT', code: 'UND_ERR_CONNECT_TIMEOUT', message: 'UND_ERR_CONNECT_TIMEOUT', landed: false },
     ];
 
