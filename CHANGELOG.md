@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to cut a page's attachment list after the first response, so sync skipped
   the images and diagrams missing from it, and made the version list jump
   past the rest of each window, so the Version History import lost versions.
+  Images already given up on (after three consecutive failures on unchanged
+  pages) remain missing until their 7-day failure counter expires or the page
+  is next edited.
   A full page without a `next` link is now the last one (no extra request);
   an empty page still ends the loop and the version list keeps its
   1000-request cap.

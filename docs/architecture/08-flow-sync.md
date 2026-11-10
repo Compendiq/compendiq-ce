@@ -330,10 +330,10 @@ a space's pages and page ids (`getAllPagesInSpace`, `getAllPageIds`), a page's
 attachments (`getPageAttachments`) and its version list (`getPageVersions`).
 Each one requests a `limit`, continues **only while the response carries
 `_links.next`**, and advances `start` by the number of results that response
-actually returned. Confluence DC may answer with fewer results than the
-requested `limit` while more remain (a server-side page-size cap, permission
-filtering), so a short page is not the end and the requested `limit` is not
-the next offset. Before #1777 the attachment list still stopped at the first
+actually returned. Confluence DC may return fewer results than the
+requested `limit` while more remain; the client relies only on `_links.next`
+to detect pagination end, regardless of whether a page is full or partial.
+Before #1777 the attachment list still stopped at the first
 short page — a server capping responses at 25 cut a page's attachments to the
 first 25, and sync then skipped every image or diagram whose attachment was not
 in that list — and the version list advanced by the requested 100, so after a
