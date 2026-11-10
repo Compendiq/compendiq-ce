@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -73,9 +73,13 @@ function createWrapper(initialEntries = ['/pages/page-1?mode=improve']) {
   };
 }
 
+// `/mcp-docs/status` answer: the web-search toggle only renders when the sidecar is enabled.
+let mcpDocsEnabled = false;
+
 describe('ImproveMode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mcpDocsEnabled = false;
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -91,6 +95,9 @@ describe('ImproveMode', () => {
       }
       if (path === '/llm/conversations') {
         return Promise.resolve([]);
+      }
+      if (path === '/mcp-docs/status') {
+        return Promise.resolve({ enabled: mcpDocsEnabled });
       }
       return Promise.resolve([]);
     });
@@ -186,6 +193,36 @@ describe('ImproveMode', () => {
         expect.any(Object),
       );
     });
+  });
+
+  it('sends searchWeb: true and no searchQuery when the web-search toggle is on (#1767)', async () => {
+    // The backend derives the query itself; the UI never sends `searchQuery`,
+    // so the contract's new 200-char / 30-word bound cannot touch this flow.
+    mcpDocsEnabled = true;
+    async function* fakeStream() {
+      yield { content: 'Improved!' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<ImproveModeInput />, { wrapper: createWrapper() });
+
+    const toggle = await screen.findByTestId('improve-search-web-toggle');
+    fireEvent.click(within(toggle).getByRole('checkbox'));
+    await waitFor(() => {
+      expect(improveButton()).not.toBeDisabled();
+    });
+
+    fireEvent.click(improveButton());
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/improve',
+        expect.objectContaining({ type: 'grammar', model: 'llama3', searchWeb: true }),
+        expect.any(Object),
+      );
+    });
+    const body = streamSSEMock.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('searchQuery');
   });
 
   it('textarea has maxLength attribute of 10000', () => {
