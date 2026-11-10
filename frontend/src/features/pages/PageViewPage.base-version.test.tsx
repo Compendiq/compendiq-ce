@@ -285,6 +285,9 @@ describe("PageViewPage ordinary Save keeps the editing session's base version (#
   });
 
   it('keeps the base after confluence_modified', async () => {
+    // Only the collaborative commit emits confluence_modified today, and that
+    // branch never reads the base. This guards the catch block both branches
+    // share, so a confluence_modified reply can never move the ordinary base.
     const { client } = renderPage();
     await startEditing();
     await typeText('LOCAL OLD EDIT');
@@ -310,6 +313,8 @@ describe("PageViewPage ordinary Save keeps the editing session's base version (#
   });
 
   it('starts a new session at the current version after Open current version', async () => {
+    // Passes before #1746 too (the live version equals a new session's base).
+    // It fails if the base is captured once per mount and never refreshed.
     const { client } = renderPage();
     await startEditing();
     await typeText('BLOCKED EDIT');
@@ -369,6 +374,28 @@ describe("PageViewPage ordinary Save keeps the editing session's base version (#
     expect(serverPage).toMatchObject({ version: 3, bodyHtml: '<p>REMOTE v3</p>' });
   });
 
+  it.each(['Restore draft', 'Edit published version'])(
+    'keeps a remote rename made while the draft dialog is open when %s is chosen',
+    async (choice) => {
+      seedDraft('<p>STORED DRAFT</p>');
+      const { client } = renderPage();
+      await startEditing();
+      expect(await screen.findByText('Restore draft?')).toBeInTheDocument();
+      remoteSave('<p>REMOTE v2</p>', { title: 'Renamed remotely' });
+      await backgroundRefresh(client, 2);
+      fireEvent.click(screen.getByRole('button', { name: choice }));
+      await typeText('PLUS MINE');
+
+      await clickSave();
+      await waitForPuts(1);
+      // The title must describe the same page as the base version: the title
+      // read at the Edit click would revert the rename without a conflict.
+      expect(puts[0]).toMatchObject({ title: 'Renamed remotely', version: 2 });
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Page saved.'));
+      expect(serverPage).toMatchObject({ version: 3, title: 'Renamed remotely' });
+    },
+  );
+
   it('adopts its own successful Save as the base when a refused label write keeps the session open', async () => {
     const { client } = renderPage();
     await startEditing();
@@ -393,7 +420,35 @@ describe("PageViewPage ordinary Save keeps the editing session's base version (#
     expect(serverPage).toMatchObject({ version: 3, bodyHtml: '<p>REMOTE v3</p>' });
   });
 
+  it('adopts the version the reply names, not base + 1, when an unchanged Save does not bump the page', async () => {
+    const { client } = renderPage();
+    await startEditing();
+    await editableBody();
+    await addTag('ops');
+    // Title and body untouched: the server writes nothing and answers the
+    // current version (1); the refused label write keeps the session open.
+    await clickSave();
+    await waitForPuts(1);
+    expect(puts[0]).toMatchObject({ bodyHtml: '<p>ORIGINAL v1</p>', version: 1 });
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
+      'Content saved; the label change was not applied. See the tag control for the reason.',
+    ));
+    expect(serverPage.version).toBe(1);
+
+    remoteSave('<p>REMOTE v2</p>');
+    await backgroundRefresh(client, 2);
+    await typeText('LATER EDIT');
+    await clickSave();
+    await waitForPuts(2);
+    // base + 1 would send 2 and overwrite the remote v2 without a conflict.
+    expect(puts[1]).toMatchObject({ version: 1 });
+    await waitFor(() => expect(conflictToasts()).toHaveLength(1));
+    expect(serverPage).toMatchObject({ version: 2, bodyHtml: '<p>REMOTE v2</p>' });
+  });
+
   it('reconciles explicitly: Reload leaves edit mode with the draft, and Restore draft then saves against the current version', async () => {
+    // Passes before #1746 too: it pins the explicit reconciliation the fix
+    // relies on (Reload keeps the draft; the next session saves on top).
     const { client } = renderPage();
     await startEditing();
     await typeText('LOCAL OLD EDIT');

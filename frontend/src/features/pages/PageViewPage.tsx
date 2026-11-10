@@ -524,9 +524,13 @@ export function PageViewPage() {
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     captureScrollOffset();
-    // A localStorage draft records no base version: the version on screen when
-    // the user chooses to restore it is the best available one (#1746).
-    if (page) editBaseVersionRef.current = page.version;
+    // A localStorage draft records no base version and no title: the page on
+    // screen when the user chooses to restore it is the best available base,
+    // and the title must describe that same version (#1746).
+    if (page) {
+      editBaseVersionRef.current = page.version;
+      setEditTitle(page.title);
+    }
     setEditHtml(pendingDraft);
     if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
@@ -541,6 +545,7 @@ export function PageViewPage() {
     captureScrollOffset();
     if (!page) return;
     editBaseVersionRef.current = page.version;
+    setEditTitle(page.title);
     setEditHtml(page.bodyHtml);
     setDraftLabels(page.labels ?? []);
     setIsDirty(false);
