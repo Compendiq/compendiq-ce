@@ -129,10 +129,10 @@ runs on the transaction it already holds:
   (`loadAuthorizedContentWriteState`) take the policy lock first.
 - **Events** (`policy_changed`) are returned as `changes` and emitted only
   after COMMIT. A reconciler's applied/not-applied result may carry an
-  `afterCommit` closure; `reconcilePageWriteIntent` invokes it strictly
-  after its settlement transaction resolves and never on rollback — the
-  `page.labels` reconciler uses it to emit its records (no polling of the
-  intent row). An explicit re-assertion of the same `all`/`local_only`
+  `afterCommit` side effect; `reconcilePageWriteIntent` awaits it strictly
+  after its settlement transaction resolves, never on rollback, and logs a
+  failure instead of failing the already-settled recovery. An explicit
+  re-assertion of the same `all`/`local_only`
   policy bumps the revision and emits, but re-queues no derived work; only
   a real move re-queues, and `none` always purges.
   An undispatched label intent is settled by restoring `priorLabels` only;
