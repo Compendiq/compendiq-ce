@@ -959,3 +959,42 @@ export interface AttachmentImageMarker {
   src: string;
   filename: string;
 }
+
+/**
+ * Give each live `image` node whose `src` a Confluence commit uploaded the
+ * markers that commit's plan wrote into the published HTML
+ * (`data-confluence-filename`, `data-confluence-image-source="attachment"`),
+ * so the next plan skips it. A node carrying either marker keeps what it has,
+ * as the plan's own skip rule does. One transaction with `origin`, none when
+ * nothing matches; returns the number of nodes marked (#1764).
+ */
+export function markAttachmentImages(
+  doc: Y.Doc,
+  markers: readonly AttachmentImageMarker[],
+  origin: unknown,
+): number {
+  const filenames = new Map(markers.map((marker) => [marker.src, marker.filename]));
+  const unmarked: Array<{ image: Y.XmlElement; filename: string }> = [];
+  // The walker skips deleted items and descends into tables, figures and layouts.
+  const images = doc.getXmlFragment(COLLAB_FIELD)
+    .createTreeWalker((type) => type instanceof Y.XmlElement && type.nodeName === 'image');
+  for (const node of images) {
+    const image = node as Y.XmlElement;
+    const src = image.getAttribute('src');
+    const filename = typeof src === 'string' ? filenames.get(src) : undefined;
+    if (
+      filename === undefined
+      || image.getAttribute('data-confluence-filename')
+      || image.getAttribute('data-confluence-image-source')
+    ) continue;
+    unmarked.push({ image, filename });
+  }
+  if (unmarked.length === 0) return 0;
+  doc.transact(() => {
+    for (const { image, filename } of unmarked) {
+      image.setAttribute('data-confluence-filename', filename);
+      image.setAttribute('data-confluence-image-source', 'attachment');
+    }
+  }, origin);
+  return unmarked.length;
+}

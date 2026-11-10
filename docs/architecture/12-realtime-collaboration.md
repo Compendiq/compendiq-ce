@@ -162,6 +162,24 @@ BYTEA persist is always the full `Y.encodeStateAsUpdate`. Redis pub/sub is
 **never** that — it publishes the incremental `update` argument. Mixing
 those two floods every keystroke as a full document.
 
+**Images a Confluence commit uploaded (#1764).** The commit publishes
+`body_html` with `data-confluence-filename` and
+`data-confluence-image-source="attachment"` on the pasted images it uploaded;
+those markers make the next commit's image plan skip them. After the intent
+settles, and before its `pages_version` control, the commit marks the same
+images in the room so the next persist keeps them. The pod that owns the room
+applies an in-place Yjs transaction under its room admission (the fence a
+client frame uses) with its own origin, `COLLAB_IMAGE_MARKER_ORIGIN`:
+`doc.on('update')` persists it, publishes it once as an incremental `sync` and
+sends it to every socket; peers apply it with origin `'redis'` and do not
+republish it. A commit pod that owns no room for the page publishes
+`image_markers`, and each owning pod applies the same transaction. The commit
+also marks `page_collaborative_docs` under its own request admission, so a room
+that loads later, a persist (which merges the persisted document first) and the
+next commit snapshot keep the markers even when no room owned the page. Only
+`image` nodes whose current `src` was uploaded and that carry neither marker
+change; the document is never reset, so editors stay open.
+
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
 `collabExtensions()`, persist, keep the doc in the in-memory room.

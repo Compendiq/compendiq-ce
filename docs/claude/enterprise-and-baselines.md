@@ -206,6 +206,11 @@ disconnects the provider but keeps an inert recoverable Y.Doc with **Download
 draft** and explicitly confirmed **Open current version**; thaw or reconnect
 never automatically replays that blocked draft.
 
+A Confluence collaborative commit that uploaded pasted images then marks them
+in the live room (an in-place Yjs transaction on the owning pod) and in
+`page_collaborative_docs`, after its intent settles and before its
+`pages_version` control, never through `doc_reset` (#1764).
+
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
 failure so a later intentional retry remains possible. The button, editor

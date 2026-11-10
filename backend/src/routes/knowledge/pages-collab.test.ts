@@ -45,6 +45,7 @@ import {
   createCollabRuntime,
   getDefaultCollabRuntime,
   COLLAB_ACTIVE_TTL_SEC,
+  COLLAB_IMAGE_MARKER_ORIGIN,
   COLLAB_PING_INTERVAL_MS,
 } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
@@ -1832,6 +1833,338 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       }
     },
   );
+
+  describe('pasted images after a collaborative Save (#1764)', () => {
+    const IMAGE_SRC = '/api/attachments/local-src/x.png';
+    const MARK_FILE = 'data-confluence-filename="x.png"';
+    const MARK_SOURCE = 'data-confluence-image-source="attachment"';
+    const MEDIA_THEN_TEXT = [
+      { kind: 'collab.commit.confluence.media', status: 'completed' },
+      { kind: 'collab.commit.confluence', status: 'completed' },
+    ];
+
+    type ImageEditor = {
+      ws: WebSocket;
+      doc: Y.Doc;
+      /** Every control frame with the editor's HTML at the moment it arrived. */
+      controls: Array<{ type: string; html: string }>;
+      closeInfo: { code: number; reason: string } | null;
+    };
+
+    async function seedImagePage(): Promise<{
+      token: string;
+      userId: string;
+      pageId: number;
+      confluenceId: string;
+    }> {
+      const { token, userId } = await createUser(`collab_img_${pageIdEntropy()}`);
+      const spaceKey = `IM${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({
+        spaceKey,
+        confluenceId,
+        version: 4,
+        bodyHtml: `<p>image</p><img src="${IMAGE_SRC}">`,
+      });
+      await grantSpaceRead(userId, spaceKey);
+      await seedConfluenceCredentials(userId);
+      await enableCollabFlag();
+      return { token, userId, pageId, confluenceId };
+    }
+
+    /** A writable editor whose document follows the room. */
+    async function joinImageEditor(pageId: number, token: string): Promise<ImageEditor> {
+      const ws = await openWritableWhatwg(pageId, token);
+      const editor: ImageEditor = { ws, doc: new Y.Doc(), controls: [], closeInfo: null };
+      ws.addEventListener('close', (ev) => {
+        editor.closeInfo = { code: ev.code, reason: String(ev.reason ?? '') };
+      });
+      ws.addEventListener('message', (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        const frame = new Uint8Array(ev.data);
+        const control = decodeControl(frame);
+        if (control) editor.controls.push({ type: control.type, html: yDocToHtml(editor.doc) });
+        else applySyncFrame(editor.doc, frame);
+      });
+      await exchangeSyncStep1(ws, editor.doc);
+      return editor;
+    }
+
+    /** Edit the editor's document and send its state, as a typing client would. */
+    function sendEditorEdit(editor: ImageEditor, edit: (fragment: Y.XmlFragment) => void): void {
+      editor.doc.transact(() => edit(editor.doc.getXmlFragment('default')));
+      editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
+    }
+
+    function appendParagraph(fragment: Y.XmlFragment, text: string): void {
+      const paragraph = new Y.XmlElement('paragraph');
+      const content = new Y.XmlText();
+      content.insert(0, text);
+      paragraph.insert(0, [content]);
+      fragment.push([paragraph]);
+    }
+
+    /** Confluence for consecutive Saves: the remote version follows each accepted PUT. */
+    function mockImageProvider(confluenceId: string, onFirstRead?: () => Promise<void>) {
+      let remoteVersion = 4;
+      let reads = 0;
+      const uploads: string[] = [];
+      const storages: string[] = [];
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        reads += 1;
+        if (reads === 1) await onFirstRead?.();
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: remoteVersion, when: '2026-11-10T00:00:00Z' },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(async (_id, filename) => {
+        uploads.push(filename);
+        return {
+          id: `attachment-${uploads.length}`,
+          title: filename,
+          mediaType: 'image/png',
+          version: {
+            number: uploads.filter((uploaded) => uploaded === filename).length,
+            when: '2026-11-10T00:00:01Z',
+          },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+        async (_id, title, storage, version) => {
+          storages.push(storage);
+          remoteVersion = version + 1;
+          return {
+            id: confluenceId,
+            title,
+            status: 'current',
+            type: 'page',
+            version: { number: remoteVersion, when: '2026-11-10T00:00:02Z' },
+            body: { storage: { value: storage } },
+          } as never;
+        },
+      );
+      return { uploads, storages };
+    }
+
+    function save(pageId: number, token: string, payload: CollabCommit) {
+      return app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    }
+
+    async function savedIntents(pageId: number): Promise<Array<{ kind: string; status: string }>> {
+      const rows = await query<{ kind: string; status: string }>(
+        `SELECT kind, status FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+        [pageId],
+      );
+      return rows.rows;
+    }
+
+    async function bodyHtmlOf(pageId: number): Promise<string> {
+      const row = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+      return row.rows[0]!.body_html;
+    }
+
+    async function activePurposes(pageId: number): Promise<string[]> {
+      const rows = await query<{ purpose: string }>(
+        `SELECT purpose FROM page_runtime_admissions
+          WHERE page_id = $1 AND released_at IS NULL ORDER BY purpose`,
+        [pageId],
+      );
+      return rows.rows.map((row) => row.purpose);
+    }
+
+    it('Save 2 after a pasted-image Save uploads nothing, is a text-only collab.commit.confluence intent, and the markers survive the next persist (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        const provider = mockImageProvider(confluenceId);
+
+        const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png']);
+
+        // A text-only edit, then the room's next persist.
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        sendEditorEdit(editor, (fragment) => appendParagraph(fragment, 'TEXT_AFTER_SAVE_1'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TEXT_AFTER_SAVE_1'));
+        await persist.flushCollabPersist(room);
+        const afterPersist = await bodyHtmlOf(pageId);
+
+        const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect.soft(provider.uploads).toEqual(['x.png']);
+        expect.soft(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+        expect.soft(afterPersist).toContain(MARK_FILE);
+        expect.soft(afterPersist).toContain(MARK_SOURCE);
+        // Save 2's storage still references the attachment Save 1 uploaded.
+        expect(provider.storages[1]).toContain('<ri:attachment ri:filename="x.png">');
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('marks the images in the saving editor\'s document after the intent settles and before pages_version, without doc_reset (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        mockImageProvider(confluenceId);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        const intentStatusAtMark: Array<Promise<string | undefined>> = [];
+        room.doc.on('update', (_update: Uint8Array, origin: unknown) => {
+          if (origin !== COLLAB_IMAGE_MARKER_ORIGIN) return;
+          intentStatusAtMark.push(query<{ status: string }>(
+            `SELECT status FROM page_write_intents
+              WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at DESC LIMIT 1`,
+            [pageId],
+          ).then((result) => result.rows[0]?.status));
+        });
+
+        const res = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(res.statusCode, res.body).toBe(200);
+        await vi.waitFor(() => {
+          expect(editor.controls.map((control) => control.type)).toContain('pages_version');
+        });
+
+        expect.soft(await Promise.all(intentStatusAtMark)).toEqual(['completed']);
+        const pagesVersion = editor.controls.find((control) => control.type === 'pages_version')!;
+        expect.soft(pagesVersion.html).toContain(MARK_FILE);
+        expect.soft(pagesVersion.html).toContain(MARK_SOURCE);
+        // The editor stays open and writable: no reset, no close.
+        expect(editor.controls.map((control) => control.type)).not.toContain('doc_reset');
+        expect(editor.closeInfo).toBeNull();
+        sendEditorEdit(editor, (fragment) => appendParagraph(fragment, 'TYPED_AFTER_SAVE'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TYPED_AFTER_SAVE'));
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('marks the room on the peer pod that owns it when the Save runs on a pod without the room (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      const { token, userId, pageId, confluenceId } = await seedImagePage();
+      const revision = await pageLifecycleRevision(pageId);
+      const podA = await createCollabRuntime(getRedisClient()!, 'image-markers-pod-a');
+      try {
+        await podA.attachSocket(pageId, {
+          id: 'pod-a-writer',
+          ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+          userId,
+          writable: true,
+          expectedLifecycleRevision: revision,
+        });
+        const roomA = podA.getRoom(pageId)!;
+        const provider = mockImageProvider(confluenceId);
+        const payload = (title: string): CollabCommit => ({
+          title,
+          expectedLifecycleRevision: revision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        });
+
+        const first = await save(pageId, token, payload('Save 1'));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeUndefined();
+        // In pod A's memory: the Redis request, not a merge of the persisted document.
+        await vi.waitFor(() => expect(yDocToHtml(roomA.doc)).toContain(MARK_FILE), { timeout: 5_000 });
+        await persist.flushCollabPersist(roomA);
+        expect(await bodyHtmlOf(pageId)).toContain(MARK_FILE);
+
+        const second = await save(pageId, token, payload('Save 2'));
+        expect(second.statusCode, second.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png']);
+        expect(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+      } finally {
+        await podA.close();
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('the markers survive when the only writer left before the Save settled and no room owns the page (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const leaving = await joinImageEditor(pageId, token);
+        // Persist the room's own rendering first, so the leave flush inside the
+        // provider read changes no protected column (on a base without #1762 it
+        // would otherwise refuse this Save as stale_content_revision).
+        await persist.flushCollabPersist(getDefaultCollabRuntime()!.getRoom(pageId)!);
+        const provider = mockImageProvider(confluenceId, async () => {
+          leaving.ws.close();
+          await vi.waitFor(async () => {
+            expect(await activePurposes(pageId)).not.toContain('collab_room');
+          }, { timeout: 5_000 });
+        });
+
+        const first = await save(pageId, token, commitPayload(leaving.ws, 'Save 1', Y.snapshot(leaving.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(await activePurposes(pageId)).toEqual([]);
+        expect.soft(await persist.htmlFromPersistedDoc(pageId)).toContain(MARK_FILE);
+
+        const rejoined = await joinImageEditor(pageId, token);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        expect.soft(yDocToHtml(room.doc)).toContain(MARK_FILE);
+        sendEditorEdit(rejoined, (fragment) => appendParagraph(fragment, 'TEXT_AFTER_REJOIN'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TEXT_AFTER_REJOIN'));
+        await persist.flushCollabPersist(room);
+        expect.soft(await bodyHtmlOf(pageId)).toContain(MARK_FILE);
+
+        const second = await save(pageId, token, commitPayload(rejoined.ws, 'Save 2', Y.snapshot(rejoined.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect.soft(provider.uploads).toEqual(['x.png']);
+        expect.soft(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+        rejoined.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('Save 2 uploads only an image pasted after Save 1 (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        await fs.promises.writeFile(
+          path.join(fixture.root, 'local-src', 'y.png'),
+          Buffer.from('image pasted after Save 1'),
+        );
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        const provider = mockImageProvider(confluenceId);
+
+        const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        sendEditorEdit(editor, (fragment) => {
+          const image = new Y.XmlElement('image');
+          image.setAttribute('src', '/api/attachments/local-src/y.png');
+          fragment.push([image]);
+        });
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('/api/attachments/local-src/y.png'));
+
+        const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png', 'y.png']);
+        // Save 2 did upload the new image, so it stays a media commit.
+        expect(await savedIntents(pageId)).toEqual([
+          { kind: 'collab.commit.confluence.media', status: 'completed' },
+          { kind: 'collab.commit.confluence.media', status: 'completed' },
+        ]);
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+  });
 
   it('refuses final local publication when authority is revoked after the page PUT', async () => {
     const {

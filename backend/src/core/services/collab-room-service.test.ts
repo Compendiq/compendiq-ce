@@ -30,6 +30,7 @@ import {
   collabDocChannel,
   COLLAB_ACTIVE_TTL_SEC,
   COLLAB_EMPTY_ROOM_GRACE_MS,
+  COLLAB_IMAGE_MARKER_ORIGIN,
   COLLAB_READONLY_DROP_LIMIT,
   type CollabRuntime,
   type CollabInboundResult,
@@ -37,8 +38,15 @@ import {
 import { assertNoLiveCollabRoom } from './collab-guard.js';
 import { setRedisClient } from './redis-cache.js';
 import * as persist from './collab-persistence.js';
-import { admitPageRuntime, releasePageRuntime, withPageWriteTransaction } from './page-write-admission.js';
+import {
+  admitPageRuntime,
+  cancelPageWriteIntentBeforeEffect,
+  releasePageRuntime,
+  reservePageWriteIntent,
+  withPageWriteTransaction,
+} from './page-write-admission.js';
 import { yDocToHtml } from './collab-schema.js';
+import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
 import type * as PageBaselineServiceModule from './page-baseline-service.js';
 import type * as PageBaselineGovernanceModule from './page-baseline-governance.js';
 
@@ -1736,6 +1744,205 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     await vi.waitFor(() => {
       expect(roomB.doc.getText('t').toString()).toContain('after-bad');
     }, { timeout: 4_000 });
+  });
+
+  describe('image markers after a Confluence commit (#1764)', () => {
+    const IMAGE_SRC = '/api/attachments/local-src/x.png';
+    const MARKERS = [{ src: IMAGE_SRC, filename: 'x.png' }];
+    const MARKED = {
+      src: IMAGE_SRC,
+      'data-confluence-filename': 'x.png',
+      'data-confluence-image-source': 'attachment',
+    };
+    const MARK_FILE = 'data-confluence-filename="x.png"';
+    const MARK_SOURCE = 'data-confluence-image-source="attachment"';
+
+    /** A page whose first writable join seeds the room from `html`. */
+    async function imagePage(html = `<p>image</p><img src="${IMAGE_SRC}">`): Promise<number> {
+      const pageId = nextPageId();
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [pageId, html]);
+      return pageId;
+    }
+
+    function elements(doc: Y.Doc, nodeName: string): Y.XmlElement[] {
+      return [...doc.getXmlFragment('default').createTreeWalker(
+        (type) => type instanceof Y.XmlElement && type.nodeName === nodeName,
+      )] as Y.XmlElement[];
+    }
+
+    function imageAttributes(doc: Y.Doc): Array<Record<string, unknown>> {
+      return elements(doc, 'image').map((image) => image.getAttributes());
+    }
+
+    /** Every message on the page's channel; `drain` returns once earlier publications arrived. */
+    async function observeBus(pageId: number) {
+      const messages: Array<{ origin: string; kind: string }> = [];
+      const observer = main!.duplicate() as RedisClientType;
+      await observer.connect();
+      await observer.subscribe(collabDocChannel(pageId), (raw) => messages.push(JSON.parse(raw)));
+      return {
+        messages,
+        async drain(): Promise<void> {
+          // Both runtimes publish through `main`, so its barrier arrives last.
+          await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'probe', kind: 'barrier' }));
+          await vi.waitFor(() => {
+            expect(messages.some((message) => message.kind === 'barrier')).toBe(true);
+          });
+        },
+        async close(): Promise<void> {
+          await observer.unsubscribe(collabDocChannel(pageId));
+          await observer.quit();
+        },
+      };
+    }
+
+    it('marks the owning room in place with one incremental sync that the peer runtime applies without an echo (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_B, writable: true });
+      const roomA = runtimeA!.getRoom(pageId)!;
+      const roomB = runtimeB!.getRoom(pageId)!;
+      const originsA: unknown[] = [];
+      roomA.doc.on('update', (_update: Uint8Array, origin: unknown) => { originsA.push(origin); });
+      const bus = await observeBus(pageId);
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+
+        expect(imageAttributes(roomA.doc)).toEqual([MARKED]);
+        expect(originsA).toEqual([COLLAB_IMAGE_MARKER_ORIGIN]);
+        // Pod B's memory, before any persist of B could merge the persisted document.
+        await vi.waitFor(() => expect(imageAttributes(roomB.doc)).toEqual([MARKED]));
+        await bus.drain();
+        expect(bus.messages.filter((message) => message.kind === 'sync').map((message) => message.origin))
+          .toEqual([runtimeA!.podId]);
+        expect(bus.messages.filter((message) => message.kind === 'image_markers')).toEqual([]);
+
+        // The shape both converters use for a Confluence attachment image.
+        const roomHtml = yDocToHtml(roomB.doc);
+        expect(htmlToConfluence(roomHtml)).toContain('<ri:attachment ri:filename="x.png">');
+        const synced = confluenceToHtml('<ac:image><ri:attachment ri:filename="x.png" /></ac:image>', 'cf-1', 'SPACE');
+        for (const marker of [MARK_FILE, MARK_SOURCE]) {
+          expect(synced).toContain(marker);
+          expect(roomHtml).toContain(marker);
+        }
+
+        // The peer runtime's own persist keeps them.
+        await persist.flushCollabPersist(roomB);
+        const body = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+        expect(body.rows[0]!.body_html).toContain(MARK_FILE);
+      } finally {
+        await releasePageRuntime(request);
+        await bus.close();
+      }
+    });
+
+    it('marks only unmarked image nodes whose src was uploaded, nested ones included (#1764)', async () => {
+      const synced = {
+        src: '/api/attachments/local-src/synced.png',
+        'data-confluence-filename': 'synced.png',
+        'data-confluence-image-source': 'attachment',
+      };
+      const pageId = await imagePage(
+        `<p>a</p><img src="${IMAGE_SRC}">`
+        + `<table><tbody><tr><td><img src="${IMAGE_SRC}"></td></tr></tbody></table>`
+        + '<img src="/api/attachments/local-src/synced.png" data-confluence-filename="synced.png"'
+        + ' data-confluence-image-source="attachment">'
+        + '<img src="/api/attachments/local-src/later.png">'
+        + `<div class="confluence-drawio" data-diagram-name="d"><img src="${IMAGE_SRC}" alt="d"></div>`,
+      );
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      const room = runtimeA!.getRoom(pageId)!;
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+      } finally {
+        await releasePageRuntime(request);
+      }
+
+      expect(imageAttributes(room.doc)).toEqual([
+        MARKED,
+        MARKED,
+        synced,
+        { src: '/api/attachments/local-src/later.png' },
+      ]);
+      // A draw.io node is not an image node and has no marker attributes.
+      const diagrams = elements(room.doc, 'drawioDiagram');
+      expect(diagrams).toHaveLength(1);
+      expect(diagrams[0]!.getAttribute('data-confluence-filename')).toBeUndefined();
+    });
+
+    it('asks the owning peer over Redis when this pod owns no room for the page (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+      const roomB = runtimeB!.getRoom(pageId)!;
+      const bus = await observeBus(pageId);
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+
+        await vi.waitFor(() => expect(imageAttributes(roomB.doc)).toEqual([MARKED]));
+        await bus.drain();
+        expect(bus.messages
+          .filter((message) => message.kind === 'image_markers' || message.kind === 'sync')
+          .map((message) => `${message.origin}:${message.kind}`))
+          .toEqual([`${runtimeA!.podId}:image_markers`, `${runtimeB!.podId}:sync`]);
+      } finally {
+        await releasePageRuntime(request);
+        await bus.close();
+      }
+    });
+
+    it('marks the persisted document when no room owns the page, so a room that loads it later has the markers (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      await runtimeA!.detachSocket(pageId, 'a1');
+      await runtimeA!.dropRoom(pageId);
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+      } finally {
+        await releasePageRuntime(request);
+      }
+
+      expect(await persist.htmlFromPersistedDoc(pageId)).toContain(MARK_FILE);
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      expect(imageAttributes(runtimeB!.getRoom(pageId)!.doc)).toEqual([MARKED]);
+    });
+
+    it.each(['stale_lifecycle', 'page_write_busy'] as const)(
+      'a %s fence leaves the room and the persisted document unmarked and does not throw (#1764)',
+      async (fence) => {
+        const pageId = await imagePage();
+        await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+        const room = runtimeA!.getRoom(pageId)!;
+        const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+        const foreign = fence === 'page_write_busy'
+          ? await reservePageWriteIntent({
+            pageIds: [pageId],
+            kind: 'page.labels',
+            actorId: USER_A,
+            effect: { effectClass: 'remote' },
+          })
+          : null;
+        if (fence === 'stale_lifecycle') {
+          await query('UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1', [pageId]);
+        }
+        try {
+          await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS)).resolves.toBeUndefined();
+          expect(imageAttributes(room.doc)).toEqual([{ src: IMAGE_SRC }]);
+          expect(await persist.htmlFromPersistedDoc(pageId)).not.toContain('data-confluence-filename');
+        } finally {
+          if (foreign) await cancelPageWriteIntentBeforeEffect(foreign);
+          if (fence === 'stale_lifecycle') {
+            await query('UPDATE pages SET lifecycle_revision = lifecycle_revision - 1 WHERE id = $1', [pageId]);
+          }
+          await releasePageRuntime(request);
+        }
+      },
+    );
   });
 
 });
