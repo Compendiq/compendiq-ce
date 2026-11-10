@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Incremental sync no longer strips access from unmodified restricted pages
+  (#1771):** with `rag_permission_enforcement` on, the end-of-run stale-ACE
+  sweep ages out Confluence access entries only on pages whose restrictions
+  that run re-read. An incremental run walks only modified pages, so it used
+  to delete every other restricted page's entries, hiding the page and its RAG
+  answers from the users Confluence lets read it. A user de-listed upstream is
+  still removed on the next run that re-reads the page; no access is granted.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads

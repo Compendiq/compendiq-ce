@@ -2880,6 +2880,14 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 - After all pages are processed, sweep: `DELETE FROM access_control_entries WHERE source='confluence' AND synced_at < <run start>`. Rows that were not refreshed are gone (restriction removed in Confluence, or a specific user was de-listed). `source='local'` rows are never touched.
 - A Confluence `userKey` that has no matching Compendiq user (no OIDC login yet) is skipped with an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit event. Safe default: implicit deny — the ACE never materialises, so `userCanAccessPage` will not grant read.
 
+> **Amended (#859, #1771):** the sweep is scoped to the spaces the run
+> synced (#859) and, within them, to pages whose restrictions the run
+> re-read — `pages.restrictions_synced_at >= <run start>`, stamped by the
+> write that mirrors the page. An incremental run walks only modified pages,
+> so the unscoped sweep deleted every unmodified restricted page's entries
+> (#1771). Rows on pages a run does not re-read keep their last mirror; a
+> de-listed principal is removed on the next run that re-reads the page.
+
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.
 - After `reciprocalRankFusion`, iterate the merged list and keep only entries where `userCanAccessPage(userId, page.id)` is true. Slice to `topK` at the end to keep the response size stable.
