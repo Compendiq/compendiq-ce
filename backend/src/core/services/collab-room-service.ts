@@ -34,7 +34,7 @@ import {
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
-import { yDocToHtml } from './collab-schema.js';
+import { yDocToHtml, type AttachmentImageMarker } from './collab-schema.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
@@ -54,6 +54,12 @@ export const MESSAGE_CONTROL = 4;
 const SYNC_STEP1 = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
+/**
+ * Origin of the post-commit image-marker transaction (#1764). Not a connection
+ * id, so `doc.on('update')` persists it, publishes it once as `sync` and sends
+ * it to every socket; peers apply that `sync` as `'redis'` and never echo it.
+ */
+export const COLLAB_IMAGE_MARKER_ORIGIN = Symbol('collab-image-markers');
 
 export type CollabControl =
   | { type: 'pages_version'; version: number }
@@ -152,6 +158,12 @@ export interface CollabRuntime {
   tombstone: (pageId: number, code: number, reason?: string) => Promise<void>;
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
   broadcastControl: (pageId: number, control: CollabControl) => void;
+  /** After a settled Confluence commit, mark the images it uploaded in the owning room and the persisted document (#1764). */
+  markUploadedImages: (
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly AttachmentImageMarker[],
+  ) => Promise<void>;
   prepareCommitSnapshot: (
     pageId: number,
     userId: string,
@@ -1444,6 +1456,7 @@ export async function createCollabRuntime(
     tombstone: (pageId, code, reason) => withRoomOwnership(pageId, () => tombstone(pageId, code, reason)),
     tombstoneAll,
     broadcastControl,
+    markUploadedImages: () => Promise.resolve(),
     prepareCommitSnapshot: (pageId, userId, revision) =>
       withRoomOwnership(pageId, () => prepareCommitSnapshot(pageId, userId, revision)),
     handleLifecycleEvent: (event) =>

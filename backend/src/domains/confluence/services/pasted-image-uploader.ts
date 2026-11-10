@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import { JSDOM } from 'jsdom';
 import { PageWriteError } from '../../../core/services/page-write-admission.js';
+import type { AttachmentImageMarker } from '../../../core/services/collab-schema.js';
 import type {
   ConfluenceAttachment,
   ConfluenceClient,
@@ -25,6 +26,8 @@ export interface PlannedPastedImage {
 export interface PastedImagePlan {
   bodyHtml: string;
   images: PlannedPastedImage[];
+  /** One entry per `src` this plan marked, in document order (#1764). */
+  markers: AttachmentImageMarker[];
 }
 
 export interface PreparedPastedImage extends PlannedPastedImage {
@@ -58,11 +61,12 @@ function unavailableImage(): PageWriteError {
  * ambiguous media.
  */
 export async function planLocalImagesForConfluence(html: string): Promise<PastedImagePlan> {
-  if (!html.includes('/api/attachments/')) return { bodyHtml: html, images: [] };
+  if (!html.includes('/api/attachments/')) return { bodyHtml: html, images: [], markers: [] };
 
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   const imagesByFilename = new Map<string, PlannedPastedImage>();
+  const markers = new Map<string, AttachmentImageMarker>();
   let changed = false;
 
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
@@ -133,12 +137,14 @@ export async function planLocalImagesForConfluence(html: string): Promise<Pasted
 
     img.setAttribute('data-confluence-filename', filename);
     img.setAttribute('data-confluence-image-source', 'attachment');
+    if (!markers.has(src)) markers.set(src, { src, filename });
     changed = true;
   }
 
   return {
     bodyHtml: changed ? doc.body.innerHTML : html,
     images: [...imagesByFilename.values()],
+    markers: [...markers.values()],
   };
 }
 

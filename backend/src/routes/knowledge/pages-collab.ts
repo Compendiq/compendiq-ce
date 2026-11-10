@@ -343,6 +343,11 @@ async function commitConfluencePage(args: {
       bodyStorage: confPage.body.storage.value,
       remoteVersion: confPage.version.number,
     }, intent.id, imagePlan.bodyHtml));
+  // The published body carries the markers of the images this commit
+  // uploaded; the room must carry them too, or its next persist drops them and
+  // the next Save uploads every image again. After settlement and before the
+  // `pages_version` control, so the flush that control starts keeps them (#1764).
+  await runtime.markUploadedImages(pageId, admission, imagePlan.markers);
   runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
   logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
 

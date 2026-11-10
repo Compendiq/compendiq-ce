@@ -953,3 +953,9 @@ export function applyHtmlToYDoc(doc: Y.Doc, html: string): void {
     src.destroy();
   }
 }
+
+/** An image `src` and the Confluence attachment filename its markers name (#1764). */
+export interface AttachmentImageMarker {
+  src: string;
+  filename: string;
+}
