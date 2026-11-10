@@ -34,6 +34,24 @@ export interface McpApp {
 /** Reaper cadence; shortened to the TTL itself when the TTL is smaller. */
 export const SESSION_REAP_INTERVAL_MS = 5 * 60_000;
 
+/**
+ * Unknown/terminated session. MCP spec 2025-06-18 (Session Management, item 3):
+ * the server MUST answer 404 so the client re-initializes; the body is the SDK
+ * transport's own shape (`createJsonErrorResponse(404, -32001, 'Session not found')`).
+ */
+const SESSION_NOT_FOUND = {
+  jsonrpc: '2.0',
+  error: { code: -32001, message: 'Session not found' },
+  id: null,
+} as const;
+
+/** Non-initialize request without a session id (SDK transport wording). */
+const SESSION_ID_REQUIRED = {
+  jsonrpc: '2.0',
+  error: { code: -32000, message: 'Bad Request: Mcp-Session-Id header is required' },
+  id: null,
+} as const;
+
 export function createMcpApp(options: McpAppOptions): McpApp {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
@@ -71,14 +89,18 @@ export function createMcpApp(options: McpAppOptions): McpApp {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     try {
-      if (sessionId && transports.has(sessionId)) {
+      if (sessionId) {
+        const transport = transports.get(sessionId);
+        if (!transport) {
+          res.status(404).json(SESSION_NOT_FOUND);
+          return;
+        }
         sessionLastSeen.set(sessionId, Date.now());
-        const transport = transports.get(sessionId)!;
         await transport.handleRequest(req, res, req.body);
         return;
       }
 
-      if (!sessionId && isInitializeRequest(req.body)) {
+      if (isInitializeRequest(req.body)) {
         const mcpServer = options.createMcpServer();
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -95,11 +117,7 @@ export function createMcpApp(options: McpAppOptions): McpApp {
         return;
       }
 
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: { code: -32000, message: 'Invalid or missing session' },
-        id: null,
-      });
+      res.status(400).json(SESSION_ID_REQUIRED);
     } catch (err) {
       logger.error({ err }, 'MCP request error');
       if (!res.headersSent) {
@@ -115,31 +133,39 @@ export function createMcpApp(options: McpAppOptions): McpApp {
   // GET /mcp for SSE streams (required by Streamable HTTP spec)
   app.get('/mcp', async (req, res) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports.has(sessionId)) {
-      sessionLastSeen.set(sessionId, Date.now());
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res);
+    if (!sessionId) {
+      res.status(400).json(SESSION_ID_REQUIRED);
       return;
     }
-    res.status(400).json({ error: 'Invalid or missing session' });
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      res.status(404).json(SESSION_NOT_FOUND);
+      return;
+    }
+    sessionLastSeen.set(sessionId, Date.now());
+    await transport.handleRequest(req, res);
   });
 
   // DELETE /mcp for session termination
   app.delete('/mcp', async (req, res) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports.has(sessionId)) {
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res);
-      transports.delete(sessionId);
-      sessionLastSeen.delete(sessionId);
-      const server = servers.get(sessionId);
-      if (server) {
-        await server.close();
-        servers.delete(sessionId);
-      }
+    if (!sessionId) {
+      res.status(400).json(SESSION_ID_REQUIRED);
       return;
     }
-    res.status(400).json({ error: 'Invalid or missing session' });
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      res.status(404).json(SESSION_NOT_FOUND);
+      return;
+    }
+    await transport.handleRequest(req, res);
+    transports.delete(sessionId);
+    sessionLastSeen.delete(sessionId);
+    const server = servers.get(sessionId);
+    if (server) {
+      await server.close();
+      servers.delete(sessionId);
+    }
   });
 
   // Health endpoint
