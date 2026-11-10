@@ -172,6 +172,17 @@ Changing the input clears both the prior result and selection immediately; the
 pending state covers debounce as well as the request. Preserve the sequence
 guard for out-of-order responses and only select a result after it resolves.
 
+**Ordinary page saves are based on the editing session (#1746).**
+`PageViewPage` sends the `PUT /pages/:id` `version` from `editBaseVersionRef`,
+never from the live `['pages', id]` query that focus, remount and invalidation
+refetches move mid-edit. It is captured where a session seeds the editor (Edit,
+Restore draft, Edit published version) and replaced only by that session's own
+successful PUT (`useUpdatePage` validates the returned version against
+`UpdatePageSchema`); a 409, `confluence_modified` or any other failure keeps
+it, so a stale draft is refused until the user reconciles it (Reload, then
+Restore draft or Edit published version). The server's `version < current`
+rule and the collaborative commit are unchanged.
+
 ## Enterprise (Open-Core)
 
 CE is this repo. EE lives in the private `Compendiq/compendiq-ee` repo and ships as `@compendiq/enterprise` (loaded dynamically via `core/enterprise/loader.ts`, falls back to `noop.ts`). Both editions ship the **same unmodified CE frontend image** — no EE frontend bundle, no build-time SPA patching. Enterprise UI is gated at runtime via `useEnterprise().isEnterprise`, derived from `/api/admin/license` (`edition !== 'community' && valid === true`).
