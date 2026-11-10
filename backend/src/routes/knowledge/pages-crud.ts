@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PoolClient } from 'pg';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { query, getPool } from '../../core/db/postgres.js';
 import { withEmbeddingDraftContinuity } from '../../core/services/embedding-draft-continuity.js';
 import { observeIngestionAdmission, publishIngestionPolicyOnClient } from '../../core/services/ai-policy-deferred-ingestion.js';
@@ -8,7 +8,13 @@ import { admitAutomaticIngestionPolicy } from '../../core/services/ai-policy-ing
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { isConfluenceEnabled } from '../../core/services/confluence-integration.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import {
+  decideConflictPolicyOnClient,
+  getClientForUser,
+  reconcileCollabAfterInboundBodyWrite,
+  recordConflictPolicyAudit,
+  type ConflictPolicyRow,
+} from '../../domains/confluence/services/sync-service.js';
 import {
   CONFLUENCE_DISABLED_MESSAGE,
   pageWriteStaysLocal,
@@ -335,6 +341,49 @@ async function loadAuthorizedContentWriteState(
     throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after the content was read');
   }
   return current;
+}
+
+/**
+ * #1779: store a local edit in page_versions before bulk sync overwrites it. Runs on
+ * the overwrite's own transaction (a pool write would wait on its row lock via
+ * the page_versions foreign key), so the snapshot and the overwrite commit or
+ * roll back together.
+ *
+ * History is keyed by version number, and opening Version History imports a
+ * body-less row for every Confluence version. Such a placeholder at the local
+ * version number is claimed for the local text (never a baseline-linked row).
+ * A row that already holds other content (title or body) refuses the
+ * overwrite instead of silently skipping the snapshot.
+ */
+async function snapshotLocalVersionBeforeOverwrite(
+  client: PoolClient,
+  row: ConflictPolicyRow,
+): Promise<void> {
+  const stored = await client.query(
+    `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (page_id, version_number) DO UPDATE
+       SET title = EXCLUDED.title, body_html = EXCLUDED.body_html,
+           body_text = EXCLUDED.body_text, synced_at = NOW()
+       WHERE page_versions.body_html IS NULL
+         AND NOT EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = page_versions.id)`,
+    [row.id, row.version, row.title, row.body_html, row.body_text],
+  );
+  if ((stored.rowCount ?? 0) > 0) return;
+  const preserved = await client.query(
+    `SELECT 1 FROM page_versions
+      WHERE page_id = $1 AND version_number = $2 AND title IS NOT DISTINCT FROM $3
+        AND body_html IS NOT DISTINCT FROM $4 AND body_text IS NOT DISTINCT FROM $5`,
+    [row.id, row.version, row.title, row.body_html, row.body_text],
+  );
+  if (preserved.rowCount === 0) {
+    throw new PageWriteError(
+      409,
+      'local_edit_snapshot_conflict',
+      `Version ${row.version} in the page's version history already holds other content, so the local edit `
+        + 'could not be stored there and was kept; saving the page with the Confluence integration off gives it a new version number',
+    );
+  }
 }
 
 /** A captured PAT is not authority to dispatch after an admission wait. */
@@ -4011,6 +4060,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
     let failed = resolutionFailed;
 
+    // #1779: one id per request, stamped on queued pending_sync_versions rows
+    // and on the conflict audit metadata, like one scheduled sync run.
+    const syncRunId = randomUUID();
 
     // Fetch latest from Confluence in parallel with concurrency control
     const bulkLimit = pLimit(5);
@@ -4030,8 +4082,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           // GET and conversion change no protected bytes. Keep them outside the
           // transaction; a failed read must not leave a durable mutation intent.
           const page = await client.getPage(id);
+          const bodyStorage = page.body?.storage?.value ?? '';
           const bodyHtml = (await materializeDrawioPreviews(
-            confluenceToHtml(page.body?.storage?.value ?? '', id, observed.spaceKey ?? undefined), id,
+            confluenceToHtml(bodyStorage, id, observed.spaceKey ?? undefined), id,
           )).html;
           const bodyText = htmlToText(bodyHtml);
           const candidate = policyFromLabels(page.metadata?.labels?.results.map((label) => label.name));
@@ -4043,17 +4096,44 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             admitAutomaticIngestionPolicy({ identity: id, currentPolicy: current.rows[0].ai_policy, candidate: pendingPolicy });
           });
 
-          await withPageWriteTransaction([numericPageId], async (writeClient) => {
+          // The scheduled sync's local-edit check and policy, on THIS
+          // transaction: the helper never opens a second connection, so it
+          // cannot wait on the row lock loadAuthorizedContentWriteState holds.
+          const decision = await withPageWriteTransaction([numericPageId], async (writeClient) => {
             await lockAiPolicyForPages(writeClient, [numericPageId]);
             await loadAuthorizedContentWriteState(writeClient, numericPageId, userId, observed);
+            const decided = await decideConflictPolicyOnClient(writeClient, {
+              confluenceId: id, confluenceVersion: page.version.number,
+              bodyStorage, bodyHtml, bodyText,
+              labels: page.metadata?.labels?.results.map((label) => label.name) ?? [],
+              syncRunId,
+            });
+            if (decided.kind === 'missing') {
+              throw new PageWriteError(409, 'page_source_changed', 'The page source changed before synchronization');
+            }
             await publishIngestionPolicyOnClient(writeClient, {
               source: 'confluence', sourceScope: 'shared', sourceId: id,
               pageId: numericPageId, userId, candidate,
             });
+            // Kept, queued and live-held rows stay as they are, and so does a
+            // local edit whose body already matches upstream (a title-only
+            // rename), as in the scheduled sync's version-unchanged branch.
+            const refresh = decided.kind === 'apply_incoming'
+              || (decided.kind === 'unchanged' && !decided.hasLocalEdits);
+            if (!refresh) return decided;
+            // A local edit is overwritten only after its snapshot is stored on
+            // this transaction. The version never decreases; with Confluence
+            // not ahead, the snapshot shares the live number and Version
+            // History does not list it until the version moves on (user
+            // decision on #1779 review r2; a separate upstream-version column
+            // is the deferred follow-up).
+            if (decided.kind === 'apply_incoming' && decided.hasLocalEdits) {
+              await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row);
+            }
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
-                 version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+                 version = GREATEST(version, $6), last_synced = NOW(), embedding_dirty = TRUE,
                  image_analysis_dirty = CASE
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty
@@ -4063,9 +4143,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  embedded_at = NULL,
                  local_modified_at = NULL, local_modified_by = NULL
                WHERE id = $1`,
-              [numericPageId, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
+              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number],
             );
+            return decided;
           });
+          // After commit, never inside it: the audit first (logAuditEvent never
+          // throws), then the collab document, whose non-live branch opens its
+          // own page-write transaction.
+          await recordConflictPolicyAudit(decision, { confluenceId: id, syncRunId, actorUserId: userId });
+          if (decision.kind === 'apply_incoming') {
+            await reconcileCollabAfterInboundBodyWrite(numericPageId, bodyHtml);
+          }
           return id;
         }),
       ),

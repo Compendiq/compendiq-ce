@@ -67,8 +67,12 @@ credentials to do it.
 Turning the switch back on restores the credential form with your saved values
 and resumes sync with the space selection you already had; edits you made while
 standalone are reconciled by the normal sync conflict handling, exactly as a
-local edit between two syncs always was. Entering credentials in the setup
-wizard turns the integration back on for you.
+local edit between two syncs always was. A page's **Re-sync** follows the same
+conflict policy: depending on your administrator's setting it keeps your edit,
+queues the Confluence version for review, or replaces your edit after storing a
+copy of it. That copy appears in **Version history** once the page has a newer
+version than your edit; until then an administrator can retrieve it. Entering
+credentials in the setup wizard turns the integration back on for you.
 
 ### The Getting Started checklist
 
@@ -139,6 +143,8 @@ After configuring your Confluence connection:
 5. Click **Sync** to start the initial synchronization.
 
 Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
+
+Only one synchronization runs at a time across the whole installation. While the background sync or another user's sync is running, **Sync Now** and **Sync Selected** start nothing and show *A Confluence sync is currently running. Wait for it to finish and try again.* — start yours again once that sync has finished. While your own sync is running, **Sync Now** is unavailable and reads *Syncing...*.
 
 If local space settings cannot load, use **Try again** to retry the read. A
 failed refresh keeps the last loaded settings and any unsaved edits available;
