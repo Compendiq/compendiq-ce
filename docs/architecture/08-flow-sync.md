@@ -204,6 +204,38 @@ sequenceDiagram
   Only a connection-fatal `ConfluenceError` (401 — revoked/expired PAT) rethrows
   to abort the whole run fast rather than grinding through every page.
 
+## Transport retry delays (#1778)
+
+`ConfluenceClient.fetch` and `downloadAttachment` retry through `withRetry`
+(`confluence-client.ts`), which sleeps between a failed attempt and the next.
+That sleep runs outside the per-attempt request timeout
+(`AbortSignal.timeout(30_000)` in `fetchOnce`), so it has bounds of its own:
+`computeConfluenceRetryDelayMs` computes every sleep as
+
+```text
+min(max(retryAfterMs ?? baseDelay × 2^attempt, RETRY_DELAY_FLOOR_MS) + jitter(0–500 ms), RETRY_DELAY_CEILING_MS)
+```
+
+| Bound | Value | Why |
+|---|---|---|
+| `RETRY_DELAY_FLOOR_MS` | 1 s | One slot of the 60 RPM pacing (`acquireToken`) and the `baseDelay` default, so a `Retry-After: 0` or a tiny `baseDelay` cannot turn the ladder into a hot loop. |
+| `RETRY_DELAY_CEILING_MS` | 30 s | The per-attempt request timeout, so no sleep outlasts what one request may take; uncapped, a `Retry-After: 3600` parks the call for an hour. |
+
+- A 429's `Retry-After` replaces the backoff before the bounds apply, whether
+  delay-seconds or an HTTP-date (`parseRetryAfter`); an HTTP-date far in the
+  future is capped like any other value. An unparseable or negative value
+  falls back to the backoff.
+- The default backoff (1 s, 2 s, … plus jitter) lies inside the bounds and is
+  unchanged; a step past 30 s is capped.
+- **Deadline.** With the defaults (`maxAttempts` 3) a REST call through
+  `fetch` ends within 2 sleeps × 30 s + 3 attempts × 30 s = **150 s**,
+  whatever the server answers. Time queued for a rate-limit token
+  (`acquireToken`) comes on top: it depends on the configured RPM and the
+  requests in flight, not on any header. `downloadAttachment` sleeps within
+  the same bounds; its attempts carry their own 60 s timeout per download-URL
+  candidate. No caller passes an `AbortSignal` into `fetch`, so these bounds
+  are the deadline of a retrying call.
+
 ## Deletion reconciliation (#706)
 
 Pages removed in Confluence are reflected locally by `detectDeletedPages`, which
