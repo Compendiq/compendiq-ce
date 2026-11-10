@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
@@ -264,6 +264,11 @@ type HealthRemedy = 'index' | 'retry-index' | 'requality' | 'assistant' | null;
 /**
  * One Document-health action: a 32px ghost button whose pending state is
  * carried by the label, a spinner and `aria-busy` together.
+ *
+ * #1882: `blocked` is the server-reported policy block for this action's
+ * stage. The button stays focusable (`aria-disabled`, never `disabled`, so
+ * keyboard and screen-reader users can reach it), refuses the click, and is
+ * described by the visible sentence naming the policy reason.
  */
 function HealthAction({
   onClick,
@@ -273,6 +278,8 @@ function HealthAction({
   pendingLabel,
   testId,
   title,
+  blocked = false,
+  describedBy,
 }: {
   onClick: () => void;
   pending?: boolean;
@@ -281,16 +288,20 @@ function HealthAction({
   pendingLabel?: string;
   testId: string;
   title?: string;
+  blocked?: boolean;
+  describedBy?: string;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => { if (!blocked) onClick(); }}
       disabled={pending}
       aria-busy={pending}
+      aria-disabled={blocked || undefined}
+      aria-describedby={blocked ? describedBy : undefined}
       data-testid={testId}
       title={title}
-      className="nm-button-ghost h-8 px-3 text-xs"
+      className={cn('nm-button-ghost h-8 px-3 text-xs', blocked && POLICY_BLOCKED_ACTION_CLASS)}
     >
       {pending ? (
         <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" />
@@ -301,6 +312,13 @@ function HealthAction({
     </button>
   );
 }
+
+/**
+ * A refused action must not paint as accepted on hover/press. Opacity stays
+ * at 0.7 (never 0.45) so 13px labels keep their contrast.
+ */
+const POLICY_BLOCKED_ACTION_CLASS =
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent';
 
 // ---------- ArticleRightPane ----------
 
@@ -492,6 +510,19 @@ export function ArticleRightPane({
       remedy: null,
     };
   }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore, page?.summaryStatus, page?.aiPolicyRecovering]);
+
+  // #1882: maintenance actions follow the SERVER's verdict — the stages whose
+  // current status is `policy_blocked`, derived server-side — never the policy
+  // label, so a recovering page or a since-declared local provider is not
+  // refused here. Blocked actions stay reachable and say why.
+  const reembedBlocked = page?.aiPolicyBlockedStages?.includes('embedding') ?? false;
+  const requalityBlocked = page?.aiPolicyBlockedStages?.includes('quality') ?? false;
+  const policyBlockReasonText = page?.aiPolicyBlockReason
+    ? BLOCK_REASON_LABEL[page.aiPolicyBlockReason]
+    : 'Blocked by article AI policy or provider locality (reason not reported by the server)';
+  const policyReasonIdBase = useId();
+  const healthPolicyReasonId = `${policyReasonIdBase}-health`;
+  const railPolicyReasonId = `${policyReasonIdBase}-rail`;
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -1033,7 +1064,7 @@ export function ArticleRightPane({
   // on the next interval tick (QUALITY_CHECK_INTERVAL_MINUTES, default 60min).
   // Same silent-no-op handling as Re-sync / Re-embed.
   const handleRequality = useCallback(() => {
-    if (!id) return;
+    if (!id || requalityBlocked) return;
     requalityMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
@@ -1047,12 +1078,12 @@ export function ArticleRightPane({
       onError: (err) =>
         toast.error(err instanceof Error ? err.message : 'Quality re-check failed.'),
     });
-  }, [id, requalityMutation]);
+  }, [id, requalityBlocked, requalityMutation]);
 
   // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
   // Same silent-no-op handling as Re-sync (see comment above).
   const handleReembed = useCallback(() => {
-    if (!id) return;
+    if (!id || reembedBlocked) return;
     reembedMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
@@ -1072,7 +1103,7 @@ export function ArticleRightPane({
         }
       },
     });
-  }, [id, reembedMutation]);
+  }, [id, reembedBlocked, reembedMutation]);
 
   if (!id && !isNewPage) return null;
 
@@ -1407,7 +1438,7 @@ export function ArticleRightPane({
           className="absolute right-full z-30 mr-1 w-56 nm-popover-glass p-1.5"
           style={{ top: railOverflowTop }}
         >
-                    <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Inspector
                     </div>
                     {activeInspectorView !== 'details' && (
@@ -1437,7 +1468,7 @@ export function ArticleRightPane({
                       <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current')} />
                       <span className="truncate">{isPinned ? 'Unpin page' : 'Pin page'} · {pinHint}</span>
                     </button>
-                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Page actions
                     </div>
                     {id && (
@@ -1485,7 +1516,7 @@ export function ArticleRightPane({
                       </a>
                     )}
 
-                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
+                    <div className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-xs font-semibold text-muted-foreground">
                       Maintenance &amp; AI
                     </div>
                     {aiAutoTagAvailable && id && (
@@ -1513,10 +1544,24 @@ export function ArticleRightPane({
                         <span className="truncate">Pull from Confluence…</span>
                       </button>
                     )}
+                    {/* #1882: the rail has no Details sentence beside it, so the
+                        reason the two items below are refused is said first —
+                        seen before focus reaches them — and names only those
+                        items (Auto-tag has its own gate). */}
+                    {(reembedBlocked || requalityBlocked) && (
+                      <p id={railPolicyReasonId} className="px-2.5 pb-1.5 pt-1 text-xs text-muted-foreground" data-testid="article-rail-policy-reason">
+                        {policyBlockReasonText}.{' '}
+                        {reembedBlocked && requalityBlocked
+                          ? 'Re-embed for search and Re-check quality are unavailable.'
+                          : `${reembedBlocked ? 'Re-embed for search' : 'Re-check quality'} is unavailable.`}
+                      </p>
+                    )}
                     <button
                       onClick={handleReembed}
                       disabled={reembedMutation.isPending}
-                      className={railMenuItem}
+                      aria-disabled={reembedBlocked || undefined}
+                      aria-describedby={reembedBlocked ? railPolicyReasonId : undefined}
+                      className={cn(railMenuItem, reembedBlocked && POLICY_BLOCKED_ACTION_CLASS)}
                       aria-label="Re-embed for search"
                       title="Re-embed for search"
                       data-testid="article-reembed-rail-btn"
@@ -1531,7 +1576,9 @@ export function ArticleRightPane({
                     <button
                       onClick={handleRequality}
                       disabled={requalityMutation.isPending}
-                      className={railMenuItem}
+                      aria-disabled={requalityBlocked || undefined}
+                      aria-describedby={requalityBlocked ? railPolicyReasonId : undefined}
+                      className={cn(railMenuItem, requalityBlocked && POLICY_BLOCKED_ACTION_CLASS)}
                       aria-label="Re-check quality"
                       title="Re-check quality"
                       data-testid="article-requality-rail-btn"
@@ -2002,10 +2049,8 @@ export function ArticleRightPane({
                 change — visible prose, never a tooltip, and never inferred
                 from a bare status. */}
             {page.aiPolicyBlockedStages && page.aiPolicyBlockedStages.length > 0 && (
-              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
-                {page.aiPolicyBlockReason
-                  ? BLOCK_REASON_LABEL[page.aiPolicyBlockReason]
-                  : 'Blocked by article AI policy or provider locality (reason not reported by the server)'}
+              <p id={healthPolicyReasonId} className="mt-1.5 text-xs text-muted-foreground" data-testid="document-health-policy-reason">
+                {policyBlockReasonText}
                 {' — '}
                 {page.aiPolicyBlockedStages.map((s) => ({ embedding: 'indexing', summary: 'summary', quality: 'quality' })[s]).join(', ')}
                 {' not completed. Relaxing the policy or assigning a declared-local provider requeues eligible work.'}
@@ -2073,6 +2118,8 @@ export function ArticleRightPane({
                   label="Re-index for search"
                   pendingLabel="Queuing…"
                   testId="article-reembed-btn"
+                  blocked={reembedBlocked}
+                  describedBy={healthPolicyReasonId}
                 />
               )}
               {overallHealth.remedy !== 'requality' && (
@@ -2083,6 +2130,8 @@ export function ArticleRightPane({
                   label="Re-check quality"
                   pendingLabel="Queuing…"
                   testId="article-requality-btn"
+                  blocked={requalityBlocked}
+                  describedBy={healthPolicyReasonId}
                 />
               )}
             </div>

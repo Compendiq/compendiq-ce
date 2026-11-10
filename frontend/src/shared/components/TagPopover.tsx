@@ -148,7 +148,7 @@ export function TagPopover({
               server restores its canonical label. A refused write is named
               with the server's reason; ordinary tag edits stay. */}
           {(hasReservedLabel || policyNotice) && (
-            <div className="mt-2 space-y-1 text-[11px] text-muted-foreground" data-testid="tag-popover-policy-note">
+            <div className="mt-2 space-y-1 text-xs text-muted-foreground" data-testid="tag-popover-policy-note">
               {hasReservedLabel && (
                 <p>
                   Removing a reserved AI-policy label (all-ai, local-ai-only, no-ai) alone does not change the

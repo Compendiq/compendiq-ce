@@ -310,7 +310,12 @@ flowchart LR
   `locality_declared_by` is NULL is treated as undeclared by both the DTO
   (`localConfirmed: false`) and admission. The DTO exposes `locality`,
   `configRevision`, `localityDeclaredAt/By` and `localConfirmed` (declared
-  local *by someone* at the current revision).
+  local *by someone* at the current revision), plus a display-only
+  `localityDeclaredByName` (#1882): the declarer's display name, else
+  username, read in the same statement as the row (`DECLARER_NAME_SQL`, a
+  data-modifying CTE on create/update) and `null` whenever the decoded
+  declarer is. The admin UI shows it, never the UUID; the
+  `/locality` state (`ProviderLocalityState`) still carries only the UUID.
 - **Admission fails closed.** `admitPageForUsecase` routes `rerank`,
   `inline_completion` and `image_analysis` through their non-inheriting
   resolvers (ADR-021/027) — an unassigned stage is `stage_disabled`, never

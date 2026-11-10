@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AI policy UI polish (#1882):** provider locality declarations name the
+  declaring administrator and show a formatted date, with the time of day on
+  hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads
+  "an administrator". Locality, authentication and TLS controls use the Steel
+  accent. Re-index and Re-check quality stay focusable but unavailable while the
+  server reports their stage as policy-blocked, and they point to the policy
+  reason instead of answering "Nothing to re-embed." The tag editor's
+  reserved-label note, the provider editor's help text and the inspector's
+  collapsed-rail menu headings now meet the 13px floor.
 - **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
   fresh access token per question instead of one before the run, so a run
   longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the

@@ -24,7 +24,20 @@ interface ProviderRow {
   locality_config_revision: string | null;
   locality_declared_by: string | null;
   locality_declared_at: Date | null;
+  /** #1882 — joined in by {@link DECLARER_NAME_SQL}; never stored. */
+  locality_declared_by_name?: string | null;
 }
+
+/**
+ * #1882 — the declaring administrator's display name (else username), read in
+ * the same statement as the provider row so it always describes the row's own
+ * `locality_declared_by`. Display only: accountability and admission keep the
+ * UUID. A deleted account leaves `locality_declared_by` NULL (FK `ON DELETE
+ * SET NULL`), so the subquery yields NULL rather than a stale name.
+ */
+const DECLARER_NAME_SQL =
+  `(SELECT COALESCE(NULLIF(btrim(u.display_name), ''), u.username)
+      FROM users u WHERE u.id = p.locality_declared_by) AS locality_declared_by_name`;
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
 interface ProviderConfigRow {
@@ -78,6 +91,8 @@ function rowToDto(r: ProviderRow): LlmProvider {
     configRevision: meta.configRevision,
     localityDeclaredAt: meta.declaredAt ? meta.declaredAt.toISOString() : null,
     localityDeclaredBy: meta.declaredBy,
+    // Never a name without the decoded declarer it belongs to.
+    localityDeclaredByName: meta.declaredBy ? (r.locality_declared_by_name ?? null) : null,
     // … and the EFFECTIVE one admission applies (declaration accountable,
     // dated and made against the current config revision).
     localConfirmed: meta.effectiveLocality === 'local',
@@ -103,7 +118,9 @@ function decryptSafe(enc: string): string | null {
 }
 
 export async function listProviders(): Promise<LlmProvider[]> {
-  const r = await query<ProviderRow>(`SELECT * FROM llm_providers ORDER BY is_default DESC, name ASC`);
+  const r = await query<ProviderRow>(
+    `SELECT p.*, ${DECLARER_NAME_SQL} FROM llm_providers p ORDER BY p.is_default DESC, p.name ASC`,
+  );
   return r.rows.map(rowToDto);
 }
 
@@ -189,17 +206,23 @@ export async function createProvider(input: LlmProviderInput, actorId?: string):
   // column default (`external`) answers for every other create.
   const r = input.locality === undefined
     ? await query<ProviderRow>(
-        `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         RETURNING *`,
+        `WITH p AS (
+           INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           RETURNING *
+         )
+         SELECT p.*, ${DECLARER_NAME_SQL} FROM p`,
         base,
       )
     : await query<ProviderRow>(
-        `INSERT INTO llm_providers
-           (name, base_url, api_key, auth_type, verify_ssl, default_model,
-            locality, locality_declared_by, locality_declared_at, locality_config_revision)
-         VALUES ($1,$2,$3,$4,$5,$6, $7, $8::uuid, clock_timestamp(), 1)
-         RETURNING *`,
+        `WITH p AS (
+           INSERT INTO llm_providers
+             (name, base_url, api_key, auth_type, verify_ssl, default_model,
+              locality, locality_declared_by, locality_declared_at, locality_config_revision)
+           VALUES ($1,$2,$3,$4,$5,$6, $7, $8::uuid, clock_timestamp(), 1)
+           RETURNING *
+         )
+         SELECT p.*, ${DECLARER_NAME_SQL} FROM p`,
         [...base, input.locality, declaringActor],
       );
   await bumpProviderCacheVersion();
@@ -231,13 +254,15 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate, actor
     sets.push('locality_config_revision = config_revision');
   }
   if (sets.length === 0) {
-    const row = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
+    const row = await query<ProviderRow>(`SELECT p.*, ${DECLARER_NAME_SQL} FROM llm_providers p WHERE p.id=$1`, [id]);
     return row.rows[0] ? rowToDto(row.rows[0]) : null;
   }
   sets.push(`updated_at=NOW()`);
   vals.push(id);
   const r = await query<ProviderRow>(
-    `UPDATE llm_providers SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, vals,
+    `WITH p AS (UPDATE llm_providers SET ${sets.join(', ')} WHERE id=$${i} RETURNING *)
+     SELECT p.*, ${DECLARER_NAME_SQL} FROM p`,
+    vals,
   );
   await bumpProviderCacheVersion();
   // #1154: a changed base_url or api_key can put an entirely different model
