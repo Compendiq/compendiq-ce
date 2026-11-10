@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import {
   CLIENT_ASSET_UPLOAD_CHUNK_BYTES,
   MAX_HUNSPELL_ASSET_BYTES,
@@ -187,6 +188,8 @@ export async function writeClientAssetChunk(opts: {
   body: Buffer;
   start?: number;
   total?: number;
+  /** Client-chosen id shared by every chunk of one upload (#1784). */
+  uploadId?: string;
   root?: string;
 }): Promise<{ complete: boolean; bytes: number }> {
   const resolved = resolveClientAssetPath(opts.modelId, opts.file, opts.root);
@@ -206,26 +209,117 @@ export async function writeClientAssetChunk(opts: {
         : 'Upload exceeds 1 GiB',
     );
   }
-  await fs.mkdir(path.dirname(resolved.abs), { recursive: true });
-  if (start === 0 && start + opts.body.length === total) {
-    await fs.writeFile(resolved.abs, opts.body);
-    return { complete: true, bytes: total };
-  }
-  const part = `${resolved.abs}.part`;
-  let handle: fs.FileHandle;
+  return serializeUpload(resolved.abs, async () => {
+    await fs.mkdir(path.dirname(resolved.abs), { recursive: true });
+    return writeContiguousChunk(resolved.abs, opts.body, start, total, opts.uploadId ?? null);
+  });
+}
+
+// Concurrent PUTs for one file would interleave the `.part` bytes and its
+// session record; uploads of the same target run one chunk at a time.
+const uploadQueues = new Map<string, Promise<unknown>>();
+
+async function serializeUpload<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const current = (uploadQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(run);
+  uploadQueues.set(key, current);
   try {
-    handle = await fs.open(part, 'r+');
+    return await current;
+  } finally {
+    if (uploadQueues.get(key) === current) uploadQueues.delete(key);
+  }
+}
+
+const UploadSessionSchema = z.object({
+  total: z.number().int().nonnegative(),
+  received: z.number().int().nonnegative(),
+  uploadId: z.string().nullable(),
+});
+type UploadSession = z.infer<typeof UploadSessionSchema>;
+
+/**
+ * The upload session that owns `<file>.part`, or null when there is none.
+ * `received` is written only after those bytes were fsynced, so it — not the
+ * `.part` size, which a crash can extend over unwritten blocks — is the
+ * verified coverage. A missing or torn record means "no session".
+ */
+async function readUploadSession(session: string): Promise<UploadSession | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(session, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    handle = await fs.open(part, 'w+');
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
   try {
-    await handle.truncate(total);
-    await handle.write(opts.body, 0, opts.body.length, start);
+    const parsed = UploadSessionSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write all of `body` at `position` (retrying short writes), then fsync. */
+async function writeDurably(file: string, flags: 'w' | 'r+', body: Buffer, position: number): Promise<void> {
+  const handle = await fs.open(file, flags);
+  try {
+    let offset = 0;
+    while (offset < body.length) {
+      const { bytesWritten } = await handle.write(body, offset, body.length - offset, position + offset);
+      if (bytesWritten === 0) throw new Error('Upload write made no progress');
+      offset += bytesWritten;
+    }
+    await handle.sync();
   } finally {
     await handle.close();
   }
-  const complete = start + opts.body.length === total;
-  if (complete) await fs.rename(part, resolved.abs);
-  return { complete, bytes: start + opts.body.length };
+}
+
+const NOT_CONTIGUOUS = 'Upload range is not contiguous';
+
+/**
+ * Ranged uploads must arrive contiguously (#1784). A chunk at byte 0 starts a
+ * fresh session, discarding any earlier `.part`; every later chunk must belong
+ * to the same session (same `total` and upload id) and start at or before the
+ * bytes it has received. The installed file is replaced only by renaming a
+ * fully covered `.part`, so a gap, an interleaved upload or an interrupted
+ * upload can never publish zero-filled or foreign bytes.
+ */
+async function writeContiguousChunk(
+  abs: string,
+  body: Buffer,
+  start: number,
+  total: number,
+  uploadId: string | null,
+): Promise<{ complete: boolean; bytes: number }> {
+  const part = `${abs}.part`;
+  const session = `${part}.json`;
+  const end = start + body.length;
+  let received: number;
+  if (start === 0) {
+    await fs.rm(session, { force: true });
+    await writeDurably(part, 'w', body, 0);
+    received = end;
+  } else {
+    const current = await readUploadSession(session);
+    if (!current || current.total !== total || current.uploadId !== uploadId || start > current.received) {
+      throw new Error(NOT_CONTIGUOUS);
+    }
+    try {
+      await writeDurably(part, 'r+', body, start);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(NOT_CONTIGUOUS);
+      throw err;
+    }
+    received = Math.max(current.received, end);
+  }
+  if (received < total) {
+    const record: UploadSession = { total, received, uploadId };
+    await fs.writeFile(session, JSON.stringify(record));
+    return { complete: false, bytes: received };
+  }
+  // Retire the session before publishing: once the rename lands, nothing can
+  // fail and turn a published upload into an error response.
+  await fs.rm(session, { force: true });
+  await fs.rename(part, abs);
+  return { complete: true, bytes: total };
 }

@@ -122,6 +122,23 @@ describe('admin client-asset routes', () => {
     expect(res.statusCode).toBe(200);
     expect(await fs.readFile(path.join(tmp, 'hunspell-en_US', 'en_US.dic'), 'utf8')).toBe('DIC');
   });
+
+  it('does not let a concurrent upload continue another upload of the same file (#1784)', async () => {
+    const put = (body: string, range: string, uploadId: string) => app.inject({
+      method: 'PUT',
+      url: '/api/admin/client-assets/hunspell-en_US/files/en_US.dic',
+      headers: { 'content-type': 'application/octet-stream', 'content-range': `bytes ${range}`, 'upload-id': uploadId },
+      payload: Buffer.from(body),
+    });
+    expect((await put('AB', '0-1/4', 'upload-aaaa')).statusCode).toBe(200);
+    expect((await put('XY', '0-1/4', 'upload-bbbb')).statusCode).toBe(200);
+    const foreign = await put('CD', '2-3/4', 'upload-aaaa');
+    expect(foreign.statusCode).toBe(400);
+    expect(foreign.json().message).toMatch(/not contiguous/i);
+    expect((await put('ZW', '2-3/4', 'upload-bbbb')).json()).toEqual({ complete: true, bytes: 4 });
+    expect(await fs.readFile(path.join(tmp, 'hunspell-en_US', 'en_US.dic'), 'utf8')).toBe('XYZW');
+    expect((await put('AB', '0-1/4', 'bad id')).statusCode).toBe(400);
+  });
 });
 
 describe('admin client-asset routes require admin', () => {
