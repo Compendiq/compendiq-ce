@@ -34,10 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edits unconditionally. They apply the configured conflict policy like the
   scheduled sync: `Compendiq wins` keeps the local page, `Manual review` queues
   the Confluence version for review, and `Confluence wins` first saves the local
-  text in the page's version history and audits `SYNC_OVERWROTE_LOCAL_EDITS`.
-  The local version number no longer goes backwards, a live collaborative
-  session is not overwritten when Confluence has nothing newer, and the
-  collaborative document is refreshed whenever the body is replaced.
+  text as a version-history entry that can be viewed and restored, then audits
+  `SYNC_OVERWROTE_LOCAL_EDITS`. The local version number no longer goes
+  backwards, so a page edited while the integration was off stays ahead of
+  Confluence's number until Confluence catches up. A live collaborative session
+  is not overwritten when Confluence has nothing newer, and the collaborative
+  document is refreshed whenever the body is replaced.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads

@@ -211,11 +211,15 @@ A page carries a local edit when `local_modified_at > last_synced` — an editor
 save, an AI write-back or a draft publish, including every write made while
 the integration was off. When an inbound Confluence body meets such a page,
 the configured policy (`getSyncConflictPolicy()`, **Settings → Knowledge →
-Spaces & Sync → Conflict policy**) decides, and every inbound writer asks the
-same function: `decideConflictPolicyOnClient` in `sync-service.ts`. It runs on
-the writer's own open transaction (the writer owns `BEGIN`/`COMMIT`), takes the
-AI-policy lock, re-reads the row `FOR UPDATE` (`source = 'confluence'` only)
-and returns one outcome, first match wins:
+Spaces & Sync → Conflict policy**) decides through one function,
+`decideConflictPolicyOnClient` in `sync-service.ts`, for the two writers
+listed below. The scheduled sync's version-jump branch (Confluence's version
+ahead of the local one) does not consult it yet: it snapshots the existing
+version and upserts the incoming page (#1772 routes it through the same
+decision). The function runs on the writer's own open transaction (the writer
+owns `BEGIN`/`COMMIT`), takes the AI-policy lock, re-reads the row
+`FOR UPDATE` (`source = 'confluence'` only) and returns one outcome, first
+match wins:
 
 | Outcome | When | What happens |
 |---|---|---|
@@ -243,22 +247,39 @@ Callers:
 - **Bulk refresh** (`POST /api/pages/bulk/sync`: a page's **Re-sync** and
   **Force re-sync**): inside `withPageWriteTransaction`, after
   `lockAiPolicyForPages` and `loadAuthorizedContentWriteState` re-checked the
-  authority and revisions captured before the upstream GET. `apply_incoming`,
-  and `unchanged` without a local edit, run the routine refresh with
-  `version = GREATEST(version, upstream)`, so the local version never
-  decreases; a local edit whose body already matches upstream is left alone.
-  Before it overwrites a local edit the route inserts a `page_versions`
-  snapshot of the local version on the same transaction, and refuses the page
-  (409 `local_edit_snapshot_conflict`) if that version number already holds
-  different content. One `sync_run_id` per request stamps queued rows and
-  audit metadata, and the audits carry the requesting user. Every committed
-  outcome — kept, queued and held included — counts as `succeeded`; the
-  `{ succeeded, failed, errors }` shape is unchanged.
+  authority and revisions captured before the upstream GET.
+  - `apply_incoming`, and `unchanged` without a local edit, run the routine
+    refresh with `version = GREATEST(version, upstream)`: the local version
+    never decreases. A local edit whose body already matches upstream is left
+    alone.
+  - Before it overwrites a local edit, the route stores the local version as a
+    `page_versions` snapshot on the same transaction and gives the incoming
+    body a new live version, `GREATEST(version + 1, upstream)` — restore's
+    rule — so the snapshot is ordinary history that Version History lists,
+    serves and restores. A body-less row that opening Version History imported
+    at that number is claimed for the snapshot; a row that already holds other
+    content (title or body) refuses the page instead: it is reported in
+    `errors` (HTTP 200, `failed` + 1) and nothing is written.
+  - One `sync_run_id` per request stamps queued rows and audit metadata, and
+    the audits carry the requesting user. Every committed outcome — kept,
+    queued and held included — counts as `succeeded`; the
+    `{ succeeded, failed, errors }` shape is unchanged.
 
-**Snapshot asymmetry.** Only the bulk refresh snapshots the local version
-before a `confluence-wins` overwrite of a local edit. The scheduled
-version-unchanged branch does not; the scheduled version-jump branch snapshots
-the existing version before every upsert.
+**Snapshot asymmetry.** Only the bulk refresh keeps a reachable snapshot of
+the local version before a `confluence-wins` overwrite of a local edit. The
+scheduled version-unchanged branch takes none. The scheduled version-jump
+branch saves the existing version with `ON CONFLICT DO NOTHING`, so it skips
+the snapshot silently when that number is already taken in history, for
+example by a row imported from Confluence.
+
+**Version alignment.** Publishing from Compendiq expects `pages.version` to
+equal Confluence's version: the editor push sends `pages.version + 1`, and the
+collaborative commit refuses when the two differ. A local edit made while the
+integration was off moves the local number ahead of Confluence's, and a
+Re-sync no longer moves it back (the version never decreases), so such a page
+cannot be published from Compendiq until Confluence's version catches up; the
+scheduled sync then realigns it. A `confluence-wins` overwrite that has to
+bump past Confluence's number (Confluence not ahead) widens that gap by one.
 
 ## Deletion reconciliation (#706)
 
@@ -882,7 +903,7 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 
 ## Key files
 
-- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`; `decideConflictPolicyOnClient` / `recordConflictPolicyAudit`, the conflict policy every inbound writer shares
+- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`; `decideConflictPolicyOnClient` / `recordConflictPolicyAudit`, the conflict policy shared by the version-unchanged branch and the bulk refresh
 - `backend/src/routes/knowledge/pages-crud.ts` — `POST /api/pages/bulk/sync`, the bulk refresh
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
