@@ -66,12 +66,11 @@ sequenceDiagram
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
+            S->>DB: version jump: INSERT page_versions (snapshot of the locked row)
             S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
             S->>DB: version jump: audit SYNC_OVERWROTE_LOCAL_EDITS<br/>only if a local edit was overwritten (#35;1772)
             S->>R: HSET sync:status:{user} progress
         end
-
-        S->>DB: INSERT/UPDATE page_versions (snapshot)
 
         Note over S,DB: Deletion reconciliation (#35;706) — every sync, incremental too
         S->>CL: getAllPageIds(spaceKey)
@@ -169,25 +168,36 @@ sequenceDiagram
   `source = 'confluence'` row is behind the fetched upstream version, `syncPage`
   applies the sync-conflict policy *before* it cleans the page's attachment
   cache or downloads anything. One short transaction takes the AI-policy lock and
-  `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). With a local edit
-  (`local_modified_at > last_synced`), `compendiq-wins` keeps the row
-  (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues the
-  incoming version (`pending_sync_versions`, `conflict_pending`,
-  `queued_for_review`). Neither cleans, downloads, snapshots, upserts or resets
-  collaborative state, and restriction sync still runs. Otherwise
-  (`confluence-wins`, or no local edit, which is a routine update with no
-  audit) the cache is cleaned and re-downloaded, the locked row is saved to
-  `page_versions`, and the upsert replaces it. `SYNC_OVERWROTE_LOCAL_EDITS` is
-  written after the commit only if a local edit was overwritten. Two checks
-  leave the page to the next walk. The upsert re-reads the row under
-  `FOR UPDATE` and writes nothing if its `version` or `local_modified_at` moved
-  since the decision (for example a local save during the download). The
-  decision itself stops if the locked row is no longer behind upstream, so a
-  concurrent newer write is never moved back. A kept or queued row keeps its
-  older version, so every walk of the page re-enters this branch:
-  `compendiq-wins` audits again and `manual-review` queues another version on
-  each such run. This is deliberate and matches the steady state for diverged
-  local content at an unchanged upstream version.
+  `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). A local edit
+  (`local_modified_at > last_synced`) counts when the local body differs from
+  the incoming one, and also when the bodies are equal but the local title
+  differs (a local rename); a local save that changed neither is routine. With
+  a local edit, `compendiq-wins` keeps the row (`SYNC_CONFLICT_DETECTED`,
+  `kept_local`) and `manual-review` queues the incoming version
+  (`pending_sync_versions`, `conflict_pending`, `queued_for_review`). Neither
+  cleans, downloads, snapshots, upserts or resets collaborative state, and
+  restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
+  which is a routine update with no audit) the cache is cleaned and
+  re-downloaded, the locked row is saved to `page_versions`, and the upsert
+  replaces it with Confluence's version number, which is always above the
+  saved local one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit,
+  and before the collaborative document is reconciled, only if a local edit
+  was overwritten. The snapshot uses `ON CONFLICT DO NOTHING`: if that version
+  number is already taken in the history (for example by a body-less row that
+  opening Version History imported), no entry is added. Two checks leave the
+  page to the next walk. The upsert re-reads the row under `FOR UPDATE` and
+  writes nothing if its `version` or `local_modified_at` moved since the
+  decision (for example a local save during the download). The decision itself
+  stops if the locked row is no longer behind upstream, so a concurrent newer
+  write is never moved back. A kept or queued row keeps its older version, so
+  every walk of the page re-enters this branch: `compendiq-wins` audits again
+  and `manual-review` queues another version on each such run. Incremental runs
+  re-fetch pages modified upstream in the last 24 hours, and the
+  missing-attachment retry re-walks a draw.io page on every incremental run
+  (its stored storage renders differently from the kept local body), so such a
+  page records the conflict twice per run inside that window and once per run
+  after it, until the conflict is resolved. This is deliberate and matches the
+  steady state for diverged local content at an unchanged upstream version.
 - **No candidate side channel.** A normal Confluence fetch remains a normal
   sync. The unshipped frozen-Confluence capture/refresh/preview/accept/retention
   workflow and its EE adapter were removed; this flow must not recreate them.
