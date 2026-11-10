@@ -856,6 +856,9 @@ async function syncPage(
   // Clear stale attachment cache when an existing page has a new version,
   // so updated diagrams/images are re-downloaded rather than served from cache.
   if (existing.rows.length > 0) {
+    // Selective (#1773): what the incoming body references goes, so it is
+    // fetched fresh, and so does what nothing references; a file only the
+    // draft, the local body or the version history still names stays.
     await pruneVersionJumpAttachmentCache({
       pageId: existing.rows[0]!.id,
       attachmentKey: page.id,
