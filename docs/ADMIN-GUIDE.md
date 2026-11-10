@@ -615,7 +615,9 @@ RAG retrieval in CE already post-filters candidate chunks by the user's readable
 
 **Sync cadence and leak-window behaviour**
 
-Restriction changes in Confluence take effect when a sync next re-reads the affected page. Incremental runs (every `SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window (the space's last sync minus a 24 h overlap); a full walk re-reads every page but only runs on a space's first sync or after it went ≥24 h without a successful sync. A restriction-only change on a page nobody edits is therefore applied at the next full walk or the next edit of the page. Until then, RAG answers and page views reflect the previous restrictions. This is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
+Restriction changes in Confluence take effect when a sync next re-reads the affected page. Incremental runs (every `SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window (the space's last sync minus a 24 h overlap); a full walk re-reads every page but only runs on a space's first sync or after it went ≥24 h without a successful sync. A restriction-only change on a page nobody edits — a new restriction, a restriction removed, or a user de-listed — is therefore applied at the next full walk or the next edit of the page; on a healthy schedule, where every run succeeds, that means the next edit. Until then, RAG answers and page views reflect the previous restrictions. A sync that fails partway still applies the de-listings of the pages it already re-read.
+
+While a run is in progress, page restrictions are mirrored page by page as the run reaches each page: this is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
 
 **Sync duration impact**
 
