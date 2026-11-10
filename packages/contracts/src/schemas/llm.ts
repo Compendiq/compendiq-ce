@@ -38,6 +38,36 @@ export const PrepareImageResponseSchema = z.object({
   fileSize: z.number().int().nonnegative(),
 });
 
+/**
+ * #1767 — bounds of an explicit web-search query, shared by the four LLM
+ * request schemas below. They are the mcp-docs sidecar's limits: the
+ * `search_web` tool declares `query: z.string().min(1).max(200)`
+ * (mcp-docs/src/index.ts) and its sanitizer enforces MAX_QUERY_LENGTH = 200
+ * and MAX_WORD_COUNT = 30 (mcp-docs/src/security/query-sanitizer.ts) as a
+ * data-leakage control. A query the contract accepts must reach the tool, so
+ * the contract refuses up front what the sidecar would refuse — never by
+ * truncating in the backend. Word counting on the raw (trimmed) value is
+ * always >= the sidecar's count after sanitization (the sanitizer only
+ * removes text), so an accepted query cannot trip the sidecar's word limit.
+ * The derived default queries the routes build when `searchQuery` is absent
+ * are a separate path and keep their own `.slice(0, 200)`.
+ *
+ * The sidecar does not depend on this package, so both sides are pinned with
+ * literal tests: schemas/llm.test.ts here; query-sanitizer.test.ts and
+ * search-web-limits.test.ts in mcp-docs. Never widen one side alone.
+ */
+export const WEB_SEARCH_QUERY_MAX_CHARS = 200;
+export const WEB_SEARCH_QUERY_MAX_WORDS = 30;
+
+export const WebSearchQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(WEB_SEARCH_QUERY_MAX_CHARS)
+  .refine((value) => value.split(/\s+/).length <= WEB_SEARCH_QUERY_MAX_WORDS, {
+    message: `keywords only (max ${WEB_SEARCH_QUERY_MAX_WORDS} words)`,
+  });
+
 export const ImproveRequestSchema = z.object({
   content: z.string().min(1),
   type: ImprovementTypeSchema,
@@ -58,7 +88,7 @@ export const ImproveRequestSchema = z.object({
   referenceText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
-  searchQuery: z.string().max(500).optional(),
+  searchQuery: WebSearchQuerySchema.optional(),
   imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
@@ -89,7 +119,7 @@ export const GenerateRequestSchema = z.object({
   documentText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
-  searchQuery: z.string().max(500).optional(),
+  searchQuery: WebSearchQuerySchema.optional(),
   imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
@@ -123,7 +153,7 @@ export const SummarizeRequestSchema = z.object({
   includeSubPages: z.boolean().optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
-  searchQuery: z.string().max(500).optional(),
+  searchQuery: WebSearchQuerySchema.optional(),
 });
 
 /**
@@ -159,7 +189,7 @@ export const AskRequestSchema = z.object({
   thinking: z.boolean().optional(),
   externalUrls: z.array(z.string().url()).max(5).optional(),
   searchWeb: z.boolean().optional(),
-  searchQuery: z.string().max(500).optional(),
+  searchQuery: WebSearchQuerySchema.optional(),
   /**
    * #1112 — multi-query expansion ("deep search"). Per-request and DEFAULT
    * OFF, exactly like `searchWeb` and `thinking` above: it costs one extra

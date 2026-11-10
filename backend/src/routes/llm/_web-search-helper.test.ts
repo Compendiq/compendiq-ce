@@ -220,6 +220,24 @@ describe('_web-search-helper', () => {
       expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10);
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 8000);
     });
+
+    it('forwards a 200-character query verbatim and maps two sidecar results to two sources (#1767)', async () => {
+      // The contract bounds searchQuery to the sidecar's 200 chars; the
+      // backend must never shorten what passed it.
+      const query200 = 'kubernetes scaling '.repeat(10) + 'autoscaler';
+      expect(query200).toHaveLength(200);
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([
+        { url: 'https://example.test/1', title: 'R1', snippet: 'S1' },
+        { url: 'https://example.test/2', title: 'R2', snippet: 'S2' },
+      ]);
+      mockFetchDocumentation.mockResolvedValue({ url: '', title: '', markdown: 'content' });
+
+      const { sources } = await fetchWebSources(query200, 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith(query200, 'user-1', 5);
+      expect(sources.map((s) => s.url)).toEqual(['https://example.test/1', 'https://example.test/2']);
+    });
   });
 
   describe('formatWebContext', () => {
