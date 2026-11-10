@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, cleanup } from '@testing-library/react';
-import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
+import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
@@ -364,5 +364,129 @@ describe('useCollabProvider — real Yjs and WebSocket protocol', () => {
     expect(reconnect.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
     expect(result.current.ydoc).toBe(draft);
     expect(result.current.error).toBeNull();
+  });
+
+  it.each([
+    { code: 4403, reason: 'rate_limited', error: 'rate_limited', readOnlyReason: null },
+    { code: 4403, reason: 'flag_off', error: 'flag_off', readOnlyReason: null },
+    { code: 4403, reason: 'readonly', error: 'join_interrupted', readOnlyReason: null },
+    { code: 4403, reason: 'forbidden', error: 'forbidden', readOnlyReason: 'permission_loss' },
+    { code: 4403, reason: '', error: 'forbidden', readOnlyReason: 'permission_loss' },
+    { code: 4403, reason: 'denied', error: 'forbidden', readOnlyReason: 'permission_loss' },
+    { code: 4404, reason: 'not_found', error: 'not_found', readOnlyReason: 'not_found' },
+  ])('maps close $code "$reason" before the first sync to $error (#1895)', async ({ code, reason, error, readOnlyReason }) => {
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); socket.close(code, reason); });
+    expect(result.current.error).toBe(error);
+    expect(result.current.readOnlyReason).toBe(readOnlyReason);
+    expect(result.current.writable).toBe(false);
+    expect(result.current.connected).toBe(false);
+    // A terminal refusal never reconnects on its own, not even after the window.
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(Socket.instances).toHaveLength(1);
+  });
+
+  it('lets a rate-limited join retry only after the server upgrade window (#1895)', async () => {
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '5',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); socket.close(4403, 'rate_limited'); });
+    expect(result.current.error).toBe('rate_limited');
+    expect(result.current.canRetry).toBe(false);
+    act(() => { result.current.retry(); });
+    expect(Socket.instances).toHaveLength(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(COLLAB_UPGRADE_WINDOW_SEC * 1000 - 1); });
+    expect(result.current.canRetry).toBe(false);
+    act(() => { result.current.retry(); });
+    expect(Socket.instances).toHaveLength(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(result.current.canRetry).toBe(true);
+    act(() => { useAuthStore.getState().setAuth('jwt-new', user); });
+    expect(Socket.instances).toHaveLength(1);
+    act(() => { result.current.retry(); });
+    expect(Socket.instances).toHaveLength(2);
+    const rejoin = Socket.instances[1]!;
+    expect(rejoin.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-new']);
+    expect(new URL(rejoin.url).searchParams.get('expectedLifecycleRevision')).toBe('5');
+    expect(result.current.error).toBeNull();
+    expect(result.current.canRetry).toBe(false);
+  });
+
+  it('retries an interrupted join at once, and never for another account (#1895)', () => {
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); socket.close(4403, 'readonly'); });
+    expect(result.current.error).toBe('join_interrupted');
+    expect(result.current.canRetry).toBe(true);
+
+    const other = { ...user, id: '00000000-0000-4000-8000-000000000002', username: 'other' };
+    act(() => { useAuthStore.getState().setAuth('jwt-other', other); });
+    act(() => { result.current.retry(); });
+    expect(Socket.instances).toHaveLength(1);
+
+    act(() => { useAuthStore.getState().setAuth('jwt-old', user); });
+    act(() => { result.current.retry(); });
+    expect(Socket.instances).toHaveLength(2);
+    const rejoin = Socket.instances[1]!;
+    act(() => { rejoin.open(); hydrate(rejoin, 'Joined after retry'); });
+    expect(result.current.synced).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(result.current.ydoc!.getText('draft').toString()).toBe('Joined after retry');
+  });
+
+  it.each(['readonly', 'rate_limited', 'flag_off', 'forbidden'])(
+    'keeps a 4403 "%s" after the first sync on the read-only draft path (#1895)',
+    (reason) => {
+      const { result } = renderHook(() => useCollabProvider({
+        pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+      }));
+      const socket = Socket.instances[0]!;
+      act(() => {
+        socket.open();
+        hydrate(socket, 'Synced draft');
+        control(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+      });
+      const draft = result.current.ydoc!;
+      act(() => { draft.getText('draft').insert(12, ' with edits'); });
+      act(() => { socket.close(4403, reason); });
+      expect(result.current.error).toBe('forbidden');
+      expect(result.current.readOnlyReason).toBe('permission_loss');
+      expect(result.current.ydoc).toBe(draft);
+      expect(draft.getText('draft').toString()).toBe('Synced draft with edits');
+      expect(result.current.canRetry).not.toBe(true);
+    },
+  );
+
+  it.each([
+    [1006, 'offline'],
+    [1013, 'join_backlog'],
+    [1001, 'internal'],
+  ])('reports a transient close %i before the first sync as reconnecting until it syncs (#1895)', async (code, reason) => {
+    const { result } = renderHook(() => useCollabProvider({
+      pageId: '42', enabled: true, expectedLifecycleRevision: '1',
+    }));
+    const socket = Socket.instances[0]!;
+    act(() => { socket.open(); socket.close(code, reason); });
+    expect(result.current.reconnecting).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(result.current.readOnlyReason).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const reconnect = Socket.instances[1]!;
+    act(() => { reconnect.open(); hydrate(reconnect); });
+    expect(result.current.synced).toBe(true);
+    expect(result.current.reconnecting).toBe(false);
+
+    // After the first sync a transient close is the offline path, not a join problem.
+    act(() => { reconnect.close(1006, 'offline'); });
+    expect(result.current.reconnecting).toBe(false);
   });
 });

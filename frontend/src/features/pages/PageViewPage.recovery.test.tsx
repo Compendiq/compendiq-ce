@@ -6,7 +6,8 @@ import { LazyMotion, domAnimation } from 'framer-motion';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
-import { CollabCommitSchema } from '@compendiq/contracts';
+import { COLLAB_UPGRADE_WINDOW_SEC, CollabCommitSchema } from '@compendiq/contracts';
+import { toast } from 'sonner';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
@@ -147,7 +148,7 @@ function TestShell() {
   );
 }
 
-function renderPage() {
+function renderPage(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -160,16 +161,22 @@ function renderPage() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return client;
 }
 
-async function joinWritableSession() {
+/** Clicks Edit with collaboration on and returns the first, not yet open, socket. */
+async function startCollabEdit(): Promise<Socket> {
   expect(Socket.instances).toHaveLength(0);
   await waitFor(() => {
     expect(fetchMock.mock.calls.some(([url]) => url === '/api/collab/config')).toBe(true);
   });
   fireEvent.click(await screen.findByRole('button', { name: /^Edit/ }));
   await waitFor(() => expect(Socket.instances).toHaveLength(1));
-  const socket = Socket.instances[0]!;
+  return Socket.instances[0]!;
+}
+
+async function joinWritableSession() {
+  const socket = await startCollabEdit();
   act(() => {
     socket.open();
     synchronize(socket);
@@ -717,5 +724,199 @@ describe('PageViewPage save and collaboration recovery', () => {
     });
     expect(screen.getByLabelText('Page title')).toHaveValue('Draft that must survive');
     expect(screen.getByText('This editing session is now read-only')).toBeInTheDocument();
+  });
+});
+
+describe('collaborative join before the first sync (#1895)', () => {
+  const pageReads = () => fetchMock.mock.calls.filter(
+    ([url, init]) => url === '/api/pages/42' && (init?.method ?? 'GET') === 'GET',
+  ).length;
+
+  it('shows one join message, no read-only banner and no Download draft when the first join is refused', async () => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => { socket.open(); socket.close(4403, 'forbidden'); });
+
+    expect(await screen.findByTestId('collab-join-error')).toHaveTextContent('You cannot join this collaborative session.');
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your open draft remains below/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download draft' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+    expect(screen.getByText('Tags are read-only')).toBeInTheDocument();
+  });
+
+  it('keeps Retry inert for a rate-limited join until the server window has passed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderPage();
+      const socket = await startCollabEdit();
+      act(() => { socket.open(); socket.close(4403, 'rate_limited'); });
+
+      expect(await screen.findByTestId('collab-join-error'))
+        .toHaveTextContent('Too many connection attempts. Retry becomes available after a minute.');
+      expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+      const retry = screen.getByRole('button', { name: 'Retry' });
+      // Unavailable, never native `disabled`: a disabled control drops focus.
+      expect(retry).toHaveAttribute('aria-disabled', 'true');
+      expect(retry).toBeEnabled();
+      retry.focus();
+      fireEvent.click(retry);
+      expect(Socket.instances).toHaveLength(1);
+      expect(retry).toHaveFocus();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(COLLAB_UPGRADE_WINDOW_SEC * 1000); });
+      expect(screen.getByTestId('collab-join-error')).toHaveTextContent('Too many connection attempts. You can retry now.');
+      expect(retry).not.toHaveAttribute('aria-disabled');
+      fireEvent.click(retry);
+      await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries an interrupted join from the editor slot and rehomes focus to the editor column', async () => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => { socket.open(); socket.close(4403, 'readonly'); });
+
+    expect(await screen.findByTestId('collab-join-error'))
+      .toHaveTextContent('The collaborative session closed before it finished loading.');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).not.toHaveAttribute('aria-disabled');
+    retry.focus();
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    expect(screen.getByRole('button', { name: 'Retrying…' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByTestId('collab-connecting')).toHaveTextContent('Connecting to the collaborative session…');
+
+    const rejoin = Socket.instances[1]!;
+    act(() => {
+      rejoin.open();
+      synchronize(rejoin);
+      sendControl(rejoin, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    await waitFor(() => expect(screen.getByTestId('article-editor-column')).toHaveFocus());
+  });
+
+  it('keeps title, tags and Save locked until the first sync even after writable admission', async () => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => {
+      socket.open();
+      sendControl(socket, lifecycle('1'));
+      sendControl(socket, { type: 'writable_admission', lifecycleRevision: '1' });
+    });
+
+    expect(await screen.findByTestId('collab-connecting')).toHaveTextContent('Connecting to the collaborative session…');
+    expect(screen.getByLabelText('Page title')).toHaveAttribute('readonly');
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+    expect(screen.getByText('Tags are read-only')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add tags' })).not.toBeInTheDocument();
+
+    const info = vi.spyOn(toast, 'info');
+    fireEvent.keyDown(document, { key: 's', code: 'KeyS', ctrlKey: true });
+    expect(info).toHaveBeenCalledWith('There is nothing to save yet: the collaborative session has not loaded.');
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/pages/42/collab/commit')).toBe(false);
+
+    act(() => synchronize(socket));
+    await waitFor(() => expect(screen.getByLabelText('Page title')).not.toHaveAttribute('readonly'));
+    expect(screen.getByTestId('save-page-btn')).toBeEnabled();
+  });
+
+  it.each([
+    [1006, 'offline'],
+    [1013, 'join_backlog'],
+  ])('names a transient close %i before the first sync as a connection problem', async (code, reason) => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => { socket.open(); socket.close(code, reason); });
+
+    expect(await screen.findByTestId('collab-connecting'))
+      .toHaveTextContent('Could not connect to the collaborative session. Retrying…');
+    expect(screen.queryByTestId('collab-join-error')).not.toBeInTheDocument();
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      refusal: 'writable_refused',
+      refuse: (socket: Socket) => sendControl(socket, {
+        type: 'writable_refused',
+        reason: 'lifecycle_revision_stale',
+        expectedLifecycleRevision: '1',
+        currentLifecycleRevision: '2',
+      }),
+      message: 'This page changed while the editor was opening. Close the editor and open it again to edit the current version.',
+      refetchesPage: true,
+    },
+    {
+      refusal: 'permission_loss',
+      refuse: (socket: Socket) => sendControl(socket, { type: 'permission_loss', reason: 'edit_permission_revoked' }),
+      message: 'You can view this page but cannot edit it.',
+      refetchesPage: false,
+    },
+    {
+      refusal: 'frozen lifecycle',
+      refuse: (socket: Socket) => sendControl(socket, lifecycle('2', true)),
+      message: 'This page is frozen, so it cannot be edited.',
+      refetchesPage: true,
+    },
+    {
+      refusal: 'doc_reset close',
+      refuse: (socket: Socket) => socket.close(1001, 'doc_reset'),
+      message: 'This page was replaced while the editor was opening. Close the editor and open it again to edit the current version.',
+      refetchesPage: true,
+    },
+  ])('names a pre-sync $refusal refusal without a draft', async ({ refuse, message, refetchesPage }) => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => socket.open());
+    const readsBefore = pageReads();
+    act(() => refuse(socket));
+
+    expect(await screen.findByTestId('collab-join-error')).toHaveTextContent(message);
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download draft' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-page-btn')).toBeDisabled();
+    await waitFor(() => expect(pageReads() > readsBefore).toBe(refetchesPage));
+  });
+
+  it('keeps the read-only draft treatment for a 4403 readonly after the first sync', async () => {
+    renderPage();
+    const socket = await joinWritableSession();
+    await pasteBodyText('Synced draft body');
+    act(() => socket.close(4403, 'readonly'));
+
+    expect(await screen.findByText('This editing session is now read-only')).toBeInTheDocument();
+    expect(screen.getByText(/Your open draft remains below/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download draft' })).toBeInTheDocument();
+    expect(document.querySelector('.ProseMirror')).toHaveTextContent('Synced draft body');
+    expect(screen.queryByTestId('collab-join-error')).not.toBeInTheDocument();
+  });
+
+  it('refetches the collaboration config after flag_off so reopening the editor edits locally', async () => {
+    const client = renderPage();
+    const socket = await startCollabEdit();
+    collabEnabled = false;
+    act(() => { socket.open(); socket.close(4403, 'flag_off'); });
+
+    expect(await screen.findByTestId('collab-join-error')).toHaveTextContent(
+      'Collaborative editing has been turned off. Close the editor and open it again to edit this page.',
+    );
+    expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
+    expect(screen.queryByText('This editing session is now read-only')).not.toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(['collab-config'])).toEqual({ enabled: false }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Edit/ }));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    });
+    expect(Socket.instances).toHaveLength(1);
   });
 });

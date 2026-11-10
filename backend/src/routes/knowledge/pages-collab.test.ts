@@ -20,6 +20,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
+import * as awarenessProtocol from 'y-protocols/awareness';
 import { WebSocket as NodeWs } from 'ws';
 
 vi.mock('node:dns/promises', () => ({
@@ -36,7 +37,7 @@ import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
-import { COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
+import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
@@ -63,6 +64,7 @@ const MESSAGE_SYNC = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
 const MESSAGE_AWARENESS = 1;
+const MESSAGE_QUERY_AWARENESS = 3;
 
 let app: FastifyInstance;
 const writableSessionRevisions = new WeakMap<object, string>();
@@ -459,6 +461,8 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened).toBe(true);
     expect(closed.code).toBe(4403);
+    // The client parses this reason before the first sync (#1895).
+    expect(closed.reason).toBe('flag_off');
   });
 
   it('missing / folder / trashed page → 4404 at join', async () => {
@@ -621,6 +625,7 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
     ws.send(update);
     const closed = await waitClose(ws);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('readonly');
   });
 });
 
@@ -759,12 +764,6 @@ describe('GET /api/collab/:pageId route options (#1444)', () => {
     expect(src).toMatch(/rateLimit:\s*false/);
     expect(src).not.toMatch(/rateLimit:\s*\{\s*max:\s*UPGRADE_LIMIT_PER_MIN/);
   });
-
-  it('pending frames are capped in the WS join handler', () => {
-    const src = fs.readFileSync(fileURLToPath(new URL('./pages-collab.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/pending\.length\s*>=\s*2/);
-    expect(src).toMatch(/pending\.length = 0/);
-  });
 });
 
 describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
@@ -778,6 +777,154 @@ describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened, 'must complete 101 before refusing').toBe(true);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('rate_limited');
+  });
+
+  it('counts upgrades in a COLLAB_UPGRADE_WINDOW_SEC window, the wait the client Retry honours (#1895)', async () => {
+    const { token, userId } = await createUser('collab_rl_window');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const ws = await openAndSync(pageId, token);
+    const ttl = await getRedisClient()!.ttl(`collab:upgrade:${userId}`);
+    expect(ttl).toBeGreaterThan(COLLAB_UPGRADE_WINDOW_SEC - 5);
+    expect(ttl).toBeLessThanOrEqual(COLLAB_UPGRADE_WINDOW_SEC);
+    ws.close();
+    await waitClose(ws);
+  });
+});
+
+/** Own-clientID awareness update carrying a marker the server must keep. */
+function encodeAwarenessProbe(): { frame: Uint8Array; clientId: number } {
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awareness.setLocalState({ probe: 'pre-live' });
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+  encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, [doc.clientID]));
+  const probe = { frame: encoding.toUint8Array(encoder), clientId: doc.clientID };
+  awareness.destroy();
+  doc.destroy();
+  return probe;
+}
+
+function awarenessFrameHasProbe(frame: Uint8Array, clientId: number): boolean {
+  if (frame[0] !== MESSAGE_AWARENESS) return false;
+  const decoder = decoding.createDecoder(frame);
+  decoding.readVarUint(decoder);
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), 'test');
+  const found = awareness.getStates().get(clientId)?.probe === 'pre-live';
+  awareness.destroy();
+  doc.destroy();
+  return found;
+}
+
+describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
+  /**
+   * Holds the join inside `attachSocket` until the server has read
+   * `releaseAfter` frames, so every frame the test sends arrives before the
+   * socket goes live.
+   */
+  function holdJoinUntilFrames(releaseAfter: number) {
+    const runtime = getDefaultCollabRuntime();
+    if (!runtime) throw new Error('collab runtime is not initialised');
+    const attach = runtime.attachSocket;
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const spy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (pageId, socket) => {
+      let received = 0;
+      // Registered after the route's own listener, so the route has already
+      // buffered (or refused) each frame this counts.
+      socket.ws.on('message', () => {
+        received += 1;
+        if (received === releaseAfter) release.resolve();
+      });
+      entered.resolve();
+      await release.promise;
+      return attach(pageId, socket);
+    });
+    return {
+      entered: entered.promise,
+      release: () => release.resolve(),
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  it('keeps 3 frames sent before the join completes and applies them in order after live', async () => {
+    const { token, userId } = await createUser('collab_prelive_order');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(3);
+    try {
+      const revision = await pageLifecycleRevision(pageId);
+      const ws = openWhatwg(pageId, token, `?expectedLifecycleRevision=${encodeURIComponent(revision)}`);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // y-websocket's own pre-live traffic plus one more frame. The replies
+      // prove the order: F2's snapshot holds F1's state, and comes before
+      // F3's SyncStep2.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      ws.send(encodeSyncStep1(new Y.Doc()));
+
+      const snapshotIndex = () => frames.findIndex((frame) => awarenessFrameHasProbe(frame, probe.clientId));
+      const syncStep2Index = () => frames.findIndex((frame) => frame[0] === MESSAGE_SYNC && frame[1] === SYNC_STEP2);
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshotIndex() < 0 || syncStep2Index() < 0) {
+          throw new Error('replies to the buffered frames are pending');
+        }
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshotIndex()).toBeGreaterThanOrEqual(0);
+      expect(snapshotIndex()).toBeLessThan(syncStep2Index());
+      expect(frames.some((frame) => decodeControl(frame)?.type === 'writable_admission')).toBe(true);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  // The gateway buffers at most 64 frames and 1 MiB before live
+  // (docs/architecture/12-realtime-collaboration.md).
+  const largeFrame = new Uint8Array(600 * 1024);
+  largeFrame[0] = MESSAGE_AWARENESS;
+
+  it.each([
+    { budget: 'frame count', frames: Array.from({ length: 65 }, () => new Uint8Array([MESSAGE_QUERY_AWARENESS])) },
+    { budget: 'byte budget', frames: [largeFrame, largeFrame] },
+  ])('closes an over-full pre-live buffer ($budget) with 1013 join_backlog, never 4403', async ({ frames }) => {
+    const { token, userId } = await createUser('collab_prelive_backlog');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(frames.length);
+    try {
+      const ws = openWhatwg(pageId, token);
+      await waitOpen(ws);
+      await join.entered;
+      for (const frame of frames) ws.send(frame);
+      const closed = await waitClose(ws, 2_000);
+      expect({ code: closed.code, reason: closed.reason }).toEqual({ code: 1013, reason: 'join_backlog' });
+    } finally {
+      join.release();
+      join.restore();
+    }
   });
 });
 
