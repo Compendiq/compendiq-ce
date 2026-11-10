@@ -609,58 +609,124 @@ describe('ConfluenceClient', () => {
   });
 
   describe('getPageAttachments pagination', () => {
-    it('combines results across multiple pages and stops when last page is partial', async () => {
+    const attachments = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `att-${from + i}`,
+        title: `attachment-${from + i}.png`,
+        mediaType: 'image/png',
+        _links: { download: `/download/att-${from + i}.png` },
+      }));
+
+    /**
+     * Fake attachment listing over `fixture`: answers every request from its own
+     * `start` offset with at most `pageSize(start)` items, whatever `limit` asked
+     * for, and advertises `_links.next` while items remain — how Confluence DC
+     * pages a listing it caps below the requested limit (#1777).
+     */
+    const serveAttachments = (fixture: readonly unknown[], pageSize: (start: number) => number) => {
+      mockRequest.mockImplementation(async (url) => {
+        const params = new URL(String(url)).searchParams;
+        const start = Number(params.get('start'));
+        const limit = Number(params.get('limit'));
+        const results = fixture.slice(start, start + Math.min(limit, pageSize(start)));
+        const nextStart = start + results.length;
+        const body = {
+          results,
+          start,
+          limit,
+          size: results.length,
+          _links: nextStart < fixture.length
+            ? { next: `/rest/api/content/page/child/attachment?limit=${limit}&start=${nextStart}` }
+            : {},
+        };
+        return { statusCode: 200, headers: {}, body: { text: async () => JSON.stringify(body) } } as never;
+      });
+    };
+
+    /** `start` / `limit` query parameter of every request so far, in call order. */
+    const requestedParam = (name: 'start' | 'limit') =>
+      mockRequest.mock.calls.map(([url]) => new URL(String(url)).searchParams.get(name));
+
+    it('follows _links.next across pages and advances by the returned count, not the requested limit (#1777)', async () => {
       const client = new ConfluenceClient(baseUrl, pat);
 
-      // First page: exactly 100 results (full page — must fetch next)
-      const firstPageResults = Array.from({ length: 100 }, (_, i) => ({
-        id: `att-${i}`,
-        title: `attachment-${i}.png`,
-        mediaType: 'image/png',
-        _links: { download: `/download/att-${i}.png` },
-      }));
+      // 160 attachments: a full page of 100, then a page the server cut to 30
+      // while still advertising `_links.next`, then the last 30. A short page is
+      // not the end — the old `size < limit` stop lost the third page — and the
+      // next offset is 100 + 30, not 100 + the requested limit.
+      const fixture = attachments(0, 160);
+      serveAttachments(fixture, (start) => (start === 100 ? 30 : 100));
 
-      // Second page: 30 results (partial — stop here)
-      const secondPageResults = Array.from({ length: 30 }, (_, i) => ({
-        id: `att-${100 + i}`,
-        title: `attachment-${100 + i}.png`,
-        mediaType: 'image/png',
-        _links: { download: `/download/att-${100 + i}.png` },
-      }));
+      const result = await client.getPageAttachments('page-42');
 
+      expect(result.results).toHaveLength(160);
+      expect(result.results.map((a) => a.id)).toEqual(fixture.map((a) => a.id));
+      expect(result.size).toBe(160);
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+
+      const firstUrl = mockRequest.mock.calls[0][0] as string;
+      expect(firstUrl).toContain('limit=100');
+      expect(firstUrl).toContain('/child/attachment');
+      expect(requestedParam('start')).toEqual(['0', '100', '130']);
+    });
+
+    it('returns all 60 unique attachments when the server clamps every page to 25 (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const fixture = attachments(0, 60);
+      serveAttachments(fixture, () => 25);
+
+      const result = await client.getPageAttachments('page-60');
+
+      expect(result.results).toHaveLength(60);
+      const ids = result.results.map((a) => a.id);
+      expect(new Set(ids).size).toBe(60);
+      expect(ids).toEqual(fixture.map((a) => a.id));
+      expect(result.size).toBe(60);
+      // Every request still asks for 100; `start` moves by the 25 actually returned.
+      expect(requestedParam('limit')).toEqual(['100', '100', '100']);
+      expect(requestedParam('start')).toEqual(['0', '25', '50']);
+    });
+
+    it('stops at a full page that has no next link instead of requesting another (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // Exactly 100 attachments: the only page is full but carries no
+      // `_links.next`, which is authoritative — no probe at start=100.
+      serveAttachments(attachments(0, 100), () => 100);
+
+      const result = await client.getPageAttachments('page-100');
+
+      expect(result.results).toHaveLength(100);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops on an empty page even when the server keeps advertising a next link (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // A clamped data page, then an EMPTY page that still advertises `next`
+      // (misbehaving / self-referential API). Advancing by 0 would re-request the
+      // same offset forever; the empty-page guard stops after it.
       mockRequest
         .mockResolvedValueOnce({
           statusCode: 200,
           headers: {},
           body: {
             text: async () =>
-              JSON.stringify({ results: firstPageResults, start: 0, limit: 100, size: 100 }),
+              JSON.stringify({ results: attachments(0, 25), start: 0, limit: 25, size: 25, _links: { next: '/next' } }),
           },
         } as never)
-        .mockResolvedValueOnce({
+        .mockResolvedValue({
           statusCode: 200,
           headers: {},
           body: {
             text: async () =>
-              JSON.stringify({ results: secondPageResults, start: 100, limit: 100, size: 30 }),
+              JSON.stringify({ results: [], start: 25, limit: 25, size: 0, _links: { next: '/self-referential' } }),
           },
         } as never);
 
-      const result = await client.getPageAttachments('page-42');
+      const result = await client.getPageAttachments('page-loop');
 
-      expect(result.results).toHaveLength(130);
-      expect(result.size).toBe(130);
+      expect(result.results).toHaveLength(25);
+      // Exactly two fetches: the data page and the empty page that triggers the break.
       expect(mockRequest).toHaveBeenCalledTimes(2);
-
-      // First request: start=0
-      const firstUrl = mockRequest.mock.calls[0][0] as string;
-      expect(firstUrl).toContain('start=0');
-      expect(firstUrl).toContain('limit=100');
-      expect(firstUrl).toContain('/child/attachment');
-
-      // Second request: start=100
-      const secondUrl = mockRequest.mock.calls[1][0] as string;
-      expect(secondUrl).toContain('start=100');
     });
 
     it('returns all results from a single page when fewer than 100 attachments', async () => {

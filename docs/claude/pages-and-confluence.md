@@ -300,13 +300,15 @@ meaning — creating a page *in* a Confluence space, `POST /pages/bulk/sync`,
 directions: it is defined as create-upstream / delete-upstream) — all with
 `Confluence integration is disabled`, never `Confluence not configured`.
 `POST /api/sync` answers **200** with that same sentence (no status flicker, no
-`SYNC_STARTED` audit row), `GET /api/spaces/available` answers **409**, and a
+`SYNC_STARTED` audit row, no worker-lock claim), `GET /api/spaces/available` answers **409**, and a
 `selectedSpaces` write arriving while the integration is off answers **422**;
 the **400 `Confluence not configured`** is now reachable only by an enabled user
 whose credentials are missing or broken. Re-enabling needs no new reconciliation
 model: the divergence a standalone stretch produced is handled by the existing
 conflict path on the next sync (the `local_modified_at` marker, and a
-locally-deleted page re-imported by the sync upsert).
+locally-deleted page re-imported by the sync upsert). `POST /pages/bulk/sync`
+takes the same path: it runs the scheduler's `decideConflictPolicyOnClient` on
+its own `withPageWriteTransaction` and never lowers `version` (#1779).
 
 **The mode changes where a write lands, never who may make it.** The toggle
 belongs to the caller, so it must not relax page authority. Every local write

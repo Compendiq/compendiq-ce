@@ -777,18 +777,32 @@ export async function hasLocalAttachments(pageId: string): Promise<boolean> {
 }
 
 /**
- * Get the list of expected attachment filenames for a page based on its XHTML body.
- * Combines image filenames and draw.io diagram PNG filenames.
+ * The two halves of {@link getExpectedAttachmentFilenames}, kept apart: the
+ * cached image filenames, and the draw.io diagram names whose `<name>.png`
+ * preview that function appends. A caller that must name a diagram's other
+ * cached files (`<name>.drawio`, `<name>.drawio.png`) reads them from here
+ * instead of parsing the body a second time.
  */
-export function getExpectedAttachmentFilenames(bodyStorage: string, currentSpaceKey?: string): string[] {
+export function getExpectedAttachmentParts(
+  bodyStorage: string,
+  currentSpaceKey?: string,
+): { imageFiles: string[]; diagramNames: string[] } {
   const imageFiles = extractImageReferences(bodyStorage, currentSpaceKey)
     .filter((ref) => {
       if (ref.source.kind === 'external-url') return true;
       return SUPPORTED_IMAGE_EXTENSIONS.has(path.extname(ref.source.attachmentFilename).toLowerCase());
     })
     .map((ref) => ref.localFilename);
-  const drawioFiles = extractDrawioDiagramNames(bodyStorage).map((name) => `${name}.png`);
-  return [...imageFiles, ...drawioFiles];
+  return { imageFiles, diagramNames: extractDrawioDiagramNames(bodyStorage) };
+}
+
+/**
+ * Get the list of expected attachment filenames for a page based on its XHTML body.
+ * Combines image filenames and draw.io diagram PNG filenames.
+ */
+export function getExpectedAttachmentFilenames(bodyStorage: string, currentSpaceKey?: string): string[] {
+  const { imageFiles, diagramNames } = getExpectedAttachmentParts(bodyStorage, currentSpaceKey);
+  return [...imageFiles, ...diagramNames.map((name) => `${name}.png`)];
 }
 
 /**

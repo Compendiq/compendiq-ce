@@ -2880,6 +2880,17 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 - After all pages are processed, sweep: `DELETE FROM access_control_entries WHERE source='confluence' AND synced_at < <run start>`. Rows that were not refreshed are gone (restriction removed in Confluence, or a specific user was de-listed). `source='local'` rows are never touched.
 - A Confluence `userKey` that has no matching Compendiq user (no OIDC login yet) is skipped with an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit event. Safe default: implicit deny — the ACE never materialises, so `userCanAccessPage` will not grant read.
 
+> **Amended (#859, #1771):** the sweep is scoped to the spaces the run
+> synced (#859) and, within them, to pages whose restrictions the run
+> re-read — `pages.restrictions_synced_at >= <run start>`, stamped by the
+> write that mirrors the page. An incremental run walks only modified pages,
+> so the unscoped sweep deleted every unmodified restricted page's entries
+> (#1771). Rows on pages a run does not re-read keep their last mirror; a
+> de-listed principal is removed on the next run that re-reads the page —
+> the sweep also runs when the run's walk throws, so only a process crash,
+> or a failure of the sweep itself, between the re-read and the sweep defers
+> it to the next re-read.
+
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.
 - After `reciprocalRankFusion`, iterate the merged list and keep only entries where `userCanAccessPage(userId, page.id)` is true. Slice to `topK` at the end to keep the response size stable.
@@ -2947,8 +2958,8 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 **Consequences:**
 - EE deployments with the flag on: sync runs take longer (proportional to restricted-page count), and RAG respects Confluence's per-page visibility.
 - CE deployments and EE without the flag: zero behaviour change. The Confluence client methods, the post-filter branch, and the 1.5x overfetch bump are all gated by `isFeatureEnabled('rag_permission_enforcement')`.
-- A Confluence admin removing a restriction or adding a user to an existing one takes effect on Compendiq's next sync (not instant). The sync cadence is `SYNC_INTERVAL_MIN` (default 15 min); documented in the ADMIN-GUIDE.
-- Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
+- A Confluence admin removing a restriction or adding a user to an existing one takes effect when a Compendiq sync next re-reads the page (not instant). *(Amended #1771.)* Incremental runs (`SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window, and a full walk runs only on a space's first sync or after it went ≥24 h without a successful sync — so a restriction-only change on an unedited page, a de-listing included, waits for the next full walk or edit; on a healthy schedule that means until the page is edited. A run that fails partway still sweeps the pages it re-read. Documented in the ADMIN-GUIDE.
+- Integration tests in `backend/src/domains/confluence/services/sync-service.integration.test.ts`, `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` + `backend/src/domains/llm/services/rag-service.integration.test.ts` are the regression guard.
 
 ---
 

@@ -426,8 +426,11 @@ export class ConfluenceClient {
         `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?expand=version&limit=${limit}&start=${start}`,
       );
       allResults.push(...page.results);
-      if (page.results.length < limit) break;
-      start += limit;
+      // See getAllSpaces: follow `_links.next` rather than `size < limit` (#903).
+      // A server-clamped page is shorter than `limit` while more remain, and
+      // the next offset is what was returned, not what was asked for (#1777).
+      if (!page._links?.next || page.results.length === 0) break;
+      start += page.results.length;
     }
 
     return {
@@ -918,7 +921,8 @@ export class ConfluenceClient {
 
   /**
    * #722/#780: list a page's full version history (metadata only — cheap).
-   * Paginates automatically.
+   * Paginates by following `_links.next`, advancing by the count each page
+   * actually returned (#1777).
    *
    * Confluence DATA CENTER serves the version *list* only at the experimental
    * path `/rest/experimental/content/{id}/version`. On DC, the stable path
@@ -978,8 +982,9 @@ export class ConfluenceClient {
     let start = 0;
     const limit = 100;
     // Defensive cap: never loop forever on a misbehaving `_links.next` (e.g. a
-    // self-referential next link). 1000 pages × 100 = 100k versions is far
-    // beyond any real page's history.
+    // self-referential next link). The cap counts requests, not versions: 1000
+    // pages × 100 = 100k versions, and even a server clamping pages to 25 still
+    // covers 25k — far beyond any real page's history.
     const maxIterations = 1000;
     for (let i = 0; i < maxIterations; i++) {
       const res = await fetchPage(start, limit);
@@ -991,7 +996,9 @@ export class ConfluenceClient {
       // plus the iteration cap above guarantee termination even if a misbehaving
       // API keeps returning a `next` link.
       if (!res._links?.next || res.results.length === 0) break;
-      start += limit;
+      // Advance by what came back, not by `limit`: a page clamped below the
+      // requested 100 would otherwise skip the rest of its window (#1777).
+      start += res.results.length;
     }
     return out;
   }
