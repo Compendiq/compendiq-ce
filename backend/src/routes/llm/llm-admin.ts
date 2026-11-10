@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RetrievalBenchmarkRequestSchema } from '@compendiq/contracts';
+import { RetrievalBenchmarkRequestSchema, UpdateSearxngSettingsSchema } from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -186,12 +186,6 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   const SEARXNG_KEYS = ['searxng_url', 'searxng_max_results', 'searxng_categories'] as const;
 
-  const UpdateSearxngSchema = z.object({
-    url: z.string().url().optional(),
-    maxResults: z.number().int().min(1).max(20).optional(),
-    categories: z.string().max(200).optional(),
-  });
-
   fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async () => {
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings WHERE setting_key = ANY($1::text[])`,
@@ -207,7 +201,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   });
 
   fastify.put('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
-    const body = UpdateSearxngSchema.parse(request.body);
+    const body = UpdateSearxngSettingsSchema.parse(request.body);
     for (const [field, key] of [['url', 'searxng_url'], ['maxResults', 'searxng_max_results'], ['categories', 'searxng_categories']] as const) {
       const val = body[field as keyof typeof body];
       if (val !== undefined) {
