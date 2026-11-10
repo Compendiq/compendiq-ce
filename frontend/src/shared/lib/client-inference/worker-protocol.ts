@@ -17,5 +17,4 @@ export type WorkerEvent =
 
 export const CLIENT_INFERENCE_MODEL_ID = 'qwen2.5-0.5b-instruct-q4' as const;
 export const IDLE_UNLOAD_MS = 5 * 60 * 1000;
-export const LOCAL_COMPLETION_MODEL = `client:${CLIENT_INFERENCE_MODEL_ID}`;
 export const LOCAL_COMPLETION_PROVIDER = 'webgpu';

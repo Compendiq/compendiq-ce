@@ -7,7 +7,6 @@ import { clearOpfsModel, hasOpfsModel, putOpfsFile } from './opfs-model-cache';
 import {
   CLIENT_INFERENCE_MODEL_ID,
   IDLE_UNLOAD_MS,
-  LOCAL_COMPLETION_MODEL,
   LOCAL_COMPLETION_PROVIDER,
   type ClientInferenceErrorCode,
   type WorkerEvent,
@@ -83,7 +82,11 @@ export function resetClientInferenceManager(): void {
 
 export class ClientInferenceManager {
   private worker: Worker | null = null;
-  private ready = false;
+  // The model the worker has loaded and reported ready, and the one load it
+  // may still answer for (#1812). A `ready` or error for any other load id is
+  // stale and ignored.
+  private loadedModelId: ClientModelId | null = null;
+  private inFlight: { id: string; modelId: ClientModelId; promise: Promise<void> } | null = null;
   private probeCache: DeviceGpuProfile | null = null;
   private lastError: { code: ClientInferenceErrorCode; at: number } | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,7 +100,6 @@ export class ClientInferenceManager {
   private userEnabled = false;
   private visibilityHandler: (() => void) | null = null;
   private loadWaiters: Array<() => void> = [];
-  private loadInFlight: Promise<void> | null = null;
   private loadFailed = false;
   // A pause-driven request must not re-fetch the manifest and re-probe OPFS
   // when this browser has no model; only a download can change that.
@@ -112,7 +114,9 @@ export class ClientInferenceManager {
     this.adminEnabled = flags.adminEnabled;
     this.userEnabled = flags.userEnabled;
     void this.refreshOrgPolicy();
-    if (!this.canUseGpu()) this.teardownWorker();
+    // Before the probe resolves, canUseGpu() is false for every device; an
+    // in-flight load re-checks it after probing, so only tear down once known.
+    if (this.probeCache && !this.canUseGpu()) this.teardownWorker();
   }
 
   orgPolicySnapshot(): ClientInferenceOrgPolicy {
@@ -126,7 +130,12 @@ export class ClientInferenceManager {
   }
 
   isReady(): boolean {
-    return this.ready && this.canUseGpu();
+    return this.loadedModelId !== null && this.canUseGpu();
+  }
+
+  /** The model local requests run on, or null while none is ready. */
+  loadedModel(): ClientModelId | null {
+    return this.loadedModelId;
   }
 
   lastProbe(): DeviceGpuProfile | null {
@@ -201,12 +210,16 @@ export class ClientInferenceManager {
     if (!mandated && !args.assigned && !args.withoutServer) return { kind: 'off' };
     await this.ensureProbed();
     if (!this.canUseGpu()) return serverFallback();
-    if (!this.ready) {
+    if (this.loadedModelId === null) {
       void this.maybeStartLoad();
       return serverFallback();
     }
     const revision = await this.articleRevision(args.input.pageId, args.signal);
     if (revision === null || args.signal.aborted) return { kind: 'off' };
+    // Read the model when the request is posted: the worker runs messages in
+    // order, so this model answers even if a switch is queued behind it.
+    const model = this.loadedModelId;
+    if (model === null) return serverFallback();
     const text = await this.requestWorker({
       id: this.nextId(),
       type: 'complete',
@@ -219,12 +232,12 @@ export class ClientInferenceManager {
     if (text == null) return serverFallback();
     const completion = normalizeInlineCompletion(text);
     if (!completion) return serverFallback();
-    this.armIdleUnload();
+    if (this.loadedModelId === model) this.armIdleUnload();
     return {
       kind: 'local',
       response: {
         completion,
-        model: LOCAL_COMPLETION_MODEL,
+        model: `client:${model}`,
         provider: LOCAL_COMPLETION_PROVIDER,
       },
     };
@@ -246,7 +259,7 @@ export class ClientInferenceManager {
     }
     if (!this.userEnabled || !this.adminEnabled) return { kind: 'server' };
     await this.ensureProbed();
-    if (!this.canUseGpu() || !this.ready) {
+    if (!this.canUseGpu() || this.loadedModelId === null) {
       void this.maybeStartLoad();
       return { kind: 'server' };
     }
@@ -263,7 +276,7 @@ export class ClientInferenceManager {
     if (/<[a-z][\s\S]*>/i.test(text) || /^\s*(sure|here|i have rewritten)/i.test(text)) {
       return { kind: 'server' };
     }
-    this.armIdleUnload();
+    if (this.loadedModelId !== null) this.armIdleUnload();
     return { kind: 'local', text };
   }
 
@@ -302,7 +315,7 @@ export class ClientInferenceManager {
     }
     this.cacheMissing = false;
     this.loadFailed = false;
-    await this.startLoad();
+    await this.startLoad(modelId);
     if (this.loadFailed) {
       throw new Error(`The model is downloaded, but on-device inference could not start (${this.lastError?.code ?? 'load'}). Check browser WebGPU support and retry.`);
     }
@@ -322,7 +335,6 @@ export class ClientInferenceManager {
       ? activeOnnxId(await this.opts.fetchManifest())
       : CLIENT_INFERENCE_MODEL_ID);
     await clearOpfsModel(resolvedId);
-    this.ready = false;
     this.teardownWorker();
   }
 
@@ -340,56 +352,65 @@ export class ClientInferenceManager {
     if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only'
       && (this.orgPolicy ?? INACTIVE_ORG_POLICY).active) return;
     if (this.loadFailed || this.cacheMissing) return;
+    const modelId = this.opts.fetchManifest
+      ? activeOnnxId(await this.opts.fetchManifest())
+      : CLIENT_INFERENCE_MODEL_ID;
     const cached = this.opts.hasCache
       ? await this.opts.hasCache()
-      : await hasOpfsModel(this.opts.fetchManifest
-        ? activeOnnxId(await this.opts.fetchManifest())
-        : CLIENT_INFERENCE_MODEL_ID);
-    if (cached) await this.startLoad();
+      : await hasOpfsModel(modelId);
+    // Only the passive path: never replace a load or model that appeared
+    // while the manifest and cache were being read.
+    if (this.inFlight) return this.inFlight.promise;
+    if (this.loadedModelId !== null) return;
+    if (cached) await this.startLoad(modelId);
     else this.cacheMissing = true;
   }
 
-  private async startLoad(): Promise<void> {
+  /**
+   * Load `modelId` unless it is already loaded or loading. A different model
+   * replaces the current one: the worker unloads it first, and the superseded
+   * load can no longer report ready (#1812).
+   */
+  private async startLoad(modelId: ClientModelId): Promise<void> {
     if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).active
       && (this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only') return;
     if (this.loadFailed) return;
-    if (this.ready) return;
-    if (this.loadInFlight) return this.loadInFlight;
-    this.loadInFlight = this.runLoad();
-    return this.loadInFlight;
+    if (this.inFlight?.modelId === modelId) return this.inFlight.promise;
+    if (!this.inFlight && this.loadedModelId === modelId) return;
+    if (this.inFlight || this.loadedModelId !== null) this.unload();
+    const load = { id: this.nextId(), modelId, promise: Promise.resolve() };
+    this.inFlight = load;
+    load.promise = this.runLoad(load);
+    return load.promise;
   }
 
-  private async runLoad(): Promise<void> {
+  private async runLoad(load: { id: string; modelId: ClientModelId }): Promise<void> {
     try {
       await this.ensureOrgPolicy();
       await this.ensureProbed();
-      if (!this.canUseGpu() || this.ready) return;
-      this.ensureWorker();
-      const id = this.nextId();
-      const done = new Promise<void>((resolve) => {
-        this.loadWaiters.push(resolve);
-      });
-      const token = this.opts.accessToken?.() ?? useAuthStore.getState().accessToken;
-      const modelId = this.opts.fetchManifest
-        ? activeOnnxId(await this.opts.fetchManifest())
-        : CLIENT_INFERENCE_MODEL_ID;
+      if (this.inFlight !== load || !this.canUseGpu()) return;
       const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
       if (
         policy.active
         && policy.allowedModels.length > 0
-        && !policy.allowedModels.includes(modelId)
+        && !policy.allowedModels.includes(load.modelId)
       ) {
         return;
       }
+      this.ensureWorker();
+      const done = new Promise<void>((resolve) => {
+        this.loadWaiters.push(resolve);
+      });
+      const token = this.opts.accessToken?.() ?? useAuthStore.getState().accessToken;
       this.post({
-        id,
+        id: load.id,
         type: 'load',
-        modelId,
+        modelId: load.modelId,
         ...(token ? { accessToken: token } : {}),
       });
       await done;
     } finally {
-      this.loadInFlight = null;
+      if (this.inFlight === load) this.inFlight = null;
     }
   }
 
@@ -418,7 +439,7 @@ export class ClientInferenceManager {
       this.orgPolicy = status === 404 ? INACTIVE_ORG_POLICY : FAIL_CLOSED_ORG_POLICY;
     }
     this.orgPolicyFetched = true;
-    if (!this.canUseGpu()) this.teardownWorker();
+    if (this.probeCache && !this.canUseGpu()) this.teardownWorker();
   }
 
 
@@ -448,18 +469,27 @@ export class ClientInferenceManager {
 
   private onWorkerEvent(event: WorkerEvent): void {
     if (event.type === 'ready') {
-      this.ready = true;
+      const load = this.inFlight;
+      if (!load || load.id !== event.id) return;
+      this.loadedModelId = load.modelId;
+      this.inFlight = null;
       this.settleLoad();
       return;
     }
     if (event.type === 'error') {
+      const pending = this.pending.get(event.id);
+      // While a load is in flight only its own error is about the model being
+      // loaded; otherwise a request's error is about the loaded model. Errors
+      // from superseded loads are neither.
+      const current = this.inFlight ? this.inFlight.id === event.id : pending !== undefined;
+      if (!current && !pending) return;
       this.lastError = { code: event.code, at: Date.now() };
-      if (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom') {
-        this.ready = false;
+      if (current && (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom')) {
+        this.loadedModelId = null;
+        this.inFlight = null;
         this.loadFailed = true;
         this.settleLoad();
       }
-      const pending = this.pending.get(event.id);
       if (pending) {
         this.pending.delete(event.id);
         pending.reject(new Error(event.message));
@@ -506,9 +536,11 @@ export class ClientInferenceManager {
   }
 
   private unload(): void {
-    this.ready = false;
+    this.loadedModelId = null;
+    this.inFlight = null;
     this.post({ id: this.nextId(), type: 'unload' });
     this.clearIdle();
+    this.settleLoad();
   }
 
   private teardownWorker(): void {
