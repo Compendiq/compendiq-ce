@@ -139,7 +139,9 @@ describe('search_web query limits against the running sidecar (#1767)', () => {
   const run = randomUUID().replace(/-/g, '').slice(0, 12);
   const QUERY_200 = `${'kubernetes scaling '.repeat(9)}q${run} autoscaler pods`;
   const QUERY_201 = `${QUERY_200}s`;
-  const WORDS_30 = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
+  // The 30-word case ends in the same per-run token, so it never meets a cached
+  // entry either (119 chars); the 31-word case is refused before the cache.
+  const WORDS_30 = [...Array.from({ length: 29 }, (_, i) => `w${i}`), `q${run}`].join(' ');
   const WORDS_31 = Array.from({ length: 31 }, (_, i) => `w${i}`).join(' ');
 
   beforeAll(async () => {
@@ -222,12 +224,13 @@ describe('search_web query limits against the running sidecar (#1767)', () => {
     expect(outcome.searxngRequests).toBe(0);
   });
 
-  it('accepts exactly 30 words', async () => {
-    // No request-count assertion: the fixed 30-word string may already sit in
-    // the shared Redis search cache from an earlier run.
+  it('accepts exactly 30 words and searches once', async () => {
+    expect(WORDS_30.split(/\s+/)).toHaveLength(30);
     const outcome = await searchFor(WORDS_30);
     expect(outcome.isError, outcome.text).toBe(false);
     expect(outcome.resultCount).toBe(2);
+    expect(outcome.searxngRequests).toBe(1);
+    expect(outcome.lastQuery).toBe(WORDS_30);
   });
 
   it('refuses a whitespace-only query as empty after sanitization, without calling SearXNG', async () => {
