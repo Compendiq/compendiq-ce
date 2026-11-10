@@ -35,10 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   someone else saves, the draft is refused with the actionable *Version
   conflict* toast — on every repeated Save too — until it is reconciled with
   **Reload** and then **Restore draft** or **Edit published version**.
-  Restoring a draft or choosing *Edit published version* bases the session on
-  the version shown at that moment, and the session's own successful Save
-  becomes its new base. A save whose reply does not say which version was
-  written is now reported as unconfirmed. Collaborative editing is unchanged.
+  Restoring a draft or choosing *Edit published version* bases the session —
+  its version and its title — on the page shown at that moment, and the
+  session's own successful Save becomes its new base. A save whose reply does
+  not say which version was written is now reported as unconfirmed.
+  Collaborative editing is unchanged.
 
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local

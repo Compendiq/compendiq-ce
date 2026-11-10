@@ -175,13 +175,13 @@ guard for out-of-order responses and only select a result after it resolves.
 **Ordinary page saves are based on the editing session (#1746).**
 `PageViewPage` sends the `PUT /pages/:id` `version` from `editBaseVersionRef`,
 never from the live `['pages', id]` query that focus, remount and invalidation
-refetches move mid-edit. It is captured where a session seeds the editor (Edit,
-Restore draft, Edit published version) and replaced only by that session's own
-successful PUT (`useUpdatePage` validates the returned version against
-`UpdatePageSchema`); a 409, `confluence_modified` or any other failure keeps
-it, so a stale draft is refused until the user reconciles it (Reload, then
-Restore draft or Edit published version). The server's `version < current`
-rule and the collaborative commit are unchanged.
+refetches move mid-edit. It is captured, with the title it describes, where a
+session seeds the editor (Edit, Restore draft, Edit published version) and is
+replaced only by that session's own successful PUT (`useUpdatePage` validates
+the returned version against `UpdatePageSchema`); a 409, `confluence_modified`
+or any other failure keeps it, so a stale draft is refused until the user
+reconciles it (Reload, then Restore draft or Edit published version). The
+server's `version < current` rule and the collaborative commit are unchanged.
 
 ## Enterprise (Open-Core)
 
