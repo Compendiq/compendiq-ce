@@ -41,9 +41,9 @@ interface Offence {
   snippet: string;
 }
 
-function findOffences(predicate: (className: string) => boolean): Offence[] {
+function findOffences(predicate: (className: string) => boolean, files: string[] = walk(SRC)): Offence[] {
   const offences: Offence[] = [];
-  for (const file of walk(SRC)) {
+  for (const file of files) {
     const lines = readFileSync(file, 'utf-8').split('\n');
     lines.forEach((line, i) => {
       if (predicate(line)) {
@@ -94,6 +94,31 @@ describe('UI text legibility floor', () => {
     expect(
       offences,
       `Uppercase labels below the 12px floor:\n${format(offences)}`,
+    ).toEqual([]);
+  });
+
+  // #1882: DESIGN.md's floor is 13px (`text-xs`) in chrome. The global floor
+  // above stays at 11px because ~140 older uses remain elsewhere; the article
+  // AI policy surfaces are held to the real floor so they cannot regress.
+  // (ArticleRightPane's Document health and maintenance menu are checked in
+  // its own DOM test, since the rest of that file is out of this scope.)
+  it('holds the article AI policy surfaces to the 13px chrome floor', () => {
+    const files = [
+      'shared/components/TagPopover.tsx',
+      'features/settings/panels/ProviderEditModal.tsx',
+      'features/settings/panels/ProviderListSection.tsx',
+      'features/settings/panels/ProviderLocalityDeclaration.tsx',
+    ].map((f) => join(SRC, f));
+    const offences = findOffences((line) => {
+      for (const m of line.matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)) {
+        if (Number(m[1]) < 13) return true;
+      }
+      return false;
+    }, files);
+
+    expect(
+      offences,
+      `AI policy surface text below the 13px chrome floor:\n${format(offences)}`,
     ).toEqual([]);
   });
 });

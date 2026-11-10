@@ -5,6 +5,7 @@ import type { LlmProvider } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { Button } from '../../../shared/components/Button';
 import { ProviderEditModal } from './ProviderEditModal';
+import { ProviderLocalityDeclaration } from './ProviderLocalityDeclaration';
 import { LocalityChip } from '../../../shared/components/badges/AiPolicyChips';
 
 /** Quiet inline action in a settings row — ordinary, reversible. */
@@ -98,7 +99,7 @@ export function ProviderListSection() {
               </div>
               <div className="text-muted-foreground text-xs">{p.baseUrl}</div>
               <LocalityChip locality={isError ? null : p.locality ?? null} />
-              {!isError && p.localityDeclaredBy && <p className="text-xs text-muted-foreground">Declared by {p.localityDeclaredBy}{p.localityDeclaredAt ? ` · ${p.localityDeclaredAt}` : ''}</p>}
+              {!isError && <ProviderLocalityDeclaration provider={p} className="text-xs text-muted-foreground" />}
             </div>
             {/* These four were bare, unstyled <button>s, so `Delete` carried
                 exactly the weight of `Edit` beside it — the least guarded

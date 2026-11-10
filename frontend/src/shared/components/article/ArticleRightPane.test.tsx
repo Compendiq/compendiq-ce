@@ -81,6 +81,21 @@ const mockPage = {
 
 let currentMockPage: typeof mockPage | (typeof mockPage & { confluenceId: null }) = mockPage;
 
+/** #1882: a No-AI article exactly as the server reports it after the policy write. */
+const noAiPage = {
+  ...mockPage, aiPolicy: 'none', embeddingStatus: 'policy_blocked', summaryStatus: 'policy_blocked',
+  qualityStatus: 'policy_blocked', qualityScore: null, aiPolicyBlockReason: 'policy_none',
+  aiPolicyBlockedStages: ['embedding', 'summary', 'quality'], aiPolicyRecovering: false,
+} as unknown as typeof mockPage;
+
+/** Arbitrary `text-[Npx]` classes under DESIGN.md's 13px chrome floor. */
+function arbitraryFontSizesBelow13(root: HTMLElement): string[] {
+  return [root, ...root.querySelectorAll('*')].flatMap((el) =>
+    [...(el.getAttribute('class') ?? '').matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)]
+      .filter((m) => Number(m[1]) < 13)
+      .map((m) => m[0]));
+}
+
 vi.mock('../../hooks/use-pages', () => ({
   usePage: () => ({ data: currentMockPage, isLoading: false }),
   useDeletePage: () => ({ mutateAsync: mockDeletePage }),
@@ -726,6 +741,57 @@ describe('ArticleRightPane', () => {
       expect(mockVerifyPage).not.toHaveBeenCalled();
       expect(mockNavigate).not.toHaveBeenCalled();
     });
+
+    // #1882: the server's blocked stages refuse their maintenance action and
+    // say why, instead of answering a press with "Nothing to re-embed."
+    it('refuses policy-blocked maintenance actions and describes them with the policy reason', () => {
+      currentMockPage = noAiPage;
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const reason = screen.getByTestId('document-health-policy-reason');
+      expect(reason).toHaveTextContent('Blocked by policy: this article is No AI allowed');
+      for (const testId of ['article-reembed-btn', 'article-requality-btn']) {
+        const action = screen.getByTestId(testId);
+        // Reachable by keyboard and announced as unavailable, with the reason.
+        expect(action).toHaveAttribute('aria-disabled', 'true');
+        expect(action).toBeEnabled();
+        expect(action).toHaveAccessibleDescription(reason.textContent!);
+        fireEvent.click(action);
+      }
+      expect(mockReembedPage).not.toHaveBeenCalled();
+      expect(mockRequalityPage).not.toHaveBeenCalled();
+    });
+
+    it('blocks only the stage the server refused', () => {
+      currentMockPage = {
+        ...mockPage, aiPolicy: 'local_only', embeddingStatus: 'policy_blocked',
+        aiPolicyBlockReason: 'provider_not_local', aiPolicyBlockedStages: ['embedding'], aiPolicyRecovering: false,
+      } as unknown as typeof currentMockPage;
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('article-reembed-btn')).toHaveAttribute('aria-disabled', 'true');
+      expect(screen.getByTestId('article-reembed-btn')).toHaveAccessibleDescription(/assigned provider is not declared local/);
+      const requality = screen.getByTestId('article-requality-btn');
+      expect(requality).not.toHaveAttribute('aria-disabled');
+      fireEvent.click(requality);
+      expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps maintenance live once the server reports nothing blocked (recovering)', () => {
+      currentMockPage = {
+        ...mockPage, aiPolicyBlockReason: 'policy_changed', aiPolicyBlockedStages: [], aiPolicyRecovering: true,
+      } as unknown as typeof currentMockPage;
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('article-reembed-btn'));
+      expect(mockReembedPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds the 13px floor in Document health', () => {
+      currentMockPage = noAiPage;
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+      expect(arbitraryFontSizesBelow13(screen.getByTestId('document-health'))).toEqual([]);
+    });
   });
 
   it('names the Details tabpanel exactly “Details” even with open notes counted on the tab', async () => {
@@ -878,6 +944,28 @@ describe('ArticleRightPane', () => {
 
       expect(mockRequalityPage).toHaveBeenCalledTimes(1);
       expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+    });
+
+    // #1882: the rail shows no Details sentence, so its blocked items carry
+    // their own visible reason.
+    it('refuses blocked overflow maintenance and states the policy reason beside it', async () => {
+      currentMockPage = noAiPage;
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+
+      const note = await screen.findByTestId('article-rail-policy-reason');
+      expect(note).toHaveTextContent(
+        'Blocked by policy: this article is No AI allowed. Re-embed for search and Re-check quality are unavailable.',
+      );
+      for (const testId of ['article-reembed-rail-btn', 'article-requality-rail-btn']) {
+        const item = screen.getByTestId(testId);
+        expect(item).toHaveAttribute('aria-disabled', 'true');
+        expect(item).toHaveAccessibleDescription(note.textContent!);
+        fireEvent.click(item);
+      }
+      expect(mockReembedPage).not.toHaveBeenCalled();
+      expect(mockRequalityPage).not.toHaveBeenCalled();
+      expect(arbitraryFontSizesBelow13(screen.getByTestId('article-rail-overflow'))).toEqual([]);
     });
 
     it('expands directly onto the Assistant tab from its rail button', () => {

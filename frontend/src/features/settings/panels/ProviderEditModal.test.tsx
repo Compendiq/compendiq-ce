@@ -120,6 +120,25 @@ describe('ProviderEditModal — edit', () => {
       expect.objectContaining({ method: 'PATCH' }),
     );
   });
+
+  // #1882: the saved declaration reads as a person and a date.
+  it('shows the saved declaration by name and date, without the raw UUID or ISO stamp', () => {
+    const at = '2026-11-08T09:55:31.862Z';
+    const uuid = '221908ce-5e49-439a-9de7-363b3e677fad';
+    const initial = {
+      ...savedProvider, locality: 'local' as const, localConfirmed: true, configRevision: 2,
+      localityDeclaredAt: at, localityDeclaredBy: uuid, localityDeclaredByName: 'Dana Admin',
+    };
+    render(
+      <ProviderEditModal mode="edit" initial={initial} open onClose={() => {}} onSaved={() => {}} />,
+      { wrapper: createWrapper() },
+    );
+    const line = screen.getByTestId('provider-locality-declaration');
+    expect(line).toHaveTextContent(/^Declared by Dana Admin · /);
+    expect(line.querySelector('time')).toHaveAttribute('dateTime', at);
+    expect(document.body.textContent).not.toContain(uuid);
+    expect(document.body.textContent).not.toContain(at);
+  });
 });
 
 describe('ProviderEditModal — dismissal & focus', () => {

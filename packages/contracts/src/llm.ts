@@ -63,6 +63,13 @@ export const LlmProviderSchema = z.object({
   configRevision: z.number().int().nonnegative(),
   localityDeclaredAt: z.string().nullable(),
   localityDeclaredBy: z.string().nullable(),
+  /**
+   * #1882 — display name of the declaring administrator (display name, else
+   * username), for display only; `localityDeclaredBy` stays the accountability
+   * record. Null when there is no declarer (never declared, or the account was
+   * deleted). Optional so a client tolerates a server that predates it.
+   */
+  localityDeclaredByName: z.string().nullable().optional(),
   /** `locality = 'local'` AND declared against the CURRENT config revision. */
   localConfirmed: z.boolean(),
 });
