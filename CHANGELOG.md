@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP docs client recovers from lost sidecar sessions (#1766):** after the
+  `mcp-docs` sidecar evicts an idle session (30 min) or restarts, the backend
+  now drops its cached session and re-initializes exactly once instead of
+  failing every Settings → MCP Docs **Test**, test-fetch and web search until
+  the URL changed or the backend was restarted. The sidecar answers an unknown
+  `mcp-session-id` with `404 Session not found` (`-32001`, the MCP spec / SDK
+  shape) on POST, GET and DELETE instead of 400; the `/mcp` shared-secret guard
+  still runs first. Only transport-level 404/400 is retried — tool errors
+  (SearXNG unavailable, SSRF-blocked fetch) are never re-sent, so outbound
+  search/fetch traffic cannot double. Concurrent callers share one connect, so
+  a reconnect under load cannot leak a transport. The sidecar reads
+  `MCP_DOCS_SESSION_TTL_MS` (default 30 min) for its idle-session TTL.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
