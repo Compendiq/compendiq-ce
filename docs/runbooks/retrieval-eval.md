@@ -1416,6 +1416,17 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
 
 ### Blinding and judging
 
+`run-arm-answers.ts` asks each question as its own `POST /api/llm/ask`
+(`inputKind: "independent"` — no article is open, and since #282 the route
+answers a question that states no identity with `400
+ask_identity_required` — plus `deepSearch: false` and no conversation) and
+**signs a fresh access token for the eval user per question** (#1824). A
+single token signed before the loop expired after `ACCESS_TOKEN_EXPIRY`
+(default `1h`: ~309 questions at ~11.7 s each) and the rest of the run
+answered 401 without writing anything. The route still verifies every
+token; the lifetime is **not** raised for the eval and a 401 under a fresh
+token (deactivated user, secret drift) stops the run.
+
 `run-arm-answers.ts` writes, per arm, `answers-<runId>.jsonl` (`itemId` =
 random UUID, question, answer, refused, `sources[{pageTitle,
 attachmentUrl?}]`, `evidenceImages` — the label's source images, identical

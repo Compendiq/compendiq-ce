@@ -83,7 +83,7 @@ describe('parseAskSse', () => {
 });
 
 describe('askThroughRoute', () => {
-  it('posts the question with deepSearch false and no conversation, with the bearer token', async () => {
+  it('posts the question as independent, with deepSearch false and no conversation, with the bearer token', async () => {
     const app = Fastify({ logger: false });
     const seen: Array<{ body: unknown; auth: string | undefined }> = [];
     app.post('/api/llm/ask', async (request, reply) => {
@@ -93,10 +93,11 @@ describe('askThroughRoute', () => {
     });
     await app.ready();
     try {
-      const ask = askThroughRoute(app, 'tok');
+      const ask = askThroughRoute(app, async () => 'tok');
       await expect(ask('Frage?')).resolves.toEqual({ answer: 'ok', refused: false, refusalReason: null, sources: [] });
-      expect(seen).toEqual([{ body: { question: 'Frage?', deepSearch: false }, auth: 'Bearer tok' }]);
+      expect(seen).toEqual([{ body: { question: 'Frage?', deepSearch: false, inputKind: 'independent' }, auth: 'Bearer tok' }]);
       expect(askRequestBody('x')).not.toHaveProperty('conversationId');
+      expect(askRequestBody('x')).not.toHaveProperty('pageId');
     } finally {
       await app.close();
     }
@@ -107,7 +108,46 @@ describe('askThroughRoute', () => {
     app.post('/api/llm/ask', async (_request, reply) => reply.code(503).send({ error: 'queue full' }));
     await app.ready();
     try {
-      await expect(askThroughRoute(app, 'tok')('Frage?')).rejects.toThrow(/answered 503/);
+      await expect(askThroughRoute(app, async () => 'tok')('Frage?')).rejects.toThrow(/answered 503/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // #1824: a long arm run outlives one access token, so the bearer is minted
+  // at the request boundary — every ask presents a token signed for it.
+  it('mints a fresh bearer per request', async () => {
+    const app = Fastify({ logger: false });
+    const seen: Array<string | undefined> = [];
+    app.post('/api/llm/ask', async (request, reply) => {
+      seen.push(request.headers.authorization);
+      reply.header('content-type', 'text/event-stream');
+      return sse([{ content: 'ok', done: true }, { done: true, final: true, sources: [] }]);
+    });
+    await app.ready();
+    try {
+      let minted = 0;
+      const ask = askThroughRoute(app, async () => `tok-${++minted}`);
+      await ask('Eins?');
+      await ask('Zwei?');
+      expect(seen).toEqual(['Bearer tok-1', 'Bearer tok-2']);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not retry a 401: a fresh token that is refused is a real auth failure', async () => {
+    const app = Fastify({ logger: false });
+    let requests = 0;
+    app.post('/api/llm/ask', async (_request, reply) => {
+      requests += 1;
+      return reply.code(401).send({ error: 'Invalid or expired token' });
+    });
+    await app.ready();
+    try {
+      let minted = 0;
+      await expect(askThroughRoute(app, async () => `tok-${++minted}`)('Frage?')).rejects.toThrow(/answered 401/);
+      expect({ requests, minted }).toEqual({ requests: 1, minted: 1 });
     } finally {
       await app.close();
     }

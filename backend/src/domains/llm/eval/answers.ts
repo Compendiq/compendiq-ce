@@ -177,9 +177,14 @@ export function parseAskSse(body: string): AskOutcome {
   };
 }
 
-/** The one request body every arm sends: the question, deep search off, no conversation. */
-export function askRequestBody(question: string): { question: string; deepSearch: false } {
-  return { question, deepSearch: false };
+/**
+ * The one request body every arm sends: the question, deep search off, no
+ * conversation, and `inputKind: 'independent'` — no article is open, and the
+ * route refuses a question that does not state its identity (400
+ * `ask_identity_required`, #282).
+ */
+export function askRequestBody(question: string): { question: string; deepSearch: false; inputKind: 'independent' } {
+  return { question, deepSearch: false, inputKind: 'independent' };
 }
 
 /** The slice of a Fastify instance the harness needs — `buildApp()`'s or a test's. */
@@ -192,9 +197,22 @@ export interface Injectable {
   }): Promise<{ statusCode: number; body: string }>;
 }
 
-/** An `AskFn` over `POST /api/llm/ask` on an injected app with a bearer token. */
-export function askThroughRoute(app: Injectable, token: string): AskFn {
+/**
+ * Yields the access token for ONE request. #1824: called per ask, so a run
+ * longer than `ACCESS_TOKEN_EXPIRY` presents a token minted for each
+ * question rather than one that expired mid-run.
+ */
+export type BearerSource = () => Promise<string>;
+
+/**
+ * An `AskFn` over `POST /api/llm/ask` on an injected app, minting its bearer
+ * at the request boundary. Every token is still verified by the route's own
+ * authentication; a non-200 — a 401 under a freshly minted token included —
+ * is a real failure and stops the run, never retried.
+ */
+export function askThroughRoute(app: Injectable, bearer: BearerSource): AskFn {
   return async (question) => {
+    const token = await bearer();
     const res = await app.inject({
       method: 'POST',
       url: '/api/llm/ask',

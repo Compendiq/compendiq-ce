@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
+  fresh access token per question instead of one before the run, so a run
+  longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the
+  route still authenticates every request and the lifetime is unchanged. The
+  harness also states `inputKind: "independent"`, which the ask route has
+  required since #282 (it answered `400 ask_identity_required` otherwise).
 - **Refresh recovery (#1800):** keep authentication after an unusable successful
   refresh and prevent query retries, polling, remounts and presence/collaboration
   reconnects from repeating a possibly committed rotation. Marked busy responses
