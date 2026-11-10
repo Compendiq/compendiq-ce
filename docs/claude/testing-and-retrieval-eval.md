@@ -480,13 +480,12 @@ scores a win it did not earn. Each page pins a `textSha256` and each image the
 upstream Commons `sha1`, because a revision id renders through the CURRENT
 templates and never pinned the pictures at all. Pinned rebuilds also compare
 encoded image SHA-256 digests against the committed files: source hashes do not
-pin thumbnail renderers or Pillow. Encoder upgrades require the controlled
-refresh in `tools/eval-corpus-images/README.md`, including image inspection and
-label revalidation before updating the fixture's manifest digest.
-`corpus-de-images.test.ts` fails on the wiring, a leaked caption, a licence
-outside the allow-list, an unnamed or silently-cut author, a missing credit and
-a body whose sha no longer matches.
-`fixture-de-images.json` is its own file with its own schema and loader (never a
+pin thumbnail renderers or Pillow. Encoder upgrades go through the controlled
+refresh in `tools/eval-corpus-images/README.md` (image inspection, label
+revalidation, then the fixture's manifest digest).
+`corpus-de-images.test.ts` pins the wiring, captions, licence allow-list, named
+and uncut authors, credits and body shas.
+`fixture-de-images.json` has its own schema and loader (never a
 widened `FixtureSchema`): 309 labels over all 65 pages and 187 images, written
 by blind labellers on a different model from the implementer, in two styles —
 `image`, and `image-negative` distractors with EMPTY `expectedImages`, without
@@ -502,8 +501,8 @@ those numbers through `--baseline` (`pairedBootstrapCi` rejects differing query
 sets); no image-axis report is committed.
 `--images` is a CORPUS SELECTOR on the ADR-027 arm axis, not a flag on the
 gate and no longer a paired leg switch: **#1618 stage 2 retired the paired
-form** with `page_image_embeddings` itself (migration 118), so there is no
-second leg to force per query and no in-process A/B. A bare `--images` is
+form** with `page_image_embeddings` (migration 118), so there is no second leg
+and no in-process A/B. A bare `--images` is
 REFUSED before the database is opened — it names `--arm B|C` (ADR-027 "Arms
 and revisions"): B is the candidate with derived `image_analysis` chunks live,
 C the same revision with `image_analysis` unassigned, and arm A (ADR-025's
@@ -514,15 +513,14 @@ happens LATER across files — `assertComparableArms` for the retrieval
 endpoints, `judge-arms.ts --unblind` for the answer ones — so everything the
 ADR holds fixed is a field of `ArmRunReportSchema` and a refusal there, and
 what one arm must carry and another must not (B's vision model and
-output-token ceiling) is `armProvenanceProblems`. The answers one arm labels
-are certified the same way (#1823): `run-arm-answers.ts` calls
-`generateLiveArmAnswers` (`eval/arm-live-state.ts`), which re-runs
-`assertArmCState` or B's readiness (`readArmBState` + `driveArmBBackfill` at
-`timeoutMs: 0`) on the live database and binds `--report` to its vision
-model, ceiling, version pair, embedder and `fts_language` before the first
-ask — a wrong or incomplete arm state never reaches a completion request
-(`arm-live-state.integration.test.ts`). Seed it through the REAL
-intake — bytes on disk under `attachment-store`'s own layout, the body
+output-token ceiling) is `armProvenanceProblems`. Labelled answers are
+certified the same way (#1823): `run-arm-answers.ts` →
+`generateLiveArmAnswers` (`eval/arm-live-state.ts`) re-runs `assertArmCState`
+or B's readiness (`readArmBState` + `driveArmBBackfill`, `timeoutMs: 0`) on the
+live database and binds `--report`'s vision model, ceiling, version pair,
+embedder and `fts_language` before the first ask, so a wrong or incomplete arm
+never reaches a completion (`arm-live-state.integration.test.ts`). Seed it
+through the REAL intake — bytes on disk under `attachment-store`'s own layout, the body
 rewritten by `buildPageImageUrl`, then `embedPage` — because a seeder that
 INSERTed rows would measure its own fixture; the analysis backfill runs off
 the `image_analysis_dirty` queue the seeder raises. `--deep-search` is refused
