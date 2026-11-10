@@ -93,6 +93,10 @@ sequenceDiagram
                 Note over S: leave row in place (shared-space safe)
             end
         end
+        opt EE rag_permission_enforcement — once at the end of the run, also after a failed space walk (#35;859, #35;1771)
+            Note over S,DB: each page syncPage re-read mirrored its effective read restriction:<br/>source='confluence' ACEs (synced_at = run start) + pages.restrictions_synced_at = run start
+            S->>DB: DELETE stale source='confluence' page ACEs (synced_at older than run start)<br/>only on pages with restrictions_synced_at at/after run start, in the run's spaces
+        end
 
         S->>R: DEL sync:worker:lock if still owned, in finally (API: the finally of the detached run)
         S-->>T: done
@@ -527,6 +531,61 @@ against a `next` link that never advances), and `getPageVersions` keeps its
 1000-request cap for a `next` link that never ends. Whether the version
 endpoint caps its page size in practice has not been verified against a real
 instance; the rule is correct either way.
+
+## Page restriction mirror and the stale-ACE sweep (EE, #859, #1771)
+
+Only with the Enterprise `rag_permission_enforcement` flag; CE and unflagged
+EE skip all of it (`syncPageRestrictions` and the sweep both short-circuit).
+
+- **Mirror per re-read page.** Both branches of `syncPage` end in
+  `syncPageRestrictions` (the incremental draw.io repair reuses `syncPage`).
+  It resolves the page's effective read restriction — its own, else the
+  nearest restricted ancestor, ancestors cached per run — and writes one
+  `access_control_entries` row per mapped principal (`source='confluence'`,
+  `synced_at` = run start; unmapped principals are skipped, implicit deny),
+  with `pages.inherit_perms = FALSE` and `pages.restrictions_synced_at` = run
+  start in the same transaction. An effectively public page gets
+  `inherit_perms = TRUE` and the same stamp.
+- **Walked is not always re-read.** The audit-log fast path (no `Permissions`
+  event for the page in the covered window) and a failed restriction fetch
+  leave `restrictions_synced_at` alone and only bump the page's existing rows'
+  `synced_at`.
+- **Sweep set (#1771).** Once at the end of the run,
+  `sweepStaleConfluenceAces` deletes `source='confluence'` page rows whose
+  `synced_at` is older than the run start — only on pages whose
+  `restrictions_synced_at` is at or after the run start, i.e. the pages this
+  run re-read. There a de-listed principal, or every row of a page that is no
+  longer restricted, goes.
+- **A failed walk still sweeps.** When the walk throws (a revoked PAT, a
+  failed listing, in the same space or a later one), `syncUser` runs the
+  sweep before rethrowing, so the de-listings of the pages the run already
+  re-read are applied; a sweep error after a failed walk is logged and the
+  walk error stays the run's outcome. A process that dies between a re-read
+  and the sweep, or a sweep that itself fails, loses them: such a page is only
+  swept again by the next run that re-reads it.
+- **Everything else keeps its last mirror:** unmodified pages of an
+  incremental walk, pages the syncing principal cannot list, pages whose fetch
+  failed or was deferred, and pages removed upstream (soft-deleted, so hidden
+  on every read surface; their rows grant nothing). Before #1771 the sweep aged
+  out every stale row in the run's spaces, so the first incremental run after a
+  full walk hid every unmodified restricted page from its readers.
+- **Space bound (#859).** Pages outside the run's spaces are never swept, so
+  one user's run cannot touch another user's spaces.
+- **Mode per space, scope per page.** One run can walk one space fully and
+  another incrementally; eligibility follows each page, never a run-level flag.
+- **Latency.** A restriction change is applied when a run next re-reads the
+  page. An incremental run re-reads a page while it is inside the
+  modified-pages window (edited since the cursor, widened by the 24 h overlap
+  of #858); a full walk re-reads every listed page, but a space only takes the
+  full branch on its first sync or after ≥24 h without a successful sync. A
+  restriction-only change on a page nobody edits therefore waits for the next
+  full walk or edit — a new restriction, a flip to public and, now that the
+  sweep no longer deletes every reader, a de-listed principal alike. On a
+  healthy schedule, where every run advances the cursor, the full branch never
+  comes back on its own: a de-listed user keeps access to an unedited
+  restricted page until the page is edited.
+- **No cache code.** ACE inserts and deletes are fenced in the database by the
+  migration-129 trigger (page cache invalidation queue).
 
 ## Version history backfill (#722/#724)
 

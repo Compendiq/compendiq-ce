@@ -53,6 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version jump bypassed every policy and its audit. A local save that lands
   while attachments download is no longer overwritten by that run, and a
   concurrent newer write is never moved back to an older version.
+- **Incremental sync no longer strips access from unmodified restricted pages
+  (#1771):** with `rag_permission_enforcement` on, the end-of-run stale-ACE
+  sweep ages out Confluence access entries only on pages whose restrictions
+  that run re-read. An incremental run walks only modified pages, so it used
+  to delete every other restricted page's entries, hiding the page and its RAG
+  answers from the users Confluence lets read it. A user de-listed upstream is
+  removed on the next run that re-reads the page, even if that run fails
+  partway; no access is granted. Timing change: because the sweep no
+  longer wipes pages a run did not visit, a de-listing on a page nobody edits
+  now waits, like any other restriction-only change, for the next full walk or
+  edit — on a healthy schedule that means until the page is edited.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads

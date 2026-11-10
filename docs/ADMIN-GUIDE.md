@@ -608,14 +608,16 @@ RAG retrieval in CE already post-filters candidate chunks by the user's readable
 
 **How it works**
 
-1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page (and walks ancestors — Confluence view restrictions **are** inherited) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
-2. A stale-ACE sweep at the end of the sync removes any `source='confluence'` row that wasn't refreshed this run — so restrictions removed in Confluence, or users de-listed from a restriction, propagate on the next sync.
+1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page it walks (and walks ancestors — Confluence view restrictions **are** inherited; when the audit log confirms a page's restrictions are unchanged, the fetch is skipped) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
+2. A stale-ACE sweep at the end of the sync removes the `source='confluence'` rows that were not refreshed on the pages whose restrictions this run re-read — so a restriction removed in Confluence, or a user de-listed from one, propagates on the next sync that re-reads the page. Pages a run does not re-read keep their last mirrored entries: an incremental run walks only recently edited pages (before #1771 it deleted those entries and hid unmodified restricted pages from their readers).
 3. The RAG hybrid retrieval (`hybridSearch`) fetches `max(rag_fetch_width, topK, ceil(topK × 1.5))` candidates per leg (see *Retrieval fetch width* below). After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` per candidate — in order-preserving batches, stopping once `topK` candidates have passed — and drops blocked pages. Rank order is preserved.
 4. `source='local'` (admin-created) ACEs are never touched by sync. Manual overrides survive.
 
 **Sync cadence and leak-window behaviour**
 
-Restriction changes in Confluence take effect on Compendiq's next successful sync of the affected page — same cadence as content changes (`SYNC_INTERVAL_MIN`, default 15 min). Within that window, RAG may return stale visibility. This is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
+Restriction changes in Confluence take effect when a sync next re-reads the affected page. Incremental runs (every `SYNC_INTERVAL_MIN`, default 15 min) re-read only pages edited inside their modified-pages window (the space's last sync minus a 24 h overlap); a full walk re-reads every page but only runs on a space's first sync or after it went ≥24 h without a successful sync. A restriction-only change on a page nobody edits — a new restriction, a restriction removed, or a user de-listed — is therefore applied at the next full walk or the next edit of the page; on a healthy schedule, where every run succeeds, that means the next edit. Until then, RAG answers and page views reflect the previous restrictions. A sync that fails partway still applies the de-listings of the pages it already re-read, unless the end-of-sync sweep itself fails (a database error) or the process dies first; those pages then wait for their next re-read.
+
+While a run is in progress, page restrictions are mirrored page by page as the run reaches each page: this is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
 
 **Sync duration impact**
 
@@ -631,7 +633,7 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 
 **Verification**
 
-- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
+- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path), `backend/src/domains/confluence/services/sync-service-incremental-ace-sweep.integration.test.ts` (sweep scope across full and incremental runs) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
 - ADR-023 documents the full design and rationale.
 
 ### Retrieval settings panel (`Settings → AI Models → Retrieval`)
