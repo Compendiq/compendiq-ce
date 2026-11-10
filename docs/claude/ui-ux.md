@@ -73,7 +73,7 @@ Inline code resolves `--inline-code-color` in **both** themes. Paper declares it
 
 **Theme preference follows the OS by default.** `system | dark | light`, cycled by the header control. The *preference* is persisted; the resolved palette deliberately is not, so a stale value cannot win over the live OS reading. `startSystemThemeSync` is gated on hydration — an OS event arriving before rehydration would re-serialise the initial `system` over the user's stored choice.
 
-Guarded by `frontend/src/workspace-themes.test.ts`, which parses tokens out of `index.css` and **computes** WCAG ratios rather than pinning hex literals, and which now also fails on a reintroduced shadow, `transform`, gradient surface, or light-theme shell override. `ui-text-legibility.test.ts` enforces an 11px floor on arbitrary font sizes.
+Guarded by `frontend/src/workspace-themes.test.ts`, which parses tokens out of `index.css` and **computes** WCAG ratios rather than pinning hex literals, and which now also fails on a reintroduced shadow, `transform`, gradient surface, or light-theme shell override. `ui-text-legibility.test.ts` enforces an 11px floor on arbitrary font sizes, and DESIGN.md's 13px chrome floor on the article AI-policy surfaces and the Document health chips (#1882).
 
 **Docked AI assistant (#1126).** On `/pages/:id` the assistant is not a destination — design of record in `docs/superpowers/specs/2026-07-28-docked-ai-assistant-design.md`, topology in `docs/architecture/04-frontend-structure.md`.
 

@@ -108,6 +108,10 @@ describe('UI text legibility floor', () => {
       'features/settings/panels/ProviderEditModal.tsx',
       'features/settings/panels/ProviderListSection.tsx',
       'features/settings/panels/ProviderLocalityDeclaration.tsx',
+      // Document health's chips; its DOM test mocks them, so hold them here.
+      'shared/components/badges/FreshnessBadge.tsx',
+      'shared/components/badges/EmbeddingStatusBadge.tsx',
+      'shared/components/badges/QualityScoreBadge.tsx',
     ].map((f) => join(SRC, f));
     const offences = findOffences((line) => {
       for (const m of line.matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)) {

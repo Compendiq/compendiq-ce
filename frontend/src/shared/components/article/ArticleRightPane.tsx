@@ -1557,7 +1557,7 @@ export function ArticleRightPane({
                       </p>
                     )}
                     <button
-                      onClick={() => { if (!reembedBlocked) handleReembed(); }}
+                      onClick={handleReembed}
                       disabled={reembedMutation.isPending}
                       aria-disabled={reembedBlocked || undefined}
                       aria-describedby={reembedBlocked ? railPolicyReasonId : undefined}
@@ -1574,7 +1574,7 @@ export function ArticleRightPane({
                       <span className="truncate">Re-embed for search</span>
                     </button>
                     <button
-                      onClick={() => { if (!requalityBlocked) handleRequality(); }}
+                      onClick={handleRequality}
                       disabled={requalityMutation.isPending}
                       aria-disabled={requalityBlocked || undefined}
                       aria-describedby={requalityBlocked ? railPolicyReasonId : undefined}
