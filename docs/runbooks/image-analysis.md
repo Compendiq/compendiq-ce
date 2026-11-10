@@ -151,7 +151,8 @@ is walked. It is raised by:
 | An image is pasted, or imported from an external URL | `writeAttachmentCache` |
 | A draw.io diagram is saved on a local page | `putLocalAttachment` |
 | A page is relocated between Confluence and local | both directions, unconditionally — the move rewrites every `<img src>` |
-| A page's cached attachments are cleared (a new version, an unsync) | `cleanPageAttachments` — this re-queues the page so the next cycle **re-reads** it; it does not shrink the corpus (see below) |
+| A newer upstream version arrives for a synced page | `pruneVersionJumpAttachmentCache` (#1773) — removes only the cached files the incoming body references or no local content names (images a draft still uses stay), then re-queues the page exactly as `cleanPageAttachments` does |
+| A page's cached attachments are cleared (an unsync, and the paths that remove a page) | `cleanPageAttachments` — this re-queues the page so the next cycle **re-reads** it; it does not shrink the corpus (see below) |
 | **Re-analyze all** | the Embeddings-tab action, and the model-change rebuild in §7 |
 
 Every one of those writers goes through **one** writer module,

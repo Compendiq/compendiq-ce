@@ -1054,6 +1054,12 @@ sync into Store A and rewritten in `body_html` to
 `/api/attachments/{confluence_id}/{filename}`. A standalone article ends up
 using *both*: images pasted into the editor go to Store A under its numeric
 id, while draw.io saves and explicit uploads go to Store B.
+Images pasted or imported into a **Confluence** page's editor land in Store A
+too, under the page's `confluence_id` (`imageAttachmentPageKey`). Like a
+standalone article's pasted images, they have no upstream copy until the page
+is published, so a miss cannot re-fetch them. A sync that brings a newer
+upstream version therefore removes only the files the incoming body references
+or no local source references ([`08-flow-sync.md`, version-jump attachment cleanup](./08-flow-sync.md#version-jump-attachment-cleanup-1773)).
 
 Draw.io XML is retained as a `.drawio` sibling, never relabelled as PNG.
 The converter defaults to an unavailable presentation; the shared

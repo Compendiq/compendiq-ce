@@ -609,58 +609,124 @@ describe('ConfluenceClient', () => {
   });
 
   describe('getPageAttachments pagination', () => {
-    it('combines results across multiple pages and stops when last page is partial', async () => {
+    const attachments = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `att-${from + i}`,
+        title: `attachment-${from + i}.png`,
+        mediaType: 'image/png',
+        _links: { download: `/download/att-${from + i}.png` },
+      }));
+
+    /**
+     * Fake attachment listing over `fixture`: answers every request from its own
+     * `start` offset with at most `pageSize(start)` items, whatever `limit` asked
+     * for, and advertises `_links.next` while items remain — how Confluence DC
+     * pages a listing it caps below the requested limit (#1777).
+     */
+    const serveAttachments = (fixture: readonly unknown[], pageSize: (start: number) => number) => {
+      mockRequest.mockImplementation(async (url) => {
+        const params = new URL(String(url)).searchParams;
+        const start = Number(params.get('start'));
+        const limit = Number(params.get('limit'));
+        const results = fixture.slice(start, start + Math.min(limit, pageSize(start)));
+        const nextStart = start + results.length;
+        const body = {
+          results,
+          start,
+          limit,
+          size: results.length,
+          _links: nextStart < fixture.length
+            ? { next: `/rest/api/content/page/child/attachment?limit=${limit}&start=${nextStart}` }
+            : {},
+        };
+        return { statusCode: 200, headers: {}, body: { text: async () => JSON.stringify(body) } } as never;
+      });
+    };
+
+    /** `start` / `limit` query parameter of every request so far, in call order. */
+    const requestedParam = (name: 'start' | 'limit') =>
+      mockRequest.mock.calls.map(([url]) => new URL(String(url)).searchParams.get(name));
+
+    it('follows _links.next across pages and advances by the returned count, not the requested limit (#1777)', async () => {
       const client = new ConfluenceClient(baseUrl, pat);
 
-      // First page: exactly 100 results (full page — must fetch next)
-      const firstPageResults = Array.from({ length: 100 }, (_, i) => ({
-        id: `att-${i}`,
-        title: `attachment-${i}.png`,
-        mediaType: 'image/png',
-        _links: { download: `/download/att-${i}.png` },
-      }));
+      // 160 attachments: a full page of 100, then a page the server cut to 30
+      // while still advertising `_links.next`, then the last 30. A short page is
+      // not the end — the old `size < limit` stop lost the third page — and the
+      // next offset is 100 + 30, not 100 + the requested limit.
+      const fixture = attachments(0, 160);
+      serveAttachments(fixture, (start) => (start === 100 ? 30 : 100));
 
-      // Second page: 30 results (partial — stop here)
-      const secondPageResults = Array.from({ length: 30 }, (_, i) => ({
-        id: `att-${100 + i}`,
-        title: `attachment-${100 + i}.png`,
-        mediaType: 'image/png',
-        _links: { download: `/download/att-${100 + i}.png` },
-      }));
+      const result = await client.getPageAttachments('page-42');
 
+      expect(result.results).toHaveLength(160);
+      expect(result.results.map((a) => a.id)).toEqual(fixture.map((a) => a.id));
+      expect(result.size).toBe(160);
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+
+      const firstUrl = mockRequest.mock.calls[0][0] as string;
+      expect(firstUrl).toContain('limit=100');
+      expect(firstUrl).toContain('/child/attachment');
+      expect(requestedParam('start')).toEqual(['0', '100', '130']);
+    });
+
+    it('returns all 60 unique attachments when the server clamps every page to 25 (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const fixture = attachments(0, 60);
+      serveAttachments(fixture, () => 25);
+
+      const result = await client.getPageAttachments('page-60');
+
+      expect(result.results).toHaveLength(60);
+      const ids = result.results.map((a) => a.id);
+      expect(new Set(ids).size).toBe(60);
+      expect(ids).toEqual(fixture.map((a) => a.id));
+      expect(result.size).toBe(60);
+      // Every request still asks for 100; `start` moves by the 25 actually returned.
+      expect(requestedParam('limit')).toEqual(['100', '100', '100']);
+      expect(requestedParam('start')).toEqual(['0', '25', '50']);
+    });
+
+    it('stops at a full page that has no next link instead of requesting another (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // Exactly 100 attachments: the only page is full but carries no
+      // `_links.next`, which is authoritative — no probe at start=100.
+      serveAttachments(attachments(0, 100), () => 100);
+
+      const result = await client.getPageAttachments('page-100');
+
+      expect(result.results).toHaveLength(100);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops on an empty page even when the server keeps advertising a next link (#1777)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // A clamped data page, then an EMPTY page that still advertises `next`
+      // (misbehaving / self-referential API). Advancing by 0 would re-request the
+      // same offset forever; the empty-page guard stops after it.
       mockRequest
         .mockResolvedValueOnce({
           statusCode: 200,
           headers: {},
           body: {
             text: async () =>
-              JSON.stringify({ results: firstPageResults, start: 0, limit: 100, size: 100 }),
+              JSON.stringify({ results: attachments(0, 25), start: 0, limit: 25, size: 25, _links: { next: '/next' } }),
           },
         } as never)
-        .mockResolvedValueOnce({
+        .mockResolvedValue({
           statusCode: 200,
           headers: {},
           body: {
             text: async () =>
-              JSON.stringify({ results: secondPageResults, start: 100, limit: 100, size: 30 }),
+              JSON.stringify({ results: [], start: 25, limit: 25, size: 0, _links: { next: '/self-referential' } }),
           },
         } as never);
 
-      const result = await client.getPageAttachments('page-42');
+      const result = await client.getPageAttachments('page-loop');
 
-      expect(result.results).toHaveLength(130);
-      expect(result.size).toBe(130);
+      expect(result.results).toHaveLength(25);
+      // Exactly two fetches: the data page and the empty page that triggers the break.
       expect(mockRequest).toHaveBeenCalledTimes(2);
-
-      // First request: start=0
-      const firstUrl = mockRequest.mock.calls[0][0] as string;
-      expect(firstUrl).toContain('start=0');
-      expect(firstUrl).toContain('limit=100');
-      expect(firstUrl).toContain('/child/attachment');
-
-      // Second request: start=100
-      const secondUrl = mockRequest.mock.calls[1][0] as string;
-      expect(secondUrl).toContain('start=100');
     });
 
     it('returns all results from a single page when fewer than 100 attachments', async () => {
@@ -996,6 +1062,287 @@ describe('ConfluenceClient', () => {
       expect(err.retryAfterMs).toBe(0);
       // 3 attempts (all 429), then throws
       expect(mockRequest).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('mutation retry matrix (#1776)', () => {
+    // A 502/503/504 or a dropped connection can come back after Confluence has
+    // already applied a POST/PUT/DELETE, so a mutation gets one attempt and its
+    // caller sees that original error. A 429 is refused before processing and
+    // stays retryable for every method; GETs keep retrying all of them. Each
+    // case runs fetch → withRetry against a stateful fake Confluence behind the
+    // mocked undici `request`, so a re-sent mutation meets the state its first
+    // attempt left behind. Fake timers fast-forward every retry sleep whatever
+    // its length: no case asserts a delay beyond "not before Retry-After".
+    const RUNBOOK = '42';
+    const NEW_TITLE = 'Incident review';
+    const MAX_ATTEMPTS = 3;
+    const RETRY_AFTER_MS = 2_000;
+    const STATUS_TEXT: Record<number, string> = {
+      429: 'Too Many Requests',
+      502: 'Bad Gateway',
+      503: 'Service Unavailable',
+      504: 'Gateway Timeout',
+    };
+
+    /** How the fake answers a failing request; `landed` = it applied the request first. */
+    type Failure = { label: string; landed: boolean } & (
+      | { statusCode: number }
+      | { code: string; message: string }
+    );
+    const RATE_LIMITED: Failure = { label: 'HTTP 429', statusCode: 429, landed: false };
+    /** Failures after which a mutation's outcome is unknown. */
+    const AMBIGUOUS: Failure[] = [
+      { label: 'HTTP 502', statusCode: 502, landed: true },
+      { label: 'HTTP 503', statusCode: 503, landed: true },
+      { label: 'HTTP 504', statusCode: 504, landed: true },
+      { label: 'ECONNRESET', code: 'ECONNRESET', message: 'read ECONNRESET', landed: true },
+      { label: 'ETIMEDOUT', code: 'ETIMEDOUT', message: 'read ETIMEDOUT', landed: true },
+      // Message is synthetic: undici's ConnectTimeoutError carries this code but message 'Connect Timeout Error …'; see isTransientError message match
+      { label: 'UND_ERR_CONNECT_TIMEOUT', code: 'UND_ERR_CONNECT_TIMEOUT', message: 'UND_ERR_CONNECT_TIMEOUT', landed: false },
+    ];
+
+    const MUTATIONS = [
+      {
+        name: 'createPage', method: 'POST', path: '/rest/api/content',
+        send: (client: ConfluenceClient) => client.createPage('OPS', NEW_TITLE, '<p>Timeline</p>'),
+        resolved: { id: '100', title: NEW_TITLE, version: { number: 1 } },
+      },
+      {
+        name: 'updatePage', method: 'PUT', path: `/rest/api/content/${RUNBOOK}`,
+        send: (client: ConfluenceClient) => client.updatePage(RUNBOOK, 'Runbook', '<p>Revised</p>', 5),
+        resolved: { id: RUNBOOK, title: 'Runbook', version: { number: 6 } },
+      },
+      {
+        name: 'deletePage', method: 'DELETE', path: `/rest/api/content/${RUNBOOK}`,
+        send: (client: ConfluenceClient) => client.deletePage(RUNBOOK),
+        resolved: undefined,
+      },
+      {
+        name: 'addLabels', method: 'POST', path: `/rest/api/content/${RUNBOOK}/label`,
+        send: (client: ConfluenceClient) => client.addLabels(RUNBOOK, ['security']),
+        resolved: undefined,
+      },
+      {
+        name: 'removeLabel', method: 'DELETE', path: `/rest/api/content/${RUNBOOK}/label/legacy`,
+        send: (client: ConfluenceClient) => client.removeLabel(RUNBOOK, 'legacy'),
+        resolved: undefined,
+      },
+    ];
+    const READS = [
+      {
+        name: 'getPage', path: `/rest/api/content/${RUNBOOK}`,
+        send: (client: ConfluenceClient) => client.getPage(RUNBOOK),
+      },
+      {
+        name: 'getPageAttachments', path: `/rest/api/content/${RUNBOOK}/child/attachment`,
+        send: (client: ConfluenceClient) => client.getPageAttachments(RUNBOOK),
+      },
+      {
+        name: 'downloadAttachment', path: `/download/attachments/${RUNBOOK}/runbook.pdf`,
+        send: (client: ConfluenceClient) => client.downloadAttachment(`/download/attachments/${RUNBOOK}/runbook.pdf`),
+      },
+    ];
+
+    interface UpstreamPage { title: string; version: number; labels: Set<string> }
+    /** What crossed the wire, the errors its sockets threw, and the upstream state left behind. */
+    interface FakeConfluence { requests: string[]; thrown: Error[]; pages: Map<string, UpstreamPage> }
+    /** How a call settled. */
+    type Outcome = { resolved?: unknown; rejected?: unknown };
+
+    /**
+     * Fake Confluence DC holding one page (`42`, "Runbook", version 5, labels
+     * ops + legacy). It answers the first `failing` requests with `failure` and
+     * every later one from its state.
+     */
+    function fakeConfluence(failure: Failure, failing = 1): FakeConfluence {
+      const requests: string[] = [];
+      const thrown: Error[] = [];
+      const pages = new Map<string, UpstreamPage>([[RUNBOOK, { title: 'Runbook', version: 5, labels: new Set(['ops', 'legacy']) }]]);
+      let nextId = 100;
+
+      /** Applies one request to the upstream state; returns the status and payload DC answers with. */
+      const apply = (method: string, path: string, body: unknown): [number, unknown?] => {
+        if (method === 'POST' && path === '/rest/api/content') {
+          const { title } = body as { title: string };
+          if ([...pages.values()].some((page) => page.title === title)) {
+            return [400, { message: 'A page with this title already exists' }];
+          }
+          const id = String(nextId++);
+          pages.set(id, { title, version: 1, labels: new Set() });
+          return [200, { id, title, version: { number: 1 } }];
+        }
+        const [, id = '', labels, label] = /^\/rest\/api\/content\/([^/]+)(\/label(?:\/([^/]+))?)?$/.exec(path) ?? [];
+        const page = pages.get(id);
+        if (!page) return [404];
+        if (method === 'PUT' && !labels) {
+          const { title, version } = body as { title: string; version: { number: number } };
+          if (version.number !== page.version + 1) {
+            return [409, { message: `Version must be incremented when updating a page. Current Version is: ${page.version}` }];
+          }
+          Object.assign(page, { title, version: version.number });
+          return [200, { id, title, version: { number: page.version } }];
+        }
+        if (method === 'DELETE' && !labels) {
+          pages.delete(id);
+          return [204];
+        }
+        if (method === 'POST' && labels && !label) {
+          for (const { name } of body as Array<{ name: string }>) page.labels.add(name);
+          return [200, { results: [...page.labels].map((name) => ({ prefix: 'global', name })) }];
+        }
+        if (method === 'DELETE' && label) return page.labels.delete(label) ? [204] : [404];
+        return [404];
+      };
+
+      mockRequest.mockImplementation(async (url: unknown, options?: { method?: string; body?: unknown }) => {
+        const method = options?.method ?? 'GET';
+        const path = new URL(String(url)).pathname;
+        requests.push(`${method} ${path}`);
+        const body: unknown = typeof options?.body === 'string' ? JSON.parse(options.body) : undefined;
+        let answer: [number, unknown?];
+        if (requests.length > failing) {
+          answer = apply(method, path, body);
+        } else {
+          if (failure.landed) apply(method, path, body);
+          if ('code' in failure) {
+            const error = Object.assign(new Error(failure.message), { code: failure.code });
+            thrown.push(error);
+            throw error;
+          }
+          answer = [failure.statusCode, STATUS_TEXT[failure.statusCode]];
+        }
+        const [statusCode, payload] = answer;
+        const text = typeof payload === 'string' ? payload : payload === undefined ? '' : JSON.stringify(payload);
+        return {
+          statusCode,
+          headers: statusCode === 429 ? { 'retry-after': String(RETRY_AFTER_MS / 1000) } : {},
+          body: { text: async () => text },
+        } as never;
+      });
+      return { requests, thrown, pages };
+    }
+
+    const newClient = () => new ConfluenceClient(baseUrl, pat, { retry: { maxAttempts: MAX_ATTEMPTS } });
+
+    /** Attaches at once, so a rejection is never unhandled while the clock moves. */
+    const settle = (call: Promise<unknown>): Promise<Outcome> =>
+      call.then((resolved) => ({ resolved }), (rejected: unknown) => ({ rejected }));
+
+    /** Fast-forwards every retry sleep, whatever its length, then reports the wire and the outcome. */
+    async function finish(settled: Promise<Outcome>, fake: FakeConfluence) {
+      await vi.runAllTimersAsync();
+      return { requests: fake.requests, ...(await settled) };
+    }
+
+    /** The rejection the caller must see: that very status, or the error the socket threw. */
+    const original = (failure: Failure, fake: FakeConfluence) =>
+      'statusCode' in failure
+        ? expect.objectContaining({ name: 'ConfluenceError', statusCode: failure.statusCode })
+        : fake.thrown.at(-1);
+
+    beforeEach(() => {
+      // A full token bucket, so acquireToken() never queues behind the fake clock.
+      resetRateLimiter();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      // Leave no stateful fake behind for the suites that follow.
+      mockRequest.mockReset();
+    });
+
+    it.each(MUTATIONS.flatMap((mutation) => AMBIGUOUS.map((failure) => ({ ...mutation, failure, on: failure.label }))))(
+      '$name sends one $method on $on and rejects with that original error',
+      async ({ method, path, send, failure }) => {
+        const fake = fakeConfluence(failure);
+
+        expect(await finish(settle(send(newClient())), fake)).toEqual({
+          requests: [`${method} ${path}`],
+          rejected: original(failure, fake),
+        });
+      },
+    );
+
+    it.each(MUTATIONS)(
+      '$name re-sends its $method after a 429, not before Retry-After, and succeeds',
+      async ({ method, path, send, resolved }) => {
+        const fake = fakeConfluence(RATE_LIMITED);
+        const settled = settle(send(newClient()));
+
+        await vi.advanceTimersByTimeAsync(RETRY_AFTER_MS - 1);
+        expect(fake.requests).toEqual([`${method} ${path}`]);
+
+        expect(await finish(settled, fake)).toEqual({
+          requests: [`${method} ${path}`, `${method} ${path}`],
+          resolved,
+        });
+      },
+    );
+
+    it.each(READS.flatMap((read) => [RATE_LIMITED, ...AMBIGUOUS].map((failure) => ({ ...read, failure, on: failure.label }))))(
+      '$name retries its GET on $on up to maxAttempts',
+      async ({ path, send, failure }) => {
+        const fake = fakeConfluence(failure, Infinity);
+
+        expect(await finish(settle(send(newClient())), fake)).toEqual({
+          requests: Array.from({ length: MAX_ATTEMPTS }, () => `GET ${path}`),
+          rejected: original(failure, fake),
+        });
+      },
+    );
+
+    it('reproduction: a create that landed but answered 504 surfaces that 504 after one POST, with one upstream page', async () => {
+      const fake = fakeConfluence({ label: 'HTTP 504', statusCode: 504, landed: true });
+
+      expect(await finish(settle(newClient().createPage('OPS', NEW_TITLE, '<p>Timeline</p>')), fake)).toEqual({
+        requests: ['POST /rest/api/content'],
+        rejected: expect.objectContaining({
+          name: 'ConfluenceError',
+          statusCode: 504,
+          message: 'Confluence API error: HTTP 504: Gateway Timeout',
+        }),
+      });
+      expect([...fake.pages.values()].filter((page) => page.title === NEW_TITLE)).toHaveLength(1);
+    });
+
+    describe('isTransientError(err, method)', () => {
+      const CASES: Failure[] = [
+        RATE_LIMITED,
+        ...AMBIGUOUS,
+        { label: 'HTTP 400', statusCode: 400, landed: false },
+        { label: 'HTTP 500', statusCode: 500, landed: false },
+      ];
+      const RETRIED_FOR_SAFE_METHODS = {
+        'HTTP 429': true, 'HTTP 502': true, 'HTTP 503': true, 'HTTP 504': true,
+        ECONNRESET: true, ETIMEDOUT: true, UND_ERR_CONNECT_TIMEOUT: true,
+        'HTTP 400': false, 'HTTP 500': false,
+      };
+      const RETRIED_FOR_MUTATIONS = {
+        'HTTP 429': true, 'HTTP 502': false, 'HTTP 503': false, 'HTTP 504': false,
+        ECONNRESET: false, ETIMEDOUT: false, UND_ERR_CONNECT_TIMEOUT: false,
+        'HTTP 400': false, 'HTTP 500': false,
+      };
+
+      it.each([
+        { method: 'GET', retries: 'a 429, a 502/503/504 and a network error', expected: RETRIED_FOR_SAFE_METHODS },
+        { method: 'HEAD', retries: 'a 429, a 502/503/504 and a network error', expected: RETRIED_FOR_SAFE_METHODS },
+        { method: 'POST', retries: 'only a 429', expected: RETRIED_FOR_MUTATIONS },
+        { method: 'PUT', retries: 'only a 429', expected: RETRIED_FOR_MUTATIONS },
+        { method: 'DELETE', retries: 'only a 429', expected: RETRIED_FOR_MUTATIONS },
+      ])('$method retries $retries', ({ method, expected }) => {
+        const decisions = CASES.map((failure): [string, boolean] => [
+          failure.label,
+          isTransientError(
+            'statusCode' in failure
+              ? new ConfluenceError(`HTTP ${failure.statusCode}`, failure.statusCode)
+              : Object.assign(new Error(failure.message), { code: failure.code }),
+            method,
+          ),
+        ]);
+        expect(Object.fromEntries(decisions)).toEqual(expected);
+      });
     });
   });
 
