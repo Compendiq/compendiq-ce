@@ -1055,7 +1055,10 @@ labelling pass reaches decides which of O2's two modes `--unblind` runs in:
 
 The other counts are not power-continuous and are refused at any N: 48
 image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
-197 control queries per language on every control given.
+exactly one EN and one DE control block of 197 queries each on every control
+given. The audit walks the expected EN + DE set, not the languages a control
+happens to carry, so a missing, duplicate or unknown language block is a
+shortfall and the sample decides nothing (#1821).
 
 **The pilot readout needs those labels too.** `judge-arms.ts --check
 --mapping` can only report `pilot: 0/30` against the shipped fixture, and
@@ -1280,7 +1283,9 @@ pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
 top-5 row carrying D11's `derived.attachmentKey` for an expected image — the
 same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
 reports **none**, never 0). Controls: the EN and DE text suites (197 each
-per arm, enforced), non-inferiority — **B vs C** and **C vs A** (the latter
+per arm, enforced; each side must carry exactly one EN and one DE report —
+`scoreControls` refuses a missing, duplicate or unknown language, #1821),
+non-inferiority — **B vs C** and **C vs A** (the latter
 was supplied through `--control-a`, a flag A-3 REMOVED in favour of
 `--control-legacy-c`); a pair whose language, FTS
 configuration, corpus sha or text embedder differs is refused. Of the two,
