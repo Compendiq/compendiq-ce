@@ -905,10 +905,14 @@ describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
   // (docs/architecture/12-realtime-collaboration.md).
   const largeFrame = new Uint8Array(600 * 1024);
   largeFrame[0] = MESSAGE_AWARENESS;
+  const halfMiBFrame = new Uint8Array(512 * 1024);
+  halfMiBFrame[0] = MESSAGE_AWARENESS;
 
   it.each([
     { budget: 'frame count', frames: Array.from({ length: 65 }, () => new Uint8Array([MESSAGE_QUERY_AWARENESS])) },
     { budget: 'byte budget', frames: [largeFrame, largeFrame] },
+    // 1 MiB + 1 byte: refused by the byte bound alone, three frames in.
+    { budget: 'one byte over 1 MiB', frames: [halfMiBFrame, halfMiBFrame, new Uint8Array([MESSAGE_QUERY_AWARENESS])] },
   ])('closes an over-full pre-live buffer ($budget) with 1013 join_backlog, never 4403', async ({ frames }) => {
     const { token, userId } = await createUser('collab_prelive_backlog');
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
@@ -984,10 +988,8 @@ describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
       await waitOpen(ws);
       await join.entered;
 
-      const halfMiB = new Uint8Array(512 * 1024);
-      halfMiB[0] = MESSAGE_AWARENESS;
-      ws.send(halfMiB);
-      ws.send(halfMiB);
+      ws.send(halfMiBFrame);
+      ws.send(halfMiBFrame);
       // The attach completed, then a live round trip proves the socket
       // survived both buffered frames.
       await lifecycleControl;
