@@ -497,8 +497,12 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     const pageX = await insertPage('c-x', 'SPACEX');
     const pageY = await insertPage('c-y', 'SPACEY');
 
-    // Both pages have a stale Confluence ACE (synced in a prior run).
+    // Both pages have a stale Confluence ACE (synced in a prior run), and
+    // both had their restrictions re-read at this run's start — pageY by
+    // another principal's run over SPACEY. The #1771 page scope admits both,
+    // so only the run's space scope keeps pageY out of this sweep.
     const oldSyncedAt = new Date('2026-01-01T10:00:00Z');
+    const runStartedAt = new Date('2026-01-02T10:00:00Z');
     for (const pid of [pageX, pageY]) {
       await query(
         `INSERT INTO access_control_entries
@@ -508,12 +512,13 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
         [pid, userA, oldSyncedAt],
       );
     }
+    await query(
+      'UPDATE pages SET restrictions_synced_at = $1 WHERE id = ANY($2::int[])',
+      [runStartedAt, [pageX, pageY]],
+    );
 
     // This run only visited SPACEX.
-    await __internal.sweepStaleConfluenceAces(
-      new Date('2026-01-02T10:00:00Z'),
-      ['SPACEX'],
-    );
+    await __internal.sweepStaleConfluenceAces(runStartedAt, ['SPACEX']);
 
     // pageX's stale ACE is gone (its space was in the run).
     expect(await getAces(pageX)).toHaveLength(0);

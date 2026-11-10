@@ -387,13 +387,15 @@ export async function syncUser(userId: string): Promise<void> {
       );
     }
 
-    // Sweep stale Confluence-sourced ACEs for all pages that were (re-)synced
-    // in this run. Rows whose `synced_at` is older than `syncRunStartedAt`
-    // were not refreshed by `syncPageRestrictions`, which means either the
-    // page no longer has restrictions or a principal was removed from the
-    // Confluence restriction list. Either way the stale row is no longer
-    // authoritative and must be removed. Admin-authored rows have
-    // `source='local'` and never appear in this sweep.
+    // Sweep stale Confluence-sourced ACEs on the pages whose restrictions
+    // this run re-read (`syncPageRestrictions` stamps their
+    // `restrictions_synced_at` with `syncRunStartedAt`). On those pages a row
+    // whose `synced_at` is older than `syncRunStartedAt` was not refreshed:
+    // the page no longer has restrictions or the principal was removed from
+    // the Confluence restriction list, so the row is no longer authoritative.
+    // Pages this run did not re-read — an incremental walk visits only
+    // modified pages — keep their last mirror (#1771). Admin-authored rows
+    // have `source='local'` and never appear in this sweep.
     if (isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
       await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
     }
@@ -1681,21 +1683,26 @@ async function resolveConfluenceGroup(name: string): Promise<number | null> {
 }
 
 /**
- * Delete Confluence-sourced ACEs that weren't refreshed by this sync run.
+ * Delete Confluence-sourced ACEs that this run's restriction re-read did not
+ * refresh.
  *
- * "Page no longer restricted" AND "a specific principal was removed from a
- * restriction list" collapse to the same condition: their ACE's `synced_at`
- * stays behind `syncRunStartedAt` because nothing re-UPSERTed them. The
- * partial index on `(source, synced_at) WHERE source = 'confluence'` keeps
- * this scan O(stale rows) regardless of how many admin-authored ACEs
- * exist. Runs once at the end of `syncUser`, outside any per-page
- * transaction, so a partial sync doesn't wipe ACEs for pages we never got
- * to.
+ * Sweep set: pages in `spaceKeys` whose `restrictions_synced_at` is at or
+ * after `syncRunStartedAt` — the pages `syncPageRestrictions` re-read in this
+ * run (it stamps the run start with the page's mirror). On them "page no
+ * longer restricted" and "a specific principal was removed from a
+ * restriction list" collapse to the same condition: the ACE's `synced_at`
+ * stays behind `syncRunStartedAt` because nothing re-UPSERTed it. A page the
+ * run did not re-read keeps the entries of its last mirror (#1771): an
+ * incremental walk visits only modified pages, a principal may be unable to
+ * list a page, a fetch may fail. A de-listed principal is removed on the next
+ * run that re-reads the page. The partial index on `(source, synced_at)
+ * WHERE source = 'confluence'` keeps this scan O(stale rows) regardless of
+ * how many admin-authored ACEs exist. Runs once at the end of `syncUser`,
+ * outside any per-page transaction, so a partial sync doesn't wipe ACEs for
+ * pages we never got to.
  *
- * Scoped to `spaceKeys` — the spaces this run actually visited (#859). Without
- * the scope, one user's end-of-run sweep would age out the ACEs another user's
- * earlier run wrote for a different space (their `synced_at` predates this run),
- * silently wiping restrictions across every space but the last one synced.
+ * Also scoped to `spaceKeys` — the spaces this run actually visited (#859) —
+ * so one user's run never ages out the ACEs of pages in another user's spaces.
  */
 async function sweepStaleConfluenceAces(
   syncRunStartedAt: Date,
@@ -1707,7 +1714,10 @@ async function sweepStaleConfluenceAces(
      WHERE resource_type = 'page'
        AND source = 'confluence'
        AND (synced_at IS NULL OR synced_at < $1)
-       AND resource_id IN (SELECT id FROM pages WHERE space_key = ANY($2) AND source = 'confluence')`,
+       AND resource_id IN (
+         SELECT id FROM pages
+          WHERE space_key = ANY($2) AND source = 'confluence'
+            AND restrictions_synced_at >= $1)`,
     [syncRunStartedAt, spaceKeys],
   );
   if (res.rowCount && res.rowCount > 0) {
