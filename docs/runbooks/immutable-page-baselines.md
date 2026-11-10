@@ -970,6 +970,11 @@ kind-specific recovery distinguishes three states:
   bytes cannot identify which side of the lost response committed after later
   remote changes.
 
+A Confluence delete whose remote delete is known complete and observed absent
+finishes the local hard delete, attachment/icon cleanup and cache publication in
+the settlement transaction, then closes open collaborative rooms with 4404 after
+COMMIT. An undispatched one restores the hidden row and leaves its rooms open.
+
 Ordinary page updates and draft publications record a successful PUT
 acknowledgment before any follow-up GET. A compact reply is therefore not
 discarded when readback fails. The receipt keeps command identity/version

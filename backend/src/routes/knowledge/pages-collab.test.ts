@@ -727,6 +727,102 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
     const closed = await closedP;
     expect(closed.code).toBe(4404);
   });
+
+  it('admin reconcile of a crashed Confluence delete closes the open writable WebSocket 4404 committed_delete (#1780)', async () => {
+    const editor = await createUser('collab_recovered_delete');
+    const admin = await createUser('collab_recovery_admin', { admin: true });
+    const spaceKey = `RCV${Date.now()}`;
+    const confluenceId = `cf-recovered-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({ spaceKey, confluenceId });
+    await grantSpaceRead(editor.userId, spaceKey);
+    await enableCollabFlag();
+
+    const upstream = createServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://confluence.test');
+      response.setHeader('content-type', 'application/json');
+      if (url.pathname === `/rest/api/content/${confluenceId}`) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: 'Page removed' }));
+      } else {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ message: 'Unexpected Confluence request' }));
+      }
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = upstream.address();
+      if (!address || typeof address === 'string') throw new Error('Confluence HTTP fixture did not bind TCP');
+      await query(
+        'UPDATE user_settings SET confluence_url = $2, confluence_pat = $3 WHERE user_id = $1',
+        [editor.userId, `http://127.0.0.1:${address.port}`, encryptPat('disposable-pat')],
+      );
+      // The editor joined before the delete began.
+      const ws = await openWritableWhatwg(pageId, editor.token);
+      await waitOpen(ws);
+
+      // What the crashed writer left behind: the page hidden, the provider
+      // delete acknowledged, the local hard delete never committed.
+      const hidden = await query<{ content_revision: string; lifecycle_revision: string }>(
+        `UPDATE pages SET deleted_at = NOW() WHERE id = $1
+         RETURNING content_revision::text, lifecycle_revision::text`,
+        [pageId],
+      );
+      const runtimeId = `crashed-delete-writer-${pageIdEntropy()}`;
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+         VALUES ($1, '{}'::jsonb, NOW(), $2, 'Known terminated original writer',
+                 '{"kind":"verified_local_termination"}')`,
+        [runtimeId, admin.userId],
+      );
+      const intentId = crypto.randomUUID();
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+            effect_started_at, effect_finished_at, remote_effect_started_at,
+            remote_effects_completed_at, remote_terminal_result)
+         VALUES ($1, $2, 'pages.delete.confluence', $3, ARRAY[$4]::int[], $5::jsonb,
+                 'remote_terminal_only', $6::jsonb, NOW(), NOW(), NOW(), NOW(), $7::jsonb)`,
+        [
+          intentId,
+          runtimeId,
+          editor.userId,
+          pageId,
+          JSON.stringify({
+            [pageId]: {
+              contentRevision: hidden.rows[0]!.content_revision,
+              lifecycleRevision: hidden.rows[0]!.lifecycle_revision,
+            },
+          }),
+          JSON.stringify({
+            effectClass: 'remote',
+            confluenceId,
+            spaceKey,
+            upstreamDelete: true,
+            attachmentStore: 'confluence',
+            iconStore: 'page-icons',
+          }),
+          JSON.stringify({ confluenceId, outcome: 'deleted' }),
+        ],
+      );
+
+      const closedP = waitClose(ws);
+      const reconciled = await app.inject({
+        method: 'POST',
+        url: `/api/admin/page-write-recovery/intents/${intentId}/reconcile`,
+        headers: { authorization: `Bearer ${admin.token}` },
+        payload: { reason: 'Finish the crashed Confluence delete and close its open editors' },
+      });
+      expect(reconciled.statusCode, reconciled.body).toBe(200);
+      expect(reconciled.json()).toEqual({ intentId, status: 'reconciled_applied' });
+      const closed = await closedP;
+      expect(closed.code).toBe(4404);
+      expect(closed.reason).toBe('committed_delete');
+      expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
 });
 
 describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {

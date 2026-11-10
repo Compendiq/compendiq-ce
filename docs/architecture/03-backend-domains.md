@@ -131,7 +131,8 @@ runs on the transaction it already holds:
   after COMMIT. A reconciler's applied/not-applied result may carry an
   `afterCommit` side effect; `reconcilePageWriteIntent` awaits it strictly
   after its settlement transaction resolves, never on rollback, and logs a
-  failure instead of failing the already-settled recovery. An explicit
+  failure instead of failing the already-settled recovery (the remote-delete
+  reconciler closes collaborative rooms this way). An explicit
   re-assertion of the same `all`/`local_only`
   policy bumps the revision and emits, but re-queues no derived work; only
   a real move re-queues, and `none` always purges.

@@ -156,6 +156,11 @@ the ACE relation lock **before the page row lock**, matching restriction sync.
 A changed ACL must refuse rather than be overwritten.
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.
+Remote delete recovery completes the normal delete's room closure: its
+reconciler destroys the row inside the settlement transaction and closes
+collaborative rooms (4404 `committed_delete`, every pod) from `afterCommit`,
+after COMMIT. `afterCommit` never runs on rollback; its failure is logged, never
+a failed recovery of a settled intent.
 Persist the create identity and each upload receipt before further provider work.
 Bound receipt capacity by the admitted inventory, not a fixed aggregate that can
 fail after valid uploads; the generic terminal result binds a count and ordered
