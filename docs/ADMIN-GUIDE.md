@@ -1223,6 +1223,8 @@ Confluence is the system of record for synced pages, but Compendiq supports loca
 
 **Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
 
+**Upstream version jumps (#1772)**: the policy applies the same way whether or not the Confluence version moved since the last sync. When it moved and the policy keeps or queues the local edit, sync also leaves the page's cached attachments alone and downloads nothing. The kept row keeps its older version, so every later sync run that fetches the page records the conflict again: one `SYNC_CONFLICT_DETECTED` per run under `Compendiq wins`, one more queued version per run under `Manual review`. Incremental runs re-fetch pages edited in Confluence during the last 24 hours. Under `Confluence wins`, the overwritten local version is saved to the page's version history first.
+
 **Resolution flow (manual-review)**
 
 1. Sync detects a conflict; the page lands in the conflicts list.
@@ -1253,7 +1255,7 @@ Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus ch
 
 **Lost-update guard**
 
-The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
+The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes. When the Confluence version moved, the policy decision takes the same lock before the cached attachments are touched, and the later write re-reads the row under its own lock. If a local save landed while attachments were downloading, that run writes nothing and the next sync decides on the new edit.
 
 ### AI Review Policy (Enterprise, v0.4+)
 

@@ -52,11 +52,22 @@ sequenceDiagram
             CL-->>S: page
             S->>CC: confluenceToHtml(XHTML)
             CC-->>S: body_html + body_text
+            opt existing row behind the upstream version (#35;1772)
+                S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
+                alt local edit under compendiq-wins / manual-review
+                    S->>DB: manual-review only: INSERT pending_sync_versions,<br/>SET conflict_pending#59; COMMIT
+                    S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
+                    Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
+                else incoming wins (confluence-wins, or no local edit)
+                    S->>DB: COMMIT (nothing written)#59; cleanup + download follow,<br/>then a snapshot of the locked row and the upsert below
+                end
+            end
             S->>AH: downloadAttachments(page)
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
             S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
+            S->>DB: version jump: audit SYNC_OVERWROTE_LOCAL_EDITS<br/>only if a local edit was overwritten (#35;1772)
             S->>R: HSET sync:status:{user} progress
         end
 
@@ -154,6 +165,29 @@ sequenceDiagram
   body or lifecycle mutation cannot overwrite a frozen row. That enforcement
   and explicit thaw are independent of the user's current integration mode;
   re-enabling the integration does not auto-thaw or remove evidence.
+- **Conflict policy on an upstream version jump (#1772).** When an existing
+  `source = 'confluence'` row is behind the fetched upstream version, `syncPage`
+  applies the sync-conflict policy *before* it cleans the page's attachment
+  cache or downloads anything. One short transaction takes the AI-policy lock and
+  `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). With a local edit
+  (`local_modified_at > last_synced`), `compendiq-wins` keeps the row
+  (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues the
+  incoming version (`pending_sync_versions`, `conflict_pending`,
+  `queued_for_review`). Neither cleans, downloads, snapshots, upserts or resets
+  collaborative state, and restriction sync still runs. Otherwise
+  (`confluence-wins`, or no local edit, which is a routine update with no
+  audit) the cache is cleaned and re-downloaded, the locked row is saved to
+  `page_versions`, and the upsert replaces it. `SYNC_OVERWROTE_LOCAL_EDITS` is
+  written after the commit only if a local edit was overwritten. Two checks
+  leave the page to the next walk. The upsert re-reads the row under
+  `FOR UPDATE` and writes nothing if its `version` or `local_modified_at` moved
+  since the decision (for example a local save during the download). The
+  decision itself stops if the locked row is no longer behind upstream, so a
+  concurrent newer write is never moved back. A kept or queued row keeps its
+  older version, so every walk of the page re-enters this branch:
+  `compendiq-wins` audits again and `manual-review` queues another version on
+  each such run. This is deliberate and matches the steady state for diverged
+  local content at an unchanged upstream version.
 - **No candidate side channel.** A normal Confluence fetch remains a normal
   sync. The unshipped frozen-Confluence capture/refresh/preview/accept/retention
   workflow and its EE adapter were removed; this flow must not recreate them.
@@ -171,7 +205,8 @@ sequenceDiagram
   version guard prevents duplicate writes.
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
   only liveness advice. Inbound sync skips snapshot-HTML drift unless the
-  remote version increased; a real increase applies the inbound HTML, rebuilds
+  remote version increased; a real increase applies the inbound HTML (unless
+  the conflict policy keeps or queues a local edit, see above), rebuilds
   BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
