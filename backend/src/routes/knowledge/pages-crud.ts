@@ -347,31 +347,41 @@ async function loadAuthorizedContentWriteState(
  * #1779: keep a local edit recoverable before bulk sync overwrites it. Runs on
  * the overwrite's own transaction (a pool write would wait on its row lock via
  * the page_versions foreign key), so the snapshot and the overwrite commit or
- * roll back together. A version number that already holds different content
- * refuses the overwrite instead of silently skipping the snapshot.
+ * roll back together.
+ *
+ * History is keyed by version number, and opening Version History imports a
+ * body-less row for every Confluence version. Such a placeholder at the local
+ * version number is claimed for the local text (never a baseline-linked row).
+ * A row that already holds other content (title or body) refuses the
+ * overwrite instead of silently skipping the snapshot.
  */
 async function snapshotLocalVersionBeforeOverwrite(
   client: PoolClient,
   row: ConflictPolicyRow,
 ): Promise<void> {
-  const inserted = await client.query(
+  const stored = await client.query(
     `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (page_id, version_number) DO NOTHING`,
+     ON CONFLICT (page_id, version_number) DO UPDATE
+       SET title = EXCLUDED.title, body_html = EXCLUDED.body_html,
+           body_text = EXCLUDED.body_text, synced_at = NOW()
+       WHERE page_versions.body_html IS NULL
+         AND NOT EXISTS (SELECT 1 FROM page_baselines b WHERE b.version_snapshot_id = page_versions.id)`,
     [row.id, row.version, row.title, row.body_html, row.body_text],
   );
-  if ((inserted.rowCount ?? 0) > 0) return;
+  if ((stored.rowCount ?? 0) > 0) return;
   const preserved = await client.query(
     `SELECT 1 FROM page_versions
-      WHERE page_id = $1 AND version_number = $2
-        AND body_html IS NOT DISTINCT FROM $3 AND body_text IS NOT DISTINCT FROM $4`,
-    [row.id, row.version, row.body_html, row.body_text],
+      WHERE page_id = $1 AND version_number = $2 AND title IS NOT DISTINCT FROM $3
+        AND body_html IS NOT DISTINCT FROM $4 AND body_text IS NOT DISTINCT FROM $5`,
+    [row.id, row.version, row.title, row.body_html, row.body_text],
   );
   if (preserved.rowCount === 0) {
     throw new PageWriteError(
       409,
       'local_edit_snapshot_conflict',
-      `Version history already holds a different version ${row.version}; the local edit was not overwritten`,
+      `Version ${row.version} in the page's version history already holds other content, so the local edit `
+        + 'could not be stored there and was kept; it gets a new version number when the page is saved again',
     );
   }
 }
@@ -4111,13 +4121,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             const refresh = decided.kind === 'apply_incoming'
               || (decided.kind === 'unchanged' && !decided.hasLocalEdits);
             if (!refresh) return decided;
-            if (decided.kind === 'apply_incoming' && decided.hasLocalEdits) {
+            // Overwriting a local edit keeps it as ordinary, restorable history:
+            // the incoming body becomes a NEW live version (restore's rule), so
+            // the snapshot never shares the live number Version History hides.
+            // A routine refresh only never lowers the version.
+            const overwritesLocalEdit = decided.kind === 'apply_incoming' && decided.hasLocalEdits;
+            if (overwritesLocalEdit) {
               await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row);
             }
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
-                 version = GREATEST(version, $6), last_synced = NOW(), embedding_dirty = TRUE,
+                 version = GREATEST(version + $7::int, $6), last_synced = NOW(), embedding_dirty = TRUE,
                  image_analysis_dirty = CASE
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty
@@ -4127,7 +4142,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  embedded_at = NULL,
                  local_modified_at = NULL, local_modified_by = NULL
                WHERE id = $1`,
-              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number],
+              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number, overwritesLocalEdit ? 1 : 0],
             );
             return decided;
           });
