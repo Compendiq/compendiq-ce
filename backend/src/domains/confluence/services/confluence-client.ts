@@ -221,14 +221,15 @@ export class ConfluenceClient {
 
   /**
    * HTTP request with automatic retry on transient errors.
-   * Wraps `fetchOnce` with exponential backoff (max 3 attempts).
+   * Wraps `fetchOnce` with exponential backoff (max 3 attempts). A POST/PUT/DELETE
+   * is re-sent only after a 429 (#1776) — see `isTransientError`.
    */
   private async fetch<T>(path: string, options: {
     method?: string;
     body?: unknown;
     signal?: AbortSignal;
   } = {}): Promise<T> {
-    return withRetry(() => this.fetchOnce<T>(path, options), this.retryOpts);
+    return withRetry(() => this.fetchOnce<T>(path, options), this.retryOpts, options.method);
   }
 
   async getSpaces(start = 0, limit = 100): Promise<PaginatedResponse<ConfluenceSpace>> {
@@ -1220,13 +1221,29 @@ export class AttachmentTooLargeError extends Error {
 const TRANSIENT_STATUS_CODES = new Set([429, 502, 503, 504]);
 
 /**
+ * Safe methods (RFC 9110 §9.2.1) this client sends: re-sending one cannot
+ * change upstream state. A 502/503/504 or a dropped connection can come back
+ * after Confluence already applied a POST/PUT/DELETE; re-sending it turns that
+ * unknown outcome into a misleading definite error — `400` "A page with this
+ * title already exists", `409` "Version must be incremented" — or repeats its
+ * side effect (#1776).
+ */
+const SAFE_METHODS = new Set(['GET', 'HEAD']);
+
+/**
  * Determines whether an error is transient and the request should be retried.
  * Returns true for:
- *  - ConfluenceError with status 429, 502, 503, or 504
- *  - Network-level errors (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT)
+ *  - ConfluenceError with status 429, whatever the method: the request was
+ *    refused before processing, so re-sending it is safe
+ *  - ConfluenceError with status 502, 503, or 504, and network-level errors
+ *    (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT), for GET/HEAD only; any
+ *    other method gets one attempt and its caller sees this original error
  * Returns false for client errors (400, 401, 403, 404) and other non-transient failures.
+ * `method` is the request's HTTP method; like `fetchOnce`, it defaults to GET.
  */
-export function isTransientError(err: unknown): boolean {
+export function isTransientError(err: unknown, method = 'GET'): boolean {
+  if (err instanceof ConfluenceError && err.statusCode === 429) return true;
+  if (!SAFE_METHODS.has(method)) return false;
   if (err instanceof ConfluenceError) {
     return TRANSIENT_STATUS_CODES.has(err.statusCode);
   }
@@ -1246,10 +1263,13 @@ export function isTransientError(err: unknown): boolean {
  *
  * Delay formula: `baseDelay * 2^attempt + random(0..500)ms`
  * For 429 responses with a Retry-After header, the server-specified delay is used instead.
+ * `method` is the HTTP method `fn` sends; it decides which errors are retried
+ * (see `isTransientError`).
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   opts?: RetryOptions,
+  method = 'GET',
 ): Promise<T> {
   const { maxAttempts = 3, baseDelay = 1000 } = opts ?? {};
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -1257,7 +1277,7 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       const isLastAttempt = attempt === maxAttempts - 1;
-      if (isLastAttempt || !isTransientError(err)) {
+      if (isLastAttempt || !isTransientError(err, method)) {
         throw err;
       }
 

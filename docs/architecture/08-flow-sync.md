@@ -389,6 +389,37 @@ version-jump branch realigns `pages.version` when the conflict policy lets
 Confluence's version in; under `compendiq-wins` and `manual-review` a kept or
 queued local edit keeps the local number until it is resolved.
 
+## Transport retries (#1776)
+
+`ConfluenceClient`'s REST calls go through `fetch` → `withRetry`
+(`confluence-client.ts`) and `downloadAttachment` through `withRetry`
+directly: up to `maxAttempts` (default 3) attempts with exponential backoff,
+where a 429's `Retry-After` replaces the computed delay. Whether a failed
+attempt is re-sent depends on the HTTP method (`isTransientError(err, method)`):
+
+| Method | 429 | 502 / 503 / 504 | `ECONNRESET`, `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT` |
+|---|---|---|---|
+| GET / HEAD, including `downloadAttachment` | retry | retry | retry |
+| POST / PUT / DELETE: `createPage`, `updatePage`, `deletePage`, `addLabels`, `removeLabel` | retry | **one attempt** | **one attempt** |
+
+**Note on transport error matching:** Transport errors are recognised by message via `isTransientError(err, method)` in `confluence-client.ts:1243-1249`. Undici's `ConnectTimeoutError` carries `code: 'UND_ERR_CONNECT_TIMEOUT'` but its message is `'Connect Timeout Error …'`, which does not match the message comparison; a real connect timeout is not retried on GETs today (pre-existing, deferred).
+
+- **A 429 is re-sent for every method.** Confluence (or its proxy) refused the
+  request before processing it, so re-sending is safe; the Notion client
+  applies the same rule.
+- **A mutation's gateway status or dropped connection is surfaced, never
+  re-sent.** Neither says whether Confluence applied the request. Re-sent, a
+  create that had landed answered `400 A page with this title already exists`
+  and an update that had landed `409 Version must be incremented`: definite
+  errors for writes that succeeded, and a re-sent request can repeat its side
+  effect. The caller now receives the original 5xx `ConfluenceError` or
+  transport error. The page-write intent layer already treats any failed
+  remote phase as an unknown outcome: the original runtime refuses to reissue
+  it (`intent_outcome_unknown`) and the write-intent reconcilers settle it.
+- Any other status (400, 401, 403, 404, 500, a non-JSON 2xx) is never retried,
+  whatever the method. `updateAttachment` and the streamed
+  `downloadAttachmentToFile` bypass `withRetry` and are never retried.
+
 ## Deletion reconciliation (#706)
 
 Pages removed in Confluence are reflected locally by `detectDeletedPages`, which
