@@ -1234,6 +1234,23 @@ export function isTransientError(err: unknown): boolean {
   return false;
 }
 
+/** Spreads retries that hit the same failure across up to 500 ms. */
+const RETRY_JITTER_MS = 500;
+
+/**
+ * The sleep `withRetry` takes after failed attempt `attempt` (zero-based): the
+ * server-specified `Retry-After` (`retryAfterMs`, from `parseRetryAfter`) when
+ * present, else `baseDelay * 2^attempt + random(0..500)ms`.
+ */
+export function computeConfluenceRetryDelayMs(
+  attempt: number,
+  retryAfterMs: number | undefined,
+  baseDelay: number,
+): number {
+  if (retryAfterMs != null) return retryAfterMs;
+  return baseDelay * Math.pow(2, attempt) + Math.random() * RETRY_JITTER_MS;
+}
+
 /**
  * Retries an async operation with exponential backoff and jitter.
  *
@@ -1254,13 +1271,12 @@ export async function withRetry<T>(
         throw err;
       }
 
-      // Use Retry-After header delay if the server provided one (429 responses)
-      let delay: number;
-      if (err instanceof ConfluenceError && err.retryAfterMs != null) {
-        delay = err.retryAfterMs;
-      } else {
-        delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
-      }
+      // A 429's Retry-After when the server sent one, else the backoff.
+      const delay = computeConfluenceRetryDelayMs(
+        attempt,
+        err instanceof ConfluenceError ? err.retryAfterMs : undefined,
+        baseDelay,
+      );
 
       logger.warn(
         {
