@@ -45,6 +45,7 @@ import {
   getRagPinIdentifiersEnabled,
   getRagRankingPriorWeight,
   getRagRerankCandidates,
+  invalidateRagAnswerMaxImagesCache,
 } from '../../../core/services/admin-settings-service.js';
 import { resolveImageAnalysisUsecase, resolveRerankUsecase, resolveUsecase } from '../services/llm-provider-resolver.js';
 import { flagValue } from './cli-flags.js';
@@ -471,6 +472,28 @@ export async function readHeldFixedProvenance(): Promise<HeldFixedProvenance> {
       rag_answer_max_images: await getRagAnswerMaxImages(),
     },
   };
+}
+
+/**
+ * `rag_answer_max_images = 0` in EVERY arm (ADR-027 O10): no image byte
+ * reaches the chat model, so the endpoint measures text-only grounding. The
+ * one writer of that protocol value, shared by `run-retrieval-eval.ts` (before
+ * `readHeldFixedProvenance` records it in the arm report) and
+ * `run-arm-answers.ts` (before the app is built), so both sides of a pair
+ * record the same cap from a fresh database — whose reader default is 2
+ * (#1822). Written, the reader's cache dropped, and read back through the
+ * reader the route uses; anything but 0 refuses the run.
+ */
+export async function establishTextOnlyAnswerCap(): Promise<void> {
+  await query(
+    `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('rag_answer_max_images', '0', NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET setting_value = '0', updated_at = NOW()`,
+  );
+  invalidateRagAnswerMaxImagesCache();
+  const readBack = await getRagAnswerMaxImages();
+  if (readBack !== 0) {
+    throw new Error(`rag_answer_max_images reads ${readBack} after being written as 0 (ADR-027 O10) — refusing to run an arm the chat model could see images in`);
+  }
 }
 
 // ---------------------------------------------------------------------------
