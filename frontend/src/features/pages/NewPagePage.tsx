@@ -7,9 +7,10 @@ import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useCreateTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { Editor, EditorToolbar, EditorContextToolbars } from '../../shared/components/article/Editor';
-import { clearDraft } from '../../shared/lib/editor-drafts';
+import { beginDraftEdit, clearDraft, persistDraft, readDraft, type PendingDraft } from '../../shared/lib/editor-drafts';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { TagPopover } from '../../shared/components/TagPopover';
 import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
@@ -30,6 +31,13 @@ import { useAuthStore } from '../../stores/auth-store';
 import type { TemplateSummary } from '@compendiq/contracts';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
+/**
+ * Title, space and parent of an unfinished create, kept beside the body draft
+ * (#1747): JSON `{title, spaceKey, parentId}`; unknown fields are ignored.
+ */
+const NEW_PAGE_META_DRAFT_KEY = 'new-page:meta';
+/** Same debounce as the editor's body autosave (`AUTO_SAVE_DELAY` in Editor.tsx). */
+const META_AUTOSAVE_DELAY_MS = 2000;
 
 /**
  * Mirrors `ImportMarkdownSchema`'s cap in
@@ -48,6 +56,68 @@ const MAX_IMPORT_BYTES = 4 * 1_000_000;
 
 type ArticleType = 'local' | 'confluence';
 type Visibility = 'private' | 'shared';
+
+interface NewPageDraftMeta {
+  title: string;
+  spaceKey: string;
+  parentId: string | null;
+}
+
+type RestoredLocation = Pick<NewPageDraftMeta, 'spaceKey' | 'parentId'>;
+
+/** An empty TipTap document serializes as `<p></p>`; neither it nor '' is worth restoring. */
+function isBlankBody(html: string | null | undefined): boolean {
+  return !html || html === '<p></p>';
+}
+
+/**
+ * The stored `new-page:meta`, or null when it is absent or unusable. A value
+ * that is not a JSON object or has no string `title` counts as absent; a
+ * missing or mistyped space or parent means "no location". Unknown fields are
+ * ignored, so a field added later never makes an older draft unreadable.
+ */
+function parseNewPageDraftMeta(raw: string | null): NewPageDraftMeta | null {
+  if (raw === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const { title, spaceKey, parentId } = value as Record<string, unknown>;
+  if (typeof title !== 'string') return null;
+  return {
+    title,
+    spaceKey: typeof spaceKey === 'string' ? spaceKey : '',
+    parentId: typeof parentId === 'string' && parentId !== '' ? parentId : null,
+  };
+}
+
+/** The signed-in user's unfinished create, read through editor-drafts. */
+function readNewPageDraft(): { body: string | null; meta: NewPageDraftMeta | null } {
+  const body = readDraft(NEW_PAGE_DRAFT_KEY);
+  return {
+    body: isBlankBody(body) ? null : body,
+    meta: parseNewPageDraftMeta(readDraft(NEW_PAGE_META_DRAFT_KEY)),
+  };
+}
+
+/**
+ * What this visit found in storage: whether there is a draft worth offering,
+ * and whether either key exists at all (even blank or malformed) — what a new
+ * draft started here has to supersede.
+ */
+function inspectStoredNewPageDraft(): { offer: boolean; bodyStored: boolean; metaStored: boolean } {
+  const rawBody = readDraft(NEW_PAGE_DRAFT_KEY);
+  const rawMeta = readDraft(NEW_PAGE_META_DRAFT_KEY);
+  const meta = parseNewPageDraftMeta(rawMeta);
+  return {
+    offer: !isBlankBody(rawBody) || (meta !== null && meta.title.trim() !== ''),
+    bodyStored: rawBody !== null,
+    metaStored: rawMeta !== null,
+  };
+}
 
 export function NewPagePage() {
   const queryClient = useQueryClient();
@@ -135,25 +205,124 @@ export function NewPagePage() {
   // out of the way even if the spaces query resolves late.
   const preselectSettled = useRef(false);
 
+  // ── Interrupted-create recovery (#1747) ──────────────────────────────────
+  // The editor autosaves the body under NEW_PAGE_DRAFT_KEY. Title, space and
+  // parent are kept under NEW_PAGE_META_DRAFT_KEY the same way (debounced,
+  // flushed on unmount, scoped and fenced by editor-drafts) and offered back
+  // with the body on the next visit.
+  const [storedDraft] = useState(inspectStoredNewPageDraft);
+  const [restoreOfferOpen, setRestoreOfferOpen] = useState(storedDraft.offer);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+  const metaTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pendingMetaRef = useRef<PendingDraft | null>(null);
+  // A new draft started over stored keys (Start blank, or keys too empty to
+  // offer) must never be restored half old, half new: its first edit rewrites
+  // both keys together. `supersedeBodyRef` is that pair write's body half.
+  const supersedeRef = useRef(storedDraft.bodyStored || storedDraft.metaStored);
+  const supersedeBodyRef = useRef<PendingDraft | null>(null);
+  // Whether a meta key exists, so an erased form overwrites it rather than
+  // leaving a stale title behind.
+  const metaStoredRef = useRef(storedDraft.metaStored);
+  // The latest rendered form, read when a debounced or unmount write runs.
+  const liveForm = { title, spaceKey, parentId: parentId ?? null, editor: editorInstance, bodyHtml };
+  const liveFormRef = useRef(liveForm);
+  liveFormRef.current = liveForm;
+  // A restored location whose space the spaces queries have not listed yet.
+  const pendingLocationRef = useRef<RestoredLocation | null>(null);
+  // Whether the current space/parent was chosen by the user (or restored)
+  // rather than preselected (#1122): a chosen one makes Cancel ask first.
+  const locationChosenRef = useRef(false);
+
+  const serializeCurrentMeta = useCallback((): string | null => {
+    const { title: currentTitle, spaceKey: currentSpaceKey, parentId: currentParentId } = liveFormRef.current;
+    const meta: NewPageDraftMeta = {
+      title: currentTitle,
+      spaceKey: currentSpaceKey,
+      parentId: currentParentId,
+      ...pendingLocationRef.current,
+    };
+    const blank = !meta.title.trim() && !meta.spaceKey && meta.parentId === null;
+    // Nothing to recover: skip, unless that would leave a stale stored meta.
+    if (blank && !metaStoredRef.current) return null;
+    metaStoredRef.current = true;
+    return JSON.stringify({ title: meta.title, spaceKey: meta.spaceKey, parentId: meta.parentId });
+  }, []);
+
+  const readLiveBody = useCallback(() => {
+    const { editor, bodyHtml: seededBody } = liveFormRef.current;
+    return editor?.getHTML() ?? seededBody;
+  }, []);
+
+  const flushPendingDraft = useCallback(() => {
+    clearTimeout(metaTimerRef.current);
+    metaTimerRef.current = undefined;
+    const meta = pendingMetaRef.current;
+    const body = supersedeBodyRef.current;
+    pendingMetaRef.current = null;
+    supersedeBodyRef.current = null;
+    if (meta) persistDraft(meta, serializeCurrentMeta);
+    if (body) persistDraft(body, readLiveBody);
+  }, [serializeCurrentMeta, readLiveBody]);
+
+  // Mirrors the editor's body autosave (Editor.tsx saveDraft): the account is
+  // captured when the edit is made, and persistDraft drops the write after a
+  // clear, a sign-out or an account switch.
+  const scheduleMetaSave = useCallback(() => {
+    pendingMetaRef.current = beginDraftEdit(NEW_PAGE_META_DRAFT_KEY);
+    if (supersedeRef.current) {
+      supersedeRef.current = false;
+      supersedeBodyRef.current = beginDraftEdit(NEW_PAGE_DRAFT_KEY);
+    } else if (supersedeBodyRef.current) {
+      return; // the pair write keeps its first-edit deadline
+    }
+    clearTimeout(metaTimerRef.current);
+    metaTimerRef.current = pendingMetaRef.current
+      ? setTimeout(flushPendingDraft, META_AUTOSAVE_DELAY_MS)
+      : undefined;
+  }, [flushPendingDraft]);
+
+  // Flush on unmount, so leaving inside the debounce window keeps the edit.
+  useEffect(() => flushPendingDraft, [flushPendingDraft]);
+
+  const handleTitleChange = useCallback((next: string) => {
+    setTitle(next);
+    scheduleMetaSave();
+  }, [scheduleMetaSave]);
+
+  const handleBodyChange = useCallback(() => {
+    syncHeadings(editorInstance);
+    // A body edit starts the replacement of a stored draft like any other edit.
+    if (supersedeRef.current) scheduleMetaSave();
+  }, [editorInstance, syncHeadings, scheduleMetaSave]);
+
   const handleSpaceChange = useCallback((newSpaceKey: string) => {
     preselectSettled.current = true;
+    pendingLocationRef.current = null;
+    locationChosenRef.current = newSpaceKey !== '';
     setSpaceKey(newSpaceKey);
     setParentId(undefined); // Reset parent when space changes
-  }, []);
+    scheduleMetaSave();
+  }, [scheduleMetaSave]);
 
   // Reset spaceKey and parentId when switching article types, to avoid sending
   // a selection made in one context to the wrong context.
   const handleArticleTypeChange = useCallback((next: ArticleType) => {
     preselectSettled.current = true;
     if (next === articleType) return;
+    pendingLocationRef.current = null;
+    locationChosenRef.current = false;
     setArticleType(next);
     setSpaceKey('');
     setParentId(undefined);
-  }, [articleType]);
+    scheduleMetaSave();
+  }, [articleType, scheduleMetaSave]);
 
   const handleLocationSelect = useCallback((selection: LocationSelection) => {
+    pendingLocationRef.current = null;
+    locationChosenRef.current = true;
     setParentId(selection.parentId);
-  }, []);
+    scheduleMetaSave();
+  }, [scheduleMetaSave]);
 
   const confluenceSpaces = useMemo(
     () => allSpaces.filter((s) => s.source === 'confluence'),
@@ -178,6 +347,32 @@ export function NewPagePage() {
     setSpaceKey(chosen.key);
   }, [spaces, confluenceSpaces]);
 
+  /**
+   * Apply a restored space and parent (#1747) only when the user can see that
+   * space, and take the type from it. Not listed while a spaces query is still
+   * pending: wait (the effect below re-runs as they answer). Not listed once
+   * both answered: unknown or no longer accessible, so leave it unset.
+   */
+  const applyRestoredLocation = useCallback((location: RestoredLocation) => {
+    const space = allSpaces.find((s) => s.key === location.spaceKey);
+    const spacesAnswered = spaces !== undefined && localSpacesData !== undefined;
+    pendingLocationRef.current = space || spacesAnswered ? null : location;
+    locationChosenRef.current = space !== undefined || pendingLocationRef.current !== null;
+    if (space) {
+      setArticleType(space.source);
+      setSpaceKey(space.key);
+      setParentId(location.parentId ?? undefined);
+    } else {
+      setSpaceKey('');
+      setParentId(undefined);
+    }
+  }, [allSpaces, spaces, localSpacesData]);
+
+  useEffect(() => {
+    const pending = pendingLocationRef.current;
+    if (pending) applyRestoredLocation(pending);
+  }, [applyRestoredLocation]);
+
   useEffect(() => {
     const handleApplyDraft = (e: Event) => {
       const customEvent = e as CustomEvent<{ markdown: string; html: string; title?: string }>;
@@ -189,11 +384,12 @@ export function NewPagePage() {
       syncHeadings(editorInstance);
       if (genTitle && !title.trim()) {
         setTitle(genTitle);
+        scheduleMetaSave();
       }
     };
     window.addEventListener('compendiq:apply-draft', handleApplyDraft);
     return () => window.removeEventListener('compendiq:apply-draft', handleApplyDraft);
-  }, [editorInstance, syncHeadings, title]);
+  }, [editorInstance, syncHeadings, title, scheduleMetaSave]);
 
   const handleCreate = async () => {
     if (!title.trim()) {
@@ -219,6 +415,7 @@ export function NewPagePage() {
       if (selectedSpace?.source === 'confluence') rememberConfluenceSpace(spaceKey);
 
       clearDraft(NEW_PAGE_DRAFT_KEY);
+      clearDraft(NEW_PAGE_META_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
       toast.success('Page created');
     } catch (err) {
@@ -262,6 +459,7 @@ export function NewPagePage() {
         !current.trim() || current === titleFromPreviousImport ? preview.title : current
       ));
       importedTitleRef.current = preview.title;
+      scheduleMetaSave();
       setPendingLabels(preview.labels);
 
       toast.success('Markdown loaded — review it, then press Create Page');
@@ -270,12 +468,50 @@ export function NewPagePage() {
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [importMarkdownMutation, editorInstance]);
+  }, [importMarkdownMutation, editorInstance, scheduleMetaSave]);
 
   const isCreating = createMutation.isPending;
   const isCreateDisabled = isCreating || !title.trim() || !spaceKey;
 
+  const handleRestoreDraft = useCallback(() => {
+    setRestoreOfferOpen(false);
+    // Continue the stored draft instead of superseding it. Disarm before
+    // setContent: its update reaches handleBodyChange.
+    supersedeRef.current = false;
+    // Read again: restore what belongs to whoever is signed in now.
+    const { body, meta } = readNewPageDraft();
+    if (body !== null) {
+      editorInstance?.commands.setContent(body, { emitUpdate: true });
+      setBodyHtml(body);
+      syncHeadings(editorInstance);
+    }
+    if (!meta) return;
+    setTitle(meta.title);
+    if (!meta.spaceKey) return;
+    // The #1122 preselection must not override a restored location.
+    preselectSettled.current = true;
+    applyRestoredLocation({ spaceKey: meta.spaceKey, parentId: meta.parentId });
+  }, [editorInstance, syncHeadings, applyRestoredLocation]);
+
+  // Start blank, Escape and the overlay all open the empty form; the stored
+  // draft stays until the first edit replaces it.
+  const handleStartBlank = useCallback(() => setRestoreOfferOpen(false), []);
+
   const handleCancel = useCallback(() => {
+    const dirty = title.trim() !== ''
+      || !isBlankBody(editorInstance?.getHTML() ?? bodyHtml)
+      || locationChosenRef.current;
+    if (dirty) {
+      setConfirmDiscardOpen(true);
+      return;
+    }
+    navigate('/pages');
+  }, [title, editorInstance, bodyHtml, navigate]);
+
+  const handleConfirmDiscard = useCallback(() => {
+    setConfirmDiscardOpen(false);
+    clearDraft(NEW_PAGE_DRAFT_KEY);
+    clearDraft(NEW_PAGE_META_DRAFT_KEY);
     navigate('/pages');
   }, [navigate]);
 
@@ -523,7 +759,7 @@ export function NewPagePage() {
           <div className="mx-auto max-w-[1200px] px-5 sm:px-10">
             <AutoGrowTextarea
               value={title}
-              onValueChange={setTitle}
+              onValueChange={handleTitleChange}
               placeholder="Untitled page"
               className="text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
               aria-label="Page title"
@@ -621,9 +857,7 @@ export function NewPagePage() {
                 setEditorInstance(ed);
                 syncHeadings(ed);
               }}
-              onChange={() => {
-                syncHeadings(editorInstance);
-              }}
+              onChange={handleBodyChange}
               inlineCompletion={{
                 available: inlineCompletionAvailable,
                 enabled: settings?.inlineCompletionEnabled ?? true,
@@ -674,11 +908,38 @@ export function NewPagePage() {
             syncHeadings(editorInstance);
             if (generatedTitle && !title.trim()) {
               setTitle(generatedTitle);
+              scheduleMetaSave();
             }
           }}
           onClose={() => setShowAiModal(false)}
         />
       )}
+
+      {/* #1747: an unfinished create found in this browser. Restoring is
+          non-destructive; Start blank, Escape and the overlay all open the
+          empty form and delete nothing (the draft is replaced as you edit). */}
+      <ConfirmDialog
+        open={restoreOfferOpen}
+        title="Restore draft?"
+        description="An unsaved draft of a new page was found in this browser. Restore it to continue where you left off, or start blank instead (the draft is overwritten as you edit)."
+        confirmLabel="Restore draft"
+        cancelLabel="Start blank"
+        onConfirm={handleRestoreDraft}
+        onCancel={handleStartBlank}
+      />
+
+      {/* Discard changes (#944 pattern): Cancel on a form with content.
+          Keep editing, Escape and the overlay just close it. */}
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard changes?"
+        description="This page has not been created yet. Discarding deletes its draft from this browser and cannot be undone."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+        destructive
+        onConfirm={handleConfirmDiscard}
+        onCancel={() => setConfirmDiscardOpen(false)}
+      />
 
     </div>
   );
