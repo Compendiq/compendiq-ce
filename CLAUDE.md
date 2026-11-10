@@ -174,7 +174,7 @@ guard for out-of-order responses and only select a result after it resolves.
 
 ## Enterprise (Open-Core)
 
-CE is this repo. EE lives in the private `compendiq-enterprise` repo and ships as `@compendiq/enterprise` (loaded dynamically via `core/enterprise/loader.ts`, falls back to `noop.ts`). Both editions ship the **same unmodified CE frontend image** — no EE frontend bundle, no build-time SPA patching. Enterprise UI is gated at runtime via `useEnterprise().isEnterprise`, derived from `/api/admin/license` (`edition !== 'community' && valid === true`).
+CE is this repo. EE lives in the private `Compendiq/compendiq-ee` repo and ships as `@compendiq/enterprise` (loaded dynamically via `core/enterprise/loader.ts`, falls back to `noop.ts`). Both editions ship the **same unmodified CE frontend image** — no EE frontend bundle, no build-time SPA patching. Enterprise UI is gated at runtime via `useEnterprise().isEnterprise`, derived from `/api/admin/license` (`edition !== 'community' && valid === true`).
 
 CE-side extension points (must remain inert in community mode):
 - Types/loader/noop/feature flags → `backend/src/core/enterprise/`

@@ -21,7 +21,7 @@ Ready-made queries live under [`github.com/Compendiq/compendiq-ce/issues`](https
 
 - `label:backend` — server-side work
 - `label:frontend` — UI work
-- `label:enterprise` — EE-gated issues (tracked here or in [`compendiq-enterprise`](https://github.com/Compendiq/compendiq-enterprise) depending on where the implementation lives)
+- `label:enterprise` — EE-gated issues (tracked here or in [`compendiq-ee`](https://github.com/Compendiq/compendiq-ee) depending on where the implementation lives)
 - `label:documentation` — docs-only issues
 - `label:priority:high` — the hot stuff
 
@@ -36,7 +36,7 @@ Ready-made queries live under [`github.com/Compendiq/compendiq-ce/issues`](https
 Issue activity relevant to Compendiq is split across three repositories:
 
 - [`Compendiq/compendiq-ce`](https://github.com/Compendiq/compendiq-ce) — this repository, AGPL-3.0, the Community Edition
-- [`Compendiq/compendiq-enterprise`](https://github.com/Compendiq/compendiq-enterprise) — private, EE-only
+- [`Compendiq/compendiq-ee`](https://github.com/Compendiq/compendiq-ee) — private, EE-only
 - `Compendiq/compendiq-mgmt` — private, multi-instance management
 
 If you're hunting an issue that you know is tracked by the Compendiq maintainers but can't find in this repo, it probably lives in one of the other two. Feature parity between repos is not a goal — each repo tracks only work that will land in its own tree.
