@@ -145,8 +145,8 @@ sequenceDiagram
   scheduler (`runScheduledSync` / `startSyncWorker`) skips its cycle while the
   key is held. `POST /api/sync` claims it through `startManualSync` (#1775):
   after the caller's own-status check and the integration check comes an
-  atomic `SET NX EX` claim, and only then does the status flip to `syncing`
-  and `SYNC_STARTED` get written — a refused claim answers
+  atomic `SET NX EX` claim, and only then is `SYNC_STARTED` written (if that fails,
+  the claim is released and the status is left alone) and the status flipped to `syncing` — a refused claim answers
   `409 { message, status }` and leaves the status, the audit log and the
   holder's key untouched. The lock is **deployment-global, not per-user**:
   user B's manual sync is refused while user A's manual or scheduled run is
