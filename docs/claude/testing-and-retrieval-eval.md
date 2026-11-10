@@ -514,14 +514,10 @@ happens LATER across files — `assertComparableArms` for the retrieval
 endpoints, `judge-arms.ts --unblind` for the answer ones — so everything the
 ADR holds fixed is a field of `ArmRunReportSchema` and a refusal there, and
 what one arm must carry and another must not (B's vision model and
-output-token ceiling) is `armProvenanceProblems`. The answers one arm labels
-are certified the same way (#1823): `run-arm-answers.ts` calls
-`generateLiveArmAnswers` (`eval/arm-live-state.ts`), which re-runs
-`assertArmCState` or B's readiness (`readArmBState` + `driveArmBBackfill` at
-`timeoutMs: 0`) on the live database and binds `--report` to its vision
-model, ceiling, version pair, embedder and `fts_language` before the first
-ask — a wrong or incomplete arm state never reaches a completion request
-(`arm-live-state.integration.test.ts`). Seed it through the REAL
+output-token ceiling) is `armProvenanceProblems`. Labelled answers are
+certified the same way (#1823, `eval/arm-live-state.ts`): a wrong or incomplete
+live arm state never reaches a completion request (runbook "Arm axis").
+Seed it through the REAL
 intake — bytes on disk under `attachment-store`'s own layout, the body
 rewritten by `buildPageImageUrl`, then `embedPage` — because a seeder that
 INSERTed rows would measure its own fixture; the analysis backfill runs off
