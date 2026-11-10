@@ -37,7 +37,13 @@ import {
 import { assertNoLiveCollabRoom } from './collab-guard.js';
 import { setRedisClient } from './redis-cache.js';
 import * as persist from './collab-persistence.js';
-import { admitPageRuntime, releasePageRuntime, withPageWriteTransaction } from './page-write-admission.js';
+import {
+  admitPageRuntime,
+  cancelPageWriteIntentBeforeEffect,
+  releasePageRuntime,
+  reservePageWriteIntent,
+  withPageWriteTransaction,
+} from './page-write-admission.js';
 import { yDocToHtml } from './collab-schema.js';
 import type * as PageBaselineServiceModule from './page-baseline-service.js';
 import type * as PageBaselineGovernanceModule from './page-baseline-governance.js';
@@ -183,6 +189,19 @@ async function cleanupKeys(): Promise<void> {
   if (!main) return;
   if (usedPageIds.length === 0) return;
   await main.del(usedPageIds.flatMap((id) => [`collab:active:${id}`, collabDocChannel(id)]));
+}
+
+/**
+ * Real timer on purpose: a room's empty-room grace drop retries the release
+ * once. A test that needs the release to have failed while a write is still
+ * pending must let that grace drop run first; the drop then waits for it on
+ * the room's ownership chain and, while the write is pending, changes nothing.
+ */
+async function waitForGraceDrop(runtime: CollabRuntime, pageId: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, COLLAB_EMPTY_ROOM_GRACE_MS + 250);
+  await promise;
+  await runtime.dropRoom(pageId).catch(() => undefined);
 }
 
 beforeAll(async () => {
@@ -1144,9 +1163,18 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
         code: 'collab_session_active',
       });
+      await waitForGraceDrop(runtimeA!, pageId);
     } finally {
       await query('ALTER TABLE page_collaborative_docs DROP CONSTRAINT collab_test_reject_flush');
     }
+    // A non-transient flush failure arms no retry (#1763): neither a later tick
+    // nor a commit's `pages_version` cue releases it once a flush could pass.
+    runtimeA!.broadcastControl(pageId, { type: 'pages_version', version: 2 });
+    await runtimeA!.getOrCreateRoom(pageId);
+    await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+      code: 'collab_session_active',
+    });
+    expect(runtimeA!.getRoom(pageId)!.deferredRelease ?? null).toBeNull();
     await runtimeA!.close();
     await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
   });
@@ -1738,4 +1766,262 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     }, { timeout: 4_000 });
   });
 
+});
+
+describe.skipIf(!canRun)('own collaborative Save window (#1763)', () => {
+  function reserveOwnCollabCommit(pageId: number) {
+    return reservePageWriteIntent({
+      pageIds: [pageId],
+      kind: 'collab.commit.confluence',
+      actorId: USER_A,
+      effect: {
+        effectClass: 'remote',
+        pageId,
+        confluenceId: `cf-${pageId}`,
+        expectedRemoteVersion: '4',
+        intendedStateDigest: 'a'.repeat(64),
+      },
+    });
+  }
+
+  function reserveForeignLabels(pageId: number) {
+    return reservePageWriteIntent({
+      pageIds: [pageId],
+      kind: 'page.labels',
+      actorId: USER_A,
+      effect: { effectClass: 'remote' },
+    });
+  }
+
+  async function activePurposes(pageId: number): Promise<string[]> {
+    const admissions = await query<{ purpose: string }>(
+      `SELECT purpose FROM page_runtime_admissions
+        WHERE page_id = $1 AND released_at IS NULL
+        ORDER BY purpose`,
+      [pageId],
+    );
+    return admissions.rows.map((row) => row.purpose);
+  }
+
+  function updateFrame(text: string): Uint8Array {
+    const draft = new Y.Doc();
+    appendParagraph(draft, text);
+    const frame = encodeSyncUpdate(Y.encodeStateAsUpdate(draft));
+    draft.destroy();
+    return frame;
+  }
+
+  it('frames, peer updates and joins keep working on every pod while the page\'s own commit is pending', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    const peerCloses: Array<[number, string]> = [];
+    await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+    await runtimeB!.attachSocket(pageId, {
+      id: 'b1',
+      ws: stubWs((code, reason) => { peerCloses.push([code, reason]); }),
+      userId: USER_B,
+      writable: true,
+    });
+    const commit = await reserveOwnCollabCommit(pageId);
+    const runtimeC = await createCollabRuntime(main, 'pod-c');
+    try {
+      expect(await runtimeB!.handleInboundFrame(pageId, 'b1', updateFrame('PEER_DURING_SAVE'))).toBe('ok');
+      expect(peerCloses).toEqual([]);
+      await vi.waitFor(() => {
+        expect(yDocToHtml(runtimeA!.getRoom(pageId)!.doc)).toContain('PEER_DURING_SAVE');
+      });
+      const rejoined = await runtimeA!.attachSocket(pageId, {
+        id: 'a2', ws: stubWs(), userId: USER_A, writable: true,
+      });
+      expect(rejoined.writable).toBe(true);
+      const reader = await runtimeA!.attachSocket(pageId, {
+        id: 'reader', ws: stubWs(), userId: USER_B, writable: false,
+      });
+      expect(reader.writable).toBe(false);
+      const freshPod = await runtimeC.attachSocket(pageId, {
+        id: 'c1', ws: stubWs(), userId: USER_A, writable: true,
+      });
+      expect(freshPod.writable).toBe(true);
+    } finally {
+      await cancelPageWriteIntentBeforeEffect(commit);
+      await runtimeC.close();
+    }
+  });
+
+  it('a foreign pending write still refuses room frames and joins', async () => {
+    const pageId = nextPageId();
+    const closes: Array<[number, string]> = [];
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1',
+      ws: stubWs((code, reason) => { closes.push([code, reason]); }),
+      userId: USER_A,
+      writable: true,
+    });
+    const labels = await reserveForeignLabels(pageId);
+    try {
+      expect(await runtimeA!.handleInboundFrame(pageId, 'a1', updateFrame('REFUSED'))).toBe('dropped');
+      expect(closes).toEqual([[1001, 'collab_validation_unavailable']]);
+      await expect(runtimeA!.attachSocket(pageId, {
+        id: 'a2', ws: stubWs(), userId: USER_A, writable: true,
+      })).rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+    } finally {
+      await cancelPageWriteIntentBeforeEffect(labels);
+    }
+  });
+
+  it.each([
+    ['stale_lifecycle', 'lifecycle'],
+    ['admission_token_mismatch', 'admission'],
+    ['runtime_unknown', 'runtime'],
+  ] as const)('a %s fence still hard-closes a writable socket while its own Save is pending', async (_reason, fence) => {
+    const pageId = nextPageId();
+    const closes: Array<[number, string]> = [];
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1',
+      ws: stubWs((code, reason) => { closes.push([code, reason]); }),
+      userId: USER_A,
+      writable: true,
+    });
+    const room = runtimeA!.getRoom(pageId)!;
+    const admission = room.admission!;
+    const commit = await reserveOwnCollabCommit(pageId);
+    try {
+      if (fence === 'lifecycle') {
+        await query('UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1', [pageId]);
+      } else if (fence === 'admission') {
+        await query(
+          `UPDATE page_runtime_admissions SET released_at = NOW(), release_kind = 'clean_disconnect'
+            WHERE id = $1`,
+          [admission.id],
+        );
+      } else {
+        room.admission = { ...admission, runtimeId: 'forged-runtime' };
+      }
+      expect(await runtimeA!.handleInboundFrame(pageId, 'a1', updateFrame('FENCED'))).toBe('dropped');
+      expect(closes).toEqual([[1001, 'collab_validation_unavailable']]);
+    } finally {
+      if (fence === 'lifecycle') {
+        await query('UPDATE pages SET lifecycle_revision = lifecycle_revision - 1 WHERE id = $1', [pageId]);
+      } else if (fence === 'runtime') {
+        room.admission = admission;
+      } else {
+        await releasePageRuntime(admission);
+      }
+      await cancelPageWriteIntentBeforeEffect(commit);
+    }
+  });
+
+  it('a last-writer release refused by its own pending Save is retried after that Save is cancelled', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+    const commit = await reserveOwnCollabCommit(pageId);
+    let settled = false;
+    try {
+      await runtimeA!.detachSocket(pageId, 'a1');
+      await waitForGraceDrop(runtimeA!, pageId);
+      expect(await activePurposes(pageId)).toEqual(['collab_room']);
+      // Cancellation settles the intent without a `pages_version` cue.
+      await cancelPageWriteIntentBeforeEffect(commit);
+      settled = true;
+      await vi.waitFor(async () => {
+        expect(await activePurposes(pageId)).toEqual([]);
+      }, { timeout: 5_000 });
+      await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+    } finally {
+      if (!settled) await cancelPageWriteIntentBeforeEffect(commit);
+    }
+  });
+
+  it('the pages_version cue retries a deferred release at once on a peer pod', async () => {
+    const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+    // A 60 s backoff leaves only the cue to release inside the wait below.
+    process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = '60000';
+    try {
+      const pageId = nextPageId();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_B, writable: true });
+      const commit = await reserveOwnCollabCommit(pageId);
+      let settled = false;
+      try {
+        await runtimeB!.detachSocket(pageId, 'b1');
+        await waitForGraceDrop(runtimeB!, pageId);
+        expect(await activePurposes(pageId)).toEqual(['collab_room']);
+        await cancelPageWriteIntentBeforeEffect(commit);
+        settled = true;
+        // Pod A has no room for this page: the cue reaches pod B over Redis only.
+        runtimeA!.broadcastControl(pageId, { type: 'pages_version', version: 2 });
+        await vi.waitFor(async () => {
+          expect(await activePurposes(pageId)).toEqual([]);
+        }, { timeout: 3_000 });
+        expect(runtimeB!.getRoom(pageId)).toBeUndefined();
+      } finally {
+        if (!settled) await cancelPageWriteIntentBeforeEffect(commit);
+      }
+    } finally {
+      if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+    }
+  });
+
+  it('a foreign pending write at the last-writer release keeps the admission without a retry', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+    const labels = await reserveForeignLabels(pageId);
+    let settled = false;
+    try {
+      await runtimeA!.detachSocket(pageId, 'a1');
+      await waitForGraceDrop(runtimeA!, pageId);
+      await cancelPageWriteIntentBeforeEffect(labels);
+      settled = true;
+      runtimeA!.broadcastControl(pageId, { type: 'pages_version', version: 2 });
+      await runtimeA!.getOrCreateRoom(pageId);
+      expect(await activePurposes(pageId)).toEqual(['collab_room']);
+      expect(runtimeA!.getRoom(pageId)!.deferredRelease ?? null).toBeNull();
+    } finally {
+      if (!settled) await cancelPageWriteIntentBeforeEffect(labels);
+    }
+  });
+
+  it('lockPageWrites passes only the page\'s own collaborative commit, and only for room steps', async () => {
+    const pageId = nextPageId();
+    const otherPageId = nextPageId();
+    const room = await admitPageRuntime(pageId, USER_A, 'collab_room');
+    try {
+      const own = await reserveOwnCollabCommit(pageId);
+      try {
+        await expect(withPageWriteTransaction([pageId], async () => 'applied', {
+          admission: room, ownCollabCommit: 'proceed',
+        })).resolves.toBe('applied');
+        await expect(withPageWriteTransaction([pageId], async () => 'persisted', {
+          admission: room, ownCollabCommit: 'defer',
+        })).rejects.toMatchObject({ statusCode: 409, reason: 'collab_commit_pending' });
+        await expect(withPageWriteTransaction([pageId], async () => 'written', { admission: room }))
+          .rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+        await expect(withPageWriteTransaction([pageId], async () => 'written'))
+          .rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+        await expect(admitPageRuntime(pageId, USER_B, 'collab_request'))
+          .rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+        await releasePageRuntime(await admitPageRuntime(pageId, USER_B, 'collab_room'));
+        await expect(withPageWriteTransaction([pageId, otherPageId], async () => 'written', {
+          ownCollabCommit: 'proceed',
+        })).rejects.toMatchObject({ statusCode: 400, reason: 'invalid_write_admission' });
+      } finally {
+        await cancelPageWriteIntentBeforeEffect(own);
+      }
+      const labels = await reserveForeignLabels(pageId);
+      try {
+        for (const ownCollabCommit of ['proceed', 'defer'] as const) {
+          await expect(withPageWriteTransaction([pageId], async () => 'written', {
+            admission: room, ownCollabCommit,
+          })).rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+        }
+        await expect(admitPageRuntime(pageId, USER_B, 'collab_room'))
+          .rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+      } finally {
+        await cancelPageWriteIntentBeforeEffect(labels);
+      }
+    } finally {
+      await releasePageRuntime(room);
+    }
+  });
 });

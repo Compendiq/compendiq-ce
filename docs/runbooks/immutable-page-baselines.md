@@ -690,7 +690,16 @@ establish a terminal outcome.
 
 A writable room admission remains active until a clean disconnect and successful
 flush, or a server-proven runtime fence. Redis liveness, a missing heartbeat,
-elapsed time, and process age do not expire it.
+elapsed time, and process age do not expire it. A flush that only waits for
+the page's own pending collaborative Save (`collab.commit.confluence` or
+`.media`) is not a failure: the room keeps the admission and retries the flush
+and release once that Save settles, at once on its `pages_version` control and
+otherwise on a retry that starts at 1 s and doubles to 30 s, so a successful
+Save does not leave the page answering `409 collab_session_active` (#1763).
+While such an intent stays pending, including an unknown outcome awaiting
+reconciliation, the admission stays active; reconcile the intent and the room
+releases on its next retry. Any other flush failure keeps the admission as
+before and schedules no retry.
 
 ## Runtime retirement and fencing
 

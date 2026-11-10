@@ -175,6 +175,24 @@ rollback) must `DELETE FROM page_collaborative_docs WHERE page_id = $1`.
 The no-row init path is how the next join recovers — not first-ever join
 only. A live room still 409s those HTTP writers; it does not DELETE.
 
+**While the page's own collaborative Save is pending (#1763).** A Confluence
+commit reserves a `collab.commit.confluence[.media]` intent after its provider
+read and keeps it pending until its local publication settles. That intent
+fences every writer of the page; for its own room it is transient. Writable
+frames and peer-pod updates keep applying to the in-memory `Y.Doc` on every
+pod, state dumps are still answered, and writable and read-only joins are still
+admitted, because the commit publishes the snapshot it captured before
+reserving. Only the room's persists wait: the 2 s snapshot and the last-writer
+flush answer `collab_commit_pending`, because a `body_html` write would advance
+`content_revision` under the intent and fail its completion after Confluence
+accepted the page. The `pages_version` control that follows a successful commit
+resumes a waiting persist and a deferred last-writer release at once on every
+pod; a cancelled Save, or one settled by recovery, is picked up by a retry that
+starts at 1 s and doubles to 30 s. Any other pending page write, a stale
+lifecycle or admission, and a fenced runtime still close a writable socket with
+`1001 collab_validation_unavailable`, and that refused frame is not requested
+again (#1928). No close code or control frame is added.
+
 ## Neighborhoods
 
 ESLint: gateway and persistence live in **`core` + `routes/knowledge`**.
@@ -245,11 +263,14 @@ Subscribe (and queue) **before** the BYTEA load. Pub/sub does not replay.
 refreshed on every ping (15 s) and every inbound frame. Yjs state is not
 stored in Redis.
 
-Last disconnect: persist BYTEA + HTML **immediately**. Do **not** `SREM`
-the last member until the 10 s empty-room grace fires **and** the
-in-memory `Y.Doc` is dropped (a `{podId}:grace` sentinel is equivalent),
-so `assertNoLiveCollabRoom` and the heap agree. A reconnect during grace
-cancels the timer.
+Last disconnect: flush BYTEA + HTML **immediately**, then release the room's
+durable admission and `SREM` its members, so `assertNoLiveCollabRoom` passes as
+soon as that flush lands. The heap keeps the clean room for the 10 s empty-room
+grace; a reconnect during grace cancels the timer, and a join after the release
+rebuilds the room from PostgreSQL. A failed flush keeps the admission (fail
+closed, see the runbook). A flush that waits for the page's own pending
+collaborative Save is retried after it (see *While the page's own collaborative
+Save is pending*).
 
 ## Feature flag
 
