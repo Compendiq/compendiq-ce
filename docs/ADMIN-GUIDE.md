@@ -1223,6 +1223,8 @@ Confluence is the system of record for synced pages, but Compendiq supports loca
 
 **Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
 
+**Where the policy applies**: every inbound write of a page that carries a local edit — the scheduled and manual space sync, and a page's **Re-sync** / **Force re-sync** (`POST /api/pages/bulk/sync`). Edits made while the Confluence integration was switched off are local edits too. A re-sync never lowers the page's version number. Under `Confluence wins` it first stores the local text as an entry in the page's version history, so the overwritten edit can be restored; a scheduled sync keeps such an entry only when Confluence's version moved ahead of the local one. A page the policy kept or queued still counts as re-synced in the result, and the audit rows of a re-sync carry the user who triggered it (`user_id`; null for the scheduled sync).
+
 **Resolution flow (manual-review)**
 
 1. Sync detects a conflict; the page lands in the conflicts list.

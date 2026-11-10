@@ -170,9 +170,10 @@ sequenceDiagram
   `confluence_id` key and mutate only `source = 'confluence'`; the upstream
   version guard prevents duplicate writes.
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
-  only liveness advice. Inbound sync skips snapshot-HTML drift unless the
-  remote version increased; a real increase applies the inbound HTML, rebuilds
-  BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
+  only liveness advice. Inbound sync — the scheduled run and the bulk refresh
+  alike — skips snapshot-HTML drift unless the remote version increased; a
+  real increase applies the inbound HTML, rebuilds BYTEA, sends `doc_reset`
+  and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
   Redis transport generation before publishing. For a Confluence-sourced page
@@ -203,6 +204,61 @@ sequenceDiagram
   pages, deletion reconciliation, and the space `last_synced` update still run.
   Only a connection-fatal `ConfluenceError` (401 — revoked/expired PAT) rethrows
   to abort the whole run fast rather than grinding through every page.
+
+## Local edits and the conflict policy (EE #118, #1779)
+
+A page carries a local edit when `local_modified_at > last_synced` — an editor
+save, an AI write-back or a draft publish, including every write made while
+the integration was off. When an inbound Confluence body meets such a page,
+the configured policy (`getSyncConflictPolicy()`, **Settings → Knowledge →
+Spaces & Sync → Conflict policy**) decides, and every inbound writer asks the
+same function: `decideConflictPolicyOnClient` in `sync-service.ts`. It runs on
+the writer's own open transaction (the writer owns `BEGIN`/`COMMIT`), takes the
+AI-policy lock, re-reads the row `FOR UPDATE` (`source = 'confluence'` only)
+and returns one outcome, first match wins:
+
+| Outcome | When | What happens |
+|---|---|---|
+| `unchanged` | stored `body_html` and `body_text` equal the incoming ones | nothing to resolve |
+| `live_collab_hold` | live collab room, upstream version not ahead of the local one | row untouched: snapshot-HTML drift is a false conflict |
+| `queued_for_review` | `manual-review` + local edit | incoming version queued in `pending_sync_versions`, `conflict_pending = TRUE`; `SYNC_CONFLICT_DETECTED` (`queued_for_review`) |
+| `kept_local` | `compendiq-wins` + local edit | row untouched; `SYNC_CONFLICT_DETECTED` (`kept_local`) |
+| `apply_incoming` | `confluence-wins`, or no local edit | the writer stores the incoming body and clears the local-edit markers; `SYNC_OVERWROTE_LOCAL_EDITS` only when a local edit was overwritten |
+
+The decision never writes the body, publishes the AI policy or audits by
+itself; its only writes are the manual-review queue row and flags. The writer
+publishes the policy once on the same transaction for every outcome, writes
+the body for `apply_incoming`, and after COMMIT calls
+`recordConflictPolicyAudit` and — only when it replaced the body —
+`reconcileCollabAfterInboundBodyWrite` (a live room is reset from the new
+HTML, otherwise the stored collab document is dropped). Repeated runs
+re-evaluate on purpose: a kept page is re-audited and a queued page stacks
+another `pending_sync_versions` row on every run.
+
+Callers:
+
+- **Scheduled sync, version-unchanged branch**
+  (`applyConflictPolicyForExistingPage`, its own transaction): `apply_incoming`
+  overwrites without a `page_versions` snapshot and leaves `version` alone.
+- **Bulk refresh** (`POST /api/pages/bulk/sync`: a page's **Re-sync** and
+  **Force re-sync**): inside `withPageWriteTransaction`, after
+  `lockAiPolicyForPages` and `loadAuthorizedContentWriteState` re-checked the
+  authority and revisions captured before the upstream GET. `apply_incoming`,
+  and `unchanged` without a local edit, run the routine refresh with
+  `version = GREATEST(version, upstream)`, so the local version never
+  decreases; a local edit whose body already matches upstream is left alone.
+  Before it overwrites a local edit the route inserts a `page_versions`
+  snapshot of the local version on the same transaction, and refuses the page
+  (409 `local_edit_snapshot_conflict`) if that version number already holds
+  different content. One `sync_run_id` per request stamps queued rows and
+  audit metadata, and the audits carry the requesting user. Every committed
+  outcome — kept, queued and held included — counts as `succeeded`; the
+  `{ succeeded, failed, errors }` shape is unchanged.
+
+**Snapshot asymmetry.** Only the bulk refresh snapshots the local version
+before a `confluence-wins` overwrite of a local edit. The scheduled
+version-unchanged branch does not; the scheduled version-jump branch snapshots
+the existing version before every upsert.
 
 ## Deletion reconciliation (#706)
 
@@ -808,7 +864,10 @@ sync upsert, both relocate directions and both `pages-crud.ts` create arms raise
 it **unconditionally** — each is writing the body wholesale and there is nothing
 to diff against. The conflict-policy update, the four `body_html` writers in
 `routes/knowledge/pages-crud.ts` (the editor save, the app-side Confluence push,
-publish-draft, the bulk refresh), `restoreVersion` and both branches of
+publish-draft, the bulk refresh — which writes only when the conflict policy
+lets the incoming body land, see
+[Local edits and the conflict policy](#local-edits-and-the-conflict-policy-ee-118-1779)),
+`restoreVersion` and both branches of
 `POST /llm/improvements/apply` are **gated on `body_html IS DISTINCT FROM $n`**.
 That gate is the whole point on the edit paths: `body_text` alone cannot move an
 `img src`, and those paths are the *only* trigger for a page whose image was
@@ -823,7 +882,8 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 
 ## Key files
 
-- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`
+- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`; `decideConflictPolicyOnClient` / `recordConflictPolicyAudit`, the conflict policy every inbound writer shares
+- `backend/src/routes/knowledge/pages-crud.ts` — `POST /api/pages/bulk/sync`, the bulk refresh
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
 - `backend/src/domains/confluence/services/attachment-sweep-service.ts` — the #1349 orphan sweep (keep-set, walk, live delete, index-row prune)

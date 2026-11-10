@@ -67,8 +67,11 @@ credentials to do it.
 Turning the switch back on restores the credential form with your saved values
 and resumes sync with the space selection you already had; edits you made while
 standalone are reconciled by the normal sync conflict handling, exactly as a
-local edit between two syncs always was. Entering credentials in the setup
-wizard turns the integration back on for you.
+local edit between two syncs always was. A page's **Re-sync** follows the same
+conflict policy: depending on your administrator's setting it keeps your edit,
+queues the Confluence version for review, or replaces your edit after saving it
+in the page's version history. Entering credentials in the setup wizard turns
+the integration back on for you.
 
 ### The Getting Started checklist
 
