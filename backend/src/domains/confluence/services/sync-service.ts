@@ -233,9 +233,12 @@ export async function isSyncRunning(): Promise<boolean> {
   }
 }
 
-/** Audit callbacks for {@link startManualSync}; neither may reject. */
+/** Audit callbacks for {@link startManualSync}. */
 interface ManualSyncHooks {
-  /** Awaited after the claim and the `syncing` status write, before the run is detached. */
+  /**
+   * Awaited right after the claim, before the status flips to `syncing`. A
+   * rejection aborts the start: the claim is released and the error propagates.
+   */
   onStarted: () => Promise<void>;
   /** Awaited in the detached run once `syncUser` resolves, before the lock is released; skipped when it rejects. */
   onCompleted: () => Promise<void>;
@@ -254,17 +257,24 @@ interface ManualSyncHooks {
  * status or the audit log. Without a Redis client the run proceeds unlocked,
  * as scheduled runs do.
  *
- * Otherwise the status flips to `syncing` (so the response reflects it and the
- * frontend starts polling), `onStarted` runs, and `syncUser` is detached: the
+ * Otherwise `onStarted` runs, the status flips to `syncing` (so the response
+ * reflects it and the frontend starts polling), and `syncUser` is detached: the
  * lock is renewed every {@link SYNC_LOCK_RENEW_INTERVAL_MS} and released in the
- * run's `finally`, after `onCompleted` or after a failed run is logged.
+ * run's `finally`, after `onCompleted` or after a failed run is logged. If
+ * `onStarted` rejects, nothing has run yet: the claim is released and the
+ * status is never touched.
  */
 export async function startManualSync(userId: string, hooks: ManualSyncHooks): Promise<boolean> {
   const lockId = await acquireSyncLock();
   if (!lockId) return false;
 
+  try {
+    await hooks.onStarted();
+  } catch (err) {
+    await releaseSyncLock(lockId);
+    throw err;
+  }
   await setSyncStatus(userId, { userId, status: 'syncing' });
-  await hooks.onStarted();
 
   // The heartbeat and the `finally` that clears it are created together, so
   // no await can strand a live interval.

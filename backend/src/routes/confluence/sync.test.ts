@@ -3,19 +3,15 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
 // Mock sync service
-const mockSyncUser = vi.fn().mockResolvedValue(undefined);
 const mockGetSyncStatus = vi.fn();
-const mockSetSyncStatus = vi.fn();
 const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
 // Claims the worker lock and detaches the run (#1775). What it does is covered
 // against real PostgreSQL and Redis in sync-manual-lock.integration.test.ts.
 const mockStartManualSync = vi.fn().mockResolvedValue(true);
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  syncUser: (...args: unknown[]) => mockSyncUser(...args),
   startManualSync: (...args: unknown[]) => mockStartManualSync(...args),
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
-  setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),
 }));
 
 vi.mock('../../core/services/confluence-integration.js', () => ({
@@ -24,10 +20,6 @@ vi.mock('../../core/services/confluence-integration.js', () => ({
 
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 import { syncRoutes } from './sync.js';
@@ -74,9 +66,8 @@ describe('Sync routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Sync already in progress');
 
-      // Should NOT call setSyncStatus or syncUser
-      expect(mockSetSyncStatus).not.toHaveBeenCalled();
-      expect(mockSyncUser).not.toHaveBeenCalled();
+      // Refused on the caller's own status, before any lock claim.
+      expect(mockStartManualSync).not.toHaveBeenCalled();
     });
 
     it('should return syncing status in response', async () => {
@@ -93,6 +84,26 @@ describe('Sync routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Sync started');
       expect(body.status.status).toBe('syncing');
+      expect(mockStartManualSync).toHaveBeenCalledWith(
+        'test-user-id',
+        expect.objectContaining({ onStarted: expect.any(Function), onCompleted: expect.any(Function) }),
+      );
+    });
+
+    it('answers 409 with the snapshot status when another run holds the sync lock', async () => {
+      mockGetSyncStatus.mockReturnValue({ userId: 'test-user-id', status: 'idle' });
+      mockStartManualSync.mockResolvedValueOnce(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/sync',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({
+        message: 'A Confluence sync is currently running. Wait for it to finish and try again.',
+        status: { userId: 'test-user-id', status: 'idle' },
+      });
     });
 
     it('reports the off state without starting a run when the integration is disabled (#1623)', async () => {
@@ -109,9 +120,8 @@ describe('Sync routes', () => {
       expect(body.message).toBe('Confluence integration is disabled');
       expect(body.status.status).toBe('idle');
 
-      // No phantom 'syncing' status, no background work.
-      expect(mockSetSyncStatus).not.toHaveBeenCalled();
-      expect(mockSyncUser).not.toHaveBeenCalled();
+      // No lock claim, no phantom 'syncing' status, no background work.
+      expect(mockStartManualSync).not.toHaveBeenCalled();
     });
   });
 

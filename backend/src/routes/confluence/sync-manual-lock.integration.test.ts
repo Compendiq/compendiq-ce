@@ -32,6 +32,7 @@ import {
   getSyncStatus,
   runScheduledSync,
   setSyncStatus,
+  startManualSync,
 } from '../../domains/confluence/services/sync-service.js';
 import { syncRoutes } from './sync.js';
 import { pagesRelocateRoutes } from '../knowledge/pages-relocate.js';
@@ -46,6 +47,8 @@ const LOCK = 'sync:worker:lock';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** `SYNC_LOCK_RENEW_INTERVAL_MS` in sync-service.ts: a third of the 600 s TTL. */
 const RENEW_INTERVAL_MS = 200_000;
+/** What a refused claim answers; relocate's sync guard says the same. */
+const LOCK_HELD = 'A Confluence sync is currently running. Wait for it to finish and try again.';
 const SPACES = [
   { key: 'CONF', name: 'Conf', type: 'global', status: 'current' },
   { key: 'OTHER', name: 'Other', type: 'global', status: 'current' },
@@ -404,7 +407,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
       expect(responses.map((response) => response.statusCode).sort((a, b) => a - b)).toEqual([200, 409]);
       const refused = responses.find((response) => response.statusCode === 409)!;
       expect(refused.json()).toEqual({
-        message: 'Sync already in progress',
+        message: LOCK_HELD,
         status: { userId: user.id, status: 'idle' },
       });
       expect(await auditCount(user.id, 'SYNC_STARTED')).toBe(1);
@@ -447,7 +450,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
 
       expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({
-        message: 'Sync already in progress',
+        message: LOCK_HELD,
         status: { userId: user.id, status: 'idle' },
       });
       expect(await redis.get(LOCK)).toBe(holder);
@@ -471,7 +474,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
 
       expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({
-        message: 'Sync already in progress',
+        message: LOCK_HELD,
         status: { userId: second.id, status: 'idle' },
       });
       expect(await statusOf(second)).toEqual({ userId: second.id, status: 'idle' });
@@ -551,6 +554,30 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
       }
     });
 
+    it('renews and releases only its own token, never a lock another holder has taken over', async () => {
+      const user = await seedUser({ spaces: ['CONF'] });
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        expect((await postSync(user)).statusCode).toBe(200);
+        await listing(1);
+        expect(vi.getTimerCount()).toBe(1); // the run's heartbeat
+        // The run's key lapsed and another holder claimed it meanwhile.
+        await redis.set(LOCK, 'foreign-holder', { PX: 30_000 });
+
+        await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS);
+        expect(await redis.pTTL(LOCK)).toBeLessThanOrEqual(30_000);
+
+        fixture.gate.resolve();
+        // The run's `finally` clears the heartbeat and issues its release on
+        // the shared connection in one step, so the next read sees the release.
+        await vi.waitFor(() => expect(vi.getTimerCount()).toBe(0), { timeout: 10_000 });
+        expect(await redis.get(LOCK)).toBe('foreign-holder');
+      } finally {
+        vi.useRealTimers();
+        await redis.del(LOCK);
+      }
+    });
+
     it('refuses with 409 and leaves the status untouched when the claim errors (fail-closed, as the scheduler)', async () => {
       const user = await seedUser({ spaces: ['CONF'] });
       const closed = createClient({
@@ -566,7 +593,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
 
         expect(response.statusCode).toBe(409);
         expect(response.json()).toEqual({
-          message: 'Sync already in progress',
+          message: LOCK_HELD,
           status: { userId: user.id, status: 'idle' },
         });
         expect((await getSyncStatus(user.id)).status).toBe('idle');
@@ -575,6 +602,25 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/sync and the sync wo
       } finally {
         setRedisClient(redis);
       }
+    });
+
+    it('releases the claim and leaves the status alone when the start hook rejects', async () => {
+      const user = await seedUser({ spaces: ['CONF'] });
+      const onCompleted = vi.fn(async () => undefined);
+
+      await expect(
+        startManualSync(user.id, {
+          onStarted: async () => {
+            throw new Error('audit unavailable');
+          },
+          onCompleted,
+        }),
+      ).rejects.toThrow('audit unavailable');
+
+      expect(await redis.get(LOCK)).toBeNull();
+      expect((await getSyncStatus(user.id)).status).toBe('idle');
+      expect(onCompleted).not.toHaveBeenCalled();
+      expect(fixture.listingAuth).toEqual([]);
     });
 
     it('makes the scheduler skip its cycle while a manual run holds the lock', async () => {
