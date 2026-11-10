@@ -441,3 +441,8 @@ safe.
   the row list takes `max-w-2xl` because `SettingsLayout` caps every `<form>`
   at that width (`SettingsLayout.tsx:62`), so the hairlines now end where the
   rows do. No behaviour, copy or state change.
+- **Round 3 — `/review` on PR #1894 (2026-11-10, `anthropic/claude-fable-5-1`):**
+  on 72afa52c, COMMENT with 8 findings (1 WARNING: rehome heading lacked the
+  focus ring; 7 INFO). All fixed in c59378df. Delta review: APPROVE, with 2
+  INFO findings (pin inline/toast exclusivity in U7; record this round),
+  both fixed in the following commit.

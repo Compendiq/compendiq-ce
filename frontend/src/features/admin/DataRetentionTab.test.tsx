@@ -538,6 +538,7 @@ describe('DataRetentionTab', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       const { fetchSpy } = await renderLoaded();
+      const toastError = vi.spyOn(toast, 'error');
 
       fireEvent.change(screen.getByTestId(WEBHOOK_INPUT), { target: { value: '120' } });
       fireEvent.click(screen.getByTestId(WEBHOOK_SAVE));
@@ -546,6 +547,8 @@ describe('DataRetentionTab', () => {
       expect(alert).toHaveTextContent(
         'Retention window rejected by policy. Your change has been kept. Retry saving.',
       );
+      // A mounted row reports inline only; the toast is for an unmounted row.
+      expect(toastError).not.toHaveBeenCalled();
       expect(inputValue(WEBHOOK_INPUT)).toBe('120');
       expect(screen.getByTestId(WEBHOOK_SAVE)).not.toHaveAttribute('aria-disabled');
 
