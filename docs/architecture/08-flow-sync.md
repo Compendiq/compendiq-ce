@@ -171,9 +171,9 @@ sequenceDiagram
   version guard prevents duplicate writes.
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
   only liveness advice. Inbound sync — the scheduled run and the bulk refresh
-  alike — skips snapshot-HTML drift unless the remote version increased; a
-  real increase applies the inbound HTML, rebuilds BYTEA, sends `doc_reset`
-  and closes sockets **1001**. Collaborative commit
+  alike — skips snapshot-HTML drift unless the remote version is ahead of the
+  local one; a remote version ahead of it applies the inbound HTML, rebuilds
+  BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
   Redis transport generation before publishing. For a Confluence-sourced page
@@ -248,38 +248,58 @@ Callers:
   **Force re-sync**): inside `withPageWriteTransaction`, after
   `lockAiPolicyForPages` and `loadAuthorizedContentWriteState` re-checked the
   authority and revisions captured before the upstream GET.
-  - `apply_incoming`, and `unchanged` without a local edit, run the routine
-    refresh with `version = GREATEST(version, upstream)`: the local version
-    never decreases. A local edit whose body already matches upstream is left
-    alone.
-  - Before it overwrites a local edit, the route stores the local version as a
-    `page_versions` snapshot on the same transaction and gives the incoming
-    body a new live version, `GREATEST(version + 1, upstream)` — restore's
-    rule — so the snapshot is ordinary history that Version History lists,
-    serves and restores. A body-less row that opening Version History imported
-    at that number is claimed for the snapshot; a row that already holds other
-    content (title or body) refuses the page instead: it is reported in
-    `errors` (HTTP 200, `failed` + 1) and nothing is written.
+  - `apply_incoming` and `unchanged`, each without a local edit, run the
+    routine refresh. A local edit whose body already matches upstream (a
+    title-only rename) is left alone, as in the scheduled version-unchanged
+    branch.
+  - Before it overwrites a local edit (`confluence-wins`), the route stores the
+    local version as a `page_versions` snapshot on the same transaction. A
+    body-less row that opening Version History imported at that number is
+    claimed for the snapshot; a row that already holds other content (title or
+    body) refuses the page instead: it is reported in `errors` (HTTP 200,
+    `failed` + 1) and nothing is written.
+  - Every write sets `version = GREATEST(version, upstream)`: Confluence's
+    number, or the local one when that is higher, so it never decreases.
+    When Confluence is ahead of the local number the snapshot is ordinary
+    history below the live version. When Confluence is behind or at the same
+    number, the snapshot shares the live version number, and Version History
+    — which shows that number as the current version — does not list or serve
+    it until the page's version moves on. The row stays readable in
+    `page_versions` meanwhile; listing it needs a separate upstream-version
+    column (deferred follow-up, user decision on #1779 review r2).
   - One `sync_run_id` per request stamps queued rows and audit metadata, and
     the audits carry the requesting user. Every committed outcome — kept,
     queued and held included — counts as `succeeded`; the
     `{ succeeded, failed, errors }` shape is unchanged.
 
-**Snapshot asymmetry.** Only the bulk refresh keeps a reachable snapshot of
-the local version before a `confluence-wins` overwrite of a local edit. The
-scheduled version-unchanged branch takes none. The scheduled version-jump
-branch saves the existing version with `ON CONFLICT DO NOTHING`, so it skips
-the snapshot silently when that number is already taken in history, for
-example by a row imported from Confluence.
+**Snapshot asymmetry.** Only the bulk refresh snapshots the local version
+before a `confluence-wins` overwrite of a local edit. The scheduled
+version-unchanged branch takes none. The scheduled version-jump branch saves
+the existing version with `ON CONFLICT DO NOTHING`, so it skips the snapshot
+silently when that number is already taken in history, for example by a row
+imported from Confluence.
 
-**Version alignment.** Publishing from Compendiq expects `pages.version` to
-equal Confluence's version: the editor push sends `pages.version + 1`, and the
-collaborative commit refuses when the two differ. A local edit made while the
-integration was off moves the local number ahead of Confluence's, and a
-Re-sync no longer moves it back (the version never decreases), so such a page
-cannot be published from Compendiq until Confluence's version catches up; the
-scheduled sync then realigns it. A `confluence-wins` overwrite that has to
-bump past Confluence's number (Confluence not ahead) widens that gap by one.
+**Version alignment.** A local edit made while the integration was off moves
+`pages.version` ahead of Confluence's version, and a Re-sync no longer moves
+it back (the version never decreases). Until Confluence's version catches up:
+
+- Publishing from Compendiq fails and fences the page. The editor push (and a
+  Confluence-mode version restore) sends `pages.version + 1` without reading
+  Confluence's version first, and Confluence accepts only its current version
+  plus one [per Atlassian's REST documentation; not run against a real DC].
+  The refused write leaves a pending page-write intent, which blocks every
+  later writer of the page, Re-sync included, until a system administrator
+  resolves it through page-write recovery. The collaborative commit refuses a
+  mismatch up front (409 `confluence_modified`) without leaving an intent.
+- The scheduled sync decides "Confluence moved" by comparing version numbers,
+  so a newer Confluence version at or below the local number takes the
+  version-unchanged branch: its content is applied through the conflict
+  policy, cached attachments are only fetched when missing (a changed
+  attachment under the same file name is not refreshed), and a live
+  collaborative session holds the change back as "not newer".
+
+Once Confluence's version passes the local one, the scheduled sync's
+version-jump branch realigns `pages.version`.
 
 ## Deletion reconciliation (#706)
 

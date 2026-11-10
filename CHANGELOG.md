@@ -33,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
   scheduled sync: `Compendiq wins` keeps the local page, `Manual review` queues
-  the Confluence version for review, and `Confluence wins` first saves the local
-  text as a version-history entry that can be viewed and restored, then audits
+  the Confluence version for review, and `Confluence wins` first stores the
+  local text in the page's version history, then audits
   `SYNC_OVERWROTE_LOCAL_EDITS`. The local version number no longer goes
   backwards, so a page edited while the integration was off stays ahead of
   Confluence's number until Confluence catches up. A live collaborative session
