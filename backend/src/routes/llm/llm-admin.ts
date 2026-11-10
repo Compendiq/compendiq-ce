@@ -221,8 +221,8 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   fastify.post('/admin/searxng/test', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
     try {
-      // Exercise the saved configuration, not a fixed width: a stored count the
-      // sidecar rejects must turn this button red, not stay green on 3 (#1768).
+      // Search with the effective (normalized) width, not a fixed 3, so the
+      // count this button reports is the one web search actually uses (#1768).
       const maxResults = await getSearxngMaxResults();
       const results = await searchDocumentation('test connection', request.userId, maxResults);
       return { ok: true, resultCount: results.length, sample: results.slice(0, 3).map((r) => ({ title: r.title, url: r.url })) };
