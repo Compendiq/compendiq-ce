@@ -40,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Confluence's number until Confluence catches up. A live collaborative session
   is not overwritten when Confluence has nothing newer, and the collaborative
   document is refreshed whenever the body is replaced.
+- **Version-jump sync honours the conflict policy (#1772):** when a synced
+  page's Confluence version moved and the page carries a local edit
+  (`local_modified_at > last_synced`; a local rename counts even when the body
+  is unchanged), sync now applies the configured sync-conflict policy before it
+  touches the page. `Compendiq wins` keeps the local row and audits
+  `SYNC_CONFLICT_DETECTED` (`kept_local`). `Manual review` queues the incoming
+  version for the conflicts queue. Neither one cleans the page's cached
+  attachments or downloads anything. `Confluence wins` still overwrites, after
+  saving the local version to the page history when that version number is
+  free there, and now audits `SYNC_OVERWROTE_LOCAL_EDITS`. Previously the
+  version jump bypassed every policy and its audit. A local save that lands
+  while attachments download is no longer overwritten by that run, and a
+  concurrent newer write is never moved back to an older version.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads

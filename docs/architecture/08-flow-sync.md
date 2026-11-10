@@ -53,15 +53,25 @@ sequenceDiagram
             CL-->>S: page
             S->>CC: confluenceToHtml(XHTML)
             CC-->>S: body_html + body_text
+            opt existing row behind the upstream version (#35;1772)
+                S->>DB: BEGIN#59; AI-policy lock + SELECT … FOR UPDATE (source = 'confluence')<br/>conflict policy + local_modified_at > last_synced
+                alt local edit under compendiq-wins / manual-review
+                    S->>DB: manual-review only: INSERT pending_sync_versions,<br/>SET conflict_pending#59; COMMIT
+                    S->>DB: audit SYNC_CONFLICT_DETECTED (kept_local / queued_for_review)
+                    Note over S,DB: no attachment cleanup, download, snapshot or upsert#59;<br/>restriction sync still runs
+                else incoming wins (confluence-wins, or no local edit)
+                    S->>DB: COMMIT (nothing written)#59; cleanup + download follow,<br/>then a snapshot of the locked row and the upsert below
+                end
+            end
             S->>AH: downloadAttachments(page)
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
+            S->>DB: version jump: INSERT page_versions (snapshot of the locked row)
             S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
+            S->>DB: version jump: audit SYNC_OVERWROTE_LOCAL_EDITS<br/>only if a local edit was overwritten (#35;1772)
             S->>R: HSET sync:status:{user} progress
         end
-
-        S->>DB: INSERT/UPDATE page_versions (snapshot)
 
         Note over S,DB: Deletion reconciliation (#35;706) — every sync, incremental too
         S->>CL: getAllPageIds(spaceKey)
@@ -168,6 +178,46 @@ sequenceDiagram
   body or lifecycle mutation cannot overwrite a frozen row. That enforcement
   and explicit thaw are independent of the user's current integration mode;
   re-enabling the integration does not auto-thaw or remove evidence.
+- **Conflict policy on an upstream version jump (#1772).** When an existing
+  `source = 'confluence'` row is behind the fetched upstream version, `syncPage`
+  applies the sync-conflict policy *before* it cleans the page's attachment
+  cache or downloads anything. One short transaction takes the AI-policy lock and
+  `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). A local edit
+  (`local_modified_at > last_synced`) counts when the local body differs from
+  Confluence's new version, and also when the bodies are equal but the local
+  title differs (a local rename); a local save that left title and body equal to
+  Confluence's new version is routine. With a local edit, `compendiq-wins` keeps
+  the row (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues
+  the incoming version (`pending_sync_versions`, `conflict_pending`,
+  `queued_for_review`). The queue stores bodies, not titles, so a rename-only
+  conflict is an entry with an empty body diff: *Keep local* keeps the local
+  title, and *Take Confluence* applies the (equal) body, Confluence's version
+  number and cleared markers but not Confluence's title, which reaches the page
+  only with Confluence's next edit of it; nothing is lost. Neither policy
+  cleans, downloads, snapshots, upserts or resets collaborative state, and
+  restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
+  which is a routine update with no audit) the cache is cleaned and
+  re-downloaded, the locked row is saved to `page_versions`, and the upsert
+  replaces it with Confluence's version number, which is above the saved local
+  one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit, and before the
+  collaborative document is reconciled, only if a local edit was overwritten.
+  The snapshot uses `ON CONFLICT DO NOTHING`: if that version number is already
+  taken in the history (for example by a body-less row that opening Version
+  History imported), no entry is added. Two checks leave the page to the next
+  walk. The upsert re-reads the row under `FOR UPDATE` and writes no content if
+  its `version` or `local_modified_at` moved since the decision (for example a
+  local save during the download); it still publishes the AI policy this walk
+  observed, as every exit does. The decision itself stops if the locked row is
+  no longer behind upstream, so a concurrent newer write is never moved back. A
+  kept or queued row keeps its older version, so
+  every walk of the page re-enters this branch: `compendiq-wins` audits again
+  and `manual-review` queues another version on each such run. Incremental runs
+  re-fetch pages modified upstream in the last 24 hours, and the
+  missing-attachment retry re-walks a draw.io page on every incremental run
+  (its stored storage renders differently from the kept local body), so such a
+  page records the conflict twice per run inside that window and once per run
+  after it, until the conflict is resolved. This is deliberate and matches the
+  steady state for diverged local content at an unchanged upstream version.
 - **No candidate side channel.** A normal Confluence fetch remains a normal
   sync. The unshipped frozen-Confluence capture/refresh/preview/accept/retention
   workflow and its EE adapter were removed; this flow must not recreate them.
@@ -186,7 +236,8 @@ sequenceDiagram
 - **Distributed live collab rooms (#1448/#276).** `collab:active:{pageId}` is
   only liveness advice. Inbound sync — the scheduled run and the bulk refresh
   alike — skips snapshot-HTML drift unless the remote version is ahead of the
-  local one; a remote version ahead of it applies the inbound HTML, rebuilds
+  local one; a remote version ahead of it applies the inbound HTML (unless the
+  conflict policy keeps or queues a local edit, see above), rebuilds
   BYTEA, sends `doc_reset` and closes sockets **1001**. Collaborative commit
   instead takes durable lifecycle admissions, gathers a freshly correlated
   state dump from every PostgreSQL-recorded `collab_room` owner, and fences the
@@ -227,11 +278,8 @@ save, an AI write-back or a draft publish, including every write made while
 the integration was off. When an inbound Confluence body meets such a page,
 the configured policy (`getSyncConflictPolicy()`, **Settings → Knowledge →
 Spaces & Sync → Conflict policy**) decides through one function,
-`decideConflictPolicyOnClient` in `sync-service.ts`, for the two writers
-listed below. The scheduled sync's version-jump branch (Confluence's version
-ahead of the local one) does not consult it yet: it snapshots the existing
-version and upserts the incoming page (#1772 routes it through the same
-decision). The function runs on the writer's own open transaction (the writer
+`decideConflictPolicyOnClient` in `sync-service.ts`, for the three writers
+listed below. The function runs on the writer's own open transaction (the writer
 owns `BEGIN`/`COMMIT`), takes the AI-policy lock, re-reads the row
 `FOR UPDATE` (`source = 'confluence'` only) and returns one outcome, first
 match wins:
@@ -286,13 +334,31 @@ Callers:
     the audits carry the requesting user. Every committed outcome — kept,
     queued and held included — counts as `succeeded`; the
     `{ succeeded, failed, errors }` shape is unchanged.
+- **Scheduled sync, version-jump branch** (Confluence's version ahead of the
+  local row; `gateVersionJumpByConflictPolicy`, #1772): decides in its own short
+  transaction *before* the page's attachment cache is cleaned or anything is
+  downloaded. On this branch a local edit whose body equals the incoming one
+  but whose title differs (a local rename) is decided like a diverged body,
+  and a locked row that is no longer behind upstream is left to the newer write.
+  - `queued_for_review`, `kept_local` and held rows skip cleanup, download,
+    snapshot and upsert; restriction sync still runs.
+  - `apply_incoming`, and `unchanged` unless it is a local rename, clean and
+    download, save the locked local version to `page_versions` with
+    `ON CONFLICT DO NOTHING`, and upsert Confluence's version number, which is
+    above the saved local one, so the snapshot is ordinary history. The upsert
+    first re-reads the row `FOR UPDATE` and writes no content if its `version`
+    or `local_modified_at` moved since the decision; it still publishes the AI
+    policy the walk observed.
+  - The overwrite audit is written before the collab reconcile; counts change
+    only after a committed upsert.
 
-**Snapshot asymmetry.** Only the bulk refresh snapshots the local version
-before a `confluence-wins` overwrite of a local edit. The scheduled
-version-unchanged branch takes none. The scheduled version-jump branch saves
-the existing version with `ON CONFLICT DO NOTHING`, so it skips the snapshot
-silently when that number is already taken in history, for example by a row
-imported from Confluence.
+**Snapshot asymmetry.** The scheduled version-unchanged branch is the only
+writer that overwrites a local edit without a `page_versions` snapshot. The
+bulk refresh snapshots it on the overwrite's own transaction, claiming a
+body-less imported row or refusing the page when that number holds other
+content. The scheduled version-jump branch saves the locked local version with
+`ON CONFLICT DO NOTHING`, so it skips the snapshot silently when that number
+is already taken in history, for example by a row imported from Confluence.
 
 **Version alignment.** A local edit made while the integration was off moves
 `pages.version` ahead of Confluence's version, and a Re-sync no longer moves
@@ -314,7 +380,9 @@ it back (the version never decreases). Until Confluence's version catches up:
   collaborative session holds the change back as "not newer".
 
 Once Confluence's version passes the local one, the scheduled sync's
-version-jump branch realigns `pages.version`.
+version-jump branch realigns `pages.version` when the conflict policy lets
+Confluence's version in; under `compendiq-wins` and `manual-review` a kept or
+queued local edit keeps the local number until it is resolved.
 
 ## Deletion reconciliation (#706)
 
