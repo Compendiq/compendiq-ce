@@ -170,26 +170,32 @@ sequenceDiagram
   cache or downloads anything. One short transaction takes the AI-policy lock and
   `SELECT … FOR UPDATE` (`decideConflictPolicyOnClient`). A local edit
   (`local_modified_at > last_synced`) counts when the local body differs from
-  the incoming one, and also when the bodies are equal but the local title
-  differs (a local rename); a local save that changed neither is routine. With
-  a local edit, `compendiq-wins` keeps the row (`SYNC_CONFLICT_DETECTED`,
-  `kept_local`) and `manual-review` queues the incoming version
-  (`pending_sync_versions`, `conflict_pending`, `queued_for_review`). Neither
+  Confluence's new version, and also when the bodies are equal but the local
+  title differs (a local rename); a local save that left title and body equal to
+  Confluence's new version is routine. With a local edit, `compendiq-wins` keeps
+  the row (`SYNC_CONFLICT_DETECTED`, `kept_local`) and `manual-review` queues
+  the incoming version (`pending_sync_versions`, `conflict_pending`,
+  `queued_for_review`). The queue stores bodies, not titles, so a rename-only
+  conflict is an entry with an empty body diff: *Keep local* keeps the local
+  title, and *Take Confluence* applies the (equal) body, Confluence's version
+  number and cleared markers but not Confluence's title, which reaches the page
+  only with Confluence's next edit of it; nothing is lost. Neither policy
   cleans, downloads, snapshots, upserts or resets collaborative state, and
   restriction sync still runs. Otherwise (`confluence-wins`, or no local edit,
   which is a routine update with no audit) the cache is cleaned and
   re-downloaded, the locked row is saved to `page_versions`, and the upsert
-  replaces it with Confluence's version number, which is always above the
-  saved local one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit,
-  and before the collaborative document is reconciled, only if a local edit
-  was overwritten. The snapshot uses `ON CONFLICT DO NOTHING`: if that version
-  number is already taken in the history (for example by a body-less row that
-  opening Version History imported), no entry is added. Two checks leave the
-  page to the next walk. The upsert re-reads the row under `FOR UPDATE` and
-  writes nothing if its `version` or `local_modified_at` moved since the
-  decision (for example a local save during the download). The decision itself
-  stops if the locked row is no longer behind upstream, so a concurrent newer
-  write is never moved back. A kept or queued row keeps its older version, so
+  replaces it with Confluence's version number, which is above the saved local
+  one. `SYNC_OVERWROTE_LOCAL_EDITS` is written after the commit, and before the
+  collaborative document is reconciled, only if a local edit was overwritten.
+  The snapshot uses `ON CONFLICT DO NOTHING`: if that version number is already
+  taken in the history (for example by a body-less row that opening Version
+  History imported), no entry is added. Two checks leave the page to the next
+  walk. The upsert re-reads the row under `FOR UPDATE` and writes no content if
+  its `version` or `local_modified_at` moved since the decision (for example a
+  local save during the download); it still publishes the AI policy this walk
+  observed, as every exit does. The decision itself stops if the locked row is
+  no longer behind upstream, so a concurrent newer write is never moved back. A
+  kept or queued row keeps its older version, so
   every walk of the page re-enters this branch: `compendiq-wins` audits again
   and `manual-review` queues another version on each such run. Incremental runs
   re-fetch pages modified upstream in the last 24 hours, and the
