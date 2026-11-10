@@ -73,12 +73,13 @@ describe('computeConfluenceRetryDelayMs (#1778)', () => {
   });
 
   it.each([
-    { case: 'Retry-After: 0', header: '0', baseDelay: BASE_DELAY_MS },
-    { case: 'Retry-After: 0.2', header: '0.2', baseDelay: BASE_DELAY_MS },
-    { case: 'an HTTP-date Retry-After in the past', header: httpDate(-60_000), baseDelay: BASE_DELAY_MS },
-    { case: 'a 1 ms backoff (baseDelay: 1)', header: undefined, baseDelay: 1 },
-  ])('raises $case to the 1 s floor plus jitter, within [1000, 1500)', ({ header, baseDelay }) => {
-    expect(atEachJitter(() => computeConfluenceRetryDelayMs(0, parseRetryAfter(header), baseDelay)))
+    { case: 'Retry-After: 0', header: '0', baseDelay: BASE_DELAY_MS, attempt: 0 },
+    { case: 'Retry-After: 0.2', header: '0.2', baseDelay: BASE_DELAY_MS, attempt: 0 },
+    { case: 'an HTTP-date Retry-After in the past', header: httpDate(-60_000), baseDelay: BASE_DELAY_MS, attempt: 0 },
+    { case: 'a 1 ms backoff (baseDelay: 1)', header: undefined, baseDelay: 1, attempt: 0 },
+    { case: 'Retry-After: 0 at attempt 1', header: '0', baseDelay: BASE_DELAY_MS, attempt: 1 },
+  ])('raises $case to the 1 s floor plus jitter, within [1000, 1500)', ({ header, baseDelay, attempt }) => {
+    expect(atEachJitter(() => computeConfluenceRetryDelayMs(attempt, parseRetryAfter(header), baseDelay)))
       .toEqual(plusJitter(FLOOR_MS));
   });
 

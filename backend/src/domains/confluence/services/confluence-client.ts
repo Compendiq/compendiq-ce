@@ -1280,7 +1280,7 @@ export function computeConfluenceRetryDelayMs(
  * Delay formula (`computeConfluenceRetryDelayMs`): `baseDelay * 2^attempt + random(0..500)ms`;
  * every sleep, Retry-After included, stays within RETRY_DELAY_FLOOR_MS (1 s) and
  * RETRY_DELAY_CEILING_MS (30 s) (#1778).
- * For 429 responses with a Retry-After header, the server-specified delay is used instead.
+ * For 429 responses with a Retry-After header, the server-specified delay replaces `baseDelay * 2^attempt`, but jitter and bounds still apply.
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
