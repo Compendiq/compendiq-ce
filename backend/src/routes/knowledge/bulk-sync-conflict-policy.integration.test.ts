@@ -4,8 +4,7 @@
  *   - compendiq-wins keeps the local row,
  *   - manual-review queues the incoming version,
  *   - confluence-wins overwrites only after a `page_versions` snapshot of the
- *     local version — one the real version-history routes list, serve and
- *     restore — and audits `SYNC_OVERWROTE_LOCAL_EDITS`,
+ *     local version, and audits `SYNC_OVERWROTE_LOCAL_EDITS`,
  *   - the local version number never decreases,
  *   - a page without a local edit gets the routine refresh (no audit), and the
  *     collaborative document is invalidated only when its body is replaced.
@@ -163,16 +162,6 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     )).rows;
   }
 
-  /** Version-history reads and restores stay local (no import, no Confluence push). */
-  async function inStandaloneMode<T>(run: () => Promise<T>): Promise<T> {
-    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
-    try {
-      return await run();
-    } finally {
-      await query('UPDATE user_settings SET confluence_enabled = TRUE WHERE user_id = $1', [userId]);
-    }
-  }
-
   async function historyOf(id: number): Promise<string[]> {
     const listed = await app.inject({ method: 'GET', url: `/api/pages/${id}/versions` });
     expect(listed.statusCode, listed.body).toBe(200);
@@ -315,9 +304,9 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
 
     expect(response.json()).toEqual({ succeeded: 2, failed: 0, errors: [] });
     const x = await pageRow(xId);
-    // Confluence is not ahead of X (5 < 6): the incoming body becomes a NEW live
-    // version, so the snapshot of the local v6 stays ordinary history.
-    expect(x.version).toBe(7);
+    // Confluence is behind X (5 < 6): Confluence's text becomes live and the
+    // version stays 6, never lower (no bump: user decision on review r2).
+    expect(x.version).toBe(6);
     expect(x).toMatchObject({ body_html: X.base, local_modified_at: null, local_modified_by: null });
     expect(await pageRow(yId)).toMatchObject({ body_html: Y.upstream, version: 7, local_modified_at: null });
     expect(await versionsOf(xId)).toEqual([
@@ -341,27 +330,22 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     expect([...await pendingOf(xId), ...await pendingOf(yId)]).toEqual([]);
   });
 
-  it.each([
-    ['behind the local one (the issue\'s page X: 5 < 6)', 5, X.base],
-    ['equal to the local one (6 = 6, edited in Confluence too)', 6, '<p>X carol upstream v6</p>'],
-  ])('keeps the overwritten local edit listed, readable and restorable when Confluence\'s version is %s', async (
-    _label, upstreamVersion, upstreamBody,
-  ) => {
-    upstream.set(X.confluenceId, { title: X.title, version: upstreamVersion, storage: upstreamBody });
+  it('keeps the snapshot row and the version when Confluence edited the page to the same number', async () => {
+    // Both sides moved 5 → 6: Bob locally, Carol in Confluence.
+    upstream.set(X.confluenceId, { title: X.title, version: 6, storage: '<p>X carol upstream v6</p>' });
     await standaloneEdit(xId, X.title, X.edit);
     await setPolicy('confluence-wins');
 
     expect((await bulkSync([X.confluenceId])).json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
 
-    // The incoming body is a NEW live version, so the local v6 stays ordinary history.
-    expect(await pageRow(xId)).toMatchObject({ body_html: upstreamBody, version: 7 });
-    const restored = await inStandaloneMode(async () => {
-      expect(await historyOf(xId)).toEqual(['7 (current)', '6']);
-      expect(await historyEntry(xId, 6)).toMatchObject({ bodyHtml: X.edit, isCurrent: false });
-      return app.inject({ method: 'POST', url: `/api/pages/${xId}/versions/6/restore`, payload: {} });
+    // Carol's text is live at the same number; Bob's v6 is kept in page_versions.
+    expect(await pageRow(xId)).toMatchObject({
+      body_html: '<p>X carol upstream v6</p>', version: 6, local_modified_at: null,
     });
-    expect(restored.statusCode, restored.body).toBe(200);
-    expect(await pageRow(xId)).toMatchObject({ body_html: X.edit, version: 8 });
+    expect(await versionsOf(xId)).toEqual([
+      { version_number: 6, title: X.title, body_html: X.edit, body_text: htmlToText(X.edit) },
+    ]);
+    expect(await syncAuditsOf(xId)).toEqual([expect.objectContaining({ action: 'SYNC_OVERWROTE_LOCAL_EDITS' })]);
   });
 
   it('without a local edit the refresh is routine: no audit, no snapshot, no queue, and the version never decreases', async () => {
@@ -434,7 +418,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
     expect(response.json().errors).toEqual([
       `Page ${X.confluenceId}: Version 6 in the page's version history already holds other content, `
-      + 'so the local edit could not be stored there and was kept; it gets a new version number when the page is saved again',
+      + 'so the local edit could not be stored there and was kept; saving the page with the Confluence integration off '
+      + 'gives it a new version number',
     ]);
     expect(await pageRow(xId)).toMatchObject({ title: X.title, body_html: X.edit, version: 6 });
     expect(await versionsOf(xId)).toEqual([
@@ -458,12 +443,8 @@ describe.skipIf(!dbAvailable)('POST /pages/bulk/sync conflict policy (#1779)', (
     expect((await versionsOf(yId)).find((entry) => entry.version_number === 6))
       .toEqual({ version_number: 6, title: Y.title, body_html: Y.edit, body_text: htmlToText(Y.edit) });
     expect(await syncAuditsOf(yId)).toEqual([expect.objectContaining({ action: 'SYNC_OVERWROTE_LOCAL_EDITS' })]);
-    const restored = await inStandaloneMode(async () => {
-      expect(await historyEntry(yId, 6)).toMatchObject({ bodyHtml: Y.edit, isCurrent: false });
-      return app.inject({ method: 'POST', url: `/api/pages/${yId}/versions/6/restore`, payload: {} });
-    });
-    expect(restored.statusCode, restored.body).toBe(200);
-    expect(await pageRow(yId)).toMatchObject({ body_html: Y.edit });
+    // Confluence is ahead (7 > 6), so the stored edit is history below the live number.
+    expect(await historyEntry(yId, 6)).toMatchObject({ bodyHtml: Y.edit, isCurrent: false });
   });
 
   it('leaves a live collaborative session alone when the upstream version is not newer', async () => {

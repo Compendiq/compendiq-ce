@@ -344,7 +344,7 @@ async function loadAuthorizedContentWriteState(
 }
 
 /**
- * #1779: keep a local edit recoverable before bulk sync overwrites it. Runs on
+ * #1779: store a local edit in page_versions before bulk sync overwrites it. Runs on
  * the overwrite's own transaction (a pool write would wait on its row lock via
  * the page_versions foreign key), so the snapshot and the overwrite commit or
  * roll back together.
@@ -381,7 +381,7 @@ async function snapshotLocalVersionBeforeOverwrite(
       409,
       'local_edit_snapshot_conflict',
       `Version ${row.version} in the page's version history already holds other content, so the local edit `
-        + 'could not be stored there and was kept; it gets a new version number when the page is saved again',
+        + 'could not be stored there and was kept; saving the page with the Confluence integration off gives it a new version number',
     );
   }
 }
@@ -4116,23 +4116,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               pageId: numericPageId, userId, candidate,
             });
             // Kept, queued and live-held rows stay as they are, and so does a
-            // local edit whose body already matches upstream (title-only edits
-            // are outside the conflict model, exactly as in the scheduled sync).
+            // local edit whose body already matches upstream (a title-only
+            // rename), as in the scheduled sync's version-unchanged branch.
             const refresh = decided.kind === 'apply_incoming'
               || (decided.kind === 'unchanged' && !decided.hasLocalEdits);
             if (!refresh) return decided;
-            // Overwriting a local edit keeps it as ordinary, restorable history:
-            // the incoming body becomes a NEW live version (restore's rule), so
-            // the snapshot never shares the live number Version History hides.
-            // A routine refresh only never lowers the version.
-            const overwritesLocalEdit = decided.kind === 'apply_incoming' && decided.hasLocalEdits;
-            if (overwritesLocalEdit) {
+            // A local edit is overwritten only after its snapshot is stored on
+            // this transaction. The version never decreases; with Confluence
+            // not ahead, the snapshot shares the live number and Version
+            // History does not list it until the version moves on (user
+            // decision on #1779 review r2; a separate upstream-version column
+            // is the deferred follow-up).
+            if (decided.kind === 'apply_incoming' && decided.hasLocalEdits) {
               await snapshotLocalVersionBeforeOverwrite(writeClient, decided.row);
             }
             await writeClient.query(
               `UPDATE pages SET
                  title = $2, body_storage = $3, body_html = $4, body_text = $5,
-                 version = GREATEST(version + $7::int, $6), last_synced = NOW(), embedding_dirty = TRUE,
+                 version = GREATEST(version, $6), last_synced = NOW(), embedding_dirty = TRUE,
                  image_analysis_dirty = CASE
                    WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                    ELSE image_analysis_dirty
@@ -4142,7 +4143,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                  embedded_at = NULL,
                  local_modified_at = NULL, local_modified_by = NULL
                WHERE id = $1`,
-              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number, overwritesLocalEdit ? 1 : 0],
+              [numericPageId, page.title, bodyStorage, bodyHtml, bodyText, page.version.number],
             );
             return decided;
           });
