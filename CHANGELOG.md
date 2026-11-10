@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **New-page drafts are offered back (#1747):** `/pages/new` autosaved the body
+  for the signed-in account but never read it back, and the title, space and
+  parent were not stored at all, so a reload or a stray navigation lost the
+  page. The form now also keeps the title, space key and parent id
+  (`new-page:meta`, same per-account draft storage) and offers **Restore
+  draft?** on return. **Start blank** and Escape delete nothing, and the first
+  edit afterwards replaces the whole kept draft, so a restore never mixes an old
+  title with a new body. A restored space that no longer exists leaves the
+  location for you to pick, and the Confluence preselection no longer overrides
+  a restored location. **Cancel** asks **Discard changes?** when the form has
+  content; creating the page or discarding it deletes both keys, and a failed
+  create keeps them.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
