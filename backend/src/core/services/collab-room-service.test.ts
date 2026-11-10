@@ -19,6 +19,7 @@ import {
 } from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
+import { logger } from '../utils/logger.js';
 import type { WebSocket } from 'ws';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
@@ -46,7 +47,6 @@ import {
   withPageWriteTransaction,
 } from './page-write-admission.js';
 import { yDocToHtml } from './collab-schema.js';
-import { logger } from '../utils/logger.js';
 import type * as PageBaselineServiceModule from './page-baseline-service.js';
 import type * as PageBaselineGovernanceModule from './page-baseline-governance.js';
 
