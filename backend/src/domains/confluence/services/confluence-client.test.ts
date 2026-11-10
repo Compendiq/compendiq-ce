@@ -775,8 +775,21 @@ describe('ConfluenceClient', () => {
   });
 
   describe('retry on transient errors', () => {
-    // Use minimal baseDelay to keep tests fast
+    // Every retry sleeps at least RETRY_DELAY_FLOOR_MS (1 s) whatever baseDelay
+    // is (#1778), so the sleeps run on a fake clock that jumps to the next timer.
     const retryOpts = { retry: { baseDelay: 1 } };
+
+    beforeEach(() => {
+      // A full token bucket, so acquireToken() never queues behind the fake clock.
+      resetRateLimiter();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      vi.setTimerTickMode('nextTimerAsync');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
 
     it('should retry on 503 and succeed on second attempt', async () => {
       const client = new ConfluenceClient(baseUrl, pat, retryOpts);
@@ -808,7 +821,8 @@ describe('ConfluenceClient', () => {
     });
 
     it('should retry on 429 and respect Retry-After header (seconds)', async () => {
-      // Use default baseDelay here so Retry-After (2s) overrides it
+      // Retry-After (2 s) replaces the backoff; the jitter is pinned to 250 ms (#1778)
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
       const client = new ConfluenceClient(baseUrl, pat, retryOpts);
       let callCount = 0;
       mockRequest.mockImplementation(async () => {
@@ -816,7 +830,7 @@ describe('ConfluenceClient', () => {
         if (callCount === 1) {
           return {
             statusCode: 429,
-            headers: { 'retry-after': '0' },
+            headers: { 'retry-after': '2' },
             body: { text: async () => 'Too Many Requests' },
           } as never;
         }
@@ -831,9 +845,9 @@ describe('ConfluenceClient', () => {
 
       expect(result.results).toEqual([]);
       expect(mockRequest).toHaveBeenCalledTimes(2);
-      // The delay should be 0ms (from Retry-After: 0)
+      // 2 s from Retry-After plus the pinned 250 ms jitter
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ delayMs: 0 }),
+        expect.objectContaining({ delayMs: 2_250 }),
         'Confluence API transient error, retrying',
       );
     });
@@ -2064,6 +2078,15 @@ describe('downloadAttachment fallback strategies', () => {
 describe('withRetry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Every retry sleeps at least RETRY_DELAY_FLOOR_MS (1 s) whatever baseDelay
+    // is (#1778), so the sleeps run on a fake clock that jumps to the next timer.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.setTimerTickMode('nextTimerAsync');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('should return result on first success without retrying', async () => {
@@ -2101,8 +2124,10 @@ describe('withRetry', () => {
   });
 
   it('should use Retry-After delay from ConfluenceError when present', async () => {
+    // Retry-After (5 s) replaces the 1 s backoff; the jitter is pinned to 250 ms (#1778)
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const error = new ConfluenceError('Too Many Requests', 429);
-    error.retryAfterMs = 100;
+    error.retryAfterMs = 5_000;
 
     const fn = vi.fn()
       .mockRejectedValueOnce(error)
@@ -2112,9 +2137,9 @@ describe('withRetry', () => {
 
     expect(result).toBe('success');
     expect(fn).toHaveBeenCalledTimes(2);
-    // Verify logger.warn was called with the Retry-After delay
+    // 5 s from Retry-After plus the pinned 250 ms jitter
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ delayMs: 100 }),
+      expect.objectContaining({ delayMs: 5_250 }),
       'Confluence API transient error, retrying',
     );
   });
@@ -2142,9 +2167,7 @@ describe('withRetry', () => {
       .mockRejectedValueOnce(new ConfluenceError('Service Unavailable', 503))
       .mockResolvedValue('success');
 
-    // Using real delays would be slow, but we can at least verify it works
-    // We use a short baseDelay override to keep tests fast
-    const result = await withRetry(fn, { baseDelay: 1 });
+    const result = await withRetry(fn);
 
     expect(result).toBe('success');
     expect(fn).toHaveBeenCalledTimes(2);

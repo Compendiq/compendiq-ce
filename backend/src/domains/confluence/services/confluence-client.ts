@@ -99,7 +99,10 @@ export interface AuditRetention {
 interface RetryOptions {
   /** Maximum number of attempts (including the first). Default: 3 */
   maxAttempts?: number;
-  /** Base delay in milliseconds before the first retry. Default: 1000 */
+  /**
+   * Base delay in milliseconds before the first retry; every sleep stays within
+   * RETRY_DELAY_FLOOR_MS and RETRY_DELAY_CEILING_MS. Default: 1000
+   */
   baseDelay?: number;
 }
 
@@ -1038,7 +1041,8 @@ export function formatCqlDateTime(d: Date): string {
 /**
  * Parses the HTTP `Retry-After` header value into milliseconds.
  * Supports both delay-seconds (e.g. "5") and HTTP-date formats.
- * Returns `undefined` if the header is missing or unparseable.
+ * Returns `undefined` if the header is missing or unparseable. The value is
+ * unbounded; `computeConfluenceRetryDelayMs` bounds the sleep it causes.
  */
 export function parseRetryAfter(header: string | string[] | undefined): number | undefined {
   if (header == null) return undefined;
@@ -1259,10 +1263,48 @@ export function isTransientError(err: unknown, method = 'GET'): boolean {
 }
 
 /**
+ * Floor on every `withRetry` sleep: one slot of the client's 60 RPM pacing
+ * (`acquireToken`) and the `baseDelay` default, so a `Retry-After: 0` cannot
+ * turn the retry ladder into a hot loop (#1778).
+ */
+export const RETRY_DELAY_FLOOR_MS = 1_000;
+
+/**
+ * Ceiling on every `withRetry` sleep, `Retry-After` included: the per-attempt
+ * request timeout (`AbortSignal.timeout(30_000)` in `fetchOnce`). The sleep runs
+ * outside that timeout; uncapped, a `Retry-After: 3600` parks the call for an
+ * hour. With the defaults a `fetch` call therefore spends at most 150 s in
+ * sleeps and requests: 2 sleeps × 30 s + 3 attempts × 30 s (#1778).
+ */
+export const RETRY_DELAY_CEILING_MS = 30_000;
+
+/** Spreads retries that hit the same failure across up to 500 ms. */
+const RETRY_JITTER_MS = 500;
+
+/**
+ * The sleep `withRetry` takes after failed attempt `attempt` (zero-based):
+ * `min(max(wanted, RETRY_DELAY_FLOOR_MS) + random(0..500)ms, RETRY_DELAY_CEILING_MS)`,
+ * where `wanted` is the server-specified `Retry-After` (`retryAfterMs`, from
+ * `parseRetryAfter`: delay-seconds or HTTP-date) when present, else
+ * `baseDelay * 2^attempt`. A backoff already within the bounds is unchanged.
+ */
+export function computeConfluenceRetryDelayMs(
+  attempt: number,
+  retryAfterMs: number | undefined,
+  baseDelay: number,
+): number {
+  const wanted = retryAfterMs ?? baseDelay * Math.pow(2, attempt);
+  const floored = Math.max(wanted, RETRY_DELAY_FLOOR_MS);
+  return Math.min(floored + Math.random() * RETRY_JITTER_MS, RETRY_DELAY_CEILING_MS);
+}
+
+/**
  * Retries an async operation with exponential backoff and jitter.
  *
- * Delay formula: `baseDelay * 2^attempt + random(0..500)ms`
- * For 429 responses with a Retry-After header, the server-specified delay is used instead.
+ * Delay formula (`computeConfluenceRetryDelayMs`): `baseDelay * 2^attempt + random(0..500)ms`;
+ * every sleep, Retry-After included, stays within RETRY_DELAY_FLOOR_MS (1 s) and
+ * RETRY_DELAY_CEILING_MS (30 s) (#1778).
+ * For 429 responses with a Retry-After header, the server-specified delay replaces `baseDelay * 2^attempt`, but jitter and bounds still apply.
  * `method` is the HTTP method `fn` sends; it decides which errors are retried
  * (see `isTransientError`).
  */
@@ -1281,13 +1323,12 @@ export async function withRetry<T>(
         throw err;
       }
 
-      // Use Retry-After header delay if the server provided one (429 responses)
-      let delay: number;
-      if (err instanceof ConfluenceError && err.retryAfterMs != null) {
-        delay = err.retryAfterMs;
-      } else {
-        delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
-      }
+      // A 429's Retry-After when the server sent one, else the backoff.
+      const delay = computeConfluenceRetryDelayMs(
+        attempt,
+        err instanceof ConfluenceError ? err.retryAfterMs : undefined,
+        baseDelay,
+      );
 
       logger.warn(
         {

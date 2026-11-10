@@ -73,6 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effect; the caller now gets the original error. A 429 is still retried for every method on requests sent through
   the client's retrying `fetch`; `updateAttachment` and
   `downloadAttachmentToFile` do not retry (unchanged).
+- **Confluence retry waits are bounded (#1778):** the wait before a Confluence
+  request is retried now stays between 1 s and 30 s, whatever `Retry-After`
+  the server sends. A 429 with `Retry-After: 3600` parked the request for an
+  hour and `Retry-After: 0` fired all three attempts within milliseconds; an
+  HTTP-date `Retry-After` is bounded the same way. With the default three
+  attempts, one Confluence REST call spends at most 150 s in retry waits and
+  request timeouts.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads
