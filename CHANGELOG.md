@@ -27,7 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an unreadable settings response shows a Retry notice instead of a
   fabricated 90-day value.
 
-### Fixed
 
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
@@ -204,6 +203,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output-token ceiling, analysis version pair, embedder and FTS configuration.
   A wrong, incomplete or reconfigured arm state is refused before any
   completion request instead of being answered under the `--arm` label.
+### Fixed
+
+- **Remote-delete recovery closes collaborative rooms (#1780):** when an admin
+  recovers a crashed Confluence or bulk-remote delete, open collaborative
+  editors are now closed with 4404 `committed_delete` on every pod after the
+  recovery settles. An undispatched delete restores the page and keeps its
+  rooms open.
 
 ## [0.9.2] - 2026-10-29
 

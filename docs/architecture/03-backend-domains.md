@@ -117,12 +117,9 @@ runs on the transaction it already holds:
   and is accepted untouched; an exact match that is *looser* is tightened
   to `initialPolicy` through `applyAiPolicyOnClient` (attributed to the
   creator, with the canonical label stored and the derived purge/re-queue
-  in the same transaction). The change records are handed back via
-  `onPolicyChanges`; `POST /pages` emits them after its publication
-  transaction has committed and the create reconciler returns them as
-  `afterCommit`. This closes the sync-first window at publication and at
-  recovery; the window itself (sync between remote acknowledgement and
-  local publication) is not otherwise prevented.
+  in the same transaction). Events (`policy_changed`) are returned as `changes` and
+  emitted only after COMMIT; the remote-delete reconciler returns an `afterCommit`
+  side effect to close collaborative rooms.
 - **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
   `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
   → `pages` row `FOR UPDATE`. Callers that lock the row themselves
