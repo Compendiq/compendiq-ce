@@ -234,6 +234,56 @@ by 2-of-4 completes / 3-of-4 fails) trips. Lifecycle step 3b in
 `docs/runbooks/shadow-reembed.md`.
 There is no separate model-comparison harness — #1113 was closed without one.
 
+**Which changes schedule the retrieval eval (#1820).** The `flag retrieval`
+pattern in `pr-check.yml`'s "Classify changed paths" step is derived from the
+code the default run executes: each stage `stageFlags()` in
+`backend/scripts/run-retrieval-eval.ts` turns on by default (`assembleContext`,
+`pinIdentifiers`) followed into the code it runs, plus the always-on pipeline
+(`runner.ts` → `hybridSearch` → vector and keyword legs; seeding →
+`embedPage`). The set is `DERIVED_RETRIEVAL_DEPENDENCIES` in
+`backend/src/docker-compose-invariants.test.ts`, one comment per entry naming
+the stage that reaches it. That test runs the step's own bash (the real
+`grep -qE`, a stubbed `git diff`) and fails when an entry stops matching or is
+renamed. In short:
+
+- base pipeline: `run-retrieval-eval`, `eval/`, `rag-service`,
+  `embedding-service`, `content-converter`, `core/db/vector-column-tier` (HNSW
+  build params), `llm-provider-resolver`, `openai-compatible-client`,
+  `query-instruction`, `query-article-transport`, `hnsw-ef-search`,
+  `ai-policy-retrieval`, `derived-provenance`, `page-visibility`,
+  `admin-settings-service` (the `rag_*` defaults every stage reads),
+  `retrieval-confidence`, and `mmr` (the runner's redundancy figures use its
+  `trigrams`/`jaccard`);
+- `pinIdentifiers`: `identifier-shortcircuit`, `lexical-chunk-resolution`,
+  `core/utils/lexical-query`, `fts-language` (the last three are also the
+  keyword leg's);
+- `assembleContext`: `sibling-assembly`.
+
+Deliberately not listed: modules of optional stages CI never runs
+(`rerank-client`, `sanitize-llm-input`, `multi-query-search`, and
+`ranking-prior`, whose default weight is 0); `page-identity` and
+`image-references` (imported by `derived-provenance`, but only its
+`buildDerivedImageSources`, the chat citation path, calls them); the
+`image-analysis-*` modules (CI measures the text axis, which seeds no image
+analyses); admission (`ai-policy-admission`, `article-stage-admission`,
+`ai-policy-service`), which decides yes/no rather than ranking, and a refused
+query embedding makes `runEval` refuse the run; `rbac-service` and
+`core/enterprise/*` (authorization and EE flags shared by every route); the
+embedding job's bookkeeping (`embedding-article-stage`, `embedding-operation`,
+locks, queue); and infra (`postgres`, `logger`, `telemetry`,
+`circuit-breaker`, `llm-queue`, `provider-url`, `llm-http-error`).
+
+Two limits. Classifier coverage decides only WHETHER the job runs; it does not
+enable optional stages, so the job still measures `--rerank`, `--deep-search`
+and `--mmr` as off. And a scheduled run is not assembly-quality coverage:
+`sibling-assembly`'s effect is not measured by the runner's page-ranking
+metrics, which score `pageId`s only. The stage is participation-guarded
+(`runEval` refuses an assembly-on run in which it never assembled), and its
+text reaches only the redundancy figures (`redundantSlots`,
+`meanPairwiseSimilarity`, computed over `contextText`). Pins are counted
+directly by `runner.ts` (`pinParticipatingQueries`: queries with a
+`pinned === true` result).
+
 **A run states which FTS configuration it measured, and the default is
 `simple` for every language (#1114).** Hybrid retrieval has a lexical leg, and
 `pages.tsv` is built by migration 049's trigger from
@@ -464,7 +514,14 @@ happens LATER across files — `assertComparableArms` for the retrieval
 endpoints, `judge-arms.ts --unblind` for the answer ones — so everything the
 ADR holds fixed is a field of `ArmRunReportSchema` and a refusal there, and
 what one arm must carry and another must not (B's vision model and
-output-token ceiling) is `armProvenanceProblems`. Seed it through the REAL
+output-token ceiling) is `armProvenanceProblems`. The answers one arm labels
+are certified the same way (#1823): `run-arm-answers.ts` calls
+`generateLiveArmAnswers` (`eval/arm-live-state.ts`), which re-runs
+`assertArmCState` or B's readiness (`readArmBState` + `driveArmBBackfill` at
+`timeoutMs: 0`) on the live database and binds `--report` to its vision
+model, ceiling, version pair, embedder and `fts_language` before the first
+ask — a wrong or incomplete arm state never reaches a completion request
+(`arm-live-state.integration.test.ts`). Seed it through the REAL
 intake — bytes on disk under `attachment-store`'s own layout, the body
 rewritten by `buildPageImageUrl`, then `embedPage` — because a seeder that
 INSERTed rows would measure its own fixture; the analysis backfill runs off

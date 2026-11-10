@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -718,4 +720,169 @@ describe('.github/workflows supply-chain hardening', () => {
       }
     },
   );
+});
+
+describe('pr-check.yml retrieval classifier (#1820)', () => {
+  /**
+   * Every module the default `run-retrieval-eval.ts` run executes and whose
+   * change can move what it measures (#1820). Derived by walking the code each
+   * default-on `stageFlags()` stage runs, plus the always-on base pipeline
+   * (`runner.ts` → `hybridSearch` → both legs; seeding → `embedPage`). The
+   * comment names the stage that reaches the module. Optional stages (--rerank,
+   * --deep-search, --mmr) and generic infra are excluded on purpose; the
+   * exclusions and their reasons are listed in
+   * docs/claude/testing-and-retrieval-eval.md.
+   */
+  const DERIVED_RETRIEVAL_DEPENDENCIES = [
+    // base: the harness and the runner it drives
+    'backend/scripts/run-retrieval-eval.ts',
+    'backend/src/domains/llm/eval/runner.ts',
+    // base: hybridSearch, both legs, getEmbeddingCoverage
+    'backend/src/domains/llm/services/rag-service.ts',
+    // base seeding: embedPage chunking (chunkText)
+    'backend/src/domains/llm/services/embedding-service.ts',
+    // base seeding: htmlToEmbeddingText is the embedded text
+    'backend/src/core/services/content-converter.ts',
+    // base seeding: HNSW_PARAMS / columnTypeFor build the ANN index the vector leg reads
+    'backend/src/core/db/vector-column-tier.ts',
+    // base vector leg: resolveUsecase('embedding') picks the query embedder
+    'backend/src/domains/llm/services/llm-provider-resolver.ts',
+    // base vector leg + seeding: generateEmbedding
+    'backend/src/domains/llm/services/openai-compatible-client.ts',
+    // base vector leg: formatQueryForEmbedding (query prefix)
+    'backend/src/domains/llm/services/query-instruction.ts',
+    // base vector leg: queryArticleTransport carries the query to the embedder
+    'backend/src/domains/llm/services/query-article-transport.ts',
+    // base vector leg: efSearchFor sets hnsw.ef_search (ANN recall)
+    'backend/src/domains/llm/services/hnsw-ef-search.ts',
+    // base legs + pinIdentifiers: aiPolicyPredicate / derivedArmPredicate filter candidates
+    'backend/src/domains/llm/services/ai-policy-retrieval.ts',
+    // base legs: readDerivedProvenance on every vector/keyword row
+    'backend/src/domains/llm/services/derived-provenance.ts',
+    // base legs + coverage + pinIdentifiers: ragRetrievalPagesPredicate
+    'backend/src/core/services/page-visibility.ts',
+    // base + both default stages: rag_* defaults (fetch width, context budget, pin switch, MMR/prior off)
+    'backend/src/core/services/admin-settings-service.ts',
+    // base: computeRetrievalConfidence runs on every hybridSearch
+    'backend/src/domains/llm/services/retrieval-confidence.ts',
+    // base runner: trigrams/jaccard compute the reported redundancy figures
+    'backend/src/domains/llm/services/mmr.ts',
+    // pinIdentifiers: detectIdentifiers
+    'backend/src/domains/llm/services/identifier-shortcircuit.ts',
+    // pinIdentifiers: lookupIdentifier → lexicalTsQuery / bestChunkLateralSql / resolveLexicalChunk (also the keyword leg)
+    'backend/src/domains/llm/services/lexical-chunk-resolution.ts',
+    // pinIdentifiers: chooseLexicalParser (also the keyword leg)
+    'backend/src/core/utils/lexical-query.ts',
+    // pinIdentifiers: getFtsLanguage (also the keyword leg)
+    'backend/src/core/services/fts-language.ts',
+    // assembleContext: assembleSiblingWindow
+    'backend/src/domains/llm/services/sibling-assembly.ts',
+  ] as const;
+
+  /**
+   * The "Classify changed paths" step's own bash, cut out of pr-check.yml.
+   * Running it (rather than re-implementing its pattern as a JS RegExp)
+   * evaluates the pattern with `flag()`'s real `grep -qE`, and exercises the
+   * fail-open branches with the code that ships.
+   */
+  const classifyScript = (() => {
+    const lines = prCheckWorkflow.split('\n');
+    const nameAt = lines.findIndex((l) => /^\s*- name: Classify changed paths\s*$/.test(l));
+    if (nameAt < 0) throw new Error('pr-check.yml has no "Classify changed paths" step');
+    const runAt = lines.findIndex((l, i) => i > nameAt && /^\s*run: \|\s*$/.test(l));
+    if (runAt < 0) throw new Error('the "Classify changed paths" step has no `run: |` block');
+    const indent = /^\s*/.exec(lines[runAt + 1] ?? '')![0];
+    const body: string[] = [];
+    for (const line of lines.slice(runAt + 1)) {
+      if (line.trim() !== '' && !line.startsWith(indent)) break;
+      body.push(line.slice(indent.length));
+    }
+    return body.join('\n');
+  })();
+
+  let stubDir = '';
+  beforeAll(() => {
+    stubDir = mkdtempSync(join(tmpdir(), 'pr-check-classify-'));
+    // Stands in for `git diff --name-only "$BASE"...HEAD`: prints the changed
+    // paths, or dies the way a missing merge base does.
+    const git = join(stubDir, 'git');
+    writeFileSync(
+      git,
+      '#!/bin/sh\nif [ -n "$STUB_GIT_FAIL" ]; then echo "fatal: no merge base" >&2; exit 128; fi\nprintf \'%s\\n\' "$STUB_GIT_CHANGED"\n',
+    );
+    chmodSync(git, 0o755);
+  });
+  afterAll(() => {
+    if (stubDir) rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Run the step the way Actions does: the `${{ }}` expressions are
+   * substituted before bash starts, then bash runs the script with
+   * $GITHUB_OUTPUT pointing at a file. Returns what the step wrote there.
+   */
+  function classify(opts: { changed?: string[]; event?: string; diffFails?: boolean }): Record<string, string> {
+    const script = classifyScript
+      .replaceAll('${{ github.event_name }}', opts.event ?? 'pull_request')
+      .replaceAll("${{ github.base_ref || 'dev' }}", 'dev');
+    expect(script, 'the classify step gained an Actions expression this test does not substitute').not.toContain('${{');
+    const outFile = join(stubDir, 'github-output');
+    writeFileSync(outFile, '');
+    execFileSync('bash', ['-c', script], {
+      env: {
+        PATH: `${stubDir}:${process.env.PATH ?? ''}`,
+        GITHUB_OUTPUT: outFile,
+        STUB_GIT_CHANGED: (opts.changed ?? []).join('\n'),
+        ...(opts.diffFails ? { STUB_GIT_FAIL: '1' } : {}),
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    return Object.fromEntries(
+      readFileSync(outFile, 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('='))
+        .map((l) => l.split('=', 2) as [string, string]),
+    );
+  }
+
+  const retrievalFor = (path: string): string | undefined => classify({ changed: [path] }).retrieval;
+
+  it.each(DERIVED_RETRIEVAL_DEPENDENCIES)('%s exists (rename guard)', (path) => {
+    expect(existsSync(join(repoRoot, path)), `${path} was renamed or removed — re-derive the set and the pr-check.yml pattern`).toBe(true);
+  });
+
+  it.each(DERIVED_RETRIEVAL_DEPENDENCIES)('%s schedules the retrieval eval', (path) => {
+    expect(retrievalFor(path)).toBe('true');
+  });
+
+  it.each(['docs/claude/ui-ux.md', 'README.md'])('unrelated doc %s does not schedule the retrieval eval', (path) => {
+    expect(retrievalFor(path)).toBe('false');
+  });
+
+  it.each([
+    'backend/src/domains/confluence/services/sync-service.ts',
+    // Same directory as the derived set but off the eval path: guards against a blanket `services/` pattern.
+    'backend/src/domains/llm/services/image-analysis-worker.ts',
+  ])('unrelated backend module %s does not schedule the retrieval eval', (path) => {
+    expect(existsSync(join(repoRoot, path)), `${path} no longer exists — pick another unrelated module`).toBe(true);
+    expect(retrievalFor(path)).toBe('false');
+  });
+
+  it('manual dispatch fails open: every optional job runs', () => {
+    expect(classify({ event: 'workflow_dispatch', changed: ['README.md'] })).toEqual({
+      frontend: 'true',
+      mcp: 'true',
+      retrieval: 'true',
+      e2e: 'true',
+    });
+  });
+
+  it('a failing git diff fails open: every optional job runs', () => {
+    expect(classify({ diffFails: true })).toEqual({
+      frontend: 'true',
+      mcp: 'true',
+      retrieval: 'true',
+      e2e: 'true',
+    });
+  });
 });

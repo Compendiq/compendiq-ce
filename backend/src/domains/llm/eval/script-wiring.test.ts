@@ -370,6 +370,17 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(flat).toContain('return backfill.versions;');
   });
 
+  it('establishes the protocol\u2019s zero answer-image cap before it reads the held-fixed provenance (#1822)', () => {
+    // The report records `rag_answer_max_images` as read here; the answer
+    // run writes 0 before it reads. Unwritten, a fresh database's report
+    // records the reader default 2 and `--unblind` refuses the pair.
+    const cState = raw.indexOf('await assertArmCState()');
+    const cap = raw.indexOf('await establishTextOnlyAnswerCap()');
+    const held = raw.indexOf('await readHeldFixedProvenance()');
+    expect(cap).toBeGreaterThan(cState);
+    expect(held).toBeGreaterThan(cap);
+  });
+
   it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
     expect(flat).toContain('axis: ARM_AXIS');
     expect(flat).toContain('revisionSha: sha');
@@ -411,17 +422,20 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
     expect([...ARM_ANSWERS_VALUELESS_FLAGS].every((f) => (ARM_ANSWERS_KNOWN_FLAGS as readonly string[]).includes(f))).toBe(true);
   });
 
-  it('guards the database, then writes rag_answer_max_images = 0 and drops its cache before the app is built', () => {
+  it('guards the database, then establishes rag_answer_max_images = 0 through the shared writer before the app is built', () => {
     const guard = raw.indexOf('assertDisposableDatabase(');
     const migrate = raw.indexOf('await runMigrations()');
-    const write = raw.indexOf("VALUES ('rag_answer_max_images', '0', NOW())");
-    const invalidate = raw.indexOf('invalidateRagAnswerMaxImagesCache()');
+    const cap = raw.indexOf('await establishTextOnlyAnswerCap()');
     const app = raw.indexOf('await buildApp()');
     expect(guard).toBeGreaterThan(-1);
     expect(migrate).toBeGreaterThan(guard);
-    expect(write).toBeGreaterThan(migrate);
-    expect(invalidate).toBeGreaterThan(write);
-    expect(app).toBeGreaterThan(invalidate);
+    expect(cap).toBeGreaterThan(migrate);
+    expect(app).toBeGreaterThan(cap);
+    // One writer for both scripts (#1822): `establishTextOnlyAnswerCap` in
+    // `arms.ts`, which writes, drops the cache and reads the value back.
+    expect(raw).not.toContain("VALUES ('rag_answer_max_images'");
+    expect(source('run-retrieval-eval.ts')).not.toContain("VALUES ('rag_answer_max_images'");
+    expect(evalModule('arms.ts').split("VALUES ('rag_answer_max_images', '0'").length - 1).toBe(1);
     // …and refuses to ask a single question if the read-back is not 0.
     expect(flat).toContain('if (held.retrieval.rag_answer_max_images !== 0)');
   });
@@ -429,7 +443,7 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
   it('asks through the real route with a token signed per request and records the provenance from what was written', () => {
     // #1824: the bearer is minted at the request boundary — one token minted
     // before the loop expires mid-run (ACCESS_TOKEN_EXPIRY, default 1h).
-    expect(flat).toContain('generateArmAnswers(askThroughRoute(app, bearer), fixture, {');
+    expect(flat).toContain('generateLiveArmAnswers(askThroughRoute(app, bearer), fixture, {');
     expect(flat).toContain("const bearer: BearerSource = () => generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' });");
     expect(flat).not.toMatch(/const token = await generateAccessToken/);
     expect(flat).toContain('answersSha256: written.answersSha256');
@@ -438,6 +452,15 @@ describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
     expect(flat).toContain('deepSearch: false');
     // The chat model is never mocked here: no vi, no stub, no fake ask.
     expect(body).not.toMatch(/\b(mock|stub|fake)\b/i);
+  });
+
+  it('certifies the live arm state and binds --report to it before the first question (#1823)', () => {
+    // No answer is generated outside the certification: a bare
+    // generateArmAnswers call would ask without asserting the arm's state.
+    expect(body).not.toMatch(/\bgenerateArmAnswers\(/);
+    expect(flat).toContain("import { generateLiveArmAnswers } from '../src/domains/llm/eval/arm-live-state.js';");
+    expect(flat).toContain('const report = reportPath ? parseArmRunReport(');
+    expect(flat).toContain('generateLiveArmAnswers(askThroughRoute(app, bearer), fixture, { arm, report, userId: EVAL_USER_ID,');
   });
 });
 
