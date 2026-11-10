@@ -100,7 +100,7 @@ vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
   useInlineCompletionAvailability: () => ({ data: true }),
 }));
 
-const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+const { editorHtml, editorCallbacks, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   // Live HTML the fake editor owns. setContent (template apply) and the
   // textarea's onChange (typing) both write here; getHTML reads it — mirroring
   // the real Editor now that the body is read off the instance, not synced to
@@ -109,6 +109,9 @@ const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsy
   const setContent = vi.fn((content: string) => { html.current = content; });
   return {
     editorHtml: html,
+    // The onChange the page last handed the editor, for signals that change
+    // no content (Vim's :w calls it too).
+    editorCallbacks: { onChange: undefined as ((dirty: boolean) => void) | undefined },
     mockSetContent: setContent,
     mockEditorInstance: {
       commands: { setContent },
@@ -149,6 +152,7 @@ vi.mock('../../shared/components/article/Editor', async () => {
         onEditorReady?.(mockEditorInstance);
         return () => onEditorReady?.(null);
       }, [onEditorReady]);
+      editorCallbacks.onChange = onChange;
       return (
         <textarea
           data-testid="mock-editor"
@@ -1646,6 +1650,98 @@ describe('NewPagePage', () => {
       unmount();
       expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
       expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+    });
+
+    // Timing: the meta write is a trailing 2000 ms debounce, and the pair
+    // write over a stored draft keeps its first-edit deadline so the editor's
+    // own body write can never land before it (review r1 F1).
+    it('waits the full 2000 ms debounce for a meta write and restarts it on each edit', async () => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'One' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1800); });
+      expect(readDraft(META_KEY)).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(readMeta()).toEqual({ title: 'One', spaceKey: 'DEV', parentId: null });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Two' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Three' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(readMeta()).toEqual({ title: 'One', spaceKey: 'DEV', parentId: null });
+      await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+      expect(readMeta()).toEqual({ title: 'Three', spaceKey: 'DEV', parentId: null });
+    });
+
+    it('keeps the pair write at its first-edit deadline after Start blank; later edits do not push it back', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'N1' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'N2' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(readDraft(META_KEY)).toBe(OLD_META);
+      expect(readDraft(BODY_KEY)).toBe('<p>OLD BODY</p>');
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+      expect(readMeta()).toEqual({ title: 'N2', spaceKey: 'DEV', parentId: null });
+      expect(readDraft(BODY_KEY)).toBe(''); // the live (mocked) editor body
+    });
+
+    // Dialog accessibility specific to this page (review r1 F3).
+    it.each([
+      ['Restore draft', 'confirm-dialog-confirm'],
+      ['Start blank', 'confirm-dialog-cancel'],
+    ])('Restore draft? is named and described, starts on Start blank and returns focus to the title after %s', async (_label, testId) => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>NEW DRAFT BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, AC1_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      const dialog = await screen.findByRole('dialog', { name: 'Restore draft?', description: /unsaved draft of a new page/ });
+      await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByTestId('confirm-dialog-cancel')));
+      fireEvent.click(within(dialog).getByTestId(testId));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('title-input')));
+    });
+
+    it.each([
+      ['Keep editing', () => fireEvent.click(screen.getByTestId('confirm-dialog-cancel'))],
+      ['Escape', () => fireEvent.keyDown(screen.getByTestId('confirm-dialog'), { key: 'Escape' })],
+    ])('Discard changes? starts on Keep editing; %s keeps the form, the keys and the route and returns focus to Cancel', async (_label, close) => {
+      signIn(ACCOUNT_A);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await settledOnPreselection();
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Keep me' } });
+      await advancePastAutosave();
+      const cancel = screen.getByTestId('cancel-new-page-btn');
+      cancel.focus();
+      fireEvent.click(cancel);
+      const dialog = await screen.findByRole('dialog', { name: 'Discard changes?', description: /not been created yet/ });
+      await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByTestId('confirm-dialog-cancel')));
+      close();
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(screen.getByTestId('title-input')).toHaveValue('Keep me');
+      expect(readMeta()).toEqual({ title: 'Keep me', spaceKey: 'DEV', parentId: null });
+      await waitFor(() => expect(document.activeElement).toBe(cancel));
+    });
+
+    // Vim's :w reports a change without editing anything (review r1 F4).
+    it('a save signal without an edit after Start blank does not replace the declined draft', async () => {
+      writeDraftAs(ACCOUNT_A, BODY_KEY, '<p>OLD BODY</p>');
+      writeDraftAs(ACCOUNT_A, META_KEY, OLD_META);
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await startBlank();
+      act(() => editorCallbacks.onChange?.(true));
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBe('<p>OLD BODY</p>');
+      expect(readDraft(META_KEY)).toBe(OLD_META);
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>NEW BODY</p>' } });
+      await advancePastAutosave();
+      expect(readDraft(BODY_KEY)).toBe('<p>NEW BODY</p>');
+      expect(readMeta()).toEqual({ title: '', spaceKey: 'DEV', parentId: null });
     });
   });
 });

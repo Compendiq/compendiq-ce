@@ -291,9 +291,12 @@ export function NewPagePage() {
 
   const handleBodyChange = useCallback(() => {
     syncHeadings(editorInstance);
-    // A body edit starts the replacement of a stored draft like any other edit.
-    if (supersedeRef.current) scheduleMetaSave();
-  }, [editorInstance, syncHeadings, scheduleMetaSave]);
+    // A body edit starts the replacement of a stored draft like any other
+    // edit, but only a real one: Vim's :w reports a change too, and on the
+    // still-empty form it must not replace the declined draft. The body is
+    // read through the ref because that save callback may be stale.
+    if (supersedeRef.current && !isBlankBody(readLiveBody())) scheduleMetaSave();
+  }, [editorInstance, syncHeadings, readLiveBody, scheduleMetaSave]);
 
   const handleSpaceChange = useCallback((newSpaceKey: string) => {
     preselectSettled.current = true;
@@ -515,7 +518,7 @@ export function NewPagePage() {
     navigate('/pages');
   }, [navigate]);
 
-  const isPageEmpty = !title.trim() && (!bodyHtml || bodyHtml === '<p></p>' || bodyHtml === '');
+  const isPageEmpty = !title.trim() && isBlankBody(bodyHtml);
 
   return (
     <div data-testid="article-page" className="flex min-h-0 flex-1 flex-col">

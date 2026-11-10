@@ -265,4 +265,23 @@ describe('New page drafts are recoverable and private to their account (#1747)',
     expect(readDraft('new-page') ?? '').toContain('NB66');
     expect(readDraft('new-page:meta')).not.toBeNull();
   });
+
+  it('never stores the old title beside the new body when a title edit follows the first body edit after Start blank', async () => {
+    writeDraftAs(ACCOUNT_A, 'new-page', '<p>OLD BODY OB44</p>');
+    writeDraftAs(ACCOUNT_A, 'new-page:meta', JSON.stringify({ title: 'OLD TITLE OT44', spaceKey: 'LOCAL', parentId: null }));
+    renderNewPage();
+    expect(await screen.findByText('Restore draft?')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByText('Restore draft?')).not.toBeInTheDocument());
+
+    await typeBody('New body NB44');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'New title NT44' } });
+    // Past the editor's own body write (2 s after the last keystroke): the
+    // pair write, due 2 s after the first edit, must already have landed.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    const bodyIsNew = (readDraft('new-page') ?? '').includes('NB44');
+    const oldTitleStored = storedValuesContaining('OT44').length > 0;
+    expect({ bodyIsNew, oldTitleStored }).toEqual({ bodyIsNew: true, oldTitleStored: false });
+  });
 });
