@@ -35,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UND_ERR_CONNECT_TIMEOUT`), is no longer re-sent. The retry reported writes
   that had landed as definite failures (`400 A page with this title already
   exists`, `409 Version must be incremented`) and could repeat their side
-  effect; the caller now gets the original error. A 429 is still retried for
-  every method, and reads keep their existing retries.
+  effect; the caller now gets the original error. A 429 is still retried for every method on requests sent through
+  the client's retrying `fetch`; `updateAttachment` and
+  `downloadAttachmentToFile` do not retry (unchanged).
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads
