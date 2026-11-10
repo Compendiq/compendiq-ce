@@ -30,7 +30,7 @@ export function parseCacheTtl(raw: string | undefined): number {
 }
 
 /** Idle-session TTL of the Streamable HTTP transport: 30 minutes. */
-export const DEFAULT_SESSION_TTL_MS = 30 * 60_000;
+const DEFAULT_SESSION_TTL_MS = 30 * 60_000;
 
 /**
  * Parse `MCP_DOCS_SESSION_TTL_MS` (milliseconds), falling back to

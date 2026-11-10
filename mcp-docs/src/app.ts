@@ -26,13 +26,12 @@ export interface McpAppOptions {
 
 export interface McpApp {
   app: express.Express;
-  sessionCount(): number;
   /** Stop the reaper and close every live session (tests only). */
   close(): Promise<void>;
 }
 
 /** Reaper cadence; shortened to the TTL itself when the TTL is smaller. */
-export const SESSION_REAP_INTERVAL_MS = 5 * 60_000;
+const SESSION_REAP_INTERVAL_MS = 5 * 60_000;
 
 /**
  * Unknown/terminated session. MCP spec 2025-06-18 (Session Management, item 3):
@@ -179,7 +178,6 @@ export function createMcpApp(options: McpAppOptions): McpApp {
 
   return {
     app,
-    sessionCount: () => transports.size,
     async close() {
       clearInterval(reaper);
       for (const [id, server] of servers) {

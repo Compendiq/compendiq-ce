@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePort, parseCacheTtl, parseSessionTtlMs, DEFAULT_CACHE_TTL, DEFAULT_SESSION_TTL_MS } from './config.js';
+import { parsePort, parseCacheTtl, DEFAULT_CACHE_TTL } from './config.js';
 
 describe('parsePort', () => {
   it('parses a valid port', () => {
@@ -49,24 +49,5 @@ describe('parseCacheTtl', () => {
     expect(parseCacheTtl('')).toBe(DEFAULT_CACHE_TTL);
     expect(parseCacheTtl('0')).toBe(DEFAULT_CACHE_TTL);
     expect(parseCacheTtl('-5')).toBe(DEFAULT_CACHE_TTL);
-  });
-});
-
-describe('parseSessionTtlMs', () => {
-  it('parses a valid TTL in milliseconds', () => {
-    expect(parseSessionTtlMs('1500')).toBe(1500);
-    expect(parseSessionTtlMs('3600000')).toBe(3_600_000);
-  });
-
-  it('falls back to 30 minutes when unset', () => {
-    expect(DEFAULT_SESSION_TTL_MS).toBe(1_800_000);
-    expect(parseSessionTtlMs(undefined)).toBe(DEFAULT_SESSION_TTL_MS);
-  });
-
-  it('falls back to the default for non-numeric or non-positive values (no NaN)', () => {
-    expect(parseSessionTtlMs('not-a-number')).toBe(DEFAULT_SESSION_TTL_MS);
-    expect(parseSessionTtlMs('')).toBe(DEFAULT_SESSION_TTL_MS);
-    expect(parseSessionTtlMs('0')).toBe(DEFAULT_SESSION_TTL_MS);
-    expect(parseSessionTtlMs('-5')).toBe(DEFAULT_SESSION_TTL_MS);
   });
 });

@@ -124,7 +124,9 @@ function prepareSidecar(): void {
     execFileSync(
       'npm',
       ['ci', '--ignore-scripts', '--omit=dev', '--prefer-offline', '--no-audit', '--no-fund', '--loglevel=error'],
-      { cwd: sidecarDir, stdio: 'pipe', timeout: 240_000 },
+      // Strictly below the beforeAll budget (240 s) so a slow install surfaces as the explicit error below,
+      // never as a generic hook timeout; the remaining 60 s cover the fake SearXNG and the ≤30 s sidecar readiness.
+      { cwd: sidecarDir, stdio: 'pipe', timeout: 180_000 },
     );
   } catch (err) {
     const detail = err instanceof Error && 'stderr' in err ? String(err.stderr) : String(err);
