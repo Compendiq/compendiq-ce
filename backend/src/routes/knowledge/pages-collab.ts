@@ -703,7 +703,9 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
         // An over-full buffer is a transient backlog, never a refusal: 1013
         // lets y-websocket reconnect instead of reporting a permission loss.
         if (pending.length >= PRELIVE_FRAME_LIMIT || pendingBytes + buf.byteLength > PRELIVE_BYTE_LIMIT) {
-          logger.info({ pageId, frames: pending.length, bytes: pendingBytes }, 'collab.prelive_backlog');
+          // Debug, not info: this runs before the JWT check and the per-user
+          // upgrade limiter, so any client could emit it once per connection.
+          logger.debug({ pageId, frames: pending.length, bytes: pendingBytes }, 'collab.prelive_backlog');
           finish(1013, 'join_backlog');
           return;
         }

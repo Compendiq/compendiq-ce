@@ -926,6 +926,82 @@ describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
       join.restore();
     }
   });
+
+  // Accept-at-the-bound pins: with the overflow rows above they fix the bound
+  // at exactly 64 frames and exactly 1 MiB.
+  it('keeps exactly 64 frames before live and applies every one of them', async () => {
+    const { token, userId } = await createUser('collab_prelive_frame_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(64);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // One awareness state, then 63 queries: each query answers with a
+      // snapshot holding that state, so 63 replies prove all 64 frames applied.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      for (let i = 0; i < 63; i++) ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      const snapshots = () => frames.filter((frame) => awarenessFrameHasProbe(frame, probe.clientId)).length;
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshots() < 63) throw new Error('replies to the buffered frames are pending');
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshots()).toBe(63);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  it('keeps exactly 1 MiB before live and stays open after replaying it', async () => {
+    const { token, userId } = await createUser('collab_prelive_byte_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(2);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      const lifecycleControl = waitControl(ws, (control) => control.type === 'page_lifecycle');
+      await waitOpen(ws);
+      await join.entered;
+
+      const halfMiB = new Uint8Array(512 * 1024);
+      halfMiB[0] = MESSAGE_AWARENESS;
+      ws.send(halfMiB);
+      ws.send(halfMiB);
+      // The attach completed, then a live round trip proves the socket
+      // survived both buffered frames.
+      await lifecycleControl;
+      await exchangeSyncStep1(ws, new Y.Doc());
+
+      expect(observed.close).toBeNull();
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
 });
 
 function pageIdEntropy(): string {

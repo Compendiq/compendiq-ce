@@ -493,11 +493,12 @@ flowchart TB
   `writable_admission`; `Ctrl`/`Cmd`+`S` says there is nothing to save yet.
   `Retry` appears for `rate_limited` (inert via `aria-disabled` until
   `COLLAB_UPGRADE_WINDOW_SEC` after the refusal) and for an interrupted join.
-  It stays mounted as `Retrying…` until the attempt settles, then hands
-  orphaned focus to the editor column. `flag_off` refetches the config, and
-  lifecycle and reset refusals refetch the page, so closing and reopening the
-  editor uses current state. After the first sync every 4403 keeps the
-  read-only draft treatment above.
+  It stays mounted as `Retrying…` until the attempt settles (the first sync or
+  any refusal, including a lifecycle, permission or reset one), then hands
+  orphaned focus to the editor column, a region named "Page body". `flag_off`
+  refetches the config, and lifecycle and reset refusals refetch the page, so
+  closing and reopening the editor uses current state. After the first sync
+  every 4403 keeps the read-only draft treatment above.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2

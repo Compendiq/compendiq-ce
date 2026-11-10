@@ -800,7 +800,55 @@ describe('collaborative join before the first sync (#1895)', () => {
     await waitFor(() => {
       expect(document.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
     });
-    await waitFor(() => expect(screen.getByTestId('article-editor-column')).toHaveFocus());
+    // The focus target is a named region, so a screen reader announces where focus went.
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
+  });
+
+  it.each([
+    {
+      refusal: 'permission_loss',
+      refuse: (socket: Socket) => sendControl(socket, { type: 'permission_loss', reason: 'edit_permission_revoked' }),
+      message: 'You can view this page but cannot edit it.',
+    },
+    {
+      refusal: 'a newer lifecycle',
+      refuse: (socket: Socket) => sendControl(socket, lifecycle('2')),
+      message: 'This page changed while the editor was opening. Close the editor and open it again to edit the current version.',
+    },
+    {
+      refusal: 'a frozen lifecycle',
+      refuse: (socket: Socket) => sendControl(socket, lifecycle('2', true)),
+      message: 'This page is frozen, so it cannot be edited.',
+    },
+    {
+      refusal: 'tombstone',
+      refuse: (socket: Socket) => sendControl(socket, { type: 'tombstone' }),
+      message: 'This page is no longer available for collaborative editing.',
+    },
+    {
+      refusal: 'a doc_reset close',
+      refuse: (socket: Socket) => socket.close(1001, 'doc_reset'),
+      message: 'This page was replaced while the editor was opening. Close the editor and open it again to edit the current version.',
+    },
+  ])('settles a join Retry that the server refuses with $refusal before the first sync', async ({ refuse, message }) => {
+    renderPage();
+    const socket = await startCollabEdit();
+    act(() => { socket.open(); socket.close(4403, 'readonly'); });
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+
+    const rejoin = Socket.instances[1]!;
+    act(() => {
+      rejoin.open();
+      refuse(rejoin);
+    });
+
+    expect(await screen.findByTestId('collab-join-error')).toHaveTextContent(message);
+    // The attempt has settled: no inert "Retrying…" left beside the refusal.
+    expect(screen.queryByTestId('collab-join-retry')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Page body' })).toHaveFocus());
   });
 
   it('keeps title, tags and Save locked until the first sync even after writable admission', async () => {
@@ -817,6 +865,7 @@ describe('collaborative join before the first sync (#1895)', () => {
     expect(screen.getByTestId('save-page-btn')).toBeDisabled();
     expect(screen.getByText('Tags are read-only')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add tags' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-title-add-icon')).not.toBeInTheDocument();
 
     const info = vi.spyOn(toast, 'info');
     fireEvent.keyDown(document, { key: 's', code: 'KeyS', ctrlKey: true });
@@ -826,6 +875,7 @@ describe('collaborative join before the first sync (#1895)', () => {
     act(() => synchronize(socket));
     await waitFor(() => expect(screen.getByLabelText('Page title')).not.toHaveAttribute('readonly'));
     expect(screen.getByTestId('save-page-btn')).toBeEnabled();
+    expect(screen.getByTestId('page-title-add-icon')).toBeInTheDocument();
   });
 
   it.each([

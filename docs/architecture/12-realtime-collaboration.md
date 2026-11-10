@@ -104,7 +104,7 @@ sequenceDiagram
         B->>B: refreshAccessTokenOnce then reconnect
     else flag off or upgrade rate limited
         F-->>B: close 4403 flag_off or rate_limited
-        B->>B: no reconnect, show the reason, Retry after the upgrade window
+        B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited
     else missing or no page access or folder or trashed
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect

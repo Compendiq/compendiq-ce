@@ -353,18 +353,20 @@ export function PageViewPage() {
     setJoinRetryInFlight(true);
     retryCollabJoin();
   }, [collabCanRetry, joinRetryInFlight, retryCollabJoin]);
-  // The attempt settles on the first sync, a new refusal or the end of the
-  // session. A Retry that vanished with focus on it hands focus to the editor
-  // column instead of dropping it to <body>.
+  // The attempt settles on the first sync, any new refusal (a close reason in
+  // `error` or a lifecycle/permission/reset refusal in `readOnlyReason`) or the
+  // end of the session. A Retry that vanished with focus on it hands focus to
+  // the named editor column instead of dropping it to <body>.
   useEffect(() => {
-    if (!joinRetryInFlight || (collabPreSync && collab.error === null)) return;
+    if (!joinRetryInFlight ||
+        (collabPreSync && collab.error === null && collab.readOnlyReason === null)) return;
     setJoinRetryInFlight(false);
     if (!joinRetryHadFocusRef.current) return;
     joinRetryHadFocusRef.current = false;
     requestAnimationFrame(() => {
       if (document.activeElement === document.body) editorColumnRef.current?.focus();
     });
-  }, [joinRetryInFlight, collabPreSync, collab.error]);
+  }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -1549,6 +1551,8 @@ export function PageViewPage() {
             <div
               ref={editorColumnRef}
               tabIndex={-1}
+              role="region"
+              aria-label="Page body"
               data-testid="article-editor-column"
               className={cn('nm-focus-ring mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}
             >
