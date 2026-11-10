@@ -960,6 +960,15 @@ npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json
 # externally started worker cannot read them. Nothing else may touch the provider meanwhile.
 npx tsx scripts/run-retrieval-eval.ts --images --arm B --fts-language german --backfill-timeout 7200 --out arm-B.json
 npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json --out-dir artifacts/
+# Either arm's answers are CERTIFIED on the live database before the first question
+# (#1823): `run-arm-answers.ts` re-runs `assertArmCState` (C) or arm B's readiness —
+# `readArmBState` + the backfill driver at timeout 0, which refuses an incomplete backfill
+# and never runs a batch — after `buildApp()` and before any completion request, with or
+# without --report. Given, --report is then bound to the live index configuration: vision
+# model, `image_analysis_max_output_tokens`, the (prompt, schema) version pair, the embedder
+# (`embedding` assignment model + endpoint, `page_embeddings` width) and `fts_language`.
+# A database re-seeded, backfilled or reconfigured since the retrieval run is refused with
+# `--report does not describe this database: <field>: report …, live …` and writes nothing.
 
 # EN/DE controls: the ordinary text gate, ONE run per arm per language, each on that
 # arm's own revision and index state. The text corpora (`corpus/`, `corpus-de/`) are
