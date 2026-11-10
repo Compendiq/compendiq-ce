@@ -22,6 +22,7 @@ import { query } from '../../../core/db/postgres.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import { filterAccessiblePages } from '../../../core/services/rbac-service.js';
 import { encryptPat } from '../../../core/utils/crypto.js';
+import { logger } from '../../../core/utils/logger.js';
 import type * as EnterpriseFeatures from '../../../core/enterprise/features.js';
 import type * as EnterpriseLoader from '../../../core/enterprise/loader.js';
 import { buildKnowledgeTestApp } from '../../../routes/knowledge/pages.test-helpers.js';
@@ -232,6 +233,54 @@ async function ageSpaceCursor(spaceKey: string): Promise<void> {
   await query("UPDATE spaces SET last_synced = NOW() - INTERVAL '25 hours' WHERE space_key = $1", [spaceKey]);
 }
 
+/**
+ * Bob on a restricted page in each of DOCS and TEAM after a full run 1, then
+ * de-listed upstream on both (restriction-only change) with both cursors
+ * aged, so the next run walks both spaces fully. When only the first space
+ * listed gets through, the result does not depend on the walk order.
+ */
+async function seedBobDelistedInTwoSpaces() {
+  const aliceId = await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
+  const bobId = await seedUser('bob', { spaces: ['DOCS', 'TEAM'] });
+  const syncerId = await seedUser(`syncer-${randomUUID()}`, { pat: 'syncer-pat', spaces: ['DOCS', 'TEAM'] });
+  putPage('DOCS', '7101', 'Docs restricted');
+  putPage('TEAM', '7201', 'Team restricted');
+  readers.set('7101', ['alice', 'bob']);
+  readers.set('7201', ['alice', 'bob']);
+
+  await runSync(syncerId); // run 1: both spaces full
+  const pages = [await localPage('7101'), await localPage('7201')];
+  for (const page of pages) expect(await aceRows(page.id)).toEqual(userAces(aliceId, bobId));
+
+  readers.set('7101', ['alice']);
+  readers.set('7201', ['alice']);
+  await ageSpaceCursor('DOCS');
+  await ageSpaceCursor('TEAM');
+  return { aliceId, bobId, syncerId, pages };
+}
+
+const SWEEP_AFTER_FAILED_WALK_LOG = 'Stale Confluence ACE sweep failed after a failed space walk';
+
+/** Runs `run` while every DELETE on access_control_entries fails (a real DB fault, no mock). */
+async function withSweepFault(run: () => Promise<void>): Promise<void> {
+  await query(`CREATE OR REPLACE FUNCTION sync_ace_sweep_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected sweep fault'; END $$;
+    DROP TRIGGER IF EXISTS sync_ace_sweep_fault ON access_control_entries;
+    CREATE TRIGGER sync_ace_sweep_fault BEFORE DELETE ON access_control_entries
+    FOR EACH STATEMENT EXECUTE FUNCTION sync_ace_sweep_fault()`);
+  try {
+    await run();
+  } finally {
+    await query(`DROP TRIGGER IF EXISTS sync_ace_sweep_fault ON access_control_entries;
+      DROP FUNCTION IF EXISTS sync_ace_sweep_fault()`);
+  }
+}
+
+function sweepAfterFailedWalkLogs(errorSpy: { mock: { calls: unknown[][] } }) {
+  return (errorSpy.mock.calls as Array<[{ err?: Error; userId?: string }, string]>)
+    .filter((call) => call[1] === SWEEP_AFTER_FAILED_WALK_LOG);
+}
+
 describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scoped to pages the run re-read', () => {
   beforeAll(async () => {
     originalAttachmentRoot = process.env.ATTACHMENTS_DIR;
@@ -402,26 +451,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
   });
 
   it('a run that fails after re-reading P still removes the principal it saw de-listed', async () => {
-    const aliceId = await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
-    const bobId = await seedUser('bob', { spaces: ['DOCS', 'TEAM'] });
-    const syncerId = await seedUser(`syncer-${randomUUID()}`, { pat: 'syncer-pat', spaces: ['DOCS', 'TEAM'] });
-    // One restricted page per space: whichever space run 2 walks first is
-    // re-read and the other space's listing fails, so the outcome does not
-    // depend on the walk order.
-    putPage('DOCS', '7101', 'Docs restricted');
-    putPage('TEAM', '7201', 'Team restricted');
-    readers.set('7101', ['alice', 'bob']);
-    readers.set('7201', ['alice', 'bob']);
-
-    await runSync(syncerId); // run 1: both spaces full
-    const pages = [await localPage('7101'), await localPage('7201')];
-    for (const page of pages) expect(await aceRows(page.id)).toEqual(userAces(aliceId, bobId));
-
-    // bob is de-listed upstream on both pages (restriction-only change).
-    readers.set('7101', ['alice']);
-    readers.set('7201', ['alice']);
-    await ageSpaceCursor('DOCS');
-    await ageSpaceCursor('TEAM');
+    const { aliceId, bobId, syncerId, pages } = await seedBobDelistedInTwoSpaces();
     failListingsAfterFirstSpace = true;
     // run 2: the first space is walked fully (page re-read, cursor advanced),
     // then the second space's listing fails the run.
@@ -436,6 +466,44 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
       expect(await pageStatus(bobId, page.id)).toBe(404);
       expect(await pageStatus(aliceId, page.id)).toBe(200);
       expect(await aceRows(page.id)).toEqual(userAces(aliceId));
+    }
+  });
+
+  it('a sweep failure after a failed walk is logged and does not mask the walk error', async () => {
+    const { aliceId, bobId, syncerId, pages } = await seedBobDelistedInTwoSpaces();
+    failListingsAfterFirstSpace = true;
+    const errorSpy = vi.spyOn(logger, 'error');
+    try {
+      await withSweepFault(async () => {
+        await expect(syncUser(syncerId)).rejects.toThrow('Confluence API error: HTTP 500');
+      });
+      const status = await getSyncStatus(syncerId);
+      expect(status.status).toBe('error');
+      expect(status.error).toContain('Confluence API error: HTTP 500');
+      const logs = sweepAfterFailedWalkLogs(errorSpy);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]![0].userId).toBe(syncerId);
+      expect(logs[0]![0].err?.message).toContain('injected sweep fault');
+    } finally {
+      errorSpy.mockRestore();
+    }
+    // The failed sweep deleted nothing: bob is still on both pages.
+    for (const page of pages) expect(await aceRows(page.id)).toEqual(userAces(aliceId, bobId));
+  });
+
+  it('a sweep failure after a successful walk fails the run', async () => {
+    const { syncerId } = await seedBobDelistedInTwoSpaces();
+    const errorSpy = vi.spyOn(logger, 'error');
+    try {
+      await withSweepFault(async () => {
+        await expect(syncUser(syncerId)).rejects.toThrow('injected sweep fault');
+      });
+      const status = await getSyncStatus(syncerId);
+      expect(status.status).toBe('error');
+      expect(status.error).toContain('injected sweep fault');
+      expect(sweepAfterFailedWalkLogs(errorSpy)).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 
