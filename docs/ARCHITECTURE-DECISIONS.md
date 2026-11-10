@@ -2887,9 +2887,9 @@ Confluence DC semantics (per Atlassian's official documentation, not the issue b
 > so the unscoped sweep deleted every unmodified restricted page's entries
 > (#1771). Rows on pages a run does not re-read keep their last mirror; a
 > de-listed principal is removed on the next run that re-reads the page —
-> the sweep also runs when a later space walk of that run throws, so only a
-> process crash between the re-read and the sweep defers it to the next
-> re-read.
+> the sweep also runs when the run's walk throws, so only a process crash,
+> or a failure of the sweep itself, between the re-read and the sweep defers
+> it to the next re-read.
 
 **Query-time contract (`backend/src/domains/llm/services/rag-service.ts`):**
 - Overfetch compensation: when the flag is on, both the vector-search and keyword-search stages pull `ceil(topK * 1.5)` candidates instead of `topK`. The post-filter needs headroom because any given page can be filtered out.

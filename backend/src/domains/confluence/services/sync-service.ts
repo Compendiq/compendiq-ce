@@ -1715,12 +1715,13 @@ async function resolveConfluenceGroup(name: string): Promise<number | null> {
  * list a page, a fetch may fail. A de-listed principal is removed on the next
  * run that re-reads the page. The partial index on `(source, synced_at)
  * WHERE source = 'confluence'` keeps this scan O(stale rows) regardless of
- * how many admin-authored ACEs exist. Runs once at the end of `syncUser`,
- * outside any per-page transaction, so a partial sync doesn't wipe ACEs for
- * pages we never got to.
+ * how many admin-authored ACEs exist. Runs once per `syncUser` run, outside
+ * any per-page transaction, after the walk — also after a failed walk
+ * (#1771): pages the run never reached carry no stamp from it, so they are
+ * outside the set.
  *
- * Also scoped to `spaceKeys` — the spaces this run actually visited (#859) —
- * so one user's run never ages out the ACEs of pages in another user's spaces.
+ * Also scoped to `spaceKeys` — the run's spaces (#859) — so one user's run
+ * never ages out the ACEs of pages in another user's spaces.
  */
 async function sweepStaleConfluenceAces(
   syncRunStartedAt: Date,

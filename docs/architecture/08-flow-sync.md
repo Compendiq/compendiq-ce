@@ -349,12 +349,13 @@ EE skip all of it (`syncPageRestrictions` and the sweep both short-circuit).
   `restrictions_synced_at` is at or after the run start, i.e. the pages this
   run re-read. There a de-listed principal, or every row of a page that is no
   longer restricted, goes.
-- **A failed walk still sweeps.** When a space walk throws (a revoked PAT, a
-  failed listing), `syncUser` runs the sweep before rethrowing, so the
-  de-listings of the pages the run already re-read are applied; a sweep error
-  after a failed walk is logged and the walk error stays the run's outcome. A
-  process that dies between a re-read and the sweep loses them: such a page is
-  only swept again by the next run that re-reads it.
+- **A failed walk still sweeps.** When the walk throws (a revoked PAT, a
+  failed listing, in the same space or a later one), `syncUser` runs the
+  sweep before rethrowing, so the de-listings of the pages the run already
+  re-read are applied; a sweep error after a failed walk is logged and the
+  walk error stays the run's outcome. A process that dies between a re-read
+  and the sweep, or a sweep that itself fails, loses them: such a page is only
+  swept again by the next run that re-reads it.
 - **Everything else keeps its last mirror:** unmodified pages of an
   incremental walk, pages the syncing principal cannot list, pages whose fetch
   failed or was deferred, and pages removed upstream (soft-deleted, so hidden
