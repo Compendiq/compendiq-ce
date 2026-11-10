@@ -7,9 +7,13 @@ const mockSyncUser = vi.fn().mockResolvedValue(undefined);
 const mockGetSyncStatus = vi.fn();
 const mockSetSyncStatus = vi.fn();
 const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
+// Claims the worker lock and detaches the run (#1775). What it does is covered
+// against real PostgreSQL and Redis in sync-manual-lock.integration.test.ts.
+const mockStartManualSync = vi.fn().mockResolvedValue(true);
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   syncUser: (...args: unknown[]) => mockSyncUser(...args),
+  startManualSync: (...args: unknown[]) => mockStartManualSync(...args),
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
   setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),
 }));
@@ -58,26 +62,6 @@ describe('Sync routes', () => {
   });
 
   describe('POST /api/sync', () => {
-    it('should set status to syncing before dispatching background work', async () => {
-      mockGetSyncStatus.mockReturnValue({ userId: 'test-user-id', status: 'idle' });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/sync',
-      });
-
-      expect(response.statusCode).toBe(200);
-
-      // setSyncStatus should be called with 'syncing' before syncUser is dispatched
-      expect(mockSetSyncStatus).toHaveBeenCalledWith('test-user-id', {
-        userId: 'test-user-id',
-        status: 'syncing',
-      });
-
-      // syncUser should be called in the background
-      expect(mockSyncUser).toHaveBeenCalledWith('test-user-id');
-    });
-
     it('should return 409 if sync is already in progress', async () => {
       mockGetSyncStatus.mockReturnValue({ userId: 'test-user-id', status: 'syncing' });
 

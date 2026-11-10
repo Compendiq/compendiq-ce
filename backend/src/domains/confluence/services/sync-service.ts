@@ -206,17 +206,18 @@ async function renewSyncLock(lockId: string): Promise<void> {
 /**
  * Is a sync run currently in flight anywhere in the deployment? (#1123)
  *
- * Reads the same Redis key {@link acquireSyncLock} sets, so it observes the
- * worker mutex without being able to take or block it. Used by
+ * Reads the same Redis key {@link acquireSyncLock} sets — held by every sync
+ * run, scheduled or manual (#1775) — so it observes the mutex without being
+ * able to take or block it. Used by
  * `POST /api/pages/:id/relocate` to refuse to start while a sync is running:
  * relocate mutates `pages.source` / `confluence_id`, which the sync upsert
  * (`ON CONFLICT (confluence_id)`) and deletion reconciliation both key off,
  * and neither of those paths takes a lock a route could join.
  *
- * Fails OPEN (returns false) when Redis is unavailable or errors — the sync
- * worker itself proceeds without the lock in that case, so refusing every
- * relocate would be strictly worse than relying on the ordering guarantees
- * inside the relocate transaction.
+ * Fails OPEN (returns false) when Redis is unavailable or errors — without a
+ * Redis client every sync, scheduled or manual, proceeds without the lock, so
+ * refusing every relocate would be strictly worse than relying on the
+ * ordering guarantees inside the relocate transaction.
  */
 export async function isSyncRunning(): Promise<boolean> {
   const redis = getRedisClient();
@@ -230,6 +231,56 @@ export async function isSyncRunning(): Promise<boolean> {
     );
     return false;
   }
+}
+
+/** Audit callbacks for {@link startManualSync}; neither may reject. */
+interface ManualSyncHooks {
+  /** Awaited after the claim and the `syncing` status write, before the run is detached. */
+  onStarted: () => Promise<void>;
+  /** Awaited in the detached run once `syncUser` resolves, before the lock is released; skipped when it rejects. */
+  onCompleted: () => Promise<void>;
+}
+
+/**
+ * Start a manual sync (`POST /api/sync`) under the same deployment-global
+ * `sync:worker:lock` the scheduler holds (#1775): while it runs, every other
+ * sync — another user's manual run or a scheduled cycle — is refused or
+ * skipped, and relocate's {@link isSyncRunning} guard sees it.
+ *
+ * The caller applies the per-user `syncing` check and the integration check
+ * first, so a standalone user never takes the lock. Resolves `false` when the
+ * claim is refused — another run holds the key, or the claim errors, the same
+ * cases in which the scheduler skips its cycle — without touching the caller's
+ * status or the audit log. Without a Redis client the run proceeds unlocked,
+ * as scheduled runs do.
+ *
+ * Otherwise the status flips to `syncing` (so the response reflects it and the
+ * frontend starts polling), `onStarted` runs, and `syncUser` is detached: the
+ * lock is renewed every {@link SYNC_LOCK_RENEW_INTERVAL_MS} and released in the
+ * run's `finally`, after `onCompleted` or after a failed run is logged.
+ */
+export async function startManualSync(userId: string, hooks: ManualSyncHooks): Promise<boolean> {
+  const lockId = await acquireSyncLock();
+  if (!lockId) return false;
+
+  await setSyncStatus(userId, { userId, status: 'syncing' });
+  await hooks.onStarted();
+
+  // The heartbeat and the `finally` that clears it are created together, so
+  // no await can strand a live interval.
+  const heartbeat = setInterval(() => {
+    void renewSyncLock(lockId);
+  }, SYNC_LOCK_RENEW_INTERVAL_MS);
+  void syncUser(userId)
+    .then(() => hooks.onCompleted())
+    .catch((err: unknown) => {
+      logger.error({ err, userId }, 'Manual sync failed');
+    })
+    .finally(async () => {
+      clearInterval(heartbeat);
+      await releaseSyncLock(lockId);
+    });
+  return true;
 }
 
 const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
