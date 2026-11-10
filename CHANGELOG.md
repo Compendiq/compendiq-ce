@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence writes are sent once when their outcome is unknown (#1776):** a
+  page create, update or delete, or a label change, that Confluence answers
+  with 502, 503 or 504, or whose connection fails (`ECONNRESET`, `ETIMEDOUT`,
+  `UND_ERR_CONNECT_TIMEOUT`), is no longer re-sent. The retry reported writes
+  that had landed as definite failures (`400 A page with this title already
+  exists`, `409 Version must be incremented`) and could repeat their side
+  effect; the caller now gets the original error. A 429 is still retried for
+  every request, and reads still retry all of these.
 - **AI policy UI polish (#1882):** provider locality declarations name the
   declaring administrator and show a formatted date, with the time of day on
   hover, instead of a raw user ID and ISO timestamp. A deleted declarer reads
