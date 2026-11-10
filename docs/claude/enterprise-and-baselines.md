@@ -17,8 +17,13 @@ must preserve unrelated S3 drafts; KMS test/rotation acts on saved settings only
 EE public-hub checks, verified browser downloads and registry discovery.
 Check the policy at every outbound hub fetch, not by URL spelling at routing.
 Registered-but-invalid assets must fail closed, never fall through to local
-copies. Dispose verification resources for every response, including HEAD,
-304 and range errors; Fastify's automatic HEAD handling retains GET metadata.
+copies. A verified asset's `dispose()` runs exactly once: for a streamed GET
+only after the body stream has ended or been destroyed (completion, client
+abort, stream error), and immediately for responses without a body (HEAD, 304,
+416). The download route registers GET and HEAD explicitly (Fastify's implicit
+HEAD would drain the stream), never opens a stream for HEAD, ignores Range on
+HEAD, and opts out of compression so Content-Length and Content-Range stay
+truthful (#1793).
 
 Summarize, Diagram and Quality use the shared SSE audit lifecycle. Inline
 completion reports provider usage (estimates if absent) without plaintext.
