@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { isDbAvailable, setupTestDb, teardownTestDb, truncateAllTables } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { attachmentCacheDir } from '../../../core/services/attachment-store.js';
+import { setAiPolicyEnforcementForTest } from '../../../core/services/ai-policy-activation.js';
 import type * as EnterpriseFeatures from '../../../core/enterprise/features.js';
 import type * as EnterpriseLoader from '../../../core/enterprise/loader.js';
 import {
@@ -631,5 +632,55 @@ describe.skipIf(!canRun)('#1772 version-jump sync honours the local-edit conflic
     // The upsert committed before the reconcile failed: the overwrite is on record.
     expect(await row(id)).toMatchObject({ version: 7, local_modified_at: null });
     expect((await syncAudits(id)).map((a) => a.action)).toEqual(['SYNC_OVERWROTE_LOCAL_EDITS']);
+  });
+
+  it.each(['compendiq-wins', 'manual-review'] as const)(
+    'an upstream-only rename with an equal body and no local edit stays a routine version jump (%s)',
+    async (policy) => {
+      await usePolicy(policy);
+      const cid = `vj-upstream-rename-${policy}`;
+      const id = await seedSyncedV5(cid);
+      const v6 = upstreamPage(cid, 6);
+      upstreamPages.set(cid, v6);
+      await runSync(v6, RUN_1);
+      const page = upstreamPage(cid, 7, 'Alice renamed upstream');
+      upstreamPages.set(cid, page);
+
+      const counts = await runSync(page, RUN_2);
+
+      expect(await row(id)).toMatchObject({
+        title: 'Alice renamed upstream', version: 7, local_modified_at: null, conflict_pending: false,
+      });
+      expect(await syncAudits(id)).toEqual([]);
+      expect(await pending(id)).toEqual([]);
+      expect(counts.pagesUpdated).toBe(1);
+    },
+  );
+
+  it('the skip exit still publishes the AI policy the walk observed, so a restrictive label is not lost', async () => {
+    await usePolicy('confluence-wins');
+    await setAiPolicyEnforcementForTest(true);
+    try {
+      const id = await seedSyncedV5('vj-race-policy');
+      await seedCache('vj-race-policy');
+      const page: ConfluencePage = {
+        ...upstreamPage('vj-race-policy'),
+        metadata: { labels: { results: [{ name: 'no-ai' }] } },
+      };
+      upstreamPages.set(page.id, page);
+      beforeAttachmentList = async (confluenceId) => {
+        if (confluenceId === 'vj-race-policy') await bobSavesLocally(id, '<p>EDIT DURING DOWNLOAD</p>', 'EDIT DURING DOWNLOAD');
+      };
+
+      const counts = await runSync(page, RUN_1);
+
+      // No content write on the skip exit, but the restrictive label of this walk is applied.
+      expect(await row(id)).toMatchObject({ body_html: '<p>EDIT DURING DOWNLOAD</p>', version: 6 });
+      expect((await query<{ ai_policy: string }>('SELECT ai_policy FROM pages WHERE id = $1', [id])).rows[0]!.ai_policy)
+        .toBe('none');
+      expect(counts).toEqual({ pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 });
+    } finally {
+      await setAiPolicyEnforcementForTest(false);
+    }
   });
 });

@@ -927,13 +927,20 @@ async function syncPage(
         'SELECT id FROM pages WHERE confluence_id = $1', [page.id],
       );
       await lockAiPolicyForPages(txClient, target.rows.map((row) => row.id));
-      const current = await txClient.query<{ ai_policy: AiPolicy; version: number; local_modified_at: Date | null }>(
-        'SELECT ai_policy, version, local_modified_at FROM pages WHERE confluence_id = $1 FOR UPDATE', [page.id],
+      const current = await txClient.query<{
+        id: number; source: string; deleted_at: Date | null;
+        ai_policy: AiPolicy; version: number; local_modified_at: Date | null;
+      }>(
+        `SELECT id, source, deleted_at, ai_policy, version, local_modified_at
+           FROM pages WHERE confluence_id = $1 FOR UPDATE`,
+        [page.id],
       );
       // #1772: a writer that committed after the policy decision (e.g. a local
       // save while attachments downloaded) moved `version` or `local_modified_at`,
       // or the row is gone. This run never decided on that state, so it writes
-      // nothing; the next walk decides on it.
+      // no content; the next walk decides on it. The AI policy this walk
+      // observed is still published (tighten-only), as on every other exit, so
+      // a restrictive label removed upstream before that walk is not lost.
       const locked = current.rows[0];
       const decided = versionJumpDecision?.row;
       if (decided && (
@@ -942,6 +949,14 @@ async function syncPage(
         || (locked.local_modified_at?.getTime() ?? null) !== (decided.local_modified_at?.getTime() ?? null)
       )) {
         movedSinceDecision = { lockedVersion: locked?.version ?? null };
+        if (locked && locked.source === 'confluence' && locked.deleted_at === null) {
+          await publishIngestionPolicyOnClient(txClient, {
+            source: 'confluence', sourceScope: 'shared', sourceId: page.id, pageId: locked.id, userId,
+            candidate: admitAutomaticIngestionPolicy({
+              identity: page.id, currentPolicy: locked.ai_policy, candidate: policyFromLabels(labels),
+            }),
+          });
+        }
       } else if (current.rows[0]) {
         admittedCurrentPolicy = current.rows[0].ai_policy;
         creationPolicy = admitAutomaticIngestionPolicy({
@@ -994,7 +1009,8 @@ async function syncPage(
       }
     }
     if (movedSinceDecision) {
-      await txClient.query('ROLLBACK');
+      // No content write; COMMIT keeps only the AI-policy publication above.
+      await txClient.query('COMMIT');
       upsert = { rowCount: 0, rows: [] };
     } else {
       const run = (sql: string, params: unknown[]) =>
