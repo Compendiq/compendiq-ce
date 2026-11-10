@@ -374,17 +374,26 @@ export async function syncUser(userId: string): Promise<void> {
     const allSpaces = await client.getAllSpaces();
     const spacesByKey = new Map(allSpaces.map((s) => [s.key, s]));
 
-    for (const spaceKey of spaces) {
-      await syncSpace(
-        client,
-        userId,
-        spaceKey,
-        spacesByKey.get(spaceKey),
-        syncRunStartedAt,
-        ancestorCache,
-        syncRunId,
-        restrictionChangeSet,
-      );
+    // A space walk that throws (a revoked PAT, a failed listing) must not
+    // discard the restriction re-reads the walk already mirrored: the sweep
+    // below touches only pages this run re-read, so it is safe after a
+    // partial walk. The walk error is rethrown once the sweep has run (#1771).
+    let walkFailure: { error: unknown } | undefined;
+    try {
+      for (const spaceKey of spaces) {
+        await syncSpace(
+          client,
+          userId,
+          spaceKey,
+          spacesByKey.get(spaceKey),
+          syncRunStartedAt,
+          ancestorCache,
+          syncRunId,
+          restrictionChangeSet,
+        );
+      }
+    } catch (error) {
+      walkFailure = { error };
     }
 
     // Sweep stale Confluence-sourced ACEs on the pages whose restrictions
@@ -397,8 +406,16 @@ export async function syncUser(userId: string): Promise<void> {
     // modified pages — keep their last mirror (#1771). Admin-authored rows
     // have `source='local'` and never appear in this sweep.
     if (isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
-      await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
+      try {
+        await sweepStaleConfluenceAces(syncRunStartedAt, spaces);
+      } catch (sweepError) {
+        // After a failed walk the walk error is the run's outcome; a sweep
+        // failure on top of it is logged rather than allowed to mask it.
+        if (!walkFailure) throw sweepError;
+        logger.error({ err: sweepError, userId }, 'Stale Confluence ACE sweep failed after a failed space walk');
+      }
     }
+    if (walkFailure) throw walkFailure.error;
 
     // Set status to 'embedding' while processing dirty pages
     await setSyncStatus(userId, {
@@ -1467,10 +1484,10 @@ async function computeEffectivePageReadRestrictions(
  * On a `ConfluenceError` from `getPageRestrictions` / `getPageAncestors` we
  * log + continue — the sync run completes, this page's ACEs just aren't
  * written this round and the stale-sweep leaves any pre-existing ACEs
- * alone (their `synced_at` hasn't been bumped but hasn't been aged out
- * either — they stay authoritative until a later successful sync rewrites
- * them). Non-ConfluenceError exceptions propagate; they indicate a bug or
- * DB outage the caller must see.
+ * alone: `restrictions_synced_at` is not advanced, so the page is outside
+ * this run's sweep set (#1771), and they stay authoritative until a later
+ * successful sync rewrites them. Non-ConfluenceError exceptions propagate;
+ * they indicate a bug or DB outage the caller must see.
  */
 async function syncPageRestrictions(
   client: ConfluenceClient,
@@ -1503,9 +1520,10 @@ async function syncPageRestrictions(
 
   // Audit-log-driven skip (perf): when the audit window confirms no restriction
   // change for this page since we last mirrored it (within the covered window),
-  // skip the rate-limited Confluence fetch. Still bump this page's Confluence ACE
-  // synced_at to the current run so the global stale-ACE sweep keeps the rows —
-  // the optimization is sweep-neutral. Any uncertainty falls through to a fetch.
+  // skip the rate-limited Confluence fetch. `restrictions_synced_at` is left
+  // alone, so the page stays out of this run's stale-ACE sweep (#1771) — the
+  // optimization is sweep-neutral; its Confluence ACE synced_at is still bumped
+  // to the run that confirmed the rows. Any uncertainty falls through to a fetch.
   if (
     changeSet.mode === 'incremental' &&
     restrictionsSyncedAt !== null &&
@@ -1535,10 +1553,10 @@ async function syncPageRestrictions(
         },
         'Failed to fetch Confluence restrictions for page — skipping this round; pre-existing ACEs untouched',
       );
-      // Bump this page's existing Confluence ACEs to the current run so the
-      // end-of-run sweep leaves them alone (#859) — matches the documented
-      // contract that they stay authoritative until a later successful sync
-      // rewrites them. Same UPDATE as the incremental-skip fast path above.
+      // The page stays out of this run's sweep set (`restrictions_synced_at`
+      // is not advanced, #1771), so its existing Confluence ACEs stay
+      // authoritative until a later successful sync rewrites them (#859).
+      // Same synced_at bump as the incremental-skip fast path above.
       await query(
         `UPDATE access_control_entries
             SET synced_at = $1

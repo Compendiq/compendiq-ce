@@ -526,11 +526,12 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     expect(await getAces(pageY)).toHaveLength(1);
   });
 
-  it('failed restriction fetch bumps synced_at so the scoped sweep keeps pre-existing ACEs', async () => {
+  it('failed restriction fetch keeps pre-existing ACEs out of the page-scoped sweep (and bumps synced_at)', async () => {
     // Regression for #859 (Fix 2): when computeEffectivePageReadRestrictions
-    // throws a ConfluenceError, syncPageRestrictions must bump the page's
-    // existing Confluence ACEs to the current run so the end-of-run sweep —
-    // which covers this page's own space — leaves them alone.
+    // throws a ConfluenceError, syncPageRestrictions keeps the page's existing
+    // Confluence ACEs and bumps their synced_at. It does not advance the page's
+    // restrictions_synced_at, so the page-scoped end-of-run sweep (#1771)
+    // leaves them alone.
     const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     await insertUser(userA, 'alice');
     await ensureSpace('DOCS');
@@ -564,7 +565,8 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
     expect(aces).toHaveLength(1);
     expect(aces[0]!.synced_at?.getTime()).toBe(runStartedAt.getTime());
 
-    // The scoped end-of-run sweep therefore leaves it in place.
+    // The page-scoped end-of-run sweep leaves it in place: its restrictions
+    // were not re-read, so restrictions_synced_at was not advanced.
     await __internal.sweepStaleConfluenceAces(runStartedAt, ['DOCS']);
     expect(await getAces(pageDbId)).toHaveLength(1);
   });
@@ -663,8 +665,9 @@ describe.skipIf(!dbAvailable)('sync-service per-page restriction branch (EE #112
   // ── Audit-log-driven restriction-change detection (skip rule) ───────────
   // syncPageRestrictions takes an optional change-set. In 'incremental' mode a
   // page is skipped (no Confluence fetch) iff it was mirrored within the
-  // audit-covered window AND is not in the changed set — but its ACE synced_at
-  // is still bumped so the global stale-ACE sweep keeps the rows.
+  // audit-covered window AND is not in the changed set. Its ACE synced_at is
+  // still bumped; its restrictions_synced_at is not, so the page-scoped
+  // stale-ACE sweep (#1771) leaves its rows alone.
   const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
   const incremental = (changed: string[]) => ({
     mode: 'incremental' as const,

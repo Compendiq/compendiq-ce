@@ -68,6 +68,12 @@ const modifiedIds = new Set<string>();
 const hiddenFrom = new Map<string, Set<string>>();
 /** Page ids whose BODY was fetched (`getPage`), i.e. the pages a run visited. */
 const bodyFetches: string[] = [];
+/**
+ * When on, a run lists one space; every other space's listing answers 500
+ * (not retried), so the walk fails after its first space whatever the order.
+ */
+let failListingsAfterFirstSpace = false;
+const listedSpaces = new Set<string>();
 
 const TEN_DAYS_AGO = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -101,16 +107,25 @@ const fixture: Server = createServer((request, response) => {
   const hidden = hiddenFrom.get(pat) ?? new Set<string>();
   const visibleIn = (spaceKey: string | null) =>
     [...remotePages.values()].filter((p) => !hidden.has(p.id) && spaceOf.get(p.id) === spaceKey);
+  const listingRefused = (spaceKey: string | null): boolean => {
+    if (!failListingsAfterFirstSpace || spaceKey === null) return false;
+    if (listedSpaces.size > 0 && !listedSpaces.has(spaceKey)) return true;
+    listedSpaces.add(spaceKey);
+    return false;
+  };
 
   if (request.method !== 'GET') return json(response, 405, { message: 'Method not allowed' });
   if (url.pathname === '/rest/api/space') {
     return json(response, 200, paged(SPACES.map((key) => ({ key, name: key, type: 'global', status: 'current' }))));
   }
   if (url.pathname === '/rest/api/content') {
-    return json(response, 200, paged(visibleIn(url.searchParams.get('spaceKey'))));
+    const spaceKey = url.searchParams.get('spaceKey');
+    if (listingRefused(spaceKey)) return json(response, 500, { message: 'listing failed' });
+    return json(response, 200, paged(visibleIn(spaceKey)));
   }
   if (url.pathname === '/rest/api/content/search') {
     const spaceKey = /space="([^"]+)"/.exec(url.searchParams.get('cql') ?? '')?.[1] ?? null;
+    if (listingRefused(spaceKey)) return json(response, 500, { message: 'listing failed' });
     return json(response, 200, paged(visibleIn(spaceKey).filter((p) => modifiedIds.has(p.id))));
   }
   const match = /^\/rest\/api\/content\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -250,6 +265,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     readers.clear();
     modifiedIds.clear();
     hiddenFrom.clear();
+    failListingsAfterFirstSpace = false;
+    listedSpaces.clear();
     bodyFetches.length = 0;
     resetRateLimiter();
     await truncateAllTables();
@@ -382,6 +399,44 @@ describe.skipIf(!dbAvailable || !redisAvailable)('#1771 stale-ACE sweep is scope
     expect([...bodyFetches].sort()).toEqual(['7101', '7202']);
     expect(await aceRows(docsPage.id)).toEqual(userAces(aliceId));
     expect(await aceRows(teamPage.id)).toEqual(userAces(aliceId));
+  });
+
+  it('a run that fails after re-reading P still removes the principal it saw de-listed', async () => {
+    const aliceId = await seedUser('alice', { spaces: ['DOCS', 'TEAM'] });
+    const bobId = await seedUser('bob', { spaces: ['DOCS', 'TEAM'] });
+    const syncerId = await seedUser(`syncer-${randomUUID()}`, { pat: 'syncer-pat', spaces: ['DOCS', 'TEAM'] });
+    // One restricted page per space: whichever space run 2 walks first is
+    // re-read and the other space's listing fails, so the outcome does not
+    // depend on the walk order.
+    putPage('DOCS', '7101', 'Docs restricted');
+    putPage('TEAM', '7201', 'Team restricted');
+    readers.set('7101', ['alice', 'bob']);
+    readers.set('7201', ['alice', 'bob']);
+
+    await runSync(syncerId); // run 1: both spaces full
+    const pages = [await localPage('7101'), await localPage('7201')];
+    for (const page of pages) expect(await aceRows(page.id)).toEqual(userAces(aliceId, bobId));
+
+    // bob is de-listed upstream on both pages (restriction-only change).
+    readers.set('7101', ['alice']);
+    readers.set('7201', ['alice']);
+    await ageSpaceCursor('DOCS');
+    await ageSpaceCursor('TEAM');
+    failListingsAfterFirstSpace = true;
+    // run 2: the first space is walked fully (page re-read, cursor advanced),
+    // then the second space's listing fails the run.
+    await expect(syncUser(syncerId)).rejects.toThrow('Confluence API error: HTTP 500');
+    expect((await getSyncStatus(syncerId)).status).toBe('error');
+
+    // run 3 succeeds; the space run 2 finished is incremental now and does not
+    // re-read its page, so only run 2's own sweep can have removed bob there.
+    failListingsAfterFirstSpace = false;
+    await runSync(syncerId);
+    for (const page of pages) {
+      expect(await pageStatus(bobId, page.id)).toBe(404);
+      expect(await pageStatus(aliceId, page.id)).toBe(200);
+      expect(await aceRows(page.id)).toEqual(userAces(aliceId));
+    }
   });
 
   it('a page removed upstream stays hidden from its readers; its unswept entries grant nothing', async () => {
