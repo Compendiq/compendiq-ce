@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SearXNG result count (#1768):** Settings → Integrations → SearXNG accepts
+  1–10 — the range the mcp-docs `search_web` tool enforces — instead of 1–20;
+  a count above 10 previously disabled web search silently (the sidecar
+  rejected every request and the backend fell back to no sources). Stored
+  values above 10 are read as 10 (logged until re-saved), and **Test** now
+  searches with the saved count rather than a fixed 3, so it reports the
+  effective configuration.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the

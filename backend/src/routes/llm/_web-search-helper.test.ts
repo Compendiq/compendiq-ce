@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { SEARXNG_MAX_RESULTS_MAX, SEARXNG_MAX_RESULTS_MIN } from '@compendiq/contracts';
+import { isDbAvailable, setupTestDb } from '../../test-db-helper.js';
+import { query } from '../../core/db/postgres.js';
+import type * as Helpers from './_helpers.js';
 
 // --- Mock: mcp-docs-client ---
 const mockIsEnabled = vi.fn();
@@ -15,8 +19,11 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
 // and the tests below assert real prompt-injection filtering (#820).
 
 // --- Mock: _helpers (getSearxngMaxResults) ---
+// Default implementation is set once here; the file-level clearAllMocks only
+// clears calls. The real-DB describe below swaps in the actual reader.
+const mockGetSearxngMaxResults = vi.fn().mockResolvedValue(5);
 vi.mock('./_helpers.js', () => ({
-  getSearxngMaxResults: vi.fn().mockResolvedValue(5),
+  getSearxngMaxResults: (...args: unknown[]) => mockGetSearxngMaxResults(...args),
 }));
 
 // --- Mock: logger ---
@@ -30,6 +37,8 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 import { fetchWebSources, formatWebContext } from './_web-search-helper.js';
+
+const dbAvailable = await isDbAvailable();
 
 describe('_web-search-helper', () => {
   beforeEach(() => {
@@ -219,6 +228,45 @@ describe('_web-search-helper', () => {
 
       expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10);
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 8000);
+    });
+  });
+
+  describe.skipIf(!dbAvailable)('fetchWebSources forwards the saved SearXNG count (real admin_settings, #1768)', () => {
+    beforeAll(async () => {
+      await setupTestDb();
+    });
+
+    beforeEach(async () => {
+      // Runs after the outer clearAllMocks: route the mocked export to the REAL
+      // reader so the stored row, not a stub, decides what reaches search_web.
+      const actual = await vi.importActual<typeof Helpers>('./_helpers.js');
+      mockGetSearxngMaxResults.mockImplementation(actual.getSearxngMaxResults);
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
+    });
+
+    afterAll(() => {
+      mockGetSearxngMaxResults.mockReset().mockResolvedValue(5);
+    });
+
+    it.each([
+      ['15', 10],
+      ['not-a-number', 5],
+      ['7', 7],
+    ])('stored %j reaches search_web as %i, inside the sidecar range', async (stored, expected) => {
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('searxng_max_results', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [stored],
+      );
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('saved width', 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('saved width', 'user-1', expected);
+      const forwarded = mockSearchDocumentation.mock.calls[0]?.[2] as number;
+      expect(forwarded).toBeGreaterThanOrEqual(SEARXNG_MAX_RESULTS_MIN);
+      expect(forwarded).toBeLessThanOrEqual(SEARXNG_MAX_RESULTS_MAX);
     });
   });
 

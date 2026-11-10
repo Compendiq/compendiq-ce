@@ -2,10 +2,16 @@ import { z } from 'zod';
 
 /**
  * Admin-configurable SearXNG result width (`admin_settings.searxng_max_results`).
- * Moved here from backend/src/routes/llm/llm-admin.ts unchanged (#1768).
+ * The range is the sidecar's: mcp-docs `search_web` declares
+ * `num_results: z.number().min(1).max(10).default(5)` (mcp-docs/src/index.ts) and
+ * `MAX_NUM_RESULTS = 10` / `DEFAULT_NUM_RESULTS = 5` (mcp-docs/src/tools/search-web.ts).
+ * The sidecar does not depend on this package, so both sides are pinned with
+ * literal tests: schemas/searxng.test.ts (these numbers) and
+ * mcp-docs/src/search-web-limits.test.ts (the running sidecar's behaviour).
+ * Never widen one side without the other (#1768).
  */
 export const SEARXNG_MAX_RESULTS_MIN = 1;
-export const SEARXNG_MAX_RESULTS_MAX = 20;
+export const SEARXNG_MAX_RESULTS_MAX = 10;
 export const SEARXNG_MAX_RESULTS_DEFAULT = 5;
 
 /** GET /api/admin/searxng */

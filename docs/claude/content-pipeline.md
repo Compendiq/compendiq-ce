@@ -247,6 +247,18 @@ Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
 can equal the new query-plus-width hashes. Never read legacy entries as
 width-aware results; let their TTL expire without flushing shared Redis.
 
+`search_web` accepts `num_results` 1–10 (`MAX_NUM_RESULTS`). The admin setting
+`searxng_max_results` shares that range through
+`SEARXNG_MAX_RESULTS_{MIN,MAX,DEFAULT}` in `@compendiq/contracts`; the sidecar
+does not depend on contracts, so both sides are pinned with literal tests —
+`packages/contracts/src/schemas/searxng.test.ts` for the constants and
+`mcp-docs/src/search-web-limits.test.ts`, which boots the sidecar against a
+loopback SearXNG and proves the tool accepts 1–10, defaults to 5 and rejects
+0/11 (real Redis via `MCP_DOCS_TEST_REDIS_URL`; never skip). Stored values
+outside the range are clamped on read (`getSearxngMaxResults`) with a warning,
+and `POST /admin/searxng/test` searches with the saved width. Never widen one
+side alone (#1768).
+
 The MCP cache-width regression is mandatory in the sidecar test suite and uses
 real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
 PR Check sidecar job provisions Redis and sets this explicitly. Missing

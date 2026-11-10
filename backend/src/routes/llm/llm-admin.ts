@@ -1,12 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RetrievalBenchmarkRequestSchema, UpdateSearxngSettingsSchema } from '@compendiq/contracts';
+import { RetrievalBenchmarkRequestSchema, UpdateSearxngSettingsSchema, type SearxngSettings } from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { query } from '../../core/db/postgres.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { getSearxngMaxResults, normalizeSearxngMaxResults } from './_helpers.js';
 import {
   createProductionBenchmarkRun,
   getActiveProductionBenchmark,
@@ -186,7 +187,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   const SEARXNG_KEYS = ['searxng_url', 'searxng_max_results', 'searxng_categories'] as const;
 
-  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async () => {
+  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (): Promise<SearxngSettings> => {
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings WHERE setting_key = ANY($1::text[])`,
       [SEARXNG_KEYS as unknown as string[]],
@@ -195,7 +196,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     for (const row of result.rows) map[row.setting_key] = row.setting_value;
     return {
       url: map['searxng_url'] ?? process.env.SEARXNG_URL ?? 'http://searxng:8080',
-      maxResults: parseInt(map['searxng_max_results'] ?? '5', 10),
+      maxResults: normalizeSearxngMaxResults(map['searxng_max_results']),
       categories: map['searxng_categories'] ?? 'general',
     };
   });
@@ -220,7 +221,10 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   fastify.post('/admin/searxng/test', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
     try {
-      const results = await searchDocumentation('test connection', request.userId, 3);
+      // Exercise the saved configuration, not a fixed width: a stored count the
+      // sidecar rejects must turn this button red, not stay green on 3 (#1768).
+      const maxResults = await getSearxngMaxResults();
+      const results = await searchDocumentation('test connection', request.userId, maxResults);
       return { ok: true, resultCount: results.length, sample: results.slice(0, 3).map((r) => ({ title: r.title, url: r.url })) };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
