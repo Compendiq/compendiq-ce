@@ -1604,8 +1604,11 @@ use: the Confluence cache `<confluence_id | page id>/<file>` (synced
 attachments, pasted images — standalone pages key by numeric id, so the
 keyspace is shared with Confluence ids) and the local store
 `local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
-rows in `local_attachments`). Sync and page deletes clean their own pages;
-everything else is covered by the observability card and the sweep shipped in
+rows in `local_attachments`). Page deletes clean their own pages. A sync that
+brings in a newer upstream version removes the cached files that version
+references (so they are fetched fresh) and the ones nothing references, but
+keeps images still named by the page's draft, body or version history.
+Everything else is covered by the observability card and the sweep shipped in
 #1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
 store** for uploaded page marks: it is reserved by name, never walked and never
 swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's

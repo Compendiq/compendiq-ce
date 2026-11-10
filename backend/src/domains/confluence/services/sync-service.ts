@@ -13,6 +13,7 @@ import {
 import { getRestrictionChangeSet, type RestrictionChangeSet } from './restriction-change-tracker.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
+import { pruneVersionJumpAttachmentCache } from './version-jump-attachment-cleanup.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
@@ -933,7 +934,15 @@ async function syncPage(
   // Clear stale attachment cache when an existing page has a new version,
   // so updated diagrams/images are re-downloaded rather than served from cache.
   if (existing.rows.length > 0) {
-    await cleanPageAttachments(page.id);
+    // Selective (#1773): what the incoming body references goes, so it is
+    // fetched fresh, and so does what nothing references; a file only the
+    // draft, the local body or the version history still names stays.
+    await pruneVersionJumpAttachmentCache({
+      pageId: existing.rows[0]!.id,
+      attachmentKey: page.id,
+      incomingStorage: bodyStorage,
+      spaceKey,
+    });
     // Reset failure tracking — new version may have fixed broken attachments
     await clearPageFailures(page.id);
   }

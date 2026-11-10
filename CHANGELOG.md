@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A full page without a `next` link is now the last one (no extra request);
   an empty page still ends the loop and the version list keeps its
   1000-request cap.
+- **Version-jump sync keeps pasted images (#1773):** when a synced page arrives
+  with a newer Confluence version, sync no longer empties the page's attachment
+  cache. It removes the cached files the new version references, so same-name
+  attachments changed upstream are fetched fresh, plus the files nothing
+  references. Images pasted into the page's draft, local body or version history
+  stay and keep loading. A draw.io diagram's preview, source and `.drawio.png`
+  are removed or kept together. A file the cleanup cannot delete is logged, and
+  the sync continues.
 - **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
   fresh access token per question instead of one before the run, so a run
   longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the

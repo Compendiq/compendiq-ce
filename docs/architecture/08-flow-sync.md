@@ -64,6 +64,7 @@ sequenceDiagram
                 end
             end
             S->>AH: downloadAttachments(page)
+            Note over S,AH: version jump on an existing row (#35;1773): before downloading, the cache is pruned —<br/>files the incoming body references (fetched fresh) or no local source references go#59;<br/>files only body_html / draft / page_versions name (pasted images) stay
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
             AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
@@ -844,9 +845,12 @@ Key properties:
     unsyncing a space never silently destroys user work. The artifact is
     retained, just unscoped.
 - **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
-  **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a
-  cleanup failure is logged, never fatal, and never aborts the transaction. Worst case
-  is a few orphaned files (preferable to dangling DB rows), swept again on re-run.
+  **outside** the DB transaction; filesystem deletes can't be rolled back, so a
+  cleanup failure is never fatal and never aborts the transaction. Worst case is a
+  few orphaned files (preferable to dangling DB rows), which the #1349 sweep
+  collects. Removing the whole directory is for paths that remove the page; a
+  newer upstream version of a live page prunes selectively instead — see
+  [Version-jump attachment cleanup (#1773)](#version-jump-attachment-cleanup-1773).
 - **Audit** — every removal emits a `SPACE_UNSYNCED` audit event.
 - **RBAC invalidation** — both the in-process RBAC cache and the per-user query cache are flushed so subsequent requests reflect the removal immediately.
 
@@ -992,10 +996,11 @@ every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
 per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
 the same rule, because it is the recovery path for a `missing` skip: a skip is
 terminal (the page still clears its flag), so nothing else would re-queue the
-page once the bytes finally land. Three more go through the same module —
+page once the bytes finally land. More go through the same module —
 `writeAttachmentCache`, `putLocalAttachment` (which is why the module is in
-`core`: `core` may not import a domain, and one of its callers lives there) and
-`cleanPageAttachments`. A CLEANUP raising the flag looks backwards and is not:
+`core`: `core` may not import a domain, and one of its callers lives there),
+`cleanPageAttachments` and the version-jump cleanup
+`pruneVersionJumpAttachmentCache`. A CLEANUP raising the flag looks backwards and is not:
 it **re-queues the page for a re-read and never shrinks the index**, because the
 reconcile's keep-set is the BODY's references and deleting cached files never
 touches `body_html` — so every image comes back as a `missing` skip whose row is
@@ -1027,6 +1032,39 @@ That gate is the whole point on the edit paths: `body_text` alone cannot move an
 DELETED — that writes no attachment at all, so without them the index keeps a
 row for a picture the page no longer shows.
 
+## Version-jump attachment cleanup (#1773)
+
+When an existing Confluence page arrives with a newer upstream version,
+`syncPage` prunes the page's cache directory `attachmentCacheDir(<confluence_id>)`
+(`pruneVersionJumpAttachmentCache` in `version-jump-attachment-cleanup.ts`)
+before it downloads anything. That directory is not only a Confluence cache:
+images pasted or imported into the page's editor (`POST /api/pages/:id/images`,
+`/images/import`) land there too under the same key (`imageAttachmentPageKey`),
+and until the page is published they have no upstream copy. So the cleanup is
+selective:
+
+| Set | Read from | Effect |
+|---|---|---|
+| **incoming** | the new upstream `body_storage`: `getExpectedAttachmentFilenames` (image refs, draw.io `<name>.png`) plus `<name>.drawio` and `<name>.drawio.png` for every diagram | removed **on purpose**: the downloaders skip a file already on disk and cached names carry no version, so a same-name attachment changed upstream would otherwise be served stale |
+| **localKeep** | this page's `body_html`, `draft_body_html`, `body_storage`, `draft_body_storage` and its `page_versions.body_html` rows: `/api/attachments/…` URLs (`collectAttachmentUrlReferences`), draw.io wrappers' `data-diagram-name` (HTML written before 2026-10-28 has no `<name>.drawio` locator, Markdown-converted HTML no URL at all) and storage refs (`getExpectedAttachmentFilenames`); a diagram any of them names keeps all three files | kept, unless also incoming |
+
+A cached file is removed when it is in *incoming* or not in *localKeep*; every
+other file stays. The directory is listed first (regular files only: dot-files
+such as draw.io classification receipts or an upload's staging file are never
+cached files and are never touched), then the keep-set is read with two
+per-page SELECTs (`pages` by id; `page_versions` by `page_id`, the rows that
+carry a cache URL or a draw.io wrapper; never the #1349 corpus-wide keep-set),
+then the selected files are removed one by one through
+`removeCachedAttachmentFile` (`validateFilename` + containment). The Redis
+failure counters and `markPageImagesDirtyByAttachmentKey` follow exactly as in
+`cleanPageAttachments`. The delete is best-effort and outside any transaction:
+an unreadable directory or a refused delete is logged at `warn` and the page
+sync continues. The cleanup runs only when the conflict-policy gate (#1772)
+applies the incoming version; a kept or queued local row leaves the cache
+untouched. Paths that remove the page — a vanished or trashed page, deletion
+reconciliation, the 30-day purge, unsync, the delete routes — still remove the
+whole directory with `cleanPageAttachments`.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
@@ -1039,6 +1077,7 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/routes/knowledge/pages-crud.ts` — `POST /api/pages/bulk/sync`, the bulk refresh
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
+- `backend/src/domains/confluence/services/version-jump-attachment-cleanup.ts` — the selective cache cleanup on an upstream version jump (#1773)
 - `backend/src/domains/confluence/services/attachment-sweep-service.ts` — the #1349 orphan sweep (keep-set, walk, live delete, index-row prune)
 - `backend/src/routes/confluence/attachments-sweep.ts` — stats + dry-run/live sweep + status (all `requireAdmin`)
 - `backend/src/core/services/standalone-attachment-cleanup.ts` — the event-driven half (hard delete / purge)
