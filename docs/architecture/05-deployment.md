@@ -430,7 +430,7 @@ flowchart LR
 | Confluence SSRF allowlist | Dedicated `ssrf-allowlist-bus` | `ssrf:allowlist:changed` |
 | Sync conflict / PII / license / per-page-restriction policy | Pub/sub | `sync:conflict:policy:changed`, `pii:policy:changed`, `license:changed` |
 | Recurring jobs (sync tick, retention prune, embedding tick, webhook outbox poll) | BullMQ `upsertJobScheduler` with stable IDs | Redis queue keys |
-| Sync worker leadership | Redis SET-NX lock | `sync:worker:lock` |
+| Sync run mutual exclusion (scheduler and manual `POST /api/sync`) | Redis SET-NX lock | `sync:worker:lock` |
 | Embedding locks | Redis SET-NX | `embedding:lock:{userId}` (per-user fairness) and `embedding:lock:__reembed_all__` (global re-embed) |
 
 ### Operator requirements

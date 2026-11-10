@@ -25,7 +25,8 @@ sequenceDiagram
     participant AS as attachment-store
     participant VL as vision model (/chat/completions)
 
-    T->>S: syncUser(userId)
+    T->>S: startManualSync(userId) via POST /api/sync, or runScheduledSync() via the scheduler
+    Note over T,S: POST /api/sync first answers 409 when the own status of the caller is syncing (#35;1775)
     S->>CI: isConfluenceEnabled(userId)
     alt explicit confluence_enabled = false
         CI-->>S: false
@@ -35,7 +36,7 @@ sequenceDiagram
         S->>R: SETEX NX sync:worker:lock (TTL 600s)
     alt already locked
         R-->>S: nil
-        S-->>T: skip (another run in progress)
+        S-->>T: scheduler skips the cycle#59; API answers 409 with message and status, status and audit untouched
     else acquired
         R-->>S: OK
         Note over S,R: Heartbeat every TTL/3 (200s): EXPIRE sync:worker:lock 600<br/>if still owned, so long runs never let the lock lapse (#35;906)
@@ -82,7 +83,7 @@ sequenceDiagram
             end
         end
 
-        S->>R: DEL sync:worker:lock
+        S->>R: DEL sync:worker:lock if still owned, in finally (API: the finally of the detached run)
         S-->>T: done
     end
     end
@@ -126,7 +127,7 @@ sequenceDiagram
 
 | Trigger | Source | Cadence |
 |---------|--------|---------|
-| Manual sync | `POST /api/sync` | on demand |
+| Manual sync | `POST /api/sync` → `startManualSync` | on demand; answers 409 while any run holds `sync:worker:lock` |
 | Scheduled sync | In-process sync scheduler in `backend/src/index.ts` (`startQueueWorkers`) | every `SYNC_INTERVAL_MIN` (default 15 min) |
 | Webhook (future) | not yet implemented | — |
 
@@ -140,10 +141,23 @@ sequenceDiagram
   baseline mutation/activation transactions that must hold an existing
   explicit-off row stable through commit.
 - **Redis lock (`sync:worker:lock`)** — one active sync per shared Redis
-  namespace, across backend processes. The 600s TTL acts as a dead-man's switch;
-  ownership-checked heartbeat re-`EXPIRE`s the key every TTL/3 (200s) so a sync
-  that outlasts one TTL can't lapse and admit a second concurrent worker
-  (#906). The heartbeat is cleared alongside the lock release in `finally`.
+  namespace, across backend processes, whichever trigger started it. The
+  scheduler (`runScheduledSync` / `startSyncWorker`) skips its cycle while the
+  key is held. `POST /api/sync` claims it through `startManualSync` (#1775):
+  after the caller's own-status check and the integration check comes an
+  atomic `SET NX EX` claim, and only then does the status flip to `syncing`
+  and `SYNC_STARTED` get written — a refused claim answers
+  `409 { message, status }` and leaves the status, the audit log and the
+  holder's key untouched. The lock is **deployment-global, not per-user**:
+  user B's manual sync is refused while user A's manual or scheduled run is
+  active, and a running manual sync makes the scheduler skip its tick. The
+  600s TTL acts as a dead-man's switch; ownership-checked heartbeat
+  re-`EXPIRE`s the key every TTL/3 (200s) so a sync that outlasts one TTL
+  can't lapse and admit a second concurrent worker (#906). The heartbeat is
+  cleared alongside the lock release in `finally` — for a manual sync, the
+  `finally` of the background run the route detaches, success or failure.
+  Without a Redis client every trigger proceeds unlocked; a Redis error
+  during the claim counts as held.
 - **Per-user PAT scope** — each sync decrypts the PAT just-in-time, uses it
   for the duration of the run, and never logs it.
 - **Source-aware ordinary sync.** The existing-row lookup checks `pages.source`
@@ -191,8 +205,9 @@ sequenceDiagram
   over-fetching is a no-op because the `version` idempotency guard above skips
   any re-fetched page whose stored version is already current.
 - **Relocate exclusion (#1123)** — `POST /api/pages/:id/relocate` refuses with
-  `409` while `sync:worker:lock` is held. It mutates `source` / `confluence_id`,
-  which the upsert and deletion reconciliation both key off; see
+  `409` while `sync:worker:lock` is held, by a scheduled run or (since #1775) a
+  manual one. It mutates `source` / `confluence_id`, which the upsert and
+  deletion reconciliation both key off; see
   [Page relocate across the boundary](#page-relocate-across-the-boundary-1123).
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
@@ -486,15 +501,16 @@ The corrected value therefore remains transient for Confluence-sourced children
   that flavour.
 - **Relocate is blocked by an in-flight sync; sync is never blocked by
   relocate.** The route refuses with `409` while `sync:worker:lock` is held
-  (`isSyncRunning()`). The sync upsert and deletion reconciliation both key off
+  (`isSyncRunning()`), which every sync run does — scheduled, or manual through
+  `POST /api/sync` (#1775). The sync upsert and deletion reconciliation both key off
   `confluence_id` and run on unlocked pooled connections, so there is no lock a
   route could join; refusing for the duration of a run is cheap, whereas making
   the whole sync pipeline lockable is not.
 
   This is a **best-effort guard, not mutual exclusion.** The probe runs once at
   the start of the request, so a sync that begins mid-relocate is not excluded,
-  and it fails **open** when Redis is unavailable (the sync worker itself
-  proceeds unlocked in that case, so refusing every relocate would be strictly
+  and it fails **open** when Redis is unavailable (every sync, scheduled or
+  manual, proceeds unlocked in that case, so refusing every relocate would be strictly
   worse). What actually protects the data is the commit ordering above: the
   worst outcome of a lost race is one junk row — a Confluence page re-imported
   as a second row — which is recoverable and self-healing, never a lost article.
@@ -835,7 +851,7 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/llm/services/image-analysis-worker.ts` — `runImageAnalysisBatch` (#1616, ADR-027 D13)
 - `backend/src/core/services/image-analysis-dirty.ts` — `pages.image_analysis_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-027)
 - `backend/src/routes/llm/llm-image-analysis.ts` — status, process, retry-failed, reanalyze-all (all `requireAdmin`)
-- `backend/src/routes/confluence/sync.ts`
+- `backend/src/routes/confluence/sync.ts` — `POST /api/sync` → `startManualSync` (claim, heartbeat, release in the run's `finally`)
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview
 - `backend/src/domains/knowledge/services/page-relocate-service.ts` — the move transaction and ordering, and `parentKeyFor()`

@@ -140,6 +140,8 @@ After configuring your Confluence connection:
 
 Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
 
+Only one synchronization runs at a time across the whole installation: while the background sync or another user's sync is running, starting a sync answers *Sync already in progress* — try again once it has finished.
+
 If local space settings cannot load, use **Try again** to retry the read. A
 failed refresh keeps the last loaded settings and any unsaved edits available;
 the missing-space message appears only after a successful list excludes it.
