@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Webhook delivery-ledger retention control (#1875):** Settings → Governance →
+  Data & Compliance → Retention gains a *Retention windows* section with a
+  **Webhook delivery attempts retention** field for
+  `webhookDeliveriesRetentionDays`, validated like the contract (whole days,
+  7–3650) and saved alone through `PUT /api/admin/settings`, so it never
+  changes another setting. It renders outside the Enterprise policy matrix and
+  is not tied to the webhook feature, because the sweep keeps pruning existing
+  ledger rows after webhooks are switched off.
+
+### Changed
+
+- **Admin access-denied retention control (#1875):** now sits in the shared
+  *Retention windows* section: empty, fractional and out-of-range values are
+  rejected inline instead of being sent, Enter saves, a failed save keeps the
+  typed value and shows the server's reason inline (previously a toast), and
+  an unreadable settings response shows a Retry notice instead of a
+  fabricated 90-day value.
+
 ### Fixed
 
 - **AI policy UI polish (#1882):** provider locality declarations name the
