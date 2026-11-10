@@ -9,6 +9,7 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import {
+  COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabCommitResponseSchema,
   CollabCommitSchema,
@@ -431,7 +432,7 @@ async function rateLimitUpgrade(userId: string): Promise<boolean> {
   try {
     const key = `collab:upgrade:${userId}`;
     const n = await redis.incr(key);
-    if (n === 1) await redis.expire(key, 60);
+    if (n === 1) await redis.expire(key, COLLAB_UPGRADE_WINDOW_SEC);
     return n <= UPGRADE_LIMIT_PER_MIN;
   } catch {
     return true;
