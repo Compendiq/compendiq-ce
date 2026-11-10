@@ -54,8 +54,9 @@ Extensionless previews are classified even beside an existing XML source;
 classification receipts suppress repeated downloads of unchanged bare sources.
 A version-jump sync removes a diagram's cached `<name>.png`, `<name>.drawio`
 and `<name>.drawio.png` together when the incoming body references it, keeps
-all three when only local content (body, draft, history) does, and never
-removes dot-file receipts.
+all three when only local content (body, draft, history) does — by source
+locator, or by the `data-diagram-name` wrapper alone in HTML written before
+2026-10-28 — and never removes dot-file receipts.
 Attachment saves and their recovery publish newly valid previews into existing
 HTML under the same writer fence, never by reconverting stale storage. Update
 plain text and invalidate persisted collaborative bytes with that presentation.
