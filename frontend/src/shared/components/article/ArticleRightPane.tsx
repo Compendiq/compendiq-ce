@@ -1544,6 +1544,18 @@ export function ArticleRightPane({
                         <span className="truncate">Pull from Confluence…</span>
                       </button>
                     )}
+                    {/* #1882: the rail has no Details sentence beside it, so the
+                        reason the two items below are refused is said first —
+                        seen before focus reaches them — and names only those
+                        items (Auto-tag has its own gate). */}
+                    {(reembedBlocked || requalityBlocked) && (
+                      <p id={railPolicyReasonId} className="px-2.5 pb-1.5 pt-1 text-xs text-muted-foreground" data-testid="article-rail-policy-reason">
+                        {policyBlockReasonText}.{' '}
+                        {reembedBlocked && requalityBlocked
+                          ? 'Re-embed for search and Re-check quality are unavailable.'
+                          : `${reembedBlocked ? 'Re-embed for search' : 'Re-check quality'} is unavailable.`}
+                      </p>
+                    )}
                     <button
                       onClick={() => { if (!reembedBlocked) handleReembed(); }}
                       disabled={reembedMutation.isPending}
@@ -1578,17 +1590,6 @@ export function ArticleRightPane({
                       )}
                       <span className="truncate">Re-check quality</span>
                     </button>
-                    {/* #1882: the rail has no Details sentence beside it, so the
-                        reason the two items above are refused is said here, and
-                        names only those items (Auto-tag has its own gate). */}
-                    {(reembedBlocked || requalityBlocked) && (
-                      <p id={railPolicyReasonId} className="px-2.5 pb-1.5 pt-1 text-xs text-muted-foreground" data-testid="article-rail-policy-reason">
-                        {policyBlockReasonText}.{' '}
-                        {reembedBlocked && requalityBlocked
-                          ? 'Re-embed for search and Re-check quality are unavailable.'
-                          : `${reembedBlocked ? 'Re-embed for search' : 'Re-check quality'} is unavailable.`}
-                      </p>
-                    )}
         </div>
       )}
 

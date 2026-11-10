@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accent. Re-index and Re-check quality stay focusable but unavailable while the
   server reports their stage as policy-blocked, and they point to the policy
   reason instead of answering "Nothing to re-embed." The tag editor's
-  reserved-label note and the provider editor's help text now meet the 13px floor.
+  reserved-label note, the provider editor's help text and the inspector's
+  collapsed-rail menu headings now meet the 13px floor.
 - **Refresh recovery (#1800):** keep authentication after an unusable successful
   refresh and prevent query retries, polling, remounts and presence/collaboration
   reconnects from repeating a possibly committed rotation. Marked busy responses

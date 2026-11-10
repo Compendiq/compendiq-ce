@@ -231,7 +231,9 @@ describe('ProviderListSection', () => {
     ]);
     const time = lines[0]!.querySelector('time')!;
     expect(time.getAttribute('dateTime')).toBe(at);
-    expect(time.getAttribute('title')).toBe(new Date(at).toLocaleString());
+    // The exact time of day lives in the title, beyond the visible date.
+    expect(time.getAttribute('title')).toMatch(/\d{1,2}:\d{2}/);
+    expect(time.getAttribute('title')).not.toBe(formatDateStamp(at));
     expect(document.body.textContent).not.toContain(uuid);
     expect(document.body.textContent).not.toContain(at);
   });

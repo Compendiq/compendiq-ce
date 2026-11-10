@@ -961,6 +961,8 @@ describe('ArticleRightPane', () => {
         const item = screen.getByTestId(testId);
         expect(item).toHaveAttribute('aria-disabled', 'true');
         expect(item).toHaveAccessibleDescription(note.textContent!);
+        // Read before the refused item, not discovered after tabbing past it.
+        expect(note.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         fireEvent.click(item);
       }
       expect(mockReembedPage).not.toHaveBeenCalled();
