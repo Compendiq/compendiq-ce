@@ -42,12 +42,14 @@ export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
 /**
- * Cap of the retry of a last-writer release that its page's own pending
- * collaborative Save deferred (#1763). The first retry waits
- * `COLLAB_DEFERRED_RELEASE_RETRY_MS` (1 s), read per arm so a test can
- * lengthen it, and each further one doubles.
+ * Delay before retry `attempt` (from 0) of a last-writer release that its
+ * page's own pending collaborative Save deferred (#1763): 1 s
+ * (`COLLAB_DEFERRED_RELEASE_RETRY_MS`, read per call so a test can change it),
+ * doubling, capped at 30 s.
  */
-const DEFERRED_RELEASE_CAP_MS = 30_000;
+export function deferredReleaseDelayMs(attempt: number): number {
+  return Math.min(vitestIntOr('COLLAB_DEFERRED_RELEASE_RETRY_MS', 1_000) * 2 ** attempt, 30_000);
+}
 /** Rounds allowed for the owner set to hold still before a read is refused. */
 const OWNER_CORRELATION_ATTEMPTS = 3;
 
@@ -702,10 +704,7 @@ export async function createCollabRuntime(
 
   function deferRelease(room: CollabRoom): void {
     if (room.deferredRelease) return;
-    const delayMs = Math.min(
-      vitestIntOr('COLLAB_DEFERRED_RELEASE_RETRY_MS', 1_000) * 2 ** room.deferredReleaseAttempts,
-      DEFERRED_RELEASE_CAP_MS,
-    );
+    const delayMs = deferredReleaseDelayMs(room.deferredReleaseAttempts);
     room.deferredReleaseAttempts += 1;
     logger.info({ pageId: room.pageId, retryInMs: delayMs }, 'collab.release_deferred');
     room.deferredRelease = setTimeout(() => {
@@ -731,16 +730,21 @@ export async function createCollabRuntime(
   /**
    * A `pages_version` control follows only a settled commit. Resume what that
    * commit's pending intent deferred now, not at the next backoff tick
-   * (#1763). An outstanding deferral includes a retry that is running right
-   * now; this one then queues behind it on the room's ownership chain.
+   * (#1763): an outstanding last-writer release, which queues behind a retry
+   * that is running right now, and, while a writer is connected (again), the
+   * persist of the edits typed during the Save. Without a writer the release
+   * flushes them.
    */
   function resumeAfterCommit(room: CollabRoom): void {
     if (room.deferredReleaseAttempts > 0) {
       cancelDeferredRelease(room);
       void retryDeferredRelease(room);
-      return;
     }
-    if (room.admission && isCollabCommitPending(room.persistError)) {
+    if (
+      room.admission
+      && isCollabCommitPending(room.persistError)
+      && [...room.sockets.values()].some((socket) => socket.writable)
+    ) {
       // `enqueuePersist` logs the outcome of this flush.
       void persist.flushCollabPersist(room).catch(() => undefined);
     }
@@ -1321,6 +1325,11 @@ export async function createCollabRuntime(
         }
       } else {
         await releaseAdmissionIfNoWriters(room);
+        // A flush that waits for the page's own pending Save keeps the
+        // admission without throwing; the heap is going away all the same.
+        if (room.admission) {
+          logger.warn({ err: room.persistError, pageId: room.pageId }, 'collab: room close retained durable admission');
+        }
       }
     } catch (err) {
       // The heap is going away regardless (shutdown, tombstone, or reset).

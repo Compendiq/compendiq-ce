@@ -186,12 +186,17 @@ reserving. Only the room's persists wait: the 2 s snapshot and the last-writer
 flush answer `collab_commit_pending`, because a `body_html` write would advance
 `content_revision` under the intent and fail its completion after Confluence
 accepted the page. The `pages_version` control that follows a successful commit
-resumes a waiting persist and a deferred last-writer release at once on every
-pod; a cancelled Save, or one settled by recovery, is picked up by a retry that
-starts at 1 s and doubles to 30 s. Any other pending page write, a stale
-lifecycle or admission, and a fenced runtime still close a writable socket with
-`1001 collab_validation_unavailable`, and that refused frame is not requested
-again (#1928). No close code or control frame is added.
+resumes both at once on every pod: a waiting persist while a writer is
+connected, and a deferred last-writer release. Without that control (a
+cancelled Save, or one settled by recovery) a waiting persist runs again on the
+next edit or the last-writer flush, and a deferred release retries from 1 s,
+doubling to 30 s. A Save whose Confluence write failed after dispatch stays
+pending as an unknown outcome until it is reconciled, and the room's edits stay
+unpersisted until then (see the immutable-page baselines runbook and #1934).
+Any other pending page write, a stale lifecycle or admission, and a fenced
+runtime still close a writable socket with `1001 collab_validation_unavailable`,
+and that refused frame is not requested again (#1928). No close code or control
+frame is added.
 
 ## Neighborhoods
 

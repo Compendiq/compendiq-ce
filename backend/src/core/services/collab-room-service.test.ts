@@ -28,6 +28,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import {
   createCollabRuntime,
   collabDocChannel,
+  deferredReleaseDelayMs,
   COLLAB_ACTIVE_TTL_SEC,
   COLLAB_EMPTY_ROOM_GRACE_MS,
   COLLAB_READONLY_DROP_LIMIT,
@@ -45,6 +46,7 @@ import {
   withPageWriteTransaction,
 } from './page-write-admission.js';
 import { yDocToHtml } from './collab-schema.js';
+import { logger } from '../utils/logger.js';
 import type * as PageBaselineServiceModule from './page-baseline-service.js';
 import type * as PageBaselineGovernanceModule from './page-baseline-governance.js';
 
@@ -1803,6 +1805,11 @@ describe.skipIf(!canRun)('own collaborative Save window (#1763)', () => {
     return admissions.rows.map((row) => row.purpose);
   }
 
+  async function storedBodyHtml(pageId: number): Promise<string> {
+    const page = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+    return page.rows[0]!.body_html;
+  }
+
   function updateFrame(text: string): Uint8Array {
     const draft = new Y.Doc();
     appendParagraph(draft, text);
@@ -1963,6 +1970,50 @@ describe.skipIf(!canRun)('own collaborative Save window (#1763)', () => {
     }
   });
 
+  it('the commit\'s cue writes the edits a deferred release holds once a writer has rejoined', async () => {
+    const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+    // A 60 s backoff keeps the deferral outstanding until the cue.
+    process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = '60000';
+    try {
+      const pageId = nextPageId();
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      const commit = await reserveOwnCollabCommit(pageId);
+      let settled = false;
+      try {
+        expect(await runtimeA!.handleInboundFrame(pageId, 'a1', updateFrame('TYPED_BEFORE_REJOIN'))).toBe('ok');
+        await runtimeA!.detachSocket(pageId, 'a1');
+        const room = runtimeA!.getRoom(pageId)!;
+        expect(room.deferredReleaseAttempts).toBe(1);
+        await runtimeA!.attachSocket(pageId, { id: 'a2', ws: stubWs(), userId: USER_A, writable: true });
+        await cancelPageWriteIntentBeforeEffect(commit);
+        settled = true;
+        runtimeA!.broadcastControl(pageId, { type: 'pages_version', version: 2 });
+        // No later edit and no leave: only the cue can write the edit now.
+        await vi.waitFor(async () => {
+          expect(await storedBodyHtml(pageId)).toContain('TYPED_BEFORE_REJOIN');
+        }, { timeout: 3_000 });
+        expect(await activePurposes(pageId)).toEqual(['collab_room']);
+      } finally {
+        if (!settled) await cancelPageWriteIntentBeforeEffect(commit);
+      }
+    } finally {
+      if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+    }
+  });
+
+  it('backs a deferred release off from 1 s, doubling to a 30 s cap', () => {
+    const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+    delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+    try {
+      expect([0, 1, 2, 3, 4, 5, 6, 20].map((attempt) => deferredReleaseDelayMs(attempt)))
+        .toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+    } finally {
+      if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+    }
+  });
+
   it('a foreign pending write at the last-writer release keeps the admission without a retry', async () => {
     const pageId = nextPageId();
     await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
@@ -2022,6 +2073,64 @@ describe.skipIf(!canRun)('own collaborative Save window (#1763)', () => {
       }
     } finally {
       await releasePageRuntime(room);
+    }
+  });
+
+  it('a collaborative commit that also covers another page is not the page\'s own', async () => {
+    const pageId = nextPageId();
+    const otherPageId = nextPageId();
+    const room = await admitPageRuntime(pageId, USER_A, 'collab_room');
+    try {
+      const wider = await reservePageWriteIntent({
+        pageIds: [pageId, otherPageId],
+        kind: 'collab.commit.confluence',
+        actorId: USER_A,
+        effect: {
+          effectClass: 'remote',
+          pageId,
+          confluenceId: `cf-${pageId}`,
+          expectedRemoteVersion: '4',
+          intendedStateDigest: 'a'.repeat(64),
+        },
+      });
+      try {
+        for (const ownCollabCommit of ['proceed', 'defer'] as const) {
+          await expect(withPageWriteTransaction([pageId], async () => 'written', {
+            admission: room, ownCollabCommit,
+          })).rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+        }
+        await expect(admitPageRuntime(pageId, USER_B, 'collab_room'))
+          .rejects.toMatchObject({ statusCode: 409, reason: 'page_write_busy' });
+      } finally {
+        await cancelPageWriteIntentBeforeEffect(wider);
+      }
+    } finally {
+      await releasePageRuntime(room);
+    }
+  });
+
+  it('shutdown during its own pending Save keeps the room admission and logs that it did', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+    const room = runtimeA!.getRoom(pageId)!;
+    const admission = room.admission!;
+    const commit = await reserveOwnCollabCommit(pageId);
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      await runtimeA!.detachSocket(pageId, 'a1');
+      expect(room.deferredReleaseAttempts).toBe(1);
+      await runtimeA!.close();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ pageId }),
+        'collab: room close retained durable admission',
+      );
+      expect(room.deferredRelease).toBeNull();
+      expect(await activePurposes(pageId)).toEqual(['collab_room']);
+    } finally {
+      warn.mockRestore();
+      await cancelPageWriteIntentBeforeEffect(commit);
+      // Shutdown retained this admission on purpose; retire the known token.
+      await releasePageRuntime(admission);
     }
   });
 });

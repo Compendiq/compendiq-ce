@@ -34,9 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or your own Save waited for Confluence, typing closed the socket
   (`1001 collab_validation_unavailable`), rejoins failed until the Save
   finished, and that typing never reached the server. Edits now keep flowing
-  live on every pod during the Save and are saved right after it. When the last
-  editor leaves during a Save, the room's admission is released once the Save
-  settles instead of answering other writers `409 collab_session_active`.
+  live on every pod during the Save and are saved as soon as it succeeds.
+  When the last editor leaves during a Save, the room's admission is released
+  once the Save settles instead of answering other writers
+  `409 collab_session_active`.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the

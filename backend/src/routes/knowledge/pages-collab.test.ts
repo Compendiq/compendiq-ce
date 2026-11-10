@@ -54,7 +54,7 @@ import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import { isCollabCommitPending, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
 const dbAvailable = await isDbAvailable();
@@ -2194,11 +2194,13 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       try {
         await put.started;
         typeInSaveWindow(b, 'CO_EDITOR_DURING_SAVE');
-        await Promise.race([b.closed, a.sees('CO_EDITOR_DURING_SAVE')]);
+        const coEditorSeen = await Promise.race([b.closed.then(() => false), a.sees('CO_EDITOR_DURING_SAVE')]);
         expect(b.closeInfo).toBeNull();
+        expect(coEditorSeen).toBe(true);
         typeInSaveWindow(a, 'SAVER_DURING_OWN_SAVE');
-        await Promise.race([a.closed, b.sees('SAVER_DURING_OWN_SAVE')]);
+        const saverSeen = await Promise.race([a.closed.then(() => false), b.sees('SAVER_DURING_OWN_SAVE')]);
         expect(a.closeInfo).toBeNull();
+        expect(saverSeen).toBe(true);
 
         put.release();
         const saved = await save;
@@ -2218,7 +2220,7 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
       }
     });
 
-    it('the room persist waits for its own pending Save, which then completes (#1763)', async () => {
+    it('the room persist waits for its own pending Save, and the commit\'s cue then writes it (#1763)', async () => {
       const { saver, pageId, confluenceId } = await seedSaveWindowPage();
       const a = await joinSaveWindowClient(pageId, saver.token);
       const contentRevision = async (): Promise<string> => (await query<{ revision: string }>(
@@ -2240,6 +2242,16 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         await vi.waitFor(() => {
           expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_DURING_SAVE');
         });
+        expect(await contentRevision()).toBe(before);
+        // Let this edit's own debounced persist run inside the window too. It
+        // waits and nothing re-arms it, so once the Save settles only the
+        // commit's `pages_version` cue can write it: no later edit, no leave.
+        const forced = room.persistError;
+        await vi.waitFor(() => {
+          expect(room.persistTimer).toBeNull();
+          expect(room.persistError).not.toBe(forced);
+          expect(isCollabCommitPending(room.persistError)).toBe(true);
+        }, { timeout: persist.COLLAB_PERSIST_DEBOUNCE_MS + 3_000 });
         expect(await contentRevision()).toBe(before);
 
         put.release();
@@ -2375,8 +2387,9 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
           try {
             await put.started;
             typeInSaveWindow(b, `CO_EDITOR_${round}`);
-            await Promise.race([b.closed, a.sees(`CO_EDITOR_${round}`)]);
+            const seen = await Promise.race([b.closed.then(() => false), a.sees(`CO_EDITOR_${round}`)]);
             expect(b.closeInfo).toBeNull();
+            expect(seen).toBe(true);
           } finally {
             put.release();
             await save;
