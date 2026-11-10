@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason instead of answering "Nothing to re-embed." The tag editor's
   reserved-label note, the provider editor's help text and the inspector's
   collapsed-rail menu headings now meet the 13px floor.
+- **Confluence attachment and version lists no longer truncate capped pages
+  (#1777):** `getPageAttachments` and `getPageVersions` now page the way every
+  other Confluence listing has since #903 — they follow `_links.next` and advance
+  `start` by the number of results each response actually returned. A server
+  that answers with fewer than the requested 100 (e.g. 25 per response) used
+  to cut a page's attachment list after the first response, so sync skipped
+  the images and diagrams missing from it, and made the version list jump
+  past the rest of each window, so the Version History import lost versions.
+  A full page without a `next` link is now the last one (no extra request);
+  an empty page still ends the loop and the version list keeps its
+  1000-request cap.
 - **Arm answers survive token expiry (#1824):** `run-arm-answers.ts` signs a
   fresh access token per question instead of one before the run, so a run
   longer than `ACCESS_TOKEN_EXPIRY` completes and writes its artifacts; the

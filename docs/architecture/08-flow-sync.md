@@ -321,6 +321,32 @@ window — never a live orphan. The bulk path applies the same shape per batch
 (intent for all candidates up front, per-page restore for upstream failures,
 one cleanup transaction for the upstream-deleted set).
 
+## Listing pagination (#903, #1777)
+
+Every multi-page Confluence listing in `confluence-client.ts` pages the same
+way: spaces (`getAllSpaces`), the audit log (`getAuditRecords`), the
+incremental CQL search (`getModifiedPages`), child pages (`getAllChildPages`),
+a space's pages and page ids (`getAllPagesInSpace`, `getAllPageIds`), a page's
+attachments (`getPageAttachments`) and its version list (`getPageVersions`).
+Each one requests a `limit`, continues **only while the response carries
+`_links.next`**, and advances `start` by the number of results that response
+actually returned. Confluence DC may answer with fewer results than the
+requested `limit` while more remain (a server-side page-size cap, permission
+filtering), so a short page is not the end and the requested `limit` is not
+the next offset. Before #1777 the attachment list still stopped at the first
+short page — a server capping responses at 25 cut a page's attachments to the
+first 25, and sync then skipped every image or diagram whose attachment was not
+in that list — and the version list advanced by the requested 100, so after a
+short page it jumped to the next window and the Version History import lost
+the versions in between.
+
+A response without `_links.next` is the last page even when it is full, so no
+extra request probes past it. An empty page also ends the loop (the guard
+against a `next` link that never advances), and `getPageVersions` keeps its
+1000-request cap for a `next` link that never ends. Whether the version
+endpoint caps its page size in practice has not been verified against a real
+instance; the rule is correct either way.
+
 ## Version history backfill (#722/#724)
 
 Confluence version metadata (edit time, author, commit message) is not fetched
@@ -334,7 +360,9 @@ serves for the version list — on DC, `/rest/api/content/{id}/version` has no G
 collection (only DELETE of a single version), which used to 404 every backfill and
 collapse the dialog to just the current version (#780). A 404/405 on the
 experimental path falls back to the Cloud-style stable path for forward
-compatibility; whichever path answers is reused for the remaining pagination pages. The historical body (`body_html`) for each old version is fetched even
+compatibility; whichever path answers is reused for the remaining pagination pages,
+which follow `_links.next` and advance by the number of versions each page
+returned (see [Listing pagination](#listing-pagination-903-1777)). The historical body (`body_html`) for each old version is fetched even
 more lazily — only when a user previews or compares that specific version
 (`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
 `body_html IS NULL`). Both calls are best-effort: failures never fail the request,
