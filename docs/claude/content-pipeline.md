@@ -251,3 +251,20 @@ The MCP cache-width regression is mandatory in the sidecar test suite and uses
 real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
 PR Check sidecar job provisions Redis and sets this explicitly. Missing
 configuration fails the suite rather than skipping the regression.
+
+`search_web` accepts a `query` of at most 200 characters and 30
+whitespace-separated words — a data-leakage control (`MAX_QUERY_LENGTH` /
+`MAX_WORD_COUNT` in `mcp-docs/src/security/query-sanitizer.ts`; the tool
+schema's `max(200)` in `mcp-docs/src/index.ts`). The public LLM contract
+enforces the same bounds up front: `searchQuery` on the
+ask/generate/improve/summarize request schemas is `WebSearchQuerySchema`
+(`trim().min(1).max(WEB_SEARCH_QUERY_MAX_CHARS)` plus a
+`WEB_SEARCH_QUERY_MAX_WORDS` refine) in `@compendiq/contracts`, so an
+over-long or blank query is a `400 ValidationError` at the API boundary
+instead of a silently empty search. The backend never truncates an explicit
+`searchQuery`; only the derived default queries are sliced to 200 characters.
+The sidecar does not depend on contracts, so both sides are pinned with
+literal tests — `packages/contracts/src/schemas/llm.test.ts`,
+`mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
+in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
+(#1767).

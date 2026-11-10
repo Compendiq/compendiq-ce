@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed value and shows the server's reason inline (previously a toast), and
   an unreadable settings response shows a Retry notice instead of a
   fabricated 90-day value.
+- **Web-search query limit enforced at the API (#1767):** `searchQuery` on
+  `POST /api/llm/ask|generate|improve|summarize` now accepts at most 200
+  characters and 30 words (trimmed, non-empty) — the limits the mcp-docs
+  `search_web` tool already enforced. Longer, over-worded or blank queries are
+  rejected with `400 ValidationError` naming `searchQuery` instead of being
+  accepted and then silently yielding no web sources. **Breaking for direct
+  API callers** that sent 201–500-character queries (the contract previously
+  allowed 500); the web UI only sends `searchWeb: true` and is unaffected.
+  Derived default queries are unchanged.
 
 ### Fixed
 
