@@ -191,12 +191,15 @@ an access denial discards them until a successful authorized read.
 5. Save with `Ctrl+S`.
 
 While you write, a new page's title, space, location and text are kept in this
-browser for your account. If you leave or reload before **Create Page**,
-opening **New Page** again asks **Restore draft?**: **Restore draft** brings
-them back; **Start blank** (or Escape) opens an empty form without deleting
-anything, and your first edit there replaces the whole kept draft. **Cancel**
-on a form with content asks **Discard changes?** first. Creating the page,
-discarding it, or signing out deletes the kept draft.
+browser for your account, about two seconds after each change; a reload or a
+closed tab within those seconds can lose the last change. If you leave or
+reload before **Create Page** and the kept draft has a title or text, opening
+**New Page** again asks **Restore draft?** (a space or location alone is not
+offered): **Restore draft** brings it back; **Start blank** (or Escape) opens
+an empty form without deleting anything, and your first edit there replaces
+the whole kept draft. **Cancel** on a form with content asks **Discard
+changes?** first. Creating the page, discarding it, or signing out deletes the
+kept draft.
 
 You can also start a page from a template (Meeting Notes, Incident Report, How-to Guide, ADR, Runbook, Cornell Notes, plus any templates you or an admin created) via the **Use Template** button on the New Page screen. Shared templates and your own templates are listed separately. If the editor already has content, **Save current as template** stores it as a personal template (admins can tick **Share with everyone**).
 
