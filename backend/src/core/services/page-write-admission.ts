@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
@@ -324,13 +325,14 @@ export type PageWriteIntentReconciler = (
       proof: PageWriteReconciliationProof;
       result: unknown;
       /**
-       * Side effects that must only become visible once the recovery
-       * transaction has COMMITTED (e.g. `policy_changed` events for a policy
-       * row the verifier moved). Invoked exactly once by
+       * A side effect that must only become visible once the recovery
+       * transaction has COMMITTED (e.g. the collaborative-room tombstone of a
+       * recovered delete: 4404 is permanent). Awaited exactly once by
        * `reconcilePageWriteIntent` after the settlement is durable; never
        * invoked when the transaction rolls back or the settlement is refused.
+       * It cannot undo the settlement, so its failure is logged, not rethrown.
        */
-      afterCommit?: () => void;
+      afterCommit?: () => void | Promise<void>;
     }
   | {
       outcome: 'repair_required';
@@ -2134,6 +2136,26 @@ export async function fencePageWriterRuntime(
 }
 
 /**
+ * Run a reconciler's post-commit side effect. The settlement is already
+ * durable, so — like the delete routes' per-id `Promise.allSettled` — a failure
+ * must neither skip the rest of the publication nor report a settled intent as
+ * a failed recovery.
+ */
+async function runAfterSettlement(
+  intentId: string,
+  afterCommit: (() => void | Promise<void>) | undefined,
+): Promise<void> {
+  if (!afterCommit) return;
+  const [outcome] = await Promise.allSettled([Promise.resolve().then(afterCommit)]);
+  if (outcome.status === 'rejected') {
+    logger.warn(
+      { err: outcome.reason, intentId },
+      'page-write recovery: a post-settlement side effect failed after the intent settled',
+    );
+  }
+}
+
+/**
  * Reconcile an unknown I/O outcome after the original runtime has a
  * server-proven fence. The proof comes only from trusted server code registered
  * for the closed intent kind; HTTP callers can supply neither a verifier nor a
@@ -2539,8 +2561,8 @@ export async function reconcilePageWriteIntent(
     const inspected = await verifyAndSettle(recoveryToken);
     if (inspected.kind === 'settled') {
       // `inTransaction` has resolved: the settlement is COMMITTED. Only now
-      // may the verifier's deferred side effects (policy events) fire.
-      inspected.afterCommit?.();
+      // may the verifier's deferred side effect run.
+      await runAfterSettlement(recoveryToken.id, inspected.afterCommit);
       localIntentEffects.delete(recoveryToken.id);
       localIntentRecoveryModes.delete(recoveryToken.id);
       localIntentFailedRemotePhases.delete(recoveryToken.id);
@@ -2578,7 +2600,7 @@ export async function reconcilePageWriteIntent(
         'The trusted repair did not produce an exactly verifiable terminal state',
       );
     }
-    repaired.afterCommit?.();
+    await runAfterSettlement(recoveryToken.id, repaired.afterCommit);
     localIntentEffects.delete(recoveryToken.id);
     localIntentRecoveryModes.delete(recoveryToken.id);
     localIntentFailedRemotePhases.delete(recoveryToken.id);

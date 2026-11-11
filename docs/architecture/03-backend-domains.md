@@ -117,22 +117,20 @@ runs on the transaction it already holds:
   and is accepted untouched; an exact match that is *looser* is tightened
   to `initialPolicy` through `applyAiPolicyOnClient` (attributed to the
   creator, with the canonical label stored and the derived purge/re-queue
-  in the same transaction). The change records are handed back via
-  `onPolicyChanges`; `POST /pages` emits them after its publication
-  transaction has committed and the create reconciler returns them as
-  `afterCommit`. This closes the sync-first window at publication and at
-  recovery; the window itself (sync between remote acknowledgement and
-  local publication) is not otherwise prevented.
+  in the same transaction). Events (`policy_changed`) are returned as `changes` and
+  emitted only after COMMIT; the remote-delete reconciler returns an `afterCommit`
+  side effect to close collaborative rooms.
 - **Lock order**: runtime epoch → hierarchy → per-page lifecycle →
   `lockAiPolicyForPages` (advisory `AI_POLICY_LOCK_NAMESPACE`, ids ascending)
   → `pages` row `FOR UPDATE`. Callers that lock the row themselves
   (`loadAuthorizedContentWriteState`) take the policy lock first.
 - **Events** (`policy_changed`) are returned as `changes` and emitted only
   after COMMIT. A reconciler's applied/not-applied result may carry an
-  `afterCommit` closure; `reconcilePageWriteIntent` invokes it strictly
-  after its settlement transaction resolves and never on rollback — the
-  `page.labels` reconciler uses it to emit its records (no polling of the
-  intent row). An explicit re-assertion of the same `all`/`local_only`
+  `afterCommit` side effect; `reconcilePageWriteIntent` awaits it strictly
+  after its settlement transaction resolves, never on rollback, and logs a
+  failure instead of failing the already-settled recovery (the remote-delete
+  reconciler closes collaborative rooms this way). An explicit
+  re-assertion of the same `all`/`local_only`
   policy bumps the revision and emits, but re-queues no derived work; only
   a real move re-queues, and `none` always purges.
   An undispatched label intent is settled by restoring `priorLabels` only;

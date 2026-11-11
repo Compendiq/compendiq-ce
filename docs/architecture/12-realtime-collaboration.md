@@ -319,6 +319,14 @@ closed, see the runbook). A flush that waits for the page's own pending
 collaborative Save is retried after it (see *While the page's own collaborative
 Save is pending*).
 
+A committed hide/delete closes the page's rooms with **4404**
+`committed_delete` on every pod (`collab-tombstone.ts`: local close, then a
+Redis `tombstone` message). Intent recovery converges on the same close: a
+recovered Confluence delete tombstones after its settlement COMMIT, never inside
+it (a writable room's final flush takes the page lifecycle lock that
+transaction holds); an undispatched one restores `deleted_at` and closes
+nothing.
+
 ## Feature flag
 
 `admin_settings.collab_editing_enabled`, `'0'` / `'1'`, default `'0'`

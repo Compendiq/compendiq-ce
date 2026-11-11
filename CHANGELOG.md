@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded as a media commit. The Save now marks the uploaded images in the
   open editors and in the saved collaborative state, without reloading the
   editor; a following text-only Save uploads nothing.
+- **Remote-delete recovery closes collaborative rooms (#1780):** when an admin
+  recovers a crashed Confluence or bulk-remote delete, open collaborative
+  editors are now closed with 4404 `committed_delete` on every pod after the
+  recovery settles. An undispatched delete restores the page and keeps its
+  rooms open.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
