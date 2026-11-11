@@ -99,4 +99,59 @@ describe('Editor collaboration wiring', () => {
     expect(caret?.options.provider).toBe(provider);
     expect(caret?.options.user).toMatchObject({ name: 'Ada', color: '#5C6B8A' });
   });
+
+  it('keeps server-applied image markers through a local edit and stays editable (#1764)', async () => {
+    // The room's document: a paragraph and a pasted image without markers.
+    const server = new Y.Doc();
+    const paragraph = new Y.XmlElement('paragraph');
+    const text = new Y.XmlText();
+    text.insert(0, 'image');
+    paragraph.insert(0, [text]);
+    const image = new Y.XmlElement('image');
+    image.setAttribute('src', '/api/attachments/local-src/x.png');
+    server.getXmlFragment('default').insert(0, [paragraph, image]);
+    const ydoc = new Y.Doc();
+    Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(server), 'provider');
+    let editor: EditorType | null = null;
+    render(
+      <Editor
+        ydoc={ydoc}
+        collabProvider={stubProvider(ydoc)}
+        caretUser={{ name: 'Ada', color: '#5C6B8A' }}
+        editable
+        onEditorReady={(e) => {
+          editor = e;
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(editor?.getHTML()).toContain('/api/attachments/local-src/x.png');
+    });
+
+    // A Save marks the uploaded image in place on the server; the editor receives that update.
+    const known = Y.encodeStateVector(ydoc);
+    server.transact(() => {
+      image.setAttribute('data-confluence-filename', 'x.png');
+      image.setAttribute('data-confluence-image-source', 'attachment');
+    });
+    Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(server, known), 'provider');
+    await waitFor(() => {
+      expect(editor!.getHTML()).toContain('data-confluence-filename="x.png"');
+    });
+    expect(editor!.getHTML()).toContain('data-confluence-image-source="attachment"');
+    expect(editor!.isEditable).toBe(true);
+
+    // The next local edit must not strip them from the shared document.
+    editor!.commands.insertContentAt(editor!.state.doc.content.size, '<p>LOCAL_EDIT</p>');
+    await waitFor(() => {
+      expect(editor!.getHTML()).toContain('LOCAL_EDIT');
+    });
+    const sharedImage = ydoc.getXmlFragment('default').toArray()
+      .find((node): node is Y.XmlElement => node instanceof Y.XmlElement && node.nodeName === 'image');
+    expect(sharedImage?.getAttributes()).toEqual({
+      src: '/api/attachments/local-src/x.png',
+      'data-confluence-filename': 'x.png',
+      'data-confluence-image-source': 'attachment',
+    });
+  });
 });

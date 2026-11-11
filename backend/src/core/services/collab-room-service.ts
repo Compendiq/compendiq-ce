@@ -28,18 +28,28 @@ import { onReconnect, subscribe } from './redis-cache-bus.js';
 import {
   admitPageRuntime,
   deferPageRequestAdmissionRelease,
+  isCollabCommitPending,
   PageWriteError,
   releasePageRuntime,
   withPageWriteTransaction,
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
-import { yDocToHtml } from './collab-schema.js';
+import { markAttachmentImages, yDocToHtml, type AttachmentImageMarker } from './collab-schema.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
+/**
+ * Delay before retry `attempt` (from 0) of a last-writer release that its
+ * page's own pending collaborative Save deferred (#1763): 1 s
+ * (`COLLAB_DEFERRED_RELEASE_RETRY_MS`, read per call so a test can change it),
+ * doubling, capped at 30 s.
+ */
+export function deferredReleaseDelayMs(attempt: number): number {
+  return Math.min(vitestIntOr('COLLAB_DEFERRED_RELEASE_RETRY_MS', 1_000) * 2 ** attempt, 30_000);
+}
 /** Rounds allowed for the owner set to hold still before a read is refused. */
 const OWNER_CORRELATION_ATTEMPTS = 3;
 
@@ -54,6 +64,12 @@ export const MESSAGE_CONTROL = 4;
 const SYNC_STEP1 = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
+/**
+ * Origin of the post-commit image-marker transaction (#1764). Not a connection
+ * id, so `doc.on('update')` persists it, publishes it once as `sync` and sends
+ * it to every socket; peers apply that `sync` as `'redis'` and never echo it.
+ */
+export const COLLAB_IMAGE_MARKER_ORIGIN = Symbol('collab-image-markers');
 
 export type CollabControl =
   | { type: 'pages_version'; version: number }
@@ -76,7 +92,8 @@ export type CollabBusKind =
   | 'tombstone'
   | 'freeze'
   | 'state_dump_request'
-  | 'state_dump';
+  | 'state_dump'
+  | 'image_markers';
 
 export type CollabBusMessage = {
   origin: string;
@@ -88,6 +105,7 @@ export type CollabBusMessage = {
   admission?: PageRuntimeAdmission;
   requestId?: string;
   requestedAdmissions?: string[];
+  markers?: AttachmentImageMarker[];
 };
 
 export interface CollabIdentity {
@@ -117,6 +135,10 @@ export interface CollabRoom {
   attached: boolean;
   flushing: boolean;
   emptyGrace: ReturnType<typeof setTimeout> | null;
+  /** Retry of a last-writer release that the page's own pending collaborative Save deferred (#1763). */
+  deferredRelease: ReturnType<typeof setTimeout> | null;
+  /** Above 0 while such a deferral is outstanding, including a retry that is running. */
+  deferredReleaseAttempts: number;
   persistTimer: ReturnType<typeof setTimeout> | null;
   persistChain: Promise<void>;
   persistError: unknown | null;
@@ -152,6 +174,12 @@ export interface CollabRuntime {
   tombstone: (pageId: number, code: number, reason?: string) => Promise<void>;
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
   broadcastControl: (pageId: number, control: CollabControl) => void;
+  /** After a settled Confluence commit, mark the images it uploaded in the owning room and the persisted document (#1764). */
+  markUploadedImages: (
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly AttachmentImageMarker[],
+  ) => Promise<void>;
   prepareCommitSnapshot: (
     pageId: number,
     userId: string,
@@ -255,6 +283,36 @@ function validAdmission(value: unknown): value is PageRuntimeAdmission {
     && 'pageId' in value && typeof value.pageId === 'number'
     && 'purpose' in value && value.purpose === 'collab_room'
     && 'lifecycleRevision' in value && typeof value.lifecycleRevision === 'string';
+}
+
+/** Markers from a peer's `image_markers` message; anything malformed marks nothing (#1764). */
+function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const markers: AttachmentImageMarker[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { src, filename } = entry as Record<string, unknown>;
+    if (
+      typeof src !== 'string' || !src.startsWith('/api/attachments/')
+      || typeof filename !== 'string' || filename.length === 0
+    ) return null;
+    markers.push({ src, filename });
+  }
+  return markers;
+}
+
+/**
+ * Why a best-effort image mark did not happen (#1764). A refusal by the
+ * page-write fence (the lifecycle changed, the page is frozen, another write is
+ * pending, the admission was retired) is an expected outcome that costs one
+ * more upload on the next Save; anything else is a failure.
+ */
+function logImageMarkersSkipped(error: unknown, pageId: number, step: 'room' | 'persisted'): void {
+  if (error instanceof PageWriteError) {
+    logger.info({ pageId, step, reason: error.reason }, 'collab.image_markers_refused');
+    return;
+  }
+  logger.warn({ err: error, pageId, step }, 'collab.image_markers_failed');
 }
 
 export async function createCollabRuntime(
@@ -373,7 +431,7 @@ export async function createCollabRuntime(
         await mergePersistedRoom(client, room);
         assertCurrent();
         return currentOwners;
-      }, { admission });
+      }, { admission, ownCollabCommit: 'proceed' });
       const remaining = new Set<string>();
       for (const owner of owners) {
         if (owner.id !== room.admission?.id) remaining.add(owner.id);
@@ -414,7 +472,7 @@ export async function createCollabRuntime(
         await mergePersistedRoom(client, room);
         assertCurrent();
         return { value: snapshot() };
-      }, { admission });
+      }, { admission, ownCollabCommit: 'proceed' });
       if (settled) return settled.value;
       if (attempt >= OWNER_CORRELATION_ATTEMPTS) throw unavailableSnapshot();
     }
@@ -422,7 +480,11 @@ export async function createCollabRuntime(
 
   async function refreshReaderRoom(room: CollabRoom): Promise<void> {
     if (room.isFrozen || room.demotionReason !== null) return;
-    const owners = await withPageWriteTransaction([room.pageId], (client) => roomOwners(client, room));
+    const owners = await withPageWriteTransaction(
+      [room.pageId],
+      (client) => roomOwners(client, room),
+      { ownCollabCommit: 'proceed' },
+    );
     const supportingAdmission = owners[0];
     if (supportingAdmission) await withFreshRoomState(room, supportingAdmission, () => undefined);
   }
@@ -527,7 +589,7 @@ export async function createCollabRuntime(
         Y.applyUpdate(room.doc, update, 'redis');
         forwardUpdate(room, update);
         return true;
-      }, { admission: message.admission });
+      }, { admission: message.admission, ownCollabCommit: 'proceed' });
       if (!accepted) return false;
       return true;
     } catch (err) {
@@ -549,7 +611,7 @@ export async function createCollabRuntime(
           await mergePersistedRoom(client, room);
           if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return null;
           return Y.encodeStateAsUpdate(room.doc);
-        }, { admission });
+        }, { admission, ownCollabCommit: 'proceed' });
         if (!dump || !transportAvailable()) return;
         await publish(room.pageId, {
           origin: podId, kind: 'state_dump', requestId: message.requestId,
@@ -584,6 +646,17 @@ export async function createCollabRuntime(
         }
         return;
       }
+      if (message.kind === 'image_markers') {
+        const markers = busImageMarkers(message.markers);
+        if (!markers || typeof message.lifecycleRevision !== 'string') return;
+        await room.initializing;
+        try {
+          await markRoomImages(room, message.lifecycleRevision, markers);
+        } catch (error) {
+          logImageMarkersSkipped(error, room.pageId, 'room');
+        }
+        return;
+      }
       if (message.kind === 'sync' && message.update) {
         await validateAndApplyPeerUpdate(room, message);
         return;
@@ -600,6 +673,7 @@ export async function createCollabRuntime(
         if (decoded.type === 'pages_version' && 'version' in decoded && typeof decoded.version === 'number') {
           room.pagesVersion = decoded.version;
           sendControl(room, { type: 'pages_version', version: decoded.version });
+          resumeAfterCommit(room);
         } else if (decoded.type === 'doc_reset') {
           sendControl(room, { type: 'doc_reset' });
         } else if (decoded.type === 'tombstone') {
@@ -651,7 +725,16 @@ export async function createCollabRuntime(
     if ([...room.sockets.values()].some((socket) => socket.writable)) return;
     const admission = room.admission;
     if (!admission) return;
-    await persist.flushCollabPersist(room);
+    try {
+      await persist.flushCollabPersist(room);
+    } catch (error) {
+      // The page's own pending collaborative Save fences this flush: a wait,
+      // not a failure. Keep the admission and retry once it settles (#1763).
+      // Every other failure propagates and keeps the admission (runbook).
+      if (!isCollabCommitPending(error)) throw error;
+      deferRelease(room);
+      return;
+    }
     // Socket demotion/disconnection remains immediate while a flush is in
     // flight; joins and retirement share the ownership queue.
     if (
@@ -659,12 +742,67 @@ export async function createCollabRuntime(
       || room.admission?.id !== admission.id
     ) return;
     await releasePageRuntime(admission);
+    cancelDeferredRelease(room);
     room.admission = null;
     room.persistable = false;
     room.lastWriterUserId = null;
     const held = [...room.heldActiveSuffixes];
     room.heldActiveSuffixes.clear();
     await sremSuffixes(room.pageId, held);
+  }
+
+  function cancelDeferredRelease(room: CollabRoom): void {
+    clearTimeout(room.deferredRelease ?? undefined);
+    room.deferredRelease = null;
+    room.deferredReleaseAttempts = 0;
+  }
+
+  function deferRelease(room: CollabRoom): void {
+    if (room.deferredRelease) return;
+    const delayMs = deferredReleaseDelayMs(room.deferredReleaseAttempts);
+    room.deferredReleaseAttempts += 1;
+    logger.info({ pageId: room.pageId, retryInMs: delayMs }, 'collab.release_deferred');
+    room.deferredRelease = setTimeout(() => {
+      room.deferredRelease = null;
+      void retryDeferredRelease(room);
+    }, delayMs);
+    if (typeof room.deferredRelease.unref === 'function') room.deferredRelease.unref();
+  }
+
+  function retryDeferredRelease(room: CollabRoom): Promise<void> {
+    return withRoomOwnership(room.pageId, async () => {
+      await releaseAdmissionIfNoWriters(room);
+      if (room.deferredRelease) return;
+      room.deferredReleaseAttempts = 0;
+      if (!room.admission && room.sockets.size === 0) await dropRoomOwned(room.pageId, room);
+    }).catch((error: unknown) => {
+      // A non-transient failure stops the retries and keeps the admission.
+      room.deferredReleaseAttempts = 0;
+      logger.warn({ err: error, pageId: room.pageId }, 'collab: deferred release failed; admission retained');
+    });
+  }
+
+  /**
+   * A `pages_version` control follows only a settled commit. Resume what that
+   * commit's pending intent deferred now, not at the next backoff tick
+   * (#1763): an outstanding last-writer release, which queues behind a retry
+   * that is running right now, and, while a writer is connected (again), the
+   * persist of the edits typed during the Save. Without a writer the release
+   * flushes them.
+   */
+  function resumeAfterCommit(room: CollabRoom): void {
+    if (room.deferredReleaseAttempts > 0) {
+      cancelDeferredRelease(room);
+      void retryDeferredRelease(room);
+    }
+    if (
+      room.admission
+      && isCollabCommitPending(room.persistError)
+      && [...room.sockets.values()].some((socket) => socket.writable)
+    ) {
+      // `enqueuePersist` logs the outcome of this flush.
+      void persist.flushCollabPersist(room).catch(() => undefined);
+    }
   }
 
   async function demoteSocket(pageId: number, connId: string): Promise<void> {
@@ -764,6 +902,8 @@ export async function createCollabRuntime(
       attached: false,
       flushing: false,
       emptyGrace: null,
+      deferredRelease: null,
+      deferredReleaseAttempts: 0,
       persistTimer: null,
       persistChain: Promise.resolve(),
       persistError: null,
@@ -844,7 +984,10 @@ export async function createCollabRuntime(
     if (room.admission) {
       // An unreadable admission is not an absent one. Keep ownership and
       // surface the failure rather than leaking this token behind a new one.
-      await withPageWriteTransaction([room.pageId], async () => undefined, { admission: room.admission });
+      await withPageWriteTransaction([room.pageId], async () => undefined, {
+        admission: room.admission,
+        ownCollabCommit: 'proceed',
+      });
       return expectedLifecycleRevision === undefined
         || room.admission.lifecycleRevision === expectedLifecycleRevision;
     }
@@ -965,6 +1108,74 @@ export async function createCollabRuntime(
     }
   }
 
+  /**
+   * Mark uploaded images in place in a room this pod owns at the commit's
+   * lifecycle revision, fenced like a client frame (handleInboundFrame).
+   * `doc.on('update')` persists the transaction, publishes it once as an
+   * incremental `sync` and sends it to every socket (#1764). False when this
+   * pod owns no such room.
+   */
+  async function markRoomImages(
+    room: CollabRoom,
+    lifecycleRevision: string,
+    markers: readonly AttachmentImageMarker[],
+  ): Promise<boolean> {
+    const admission = room.admission;
+    // A room without a writable admission (read-only viewers) is not an owner:
+    // it never persists, and it gets the marks with an owner's `sync` or the
+    // next time it merges the persisted document.
+    if (!admission || rooms.get(room.pageId) !== room || room.lifecycleRevision !== lifecycleRevision) {
+      return false;
+    }
+    let owned = false;
+    await withPageWriteTransaction([room.pageId], async () => {
+      // A disconnect, demotion or retirement can win the lifecycle lock first.
+      // Like a client frame, this in-memory step writes no protected row, so the
+      // page's own pending collaborative Save does not fence it (#1763).
+      if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
+      owned = true;
+      markAttachmentImages(room.doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+    }, { admission, ownCollabCommit: 'proceed' });
+    return owned;
+  }
+
+  /**
+   * After a settled Confluence commit, mark the images it uploaded (#1764): in
+   * place in the room this pod owns, else by asking the owning pods over
+   * Redis; then in the persisted document every later room starts from. Best
+   * effort: the Save has already succeeded, so a refusal is only logged and
+   * costs one more upload on the next Save.
+   */
+  async function markUploadedImages(
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly AttachmentImageMarker[],
+  ): Promise<void> {
+    if (markers.length === 0) return;
+    let inRoom = false;
+    try {
+      const room = rooms.get(pageId);
+      inRoom = room ? await markRoomImages(room, admission.lifecycleRevision, markers) : false;
+      // An owning pod applies the same transaction; its fan-out reaches every other pod.
+      if (!inRoom) {
+        await publish(pageId, {
+          origin: podId,
+          kind: 'image_markers',
+          lifecycleRevision: admission.lifecycleRevision,
+          markers: [...markers],
+        });
+      }
+    } catch (error) {
+      logImageMarkersSkipped(error, pageId, 'room');
+    }
+    try {
+      const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
+      logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
+    } catch (error) {
+      logImageMarkersSkipped(error, pageId, 'persisted');
+    }
+  }
+
   function recordReadonlyViolation(room: CollabRoom, socket: CollabSocket): CollabInboundResult {
     socket.readonlyDrops += 1;
     logger.info({ pageId: room.pageId, userId: socket.userId, connId: socket.id }, 'collab.readonly_drop');
@@ -1016,6 +1227,11 @@ export async function createCollabRuntime(
           }
           try {
             let applied = false;
+            // The page's own pending collaborative Save does not fence an
+            // in-memory apply: it publishes the snapshot it captured before
+            // reserving, and this room's persist waits for it (#1763). A foreign
+            // pending write, a stale lifecycle or admission, a fenced runtime or
+            // an unreadable fence still closes below.
             await withPageWriteTransaction([pageId], async () => {
               // Disconnect/demotion can win while this frame waits for the
               // lifecycle lock. It must not write behind their final flush.
@@ -1023,7 +1239,7 @@ export async function createCollabRuntime(
                 || !socket.writable || room.admission?.id !== admission.id) return;
               apply();
               applied = true;
-            }, { admission });
+            }, { admission, ownCollabCommit: 'proceed' });
             if (!applied) return 'dropped';
           } catch (err) {
             // A failed read is not a released token. Keep ownership until
@@ -1232,6 +1448,11 @@ export async function createCollabRuntime(
         }
       } else {
         await releaseAdmissionIfNoWriters(room);
+        // A flush that waits for the page's own pending Save keeps the
+        // admission without throwing; the heap is going away all the same.
+        if (room.admission) {
+          logger.warn({ err: room.persistError, pageId: room.pageId }, 'collab: room close retained durable admission');
+        }
       }
     } catch (err) {
       // The heap is going away regardless (shutdown, tombstone, or reset).
@@ -1240,6 +1461,7 @@ export async function createCollabRuntime(
       // the Redis subscription during teardown.
       logger.warn({ err, pageId: room.pageId }, 'collab: room close retained durable admission');
     }
+    cancelDeferredRelease(room);
     await sremSuffixes(room.pageId, room.heldActiveSuffixes);
     room.heldActiveSuffixes.clear();
     persist.endCollabReset(room.pageId);
@@ -1255,6 +1477,7 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
+    cancelDeferredRelease(room);
     await sremSuffixes(pageId, room.heldActiveSuffixes);
     persist.endCollabReset(pageId);
     room.doc.destroy();
@@ -1268,7 +1491,10 @@ export async function createCollabRuntime(
     const room = rooms.get(pageId);
     if (room) {
       sendControl(room, control);
-      if (control.type === 'pages_version') room.pagesVersion = control.version;
+      if (control.type === 'pages_version') {
+        room.pagesVersion = control.version;
+        resumeAfterCommit(room);
+      }
     }
     void publish(pageId, {
       origin: podId,
@@ -1444,6 +1670,7 @@ export async function createCollabRuntime(
     tombstone: (pageId, code, reason) => withRoomOwnership(pageId, () => tombstone(pageId, code, reason)),
     tombstoneAll,
     broadcastControl,
+    markUploadedImages,
     prepareCommitSnapshot: (pageId, userId, revision) =>
       withRoomOwnership(pageId, () => prepareCommitSnapshot(pageId, userId, revision)),
     handleLifecycleEvent: (event) =>
