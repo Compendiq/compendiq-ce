@@ -20,6 +20,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
+import * as awarenessProtocol from 'y-protocols/awareness';
 import { WebSocket as NodeWs } from 'ws';
 
 vi.mock('node:dns/promises', () => ({
@@ -36,7 +37,7 @@ import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
-import { COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
+import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
@@ -45,14 +46,17 @@ import {
   createCollabRuntime,
   getDefaultCollabRuntime,
   COLLAB_ACTIVE_TTL_SEC,
+  COLLAB_IMAGE_MARKER_ORIGIN,
   COLLAB_PING_INTERVAL_MS,
+  COLLAB_EMPTY_ROOM_GRACE_MS,
+  type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import { isCollabCommitPending, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
 const dbAvailable = await isDbAvailable();
@@ -63,6 +67,7 @@ const MESSAGE_SYNC = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
 const MESSAGE_AWARENESS = 1;
+const MESSAGE_QUERY_AWARENESS = 3;
 
 let app: FastifyInstance;
 const writableSessionRevisions = new WeakMap<object, string>();
@@ -459,6 +464,8 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened).toBe(true);
     expect(closed.code).toBe(4403);
+    // The client parses this reason before the first sync (#1895).
+    expect(closed.reason).toBe('flag_off');
   });
 
   it('missing / folder / trashed page → 4404 at join', async () => {
@@ -621,6 +628,7 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
     ws.send(update);
     const closed = await waitClose(ws);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('readonly');
   });
 });
 
@@ -727,6 +735,102 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
     const closed = await closedP;
     expect(closed.code).toBe(4404);
   });
+
+  it('admin reconcile of a crashed Confluence delete closes the open writable WebSocket 4404 committed_delete (#1780)', async () => {
+    const editor = await createUser('collab_recovered_delete');
+    const admin = await createUser('collab_recovery_admin', { admin: true });
+    const spaceKey = `RCV${Date.now()}`;
+    const confluenceId = `cf-recovered-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({ spaceKey, confluenceId });
+    await grantSpaceRead(editor.userId, spaceKey);
+    await enableCollabFlag();
+
+    const upstream = createServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://confluence.test');
+      response.setHeader('content-type', 'application/json');
+      if (url.pathname === `/rest/api/content/${confluenceId}`) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: 'Page removed' }));
+      } else {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ message: 'Unexpected Confluence request' }));
+      }
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = upstream.address();
+      if (!address || typeof address === 'string') throw new Error('Confluence HTTP fixture did not bind TCP');
+      await query(
+        'UPDATE user_settings SET confluence_url = $2, confluence_pat = $3 WHERE user_id = $1',
+        [editor.userId, `http://127.0.0.1:${address.port}`, encryptPat('disposable-pat')],
+      );
+      // The editor joined before the delete began.
+      const ws = await openWritableWhatwg(pageId, editor.token);
+      await waitOpen(ws);
+
+      // What the crashed writer left behind: the page hidden, the provider
+      // delete acknowledged, the local hard delete never committed.
+      const hidden = await query<{ content_revision: string; lifecycle_revision: string }>(
+        `UPDATE pages SET deleted_at = NOW() WHERE id = $1
+         RETURNING content_revision::text, lifecycle_revision::text`,
+        [pageId],
+      );
+      const runtimeId = `crashed-delete-writer-${pageIdEntropy()}`;
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof)
+         VALUES ($1, '{}'::jsonb, NOW(), $2, 'Known terminated original writer',
+                 '{"kind":"verified_local_termination"}')`,
+        [runtimeId, admin.userId],
+      );
+      const intentId = crypto.randomUUID();
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+            effect_started_at, effect_finished_at, remote_effect_started_at,
+            remote_effects_completed_at, remote_terminal_result)
+         VALUES ($1, $2, 'pages.delete.confluence', $3, ARRAY[$4]::int[], $5::jsonb,
+                 'remote_terminal_only', $6::jsonb, NOW(), NOW(), NOW(), NOW(), $7::jsonb)`,
+        [
+          intentId,
+          runtimeId,
+          editor.userId,
+          pageId,
+          JSON.stringify({
+            [pageId]: {
+              contentRevision: hidden.rows[0]!.content_revision,
+              lifecycleRevision: hidden.rows[0]!.lifecycle_revision,
+            },
+          }),
+          JSON.stringify({
+            effectClass: 'remote',
+            confluenceId,
+            spaceKey,
+            upstreamDelete: true,
+            attachmentStore: 'confluence',
+            iconStore: 'page-icons',
+          }),
+          JSON.stringify({ confluenceId, outcome: 'deleted' }),
+        ],
+      );
+
+      const closedP = waitClose(ws);
+      const reconciled = await app.inject({
+        method: 'POST',
+        url: `/api/admin/page-write-recovery/intents/${intentId}/reconcile`,
+        headers: { authorization: `Bearer ${admin.token}` },
+        payload: { reason: 'Finish the crashed Confluence delete and close its open editors' },
+      });
+      expect(reconciled.statusCode, reconciled.body).toBe(200);
+      expect(reconciled.json()).toEqual({ intentId, status: 'reconciled_applied' });
+      const closed = await closedP;
+      expect(closed.code).toBe(4404);
+      expect(closed.reason).toBe('committed_delete');
+      expect((await query('SELECT 1 FROM pages WHERE id = $1', [pageId])).rowCount).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
 });
 
 describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {
@@ -759,12 +863,6 @@ describe('GET /api/collab/:pageId route options (#1444)', () => {
     expect(src).toMatch(/rateLimit:\s*false/);
     expect(src).not.toMatch(/rateLimit:\s*\{\s*max:\s*UPGRADE_LIMIT_PER_MIN/);
   });
-
-  it('pending frames are capped in the WS join handler', () => {
-    const src = fs.readFileSync(fileURLToPath(new URL('./pages-collab.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/pending\.length\s*>=\s*2/);
-    expect(src).toMatch(/pending\.length = 0/);
-  });
 });
 
 describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
@@ -778,6 +876,232 @@ describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened, 'must complete 101 before refusing').toBe(true);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('rate_limited');
+  });
+
+  it('counts upgrades in a COLLAB_UPGRADE_WINDOW_SEC window, the wait the client Retry honours (#1895)', async () => {
+    const { token, userId } = await createUser('collab_rl_window');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const ws = await openAndSync(pageId, token);
+    const ttl = await getRedisClient()!.ttl(`collab:upgrade:${userId}`);
+    expect(ttl).toBeGreaterThan(COLLAB_UPGRADE_WINDOW_SEC - 5);
+    expect(ttl).toBeLessThanOrEqual(COLLAB_UPGRADE_WINDOW_SEC);
+    ws.close();
+    await waitClose(ws);
+  });
+});
+
+/** Own-clientID awareness update carrying a marker the server must keep. */
+function encodeAwarenessProbe(): { frame: Uint8Array; clientId: number } {
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awareness.setLocalState({ probe: 'pre-live' });
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+  encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, [doc.clientID]));
+  const probe = { frame: encoding.toUint8Array(encoder), clientId: doc.clientID };
+  awareness.destroy();
+  doc.destroy();
+  return probe;
+}
+
+function awarenessFrameHasProbe(frame: Uint8Array, clientId: number): boolean {
+  if (frame[0] !== MESSAGE_AWARENESS) return false;
+  const decoder = decoding.createDecoder(frame);
+  decoding.readVarUint(decoder);
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), 'test');
+  const found = awareness.getStates().get(clientId)?.probe === 'pre-live';
+  awareness.destroy();
+  doc.destroy();
+  return found;
+}
+
+describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
+  /**
+   * Holds the join inside `attachSocket` until the server has read
+   * `releaseAfter` frames, so every frame the test sends arrives before the
+   * socket goes live.
+   */
+  function holdJoinUntilFrames(releaseAfter: number) {
+    const runtime = getDefaultCollabRuntime();
+    if (!runtime) throw new Error('collab runtime is not initialised');
+    const attach = runtime.attachSocket;
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const spy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (pageId, socket) => {
+      let received = 0;
+      // Registered after the route's own listener, so the route has already
+      // buffered (or refused) each frame this counts.
+      socket.ws.on('message', () => {
+        received += 1;
+        if (received === releaseAfter) release.resolve();
+      });
+      entered.resolve();
+      await release.promise;
+      return attach(pageId, socket);
+    });
+    return {
+      entered: entered.promise,
+      release: () => release.resolve(),
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  it('keeps 3 frames sent before the join completes and applies them in order after live', async () => {
+    const { token, userId } = await createUser('collab_prelive_order');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(3);
+    try {
+      const revision = await pageLifecycleRevision(pageId);
+      const ws = openWhatwg(pageId, token, `?expectedLifecycleRevision=${encodeURIComponent(revision)}`);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // y-websocket's own pre-live traffic plus one more frame. The replies
+      // prove the order: F2's snapshot holds F1's state, and comes before
+      // F3's SyncStep2.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      ws.send(encodeSyncStep1(new Y.Doc()));
+
+      const snapshotIndex = () => frames.findIndex((frame) => awarenessFrameHasProbe(frame, probe.clientId));
+      const syncStep2Index = () => frames.findIndex((frame) => frame[0] === MESSAGE_SYNC && frame[1] === SYNC_STEP2);
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshotIndex() < 0 || syncStep2Index() < 0) {
+          throw new Error('replies to the buffered frames are pending');
+        }
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshotIndex()).toBeGreaterThanOrEqual(0);
+      expect(snapshotIndex()).toBeLessThan(syncStep2Index());
+      expect(frames.some((frame) => decodeControl(frame)?.type === 'writable_admission')).toBe(true);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  // The gateway buffers at most 64 frames and 1 MiB before live
+  // (docs/architecture/12-realtime-collaboration.md).
+  const largeFrame = new Uint8Array(600 * 1024);
+  largeFrame[0] = MESSAGE_AWARENESS;
+  const halfMiBFrame = new Uint8Array(512 * 1024);
+  halfMiBFrame[0] = MESSAGE_AWARENESS;
+
+  it.each([
+    { budget: 'frame count', frames: Array.from({ length: 65 }, () => new Uint8Array([MESSAGE_QUERY_AWARENESS])) },
+    { budget: 'byte budget', frames: [largeFrame, largeFrame] },
+    // 1 MiB + 1 byte: refused by the byte bound alone, three frames in.
+    { budget: 'one byte over 1 MiB', frames: [halfMiBFrame, halfMiBFrame, new Uint8Array([MESSAGE_QUERY_AWARENESS])] },
+  ])('closes an over-full pre-live buffer ($budget) with 1013 join_backlog, never 4403', async ({ frames }) => {
+    const { token, userId } = await createUser('collab_prelive_backlog');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(frames.length);
+    try {
+      const ws = openWhatwg(pageId, token);
+      await waitOpen(ws);
+      await join.entered;
+      for (const frame of frames) ws.send(frame);
+      const closed = await waitClose(ws, 2_000);
+      expect({ code: closed.code, reason: closed.reason }).toEqual({ code: 1013, reason: 'join_backlog' });
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  // Accept-at-the-bound pins: with the overflow rows above they fix the bound
+  // at exactly 64 frames and exactly 1 MiB.
+  it('keeps exactly 64 frames before live and applies every one of them', async () => {
+    const { token, userId } = await createUser('collab_prelive_frame_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(64);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // One awareness state, then 63 queries: each query answers with a
+      // snapshot holding that state, so 63 replies prove all 64 frames applied.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      for (let i = 0; i < 63; i++) ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      const snapshots = () => frames.filter((frame) => awarenessFrameHasProbe(frame, probe.clientId)).length;
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshots() < 63) throw new Error('replies to the buffered frames are pending');
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshots()).toBe(63);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  it('keeps exactly 1 MiB before live and stays open after replaying it', async () => {
+    const { token, userId } = await createUser('collab_prelive_byte_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(2);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      const lifecycleControl = waitControl(ws, (control) => control.type === 'page_lifecycle');
+      await waitOpen(ws);
+      await join.entered;
+
+      ws.send(halfMiBFrame);
+      ws.send(halfMiBFrame);
+      // The attach completed, then a live round trip proves the socket
+      // survived both buffered frames.
+      await lifecycleControl;
+      await exchangeSyncStep1(ws, new Y.Doc());
+
+      expect(observed.close).toBeNull();
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
   });
 });
 
@@ -1575,6 +1899,207 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     ws.close();
   });
 
+  // #1762 — the room's own debounced autosave lands while the provider read
+  // is in flight, i.e. after the route's first read and before the reservation.
+  async function typeIntoLiveRoom(ws: WebSocket, text: string): Promise<Y.Doc> {
+    const doc = new Y.Doc();
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    const paragraph = new Y.XmlElement('paragraph');
+    const typed = new Y.XmlText();
+    typed.insert(0, text);
+    paragraph.insert(0, [typed]);
+    const fragment = doc.getXmlFragment('default');
+    fragment.insert(fragment.length, [paragraph]);
+    ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+    // The reply is ordered after the update on the same socket/frame chain.
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    return doc;
+  }
+
+  async function contentRevisionOf(pageId: number): Promise<bigint> {
+    const row = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    return BigInt(row.rows[0]!.content_revision);
+  }
+
+  async function commitIntents(pageId: number): Promise<Array<{ kind: string; status: string }>> {
+    const rows = await query<{ kind: string; status: string }>(
+      `SELECT kind, status FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+      [pageId],
+    );
+    return rows.rows;
+  }
+
+  function confluenceUpdateEcho(confluenceId: string) {
+    return vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+      async (_id, title, storage) => ({
+        id: confluenceId,
+        title,
+        status: 'current',
+        type: 'page',
+        version: { number: 5, when: '2026-11-10T00:00:01Z' },
+        body: { storage: { value: storage } },
+      }) as never,
+    );
+  }
+
+  /**
+   * Save right after typing while getPage outlasts the 2 s debounce. getPage
+   * lands the pending autosave through flushCollabPersist (the same
+   * enqueuePersist → persistAndSnapshot path the debounce timer runs) instead
+   * of sleeping past the timer.
+   */
+  async function saveWhileAutosaveLands(change: 'none' | 'lifecycle' | 'remote') {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const doc = await typeIntoLiveRoom(ws, 'typed right before Save');
+    const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+    expect(room.persistTimer, 'the debounced autosave is still pending at Save').not.toBeNull();
+    const before = await contentRevisionOf(pageId);
+    let during: bigint | undefined;
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      await persist.flushCollabPersist(room);
+      during = await contentRevisionOf(pageId);
+      if (change === 'lifecycle') {
+        await query(
+          'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+          [pageId],
+        );
+      }
+      return {
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: change === 'remote' ? 7 : 4, when: '2026-11-10T00:00:00Z' },
+      } as never;
+    });
+    const updatePage = confluenceUpdateEcho(confluenceId);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: commitPayload(ws, 'Saved during autosave', Y.snapshot(doc)),
+    });
+    return { res, pageId, ws, doc, updatePage, before, during };
+  }
+
+  it('room autosave landing during a slow getPage does not refuse the Save (#1762)', async () => {
+    const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands('none');
+    try {
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: pageId,
+        version: 5,
+        source: 'confluence',
+        pushedToConfluence: true,
+      });
+      expect(during).toBeGreaterThan(before);
+      expect(updatePage).toHaveBeenCalledTimes(1);
+      expect(updatePage.mock.calls[0]![3]).toBe(4);
+      expect(String(updatePage.mock.calls[0]![2])).toContain('typed right before Save');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      ws.close();
+      doc.destroy();
+    }
+  });
+
+  it.each(['lifecycle', 'remote'] as const)(
+    'a %s change in the same autosave window still refuses before any intent (#1762)',
+    async (change) => {
+      const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands(change);
+      try {
+        expect(res.statusCode).toBe(409);
+        expect(res.json()).toMatchObject(change === 'lifecycle'
+          ? { reason: 'stale_lifecycle' }
+          : { code: 'confluence_modified', remoteVersion: 7, localVersion: 4 });
+        expect(during).toBeGreaterThan(before);
+        expect(updatePage).not.toHaveBeenCalled();
+        expect(await commitIntents(pageId)).toEqual([]);
+        const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+        expect(page.rows[0]!.version).toBe(4);
+      } finally {
+        ws.close();
+        doc.destroy();
+      }
+    },
+  );
+
+  it('peer-pod autosave landing during the commit pod getPage does not refuse the Save (#1762)', async () => {
+    const { token, userId } = await createUser(`collab_cf_peer_${pageIdEntropy()}`);
+    const spaceKey = `PP${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `cf-peer-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: 4,
+      bodyHtml: '<p>peer-seed</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await seedConfluenceCredentials(userId);
+    await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
+    const podA = await createCollabRuntime(getRedisClient()!, 'autosave-peer-pod-a');
+    try {
+      await podA.attachSocket(pageId, {
+        id: 'pod-a-writer',
+        ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+        userId,
+        writable: true,
+        expectedLifecycleRevision: editingRevision,
+      });
+      const roomA = podA.getRoom(pageId)!;
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'typed on pod A');
+      paragraph.insert(0, [typed]);
+      const fragment = roomA.doc.getXmlFragment('default');
+      fragment.insert(fragment.length, [paragraph]);
+      expect(roomA.persistTimer, 'pod A autosave is still pending at Save').not.toBeNull();
+      const before = await contentRevisionOf(pageId);
+      let during: bigint | undefined;
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        await persist.flushCollabPersist(roomA);
+        during = await contentRevisionOf(pageId);
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: 4, when: '2026-11-10T00:00:00Z' },
+        } as never;
+      });
+      const updatePage = confluenceUpdateEcho(confluenceId);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          title: 'Saved from pod B',
+          expectedLifecycleRevision: editingRevision,
+          expectedDocumentState: Buffer.from(Y.encodeSnapshot(Y.snapshot(roomA.doc))).toString('base64'),
+        },
+      });
+
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ id: pageId, version: 5, pushedToConfluence: true });
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      expect(during).toBeGreaterThan(before);
+      expect(String(updatePage.mock.calls[0]?.[2])).toContain('typed on pod A');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      await podA.close();
+    }
+  });
+
   it('reserves terminal-only durable ownership before the first pasted-image mutation', async () => {
     const fixture = await createPastedImageRoot();
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({
@@ -1833,6 +2358,338 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     },
   );
 
+  describe('pasted images after a collaborative Save (#1764)', () => {
+    const IMAGE_SRC = '/api/attachments/local-src/x.png';
+    const MARK_FILE = 'data-confluence-filename="x.png"';
+    const MARK_SOURCE = 'data-confluence-image-source="attachment"';
+    const MEDIA_THEN_TEXT = [
+      { kind: 'collab.commit.confluence.media', status: 'completed' },
+      { kind: 'collab.commit.confluence', status: 'completed' },
+    ];
+
+    type ImageEditor = {
+      ws: WebSocket;
+      doc: Y.Doc;
+      /** Every control frame with the editor's HTML at the moment it arrived. */
+      controls: Array<{ type: string; html: string }>;
+      closeInfo: { code: number; reason: string } | null;
+    };
+
+    async function seedImagePage(): Promise<{
+      token: string;
+      userId: string;
+      pageId: number;
+      confluenceId: string;
+    }> {
+      const { token, userId } = await createUser(`collab_img_${pageIdEntropy()}`);
+      const spaceKey = `IM${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({
+        spaceKey,
+        confluenceId,
+        version: 4,
+        bodyHtml: `<p>image</p><img src="${IMAGE_SRC}">`,
+      });
+      await grantSpaceRead(userId, spaceKey);
+      await seedConfluenceCredentials(userId);
+      await enableCollabFlag();
+      return { token, userId, pageId, confluenceId };
+    }
+
+    /** A writable editor whose document follows the room. */
+    async function joinImageEditor(pageId: number, token: string): Promise<ImageEditor> {
+      const ws = await openWritableWhatwg(pageId, token);
+      const editor: ImageEditor = { ws, doc: new Y.Doc(), controls: [], closeInfo: null };
+      ws.addEventListener('close', (ev) => {
+        editor.closeInfo = { code: ev.code, reason: String(ev.reason ?? '') };
+      });
+      ws.addEventListener('message', (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        const frame = new Uint8Array(ev.data);
+        const control = decodeControl(frame);
+        if (control) editor.controls.push({ type: control.type, html: yDocToHtml(editor.doc) });
+        else applySyncFrame(editor.doc, frame);
+      });
+      await exchangeSyncStep1(ws, editor.doc);
+      return editor;
+    }
+
+    /** Edit the editor's document and send its state, as a typing client would. */
+    function sendEditorEdit(editor: ImageEditor, edit: (fragment: Y.XmlFragment) => void): void {
+      editor.doc.transact(() => edit(editor.doc.getXmlFragment('default')));
+      editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
+    }
+
+    function appendParagraph(fragment: Y.XmlFragment, text: string): void {
+      const paragraph = new Y.XmlElement('paragraph');
+      const content = new Y.XmlText();
+      content.insert(0, text);
+      paragraph.insert(0, [content]);
+      fragment.push([paragraph]);
+    }
+
+    /** Confluence for consecutive Saves: the remote version follows each accepted PUT. */
+    function mockImageProvider(confluenceId: string, onFirstRead?: () => Promise<void>) {
+      let remoteVersion = 4;
+      let reads = 0;
+      const uploads: string[] = [];
+      const storages: string[] = [];
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        reads += 1;
+        if (reads === 1) await onFirstRead?.();
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: remoteVersion, when: '2026-11-10T00:00:00Z' },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updateAttachment').mockImplementation(async (_id, filename) => {
+        uploads.push(filename);
+        return {
+          id: `attachment-${uploads.length}`,
+          title: filename,
+          mediaType: 'image/png',
+          version: {
+            number: uploads.filter((uploaded) => uploaded === filename).length,
+            when: '2026-11-10T00:00:01Z',
+          },
+        } as never;
+      });
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+        async (_id, title, storage, version) => {
+          storages.push(storage);
+          remoteVersion = version + 1;
+          return {
+            id: confluenceId,
+            title,
+            status: 'current',
+            type: 'page',
+            version: { number: remoteVersion, when: '2026-11-10T00:00:02Z' },
+            body: { storage: { value: storage } },
+          } as never;
+        },
+      );
+      return { uploads, storages };
+    }
+
+    function save(pageId: number, token: string, payload: CollabCommit) {
+      return app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    }
+
+    async function savedIntents(pageId: number): Promise<Array<{ kind: string; status: string }>> {
+      const rows = await query<{ kind: string; status: string }>(
+        `SELECT kind, status FROM page_write_intents
+          WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+        [pageId],
+      );
+      return rows.rows;
+    }
+
+    async function bodyHtmlOf(pageId: number): Promise<string> {
+      const row = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+      return row.rows[0]!.body_html;
+    }
+
+    async function activePurposes(pageId: number): Promise<string[]> {
+      const rows = await query<{ purpose: string }>(
+        `SELECT purpose FROM page_runtime_admissions
+          WHERE page_id = $1 AND released_at IS NULL ORDER BY purpose`,
+        [pageId],
+      );
+      return rows.rows.map((row) => row.purpose);
+    }
+
+    it('Save 2 after a pasted-image Save uploads nothing, is a text-only collab.commit.confluence intent, and the markers survive the next persist (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        const provider = mockImageProvider(confluenceId);
+
+        const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png']);
+
+        // A text-only edit, then the room's next persist.
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        sendEditorEdit(editor, (fragment) => appendParagraph(fragment, 'TEXT_AFTER_SAVE_1'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TEXT_AFTER_SAVE_1'));
+        await persist.flushCollabPersist(room);
+        const afterPersist = await bodyHtmlOf(pageId);
+
+        const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect.soft(provider.uploads).toEqual(['x.png']);
+        expect.soft(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+        expect.soft(afterPersist).toContain(MARK_FILE);
+        expect.soft(afterPersist).toContain(MARK_SOURCE);
+        // Save 2's storage still references the attachment Save 1 uploaded.
+        expect(provider.storages[1]).toContain('<ri:attachment ri:filename="x.png">');
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('marks the images in the saving editor\'s document after the intent settles and before pages_version, without doc_reset (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        mockImageProvider(confluenceId);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        const intentStatusAtMark: Array<Promise<string | undefined>> = [];
+        room.doc.on('update', (_update: Uint8Array, origin: unknown) => {
+          if (origin !== COLLAB_IMAGE_MARKER_ORIGIN) return;
+          intentStatusAtMark.push(query<{ status: string }>(
+            `SELECT status FROM page_write_intents
+              WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at DESC LIMIT 1`,
+            [pageId],
+          ).then((result) => result.rows[0]?.status));
+        });
+
+        const res = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(res.statusCode, res.body).toBe(200);
+        await vi.waitFor(() => {
+          expect(editor.controls.map((control) => control.type)).toContain('pages_version');
+        });
+
+        expect.soft(await Promise.all(intentStatusAtMark)).toEqual(['completed']);
+        const pagesVersion = editor.controls.find((control) => control.type === 'pages_version')!;
+        expect.soft(pagesVersion.html).toContain(MARK_FILE);
+        expect.soft(pagesVersion.html).toContain(MARK_SOURCE);
+        // The editor stays open and writable: no reset, no close.
+        expect(editor.controls.map((control) => control.type)).not.toContain('doc_reset');
+        expect(editor.closeInfo).toBeNull();
+        sendEditorEdit(editor, (fragment) => appendParagraph(fragment, 'TYPED_AFTER_SAVE'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TYPED_AFTER_SAVE'));
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('marks the room on the peer pod that owns it when the Save runs on a pod without the room (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      const { token, userId, pageId, confluenceId } = await seedImagePage();
+      const revision = await pageLifecycleRevision(pageId);
+      const podA = await createCollabRuntime(getRedisClient()!, 'image-markers-pod-a');
+      try {
+        await podA.attachSocket(pageId, {
+          id: 'pod-a-writer',
+          ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+          userId,
+          writable: true,
+          expectedLifecycleRevision: revision,
+        });
+        const roomA = podA.getRoom(pageId)!;
+        const provider = mockImageProvider(confluenceId);
+        const payload = (title: string): CollabCommit => ({
+          title,
+          expectedLifecycleRevision: revision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        });
+
+        const first = await save(pageId, token, payload('Save 1'));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(getDefaultCollabRuntime()!.getRoom(pageId)).toBeUndefined();
+        // In pod A's memory: the Redis request, not a merge of the persisted document.
+        await vi.waitFor(() => expect(yDocToHtml(roomA.doc)).toContain(MARK_FILE), { timeout: 5_000 });
+        await persist.flushCollabPersist(roomA);
+        expect(await bodyHtmlOf(pageId)).toContain(MARK_FILE);
+
+        const second = await save(pageId, token, payload('Save 2'));
+        expect(second.statusCode, second.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png']);
+        expect(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+      } finally {
+        await podA.close();
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('the markers survive when the only writer left before the Save settled and no room owns the page (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const leaving = await joinImageEditor(pageId, token);
+        // Persist the room's own rendering first, so the leave flush inside the
+        // provider read changes no protected column (on a base without #1762 it
+        // would otherwise refuse this Save as stale_content_revision).
+        await persist.flushCollabPersist(getDefaultCollabRuntime()!.getRoom(pageId)!);
+        const provider = mockImageProvider(confluenceId, async () => {
+          leaving.ws.close();
+          await vi.waitFor(async () => {
+            expect(await activePurposes(pageId)).not.toContain('collab_room');
+          }, { timeout: 5_000 });
+        });
+
+        const first = await save(pageId, token, commitPayload(leaving.ws, 'Save 1', Y.snapshot(leaving.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(await activePurposes(pageId)).toEqual([]);
+        expect.soft(await persist.htmlFromPersistedDoc(pageId)).toContain(MARK_FILE);
+
+        const rejoined = await joinImageEditor(pageId, token);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        expect.soft(yDocToHtml(room.doc)).toContain(MARK_FILE);
+        sendEditorEdit(rejoined, (fragment) => appendParagraph(fragment, 'TEXT_AFTER_REJOIN'));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('TEXT_AFTER_REJOIN'));
+        await persist.flushCollabPersist(room);
+        expect.soft(await bodyHtmlOf(pageId)).toContain(MARK_FILE);
+
+        const second = await save(pageId, token, commitPayload(rejoined.ws, 'Save 2', Y.snapshot(rejoined.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect.soft(provider.uploads).toEqual(['x.png']);
+        expect.soft(await savedIntents(pageId)).toEqual(MEDIA_THEN_TEXT);
+        rejoined.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+
+    it('Save 2 uploads only an image pasted after Save 1 (#1764)', async () => {
+      const fixture = await createPastedImageRoot('x.png');
+      try {
+        await fs.promises.writeFile(
+          path.join(fixture.root, 'local-src', 'y.png'),
+          Buffer.from('image pasted after Save 1'),
+        );
+        const { token, pageId, confluenceId } = await seedImagePage();
+        const editor = await joinImageEditor(pageId, token);
+        const provider = mockImageProvider(confluenceId);
+
+        const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        sendEditorEdit(editor, (fragment) => {
+          const image = new Y.XmlElement('image');
+          image.setAttribute('src', '/api/attachments/local-src/y.png');
+          fragment.push([image]);
+        });
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('/api/attachments/local-src/y.png'));
+
+        const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect(provider.uploads).toEqual(['x.png', 'y.png']);
+        // Save 2 did upload the new image, so it stays a media commit.
+        expect(await savedIntents(pageId)).toEqual([
+          { kind: 'collab.commit.confluence.media', status: 'completed' },
+          { kind: 'collab.commit.confluence.media', status: 'completed' },
+        ]);
+        editor.ws.close();
+      } finally {
+        await removePastedImageRoot(fixture.root, fixture.priorRoot);
+      }
+    });
+  });
+
   it('refuses final local publication when authority is revoked after the page PUT', async () => {
     const {
       token, userId, pageId, confluenceId, spaceKey, ws,
@@ -2026,6 +2883,410 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
     expect(page.rows[0]!.version).toBe(4);
     ws.close();
+  });
+
+  describe('collaborative Save window (#1763)', () => {
+    type SaveWindowClient = {
+      ws: WebSocket;
+      doc: Y.Doc;
+      closeInfo: { code: number; reason: string } | null;
+      closed: Promise<{ code: number; reason: string }>;
+      /** True once the client's document shows the text, false after 8 s; never rejects. */
+      sees: (text: string) => Promise<boolean>;
+    };
+
+    async function seedSaveWindowPage(): Promise<{
+      saver: { token: string; userId: string };
+      coEditor: { token: string; userId: string };
+      pageId: number;
+      confluenceId: string;
+    }> {
+      const saver = await createUser(`collab_sw_saver_${pageIdEntropy()}`);
+      const coEditor = await createUser(`collab_sw_peer_${pageIdEntropy()}`);
+      const spaceKey = `SW${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-sw-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({
+        spaceKey,
+        confluenceId,
+        version: 4,
+        bodyHtml: '<p>save-window-seed</p>',
+      });
+      await grantSpaceRead(saver.userId, spaceKey);
+      await grantSpaceRead(coEditor.userId, spaceKey);
+      await seedConfluenceCredentials(saver.userId);
+      await enableCollabFlag();
+      return { saver, coEditor, pageId, confluenceId };
+    }
+
+    async function joinSaveWindowClient(pageId: number, token: string): Promise<SaveWindowClient> {
+      const ws = await openWritableWhatwg(pageId, token);
+      const doc = new Y.Doc();
+      const waiters = new Set<() => void>();
+      const closed = Promise.withResolvers<{ code: number; reason: string }>();
+      const client: SaveWindowClient = {
+        ws,
+        doc,
+        closeInfo: null,
+        closed: closed.promise,
+        sees: (text) => {
+          const { promise, resolve } = Promise.withResolvers<boolean>();
+          const timer = setTimeout(() => {
+            waiters.delete(check);
+            resolve(false);
+          }, 8_000);
+          function check(): void {
+            if (!yDocToHtml(doc).includes(text)) return;
+            waiters.delete(check);
+            clearTimeout(timer);
+            resolve(true);
+          }
+          waiters.add(check);
+          check();
+          return promise;
+        },
+      };
+      ws.addEventListener('message', (event) => {
+        if (!(event.data instanceof ArrayBuffer)) return;
+        const frame = new Uint8Array(event.data);
+        if (frame[0] !== MESSAGE_SYNC) return;
+        applySyncFrame(doc, frame);
+        for (const waiter of [...waiters]) waiter();
+      });
+      ws.addEventListener('close', (event) => {
+        client.closeInfo = { code: event.code, reason: String(event.reason ?? '') };
+        closed.resolve(client.closeInfo);
+      });
+      // The message listener above applies the SyncStep2 reply to `doc`.
+      await exchangeSyncStep1(ws, doc);
+      return client;
+    }
+
+    function typeInSaveWindow(client: SaveWindowClient, text: string): void {
+      const before = Y.encodeStateVector(client.doc);
+      client.doc.transact(() => {
+        const paragraph = new Y.XmlElement('paragraph');
+        const content = new Y.XmlText();
+        content.insert(0, text);
+        paragraph.insert(0, [content]);
+        client.doc.getXmlFragment('default').push([paragraph]);
+      });
+      client.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(client.doc, before)));
+    }
+
+    /** The provider PUT waits for `release`; `started` resolves once the intent's remote phase began. */
+    function gateConfluencePut(confluenceId: string, localVersion: number): {
+      started: Promise<void>;
+      release: () => void;
+    } {
+      const started = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: localVersion, when: '2026-11-10T00:00:00Z' },
+      } as never);
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
+        started.resolve();
+        await gate.promise;
+        return {
+          id: confluenceId,
+          title,
+          status: 'current',
+          type: 'page',
+          version: { number: localVersion + 1, when: '2026-11-10T00:01:00Z' },
+          body: { storage: { value: storage } },
+        } as never;
+      });
+      return { started: started.promise, release: () => gate.resolve() };
+    }
+
+    function startSave(pageId: number, token: string, payload: CollabCommit) {
+      return app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    }
+
+    async function activePurposes(pageId: number): Promise<string[]> {
+      const admissions = await query<{ purpose: string }>(
+        `SELECT purpose FROM page_runtime_admissions
+          WHERE page_id = $1 AND released_at IS NULL
+          ORDER BY purpose`,
+        [pageId],
+      );
+      return admissions.rows.map((row) => row.purpose);
+    }
+
+    async function storedBodyHtml(pageId: number): Promise<string> {
+      const page = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+      return page.rows[0]!.body_html;
+    }
+
+    /**
+     * Real timer on purpose: the empty-room grace must also run out while the
+     * Save is pending, as a 12 s provider PUT outlasts the 10 s production
+     * grace; a grace drop that runs after settlement releases by itself and
+     * would hide the defect. The second step waits for that grace drop on the
+     * room's ownership chain; while the Save is pending it changes nothing.
+     */
+    async function waitForGraceDrop(runtime: CollabRuntime, pageId: number): Promise<void> {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, COLLAB_EMPTY_ROOM_GRACE_MS + 250);
+      await promise;
+      await runtime.dropRoom(pageId).catch(() => undefined);
+    }
+
+    it('typing during a pending Save keeps every writer connected and live (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        typeInSaveWindow(b, 'CO_EDITOR_DURING_SAVE');
+        const coEditorSeen = await Promise.race([b.closed.then(() => false), a.sees('CO_EDITOR_DURING_SAVE')]);
+        expect(b.closeInfo).toBeNull();
+        expect(coEditorSeen).toBe(true);
+        typeInSaveWindow(a, 'SAVER_DURING_OWN_SAVE');
+        const saverSeen = await Promise.race([a.closed.then(() => false), b.sees('SAVER_DURING_OWN_SAVE')]);
+        expect(a.closeInfo).toBeNull();
+        expect(saverSeen).toBe(true);
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(a.closeInfo).toBeNull();
+        expect(b.closeInfo).toBeNull();
+        await vi.waitFor(async () => {
+          const body = await storedBodyHtml(pageId);
+          expect(body).toContain('CO_EDITOR_DURING_SAVE');
+          expect(body).toContain('SAVER_DURING_OWN_SAVE');
+        }, { timeout: 5_000 });
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+        b.ws.close();
+      }
+    });
+
+    it('the room persist waits for its own pending Save, and the commit\'s cue then writes it (#1763)', async () => {
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const contentRevision = async (): Promise<string> => (await query<{ revision: string }>(
+        'SELECT content_revision::text AS revision FROM pages WHERE id = $1',
+        [pageId],
+      )).rows[0]!.revision;
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        const before = await contentRevision();
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        await expect(persist.flushCollabPersist(room)).rejects.toMatchObject({
+          statusCode: 409,
+          reason: 'collab_commit_pending',
+        });
+        expect(await contentRevision()).toBe(before);
+        typeInSaveWindow(a, 'TYPED_DURING_SAVE');
+        await vi.waitFor(() => {
+          expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_DURING_SAVE');
+        });
+        expect(await contentRevision()).toBe(before);
+        // Let this edit's own debounced persist run inside the window too. It
+        // waits and nothing re-arms it, so once the Save settles only the
+        // commit's `pages_version` cue can write it: no later edit, no leave.
+        const forced = room.persistError;
+        await vi.waitFor(() => {
+          expect(room.persistTimer).toBeNull();
+          expect(room.persistError).not.toBe(forced);
+          expect(isCollabCommitPending(room.persistError)).toBe(true);
+        }, { timeout: persist.COLLAB_PERSIST_DEBOUNCE_MS + 3_000 });
+        expect(await contentRevision()).toBe(before);
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        const intents = await query<{ kind: string; status: string }>(
+          'SELECT kind, status FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]',
+          [pageId],
+        );
+        expect(intents.rows).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
+        await vi.waitFor(async () => {
+          expect(await storedBodyHtml(pageId)).toContain('TYPED_DURING_SAVE');
+        }, { timeout: 5_000 });
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+      }
+    });
+
+    it('a writable rejoin during a pending Save is admitted (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      let rejoin: WebSocket | undefined;
+      try {
+        await put.started;
+        b.ws.close();
+        await b.closed;
+        const revision = await pageLifecycleRevision(pageId);
+        rejoin = openWhatwg(pageId, coEditor.token, `?expectedLifecycleRevision=${encodeURIComponent(revision)}`);
+        const outcome = await Promise.race([
+          waitControl(rejoin, (control) => control.type === 'writable_admission').catch(() => null),
+          waitClose(rejoin).catch(() => null),
+        ]);
+        expect(outcome).toMatchObject({ type: 'writable_admission', lifecycleRevision: revision });
+        await exchangeSyncStep1(rejoin, new Y.Doc());
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+      } finally {
+        put.release();
+        await save;
+        rejoin?.close();
+        a.ws.close();
+      }
+    });
+
+    it('the last writer leaving during a pending Save is released once the Save settles (#1763)', async () => {
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        a.ws.close();
+        await a.closed;
+        await waitForGraceDrop(getDefaultCollabRuntime()!, pageId);
+        // Fail closed while the Save is pending: the room's flush could not run.
+        expect(await activePurposes(pageId)).toContain('collab_room');
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        await vi.waitFor(async () => {
+          expect(await activePurposes(pageId)).toEqual([]);
+        }, { timeout: 5_000 });
+        await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+        expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      } finally {
+        put.release();
+        await save;
+      }
+    });
+
+    it('a peer pod\'s last writer leaving during a Save is released by the commit\'s cue (#1763)', async () => {
+      const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      // A 60 s backoff leaves only the commit's `pages_version` cue, delivered
+      // over Redis, to release pod A inside the wait below.
+      process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = '60000';
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const podA = await createCollabRuntime(getRedisClient()!, 'save-window-pod-a');
+      try {
+        const revision = await pageLifecycleRevision(pageId);
+        await podA.attachSocket(pageId, {
+          id: 'pod-a-writer',
+          ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+          userId: saver.userId,
+          writable: true,
+          expectedLifecycleRevision: revision,
+        });
+        const put = gateConfluencePut(confluenceId, 4);
+        const save = startSave(pageId, saver.token, {
+          title: 'Saved on the app pod',
+          expectedLifecycleRevision: revision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        });
+        try {
+          await put.started;
+          await podA.detachSocket(pageId, 'pod-a-writer');
+          await waitForGraceDrop(podA, pageId);
+          expect(await activePurposes(pageId)).toContain('collab_room');
+
+          put.release();
+          const saved = await save;
+          expect(saved.statusCode, saved.body).toBe(200);
+          await vi.waitFor(async () => {
+            expect(await activePurposes(pageId)).toEqual([]);
+          }, { timeout: 5_000 });
+          expect(podA.getRoom(pageId)).toBeUndefined();
+        } finally {
+          put.release();
+          await save;
+        }
+      } finally {
+        if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+        else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+        await podA.close();
+      }
+    });
+
+    it('five Saves in a row never disconnect a co-editor typing inside each (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      try {
+        for (let round = 1; round <= 5; round += 1) {
+          const put = gateConfluencePut(confluenceId, 3 + round);
+          const save = startSave(pageId, saver.token, commitPayload(a.ws, `Save ${round}`));
+          try {
+            await put.started;
+            typeInSaveWindow(b, `CO_EDITOR_${round}`);
+            const seen = await Promise.race([b.closed.then(() => false), a.sees(`CO_EDITOR_${round}`)]);
+            expect(b.closeInfo).toBeNull();
+            expect(seen).toBe(true);
+          } finally {
+            put.release();
+            await save;
+          }
+          const saved = await save;
+          expect(saved.statusCode, saved.body).toBe(200);
+        }
+        expect(b.closeInfo).toBeNull();
+        const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+        expect(page.rows[0]!.version).toBe(9);
+        await vi.waitFor(async () => {
+          const body = await storedBodyHtml(pageId);
+          for (let round = 1; round <= 5; round += 1) expect(body).toContain(`CO_EDITOR_${round}`);
+        }, { timeout: 5_000 });
+      } finally {
+        a.ws.close();
+        b.ws.close();
+      }
+    });
+
+    it('a second Save while one is pending is still refused 409 page_write_busy (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'First'));
+      try {
+        await put.started;
+        const second = await startSave(pageId, coEditor.token, commitPayload(b.ws, 'Second'));
+        expect(second.statusCode).toBe(409);
+        expect(second.json()).toMatchObject({ reason: 'page_write_busy' });
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+        b.ws.close();
+      }
+    });
   });
 });
 

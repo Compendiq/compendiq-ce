@@ -436,6 +436,7 @@ flowchart TB
     fence["Lifecycle / authority / document reset<br/>or connection loss"]
     draft["Mounted inert or offline draft<br/>no automatic replay"]
     recovery["Download draft<br/>or confirmed Open current version"]
+    join["Before first sync: one reason message<br/>Retry for rate_limited after the window or an interrupted join<br/>no draft · title and tags read-only · Save blocked"]
     sse["usePresence SSE (issue 301)"]
     stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
 
@@ -445,7 +446,8 @@ flowchart TB
     ed --> save --> api --> ack
     ack -->|captured state changed meanwhile| stay
     ack -->|unchanged| exit
-    hook --> fence --> draft --> recovery
+    hook -->|before first sync| join
+    hook -->|after first sync| fence --> draft --> recovery
     hook --> stack
     sse --> stack
 ```
@@ -461,6 +463,16 @@ flowchart TB
   and transport generation and contain the captured client state. If
   title/labels or the Y.Doc change while the request is in flight, the
   acknowledged capture is saved but the editor stays open with the later edits.
+- **The ordinary versioned PUT is based on the editing session (#1746).** The
+  flag-off Save sends `editBaseVersionRef`, not the live page query: Edit,
+  Restore draft and Edit published version take it — and the title — from the
+  page on screen, and only the session's own successful PUT replaces it (with
+  the version `useUpdatePage` read back and validated). Background refetches
+  never move it, and a 409, `confluence_modified` or any other failure keeps
+  it, so every later Save of a stale draft is refused again; the conflict
+  toast's **Reload** leaves edit mode with the local draft intact and the next
+  Edit offers it. A newer version this session did not write — another user,
+  another tab, a version restore or an inbound sync — is a conflict.
 - **Save is single-flight per editing session.** `PageViewPage` claims the
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the
@@ -481,6 +493,22 @@ flowchart TB
   `Open current version` requires explicit confirmation, then refetches and
   discards only after a successful refetch; failure leaves the draft in place.
   These are editor recovery controls, not #277's baseline-management UI.
+- **Before the first sync there is no draft (#1895).** Until
+  `collabHasSynced`, the editor slot is one `role="status"` region that owns
+  the screen. It shows connecting, *could not connect — retrying* (a
+  transient close that y-websocket retries), or one sentence for the refusal:
+  4401 without a session, each 4403 reason, 4404, or a lifecycle, permission or
+  reset control. The read-only banner, `Download draft` and title/tag/icon
+  editing wait for the first sync, and Save stays blocked even after
+  `writable_admission`; `Ctrl`/`Cmd`+`S` says there is nothing to save yet.
+  `Retry` appears for `rate_limited` (inert via `aria-disabled` until
+  `COLLAB_UPGRADE_WINDOW_SEC` after the refusal) and for an interrupted join.
+  It stays mounted as `Retrying…` until the attempt settles (the first sync or
+  any refusal, including a lifecycle, permission or reset one), then hands
+  orphaned focus to the editor column, a region named "Page body". `flag_off`
+  refetches the config, and lifecycle and reset refusals refetch the page, so
+  closing and reopening the editor uses current state. After the first sync
+  every 4403 keeps the read-only draft treatment above.
 - **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured
   ≥3:1 on Graphite and Paper `--surface-card`. Steel and status hues are not a
   caret palette. `@tiptap/extension-collaboration-caret` — not the v2

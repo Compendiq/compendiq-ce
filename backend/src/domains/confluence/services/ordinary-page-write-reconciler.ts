@@ -1132,6 +1132,11 @@ const reconcileDelete: PageWriteIntentReconciler = async (client, intent) => {
       details: { remoteEffectsCompleted: true, terminalEvidence: 'remote-page-absent' },
     },
     result: { pageId },
+    // 4404 is permanent. Unlike the local-delete siblings, this row is
+    // destroyed by the settlement transaction itself, so close the rooms only
+    // after that COMMIT; doing it in here would also wait on our own page
+    // lifecycle lock, which a writable room's final flush takes.
+    afterCommit: () => tombstoneCollabRoomAfterCommit(pageId),
   };
 };
 const LOCAL_DELETE_KINDS = [
