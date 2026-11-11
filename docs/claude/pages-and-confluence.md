@@ -207,6 +207,14 @@ the same class of reason: they fire after the cascade has COMMITTED, so one
 failing collab tombstone must not skip the remaining ids' webhooks, the cache
 invalidation and the audit row.
 
+Recovery follows the same rule. A recovered Confluence delete
+(`pages.delete.confluence`, `pages.bulk.delete.remote`) destroys its row inside
+the settlement transaction, so its 4404 `committed_delete` tombstone is the
+reconciler's `afterCommit` side effect: `reconcilePageWriteIntent` awaits it
+only after that COMMIT, never on rollback, and logs a failure instead of failing
+the settled recovery. An undispatched delete (`remoteEffectStartedAt === null`)
+restores `deleted_at` and leaves the rooms open.
+
 The frontend delete hook does not remove anything before the DELETE succeeds.
 After success it adjusts only paginated Library caches that actually contain
 the confirmed target; an absent row gives no evidence that the page belongs to

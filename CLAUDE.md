@@ -14,6 +14,13 @@ Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
 
+A collaborative join that never synced is not a read-only draft (#1895):
+until the first sync the editor shows one message per close reason (4403
+`forbidden` and unknown reasons fail closed; `rate_limited` retries only after
+the server's upgrade window), no draft banner or Download draft, and Save stays
+blocked; after it every 4403 keeps the read-only draft. The gateway buffers
+pre-live frames in order and never refuses them with 4403.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)

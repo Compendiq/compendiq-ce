@@ -11,8 +11,14 @@ import { query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
-import { applyHtmlToYDoc, yDocToHtml } from './collab-schema.js';
 import {
+  applyHtmlToYDoc,
+  markAttachmentImages,
+  yDocToHtml,
+  type AttachmentImageMarker,
+} from './collab-schema.js';
+import {
+  isCollabCommitPending,
   withPageWriteTransaction,
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
@@ -92,6 +98,8 @@ export async function loadOrInitCollabDoc(
       return row ? applyLoadRow(doc, row) : 'missing';
     }
 
+    // A missing seed writes BYTEA only, never a protected page row, so the
+    // page's own pending collaborative Save does not fence the load (#1763).
     return await withPageWriteTransaction([pageId], async (client) => {
       await lockCollabInit(client, pageId);
       const result = await client.query<LoadRow>(LOAD_PAGE_AND_DOC, [pageId]);
@@ -101,7 +109,7 @@ export async function loadOrInitCollabDoc(
       if (loaded === 'missing' || loaded.hasPersistedDoc) return loaded;
       await upsertDocState(client, pageId, doc);
       return { ...loaded, hasPersistedDoc: true };
-    }, { admission });
+    }, { admission, ownCollabCommit: 'proceed' });
   } catch (err) {
     logger.warn({ err, pageId }, 'collab: load/init failed');
     throw err;
@@ -157,6 +165,38 @@ export async function mergePersistedCollabDoc(
   return true;
 }
 
+/**
+ * Mark the images a settled Confluence commit uploaded in the persisted
+ * document (#1764). Every later room load, persist (which merges this row
+ * first) and commit snapshot starts from it, so the markers survive when no
+ * room owns the page or the owning room missed the in-place marks. The caller
+ * holds that commit's request admission. No row: the next writable join seeds
+ * from `body_html`, which the commit published with the markers.
+ */
+export async function markPersistedAttachmentImages(
+  pageId: number,
+  admission: PageRuntimeAdmission,
+  markers: readonly AttachmentImageMarker[],
+): Promise<number> {
+  return withPageWriteTransaction([pageId], async (client) => {
+    await lockCollabInit(client, pageId);
+    const persisted = await client.query<{ doc_state: Buffer }>(
+      'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
+      [pageId],
+    );
+    if (!persisted.rows[0]) return 0;
+    const doc = new Y.Doc();
+    try {
+      Y.applyUpdate(doc, new Uint8Array(persisted.rows[0].doc_state), COLLAB_LOAD_ORIGIN);
+      const marked = markAttachmentImages(doc, markers, COLLAB_LOAD_ORIGIN);
+      if (marked > 0) await upsertDocState(client, pageId, doc);
+      return marked;
+    } finally {
+      doc.destroy();
+    }
+  }, { admission });
+}
+
 export async function persistCollabDocState(
   pageId: number,
   doc: Y.Doc,
@@ -192,6 +232,9 @@ export async function persistAndSnapshot(
 ): Promise<void> {
   if (resettingPageIds.has(pageId)) return;
   const t0 = Date.now();
+  // This writes `body_html`, which advances `content_revision` under a pending
+  // collaborative commit's stored revisions and would fail its completion after
+  // the provider PUT (#1763). It waits for that Save instead.
   const sizes = await withPageWriteTransaction([pageId], async (client) => {
     await lockCollabInit(client, pageId);
     if (resettingPageIds.has(pageId)) return null;
@@ -221,7 +264,7 @@ export async function persistAndSnapshot(
       [pageId, html, bodyText],
     );
     return { doc: docState.length, html: Buffer.byteLength(html) };
-  }, { admission });
+  }, { admission, ownCollabCommit: 'defer' });
   if (!sizes) return;
   logger.info({ pageId, duration_ms: Date.now() - t0, bytes: sizes.doc }, 'collab.persist');
   logger.info({ pageId, duration_ms: Date.now() - t0, html_bytes: sizes.html }, 'collab.snapshot');
@@ -258,7 +301,8 @@ function enqueuePersist(room: CollabPersistHandle & { persistable?: boolean }): 
       room.persistError = null;
     } catch (err) {
       room.persistError = err;
-      logger.warn({ err, pageId: room.pageId }, 'collab: persist failed');
+      if (isCollabCommitPending(err)) logger.info({ pageId: room.pageId }, 'collab.persist_deferred');
+      else logger.warn({ err, pageId: room.pageId }, 'collab: persist failed');
       throw err;
     }
   });
