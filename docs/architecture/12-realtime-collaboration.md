@@ -165,7 +165,7 @@ client-claimed identity. Color is deterministic from `userId`.
 | In-memory `Y.Doc` + Redis **incremental** `doc.on('update')` | Every keystroke | Live truth. `Y.applyUpdate(..., 'redis')` on receive so the handler does not loop. |
 | `page_collaborative_docs.doc_state` / `state_vector` | Debounced **2 s** after last applied update, and immediately when the last editor disconnects | Increments **this table's** `version` (persistence generation). Always. |
 | `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. **Does** advance `pages.content_revision` (migration 120 trigger), so a Confluence commit pins lifecycle and version, not that revision, across its provider read (#1762). |
-| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds). It also resets `pages.body_html` / `body_text` to the committed snapshot: edits typed after that snapshot stay in the room and in `page_collaborative_docs`, and reach `body_html` only on the room's next persist (the next edit's 2 s debounce, or the last-writer flush) (#1762). |
+| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds). It also resets `pages.body_html` / `body_text` to the committed snapshot: edits typed after that snapshot stay in the room; a persist that falls inside the Save's intent waits for it (#1763), so they reach `page_collaborative_docs` and `body_html` on the flush that the Save's `pages_version` control starts, the next edit's 2 s debounce, or the last-writer flush (#1762). |
 | Confluence DC | Collab commit for `source = 'confluence'` | Remote write **first**, same order as today's PUT |
 
 Stamping `local_modified_*` on the 2 s path is forbidden:
@@ -190,6 +190,29 @@ restore, Apply, draft-publish, inbound sync with `sCard = 0`, flag-off
 rollback) must `DELETE FROM page_collaborative_docs WHERE page_id = $1`.
 The no-row init path is how the next join recovers — not first-ever join
 only. A live room still 409s those HTTP writers; it does not DELETE.
+
+**While the page's own collaborative Save is pending (#1763).** A Confluence
+commit reserves a `collab.commit.confluence[.media]` intent after its provider
+read and keeps it pending until its local publication settles. That intent
+fences every writer of the page; for its own room it is transient. Writable
+frames and peer-pod updates keep applying to the in-memory `Y.Doc` on every
+pod, state dumps are still answered, and writable and read-only joins are still
+admitted, because the commit publishes the snapshot it captured before
+reserving. Only the room's persists wait: the 2 s snapshot and the last-writer
+flush answer `collab_commit_pending`, because a `body_html` write would advance
+`content_revision` under the intent and fail its completion after Confluence
+accepted the page. The `pages_version` control that follows a successful commit
+resumes both at once on every pod: a waiting persist while a writer is
+connected, and a deferred last-writer release. Without that control (a
+cancelled Save, or one settled by recovery) a waiting persist runs again on the
+next edit or the last-writer flush, and a deferred release retries from 1 s,
+doubling to 30 s. A Save whose Confluence write failed after dispatch stays
+pending as an unknown outcome until it is reconciled, and the room's edits stay
+unpersisted until then (see the immutable-page baselines runbook and #1934).
+Any other pending page write, a stale lifecycle or admission, and a fenced
+runtime still close a writable socket with `1001 collab_validation_unavailable`,
+and that refused frame is not requested again (#1928). No close code or control
+frame is added.
 
 ## Neighborhoods
 
@@ -261,11 +284,14 @@ Subscribe (and queue) **before** the BYTEA load. Pub/sub does not replay.
 refreshed on every ping (15 s) and every inbound frame. Yjs state is not
 stored in Redis.
 
-Last disconnect: persist BYTEA + HTML **immediately**. Do **not** `SREM`
-the last member until the 10 s empty-room grace fires **and** the
-in-memory `Y.Doc` is dropped (a `{podId}:grace` sentinel is equivalent),
-so `assertNoLiveCollabRoom` and the heap agree. A reconnect during grace
-cancels the timer.
+Last disconnect: flush BYTEA + HTML **immediately**, then release the room's
+durable admission and `SREM` its members, so `assertNoLiveCollabRoom` passes as
+soon as that flush lands. The heap keeps the clean room for the 10 s empty-room
+grace; a reconnect during grace cancels the timer, and a join after the release
+rebuilds the room from PostgreSQL. A failed flush keeps the admission (fail
+closed, see the runbook). A flush that waits for the page's own pending
+collaborative Save is retried after it (see *While the page's own collaborative
+Save is pending*).
 
 ## Feature flag
 

@@ -28,6 +28,7 @@ import { onReconnect, subscribe } from './redis-cache-bus.js';
 import {
   admitPageRuntime,
   deferPageRequestAdmissionRelease,
+  isCollabCommitPending,
   PageWriteError,
   releasePageRuntime,
   withPageWriteTransaction,
@@ -40,6 +41,15 @@ export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
 export const COLLAB_READONLY_DROP_LIMIT = 8;
 export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
+/**
+ * Delay before retry `attempt` (from 0) of a last-writer release that its
+ * page's own pending collaborative Save deferred (#1763): 1 s
+ * (`COLLAB_DEFERRED_RELEASE_RETRY_MS`, read per call so a test can change it),
+ * doubling, capped at 30 s.
+ */
+export function deferredReleaseDelayMs(attempt: number): number {
+  return Math.min(vitestIntOr('COLLAB_DEFERRED_RELEASE_RETRY_MS', 1_000) * 2 ** attempt, 30_000);
+}
 /** Rounds allowed for the owner set to hold still before a read is refused. */
 const OWNER_CORRELATION_ATTEMPTS = 3;
 
@@ -117,6 +127,10 @@ export interface CollabRoom {
   attached: boolean;
   flushing: boolean;
   emptyGrace: ReturnType<typeof setTimeout> | null;
+  /** Retry of a last-writer release that the page's own pending collaborative Save deferred (#1763). */
+  deferredRelease: ReturnType<typeof setTimeout> | null;
+  /** Above 0 while such a deferral is outstanding, including a retry that is running. */
+  deferredReleaseAttempts: number;
   persistTimer: ReturnType<typeof setTimeout> | null;
   persistChain: Promise<void>;
   persistError: unknown | null;
@@ -373,7 +387,7 @@ export async function createCollabRuntime(
         await mergePersistedRoom(client, room);
         assertCurrent();
         return currentOwners;
-      }, { admission });
+      }, { admission, ownCollabCommit: 'proceed' });
       const remaining = new Set<string>();
       for (const owner of owners) {
         if (owner.id !== room.admission?.id) remaining.add(owner.id);
@@ -414,7 +428,7 @@ export async function createCollabRuntime(
         await mergePersistedRoom(client, room);
         assertCurrent();
         return { value: snapshot() };
-      }, { admission });
+      }, { admission, ownCollabCommit: 'proceed' });
       if (settled) return settled.value;
       if (attempt >= OWNER_CORRELATION_ATTEMPTS) throw unavailableSnapshot();
     }
@@ -422,7 +436,11 @@ export async function createCollabRuntime(
 
   async function refreshReaderRoom(room: CollabRoom): Promise<void> {
     if (room.isFrozen || room.demotionReason !== null) return;
-    const owners = await withPageWriteTransaction([room.pageId], (client) => roomOwners(client, room));
+    const owners = await withPageWriteTransaction(
+      [room.pageId],
+      (client) => roomOwners(client, room),
+      { ownCollabCommit: 'proceed' },
+    );
     const supportingAdmission = owners[0];
     if (supportingAdmission) await withFreshRoomState(room, supportingAdmission, () => undefined);
   }
@@ -527,7 +545,7 @@ export async function createCollabRuntime(
         Y.applyUpdate(room.doc, update, 'redis');
         forwardUpdate(room, update);
         return true;
-      }, { admission: message.admission });
+      }, { admission: message.admission, ownCollabCommit: 'proceed' });
       if (!accepted) return false;
       return true;
     } catch (err) {
@@ -549,7 +567,7 @@ export async function createCollabRuntime(
           await mergePersistedRoom(client, room);
           if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return null;
           return Y.encodeStateAsUpdate(room.doc);
-        }, { admission });
+        }, { admission, ownCollabCommit: 'proceed' });
         if (!dump || !transportAvailable()) return;
         await publish(room.pageId, {
           origin: podId, kind: 'state_dump', requestId: message.requestId,
@@ -600,6 +618,7 @@ export async function createCollabRuntime(
         if (decoded.type === 'pages_version' && 'version' in decoded && typeof decoded.version === 'number') {
           room.pagesVersion = decoded.version;
           sendControl(room, { type: 'pages_version', version: decoded.version });
+          resumeAfterCommit(room);
         } else if (decoded.type === 'doc_reset') {
           sendControl(room, { type: 'doc_reset' });
         } else if (decoded.type === 'tombstone') {
@@ -651,7 +670,16 @@ export async function createCollabRuntime(
     if ([...room.sockets.values()].some((socket) => socket.writable)) return;
     const admission = room.admission;
     if (!admission) return;
-    await persist.flushCollabPersist(room);
+    try {
+      await persist.flushCollabPersist(room);
+    } catch (error) {
+      // The page's own pending collaborative Save fences this flush: a wait,
+      // not a failure. Keep the admission and retry once it settles (#1763).
+      // Every other failure propagates and keeps the admission (runbook).
+      if (!isCollabCommitPending(error)) throw error;
+      deferRelease(room);
+      return;
+    }
     // Socket demotion/disconnection remains immediate while a flush is in
     // flight; joins and retirement share the ownership queue.
     if (
@@ -659,12 +687,67 @@ export async function createCollabRuntime(
       || room.admission?.id !== admission.id
     ) return;
     await releasePageRuntime(admission);
+    cancelDeferredRelease(room);
     room.admission = null;
     room.persistable = false;
     room.lastWriterUserId = null;
     const held = [...room.heldActiveSuffixes];
     room.heldActiveSuffixes.clear();
     await sremSuffixes(room.pageId, held);
+  }
+
+  function cancelDeferredRelease(room: CollabRoom): void {
+    clearTimeout(room.deferredRelease ?? undefined);
+    room.deferredRelease = null;
+    room.deferredReleaseAttempts = 0;
+  }
+
+  function deferRelease(room: CollabRoom): void {
+    if (room.deferredRelease) return;
+    const delayMs = deferredReleaseDelayMs(room.deferredReleaseAttempts);
+    room.deferredReleaseAttempts += 1;
+    logger.info({ pageId: room.pageId, retryInMs: delayMs }, 'collab.release_deferred');
+    room.deferredRelease = setTimeout(() => {
+      room.deferredRelease = null;
+      void retryDeferredRelease(room);
+    }, delayMs);
+    if (typeof room.deferredRelease.unref === 'function') room.deferredRelease.unref();
+  }
+
+  function retryDeferredRelease(room: CollabRoom): Promise<void> {
+    return withRoomOwnership(room.pageId, async () => {
+      await releaseAdmissionIfNoWriters(room);
+      if (room.deferredRelease) return;
+      room.deferredReleaseAttempts = 0;
+      if (!room.admission && room.sockets.size === 0) await dropRoomOwned(room.pageId, room);
+    }).catch((error: unknown) => {
+      // A non-transient failure stops the retries and keeps the admission.
+      room.deferredReleaseAttempts = 0;
+      logger.warn({ err: error, pageId: room.pageId }, 'collab: deferred release failed; admission retained');
+    });
+  }
+
+  /**
+   * A `pages_version` control follows only a settled commit. Resume what that
+   * commit's pending intent deferred now, not at the next backoff tick
+   * (#1763): an outstanding last-writer release, which queues behind a retry
+   * that is running right now, and, while a writer is connected (again), the
+   * persist of the edits typed during the Save. Without a writer the release
+   * flushes them.
+   */
+  function resumeAfterCommit(room: CollabRoom): void {
+    if (room.deferredReleaseAttempts > 0) {
+      cancelDeferredRelease(room);
+      void retryDeferredRelease(room);
+    }
+    if (
+      room.admission
+      && isCollabCommitPending(room.persistError)
+      && [...room.sockets.values()].some((socket) => socket.writable)
+    ) {
+      // `enqueuePersist` logs the outcome of this flush.
+      void persist.flushCollabPersist(room).catch(() => undefined);
+    }
   }
 
   async function demoteSocket(pageId: number, connId: string): Promise<void> {
@@ -764,6 +847,8 @@ export async function createCollabRuntime(
       attached: false,
       flushing: false,
       emptyGrace: null,
+      deferredRelease: null,
+      deferredReleaseAttempts: 0,
       persistTimer: null,
       persistChain: Promise.resolve(),
       persistError: null,
@@ -844,7 +929,10 @@ export async function createCollabRuntime(
     if (room.admission) {
       // An unreadable admission is not an absent one. Keep ownership and
       // surface the failure rather than leaking this token behind a new one.
-      await withPageWriteTransaction([room.pageId], async () => undefined, { admission: room.admission });
+      await withPageWriteTransaction([room.pageId], async () => undefined, {
+        admission: room.admission,
+        ownCollabCommit: 'proceed',
+      });
       return expectedLifecycleRevision === undefined
         || room.admission.lifecycleRevision === expectedLifecycleRevision;
     }
@@ -1016,6 +1104,11 @@ export async function createCollabRuntime(
           }
           try {
             let applied = false;
+            // The page's own pending collaborative Save does not fence an
+            // in-memory apply: it publishes the snapshot it captured before
+            // reserving, and this room's persist waits for it (#1763). A foreign
+            // pending write, a stale lifecycle or admission, a fenced runtime or
+            // an unreadable fence still closes below.
             await withPageWriteTransaction([pageId], async () => {
               // Disconnect/demotion can win while this frame waits for the
               // lifecycle lock. It must not write behind their final flush.
@@ -1023,7 +1116,7 @@ export async function createCollabRuntime(
                 || !socket.writable || room.admission?.id !== admission.id) return;
               apply();
               applied = true;
-            }, { admission });
+            }, { admission, ownCollabCommit: 'proceed' });
             if (!applied) return 'dropped';
           } catch (err) {
             // A failed read is not a released token. Keep ownership until
@@ -1232,6 +1325,11 @@ export async function createCollabRuntime(
         }
       } else {
         await releaseAdmissionIfNoWriters(room);
+        // A flush that waits for the page's own pending Save keeps the
+        // admission without throwing; the heap is going away all the same.
+        if (room.admission) {
+          logger.warn({ err: room.persistError, pageId: room.pageId }, 'collab: room close retained durable admission');
+        }
       }
     } catch (err) {
       // The heap is going away regardless (shutdown, tombstone, or reset).
@@ -1240,6 +1338,7 @@ export async function createCollabRuntime(
       // the Redis subscription during teardown.
       logger.warn({ err, pageId: room.pageId }, 'collab: room close retained durable admission');
     }
+    cancelDeferredRelease(room);
     await sremSuffixes(room.pageId, room.heldActiveSuffixes);
     room.heldActiveSuffixes.clear();
     persist.endCollabReset(room.pageId);
@@ -1255,6 +1354,7 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
+    cancelDeferredRelease(room);
     await sremSuffixes(pageId, room.heldActiveSuffixes);
     persist.endCollabReset(pageId);
     room.doc.destroy();
@@ -1268,7 +1368,10 @@ export async function createCollabRuntime(
     const room = rooms.get(pageId);
     if (room) {
       sendControl(room, control);
-      if (control.type === 'pages_version') room.pagesVersion = control.version;
+      if (control.type === 'pages_version') {
+        room.pagesVersion = control.version;
+        resumeAfterCommit(room);
+      }
     }
     void publish(pageId, {
       origin: podId,

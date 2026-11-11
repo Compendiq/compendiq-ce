@@ -76,6 +76,13 @@ page locks, then, for restrictive policy writes, activation-state `FOR SHARE`
 (taken by the migration-151 tightening trigger after the writer's page
 locks). A durable intent precedes external mutation; its effect gate must
 finish before settlement. Unknown outcomes stay pending without TTL expiry.
+A pending collaborative commit (`collab.commit.confluence[.media]`) is transient
+only for its own room's steps that write no protected page row
+(`ownCollabCommit: 'proceed'`: frames, peer updates, state reads, joins). The
+room's persists wait for it (`'defer'` answers `collab_commit_pending`) and run
+again on the successful commit's `pages_version` cue, the next edit, or the
+last-writer release, which retries. Every other writer, including a second
+Save, and every other pending intent keep `page_write_busy` (#1763).
 Recovery requires server-observed fencing evidence, never a caller's assertion,
 a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable
 mutation intent: capture current authority and revisions, then check the same

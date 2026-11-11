@@ -47,13 +47,15 @@ import {
   getDefaultCollabRuntime,
   COLLAB_ACTIVE_TTL_SEC,
   COLLAB_PING_INTERVAL_MS,
+  COLLAB_EMPTY_ROOM_GRACE_MS,
+  type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
-import { withPageWriteTransaction } from '../../core/services/page-write-admission.js';
+import { isCollabCommitPending, withPageWriteTransaction } from '../../core/services/page-write-admission.js';
 import { seedRestrictionFixture } from './page-restriction.test-helpers.js';
 
 const dbAvailable = await isDbAvailable();
@@ -2452,6 +2454,410 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
     expect(page.rows[0]!.version).toBe(4);
     ws.close();
+  });
+
+  describe('collaborative Save window (#1763)', () => {
+    type SaveWindowClient = {
+      ws: WebSocket;
+      doc: Y.Doc;
+      closeInfo: { code: number; reason: string } | null;
+      closed: Promise<{ code: number; reason: string }>;
+      /** True once the client's document shows the text, false after 8 s; never rejects. */
+      sees: (text: string) => Promise<boolean>;
+    };
+
+    async function seedSaveWindowPage(): Promise<{
+      saver: { token: string; userId: string };
+      coEditor: { token: string; userId: string };
+      pageId: number;
+      confluenceId: string;
+    }> {
+      const saver = await createUser(`collab_sw_saver_${pageIdEntropy()}`);
+      const coEditor = await createUser(`collab_sw_peer_${pageIdEntropy()}`);
+      const spaceKey = `SW${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+      const confluenceId = `cf-sw-${pageIdEntropy()}`;
+      const pageId = await insertConfluencePage({
+        spaceKey,
+        confluenceId,
+        version: 4,
+        bodyHtml: '<p>save-window-seed</p>',
+      });
+      await grantSpaceRead(saver.userId, spaceKey);
+      await grantSpaceRead(coEditor.userId, spaceKey);
+      await seedConfluenceCredentials(saver.userId);
+      await enableCollabFlag();
+      return { saver, coEditor, pageId, confluenceId };
+    }
+
+    async function joinSaveWindowClient(pageId: number, token: string): Promise<SaveWindowClient> {
+      const ws = await openWritableWhatwg(pageId, token);
+      const doc = new Y.Doc();
+      const waiters = new Set<() => void>();
+      const closed = Promise.withResolvers<{ code: number; reason: string }>();
+      const client: SaveWindowClient = {
+        ws,
+        doc,
+        closeInfo: null,
+        closed: closed.promise,
+        sees: (text) => {
+          const { promise, resolve } = Promise.withResolvers<boolean>();
+          const timer = setTimeout(() => {
+            waiters.delete(check);
+            resolve(false);
+          }, 8_000);
+          function check(): void {
+            if (!yDocToHtml(doc).includes(text)) return;
+            waiters.delete(check);
+            clearTimeout(timer);
+            resolve(true);
+          }
+          waiters.add(check);
+          check();
+          return promise;
+        },
+      };
+      ws.addEventListener('message', (event) => {
+        if (!(event.data instanceof ArrayBuffer)) return;
+        const frame = new Uint8Array(event.data);
+        if (frame[0] !== MESSAGE_SYNC) return;
+        applySyncFrame(doc, frame);
+        for (const waiter of [...waiters]) waiter();
+      });
+      ws.addEventListener('close', (event) => {
+        client.closeInfo = { code: event.code, reason: String(event.reason ?? '') };
+        closed.resolve(client.closeInfo);
+      });
+      // The message listener above applies the SyncStep2 reply to `doc`.
+      await exchangeSyncStep1(ws, doc);
+      return client;
+    }
+
+    function typeInSaveWindow(client: SaveWindowClient, text: string): void {
+      const before = Y.encodeStateVector(client.doc);
+      client.doc.transact(() => {
+        const paragraph = new Y.XmlElement('paragraph');
+        const content = new Y.XmlText();
+        content.insert(0, text);
+        paragraph.insert(0, [content]);
+        client.doc.getXmlFragment('default').push([paragraph]);
+      });
+      client.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(client.doc, before)));
+    }
+
+    /** The provider PUT waits for `release`; `started` resolves once the intent's remote phase began. */
+    function gateConfluencePut(confluenceId: string, localVersion: number): {
+      started: Promise<void>;
+      release: () => void;
+    } {
+      const started = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: localVersion, when: '2026-11-10T00:00:00Z' },
+      } as never);
+      vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async (_id, title, storage) => {
+        started.resolve();
+        await gate.promise;
+        return {
+          id: confluenceId,
+          title,
+          status: 'current',
+          type: 'page',
+          version: { number: localVersion + 1, when: '2026-11-10T00:01:00Z' },
+          body: { storage: { value: storage } },
+        } as never;
+      });
+      return { started: started.promise, release: () => gate.resolve() };
+    }
+
+    function startSave(pageId: number, token: string, payload: CollabCommit) {
+      return app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload,
+      });
+    }
+
+    async function activePurposes(pageId: number): Promise<string[]> {
+      const admissions = await query<{ purpose: string }>(
+        `SELECT purpose FROM page_runtime_admissions
+          WHERE page_id = $1 AND released_at IS NULL
+          ORDER BY purpose`,
+        [pageId],
+      );
+      return admissions.rows.map((row) => row.purpose);
+    }
+
+    async function storedBodyHtml(pageId: number): Promise<string> {
+      const page = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+      return page.rows[0]!.body_html;
+    }
+
+    /**
+     * Real timer on purpose: the empty-room grace must also run out while the
+     * Save is pending, as a 12 s provider PUT outlasts the 10 s production
+     * grace; a grace drop that runs after settlement releases by itself and
+     * would hide the defect. The second step waits for that grace drop on the
+     * room's ownership chain; while the Save is pending it changes nothing.
+     */
+    async function waitForGraceDrop(runtime: CollabRuntime, pageId: number): Promise<void> {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, COLLAB_EMPTY_ROOM_GRACE_MS + 250);
+      await promise;
+      await runtime.dropRoom(pageId).catch(() => undefined);
+    }
+
+    it('typing during a pending Save keeps every writer connected and live (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        typeInSaveWindow(b, 'CO_EDITOR_DURING_SAVE');
+        const coEditorSeen = await Promise.race([b.closed.then(() => false), a.sees('CO_EDITOR_DURING_SAVE')]);
+        expect(b.closeInfo).toBeNull();
+        expect(coEditorSeen).toBe(true);
+        typeInSaveWindow(a, 'SAVER_DURING_OWN_SAVE');
+        const saverSeen = await Promise.race([a.closed.then(() => false), b.sees('SAVER_DURING_OWN_SAVE')]);
+        expect(a.closeInfo).toBeNull();
+        expect(saverSeen).toBe(true);
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(a.closeInfo).toBeNull();
+        expect(b.closeInfo).toBeNull();
+        await vi.waitFor(async () => {
+          const body = await storedBodyHtml(pageId);
+          expect(body).toContain('CO_EDITOR_DURING_SAVE');
+          expect(body).toContain('SAVER_DURING_OWN_SAVE');
+        }, { timeout: 5_000 });
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+        b.ws.close();
+      }
+    });
+
+    it('the room persist waits for its own pending Save, and the commit\'s cue then writes it (#1763)', async () => {
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const contentRevision = async (): Promise<string> => (await query<{ revision: string }>(
+        'SELECT content_revision::text AS revision FROM pages WHERE id = $1',
+        [pageId],
+      )).rows[0]!.revision;
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        const before = await contentRevision();
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        await expect(persist.flushCollabPersist(room)).rejects.toMatchObject({
+          statusCode: 409,
+          reason: 'collab_commit_pending',
+        });
+        expect(await contentRevision()).toBe(before);
+        typeInSaveWindow(a, 'TYPED_DURING_SAVE');
+        await vi.waitFor(() => {
+          expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('TYPED_DURING_SAVE');
+        });
+        expect(await contentRevision()).toBe(before);
+        // Let this edit's own debounced persist run inside the window too. It
+        // waits and nothing re-arms it, so once the Save settles only the
+        // commit's `pages_version` cue can write it: no later edit, no leave.
+        const forced = room.persistError;
+        await vi.waitFor(() => {
+          expect(room.persistTimer).toBeNull();
+          expect(room.persistError).not.toBe(forced);
+          expect(isCollabCommitPending(room.persistError)).toBe(true);
+        }, { timeout: persist.COLLAB_PERSIST_DEBOUNCE_MS + 3_000 });
+        expect(await contentRevision()).toBe(before);
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        const intents = await query<{ kind: string; status: string }>(
+          'SELECT kind, status FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[]',
+          [pageId],
+        );
+        expect(intents.rows).toEqual([{ kind: 'collab.commit.confluence', status: 'completed' }]);
+        await vi.waitFor(async () => {
+          expect(await storedBodyHtml(pageId)).toContain('TYPED_DURING_SAVE');
+        }, { timeout: 5_000 });
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+      }
+    });
+
+    it('a writable rejoin during a pending Save is admitted (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      let rejoin: WebSocket | undefined;
+      try {
+        await put.started;
+        b.ws.close();
+        await b.closed;
+        const revision = await pageLifecycleRevision(pageId);
+        rejoin = openWhatwg(pageId, coEditor.token, `?expectedLifecycleRevision=${encodeURIComponent(revision)}`);
+        const outcome = await Promise.race([
+          waitControl(rejoin, (control) => control.type === 'writable_admission').catch(() => null),
+          waitClose(rejoin).catch(() => null),
+        ]);
+        expect(outcome).toMatchObject({ type: 'writable_admission', lifecycleRevision: revision });
+        await exchangeSyncStep1(rejoin, new Y.Doc());
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+      } finally {
+        put.release();
+        await save;
+        rejoin?.close();
+        a.ws.close();
+      }
+    });
+
+    it('the last writer leaving during a pending Save is released once the Save settles (#1763)', async () => {
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'Saved', Y.snapshot(a.doc)));
+      try {
+        await put.started;
+        a.ws.close();
+        await a.closed;
+        await waitForGraceDrop(getDefaultCollabRuntime()!, pageId);
+        // Fail closed while the Save is pending: the room's flush could not run.
+        expect(await activePurposes(pageId)).toContain('collab_room');
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+        await vi.waitFor(async () => {
+          expect(await activePurposes(pageId)).toEqual([]);
+        }, { timeout: 5_000 });
+        await expect(assertNoLiveCollabRoom(pageId)).resolves.toBeUndefined();
+        expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      } finally {
+        put.release();
+        await save;
+      }
+    });
+
+    it('a peer pod\'s last writer leaving during a Save is released by the commit\'s cue (#1763)', async () => {
+      const previousRetry = process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+      // A 60 s backoff leaves only the commit's `pages_version` cue, delivered
+      // over Redis, to release pod A inside the wait below.
+      process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = '60000';
+      const { saver, pageId, confluenceId } = await seedSaveWindowPage();
+      const podA = await createCollabRuntime(getRedisClient()!, 'save-window-pod-a');
+      try {
+        const revision = await pageLifecycleRevision(pageId);
+        await podA.attachSocket(pageId, {
+          id: 'pod-a-writer',
+          ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+          userId: saver.userId,
+          writable: true,
+          expectedLifecycleRevision: revision,
+        });
+        const put = gateConfluencePut(confluenceId, 4);
+        const save = startSave(pageId, saver.token, {
+          title: 'Saved on the app pod',
+          expectedLifecycleRevision: revision,
+          expectedDocumentState: EMPTY_DOCUMENT_STATE,
+        });
+        try {
+          await put.started;
+          await podA.detachSocket(pageId, 'pod-a-writer');
+          await waitForGraceDrop(podA, pageId);
+          expect(await activePurposes(pageId)).toContain('collab_room');
+
+          put.release();
+          const saved = await save;
+          expect(saved.statusCode, saved.body).toBe(200);
+          await vi.waitFor(async () => {
+            expect(await activePurposes(pageId)).toEqual([]);
+          }, { timeout: 5_000 });
+          expect(podA.getRoom(pageId)).toBeUndefined();
+        } finally {
+          put.release();
+          await save;
+        }
+      } finally {
+        if (previousRetry === undefined) delete process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS;
+        else process.env.COLLAB_DEFERRED_RELEASE_RETRY_MS = previousRetry;
+        await podA.close();
+      }
+    });
+
+    it('five Saves in a row never disconnect a co-editor typing inside each (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      try {
+        for (let round = 1; round <= 5; round += 1) {
+          const put = gateConfluencePut(confluenceId, 3 + round);
+          const save = startSave(pageId, saver.token, commitPayload(a.ws, `Save ${round}`));
+          try {
+            await put.started;
+            typeInSaveWindow(b, `CO_EDITOR_${round}`);
+            const seen = await Promise.race([b.closed.then(() => false), a.sees(`CO_EDITOR_${round}`)]);
+            expect(b.closeInfo).toBeNull();
+            expect(seen).toBe(true);
+          } finally {
+            put.release();
+            await save;
+          }
+          const saved = await save;
+          expect(saved.statusCode, saved.body).toBe(200);
+        }
+        expect(b.closeInfo).toBeNull();
+        const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+        expect(page.rows[0]!.version).toBe(9);
+        await vi.waitFor(async () => {
+          const body = await storedBodyHtml(pageId);
+          for (let round = 1; round <= 5; round += 1) expect(body).toContain(`CO_EDITOR_${round}`);
+        }, { timeout: 5_000 });
+      } finally {
+        a.ws.close();
+        b.ws.close();
+      }
+    });
+
+    it('a second Save while one is pending is still refused 409 page_write_busy (#1763)', async () => {
+      const { saver, coEditor, pageId, confluenceId } = await seedSaveWindowPage();
+      const a = await joinSaveWindowClient(pageId, saver.token);
+      const b = await joinSaveWindowClient(pageId, coEditor.token);
+      const put = gateConfluencePut(confluenceId, 4);
+      const save = startSave(pageId, saver.token, commitPayload(a.ws, 'First'));
+      try {
+        await put.started;
+        const second = await startSave(pageId, coEditor.token, commitPayload(b.ws, 'Second'));
+        expect(second.statusCode).toBe(409);
+        expect(second.json()).toMatchObject({ reason: 'page_write_busy' });
+
+        put.release();
+        const saved = await save;
+        expect(saved.statusCode, saved.body).toBe(200);
+      } finally {
+        put.release();
+        await save;
+        a.ws.close();
+        b.ws.close();
+      }
+    });
   });
 });
 
