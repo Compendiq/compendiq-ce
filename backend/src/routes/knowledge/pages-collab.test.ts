@@ -20,6 +20,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
+import * as awarenessProtocol from 'y-protocols/awareness';
 import { WebSocket as NodeWs } from 'ws';
 
 vi.mock('node:dns/promises', () => ({
@@ -36,7 +37,7 @@ import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
 import { generateAccessToken, generateRefreshToken, revokeAllUserTokens } from '../../core/plugins/auth.js';
 import { logger } from '../../core/utils/logger.js';
-import { COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
+import { COLLAB_UPGRADE_WINDOW_SEC, COLLAB_WS_PROTOCOL, type CollabCommit } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
@@ -65,6 +66,7 @@ const MESSAGE_SYNC = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
 const MESSAGE_AWARENESS = 1;
+const MESSAGE_QUERY_AWARENESS = 3;
 
 let app: FastifyInstance;
 const writableSessionRevisions = new WeakMap<object, string>();
@@ -461,6 +463,8 @@ describe.skipIf(!canRun)('GET /api/collab/:pageId handshake (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened).toBe(true);
     expect(closed.code).toBe(4403);
+    // The client parses this reason before the first sync (#1895).
+    expect(closed.reason).toBe('flag_off');
   });
 
   it('missing / folder / trashed page → 4404 at join', async () => {
@@ -623,6 +627,7 @@ describe.skipIf(!canRun)('read-only PROTOCOL.md §6 (#1444)', () => {
     ws.send(update);
     const closed = await waitClose(ws);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('readonly');
   });
 });
 
@@ -761,12 +766,6 @@ describe('GET /api/collab/:pageId route options (#1444)', () => {
     expect(src).toMatch(/rateLimit:\s*false/);
     expect(src).not.toMatch(/rateLimit:\s*\{\s*max:\s*UPGRADE_LIMIT_PER_MIN/);
   });
-
-  it('pending frames are capped in the WS join handler', () => {
-    const src = fs.readFileSync(fileURLToPath(new URL('./pages-collab.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/pending\.length\s*>=\s*2/);
-    expect(src).toMatch(/pending\.length = 0/);
-  });
 });
 
 describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
@@ -780,6 +779,232 @@ describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
     const closed = await waitClose(ws);
     expect(closed.opened, 'must complete 101 before refusing').toBe(true);
     expect(closed.code).toBe(4403);
+    expect(closed.reason).toBe('rate_limited');
+  });
+
+  it('counts upgrades in a COLLAB_UPGRADE_WINDOW_SEC window, the wait the client Retry honours (#1895)', async () => {
+    const { token, userId } = await createUser('collab_rl_window');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+
+    const ws = await openAndSync(pageId, token);
+    const ttl = await getRedisClient()!.ttl(`collab:upgrade:${userId}`);
+    expect(ttl).toBeGreaterThan(COLLAB_UPGRADE_WINDOW_SEC - 5);
+    expect(ttl).toBeLessThanOrEqual(COLLAB_UPGRADE_WINDOW_SEC);
+    ws.close();
+    await waitClose(ws);
+  });
+});
+
+/** Own-clientID awareness update carrying a marker the server must keep. */
+function encodeAwarenessProbe(): { frame: Uint8Array; clientId: number } {
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awareness.setLocalState({ probe: 'pre-live' });
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+  encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, [doc.clientID]));
+  const probe = { frame: encoding.toUint8Array(encoder), clientId: doc.clientID };
+  awareness.destroy();
+  doc.destroy();
+  return probe;
+}
+
+function awarenessFrameHasProbe(frame: Uint8Array, clientId: number): boolean {
+  if (frame[0] !== MESSAGE_AWARENESS) return false;
+  const decoder = decoding.createDecoder(frame);
+  decoding.readVarUint(decoder);
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), 'test');
+  const found = awareness.getStates().get(clientId)?.probe === 'pre-live';
+  awareness.destroy();
+  doc.destroy();
+  return found;
+}
+
+describe.skipIf(!canRun)('pre-live frame buffer (#1895)', () => {
+  /**
+   * Holds the join inside `attachSocket` until the server has read
+   * `releaseAfter` frames, so every frame the test sends arrives before the
+   * socket goes live.
+   */
+  function holdJoinUntilFrames(releaseAfter: number) {
+    const runtime = getDefaultCollabRuntime();
+    if (!runtime) throw new Error('collab runtime is not initialised');
+    const attach = runtime.attachSocket;
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const spy = vi.spyOn(runtime, 'attachSocket').mockImplementationOnce(async (pageId, socket) => {
+      let received = 0;
+      // Registered after the route's own listener, so the route has already
+      // buffered (or refused) each frame this counts.
+      socket.ws.on('message', () => {
+        received += 1;
+        if (received === releaseAfter) release.resolve();
+      });
+      entered.resolve();
+      await release.promise;
+      return attach(pageId, socket);
+    });
+    return {
+      entered: entered.promise,
+      release: () => release.resolve(),
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  it('keeps 3 frames sent before the join completes and applies them in order after live', async () => {
+    const { token, userId } = await createUser('collab_prelive_order');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(3);
+    try {
+      const revision = await pageLifecycleRevision(pageId);
+      const ws = openWhatwg(pageId, token, `?expectedLifecycleRevision=${encodeURIComponent(revision)}`);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // y-websocket's own pre-live traffic plus one more frame. The replies
+      // prove the order: F2's snapshot holds F1's state, and comes before
+      // F3's SyncStep2.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      ws.send(encodeSyncStep1(new Y.Doc()));
+
+      const snapshotIndex = () => frames.findIndex((frame) => awarenessFrameHasProbe(frame, probe.clientId));
+      const syncStep2Index = () => frames.findIndex((frame) => frame[0] === MESSAGE_SYNC && frame[1] === SYNC_STEP2);
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshotIndex() < 0 || syncStep2Index() < 0) {
+          throw new Error('replies to the buffered frames are pending');
+        }
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshotIndex()).toBeGreaterThanOrEqual(0);
+      expect(snapshotIndex()).toBeLessThan(syncStep2Index());
+      expect(frames.some((frame) => decodeControl(frame)?.type === 'writable_admission')).toBe(true);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  // The gateway buffers at most 64 frames and 1 MiB before live
+  // (docs/architecture/12-realtime-collaboration.md).
+  const largeFrame = new Uint8Array(600 * 1024);
+  largeFrame[0] = MESSAGE_AWARENESS;
+  const halfMiBFrame = new Uint8Array(512 * 1024);
+  halfMiBFrame[0] = MESSAGE_AWARENESS;
+
+  it.each([
+    { budget: 'frame count', frames: Array.from({ length: 65 }, () => new Uint8Array([MESSAGE_QUERY_AWARENESS])) },
+    { budget: 'byte budget', frames: [largeFrame, largeFrame] },
+    // 1 MiB + 1 byte: refused by the byte bound alone, three frames in.
+    { budget: 'one byte over 1 MiB', frames: [halfMiBFrame, halfMiBFrame, new Uint8Array([MESSAGE_QUERY_AWARENESS])] },
+  ])('closes an over-full pre-live buffer ($budget) with 1013 join_backlog, never 4403', async ({ frames }) => {
+    const { token, userId } = await createUser('collab_prelive_backlog');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(frames.length);
+    try {
+      const ws = openWhatwg(pageId, token);
+      await waitOpen(ws);
+      await join.entered;
+      for (const frame of frames) ws.send(frame);
+      const closed = await waitClose(ws, 2_000);
+      expect({ code: closed.code, reason: closed.reason }).toEqual({ code: 1013, reason: 'join_backlog' });
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  // Accept-at-the-bound pins: with the overflow rows above they fix the bound
+  // at exactly 64 frames and exactly 1 MiB.
+  it('keeps exactly 64 frames before live and applies every one of them', async () => {
+    const { token, userId } = await createUser('collab_prelive_frame_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(64);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const frames: Uint8Array[] = [];
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) frames.push(new Uint8Array(event.data));
+      });
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      await waitOpen(ws);
+      await join.entered;
+
+      // One awareness state, then 63 queries: each query answers with a
+      // snapshot holding that state, so 63 replies prove all 64 frames applied.
+      const probe = encodeAwarenessProbe();
+      ws.send(probe.frame);
+      for (let i = 0; i < 63; i++) ws.send(new Uint8Array([MESSAGE_QUERY_AWARENESS]));
+      const snapshots = () => frames.filter((frame) => awarenessFrameHasProbe(frame, probe.clientId)).length;
+      await vi.waitFor(() => {
+        if (observed.close) return;
+        if (snapshots() < 63) throw new Error('replies to the buffered frames are pending');
+      }, { timeout: 8_000 });
+
+      expect(observed.close).toBeNull();
+      expect(snapshots()).toBe(63);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
+  });
+
+  it('keeps exactly 1 MiB before live and stays open after replaying it', async () => {
+    const { token, userId } = await createUser('collab_prelive_byte_bound');
+    const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
+    await enableCollabFlag();
+    const join = holdJoinUntilFrames(2);
+    try {
+      const ws = openWhatwg(pageId, token);
+      const observed: { close: { code: number; reason: string } | null } = { close: null };
+      ws.addEventListener('close', (event) => {
+        observed.close = { code: event.code, reason: event.reason };
+      });
+      const lifecycleControl = waitControl(ws, (control) => control.type === 'page_lifecycle');
+      await waitOpen(ws);
+      await join.entered;
+
+      ws.send(halfMiBFrame);
+      ws.send(halfMiBFrame);
+      // The attach completed, then a live round trip proves the socket
+      // survived both buffered frames.
+      await lifecycleControl;
+      await exchangeSyncStep1(ws, new Y.Doc());
+
+      expect(observed.close).toBeNull();
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await waitClose(ws);
+    } finally {
+      join.release();
+      join.restore();
+    }
   });
 });
 
@@ -1575,6 +1800,207 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(page.rows[0]!.quality_status).toBe('pending');
     expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
     ws.close();
+  });
+
+  // #1762 — the room's own debounced autosave lands while the provider read
+  // is in flight, i.e. after the route's first read and before the reservation.
+  async function typeIntoLiveRoom(ws: WebSocket, text: string): Promise<Y.Doc> {
+    const doc = new Y.Doc();
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    const paragraph = new Y.XmlElement('paragraph');
+    const typed = new Y.XmlText();
+    typed.insert(0, text);
+    paragraph.insert(0, [typed]);
+    const fragment = doc.getXmlFragment('default');
+    fragment.insert(fragment.length, [paragraph]);
+    ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+    // The reply is ordered after the update on the same socket/frame chain.
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    return doc;
+  }
+
+  async function contentRevisionOf(pageId: number): Promise<bigint> {
+    const row = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    return BigInt(row.rows[0]!.content_revision);
+  }
+
+  async function commitIntents(pageId: number): Promise<Array<{ kind: string; status: string }>> {
+    const rows = await query<{ kind: string; status: string }>(
+      `SELECT kind, status FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+      [pageId],
+    );
+    return rows.rows;
+  }
+
+  function confluenceUpdateEcho(confluenceId: string) {
+    return vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+      async (_id, title, storage) => ({
+        id: confluenceId,
+        title,
+        status: 'current',
+        type: 'page',
+        version: { number: 5, when: '2026-11-10T00:00:01Z' },
+        body: { storage: { value: storage } },
+      }) as never,
+    );
+  }
+
+  /**
+   * Save right after typing while getPage outlasts the 2 s debounce. getPage
+   * lands the pending autosave through flushCollabPersist (the same
+   * enqueuePersist → persistAndSnapshot path the debounce timer runs) instead
+   * of sleeping past the timer.
+   */
+  async function saveWhileAutosaveLands(change: 'none' | 'lifecycle' | 'remote') {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const doc = await typeIntoLiveRoom(ws, 'typed right before Save');
+    const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+    expect(room.persistTimer, 'the debounced autosave is still pending at Save').not.toBeNull();
+    const before = await contentRevisionOf(pageId);
+    let during: bigint | undefined;
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      await persist.flushCollabPersist(room);
+      during = await contentRevisionOf(pageId);
+      if (change === 'lifecycle') {
+        await query(
+          'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+          [pageId],
+        );
+      }
+      return {
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: change === 'remote' ? 7 : 4, when: '2026-11-10T00:00:00Z' },
+      } as never;
+    });
+    const updatePage = confluenceUpdateEcho(confluenceId);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: commitPayload(ws, 'Saved during autosave', Y.snapshot(doc)),
+    });
+    return { res, pageId, ws, doc, updatePage, before, during };
+  }
+
+  it('room autosave landing during a slow getPage does not refuse the Save (#1762)', async () => {
+    const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands('none');
+    try {
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: pageId,
+        version: 5,
+        source: 'confluence',
+        pushedToConfluence: true,
+      });
+      expect(during).toBeGreaterThan(before);
+      expect(updatePage).toHaveBeenCalledTimes(1);
+      expect(updatePage.mock.calls[0]![3]).toBe(4);
+      expect(String(updatePage.mock.calls[0]![2])).toContain('typed right before Save');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      ws.close();
+      doc.destroy();
+    }
+  });
+
+  it.each(['lifecycle', 'remote'] as const)(
+    'a %s change in the same autosave window still refuses before any intent (#1762)',
+    async (change) => {
+      const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands(change);
+      try {
+        expect(res.statusCode).toBe(409);
+        expect(res.json()).toMatchObject(change === 'lifecycle'
+          ? { reason: 'stale_lifecycle' }
+          : { code: 'confluence_modified', remoteVersion: 7, localVersion: 4 });
+        expect(during).toBeGreaterThan(before);
+        expect(updatePage).not.toHaveBeenCalled();
+        expect(await commitIntents(pageId)).toEqual([]);
+        const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+        expect(page.rows[0]!.version).toBe(4);
+      } finally {
+        ws.close();
+        doc.destroy();
+      }
+    },
+  );
+
+  it('peer-pod autosave landing during the commit pod getPage does not refuse the Save (#1762)', async () => {
+    const { token, userId } = await createUser(`collab_cf_peer_${pageIdEntropy()}`);
+    const spaceKey = `PP${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `cf-peer-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: 4,
+      bodyHtml: '<p>peer-seed</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await seedConfluenceCredentials(userId);
+    await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
+    const podA = await createCollabRuntime(getRedisClient()!, 'autosave-peer-pod-a');
+    try {
+      await podA.attachSocket(pageId, {
+        id: 'pod-a-writer',
+        ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+        userId,
+        writable: true,
+        expectedLifecycleRevision: editingRevision,
+      });
+      const roomA = podA.getRoom(pageId)!;
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'typed on pod A');
+      paragraph.insert(0, [typed]);
+      const fragment = roomA.doc.getXmlFragment('default');
+      fragment.insert(fragment.length, [paragraph]);
+      expect(roomA.persistTimer, 'pod A autosave is still pending at Save').not.toBeNull();
+      const before = await contentRevisionOf(pageId);
+      let during: bigint | undefined;
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        await persist.flushCollabPersist(roomA);
+        during = await contentRevisionOf(pageId);
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: 4, when: '2026-11-10T00:00:00Z' },
+        } as never;
+      });
+      const updatePage = confluenceUpdateEcho(confluenceId);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          title: 'Saved from pod B',
+          expectedLifecycleRevision: editingRevision,
+          expectedDocumentState: Buffer.from(Y.encodeSnapshot(Y.snapshot(roomA.doc))).toString('base64'),
+        },
+      });
+
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ id: pageId, version: 5, pushedToConfluence: true });
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      expect(during).toBeGreaterThan(before);
+      expect(String(updatePage.mock.calls[0]?.[2])).toContain('typed on pod A');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      await podA.close();
+    }
   });
 
   it('reserves terminal-only durable ownership before the first pasted-image mutation', async () => {

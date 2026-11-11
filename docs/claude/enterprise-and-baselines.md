@@ -206,12 +206,20 @@ Collaborative Save posts a bounded base64 Yjs Snapshot containing clocks **and
 the delete set**, not document content. The server obtains a freshly correlated
 cross-process room snapshot, rechecks the exact active-owner set, transport
 generation, lifecycle and current authority, and refuses if the Save-start
-snapshot is not covered. A successful acknowledgment covers only that captured
+snapshot is not covered. A Confluence commit pins the lifecycle through the
+Save's own request admission (`collab_request`) and the local and remote
+version, never a `content_revision` read before the snapshot, because the
+room's own 2 s persist may land during the provider read (#1762). A successful
+acknowledgment covers only that captured
 snapshot; later local edits keep the editor open. Dirty connected and offline
 drafts are navigation/unload guarded. Lifecycle/freeze/permission/document loss
 disconnects the provider but keeps an inert recoverable Y.Doc with **Download
 draft** and explicitly confirmed **Open current version**; thaw or reconnect
 never automatically replays that blocked draft.
+Before the first sync no draft exists: the editor shows one reason-specific
+join message (Retry for `rate_limited` after the upgrade window and for an
+interrupted join), never that banner or **Download draft**, and Save stays
+blocked (#1895).
 
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or

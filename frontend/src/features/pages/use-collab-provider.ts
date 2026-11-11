@@ -1,9 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import * as decoding from 'lib0/decoding';
 import { Awareness } from 'y-protocols/awareness';
-import { COLLAB_WS_PROTOCOL, CollabWritableAdmissionControlSchema, PageLifecycleEventSchema } from '@compendiq/contracts';
+import {
+  COLLAB_UPGRADE_WINDOW_SEC,
+  COLLAB_WS_PROTOCOL,
+  CollabRefusalReasonSchema,
+  CollabWritableAdmissionControlSchema,
+  PageLifecycleEventSchema,
+  type CollabRefusalReason,
+} from '@compendiq/contracts';
 import { refreshAccessTokenOnce, RefreshUnavailableError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
@@ -14,7 +21,13 @@ const MESSAGE_CONTROL = 4;
 const REJOIN_BACKOFF_START_MS = 1_000;
 const REJOIN_BACKOFF_CAP_MS = 30_000;
 
-export type CollabJoinError = 'unauthorized' | 'forbidden' | 'not_found';
+export type CollabJoinError =
+  | 'unauthorized'
+  | 'forbidden'
+  | 'not_found'
+  | 'rate_limited'
+  | 'flag_off'
+  | 'join_interrupted';
 export type CollabReadOnlyReason =
   | 'frozen'
   | 'lifecycle_changed'
@@ -29,6 +42,12 @@ export interface UseCollabProviderResult {
   synced: boolean;
   awarenessUsers: CollabAwarenessUser[];
   error: CollabJoinError | null;
+  /** Before the first sync only: an attempt closed transiently and y-websocket is reconnecting. */
+  reconnecting: boolean;
+  /** `retry()` would rejoin now: an interrupted join, or `rate_limited` once the upgrade window passed. */
+  canRetry: boolean;
+  /** Rejoins after a retryable refusal before the first sync; a no-op otherwise. */
+  retry: () => void;
   connected: boolean;
   writable: boolean;
   readOnlyReason: CollabReadOnlyReason | null;
@@ -54,11 +73,29 @@ function readAwarenessUsers(awareness: Awareness, selfUserId: string | undefined
   return users;
 }
 
-function closeCodeError(code: number): CollabJoinError | null {
-  if (code === 4401) return 'unauthorized';
-  if (code === 4403) return 'forbidden';
+/** Join error before the first sync for each 4403 reason the gateway names. */
+const PRE_SYNC_REFUSALS: Record<CollabRefusalReason, Exclude<CollabJoinError, 'unauthorized' | 'not_found'>> = {
+  forbidden: 'forbidden',
+  readonly: 'join_interrupted',
+  rate_limited: 'rate_limited',
+  flag_off: 'flag_off',
+};
+
+/**
+ * Join error for a terminal close other than 4401. A 4403 reason only changes
+ * the outcome before the first sync; after it, and for any reason the client
+ * does not know, 4403 stays `forbidden` (fail closed).
+ */
+function terminalJoinError(
+  code: number,
+  reason: string,
+  hasSynced: boolean,
+): Exclude<CollabJoinError, 'unauthorized'> | null {
   if (code === 4404) return 'not_found';
-  return null;
+  if (code !== 4403) return null;
+  const refusal = CollabRefusalReasonSchema.safeParse(reason);
+  if (hasSynced || !refusal.success) return 'forbidden';
+  return PRE_SYNC_REFUSALS[refusal.data];
 }
 
 /**
@@ -71,6 +108,11 @@ function closeCodeError(code: number): CollabJoinError | null {
  * - A writable admission is acknowledged explicitly; page state is not permission.
  * - Lifecycle, permission, and document resets preserve the Y.Doc for recovery,
  *   disconnect it, and never silently replay it into a new lifecycle.
+ * - Before the first sync a 4403 reason is parsed with `CollabRefusalReasonSchema`:
+ *   `rate_limited` (Retry once `COLLAB_UPGRADE_WINDOW_SEC` has passed), `flag_off`,
+ *   and `readonly` (an interrupted join, Retry at once) preserve no document.
+ *   An unknown reason and every 4403 after the first sync stay `forbidden`.
+ * - A transient close before the first sync sets `reconnecting`; y-websocket retries.
  * - `disableBc: true` so two tabs go through Redis, not BroadcastChannel.
  */
 export function useCollabProvider({
@@ -90,14 +132,21 @@ export function useCollabProvider({
   const [readOnlyReason, setReadOnlyReason] = useState<CollabReadOnlyReason | null>(null);
   const [awarenessUsers, setAwarenessUsers] = useState<CollabAwarenessUser[]>([]);
   const [error, setError] = useState<CollabJoinError | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [canRetry, setCanRetry] = useState(false);
   // Refetches must not upgrade the epoch of an already-open document.
   const latestRevision = useRef(expectedLifecycleRevision);
   latestRevision.current = expectedLifecycleRevision;
+  // Each join installs its own rejoin; `retry` keeps one identity for callers.
+  const retryRef = useRef<() => void>(() => undefined);
+  const retry = useCallback(() => retryRef.current(), []);
 
   useEffect(() => {
     setConnected(false);
     setWritable(false);
     setReadOnlyReason(null);
+    setReconnecting(false);
+    setCanRetry(false);
     if (!enabled || !pageId) {
       setYdoc(null);
       setProvider(null);
@@ -116,6 +165,9 @@ export function useCollabProvider({
     // Same timer-handle type use-presence uses for its reconnect timer.
     let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
     let pausedToken: string | null | undefined;
+    let hasSynced = false;
+    let retryReady = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const joinedRevision = latestRevision.current;
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
@@ -156,6 +208,36 @@ export function useCollabProvider({
       // Keep both the document and provider identity mounted in TipTap.
       ws.disconnect();
     };
+    // A refused first join has no document to preserve; a retry is explicit.
+    const refuseBeforeSync = (joinError: Exclude<CollabJoinError, 'unauthorized' | 'forbidden' | 'not_found'>) => {
+      if (cancelled || blocked) return;
+      blocked = true;
+      setWritable(false);
+      setConnected(false);
+      setReconnecting(false);
+      setError(joinError);
+      if (joinError === 'join_interrupted') {
+        retryReady = true;
+        setCanRetry(true);
+      } else if (joinError === 'rate_limited') {
+        // The server's fixed window started at or before this refusal.
+        retryTimer = setTimeout(() => {
+          if (cancelled) return;
+          retryReady = true;
+          setCanRetry(true);
+        }, COLLAB_UPGRADE_WINDOW_SEC * 1000);
+      }
+    };
+    retryRef.current = () => {
+      const state = useAuthStore.getState();
+      if (cancelled || !retryReady || !state.accessToken || state.user?.id !== selfUserId) return;
+      retryReady = false;
+      blocked = false;
+      setCanRetry(false);
+      setError(null);
+      ws.protocols = [COLLAB_WS_PROTOCOL, state.accessToken];
+      ws.connect();
+    };
     ws.messageHandlers[MESSAGE_CONTROL] = (_encoder, decoder) => {
       try {
         const control: unknown = JSON.parse(decoding.readVarString(decoder));
@@ -185,7 +267,10 @@ export function useCollabProvider({
       }
     };
     ws.on('sync', (isSynced: boolean) => {
-      if (!cancelled && isSynced) setSynced(true);
+      if (cancelled || !isSynced) return;
+      hasSynced = true;
+      setSynced(true);
+      setReconnecting(false);
     });
     ws.on('status', ({ status }: { status: string }) => {
       // A connected socket ends any refresh outage, as in use-presence.
@@ -230,10 +315,12 @@ export function useCollabProvider({
         );
         return;
       }
-      const joinError = closeCodeError(event.code);
+      const joinError = terminalJoinError(event.code, event.reason, hasSynced);
       if (joinError === 'forbidden' || joinError === 'not_found') {
         setError(joinError);
         preserveReadOnly(joinError === 'forbidden' ? 'permission_loss' : 'not_found');
+      } else if (joinError) {
+        refuseBeforeSync(joinError);
       }
     });
     ws.on('connection-close', (event: CloseEvent | null) => {
@@ -241,12 +328,17 @@ export function useCollabProvider({
       setConnected(false);
       setWritable(false);
       if (event?.code === 1001 && event.reason === 'doc_reset') preserveReadOnly('document_changed');
+      // y-websocket retries every close outside 4400–4499; those arrive as `closed`.
+      const terminal = event !== null && event.code >= 4400 && event.code < 4500;
+      if (!hasSynced && !blocked && !terminal) setReconnecting(true);
     });
 
     return () => {
       cancelled = true;
       unsubscribeAuth();
       clearTimeout(rejoinTimer);
+      clearTimeout(retryTimer);
+      retryRef.current = () => undefined;
       awareness.off('update', refreshAwareness);
       ws.destroy();
       awareness.destroy();
@@ -255,8 +347,13 @@ export function useCollabProvider({
       setProvider(null);
       setSynced(false);
       setAwarenessUsers([]);
+      setReconnecting(false);
+      setCanRetry(false);
     };
   }, [enabled, pageId]);
 
-  return { ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error };
+  return {
+    ydoc, provider, synced, connected, writable, readOnlyReason, awarenessUsers, error,
+    reconnecting, canRetry, retry,
+  };
 }
