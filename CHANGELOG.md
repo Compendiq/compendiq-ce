@@ -41,12 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spaces, e.g. `general,it`; anything else is a `400`) are sent on every
   search, including **Test**, and are part of the search-cache key
   (`mcp:docs:search:v3:`; older entries expire unread). Previously all three
-  saved successfully and changed nothing. The admin **SearXNG URL** control is
-  removed: the search backend is configured only through `SEARXNG_URL` on the
-  `mcp-docs` service, `GET /api/admin/searxng` no longer returns `url`, and a
-  `url` sent to `PUT /api/admin/searxng` is ignored. **Breaking for direct API
-  callers** that sent a `maxContentLength` above 100,000, free-text
-  `categories`, or relied on the SearXNG `url` field.
+  saved successfully and changed nothing. **On upgrade:** `MCP_CACHE_TTL`
+  (the sidecar's `CACHE_TTL_SECONDS`) no longer governs the backend's fetches
+  — the backend always sends the admin Cache TTL, 3600 s until an admin saves
+  one — so a deployment that tuned the env var sets the value under Settings
+  → Integrations → MCP Docs instead; the env var still applies to MCP clients
+  that send no `cache_ttl`. A stored **Search Categories** value in the old
+  free-text form with spaces (e.g. `general, it`) is read as `general` — what
+  was searched before — and logged until it is re-saved. The admin
+  **SearXNG URL** control is removed: the search backend is configured only
+  through `SEARXNG_URL` on the `mcp-docs` service, `GET /api/admin/searxng`
+  no longer returns `url`, and a `url` sent to `PUT /api/admin/searxng` is
+  ignored. **Breaking for direct API callers** that sent a `maxContentLength`
+  above 100,000, free-text `categories`, or relied on the SearXNG `url` field.
 - **Confluence collaborative Save no longer conflicts with its own autosave
   (#1762):** saving a Confluence page in a collaborative session right after
   typing could fail with `409 stale_content_revision` when the room's 2 s

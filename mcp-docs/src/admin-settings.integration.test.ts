@@ -206,7 +206,10 @@ afterAll(async () => {
   if (child) await stopChild(child);
   await close(searxng);
   await close(decoy);
-  if (redis?.isOpen) await redis.quit();
+  // A client that never connected is "open" but not ready: quit() would wait
+  // for a connection and hide the real failure behind a hook timeout.
+  if (redis?.isReady) await redis.quit();
+  else redis?.destroy();
 });
 
 async function callTool(name: string, args: Record<string, unknown>) {
