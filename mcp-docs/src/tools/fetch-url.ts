@@ -14,7 +14,7 @@ import { logOutboundRequest } from '../security/audit-logger.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
 
 const DEFAULT_MAX_LENGTH = 10_000;
-// Largest page one call returns. The document cache stores exactly this many
+// Largest page one call returns. The document cache stores at most this many
 // characters per entry (CACHE_MAX_CHARS in cache/redis-cache.ts), so every
 // first page is a cache hit — change the two together.
 const ABSOLUTE_MAX_LENGTH = 100_000;
