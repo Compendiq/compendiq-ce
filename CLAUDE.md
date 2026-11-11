@@ -163,6 +163,10 @@ live in `localStorage`, shared by every account in the browser. Build and
 access draft keys only through `frontend/src/shared/lib/editor-drafts.ts`
 (`draft:u:<userId>:<key>`); nothing reads or writes a draft without a
 signed-in user. Legacy unscoped `draft:*` keys are purged and never imported.
+The New Page form keeps its body under `new-page` and its title, space key and
+parent id under a second per-user key, `new-page:meta` (JSON
+`{title, spaceKey, parentId}`; unknown fields are ignored), built and read only
+through `editor-drafts.ts`.
 An explicit sign-out (`logoutApi()`, after the `logout_busy` check) discards
 the user's drafts and fences pending writes via the sign-out epoch and the
 per-user signed-out marker (cleared by `setAuth`); non-explicit session loss
