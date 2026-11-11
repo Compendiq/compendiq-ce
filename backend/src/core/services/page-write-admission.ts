@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { PAGE_HIERARCHY_LOCK_ID, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
 import { getPool } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 import { flushPageWriteInvalidations } from './page-write-invalidation.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import { AI_POLICY_ENFORCEMENT_VERSION } from './ai-policy-runtime-guard.js';
@@ -67,6 +68,20 @@ const INTENT_POLICIES = {
 } as const satisfies Record<string, IntentPolicy>;
 
 export type IntentKind = keyof typeof INTENT_POLICIES;
+
+/** The intents `commitConfluencePage` reserves for exactly one page: that page's own collaborative Save (#1763). */
+const COLLAB_COMMIT_INTENT_KINDS = ['collab.commit.confluence', 'collab.commit.confluence.media'] satisfies IntentKind[];
+
+/**
+ * How a collaboration-room step treats its page's own pending collaborative
+ * Save (#1763). `proceed`: the step writes no protected page row (frame and
+ * peer-update apply, owner and state reads, a room admission, a BYTEA seed),
+ * so the Save does not fence it. `defer`: the step writes protected rows (the
+ * room persist), so it stays fenced but refuses with `collab_commit_pending`
+ * to be retried once the Save settles. Every other pending intent still
+ * refuses with `page_write_busy`.
+ */
+export type OwnCollabCommit = 'proceed' | 'defer';
 
 /**
  * The ONE intent shape with an empty target set (#280, migration 137): a
@@ -167,6 +182,11 @@ export class PageWriteError extends Error {
     this.statusCode = statusCode;
     this.reason = reason;
   }
+}
+
+/** A room persist refused only because its page's own collaborative Save has not settled (#1763). */
+export function isCollabCommitPending(error: unknown): boolean {
+  return error instanceof PageWriteError && error.reason === 'collab_commit_pending';
 }
 
 export type PageRevision = {
@@ -305,13 +325,14 @@ export type PageWriteIntentReconciler = (
       proof: PageWriteReconciliationProof;
       result: unknown;
       /**
-       * Side effects that must only become visible once the recovery
-       * transaction has COMMITTED (e.g. `policy_changed` events for a policy
-       * row the verifier moved). Invoked exactly once by
+       * A side effect that must only become visible once the recovery
+       * transaction has COMMITTED (e.g. the collaborative-room tombstone of a
+       * recovered delete: 4404 is permanent). Awaited exactly once by
        * `reconcilePageWriteIntent` after the settlement is durable; never
        * invoked when the transaction rolls back or the settlement is refused.
+       * It cannot undo the settlement, so its failure is logged, not rethrown.
        */
-      afterCommit?: () => void;
+      afterCommit?: () => void | Promise<void>;
     }
   | {
       outcome: 'repair_required';
@@ -873,20 +894,28 @@ async function assertNoCompetingIntent(
   client: PoolClient,
   pageIds: readonly number[],
   exceptId?: string,
+  ownCollabCommit?: OwnCollabCommit,
 ): Promise<void> {
   if (pageIds.length === 0) return;
-  const result = await client.query<{ id: string }>(
-    `SELECT id
+  const ids = normalizePageIds(pageIds);
+  // A foreign row sorts first (false < true), so this one row decides.
+  const result = await client.query<{ own_collab_commit: boolean }>(
+    `SELECT kind = ANY($3::text[]) AND page_ids = $1::integer[] AS own_collab_commit
        FROM page_write_intents
       WHERE status = 'pending'
         AND page_ids && $1::integer[]
         AND ($2::uuid IS NULL OR id <> $2::uuid)
+      ORDER BY own_collab_commit
       LIMIT 1`,
-    [normalizePageIds(pageIds), exceptId ?? null],
+    [ids, exceptId ?? null, COLLAB_COMMIT_INTENT_KINDS],
   );
-  if (result.rows[0]) {
-    throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
+  const competing = result.rows[0];
+  if (!competing) return;
+  if (ownCollabCommit !== undefined && competing.own_collab_commit) {
+    if (ownCollabCommit === 'proceed') return;
+    throw new PageWriteError(409, 'collab_commit_pending', "The page's own collaborative Save has not settled");
   }
+  throw new PageWriteError(409, 'page_write_busy', 'Another external page write is unresolved');
 }
 
 /**
@@ -942,16 +971,30 @@ export async function lockPageLifecycle(
  * Lock and validate a protected write on the same client that will execute it.
  * The caller must already have opened a transaction and must not acquire any
  * collaboration, attachment, move, or page-row lock before calling this.
+ * `ownCollabCommit` is for collaboration-room steps on one page only (#1763);
+ * see `OwnCollabCommit`.
  */
 export async function lockPageWrites(
   client: PoolClient,
   pageIds: readonly number[],
-  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission; hierarchyExclusive?: boolean } = {},
+  options: {
+    intent?: PageWriteIntent;
+    admission?: PageRuntimeAdmission;
+    hierarchyExclusive?: boolean;
+    ownCollabCommit?: OwnCollabCommit;
+  } = {},
 ): Promise<void> {
   if (options.intent && options.admission) {
     throw new PageWriteError(400, 'invalid_write_admission', 'A write cannot use two admission tokens');
   }
   const ids = normalizePageIds(pageIds, true);
+  if (options.ownCollabCommit && (options.intent || options.hierarchyExclusive || ids.length !== 1)) {
+    throw new PageWriteError(
+      400,
+      'invalid_write_admission',
+      'Only a single-page collaboration-room step may pass its own collaborative Save',
+    );
+  }
   const tokenRuntimeId = options.intent?.runtimeId ?? options.admission?.runtimeId;
   if (tokenRuntimeId !== processRuntimeId) {
     // Tokenless SQL still belongs to this process epoch. Keep its row locked
@@ -1035,11 +1078,11 @@ export async function lockPageWrites(
     if (String(rows[0]!.lifecycle_revision) !== admission.lifecycleRevision) {
       throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after room admission');
     }
-    await assertNoCompetingIntent(client, ids);
+    await assertNoCompetingIntent(client, ids, undefined, options.ownCollabCommit);
     return;
   }
 
-  await assertNoCompetingIntent(client, ids);
+  await assertNoCompetingIntent(client, ids, undefined, options.ownCollabCommit);
 }
 
 /** Policy-only supersession may obsolete an acknowledged generated label effect.
@@ -1098,7 +1141,7 @@ export async function withAiPolicyWriteTransaction<T>(
 export async function withPageWriteTransaction<T>(
   pageIds: readonly number[],
   operation: (client: PoolClient) => Promise<T>,
-  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission } = {},
+  options: { intent?: PageWriteIntent; admission?: PageRuntimeAdmission; ownCollabCommit?: OwnCollabCommit } = {},
 ): Promise<T> {
   beginLocalOperation(options.intent !== undefined || options.admission !== undefined);
   try {
@@ -1673,7 +1716,9 @@ export async function admitPageRuntime(
     if (runtimeId) await registerRuntime(runtimeId);
     const admission = await inTransaction(async (client) => {
       await assertRuntimeActive(client, id);
-      await lockPageWrites(client, [pageId]);
+      // A room admission does not wait for its page's own collaborative Save;
+      // a request admission (another Save) does (#1763).
+      await lockPageWrites(client, [pageId], purpose === 'collab_room' ? { ownCollabCommit: 'proceed' } : {});
       const rows = await loadPageStates(client, [pageId]);
       const admissionId = randomUUID();
       const lifecycleRevision = String(rows[0]!.lifecycle_revision);
@@ -2091,6 +2136,26 @@ export async function fencePageWriterRuntime(
 }
 
 /**
+ * Run a reconciler's post-commit side effect. The settlement is already
+ * durable, so — like the delete routes' per-id `Promise.allSettled` — a failure
+ * must neither skip the rest of the publication nor report a settled intent as
+ * a failed recovery.
+ */
+async function runAfterSettlement(
+  intentId: string,
+  afterCommit: (() => void | Promise<void>) | undefined,
+): Promise<void> {
+  if (!afterCommit) return;
+  const [outcome] = await Promise.allSettled([Promise.resolve().then(afterCommit)]);
+  if (outcome.status === 'rejected') {
+    logger.warn(
+      { err: outcome.reason, intentId },
+      'page-write recovery: a post-settlement side effect failed after the intent settled',
+    );
+  }
+}
+
+/**
  * Reconcile an unknown I/O outcome after the original runtime has a
  * server-proven fence. The proof comes only from trusted server code registered
  * for the closed intent kind; HTTP callers can supply neither a verifier nor a
@@ -2496,8 +2561,8 @@ export async function reconcilePageWriteIntent(
     const inspected = await verifyAndSettle(recoveryToken);
     if (inspected.kind === 'settled') {
       // `inTransaction` has resolved: the settlement is COMMITTED. Only now
-      // may the verifier's deferred side effects (policy events) fire.
-      inspected.afterCommit?.();
+      // may the verifier's deferred side effect run.
+      await runAfterSettlement(recoveryToken.id, inspected.afterCommit);
       localIntentEffects.delete(recoveryToken.id);
       localIntentRecoveryModes.delete(recoveryToken.id);
       localIntentFailedRemotePhases.delete(recoveryToken.id);
@@ -2535,7 +2600,7 @@ export async function reconcilePageWriteIntent(
         'The trusted repair did not produce an exactly verifiable terminal state',
       );
     }
-    repaired.afterCommit?.();
+    await runAfterSettlement(recoveryToken.id, repaired.afterCommit);
     localIntentEffects.delete(recoveryToken.id);
     localIntentRecoveryModes.delete(recoveryToken.id);
     localIntentFailedRemotePhases.delete(recoveryToken.id);
