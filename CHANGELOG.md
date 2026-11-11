@@ -29,6 +29,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence collaborative Save no longer conflicts with its own autosave
+  (#1762):** saving a Confluence page in a collaborative session right after
+  typing could fail with `409 stale_content_revision` when the room's 2 s
+  autosave landed while the Save was reading the page from Confluence;
+  retrying succeeded. The Save now goes through, on the editor's pod or a
+  peer pod. A lifecycle change during the Save still refuses with
+  `409 stale_lifecycle`, and a page changed in Confluence still returns
+  `confluence_modified`.
+- **Collaborative Edit no longer rejects slow joins as unauthorized (#1895):**
+  frames a browser sends before its collaborative join completes are kept in
+  order (up to 64 frames / 1 MiB) and applied once the socket is live, instead
+  of closing the third one with `4403 readonly`. An overflow closes
+  `1013 join_backlog`, which the client retries, and is never reported as a
+  permission loss. Until the first sync the editor now shows one message per
+  close reason, with no read-only draft banner and no **Download draft**:
+  `rate_limited` offers Retry once the server's upgrade window has passed,
+  an interrupted join offers Retry at once, `flag_off` says collaborative
+  editing was turned off and reopening the editor edits locally, and
+  `forbidden` and unknown reasons still refuse. Title, tags, icon and Save stay
+  locked until the first sync (Save was enabled once write admission arrived,
+  so Ctrl+S could post a commit before the document had loaded). After the
+  first sync every 4403 keeps the existing read-only draft treatment.
+- **Typing during a Confluence collaborative Save no longer disconnects
+  editors, and the room releases after the Save (#1763):** while a co-editor's
+  or your own Save waited for Confluence, typing closed the socket
+  (`1001 collab_validation_unavailable`), rejoins failed until the Save
+  finished, and that typing never reached the server. Edits now keep flowing
+  live on every pod during the Save and are saved as soon as it succeeds.
+  When the last editor leaves during a Save, the room's admission is released
+  once the Save settles instead of answering other writers
+  `409 collab_session_active`.
 - **A pasted image is uploaded once, not on every collaborative Save (#1764):**
   after a Confluence collaborative Save uploaded a pasted image, the session's
   next autosave dropped the image's attachment markers, so every later Save

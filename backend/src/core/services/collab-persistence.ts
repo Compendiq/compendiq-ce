@@ -18,6 +18,7 @@ import {
   type AttachmentImageMarker,
 } from './collab-schema.js';
 import {
+  isCollabCommitPending,
   withPageWriteTransaction,
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
@@ -97,6 +98,8 @@ export async function loadOrInitCollabDoc(
       return row ? applyLoadRow(doc, row) : 'missing';
     }
 
+    // A missing seed writes BYTEA only, never a protected page row, so the
+    // page's own pending collaborative Save does not fence the load (#1763).
     return await withPageWriteTransaction([pageId], async (client) => {
       await lockCollabInit(client, pageId);
       const result = await client.query<LoadRow>(LOAD_PAGE_AND_DOC, [pageId]);
@@ -106,7 +109,7 @@ export async function loadOrInitCollabDoc(
       if (loaded === 'missing' || loaded.hasPersistedDoc) return loaded;
       await upsertDocState(client, pageId, doc);
       return { ...loaded, hasPersistedDoc: true };
-    }, { admission });
+    }, { admission, ownCollabCommit: 'proceed' });
   } catch (err) {
     logger.warn({ err, pageId }, 'collab: load/init failed');
     throw err;
@@ -229,6 +232,9 @@ export async function persistAndSnapshot(
 ): Promise<void> {
   if (resettingPageIds.has(pageId)) return;
   const t0 = Date.now();
+  // This writes `body_html`, which advances `content_revision` under a pending
+  // collaborative commit's stored revisions and would fail its completion after
+  // the provider PUT (#1763). It waits for that Save instead.
   const sizes = await withPageWriteTransaction([pageId], async (client) => {
     await lockCollabInit(client, pageId);
     if (resettingPageIds.has(pageId)) return null;
@@ -258,7 +264,7 @@ export async function persistAndSnapshot(
       [pageId, html, bodyText],
     );
     return { doc: docState.length, html: Buffer.byteLength(html) };
-  }, { admission });
+  }, { admission, ownCollabCommit: 'defer' });
   if (!sizes) return;
   logger.info({ pageId, duration_ms: Date.now() - t0, bytes: sizes.doc }, 'collab.persist');
   logger.info({ pageId, duration_ms: Date.now() - t0, html_bytes: sizes.html }, 'collab.snapshot');
@@ -295,7 +301,8 @@ function enqueuePersist(room: CollabPersistHandle & { persistable?: boolean }): 
       room.persistError = null;
     } catch (err) {
       room.persistError = err;
-      logger.warn({ err, pageId: room.pageId }, 'collab: persist failed');
+      if (isCollabCommitPending(err)) logger.info({ pageId: room.pageId }, 'collab.persist_deferred');
+      else logger.warn({ err, pageId: room.pageId }, 'collab: persist failed');
       throw err;
     }
   });

@@ -76,6 +76,13 @@ page locks, then, for restrictive policy writes, activation-state `FOR SHARE`
 (taken by the migration-151 tightening trigger after the writer's page
 locks). A durable intent precedes external mutation; its effect gate must
 finish before settlement. Unknown outcomes stay pending without TTL expiry.
+A pending collaborative commit (`collab.commit.confluence[.media]`) is transient
+only for its own room's steps that write no protected page row
+(`ownCollabCommit: 'proceed'`: frames, peer updates, state reads, joins). The
+room's persists wait for it (`'defer'` answers `collab_commit_pending`) and run
+again on the successful commit's `pages_version` cue, the next edit, or the
+last-writer release, which retries. Every other writer, including a second
+Save, and every other pending intent keep `page_write_busy` (#1763).
 Recovery requires server-observed fencing evidence, never a caller's assertion,
 a missing heartbeat or a force-clear. A read-only HTTP fetch needs no durable
 mutation intent: capture current authority and revisions, then check the same
@@ -199,12 +206,20 @@ Collaborative Save posts a bounded base64 Yjs Snapshot containing clocks **and
 the delete set**, not document content. The server obtains a freshly correlated
 cross-process room snapshot, rechecks the exact active-owner set, transport
 generation, lifecycle and current authority, and refuses if the Save-start
-snapshot is not covered. A successful acknowledgment covers only that captured
+snapshot is not covered. A Confluence commit pins the lifecycle through the
+Save's own request admission (`collab_request`) and the local and remote
+version, never a `content_revision` read before the snapshot, because the
+room's own 2 s persist may land during the provider read (#1762). A successful
+acknowledgment covers only that captured
 snapshot; later local edits keep the editor open. Dirty connected and offline
 drafts are navigation/unload guarded. Lifecycle/freeze/permission/document loss
 disconnects the provider but keeps an inert recoverable Y.Doc with **Download
 draft** and explicitly confirmed **Open current version**; thaw or reconnect
 never automatically replays that blocked draft.
+Before the first sync no draft exists: the editor shows one reason-specific
+join message (Retry for `rate_limited` after the upgrade window and for an
+interrupted join), never that banner or **Download draft**, and Save stays
+blocked (#1895).
 
 A Confluence collaborative commit that uploaded pasted images then marks them
 in the live room (an in-place Yjs transaction on the owning pod) and in
