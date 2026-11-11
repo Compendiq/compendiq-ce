@@ -24,8 +24,10 @@ describe.skipIf(!dbAvailable)('getSearxngMaxResults — stored value normalized 
     await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
   });
 
-  afterEach(() => {
+  // The worker DB is shared with every other suite: leave no SearXNG row behind.
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
   });
 
   // Rows written under the pre-#1768 admin range (1–20) must not disable web

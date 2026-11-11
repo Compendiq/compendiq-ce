@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
@@ -225,6 +225,12 @@ describe.skipIf(!dbAvailable)('SearXNG admin routes — shared result limit (#17
     vi.clearAllMocks();
     mockSearchDocumentation.mockResolvedValue(fakeResults);
     await query(`DELETE FROM admin_settings WHERE setting_key LIKE 'searxng_%'`);
+  });
+
+  // The worker DB is shared with every other suite: leave no SearXNG row behind.
+  // `searxng_max_results` is the only key these tests write (PUT sends maxResults alone).
+  afterEach(async () => {
+    await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
   });
 
   it('PUT /api/admin/searxng rejects maxResults above the sidecar limit with 400 and persists nothing', async () => {

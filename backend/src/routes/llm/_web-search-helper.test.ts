@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { SEARXNG_MAX_RESULTS_MAX, SEARXNG_MAX_RESULTS_MIN } from '@compendiq/contracts';
 import { isDbAvailable, setupTestDb } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
@@ -241,6 +241,11 @@ describe('_web-search-helper', () => {
       // reader so the stored row, not a stub, decides what reaches search_web.
       const actual = await vi.importActual<typeof Helpers>('./_helpers.js');
       mockGetSearxngMaxResults.mockImplementation(actual.getSearxngMaxResults);
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
+    });
+
+    // The worker DB is shared with every other suite: leave no SearXNG row behind.
+    afterEach(async () => {
       await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
     });
 
