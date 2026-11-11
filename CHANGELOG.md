@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer pod. A lifecycle change during the Save still refuses with
   `409 stale_lifecycle`, and a page changed in Confluence still returns
   `confluence_modified`.
+- **Collaborative Edit no longer rejects slow joins as unauthorized (#1895):**
+  frames a browser sends before its collaborative join completes are kept in
+  order (up to 64 frames / 1 MiB) and applied once the socket is live, instead
+  of closing the third one with `4403 readonly`. An overflow closes
+  `1013 join_backlog`, which the client retries, and is never reported as a
+  permission loss. Until the first sync the editor now shows one message per
+  close reason, with no read-only draft banner and no **Download draft**:
+  `rate_limited` offers Retry once the server's upgrade window has passed,
+  an interrupted join offers Retry at once, `flag_off` says collaborative
+  editing was turned off and reopening the editor edits locally, and
+  `forbidden` and unknown reasons still refuse. Title, tags, icon and Save stay
+  locked until the first sync (Save was enabled once write admission arrived,
+  so Ctrl+S could post a commit before the document had loaded). After the
+  first sync every 4403 keeps the existing read-only draft treatment.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the

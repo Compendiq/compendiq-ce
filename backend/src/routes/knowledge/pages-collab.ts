@@ -9,6 +9,7 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import {
+  COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabCommitResponseSchema,
   CollabCommitSchema,
@@ -65,6 +66,12 @@ import {
 } from '../../domains/confluence/services/collab-commit-intent-reconciler.js';
 
 const UPGRADE_LIMIT_PER_MIN = 20;
+// Frames that arrive before the join completes wait in arrival order and are
+// handled before any later frame. y-websocket sends SyncStep1 and awareness on
+// open and renews awareness every 15 s, so a slow join must not refuse them;
+// the bound only caps memory for a socket that is not live yet (#1895).
+const PRELIVE_FRAME_LIMIT = 64;
+const PRELIVE_BYTE_LIMIT = 1024 * 1024;
 
 function throwConfluenceModified(
   fastify: FastifyInstance,
@@ -430,7 +437,7 @@ async function rateLimitUpgrade(userId: string): Promise<boolean> {
   try {
     const key = `collab:upgrade:${userId}`;
     const n = await redis.incr(key);
-    if (n === 1) await redis.expire(key, 60);
+    if (n === 1) await redis.expire(key, COLLAB_UPGRADE_WINDOW_SEC);
     return n <= UPGRADE_LIMIT_PER_MIN;
   } catch {
     return true;
@@ -660,6 +667,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     mapWsProtocolToAuthorization(request);
 
     const pending: Uint8Array[] = [];
+    let pendingBytes = 0;
     let live = false;
     let closed = false;
     let pageId: number | null = null;
@@ -690,11 +698,17 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       const buf = toUint8(data);
       if (closed) return;
       if (!live || pageId === null || connId === null || !runtime) {
-        if (pending.length >= 2) {
-          finish(4403, 'readonly');
+        // An over-full buffer is a transient backlog, never a refusal: 1013
+        // lets y-websocket reconnect instead of reporting a permission loss.
+        if (pending.length >= PRELIVE_FRAME_LIMIT || pendingBytes + buf.byteLength > PRELIVE_BYTE_LIMIT) {
+          // Debug, not info: this runs before the JWT check and the per-user
+          // upgrade limiter, so any client could emit it once per connection.
+          logger.debug({ pageId, frames: pending.length, bytes: pendingBytes }, 'collab.prelive_backlog');
+          finish(1013, 'join_backlog');
           return;
         }
         pending.push(buf);
+        pendingBytes += buf.byteLength;
         return;
       }
       const joinedPageId = pageId;

@@ -209,6 +209,10 @@ drafts are navigation/unload guarded. Lifecycle/freeze/permission/document loss
 disconnects the provider but keeps an inert recoverable Y.Doc with **Download
 draft** and explicitly confirmed **Open current version**; thaw or reconnect
 never automatically replays that blocked draft.
+Before the first sync no draft exists: the editor shows one reason-specific
+join message (Retry for `rate_limited` after the upgrade window and for an
+interrupted join), never that banner or **Download draft**, and Save stays
+blocked (#1895).
 
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
