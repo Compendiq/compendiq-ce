@@ -1575,6 +1575,207 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     ws.close();
   });
 
+  // #1762 — the room's own debounced autosave lands while the provider read
+  // is in flight, i.e. after the route's first read and before the reservation.
+  async function typeIntoLiveRoom(ws: WebSocket, text: string): Promise<Y.Doc> {
+    const doc = new Y.Doc();
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    const paragraph = new Y.XmlElement('paragraph');
+    const typed = new Y.XmlText();
+    typed.insert(0, text);
+    paragraph.insert(0, [typed]);
+    const fragment = doc.getXmlFragment('default');
+    fragment.insert(fragment.length, [paragraph]);
+    ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(doc)));
+    // The reply is ordered after the update on the same socket/frame chain.
+    applySyncFrame(doc, await exchangeSyncStep1(ws, doc));
+    return doc;
+  }
+
+  async function contentRevisionOf(pageId: number): Promise<bigint> {
+    const row = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    return BigInt(row.rows[0]!.content_revision);
+  }
+
+  async function commitIntents(pageId: number): Promise<Array<{ kind: string; status: string }>> {
+    const rows = await query<{ kind: string; status: string }>(
+      `SELECT kind, status FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::integer[] ORDER BY created_at`,
+      [pageId],
+    );
+    return rows.rows;
+  }
+
+  function confluenceUpdateEcho(confluenceId: string) {
+    return vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(
+      async (_id, title, storage) => ({
+        id: confluenceId,
+        title,
+        status: 'current',
+        type: 'page',
+        version: { number: 5, when: '2026-11-10T00:00:01Z' },
+        body: { storage: { value: storage } },
+      }) as never,
+    );
+  }
+
+  /**
+   * Save right after typing while getPage outlasts the 2 s debounce. getPage
+   * lands the pending autosave through flushCollabPersist (the same
+   * enqueuePersist → persistAndSnapshot path the debounce timer runs) instead
+   * of sleeping past the timer.
+   */
+  async function saveWhileAutosaveLands(change: 'none' | 'lifecycle' | 'remote') {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const doc = await typeIntoLiveRoom(ws, 'typed right before Save');
+    const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+    expect(room.persistTimer, 'the debounced autosave is still pending at Save').not.toBeNull();
+    const before = await contentRevisionOf(pageId);
+    let during: bigint | undefined;
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      await persist.flushCollabPersist(room);
+      during = await contentRevisionOf(pageId);
+      if (change === 'lifecycle') {
+        await query(
+          'UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1',
+          [pageId],
+        );
+      }
+      return {
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: change === 'remote' ? 7 : 4, when: '2026-11-10T00:00:00Z' },
+      } as never;
+    });
+    const updatePage = confluenceUpdateEcho(confluenceId);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: commitPayload(ws, 'Saved during autosave', Y.snapshot(doc)),
+    });
+    return { res, pageId, ws, doc, updatePage, before, during };
+  }
+
+  it('room autosave landing during a slow getPage does not refuse the Save (#1762)', async () => {
+    const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands('none');
+    try {
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: pageId,
+        version: 5,
+        source: 'confluence',
+        pushedToConfluence: true,
+      });
+      expect(during).toBeGreaterThan(before);
+      expect(updatePage).toHaveBeenCalledTimes(1);
+      expect(updatePage.mock.calls[0]![3]).toBe(4);
+      expect(String(updatePage.mock.calls[0]![2])).toContain('typed right before Save');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      ws.close();
+      doc.destroy();
+    }
+  });
+
+  it.each(['lifecycle', 'remote'] as const)(
+    'a %s change in the same autosave window still refuses before any intent (#1762)',
+    async (change) => {
+      const { res, pageId, ws, doc, updatePage, before, during } = await saveWhileAutosaveLands(change);
+      try {
+        expect(res.statusCode).toBe(409);
+        expect(res.json()).toMatchObject(change === 'lifecycle'
+          ? { reason: 'stale_lifecycle' }
+          : { code: 'confluence_modified', remoteVersion: 7, localVersion: 4 });
+        expect(during).toBeGreaterThan(before);
+        expect(updatePage).not.toHaveBeenCalled();
+        expect(await commitIntents(pageId)).toEqual([]);
+        const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+        expect(page.rows[0]!.version).toBe(4);
+      } finally {
+        ws.close();
+        doc.destroy();
+      }
+    },
+  );
+
+  it('peer-pod autosave landing during the commit pod getPage does not refuse the Save (#1762)', async () => {
+    const { token, userId } = await createUser(`collab_cf_peer_${pageIdEntropy()}`);
+    const spaceKey = `PP${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `cf-peer-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: 4,
+      bodyHtml: '<p>peer-seed</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await seedConfluenceCredentials(userId);
+    await enableCollabFlag();
+    const editingRevision = await pageLifecycleRevision(pageId);
+    const podA = await createCollabRuntime(getRedisClient()!, 'autosave-peer-pod-a');
+    try {
+      await podA.attachSocket(pageId, {
+        id: 'pod-a-writer',
+        ws: { readyState: 1, send() {}, close() {} } as unknown as NodeWs,
+        userId,
+        writable: true,
+        expectedLifecycleRevision: editingRevision,
+      });
+      const roomA = podA.getRoom(pageId)!;
+      const paragraph = new Y.XmlElement('paragraph');
+      const typed = new Y.XmlText();
+      typed.insert(0, 'typed on pod A');
+      paragraph.insert(0, [typed]);
+      const fragment = roomA.doc.getXmlFragment('default');
+      fragment.insert(fragment.length, [paragraph]);
+      expect(roomA.persistTimer, 'pod A autosave is still pending at Save').not.toBeNull();
+      const before = await contentRevisionOf(pageId);
+      let during: bigint | undefined;
+      vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+        await persist.flushCollabPersist(roomA);
+        during = await contentRevisionOf(pageId);
+        return {
+          id: confluenceId,
+          title: 'Conf page',
+          status: 'current',
+          type: 'page',
+          version: { number: 4, when: '2026-11-10T00:00:00Z' },
+        } as never;
+      });
+      const updatePage = confluenceUpdateEcho(confluenceId);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/collab/commit`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          title: 'Saved from pod B',
+          expectedLifecycleRevision: editingRevision,
+          expectedDocumentState: Buffer.from(Y.encodeSnapshot(Y.snapshot(roomA.doc))).toString('base64'),
+        },
+      });
+
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ id: pageId, version: 5, pushedToConfluence: true });
+      expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+      expect(during).toBeGreaterThan(before);
+      expect(String(updatePage.mock.calls[0]?.[2])).toContain('typed on pod A');
+      expect(await commitIntents(pageId)).toEqual([
+        { kind: 'collab.commit.confluence', status: 'completed' },
+      ]);
+    } finally {
+      await podA.close();
+    }
+  });
+
   it('reserves terminal-only durable ownership before the first pasted-image mutation', async () => {
     const fixture = await createPastedImageRoot();
     const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({

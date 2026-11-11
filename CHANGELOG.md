@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence collaborative Save no longer conflicts with its own autosave
+  (#1762):** saving a Confluence page in a collaborative session right after
+  typing could fail with `409 stale_content_revision` when the room's 2 s
+  autosave landed while the Save was reading the page from Confluence;
+  retrying succeeded. The Save now goes through, on the editor's pod or a
+  peer pod. A lifecycle change during the Save still refuses with
+  `409 stale_lifecycle`, and a page changed in Confluence still returns
+  `confluence_modified`.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
