@@ -19,6 +19,7 @@ import {
 } from '../../test-db-helper.js';
 import { getPool, query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY, PAGE_LIFECYCLE_LOCK_KEY } from '../db/advisory-locks.js';
+import { logger } from '../utils/logger.js';
 import type { WebSocket } from 'ws';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
@@ -32,6 +33,7 @@ import {
   COLLAB_EMPTY_ROOM_GRACE_MS,
   COLLAB_IMAGE_MARKER_ORIGIN,
   COLLAB_READONLY_DROP_LIMIT,
+  type CollabRoom,
   type CollabRuntime,
   type CollabInboundResult,
 } from './collab-room-service.js';
@@ -1796,6 +1798,31 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       };
     }
 
+    /** A message on the page's channel from a pod that is neither runtime. */
+    async function publishFromCommitPod(pageId: number, message: Record<string, unknown>): Promise<void> {
+      await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'commit-pod', ...message }));
+    }
+
+    /**
+     * A room handles its inbound messages one at a time, in order: once it took
+     * this control, it has finished with every message published before it.
+     */
+    async function inboundHandled(room: CollabRoom): Promise<void> {
+      const version = room.pagesVersion + 1;
+      await publishFromCommitPod(room.pageId, {
+        kind: 'control',
+        update: Buffer.from(JSON.stringify({ type: 'pages_version', version }), 'utf8').toString('base64'),
+      });
+      await vi.waitFor(() => expect(room.pagesVersion).toBe(version), { timeout: 4_000 });
+    }
+
+    /** The origin of every transaction the document applies from now on. */
+    function updateOrigins(doc: Y.Doc): unknown[] {
+      const origins: unknown[] = [];
+      doc.on('update', (_update: Uint8Array, origin: unknown) => { origins.push(origin); });
+      return origins;
+    }
+
     it('marks the owning room in place with one incremental sync that the peer runtime applies without an echo (#1764)', async () => {
       const pageId = await imagePage();
       await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
@@ -1894,6 +1921,147 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       }
     });
 
+    it('ignores an image_markers message that is malformed or names another lifecycle revision (#1764)', async () => {
+      const EXTERNAL_SRC = 'https://elsewhere.test/y.png';
+      const UNMARKED = [{ src: IMAGE_SRC }, { src: EXTERNAL_SRC }];
+      const pageId = await imagePage(`<p>image</p><img src="${IMAGE_SRC}"><img src="${EXTERNAL_SRC}">`);
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      const roomB = runtimeB!.getRoom(pageId)!;
+      const revision = roomB.lifecycleRevision;
+      const origins = updateOrigins(roomB.doc);
+      const bus = await observeBus(pageId);
+      const ignored: Array<[string, Record<string, unknown>]> = [
+        ['markers that are not a list', { lifecycleRevision: revision, markers: MARKERS[0] }],
+        ['an empty filename', { lifecycleRevision: revision, markers: [{ src: IMAGE_SRC, filename: '' }] }],
+        ['a filename that is not a string', {
+          lifecycleRevision: revision,
+          markers: [{ src: IMAGE_SRC, filename: 7 }],
+        }],
+        ['a src outside /api/attachments/', {
+          lifecycleRevision: revision,
+          markers: [{ src: EXTERNAL_SRC, filename: 'y.png' }],
+        }],
+        ['a valid entry beside a malformed one', {
+          lifecycleRevision: revision,
+          markers: [...MARKERS, { src: EXTERNAL_SRC, filename: 'y.png' }],
+        }],
+        ['no lifecycle revision', { markers: MARKERS }],
+        ['another lifecycle revision', { lifecycleRevision: String(BigInt(revision) + 1n), markers: MARKERS }],
+      ];
+      try {
+        for (const [label, message] of ignored) {
+          await publishFromCommitPod(pageId, { kind: 'image_markers', ...message });
+          await inboundHandled(roomB);
+          expect(imageAttributes(roomB.doc), label).toEqual(UNMARKED);
+          expect(origins, label).toEqual([]);
+        }
+        await bus.drain();
+        expect(bus.messages.filter((message) => message.origin === runtimeB!.podId)).toEqual([]);
+
+        // The same envelope with a well-formed payload at the room's revision is applied.
+        await publishFromCommitPod(pageId, { kind: 'image_markers', lifecycleRevision: revision, markers: MARKERS });
+        await vi.waitFor(() => {
+          expect(imageAttributes(roomB.doc)).toEqual([MARKED, { src: EXTERNAL_SRC }]);
+        }, { timeout: 4_000 });
+        expect(origins).toEqual([COLLAB_IMAGE_MARKER_ORIGIN]);
+      } finally {
+        await bus.close();
+      }
+    });
+
+    it('a room that holds no writable admission leaves its document as it is on image_markers (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeB!.attachSocket(pageId, { id: 'viewer', ws: stubWs(), userId: USER_B, writable: false });
+      const roomB = runtimeB!.getRoom(pageId)!;
+      expect(roomB.admission).toBeNull();
+      const origins = updateOrigins(roomB.doc);
+      const bus = await observeBus(pageId);
+      try {
+        await publishFromCommitPod(pageId, {
+          kind: 'image_markers',
+          lifecycleRevision: roomB.lifecycleRevision,
+          markers: MARKERS,
+        });
+        await inboundHandled(roomB);
+
+        expect(imageAttributes(roomB.doc)).toEqual([{ src: IMAGE_SRC }]);
+        expect(origins).toEqual([]);
+        await bus.drain();
+        expect(bus.messages.filter((message) => message.origin === runtimeB!.podId)).toEqual([]);
+      } finally {
+        await bus.close();
+      }
+    });
+
+    it.each(['stale_lifecycle', 'admission_token_mismatch'] as const)(
+      'an owning room whose fenced transaction is refused (%s) leaves its document as it is on image_markers (#1764)',
+      async (fence) => {
+        const pageId = await imagePage();
+        await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+        const roomB = runtimeB!.getRoom(pageId)!;
+        const revision = roomB.lifecycleRevision;
+        const origins = updateOrigins(roomB.doc);
+        // PostgreSQL has moved on; the room has not been told yet.
+        if (fence === 'stale_lifecycle') {
+          await query('UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1', [pageId]);
+        } else {
+          await releasePageRuntime(roomB.admission!);
+        }
+        const bus = await observeBus(pageId);
+        const info = vi.spyOn(logger, 'info');
+        const warn = vi.spyOn(logger, 'warn');
+        try {
+          await publishFromCommitPod(pageId, { kind: 'image_markers', lifecycleRevision: revision, markers: MARKERS });
+          await inboundHandled(roomB);
+
+          expect(imageAttributes(roomB.doc)).toEqual([{ src: IMAGE_SRC }]);
+          expect(origins).toEqual([]);
+          await bus.drain();
+          expect(bus.messages.filter((message) => message.origin === runtimeB!.podId)).toEqual([]);
+          // An expected refusal, logged with its reason; not a failure.
+          expect(info).toHaveBeenCalledWith({ pageId, step: 'room', reason: fence }, 'collab.image_markers_refused');
+          expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'collab.image_markers_failed');
+          expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'collab: bus apply failed');
+        } finally {
+          info.mockRestore();
+          warn.mockRestore();
+          if (fence === 'stale_lifecycle') {
+            await query('UPDATE pages SET lifecycle_revision = lifecycle_revision - 1 WHERE id = $1', [pageId]);
+          }
+          await bus.close();
+        }
+      },
+    );
+
+    it('a commit pod whose own room is read-only asks the owning peer, whose sync then marks that room too (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      // Joined after the writer, so this read-only room starts from the persisted document.
+      await runtimeA!.attachSocket(pageId, { id: 'viewer', ws: stubWs(), userId: USER_B, writable: false });
+      const roomA = runtimeA!.getRoom(pageId)!;
+      const roomB = runtimeB!.getRoom(pageId)!;
+      expect(roomA.admission).toBeNull();
+      const originsA = updateOrigins(roomA.doc);
+      const bus = await observeBus(pageId);
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+
+        await vi.waitFor(() => expect(imageAttributes(roomA.doc)).toEqual([MARKED]), { timeout: 4_000 });
+        expect(imageAttributes(roomB.doc)).toEqual([MARKED]);
+        // Never a transaction of its own: a room without an admission is not an owner.
+        expect(originsA).toEqual(['redis']);
+        await bus.drain();
+        expect(bus.messages
+          .filter((message) => message.kind === 'image_markers' || message.kind === 'sync')
+          .map((message) => `${message.origin}:${message.kind}`))
+          .toEqual([`${runtimeA!.podId}:image_markers`, `${runtimeB!.podId}:sync`]);
+      } finally {
+        await releasePageRuntime(request);
+        await bus.close();
+      }
+    });
+
     it('marks the persisted document when no room owns the page, so a room that loads it later has the markers (#1764)', async () => {
       const pageId = await imagePage();
       await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
@@ -1910,6 +2078,48 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       expect(await persist.htmlFromPersistedDoc(pageId)).toContain(MARK_FILE);
       await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
       expect(imageAttributes(runtimeB!.getRoom(pageId)!.doc)).toEqual([MARKED]);
+    });
+
+    it('an owning room that missed image_markers takes the markers from the persisted document at its next persist (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+      const roomB = runtimeB!.getRoom(pageId)!;
+      // Redis pub/sub delivers at most once: lose the one message that asks the owner to mark.
+      const redis = main!;
+      const publish = redis.publish.bind(redis);
+      const lost: string[] = [];
+      const publishSpy = vi.spyOn(redis, 'publish').mockImplementation(((channel: string, message: string) => {
+        const parsed: unknown = JSON.parse(message);
+        const asksToMark = parsed !== null && typeof parsed === 'object'
+          && 'kind' in parsed && parsed.kind === 'image_markers';
+        if (!asksToMark) return publish(channel, message);
+        lost.push(message);
+        return Promise.resolve(0);
+      }) as typeof redis.publish);
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markUploadedImages(pageId, request, MARKERS);
+      } finally {
+        publishSpy.mockRestore();
+        await releasePageRuntime(request);
+      }
+      expect(lost).toHaveLength(1);
+      await inboundHandled(roomB);
+      expect(imageAttributes(roomB.doc)).toEqual([{ src: IMAGE_SRC }]);
+      expect(await persist.htmlFromPersistedDoc(pageId)).toContain(MARK_FILE);
+
+      // The owner keeps editing its unmarked document; its persist merges the marked row first.
+      appendParagraph(roomB.doc, 'EDIT_AFTER_MISSED_MARKERS');
+      await persist.flushCollabPersist(roomB);
+
+      expect(imageAttributes(roomB.doc)).toEqual([MARKED]);
+      const body = await query<{ body_html: string }>('SELECT body_html FROM pages WHERE id = $1', [pageId]);
+      const persisted = await persist.htmlFromPersistedDoc(pageId);
+      for (const kept of [MARK_FILE, MARK_SOURCE, 'EDIT_AFTER_MISSED_MARKERS']) {
+        expect(body.rows[0]!.body_html).toContain(kept);
+        expect(persisted).toContain(kept);
+      }
     });
 
     it.each(['stale_lifecycle', 'page_write_busy'] as const)(
@@ -1930,11 +2140,20 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         if (fence === 'stale_lifecycle') {
           await query('UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1', [pageId]);
         }
+        const info = vi.spyOn(logger, 'info');
+        const warn = vi.spyOn(logger, 'warn');
         try {
           await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS)).resolves.toBeUndefined();
           expect(imageAttributes(room.doc)).toEqual([{ src: IMAGE_SRC }]);
           expect(await persist.htmlFromPersistedDoc(pageId)).not.toContain('data-confluence-filename');
+          // Both steps were refused by the write fence: an expected outcome, logged with its reason.
+          for (const step of ['room', 'persisted']) {
+            expect(info).toHaveBeenCalledWith({ pageId, step, reason: fence }, 'collab.image_markers_refused');
+          }
+          expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'collab.image_markers_failed');
         } finally {
+          info.mockRestore();
+          warn.mockRestore();
           if (foreign) await cancelPageWriteIntentBeforeEffect(foreign);
           if (fence === 'stale_lifecycle') {
             await query('UPDATE pages SET lifecycle_revision = lifecycle_revision - 1 WHERE id = $1', [pageId]);
@@ -1943,6 +2162,34 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         }
       },
     );
+
+    it('logs a failure that is not a fence refusal as a warning and does not throw (#1764)', async () => {
+      const pageId = await imagePage();
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      const room = runtimeA!.getRoom(pageId)!;
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      // PostgreSQL rejects the write of the persisted document: not a decision of the write fence.
+      await query(`ALTER TABLE page_collaborative_docs
+        ADD CONSTRAINT collab_test_reject_marks CHECK (FALSE) NOT VALID`);
+      const info = vi.spyOn(logger, 'info');
+      const warn = vi.spyOn(logger, 'warn');
+      try {
+        await expect(runtimeA!.markUploadedImages(pageId, request, MARKERS)).resolves.toBeUndefined();
+
+        // The in-place step does not depend on the persisted one.
+        expect(imageAttributes(room.doc)).toEqual([MARKED]);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ pageId, step: 'persisted', err: expect.objectContaining({ code: '23514' }) }),
+          'collab.image_markers_failed',
+        );
+        expect(info).not.toHaveBeenCalledWith(expect.anything(), 'collab.image_markers_refused');
+      } finally {
+        info.mockRestore();
+        warn.mockRestore();
+        await query('ALTER TABLE page_collaborative_docs DROP CONSTRAINT collab_test_reject_marks');
+        await releasePageRuntime(request);
+      }
+    });
   });
 
 });

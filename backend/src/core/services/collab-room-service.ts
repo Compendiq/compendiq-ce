@@ -287,6 +287,20 @@ function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
   return markers;
 }
 
+/**
+ * Why a best-effort image mark did not happen (#1764). A refusal by the
+ * page-write fence (the lifecycle changed, the page is frozen, another write is
+ * pending, the admission was retired) is an expected outcome that costs one
+ * more upload on the next Save; anything else is a failure.
+ */
+function logImageMarkersSkipped(error: unknown, pageId: number, step: 'room' | 'persisted'): void {
+  if (error instanceof PageWriteError) {
+    logger.info({ pageId, step, reason: error.reason }, 'collab.image_markers_refused');
+    return;
+  }
+  logger.warn({ err: error, pageId, step }, 'collab.image_markers_failed');
+}
+
 export async function createCollabRuntime(
   main: RedisClientType,
   podId: string = randomUUID(),
@@ -618,7 +632,11 @@ export async function createCollabRuntime(
         const markers = busImageMarkers(message.markers);
         if (!markers || typeof message.lifecycleRevision !== 'string') return;
         await room.initializing;
-        await markRoomImages(room, message.lifecycleRevision, markers);
+        try {
+          await markRoomImages(room, message.lifecycleRevision, markers);
+        } catch (error) {
+          logImageMarkersSkipped(error, room.pageId, 'room');
+        }
         return;
       }
       if (message.kind === 'sync' && message.update) {
@@ -1015,6 +1033,9 @@ export async function createCollabRuntime(
     markers: readonly AttachmentImageMarker[],
   ): Promise<boolean> {
     const admission = room.admission;
+    // A room without a writable admission (read-only viewers) is not an owner:
+    // it never persists, and it gets the marks with an owner's `sync` or the
+    // next time it merges the persisted document.
     if (!admission || rooms.get(room.pageId) !== room || room.lifecycleRevision !== lifecycleRevision) {
       return false;
     }
@@ -1055,13 +1076,13 @@ export async function createCollabRuntime(
         });
       }
     } catch (error) {
-      logger.warn({ err: error, pageId }, 'collab.image_markers_failed');
+      logImageMarkersSkipped(error, pageId, 'room');
     }
     try {
       const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
       logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
     } catch (error) {
-      logger.warn({ err: error, pageId }, 'collab.image_markers_failed');
+      logImageMarkersSkipped(error, pageId, 'persisted');
     }
   }
 

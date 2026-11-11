@@ -172,13 +172,21 @@ applies an in-place Yjs transaction under its room admission (the fence a
 client frame uses) with its own origin, `COLLAB_IMAGE_MARKER_ORIGIN`:
 `doc.on('update')` persists it, publishes it once as an incremental `sync` and
 sends it to every socket; peers apply it with origin `'redis'` and do not
-republish it. A commit pod that owns no room for the page publishes
-`image_markers`, and each owning pod applies the same transaction. The commit
-also marks `page_collaborative_docs` under its own request admission, so a room
-that loads later, a persist (which merges the persisted document first) and the
-next commit snapshot keep the markers even when no room owned the page. Only
-`image` nodes whose current `src` was uploaded and that carry neither marker
-change; the document is never reset, so editors stay open.
+republish it. A commit pod whose own room did not take the mark (no room for
+the page, a room without a writable admission, a room at another lifecycle
+revision, or a room released while the step waited for the page lock)
+publishes `image_markers` with the Save's lifecycle revision, and each pod
+whose room owns the page at that revision applies the same transaction. A pod
+without such a room ignores the message, and every pod ignores a malformed
+one. The commit also marks `page_collaborative_docs` under its own request
+admission, so a room that loads later, a persist (which merges the persisted
+document first) and the next commit snapshot keep the markers even when no
+room owned the page or the owning pod missed the message. Only `image` nodes
+whose current `src` was uploaded and that carry neither marker change; the
+document is never reset, so editors stay open. Both steps are best effort: one
+that the write fence refuses (lifecycle changed, page frozen, another pending
+write) is logged as `collab.image_markers_refused`, and the next Save uploads
+again the images that neither step marked.
 
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
