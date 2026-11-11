@@ -79,14 +79,16 @@ function createMcpServerInstance(): McpServer {
       max_length: z.number().max(100_000).default(10_000).optional().describe('Max characters to return'),
       start_index: z.number().min(0).default(0).optional().describe('Character offset to start from'),
       user_id: z.string().optional().describe('User ID for audit logging'),
+      cache_ttl: z.number().int().min(60).max(86400).optional()
+        .describe('Seconds to cache the fetched document (default: CACHE_TTL_SECONDS)'),
     },
-    async ({ url, max_length, start_index, user_id }) => {
+    async ({ url, max_length, start_index, user_id, cache_ttl }) => {
       try {
         const result = await fetchUrl(url, redis, {
           maxLength: max_length ?? undefined,
           startIndex: start_index ?? undefined,
           userId: user_id ?? undefined,
-          cacheTtl: CACHE_TTL,
+          cacheTtl: cache_ttl ?? CACHE_TTL,
         });
 
         const meta = [
@@ -120,12 +122,15 @@ function createMcpServerInstance(): McpServer {
       query: z.string().min(1).max(200).describe('Search query (keywords only, max 200 chars)'),
       num_results: z.number().min(1).max(10).default(5).optional().describe('Number of results'),
       user_id: z.string().optional().describe('User ID for audit logging'),
+      categories: z.string().regex(/^[a-z0-9_]+(,[a-z0-9_]+)*$/).max(200).optional()
+        .describe('Comma-separated SearXNG categories, e.g. "general,it" (default: general)'),
     },
-    async ({ query, num_results, user_id }) => {
+    async ({ query, num_results, user_id, categories }) => {
       try {
         const results = await searchWeb(query, redis, {
           numResults: num_results ?? undefined,
           userId: user_id ?? undefined,
+          categories: categories ?? undefined,
         });
 
         if (results.length === 0) {
