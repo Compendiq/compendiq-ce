@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MCP docs cache entries are bounded (#1770):** the `mcp-docs` sidecar now
+  stores at most the first 100,000 characters of a fetched document per cache
+  entry instead of the whole download (up to 5 MiB, more once JSON-escaped),
+  so large documents no longer eat into the Redis memory shared with the job
+  queues. Returned text is unchanged: a first page of up to 100,000 characters
+  is still served from the cache, and a `start_index` read beyond the stored
+  part fetches the document again (`Cached: false`) instead of returning less
+  text. `list_cached` still reports the full length. Existing entries stay
+  readable and expire on their TTL.
 - **Admin access-denied retention control (#1875):** now sits in the shared
   *Retention windows* section: empty, fractional and out-of-range values are
   rejected inline instead of being sent, Enter saves, a failed save keeps the

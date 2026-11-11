@@ -239,6 +239,22 @@ can echo request fragments and internal topology. It is truncated at
 
 ## SearXNG Sidecar
 
+`fetch_url` caches at most the first 100 000 characters of a document's
+markdown (`CACHE_MAX_CHARS` in `mcp-docs/src/cache/redis-cache.ts`, equal to
+the tool's `ABSOLUTE_MAX_LENGTH`), whatever the download size: the Redis it
+shares with the BullMQ queues runs `noeviction` (#658), so a 5 MiB document
+must not become a 5 MiB value (#1770). `contentLength` stays the full length
+and `storedLength` says how much is stored; an entry without `storedLength`
+predates the bound, holds the whole document and stays readable, so the
+`mcp:docs:url:` namespace is not versioned for this additive field. A read the
+stored prefix cannot answer in full — a `start_index` at or beyond it, or a
+window crossing it — is a cache miss: fetch again, answer from the fresh
+document and re-store the bounded entry. Never answer it with a short slice
+(a caller paging by `max_length` would lose text), and never raise one of the
+two constants alone. Only the markdown is bounded; `title` and `url` are
+stored as fetched. `mcp-docs/src/tools/fetch-url.integration.test.ts` pins
+this against real Redis (`MCP_DOCS_TEST_REDIS_URL`; never skip).
+
 `mcp-docs` calls SearXNG directly, so `[botdetection].trusted_proxies`
 defaults to loopback only; never re-add a blanket Docker subnet. A deployment
 that actually proxies SearXNG may set `SEARXNG_TRUSTED_PROXIES` to
