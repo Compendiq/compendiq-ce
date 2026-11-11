@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RetrievalBenchmarkRequestSchema } from '@compendiq/contracts';
+import { RetrievalBenchmarkRequestSchema, SearxngCategoriesSchema, UpdateMcpDocsSettingsSchema } from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -18,16 +18,6 @@ import { slotBusyMessage } from '../../domains/llm/eval/benchmark-run-lifecycle.
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
-
-const UpdateMcpDocsSchema = z.object({
-  enabled: z.boolean().optional(),
-  url: z.string().url().optional(),
-  domainMode: z.enum(['allowlist', 'blocklist']).optional(),
-  allowedDomains: z.array(z.string()).optional(),
-  blockedDomains: z.array(z.string()).optional(),
-  cacheTtl: z.number().int().min(60).max(86400).optional(),
-  maxContentLength: z.number().int().min(1000).max(500_000).optional(),
-});
 
 const TestFetchSchema = z.object({
   url: z.string().url(),
@@ -145,7 +135,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
     ...ADMIN_RATE_LIMIT,
   }, async (request) => {
-    const updates = UpdateMcpDocsSchema.parse(request.body);
+    const updates = UpdateMcpDocsSettingsSchema.parse(request.body);
     await upsertMcpDocsSettings(updates);
     return { message: 'MCP docs settings updated', ...await getMcpDocsSettings() };
   });
@@ -189,7 +179,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   const UpdateSearxngSchema = z.object({
     url: z.string().url().optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
-    categories: z.string().max(200).optional(),
+    categories: SearxngCategoriesSchema.optional(),
   });
 
   fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async () => {

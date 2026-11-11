@@ -7,7 +7,7 @@
 
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { getSearxngMaxResults } from './_helpers.js';
+import { getSearxngSettings } from './_helpers.js';
 import { logger } from '../../core/utils/logger.js';
 
 export interface WebSource {
@@ -52,7 +52,7 @@ export async function fetchWebSources(
 ): Promise<WebSearchResult> {
   if (!await isMcpDocsEnabled()) return { sources: [], injectionWarnings: [] };
 
-  const maxResults = options?.maxResults ?? await getSearxngMaxResults();
+  const maxResults = options?.maxResults ?? (await getSearxngSettings()).maxResults;
   const maxLength = options?.maxLength ?? 5000;
 
   try {

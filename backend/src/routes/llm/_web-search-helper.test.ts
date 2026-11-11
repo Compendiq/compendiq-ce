@@ -14,9 +14,12 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
 // NOTE: sanitize-llm-input is deliberately NOT mocked — it is a pure utility
 // and the tests below assert real prompt-injection filtering (#820).
 
-// --- Mock: _helpers (getSearxngMaxResults) ---
+// --- Mock: _helpers (getSearxngSettings) ---
+// Default implementation is set once here; the file-level clearAllMocks only
+// clears calls.
+const mockGetSearxngSettings = vi.fn().mockResolvedValue({ maxResults: 5, categories: 'general' });
 vi.mock('./_helpers.js', () => ({
-  getSearxngMaxResults: vi.fn().mockResolvedValue(5),
+  getSearxngSettings: (...args: unknown[]) => mockGetSearxngSettings(...args),
 }));
 
 // --- Mock: logger ---

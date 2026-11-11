@@ -23,7 +23,7 @@ import {
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
-import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import { SEARXNG_CATEGORIES_DEFAULT, type ConversationTurnAiProvenance } from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -522,14 +522,17 @@ export async function streamSSE(
   return streamError || controller.signal.aborted ? '' : fullContent;
 }
 
-/**
- * Get admin-configured SearXNG max results (reads from admin_settings, defaults to 5).
- */
-export async function getSearxngMaxResults(): Promise<number> {
-  const result = await query<{ setting_value: string }>(
-    `SELECT setting_value FROM admin_settings WHERE setting_key = 'searxng_max_results'`,
+/** Admin-configured SearXNG search settings (admin_settings): result width and categories. */
+export async function getSearxngSettings(): Promise<{ maxResults: number; categories: string }> {
+  const result = await query<{ setting_key: string; setting_value: string }>(
+    `SELECT setting_key, setting_value FROM admin_settings
+     WHERE setting_key IN ('searxng_max_results', 'searxng_categories')`,
   );
-  return parseInt(result.rows[0]?.setting_value ?? '5', 10);
+  const stored = new Map(result.rows.map((row) => [row.setting_key, row.setting_value]));
+  return {
+    maxResults: parseInt(stored.get('searxng_max_results') ?? '5', 10),
+    categories: stored.get('searxng_categories') ?? SEARXNG_CATEGORIES_DEFAULT,
+  };
 }
 
 /**

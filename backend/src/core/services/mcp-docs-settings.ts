@@ -3,6 +3,7 @@
  * Same pattern as admin-settings-service.ts for LLM settings.
  */
 
+import { MCP_DOCS_CACHE_TTL_DEFAULT, MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT } from '@compendiq/contracts';
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -22,8 +23,8 @@ const DEFAULTS: McpDocsSettings = {
   domainMode: 'blocklist',
   allowedDomains: ['*'],
   blockedDomains: [],
-  cacheTtl: 3600,
-  maxContentLength: 50_000,
+  cacheTtl: MCP_DOCS_CACHE_TTL_DEFAULT,
+  maxContentLength: MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT,
 };
 
 const MCP_SETTING_KEYS = [
