@@ -62,12 +62,32 @@ describe('_web-search-helper', () => {
 
       const { sources, injectionWarnings } = await fetchWebSources('test query', 'user-1');
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 5000);
       expect(sources).toEqual([
         { url: 'https://example.com/doc1', title: 'Doc 1', snippet: 'Full markdown content' },
       ]);
       expect(injectionWarnings).toEqual([]);
+    });
+
+    it('forwards the saved SearXNG width and categories to search_web (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'general,it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 7, 'general,it');
+    });
+
+    it('keeps the saved categories when the caller overrides the width (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1', { maxResults: 3 });
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 3, 'it');
     });
 
     it('falls back to snippet on individual fetch failure', async () => {
@@ -220,7 +240,7 @@ describe('_web-search-helper', () => {
 
       await fetchWebSources('query', 'user-1', { maxResults: 10, maxLength: 8000 });
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 8000);
     });
   });

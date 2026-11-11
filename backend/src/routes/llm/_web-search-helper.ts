@@ -52,11 +52,13 @@ export async function fetchWebSources(
 ): Promise<WebSearchResult> {
   if (!await isMcpDocsEnabled()) return { sources: [], injectionWarnings: [] };
 
-  const maxResults = options?.maxResults ?? (await getSearxngSettings()).maxResults;
+  const searxng = await getSearxngSettings();
+  const maxResults = options?.maxResults ?? searxng.maxResults;
+  // Per-source budget; fetchDocumentation caps it at the admin Max Content Length.
   const maxLength = options?.maxLength ?? 5000;
 
   try {
-    const results = await searchDocumentation(searchQuery, userId, maxResults);
+    const results = await searchDocumentation(searchQuery, userId, maxResults, searxng.categories);
     const sources: WebSource[] = [];
     const injectionWarnings: WebInjectionWarning[] = [];
 

@@ -23,7 +23,11 @@ import {
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
-import { SEARXNG_CATEGORIES_DEFAULT, type ConversationTurnAiProvenance } from '@compendiq/contracts';
+import {
+  SEARXNG_CATEGORIES_DEFAULT,
+  SearxngCategoriesSchema,
+  type ConversationTurnAiProvenance,
+} from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -522,6 +526,24 @@ export async function streamSSE(
   return streamError || controller.signal.aborted ? '' : fullContent;
 }
 
+/**
+ * Effective SearXNG categories for a stored `searxng_categories` value. Rows
+ * written before #1769 were only length-checked, so one can hold a value the
+ * sidecar's `search_web` schema rejects with -32602 (e.g. "general, it"),
+ * which fetchWebSources swallows into "no sources". Such a row falls back to
+ * the default — what the sidecar searched before #1769 — and is logged so the
+ * operator re-saves.
+ */
+function normalizeSearxngCategories(stored: string | undefined): string {
+  if (stored === undefined) return SEARXNG_CATEGORIES_DEFAULT;
+  if (SearxngCategoriesSchema.safeParse(stored).success) return stored;
+  logger.warn(
+    { stored, effective: SEARXNG_CATEGORIES_DEFAULT },
+    'searxng_categories is not a comma-separated category list — using the default; re-save SearXNG settings',
+  );
+  return SEARXNG_CATEGORIES_DEFAULT;
+}
+
 /** Admin-configured SearXNG search settings (admin_settings): result width and categories. */
 export async function getSearxngSettings(): Promise<{ maxResults: number; categories: string }> {
   const result = await query<{ setting_key: string; setting_value: string }>(
@@ -531,7 +553,7 @@ export async function getSearxngSettings(): Promise<{ maxResults: number; catego
   const stored = new Map(result.rows.map((row) => [row.setting_key, row.setting_value]));
   return {
     maxResults: parseInt(stored.get('searxng_max_results') ?? '5', 10),
-    categories: stored.get('searxng_categories') ?? SEARXNG_CATEGORIES_DEFAULT,
+    categories: normalizeSearxngCategories(stored.get('searxng_categories')),
   };
 }
 
