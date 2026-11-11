@@ -93,7 +93,6 @@ type CollabCommitPage = {
   visibility: string;
   confluence_id: string | null;
   space_key: string | null;
-  content_revision: string;
   lifecycle_revision: string;
   baseline_id: string | null;
 };
@@ -228,6 +227,12 @@ async function commitConfluencePage(args: {
       contentSha256: image.contentSha256,
     })),
   });
+  // No `expectedRevisions` (#1762): the published body is the room snapshot,
+  // not the row read before it, so a content pin only refused the Save when a
+  // non-conflicting write (typically this room's own 2 s persist) landed
+  // meanwhile. `{ admission }` still pins the lifecycle on this transaction
+  // (409 `stale_lifecycle`), the authority check pins identity and local
+  // version, and the intent stores the revisions of the row locked here.
   const intent = await withPageWriteTransaction([pageId], async (dbClient) => {
     await assertCurrentCollabMutationAuthority(dbClient, existing, userId);
     return reservePageWriteIntentInTransaction(dbClient, {
@@ -236,12 +241,6 @@ async function commitConfluencePage(args: {
         ? 'collab.commit.confluence.media'
         : 'collab.commit.confluence',
       actorId: userId,
-      expectedRevisions: {
-        [pageId]: {
-          contentRevision: existing.content_revision,
-          lifecycleRevision: existing.lifecycle_revision,
-        },
-      },
       effect: publication.effect,
     });
   }, { admission });
@@ -511,12 +510,11 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       page_type: string | null;
       confluence_id: string | null;
       space_key: string | null;
-      content_revision: string;
       lifecycle_revision: string;
       baseline_id: string | null;
     }>(
       `SELECT id, version, source, visibility, deleted_at, page_type,
-              confluence_id, space_key, content_revision::text,
+              confluence_id, space_key,
               lifecycle_revision::text, baseline_id
          FROM pages
         WHERE id = $1`,
