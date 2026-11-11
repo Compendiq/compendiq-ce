@@ -221,6 +221,11 @@ join message (Retry for `rate_limited` after the upgrade window and for an
 interrupted join), never that banner or **Download draft**, and Save stays
 blocked (#1895).
 
+A Confluence collaborative commit that uploaded pasted images then marks them
+in the live room (an in-place Yjs transaction on the owning pod) and in
+`page_collaborative_docs`, after its intent settles and before its
+`pages_version` control, never through `doc_reset` (#1764).
+
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
 failure so a later intentional retry remains possible. The button, editor

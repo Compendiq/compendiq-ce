@@ -35,7 +35,7 @@ import {
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
-import { yDocToHtml } from './collab-schema.js';
+import { markAttachmentImages, yDocToHtml, type AttachmentImageMarker } from './collab-schema.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
@@ -64,6 +64,12 @@ export const MESSAGE_CONTROL = 4;
 const SYNC_STEP1 = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
+/**
+ * Origin of the post-commit image-marker transaction (#1764). Not a connection
+ * id, so `doc.on('update')` persists it, publishes it once as `sync` and sends
+ * it to every socket; peers apply that `sync` as `'redis'` and never echo it.
+ */
+export const COLLAB_IMAGE_MARKER_ORIGIN = Symbol('collab-image-markers');
 
 export type CollabControl =
   | { type: 'pages_version'; version: number }
@@ -86,7 +92,8 @@ export type CollabBusKind =
   | 'tombstone'
   | 'freeze'
   | 'state_dump_request'
-  | 'state_dump';
+  | 'state_dump'
+  | 'image_markers';
 
 export type CollabBusMessage = {
   origin: string;
@@ -98,6 +105,7 @@ export type CollabBusMessage = {
   admission?: PageRuntimeAdmission;
   requestId?: string;
   requestedAdmissions?: string[];
+  markers?: AttachmentImageMarker[];
 };
 
 export interface CollabIdentity {
@@ -166,6 +174,12 @@ export interface CollabRuntime {
   tombstone: (pageId: number, code: number, reason?: string) => Promise<void>;
   tombstoneAll: (code: number, reason?: string) => Promise<void>;
   broadcastControl: (pageId: number, control: CollabControl) => void;
+  /** After a settled Confluence commit, mark the images it uploaded in the owning room and the persisted document (#1764). */
+  markUploadedImages: (
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly AttachmentImageMarker[],
+  ) => Promise<void>;
   prepareCommitSnapshot: (
     pageId: number,
     userId: string,
@@ -269,6 +283,36 @@ function validAdmission(value: unknown): value is PageRuntimeAdmission {
     && 'pageId' in value && typeof value.pageId === 'number'
     && 'purpose' in value && value.purpose === 'collab_room'
     && 'lifecycleRevision' in value && typeof value.lifecycleRevision === 'string';
+}
+
+/** Markers from a peer's `image_markers` message; anything malformed marks nothing (#1764). */
+function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const markers: AttachmentImageMarker[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { src, filename } = entry as Record<string, unknown>;
+    if (
+      typeof src !== 'string' || !src.startsWith('/api/attachments/')
+      || typeof filename !== 'string' || filename.length === 0
+    ) return null;
+    markers.push({ src, filename });
+  }
+  return markers;
+}
+
+/**
+ * Why a best-effort image mark did not happen (#1764). A refusal by the
+ * page-write fence (the lifecycle changed, the page is frozen, another write is
+ * pending, the admission was retired) is an expected outcome that costs one
+ * more upload on the next Save; anything else is a failure.
+ */
+function logImageMarkersSkipped(error: unknown, pageId: number, step: 'room' | 'persisted'): void {
+  if (error instanceof PageWriteError) {
+    logger.info({ pageId, step, reason: error.reason }, 'collab.image_markers_refused');
+    return;
+  }
+  logger.warn({ err: error, pageId, step }, 'collab.image_markers_failed');
 }
 
 export async function createCollabRuntime(
@@ -599,6 +643,17 @@ export async function createCollabRuntime(
         if (await validateAndApplyPeerUpdate(room, message)) {
           round.remaining.delete(message.admission.id);
           if (round.remaining.size === 0) round.finish(true);
+        }
+        return;
+      }
+      if (message.kind === 'image_markers') {
+        const markers = busImageMarkers(message.markers);
+        if (!markers || typeof message.lifecycleRevision !== 'string') return;
+        await room.initializing;
+        try {
+          await markRoomImages(room, message.lifecycleRevision, markers);
+        } catch (error) {
+          logImageMarkersSkipped(error, room.pageId, 'room');
         }
         return;
       }
@@ -1050,6 +1105,74 @@ export async function createCollabRuntime(
           logger.warn({ err: error, pageId }, 'collab: transient snapshot room cleanup deferred');
         });
       }
+    }
+  }
+
+  /**
+   * Mark uploaded images in place in a room this pod owns at the commit's
+   * lifecycle revision, fenced like a client frame (handleInboundFrame).
+   * `doc.on('update')` persists the transaction, publishes it once as an
+   * incremental `sync` and sends it to every socket (#1764). False when this
+   * pod owns no such room.
+   */
+  async function markRoomImages(
+    room: CollabRoom,
+    lifecycleRevision: string,
+    markers: readonly AttachmentImageMarker[],
+  ): Promise<boolean> {
+    const admission = room.admission;
+    // A room without a writable admission (read-only viewers) is not an owner:
+    // it never persists, and it gets the marks with an owner's `sync` or the
+    // next time it merges the persisted document.
+    if (!admission || rooms.get(room.pageId) !== room || room.lifecycleRevision !== lifecycleRevision) {
+      return false;
+    }
+    let owned = false;
+    await withPageWriteTransaction([room.pageId], async () => {
+      // A disconnect, demotion or retirement can win the lifecycle lock first.
+      // Like a client frame, this in-memory step writes no protected row, so the
+      // page's own pending collaborative Save does not fence it (#1763).
+      if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
+      owned = true;
+      markAttachmentImages(room.doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+    }, { admission, ownCollabCommit: 'proceed' });
+    return owned;
+  }
+
+  /**
+   * After a settled Confluence commit, mark the images it uploaded (#1764): in
+   * place in the room this pod owns, else by asking the owning pods over
+   * Redis; then in the persisted document every later room starts from. Best
+   * effort: the Save has already succeeded, so a refusal is only logged and
+   * costs one more upload on the next Save.
+   */
+  async function markUploadedImages(
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly AttachmentImageMarker[],
+  ): Promise<void> {
+    if (markers.length === 0) return;
+    let inRoom = false;
+    try {
+      const room = rooms.get(pageId);
+      inRoom = room ? await markRoomImages(room, admission.lifecycleRevision, markers) : false;
+      // An owning pod applies the same transaction; its fan-out reaches every other pod.
+      if (!inRoom) {
+        await publish(pageId, {
+          origin: podId,
+          kind: 'image_markers',
+          lifecycleRevision: admission.lifecycleRevision,
+          markers: [...markers],
+        });
+      }
+    } catch (error) {
+      logImageMarkersSkipped(error, pageId, 'room');
+    }
+    try {
+      const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
+      logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
+    } catch (error) {
+      logImageMarkersSkipped(error, pageId, 'persisted');
     }
   }
 
@@ -1547,6 +1670,7 @@ export async function createCollabRuntime(
     tombstone: (pageId, code, reason) => withRoomOwnership(pageId, () => tombstone(pageId, code, reason)),
     tombstoneAll,
     broadcastControl,
+    markUploadedImages,
     prepareCommitSnapshot: (pageId, userId, revision) =>
       withRoomOwnership(pageId, () => prepareCommitSnapshot(pageId, userId, revision)),
     handleLifecycleEvent: (event) =>

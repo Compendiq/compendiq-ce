@@ -60,6 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When the last editor leaves during a Save, the room's admission is released
   once the Save settles instead of answering other writers
   `409 collab_session_active`.
+- **A pasted image is uploaded once, not on every collaborative Save (#1764):**
+  after a Confluence collaborative Save uploaded a pasted image, the session's
+  next autosave dropped the image's attachment markers, so every later Save
+  uploaded the image again (a new attachment version each time) and was
+  recorded as a media commit. The Save now marks the uploaded images in the
+  open editors and in the saved collaborative state, without reloading the
+  editor; a following text-only Save uploads nothing.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the

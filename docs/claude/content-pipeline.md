@@ -66,6 +66,15 @@ Read mode uses the draw.io schema renderer, not the editor-only React node view,
 so the admitted Edit Diagram callback remains reachable for source-only nodes.
 Remove its overlay when that callback is withdrawn (including a live freeze).
 
+A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
+`img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
+`data-confluence-image-source`, and gives it both (`attachment`): the shape
+`confluenceToHtml` writes for a synced attachment and `htmlToConfluence` turns
+into `ri:attachment`. A collaborative Confluence Save copies those markers into
+the room's live and persisted Yjs document after its intent settles (#1764);
+otherwise the room's next 2 s persist drops them and every later Save uploads
+the image again.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.

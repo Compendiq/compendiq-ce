@@ -11,7 +11,12 @@ import { query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
-import { applyHtmlToYDoc, yDocToHtml } from './collab-schema.js';
+import {
+  applyHtmlToYDoc,
+  markAttachmentImages,
+  yDocToHtml,
+  type AttachmentImageMarker,
+} from './collab-schema.js';
 import {
   isCollabCommitPending,
   withPageWriteTransaction,
@@ -158,6 +163,38 @@ export async function mergePersistedCollabDoc(
   if (!existing.rows[0]) return false;
   Y.applyUpdate(doc, new Uint8Array(existing.rows[0].doc_state), COLLAB_MERGE_ORIGIN);
   return true;
+}
+
+/**
+ * Mark the images a settled Confluence commit uploaded in the persisted
+ * document (#1764). Every later room load, persist (which merges this row
+ * first) and commit snapshot starts from it, so the markers survive when no
+ * room owns the page or the owning room missed the in-place marks. The caller
+ * holds that commit's request admission. No row: the next writable join seeds
+ * from `body_html`, which the commit published with the markers.
+ */
+export async function markPersistedAttachmentImages(
+  pageId: number,
+  admission: PageRuntimeAdmission,
+  markers: readonly AttachmentImageMarker[],
+): Promise<number> {
+  return withPageWriteTransaction([pageId], async (client) => {
+    await lockCollabInit(client, pageId);
+    const persisted = await client.query<{ doc_state: Buffer }>(
+      'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
+      [pageId],
+    );
+    if (!persisted.rows[0]) return 0;
+    const doc = new Y.Doc();
+    try {
+      Y.applyUpdate(doc, new Uint8Array(persisted.rows[0].doc_state), COLLAB_LOAD_ORIGIN);
+      const marked = markAttachmentImages(doc, markers, COLLAB_LOAD_ORIGIN);
+      if (marked > 0) await upsertDocState(client, pageId, doc);
+      return marked;
+    } finally {
+      doc.destroy();
+    }
+  }, { admission });
 }
 
 export async function persistCollabDocState(
