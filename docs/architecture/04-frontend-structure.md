@@ -463,6 +463,16 @@ flowchart TB
   and transport generation and contain the captured client state. If
   title/labels or the Y.Doc change while the request is in flight, the
   acknowledged capture is saved but the editor stays open with the later edits.
+- **The ordinary versioned PUT is based on the editing session (#1746).** The
+  flag-off Save sends `editBaseVersionRef`, not the live page query: Edit,
+  Restore draft and Edit published version take it — and the title — from the
+  page on screen, and only the session's own successful PUT replaces it (with
+  the version `useUpdatePage` read back and validated). Background refetches
+  never move it, and a 409, `confluence_modified` or any other failure keeps
+  it, so every later Save of a stale draft is refused again; the conflict
+  toast's **Reload** leaves edit mode with the local draft intact and the next
+  Edit offers it. A newer version this session did not write — another user,
+  another tab, a version restore or an inbound sync — is a conflict.
 - **Save is single-flight per editing session.** `PageViewPage` claims the
   flight synchronously before draw.io draining (the first await), so the Save
   button, editor callback, and `Ctrl`/`Cmd`+`S` cannot overlap either the

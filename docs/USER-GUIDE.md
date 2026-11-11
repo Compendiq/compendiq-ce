@@ -250,6 +250,15 @@ Skipped and unselected Notion items keep their Notion URLs in imported page bodi
 
 Changes to Confluence-synced pages can be pushed back to Confluence.
 
+When collaborative editing is off and someone else saves the page while you
+are editing it, **Save** is refused with *Version conflict detected* instead
+of overwriting their change, and it stays refused until you decide. Choose
+**Reload** in that message: the current version opens and the text of your
+unsaved draft stays in this browser (title and tag changes are not kept).
+Press **Edit** again and choose **Restore draft** to continue with your text —
+saving it then replaces the newer version — or **Edit published version** to
+start from the current text.
+
 ### Page Details
 
 Open **Details** in the right-hand page inspector (`Alt+D`). The panel groups
