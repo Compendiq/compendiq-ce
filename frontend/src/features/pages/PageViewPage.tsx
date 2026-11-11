@@ -77,7 +77,7 @@ import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
-import { useCollabProvider } from './use-collab-provider';
+import { useCollabProvider, type UseCollabProviderResult } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
 import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
@@ -113,6 +113,53 @@ function stateHistoryIndex(value: unknown): number | null {
 
 function historyIndex(): number | null {
   return stateHistoryIndex(window.history.state);
+}
+
+/**
+ * The one sentence the editor slot shows until the collaborative document
+ * first syncs (#1895). A refusal wins over a read-only reason, which wins over
+ * a transient reconnect. No draft exists yet, so nothing mentions one.
+ */
+function collabPreSyncMessage(
+  collab: Pick<UseCollabProviderResult, 'error' | 'readOnlyReason' | 'reconnecting' | 'canRetry'>,
+): string {
+  switch (collab.error) {
+    case 'unauthorized':
+      return 'Your session expired. Sign in again to keep editing together.';
+    case 'forbidden':
+      return 'You cannot join this collaborative session.';
+    case 'not_found':
+      return 'This page is no longer available for collaborative editing.';
+    case 'rate_limited':
+      return collab.canRetry
+        ? 'Too many connection attempts. You can retry now.'
+        : 'Too many connection attempts. Retry becomes available after a minute.';
+    case 'flag_off':
+      return 'Collaborative editing has been turned off. Close the editor and open it again to edit this page.';
+    case 'join_interrupted':
+      return 'The collaborative session closed before it finished loading.';
+    case null:
+      break;
+  }
+  switch (collab.readOnlyReason) {
+    case 'frozen':
+      return 'This page is frozen, so it cannot be edited.';
+    case 'lifecycle_changed':
+      return 'This page changed while the editor was opening. Close the editor and open it again to edit the current version.';
+    case 'document_changed':
+      return 'This page was replaced while the editor was opening. Close the editor and open it again to edit the current version.';
+    case 'permission_loss':
+      return 'You can view this page but cannot edit it.';
+    case 'not_found':
+      return 'This page is no longer available for collaborative editing.';
+    case 'unauthorized':
+      return 'Your session expired. Sign in again to keep editing together.';
+    case null:
+      break;
+  }
+  return collab.reconnecting
+    ? 'Could not connect to the collaborative session. Retrying…'
+    : 'Connecting to the collaborative session…';
 }
 
 export function PageViewPage() {
@@ -176,6 +223,14 @@ export function PageViewPage() {
   const [labelPolicyNotice, setLabelPolicyNotice] = useState<string | null>(null);
   const metadataRevisionRef = useRef(0);
   const editSessionRef = useRef(0);
+  // #1746: the page version this editing session's content is based on, sent
+  // as the ordinary PUT's `version`. Set where a session seeds the editor
+  // (Edit, Restore draft, Edit published version) and replaced only by this
+  // session's own successful PUT. Never send the live `page.version`: focus,
+  // remount and invalidation refetches move it mid-edit and would rebase a
+  // stale draft onto someone else's version. 0 = no session; no page has
+  // version 0 and UpdatePageSchema refuses it, so an unset base fails closed.
+  const editBaseVersionRef = useRef(0);
   // State-backed pending flags update on the next render, which leaves a
   // same-tick Ctrl/Cmd+S window. Claim the ref synchronously so every entry
   // path shares one flight, including draw.io draining and collab commit; keep
@@ -240,6 +295,11 @@ export function PageViewPage() {
   });
   const [collabSession, setCollabSession] = useState(false);
   const [collabHasSynced, setCollabHasSynced] = useState(false);
+  // The join Retry stays mounted as "Retrying…" until its attempt settles.
+  const [joinRetryInFlight, setJoinRetryInFlight] = useState(false);
+  const joinRetryButtonRef = useRef<HTMLButtonElement>(null);
+  const joinRetryHadFocusRef = useRef(false);
+  const editorColumnRef = useRef<HTMLDivElement>(null);
   const collab = useCollabProvider({
     pageId: id,
     enabled: collabSession,
@@ -276,9 +336,45 @@ export function PageViewPage() {
   }, [editing, lifecycle, page, sessionLifecycleRevision]);
   const writeLocked = page?.isFrozen === true ||
     (editing && (editingBlocked || collab.readOnlyReason != null));
-  const editorWritable = !writeLocked && (!collabLive || collab.writable ||
-    (collabHasSynced && !collab.connected));
-  const saveBlocked = writeLocked || (collabLive && (!collab.writable || !collab.connected));
+  // Until the first sync there is no collaborative draft: the editor slot owns
+  // the screen, nothing is editable and Save stays blocked (#1895).
+  const collabPreSync = collabLive && !collabHasSynced;
+  const editorWritable = !writeLocked && (!collabLive ||
+    (collabHasSynced && (collab.writable || !collab.connected)));
+  const saveBlocked = writeLocked ||
+    (collabLive && (!collabHasSynced || !collab.writable || !collab.connected));
+  // The refusal copy says to close and reopen the editor; make that reopen use
+  // the current config and page instead of the cached ones.
+  useEffect(() => {
+    if (!collabPreSync) return;
+    if (collab.error === 'flag_off') void queryClient.invalidateQueries({ queryKey: ['collab-config'] });
+    if (collab.readOnlyReason === 'lifecycle_changed' || collab.readOnlyReason === 'document_changed' ||
+        collab.readOnlyReason === 'frozen') {
+      void queryClient.invalidateQueries({ queryKey: ['pages', id] });
+    }
+  }, [collabPreSync, collab.error, collab.readOnlyReason, id, queryClient]);
+  const { canRetry: collabCanRetry, retry: retryCollabJoin } = collab;
+  const handleJoinRetry = useCallback(() => {
+    // `aria-disabled`, never `disabled`: the control keeps focus, so refuse here.
+    if (joinRetryInFlight || !collabCanRetry) return;
+    joinRetryHadFocusRef.current = document.activeElement === joinRetryButtonRef.current;
+    setJoinRetryInFlight(true);
+    retryCollabJoin();
+  }, [collabCanRetry, joinRetryInFlight, retryCollabJoin]);
+  // The attempt settles on the first sync, any new refusal (a close reason in
+  // `error` or a lifecycle/permission/reset refusal in `readOnlyReason`) or the
+  // end of the session. A Retry that vanished with focus on it hands focus to
+  // the named editor column instead of dropping it to <body>.
+  useEffect(() => {
+    if (!joinRetryInFlight ||
+        (collabPreSync && collab.error === null && collab.readOnlyReason === null)) return;
+    setJoinRetryInFlight(false);
+    if (!joinRetryHadFocusRef.current) return;
+    joinRetryHadFocusRef.current = false;
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) editorColumnRef.current?.focus();
+    });
+  }, [joinRetryInFlight, collabPreSync, collab.error, collab.readOnlyReason]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -485,6 +581,7 @@ export function PageViewPage() {
       return;
     }
     editSessionRef.current += 1;
+    editBaseVersionRef.current = page.version;
     setEditingBlocked(false);
     setSessionLifecycleRevision(page.lifecycleRevision);
     captureScrollOffset();
@@ -515,6 +612,13 @@ export function PageViewPage() {
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
     captureScrollOffset();
+    // A localStorage draft records no base version and no title: the page on
+    // screen when the user chooses to restore it is the best available base,
+    // and the title must describe that same version (#1746).
+    if (page) {
+      editBaseVersionRef.current = page.version;
+      setEditTitle(page.title);
+    }
     setEditHtml(pendingDraft);
     if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
@@ -528,6 +632,8 @@ export function PageViewPage() {
     setPendingDraft(null);
     captureScrollOffset();
     if (!page) return;
+    editBaseVersionRef.current = page.version;
+    setEditTitle(page.title);
     setEditHtml(page.bodyHtml);
     setDraftLabels(page.labels ?? []);
     setIsDirty(false);
@@ -810,12 +916,15 @@ export function PageViewPage() {
           return;
         }
         const bodyToSave = editorInstance.getHTML();
-        await updateMutation.mutateAsync({
+        const saved = await updateMutation.mutateAsync({
           id,
           title: editTitle,
           bodyHtml: bodyToSave,
-          version: page.version,
+          version: editBaseVersionRef.current,
         });
+        // This session's own write is its new base: a Save that stays open
+        // (a refused label write below) must not 409 against it (#1746).
+        if (editSessionRef.current === session) editBaseVersionRef.current = saved.version;
       }
       if (editSessionRef.current !== session) return;
       if (editing) {
@@ -1087,7 +1196,12 @@ export function PageViewPage() {
       description: 'Save current page',
       category: 'editor',
       action: () => {
-        if (editing) handleSave();
+        if (!editing) return;
+        if (collabPreSync) {
+          toast.info('There is nothing to save yet: the collaborative session has not loaded.');
+          return;
+        }
+        handleSave();
       },
     },
     {
@@ -1151,7 +1265,7 @@ export function PageViewPage() {
       // the user did not ask for, which is why it is no longer called Improve.
       action: openDock,
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
+  ], [editing, collabPreSync, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
 
   useKeyboardShortcuts(pageShortcuts);
 
@@ -1218,7 +1332,7 @@ export function PageViewPage() {
     );
   }
 
-  const tagChip = writeLocked ? (
+  const tagChip = writeLocked || collabPreSync ? (
     <span className="text-xs text-muted-foreground">{draftLabels.length ? draftLabels.join(', ') : 'Tags are read-only'}</span>
   ) : (
     <TagPopover
@@ -1407,7 +1521,7 @@ export function PageViewPage() {
         {editing ? (
           <Fragment key="article-edit">
             <div role="status" aria-live="polite" className="mx-auto w-full max-w-[1200px] px-5 sm:px-10">
-              {(writeLocked || (collabLive && collabHasSynced && !collab.connected)) && (
+              {!collabPreSync && (writeLocked || (collabLive && collabHasSynced && !collab.connected)) && (
                 <div className="my-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
                   <p className="font-medium text-foreground">
                     {writeLocked ? 'This editing session is now read-only' : 'Working offline'}
@@ -1455,30 +1569,33 @@ export function PageViewPage() {
 
             {/* Editor body — same 1200px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
+            <div
+              ref={editorColumnRef}
+              tabIndex={-1}
+              role="region"
+              aria-label="Page body"
+              data-testid="article-editor-column"
+              className={cn('nm-focus-ring mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}
+            >
               <FeatureErrorBoundary featureName="Editor">
-                {collabLive && collab.error && !collabHasSynced ? (
-                  <p
-                    role="status"
-                    className="py-8 text-sm leading-6 text-muted-foreground"
-                    data-testid="collab-join-error"
-                  >
-                    {collab.error === 'forbidden'
-                      ? 'You cannot join this collaborative session.'
-                      : collab.error === 'not_found'
-                        ? 'This page is no longer available for collaborative editing.'
-                        : 'Your session expired. Sign in again to keep editing together.'}
-                  </p>
-                ) : collabLive && !collabHasSynced ? (
-                  <p
-                    role="status"
-                    className="py-8 text-sm leading-6 text-muted-foreground"
-                    data-testid="collab-connecting"
-                  >
-                    {collab.readOnlyReason
-                      ? 'This tab did not join a writable session. Open the current version to continue.'
-                      : 'Connecting to the collaborative session…'}
-                  </p>
+                {collabPreSync ? (
+                  <div role="status" className="py-8 text-sm leading-6 text-muted-foreground">
+                    <p data-testid={collab.error || collab.readOnlyReason ? 'collab-join-error' : 'collab-connecting'}>
+                      {collabPreSyncMessage(collab)}
+                    </p>
+                    {(joinRetryInFlight || collab.error === 'rate_limited' || collab.error === 'join_interrupted') && (
+                      <button
+                        ref={joinRetryButtonRef}
+                        type="button"
+                        className="nm-button-ghost mt-3 h-8 aria-disabled:cursor-default aria-disabled:opacity-70"
+                        aria-disabled={joinRetryInFlight || !collab.canRetry || undefined}
+                        onClick={handleJoinRetry}
+                        data-testid="collab-join-retry"
+                      >
+                        {joinRetryInFlight ? 'Retrying…' : 'Retry'}
+                      </button>
+                    )}
+                  </div>
                 ) : (
                   <Editor
                     content={collabLive ? undefined : editHtml}

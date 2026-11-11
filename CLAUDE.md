@@ -14,6 +14,13 @@ Local space settings distinguish unresolved and failed list reads from an
 authoritative missing key. A failed refetch retains the cached form and its
 unsaved edits; keep form seeding once per space key, not per query result.
 
+A collaborative join that never synced is not a read-only draft (#1895):
+until the first sync the editor shows one message per close reason (4403
+`forbidden` and unknown reasons fail closed; `rate_limited` retries only after
+the server's upgrade window), no draft banner or Download draft, and Save stays
+blocked; after it every 4403 keeps the read-only draft. The gateway buffers
+pre-live frames in order and never refuses them with 4403.
+
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
@@ -175,6 +182,17 @@ Command-palette page results are bound to the exact query that produced them.
 Changing the input clears both the prior result and selection immediately; the
 pending state covers debounce as well as the request. Preserve the sequence
 guard for out-of-order responses and only select a result after it resolves.
+
+**Ordinary page saves are based on the editing session (#1746).**
+`PageViewPage` sends the `PUT /pages/:id` `version` from `editBaseVersionRef`,
+never from the live `['pages', id]` query that focus, remount and invalidation
+refetches move mid-edit. It is captured, with the title it describes, where a
+session seeds the editor (Edit, Restore draft, Edit published version) and is
+replaced only by that session's own successful PUT (`useUpdatePage` validates
+the returned version against `UpdatePageSchema`); a 409, `confluence_modified`
+or any other failure keeps it, so a stale draft is refused until the user
+reconciles it (Reload, then Restore draft or Edit published version). The
+server's `version < current` rule and the collaborative commit are unchanged.
 
 ## Enterprise (Open-Core)
 
