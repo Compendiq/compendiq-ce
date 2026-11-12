@@ -87,6 +87,18 @@ through the existing info-panel node but carries `data-macro-name="panel"` and
 arbitrary direct text parameters through the editor, so write-back emits
 `ac:name="panel"` rather than permanently coercing it to `info`.
 
+**Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
+`status` keep canonical parameters in their own attributes (code `language`
+class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
+other direct text parameter in `data-macro-params`. `codeBlock`,
+`confluenceToc` and `confluenceStatus` declare it as `macroParams` in both
+TipTap schemas (the parity test enforces the pair), and so does read mode's
+code block, because a copy out of read mode is serialized with that schema. The
+reverse pass skips a carried copy of a canonical name. The code language is the
+whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
+code language, but not a code block's `data-title`/`data-macro-params`.
+
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without
 listing every page body; existing bounded row probes only advise table defaults.

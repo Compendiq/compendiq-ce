@@ -85,7 +85,7 @@ Custom turndown rules handle Confluence-specific macros:
 
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
-| `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
+| `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
@@ -96,7 +96,8 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
-| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
+| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…" data-macro-params="{…}">[Table of Contents]</div>` — the seven named parameters as `data-*`, every other one (`exclude`, `include`, `indent`, `separator`, `class`, …) in `data-macro-params` (#1749) | `[Table of Contents]` placeholder; opaque-protected on Improve |
+| `ac:structured-macro[status]`        | `<span class="confluence-status" data-color="…" data-macro-params="{…}">TITLE</span>` — `colour` → `data-color`, `title` → badge text, every other parameter (`subtle`, …) in `data-macro-params` (#1749) | `[STATUS: TITLE]` (inline); opaque-protected on Improve |
 | `ac:structured-macro[labels]`        | `<div class="confluence-labels-macro" data-showlabels="…">[Labels]</div>` (#765; was dropped per #348) | `[Labels]` placeholder; opaque-protected on Improve |
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
@@ -125,7 +126,9 @@ any change to the existing conflict policy.
 - `jira`, `include`, `excerpt-include`, and `toc` all round-trip
   losslessly by stashing the original parameters on `data-*` attributes
   of the placeholder element; `htmlToConfluence` reads them back to
-  reconstruct the `<ac:structured-macro>` with its parameters. The
+  reconstruct the `<ac:structured-macro>` with its parameters — `toc`,
+  `code` and `status` additionally carry every direct text parameter that
+  has no named attribute in a JSON `data-macro-params` (#1749). The
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
@@ -175,6 +178,33 @@ any change to the existing conflict policy.
   grandchildren (dropped by a direct-child lookup, though the old descendant
   search still found them), and an empty `title` parameter absorbed the body,
   titling the section with its own opening prose. Expanding the tag closes both.
+- **Dedicated handlers keep every direct text parameter (#1749).** `code`,
+  `toc` and `status` keep their canonical parameters in their own attributes
+  (code `language` class + `data-title`, toc `data-<name>`, status
+  `data-color` + badge text) and carry every other direct text parameter
+  (`collectDirectTextParams`) in `data-macro-params`. One value, one home:
+  the forward pass removes a parameter from the carrier exactly when it wrote
+  its canonical attribute, and the reverse pass writes canonical parameters
+  first while `appendSerializedMacroParams(…, emitted)` skips a carried copy
+  of any name already written — so a value the editor changes always wins.
+  The code macro writes its attributes only for values they give back
+  exactly — a non-empty title, a language that is one class token
+  (`/^\S+$/`) — so an empty `language` / `title` stays carried and writes
+  back empty (the #1227 rule). The language class is the same `\S` class in
+  the reverse pass, collab-schema.ts and `TitledCodeBlock.ts` (turndown's
+  fenced-code rule reads it the same way). In both editor schemas TipTap's
+  own CodeBlock `language` parse (the first element child's class token)
+  overrides the parse rule's `getAttrs`, so the rule's regex decides only
+  when `<code>` is not `<pre>`'s first element child. Values only ever travel
+  as attribute values (`body_html`) or element text (storage), which the DOM
+  serializers escape (`"`/`&` in attributes, `<`/`>`/`&` in text), so a
+  hostile value stays inert and intact; the storage void-element
+  post-process can only rewrite `<br …>`-like text inside attribute values —
+  for these macros a carried parameter *name*, as for the #865 net. On
+  Improve, toc and status are frozen by `protectMedia` and keep their
+  carrier; a code block keeps only its language. Parameter order is
+  canonical first, then carried in source order (Confluence reads
+  parameters as a map).
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as
   `data-macro-name="expand|ui-expand"` (plus
@@ -351,7 +381,12 @@ any change to the existing conflict policy.
   class + `data-*` attributes. The `details` node likewise declares
   `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
   attributes, so dropping those declarations silently reintroduces the
-  rewrite bug. ProseMirror silently unwraps any element
+  rewrite bug. `confluenceToc`, `confluenceStatus` and the code block
+  (`TitledCodeBlock`, both schemas) declare `macroParams` for the same reason
+  (#1749), and so does read mode's own code block in `ArticleViewer.tsx`:
+  read mode never saves, but ProseMirror serializes a copy with the viewer's
+  schema, and a block copied from the read view is pasted into the editor
+  and written back. ProseMirror silently unwraps any element
   with no matching parse rule, so a placeholder the editor doesn't know
   about is dropped from `getHTML()` and then permanently deleted from the
   Confluence page on the next save. The edit-mode schema

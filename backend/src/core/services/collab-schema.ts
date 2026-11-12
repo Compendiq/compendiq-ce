@@ -225,17 +225,22 @@ const ConfluenceToc = Node.create({
   group: 'block',
   atom: true,
   addAttributes() {
-    return dataParamAttributes(TOC_PARAMS);
+    return {
+      ...dataParamAttributes(TOC_PARAMS),
+      // #1749: every toc parameter outside TOC_PARAMS (exclude, include, …).
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
+    };
   },
   parseHTML() {
     return [{ tag: 'div.confluence-toc' }];
   },
   renderHTML({ node }) {
-    return [
-      'div',
-      renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' }),
-      'Table of Contents is displayed in the sidebar',
-    ];
+    const attrs = renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' });
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['div', attrs, 'Table of Contents is displayed in the sidebar'];
   },
 });
 
@@ -254,17 +259,20 @@ const ConfluenceStatus = Node.create({
         default: '',
         parseHTML: (element: HTMLElement) => element.textContent ?? '',
       },
+      // #1749: every status parameter except colour and title (subtle, …).
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
     };
   },
   parseHTML() {
     return [{ tag: 'span.confluence-status' }];
   },
   renderHTML({ node }) {
-    return [
-      'span',
-      { class: 'confluence-status', 'data-color': node.attrs.color },
-      node.attrs.label,
-    ];
+    const attrs: Record<string, string> = { class: 'confluence-status', 'data-color': node.attrs.color };
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['span', attrs, node.attrs.label];
   },
 });
 
@@ -742,6 +750,13 @@ const TitledCodeBlock = CodeBlock.extend({
         renderHTML: (attributes: { title?: string | null }) =>
           attributes.title ? { 'data-title': attributes.title } : {},
       },
+      // #1749: every code macro parameter except language and title.
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes: { macroParams?: string | null }) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
   parseHTML() {
@@ -752,7 +767,9 @@ const TitledCodeBlock = CodeBlock.extend({
         getAttrs: (node) => {
           const el = node as HTMLElement;
           return {
-            language: el.querySelector('code')?.className.match(/language-(\w+)/)?.[1] ?? null,
+            // #1749: the whole class token, the `\S` class content-converter.ts
+            // and frontend TitledCodeBlock.ts share.
+            language: el.querySelector('code')?.className.match(/language-(\S+)/)?.[1] ?? null,
             title: el.getAttribute('data-title'),
           };
         },

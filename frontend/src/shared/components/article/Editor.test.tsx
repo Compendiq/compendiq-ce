@@ -287,6 +287,50 @@ describe('Editor', () => {
       expect(html).toContain('confluence-user-mention');
       expect(html).toContain('data-username="alice"');
     });
+
+    // #1749: the dedicated code / toc / status placeholders carry their other
+    // Confluence parameters in data-macro-params (and the code title in
+    // data-title). PAGE_HTML is confluenceToHtml's output for the issue's
+    // fixtures, byte for byte, pinned by the backend's
+    // content-converter.macro-params.test.ts.
+    it('keeps code, toc and status macro parameters through an unrelated edit (#1749)', async () => {
+      const PAGE_HTML =
+        '<p>Intro</p>'
+        + '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;,&quot;collapse&quot;:&quot;true&quot;}">'
+        + '<code class="language-c#">var app = builder.Build();</code></pre>'
+        + '<div class="confluence-toc" data-macro-params="{&quot;exclude&quot;:&quot;Secret&quot;}">[Table of Contents]</div>'
+        + '<p>State: <span class="confluence-status" data-color="green" data-macro-params="{&quot;subtle&quot;:&quot;true&quot;}">DONE</span></p>';
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content={PAGE_HTML}
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      // An edit no macro is part of: type at the end of the first paragraph.
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('p')?.textContent).toBe('Intro (edited)');
+      const pre = saved.querySelector('pre');
+      expect(pre?.querySelector('code')?.className).toBe('language-c#');
+      expect(pre?.getAttribute('data-title')).toBe('Startup.cs');
+      expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null'))
+        .toEqual({ linenumbers: 'true', collapse: 'true' });
+      expect(JSON.parse(saved.querySelector('div.confluence-toc')?.getAttribute('data-macro-params') ?? 'null'))
+        .toEqual({ exclude: 'Secret' });
+      const status = saved.querySelector('span.confluence-status');
+      expect(status?.getAttribute('data-color')).toBe('green');
+      expect(JSON.parse(status?.getAttribute('data-macro-params') ?? 'null')).toEqual({ subtle: 'true' });
+    });
   });
 
   describe('insert panel command (#1134)', () => {
