@@ -178,6 +178,15 @@ export async function markPersistedAttachmentImages(
   admission: PageRuntimeAdmission,
   markers: readonly AttachmentImageMarker[],
 ): Promise<number> {
+  return markPersistedDoc(pageId, admission, (doc) => markAttachmentImages(doc, markers, COLLAB_LOAD_ORIGIN));
+}
+
+/** Apply `mark` to the persisted document in one fenced transaction and store it when it changed. */
+async function markPersistedDoc(
+  pageId: number,
+  admission: PageRuntimeAdmission,
+  mark: (doc: Y.Doc) => number,
+): Promise<number> {
   return withPageWriteTransaction([pageId], async (client) => {
     await lockCollabInit(client, pageId);
     const persisted = await client.query<{ doc_state: Buffer }>(
@@ -188,7 +197,7 @@ export async function markPersistedAttachmentImages(
     const doc = new Y.Doc();
     try {
       Y.applyUpdate(doc, new Uint8Array(persisted.rows[0].doc_state), COLLAB_LOAD_ORIGIN);
-      const marked = markAttachmentImages(doc, markers, COLLAB_LOAD_ORIGIN);
+      const marked = mark(doc);
       if (marked > 0) await upsertDocState(client, pageId, doc);
       return marked;
     } finally {

@@ -302,17 +302,22 @@ function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
 }
 
 /**
- * Why a best-effort image mark did not happen (#1764). A refusal by the
+ * Why a best-effort post-commit mark did not happen (#1764). A refusal by the
  * page-write fence (the lifecycle changed, the page is frozen, another write is
  * pending, the admission was retired) is an expected outcome that costs one
  * more upload on the next Save; anything else is a failure.
  */
-function logImageMarkersSkipped(error: unknown, pageId: number, step: 'room' | 'persisted'): void {
+function logMarksSkipped(
+  kind: 'image_markers',
+  error: unknown,
+  pageId: number,
+  step: 'room' | 'persisted',
+): void {
   if (error instanceof PageWriteError) {
-    logger.info({ pageId, step, reason: error.reason }, 'collab.image_markers_refused');
+    logger.info({ pageId, step, reason: error.reason }, `collab.${kind}_refused`);
     return;
   }
-  logger.warn({ err: error, pageId, step }, 'collab.image_markers_failed');
+  logger.warn({ err: error, pageId, step }, `collab.${kind}_failed`);
 }
 
 export async function createCollabRuntime(
@@ -653,7 +658,7 @@ export async function createCollabRuntime(
         try {
           await markRoomImages(room, message.lifecycleRevision, markers);
         } catch (error) {
-          logImageMarkersSkipped(error, room.pageId, 'room');
+          logMarksSkipped('image_markers', error, room.pageId, 'room');
         }
         return;
       }
@@ -1120,6 +1125,17 @@ export async function createCollabRuntime(
     lifecycleRevision: string,
     markers: readonly AttachmentImageMarker[],
   ): Promise<boolean> {
+    return markRoomDoc(room, lifecycleRevision, (doc) => {
+      markAttachmentImages(doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+    });
+  }
+
+  /** Apply `mark` to an owned room's document under its admission; false when this pod owns no such room. */
+  async function markRoomDoc(
+    room: CollabRoom,
+    lifecycleRevision: string,
+    mark: (doc: Y.Doc) => void,
+  ): Promise<boolean> {
     const admission = room.admission;
     // A room without a writable admission (read-only viewers) is not an owner:
     // it never persists, and it gets the marks with an owner's `sync` or the
@@ -1134,7 +1150,7 @@ export async function createCollabRuntime(
       // page's own pending collaborative Save does not fence it (#1763).
       if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
       owned = true;
-      markAttachmentImages(room.doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+      mark(room.doc);
     }, { admission, ownCollabCommit: 'proceed' });
     return owned;
   }
@@ -1166,13 +1182,13 @@ export async function createCollabRuntime(
         });
       }
     } catch (error) {
-      logImageMarkersSkipped(error, pageId, 'room');
+      logMarksSkipped('image_markers', error, pageId, 'room');
     }
     try {
       const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
       logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
     } catch (error) {
-      logImageMarkersSkipped(error, pageId, 'persisted');
+      logMarksSkipped('image_markers', error, pageId, 'persisted');
     }
   }
 
