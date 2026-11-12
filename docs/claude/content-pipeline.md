@@ -22,9 +22,10 @@ of its columns within each band, with no border inside it. Grids wider than 14
 columns print in bands of at most 14 equal columns (at least 35.38 pt, two
 glyphs wide), one below the other. A later band holds only the rows with a
 cell starting in it (a crossing cell repeats there), plus the header row's
-share of the band where that share would also repeat on a continuation page,
-so an oversized header cell prints once; a band in which no cell starts is
-skipped. Non-Latin font coverage is a separate limitation.
+share of the band; a header cell prints again in a later band only if its
+piece there would also repeat on a continuation page, so an oversized header
+cell prints once. A band in which no cell starts is skipped. Non-Latin font
+coverage is a separate limitation.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
