@@ -28,6 +28,12 @@ other text into two links around the code, and on a collaborative save splits a
 link around a line break (Yjs keeps marks on text only). Pinned by
 `content-converter.links.test.ts`.
 
+`body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
+imports, drafts, version text; Notion imports join parts with blank lines, restores copy
+stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
+entities once and nothing decodes again (#1735). Rows written before #1735 keep their double-decoded text until
+their next write; there is no backfill.
+
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header

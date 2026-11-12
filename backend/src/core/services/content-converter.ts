@@ -3878,11 +3878,17 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 /**
  * Strips all HTML tags, returning plain text (for full-text search — and, until
  * #1265, the embedding input; see htmlToEmbeddingText for why that moved).
+ *
+ * The HTML parser decodes every character reference once, so `textContent`
+ * is already the text the reader sees. Never decode it again: a documented
+ * example written as `&amp;lt;br&amp;gt;` must store `&lt;br&gt;`, not `<br>`
+ * (#1735). Whitespace runs (including `&nbsp;`) collapse to one space and the
+ * result is trimmed — `embedding-chunking.test.ts` depends on that.
  */
 export function htmlToText(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const text = dom.window.document.body.textContent ?? '';
-  return he.decode(text).replace(/\s+/g, ' ').trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /**
