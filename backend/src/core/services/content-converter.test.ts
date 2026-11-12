@@ -1220,6 +1220,35 @@ describe('content-converter', () => {
       const text = htmlToText('<p>A &amp; B &lt; C</p>');
       expect(text).toContain('A & B < C');
     });
+
+    // #1735: textContent already decodes each character reference once, so an
+    // escaped entity example is stored as the entity the reader sees.
+    it('keeps an escaped tag example as its visible text (#1735)', () => {
+      expect(htmlToText('<p>Use &amp;lt;br&amp;gt;</p>')).toBe('Use &lt;br&gt;');
+    });
+
+    it('keeps an escaped ampersand entity as its visible text (#1735)', () => {
+      expect(htmlToText('<p>Write &amp;amp; for an ampersand</p>')).toBe('Write &amp; for an ampersand');
+    });
+
+    it('keeps an escaped numeric entity as its visible text (#1735)', () => {
+      expect(htmlToText('<p>Write &amp;#60; for a less-than sign</p>')).toBe('Write &#60; for a less-than sign');
+    });
+
+    it('keeps an entity example in a Confluence code block as its visible text (#1735)', () => {
+      const html = confluenceToHtml(
+        '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[Use &lt;br&gt; for a line break]]></ac:plain-text-body></ac:structured-macro>',
+      );
+      expect(htmlToText(html)).toContain('Use &lt;br&gt; for a line break');
+    });
+
+    it('still collapses whitespace runs and trims around decoded text (#1735)', () => {
+      expect(htmlToText('\n  <p>  A &amp;\tB </p>\n\n<p>&amp;lt;br&amp;gt;  </p>  ')).toBe('A & B &lt;br&gt;');
+    });
+
+    it('collapses real non-breaking spaces but keeps an escaped &nbsp; example (#1735)', () => {
+      expect(htmlToText('<p>a&nbsp;&nbsp;b &amp;nbsp;</p>')).toBe('a b &nbsp;');
+    });
   });
 
   // ========== Lossy macro documentation ==========
