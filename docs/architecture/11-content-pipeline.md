@@ -461,7 +461,9 @@ as a URL — the editor and read view show it as text or pass it through
 `encodeURIComponent`, the backend through `safeAttachmentPath`. `htmlToMarkdown`
 writes a name-only placeholder's name raw inside its ` ```drawio ` fence, so the
 import drops a name that contains a line break or another control character, or
-is a bare run of three or more backticks: such a placeholder imports nameless. A
+that marked reads as a closing fence (three backticks followed only by backticks
+or tildes); it drops an empty or whitespace-only name too, which `htmlToConfluence`
+would write as an empty `diagramName`. Such a placeholder imports nameless. A
 fence's `data-drawio-source` and `data-drawio-xml` are still stripped with every
 other `data-*` attribute (`ALLOW_DATA_ATTR` stays `false`): the source locator
 names another page's attachment, and the inline XML would reach the same-origin
@@ -759,9 +761,10 @@ export and re-import do not silently discard the editable source reference.
 The Markdown import route keeps the name, the preview image and the edit link
 of either form, but its sanitiser strips the source locator and the inline XML
 (#1754; see Markdown import). A name-only wrapper's name is written raw, so a
-name with a line break, or one that is a bare backtick run, ends the fence
-early: the import drops such names, while names from Confluence storage or API
-writes are not checked yet.
+name with a line break, or one that marked reads as a closing fence (three
+backticks followed only by backticks or tildes), ends the fence early: the
+import drops such names, while names from Confluence storage or API writes are
+not checked yet.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|

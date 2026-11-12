@@ -124,18 +124,40 @@ describe('POST /api/pages/import/preview keeps the identity of a draw.io placeho
     });
   });
 
-  it('drops a diagram name that cannot stay one line of Markdown, so it cannot break out of the fence it is written back to', async () => {
+  it('drops a diagram name that is empty or cannot stay one line of Markdown: nothing breaks out of the fence it is written back to, and Confluence still gets `diagram`', async () => {
     const bodyHtml = await preview(
       '````drawio\na\n```\n# x\n````\n\n'
       + '````drawio\n```\n````\n\n'
+      + '````drawio\n```~\n````\n\n'
       + '<div class="confluence-drawio" data-diagram-name="b&#13;```">raw</div>\n\n'
+      + '```drawio\n```\n\n'
+      + '<div class="confluence-drawio" data-diagram-name="  ">raw</div>\n\n'
       + '```drawio\narchitecture.drawio\n```',
     );
-    expect(diagramNames(bodyHtml)).toEqual([null, null, null, 'architecture.drawio']);
+    expect(diagramNames(bodyHtml)).toEqual([null, null, null, null, null, null, 'architecture.drawio']);
+    const saved = yDocToHtml(htmlToYDoc(bodyHtml));
     // Written back to Markdown (LLM context, quality checks, version diffs), nothing escapes its fence: no stray
     // heading or code block, and the named diagram is still a diagram.
-    const roundTrip = parse(await markdownToHtml(htmlToMarkdown(yDocToHtml(htmlToYDoc(bodyHtml)))));
+    const roundTrip = parse(await markdownToHtml(htmlToMarkdown(saved)));
     expect(roundTrip.querySelector('h1, pre')).toBeNull();
     expect([...roundTrip.querySelectorAll('div.confluence-drawio[data-diagram-name="architecture.drawio"]')]).toHaveLength(1);
+    // Created in a Confluence space, a nameless placeholder is the `diagram` it always was, never an empty name.
+    expect([...htmlToConfluence(saved).matchAll(/<ac:parameter ac:name="diagramName">([^<]*)<\/ac:parameter>/g)]
+      .map((match) => match[1]))
+      .toEqual(['diagram', 'diagram', 'diagram', 'diagram', 'diagram', 'diagram', 'architecture.drawio']);
+  });
+
+  it('checks a long name in linear time, so a backtick run cannot stall the import', async () => {
+    // The worst case for a closing-fence pattern: a long backtick run that is not a closing fence (the x).
+    const name = `${'`'.repeat(200_000)}x`;
+    let fastestMs = Infinity;
+    for (let attempt = 0; attempt < 3 && fastestMs >= 1000; attempt++) {
+      const start = performance.now();
+      const bodyHtml = await preview(`\`\`\`\`drawio\n${name}\n\`\`\`\``);
+      fastestMs = Math.min(fastestMs, performance.now() - start);
+      expect(diagramNames(bodyHtml)).toEqual([name]);
+    }
+
+    expect(fastestMs).toBeLessThan(1000);
   });
 });

@@ -158,14 +158,18 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
 }
 
 /**
- * #1754: a draw.io name that cannot be written back as one line of Markdown.
- * htmlToMarkdown writes a name-only placeholder's name, raw, as the body of a
- * ```drawio fence: a line break would end that line and let the rest of the
- * name escape the fence, and a bare run of three or more backticks closes the
- * fence by itself. Control characters are never part of a real name. Such a
- * placeholder imports nameless, as every placeholder did before #1754.
+ * #1754: a draw.io name the import must not keep. htmlToMarkdown writes a
+ * name-only placeholder's name, raw, as the body of a ```drawio fence: a line
+ * break would end that line and let the rest of the name escape the fence, and
+ * a name that marked reads as a closing fence (three backticks followed only by
+ * backticks or tildes; names are trimmed) ends the fence by itself. Control
+ * characters are never part of a real name. An empty or whitespace-only name
+ * would reach Confluence as an empty diagramName instead of the nameless
+ * placeholder's `diagram`. Such a placeholder imports nameless, as every
+ * placeholder did before #1754. Each branch is linear: a `{3,}` run in front
+ * of `[`~]*` would backtrack quadratically on a long run of backticks.
  */
-const UNWRITABLE_DIAGRAM_NAME = /[\p{Cc}\u2028\u2029]|^`{3,}$/u;
+const UNWRITABLE_DIAGRAM_NAME = /^\s*$|[\p{Cc}\u2028\u2029]|^```[`~]*$/u;
 
 /**
  * Sanitize HTML to prevent XSS using DOMPurify with a strict allowlist.

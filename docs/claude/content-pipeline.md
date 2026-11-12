@@ -151,9 +151,10 @@ The import sanitiser admits `data-diagram-name` by name, and as URI-safe, so a
 (#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
 `safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
 placeholder's name raw into its fence, so the import drops a name with a line break or other
-control character, or one that is a bare backtick run. A fence's `data-drawio-source` and
-`data-drawio-xml` stay stripped — another page's attachment, and XML for the same-origin
-draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+control character, one that marked reads as a closing fence (three backticks, then only backticks
+or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
+`data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
+the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
