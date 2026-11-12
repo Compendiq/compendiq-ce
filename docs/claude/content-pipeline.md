@@ -146,6 +146,15 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, a media placeholder) stays plain with `[x]` / `[ ]` as text:
+TipTap's TaskItem parses only the first descendant `div`. The import sanitiser
+admits exactly `start`, `type`, `data-type` and `data-checked` by name: never
+`ALLOW_DATA_ATTR: true`, never `<input>`.
+
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
 `ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.

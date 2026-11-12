@@ -1193,6 +1193,105 @@ describe('content-converter', () => {
       expect(html).toContain('<code');
       expect(html).toContain('console.log');
     });
+
+    // #1752: GFM task items render as the editor's own task markup — the only
+    // shape either TipTap schema parses as a task — not as marked's
+    // <input type="checkbox">, which both schemas drop.
+    it('renders GFM task items as the editor task markup with their checked state, tight or loose (#1752)', async () => {
+      expect(await markdownToHtml('- [x] done\n- [ ] todo')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true">done</li>\n'
+        + '<li data-type="taskItem" data-checked="false">todo</li>\n'
+        + '</ul>\n',
+      );
+      expect(await markdownToHtml('- [x] done\n\n- [ ] todo')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true"><p>done</p>\n</li>\n'
+        + '<li data-type="taskItem" data-checked="false"><p>todo</p>\n</li>\n'
+        + '</ul>\n',
+      );
+    });
+
+    it('splits a list mixing task and plain items into runs, keeping ordered numbering (#1752)', async () => {
+      // A task list holds task items only, and htmlToConfluence rebuilds
+      // ac:task-list from li[data-type="taskItem"] alone — a plain item left
+      // inside one would vanish on write-back.
+      expect(await markdownToHtml('1. [x] a\n2. b\n3. [ ] c')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">a</li>\n</ul>\n'
+        + '<ol start="2">\n<li>b</li>\n</ol>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">c</li>\n</ul>\n',
+      );
+      expect(await markdownToHtml('- [x] parent\n  - [ ] child\n  - plain child')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true">parent<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="false">child</li>\n</ul>\n'
+        + '<ul>\n<li>plain child</li>\n</ul>\n</li>\n'
+        + '</ul>\n',
+      );
+    });
+
+    it('keeps plain lists, ordered starts and code-fenced task syntax as marked renders them, and converts a trailing task item (#1752)', async () => {
+      const md = '- plain\n- list\n\n3. a\n4. b\n\n`- [x] inline`\n\n```\n- [x] fenced\n```\n\n- [x] real';
+      expect(await markdownToHtml(md)).toBe(
+        '<ul>\n<li>plain</li>\n<li>list</li>\n</ul>\n'
+        + '<ol start="3">\n<li>a</li>\n<li>b</li>\n</ol>\n'
+        + '<p><code>- [x] inline</code></p>\n'
+        + '<pre><code>- [x] fenced\n</code></pre>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">real</li>\n</ul>\n',
+      );
+    });
+
+    it('keeps a task item whose body holds, or will hold, a div as a plain item with its marker as text (#1752)', async () => {
+      // TipTap's TaskItem parses its content from the first descendant <div>, so
+      // a task item holding one would lose everything else in the editor. A
+      // draw.io fence becomes a div after parsing; a media token becomes one in
+      // restoreMedia. Such an item stays plain and keeps `[x]` / `[ ]` as text.
+      expect(await markdownToHtml('- [x] done\n\n  ```drawio\n  arch.drawio\n  ```\n\n- [ ] todo')).toBe(
+        '<ul>\n<li><p>[x] done</p>\n'
+        + '<div class="confluence-drawio" data-diagram-name="arch.drawio">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: arch.drawio</span></div>\n'
+        + '</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false"><p>todo</p>\n</li>\n</ul>\n',
+      );
+      expect(await markdownToHtml('- [ ] see <div>raw block</div>\n- [x] fine')).toBe(
+        '<ul>\n<li>[ ] see <div>raw block</div></li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">fine</li>\n</ul>\n',
+      );
+      expect(await markdownToHtml('- [x] Fix CQ\\_MEDIA\\_PLACEHOLDER\\_0 now\n- [ ] todo')).toBe(
+        '<ul>\n<li>[x] Fix CQ_MEDIA_PLACEHOLDER_0 now</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">todo</li>\n</ul>\n',
+      );
+      // The lookup is a descendant search, so a div in a nested item also keeps
+      // its ancestors plain.
+      expect(await markdownToHtml('- [x] parent\n  - [x] child\n\n    ```drawio\n    a.drawio\n    ```')).toBe(
+        '<ul>\n<li>[x] parent<ul>\n<li><p>[x] child</p>\n'
+        + '<div class="confluence-drawio" data-diagram-name="a.drawio">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: a.drawio</span></div>\n'
+        + '</li>\n</ul>\n</li>\n</ul>\n',
+      );
+      // Escaped markup in code is text, not a div.
+      expect(await markdownToHtml('- [x] use `<div>` tags')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">use <code>&lt;div&gt;</code> tags</li>\n</ul>\n',
+      );
+    });
+
+    it('brings a Confluence task list back as tasks after the AI Improve Markdown round trip (#1752)', async () => {
+      // Mirrors POST /llm/improvements/apply (llm-conversations.ts): protected
+      // HTML goes out as Markdown; the reply comes back through the
+      // skeleton-guided markdownToHtml, restoreMedia and htmlToConfluence.
+      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(TASK_LIST_PAGE));
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml) }),
+        media,
+      );
+      const xhtml = htmlToConfluence(html);
+      expect([...xhtml.matchAll(/<ac:task-status>(\w+)<\/ac:task-status>/g)].map((m) => m[1]))
+        .toEqual(['complete', 'incomplete', 'incomplete']);
+      expect([...xhtml.matchAll(/<ac:task-body>([\s\S]*?)<\/ac:task-body>/g)].map((m) => m[1]))
+        .toEqual(['Set up CI pipeline', 'Write integration tests', 'Deploy to <strong>staging</strong>']);
+      expect(xhtml).not.toContain('<input');
+    });
   });
 
   // ========== htmlToText ==========

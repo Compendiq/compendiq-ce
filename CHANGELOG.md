@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown import keeps task completion and list numbering (#1752):**
+  importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
+  `- [ ] todo`) as editor task lists with their checked state, and ordered
+  lists keep a start number other than 1 (`3. a` stays item 3). Previously
+  both were silently dropped. Applying an AI Improve result uses the same
+  conversion, so a page's task list now comes back as a task list instead of
+  a bullet list with raw checkbox elements in the saved body. A list mixing
+  tasks and plain items becomes separate lists, a numbered task list becomes
+  an unnumbered task list (the editor has no numbered tasks), and a task item
+  that contains a diagram or other block HTML stays a bullet with its
+  `[x]` / `[ ]` as text, so nothing in it is lost. Known limitation: when such
+  a page is created in a Confluence space, the task bodies written to
+  Confluence still carry the editor's checkbox markup, as they already do for
+  any task created in the editor; the fix is tracked with #1751.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

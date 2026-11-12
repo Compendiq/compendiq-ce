@@ -173,7 +173,16 @@ function sanitizeHtml(html: string): string {
       'strong', 'em', 'del', 'sup', 'sub', 'mark',
       'span', 'div',
     ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel'],
+    // #1752: the editor's own list attributes, admitted by name. `start`/`type`
+    // are OrderedList's, and `data-type`/`data-checked` are the TaskList/TaskItem
+    // markup markdownToHtml emits for GFM task items. ALLOW_DATA_ATTR stays
+    // false, so any other data-* is still stripped, and <input> is never
+    // admitted: a task's state travels in data-checked, not in a checkbox.
+    ALLOWED_ATTR: [
+      'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel',
+      'start', 'type',
+      'data-type', 'data-checked',
+    ],
     ALLOW_DATA_ATTR: false,
   });
 }

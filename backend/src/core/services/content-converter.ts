@@ -1,7 +1,7 @@
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import he from 'he';
 import {
   getAttachmentImageSource,
@@ -3061,6 +3061,90 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   });
 }
 
+/**
+ * #1752: protectMedia tokens, in either spelling (turndown escapes `_`).
+ * restoreMedia may put a block element (a draw.io or mermaid div) where one
+ * stands.
+ */
+const MEDIA_TOKEN_IN_HTML = /CQ\\?_MEDIA\\?_PLACEHOLDER\\?_\d/;
+
+/**
+ * #1752: does this rendered task-item body hold a `<div>`, or a draw.io fence
+ * or media token that becomes one later? markdownToHtml turns the fence into a
+ * `div.confluence-drawio` after parsing, and the caller's restoreMedia replaces
+ * the token. TipTap's TaskItem parses its content from the first descendant
+ * `div` (`contentElement` in @tiptap/extension-list task-item.ts), so a task
+ * item holding one would lose all content outside that div in the editor.
+ */
+function breaksTaskItemParse(body: string): boolean {
+  return /<div[\s>]/i.test(body)
+    || body.includes('<code class="language-drawio">')
+    || MEDIA_TOKEN_IN_HTML.test(body);
+}
+
+/**
+ * #1752: the Markdown parser behind markdownToHtml — marked's defaults (GFM
+ * on), except for lists that contain GFM task items.
+ *
+ * marked renders `- [x] done` as `<li><input checked="" disabled=""
+ * type="checkbox"> done</li>`. Neither TipTap schema parses that as a task:
+ * both read a task only as `ul[data-type="taskList"] >
+ * li[data-type="taskItem"][data-checked]` (TaskList/TaskItem in
+ * collab-schema.ts, Editor.tsx, ArticleViewer.tsx). So the checked state was
+ * lost on import, and on AI Improve Accept, whose htmlToMarkdown writes task
+ * items as `- [x]` / `- [ ]`, the `<input>` elements reached the stored body
+ * while the task list did not.
+ *
+ * Task items are emitted as that markup, in runs. A TaskList holds task items
+ * only, and htmlToConfluence rebuilds `ac:task-list` from
+ * `li[data-type="taskItem"]` alone, so a plain item inside one would vanish on
+ * write-back. A task item whose body would break the TaskItem parse
+ * (breaksTaskItemParse) stays a plain item instead, with the author's
+ * `[x]`/`[ ]` kept as text: its content and its state both survive. A plain
+ * run of an ordered list keeps its number via `start`; a task run has no
+ * numbering in either schema or in `ac:task-list`. No task id is emitted,
+ * because every converted task is new. Each item body is rendered exactly
+ * once. A list without a task item returns `false`: marked's own rendering,
+ * byte for byte.
+ */
+const editorMarked = new Marked({
+  renderer: {
+    list(token) {
+      if (!token.items.some((item) => item.task)) return false;
+      const items = token.items.map((item) => {
+        const body = this.parser.parse(item.tokens, item.loose);
+        if (item.task && !breaksTaskItemParse(body)) {
+          return {
+            task: true,
+            html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
+          };
+        }
+        if (!item.task) return { task: false, html: `<li>${body}</li>\n` };
+        const marker = item.checked ? '[x] ' : '[ ] ';
+        const kept = body.startsWith('<p>') ? `<p>${marker}${body.slice(3)}` : `${marker}${body}`;
+        return { task: false, html: `<li>${kept}</li>\n` };
+      });
+      let html = '';
+      let index = 0;
+      while (index < items.length) {
+        const runStart = index;
+        const task = items[runStart]!.task;
+        while (index < items.length && items[index]!.task === task) index += 1;
+        const lis = items.slice(runStart, index).map((item) => item.html).join('');
+        if (task) {
+          html += `<ul data-type="taskList">\n${lis}</ul>\n`;
+        } else if (typeof token.start === 'number') {
+          const start = token.start + runStart;
+          html += `<ol${start === 1 ? '' : ` start="${start}"`}>\n${lis}</ol>\n`;
+        } else {
+          html += `<ul>\n${lis}</ul>\n`;
+        }
+      }
+      return html;
+    },
+  },
+});
+
 export interface MarkdownToHtmlOptions {
   /**
    * #781: the expected layout-token skeleton of the document being edited
@@ -3074,7 +3158,8 @@ export interface MarkdownToHtmlOptions {
 }
 
 /**
- * Converts Markdown to HTML (for LLM output -> editor).
+ * Converts Markdown to HTML (for LLM output -> editor). GFM task items become
+ * the editor's task markup (see editorMarked, #1752).
  */
 export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
   const skeleton = options?.layoutSkeleton;
@@ -3126,7 +3211,7 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
-  let html = await marked(normalized) as string;
+  let html = await editorMarked.parse(normalized) as string;
 
   // Older authored fences contain just a name; exported wrappers also carry
   // their source and preview attributes in a single JSON line.
