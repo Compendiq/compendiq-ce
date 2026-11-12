@@ -227,6 +227,12 @@ body {
   outline: none;
 }
 
+/* A Confluence emoticon (#1750) is an empty, named `role="img"` span: the glyph
+   (or Confluence's text form) is drawn here, so it never becomes body text. */
+.confluence-emoticon::before {
+  content: attr(data-emoticon-label);
+}
+
 /* Headings share the body face. There is no display voice in this system: a
    workspace heading is a wayfinding label, and a second family competing with
    it at 15–20px costs legibility without buying identity.

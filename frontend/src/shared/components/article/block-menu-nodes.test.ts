@@ -22,6 +22,7 @@ const schema = new Schema({
     paragraph: { group: 'block', content: 'inline*' },
     hardBreak: { group: 'inline', inline: true },
     confluenceStatus: { group: 'inline', inline: true, atom: true },
+    confluenceEmoticon: { group: 'inline', inline: true, atom: true },
     heading: { group: 'block', content: 'inline*', attrs: { level: { default: 1 } } },
     blockquote: { group: 'block', content: 'block+' },
     listItem: { group: 'block', content: 'paragraph+' },
@@ -110,6 +111,7 @@ describe('blockLabel', () => {
     expect(blockLabel(node('confluenceLayoutCell'))).toBe('Layout cell');
     expect(blockLabel(node('confluenceSection'))).toBe('Section');
     expect(blockLabel(node('confluenceColumn'))).toBe('Column');
+    expect(blockLabel(node('confluenceEmoticon'))).toBe('Emoticon');
     expect(blockLabel(node('table'))).toBe('Table');
     expect(blockLabel(node('blockquote'))).toBe('Quote');
   });

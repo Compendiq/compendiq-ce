@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import {
+  PDFArray,
+  PDFDocument,
+  StandardFonts,
+  decodePDFRawStream,
+  type PDFRawStream,
+} from 'pdf-lib';
 import {
   exportToPdf,
   setPdfRendererOverlay,
@@ -8,6 +14,33 @@ import {
   sha256Hex,
   type PdfReportMeta,
 } from './export-helpers';
+
+/** Cover line the CE renderer adds when it had to print "?" (#1732). */
+const SUBSTITUTION_NOTE =
+  'Some characters cannot be shown in this PDF and appear as "?". The integrity hash covers the original data.';
+
+/**
+ * Every string a PDF draws, in content-stream order: the hex operand of each
+ * `Tj`, decoded from the standard fonts' WinAnsi (Windows-1252) codes.
+ */
+async function pdfStrings(bytes: Uint8Array): Promise<string[]> {
+  const doc = await PDFDocument.load(bytes);
+  const winAnsi = new TextDecoder('windows-1252');
+  const strings: string[] = [];
+  for (const page of doc.getPages()) {
+    const contents = page.node.Contents();
+    const streams = contents instanceof PDFArray
+      ? contents.asArray().map((ref) => doc.context.lookup(ref))
+      : contents ? [contents] : [];
+    for (const stream of streams) {
+      const ops = new TextDecoder('latin1').decode(decodePDFRawStream(stream as PDFRawStream).decode());
+      for (const [, hex] of ops.matchAll(/<([0-9A-Fa-f]*)>\s*Tj/g)) {
+        strings.push(winAnsi.decode(Uint8Array.from(hex!.match(/../g) ?? [], (h) => parseInt(h, 16))));
+      }
+    }
+  }
+  return strings;
+}
 
 describe('export-helpers (#303)', () => {
   let objectUrl = '';
@@ -102,6 +135,32 @@ describe('export-helpers (#303)', () => {
     expect(overlay).toHaveBeenCalledTimes(1);
   });
 
+  it('overlay receives the unsanitised rows and meta (#1732)', async () => {
+    // The WinAnsi guard belongs to the CE renderer; an EE overlay chooses its
+    // own fonts and must see exactly what the dashboard passed.
+    const rows = [{ query: 'Установка 手順 😀', trend: 'a → b' }];
+    const meta: PdfReportMeta = {
+      title: 'Отчёт',
+      dateRange: { startDate: '2026-10-01', endDate: '2026-10-27' },
+      generatedBy: 'Анна',
+      kpis: [{ label: 'Топ', value: '手順 → 😀' }],
+    };
+    const rowsBefore = structuredClone(rows);
+    const metaBefore = structuredClone(meta);
+    const overlayBytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]); // '%PDF-1.7'
+    const overlay = vi.fn(async (_rows: Record<string, unknown>[], _meta: PdfReportMeta) => overlayBytes);
+    setPdfRendererOverlay(overlay);
+
+    await exportToPdf('ee.pdf', rows, meta);
+
+    expect(overlay).toHaveBeenCalledTimes(1);
+    expect(overlay.mock.calls[0]![0]).toBe(rows);
+    expect(overlay.mock.calls[0]![1]).toBe(meta);
+    expect(rows).toEqual(rowsBefore);
+    expect(meta).toEqual(metaBefore);
+    expect(new Uint8Array(await capturedBlobs[0]!.arrayBuffer())).toEqual(overlayBytes);
+  });
+
   // ---------------------------------------------------------------------------
   // Default CE renderer — direct assertions on the produced PDF (AC-6).
   // No overlay is registered; these exercise the real `renderPdfCe` path.
@@ -155,6 +214,80 @@ describe('export-helpers (#303)', () => {
     const doc = await PDFDocument.load(bytes);
     const dataPage = doc.getPages()[1]!.getSize();
     expect(dataPage.width).toBeLessThan(dataPage.height);
+  });
+
+  it('default renderer exports a date-range report without an overlay (#1732)', async () => {
+    const meta: PdfReportMeta = {
+      title: 'AI Usage',
+      dateRange: { startDate: '2026-10-01', endDate: '2026-10-27' },
+      generatedBy: 'alice',
+      instanceUrl: 'https://compendiq.example.com',
+      kpis: [{ label: 'Total requests', value: 3 }],
+    };
+
+    await expect(
+      exportToPdf('ai-usage.pdf', [{ date: '2026-10-01', requests: 3 }], meta),
+    ).resolves.toBeUndefined();
+
+    expect(createdAnchor?.download).toBe('ai-usage.pdf');
+    const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    expect(strings).toEqual(expect.arrayContaining([
+      'AI Usage',
+      '2026-10-01 to 2026-10-27',
+      'alice',
+      'https://compendiq.example.com',
+      'Total requests',
+      '3',
+    ]));
+    expect(strings).not.toContain(SUBSTITUTION_NOTE);
+  });
+
+  it('default renderer replaces characters its fonts cannot encode in data values (#1732)', async () => {
+    const rows = [{
+      query: 'Установка 手順 😀',
+      page: 'Cafe\u0301\u3000Zürich\nA→B',
+      raw: 'a\u0081b\uD800c\u0007d\te\u007Ff',
+      hits: 3,
+    }];
+
+    await expect(exportToPdf('gaps.pdf', rows, 'Content Gaps')).resolves.toBeUndefined();
+
+    const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    expect(strings).toEqual(expect.arrayContaining([
+      '????????? ?? ?',
+      'Café Zürich A?B',
+      'a?b?c?d e?f',
+      SUBSTITUTION_NOTE,
+      // The integrity hash still covers the original rows, not the printed text.
+      await sha256Hex(canonicalJson(rows)),
+    ]));
+  });
+
+  it('default renderer replaces unencodable characters in the title, column names, user name and KPIs (#1732)', async () => {
+    const meta: PdfReportMeta = {
+      title: 'Отчёт',
+      dateRange: { startDate: '2026-10-01', endDate: '2026-10-27' },
+      generatedBy: 'Анна',
+      kpis: [
+        { label: 'Топ', value: '手順', unit: '😀' },
+        { label: 'Trend', value: 'up → 3' },
+      ],
+    };
+
+    await expect(exportToPdf('report.pdf', [{ 'Запрос': 'ok' }], meta)).resolves.toBeUndefined();
+
+    const strings = await pdfStrings(new Uint8Array(await capturedBlobs[0]!.arrayBuffer()));
+    expect(strings).toEqual(expect.arrayContaining([
+      '?????',
+      '????? — data',
+      '????',
+      '???',
+      '?? ?',
+      'up ? 3',
+      '??????',
+      '2026-10-01 to 2026-10-27',
+      SUBSTITUTION_NOTE,
+    ]));
   });
 
   // ---------------------------------------------------------------------------

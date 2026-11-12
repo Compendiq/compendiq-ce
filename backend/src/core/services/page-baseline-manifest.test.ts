@@ -7,6 +7,7 @@ import {
   renderBaselineBodyHtml,
   type BaselineAttachment,
 } from './page-baseline-manifest.js';
+import { confluenceToHtml } from './content-converter.js';
 
 const BASELINE_ID = '018f47a8-4a19-7cc2-a747-8f4ef65d9a22';
 
@@ -168,6 +169,64 @@ describe('baseline rendering-only media projection', () => {
         [foreign],
         '9001',
       )).toThrowError(expect.objectContaining({ reason: 'baseline_storage_unavailable' }));
+  });
+
+  it("binds a #1748 attachment link by its decoded filename and leaves a link to another page's attachment alone", () => {
+    const own = attachment('confluence', '9001', 'Q3 100% plan.pdf');
+    const sameName = attachment('confluence', '9001', 'logo.png');
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:attachment ri:filename="Q3 100% plan.pdf" />'
+      + '<ac:plain-text-link-body><![CDATA[plan]]></ac:plain-text-link-body></ac:link>'
+      + ' <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+      + '</ri:attachment></ac:link></p>',
+      '9001',
+    );
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [own, sameName], '9001');
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${own.identity}"`);
+    expect(rendered).not.toContain(sameName.identity);
+    expect(rendered).toContain(
+      'href="#confluence-attachment:logo.png?page.ri:content-title=Shared%20Assets&amp;page.ri:space-key=ENG"',
+    );
+  });
+
+  it('renders a reference frozen before #1748 by its old decoding when the #1748 reading is not retained', () => {
+    // A baseline frozen before #1748 retained each reference by the filename
+    // as written. One that also reads as the #1748 grammar (a body flag, a
+    // container) reads as another file now, which that inventory never held.
+    const bodyFlag = attachment('confluence', '9001', 'x?body=plain');
+    const containerLike = attachment('confluence', '9001', 'logo.png?page.ri:content-title=A');
+    const rendered = renderBaselineBodyHtml(
+      '<p><a href="#confluence-attachment:x?body=plain">x</a>'
+      + '<img src="#confluence-attachment:logo.png?page.ri:content-title=A"></p>',
+      42,
+      BASELINE_ID,
+      [bodyFlag, containerLike],
+      '9001',
+    );
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${bodyFlag.identity}"`);
+    expect(rendered).toContain(`src="/api/pages/42/baselines/${BASELINE_ID}/media/${containerLike.identity}"`);
+    // Neither reading retained: still refused. A link to another page's
+    // attachment whose old decoding is no safe filename is still left alone.
+    expect(() => renderBaselineBodyHtml('<a href="#confluence-attachment:x?body=plain">x</a>', 42, BASELINE_ID, [], '9001'))
+      .toThrowError(expect.objectContaining({ reason: 'baseline_storage_unavailable' }));
+    const crossPage = '<a href="#confluence-attachment:logo.png?page.ri:content-title=CI%2FCD">logo.png</a>';
+    expect(renderBaselineBodyHtml(crossPage, 42, BASELINE_ID, [], '9001')).toBe(crossPage);
+  });
+
+  it('reads a #1748 reference by its #1748 reading first, even when a file named as its old decoding is retained too', () => {
+    // A link to `x` whose plain body repeats the filename is written
+    // `#confluence-attachment:x?body=plain`; a retained file literally named
+    // `x?body=plain` must not capture it.
+    const linked = attachment('confluence', '9001', 'x');
+    const lookalike = attachment('confluence', '9001', 'x?body=plain');
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:attachment ri:filename="x" /><ac:plain-text-link-body><![CDATA[x]]></ac:plain-text-link-body></ac:link></p>',
+      '9001',
+    );
+    expect(html).toContain('href="#confluence-attachment:x?body=plain"');
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [lookalike, linked], '9001');
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${linked.identity}"`);
+    expect(rendered).not.toContain(lookalike.identity);
   });
 
   it('keeps comma-bearing inline srcset URLs intact while rewriting only retained candidates', () => {

@@ -35,7 +35,17 @@ import {
   type PageRuntimeAdmission,
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
-import { markAttachmentImages, yDocToHtml, type AttachmentImageMarker } from './collab-schema.js';
+import {
+  collabCarriesTaskIds,
+  collabTaskItems,
+  markAttachmentImages,
+  markTaskIds,
+  yDocToHtml,
+  type AttachmentImageMarker,
+  type CollabTaskItem,
+  type TaskIdMarker,
+} from './collab-schema.js';
+import { isConfluenceTaskId } from './confluence-task-id.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
@@ -70,6 +80,8 @@ const SYNC_UPDATE = 2;
  * it to every socket; peers apply that `sync` as `'redis'` and never echo it.
  */
 export const COLLAB_IMAGE_MARKER_ORIGIN = Symbol('collab-image-markers');
+/** Origin of the post-commit task-id transaction (#1751); handled like COLLAB_IMAGE_MARKER_ORIGIN. */
+export const COLLAB_TASK_ID_ORIGIN = Symbol('collab-task-ids');
 
 export type CollabControl =
   | { type: 'pages_version'; version: number }
@@ -93,7 +105,8 @@ export type CollabBusKind =
   | 'freeze'
   | 'state_dump_request'
   | 'state_dump'
-  | 'image_markers';
+  | 'image_markers'
+  | 'task_ids';
 
 export type CollabBusMessage = {
   origin: string;
@@ -106,6 +119,7 @@ export type CollabBusMessage = {
   requestId?: string;
   requestedAdmissions?: string[];
   markers?: AttachmentImageMarker[];
+  taskIds?: TaskIdMarker[];
 };
 
 export interface CollabIdentity {
@@ -180,11 +194,25 @@ export interface CollabRuntime {
     admission: PageRuntimeAdmission,
     markers: readonly AttachmentImageMarker[],
   ) => Promise<void>;
+  /** After a settled Confluence commit, store the task ids it wrote in the owning room and the persisted document (#1751). */
+  markWrittenTaskIds: (
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly TaskIdMarker[],
+  ) => Promise<void>;
   prepareCommitSnapshot: (
     pageId: number,
     userId: string,
     expectedLifecycleRevision: string,
-  ) => Promise<{ admission: PageRuntimeAdmission; html: string; documentState: Y.Snapshot }>;
+  ) => Promise<{
+    admission: PageRuntimeAdmission;
+    html: string;
+    documentState: Y.Snapshot;
+    /** The snapshot's task items, in the order of `html` (#1751). */
+    taskItems: CollabTaskItem[];
+    /** Whether the room's tasks carry Confluence task ids (#1751; collabCarriesTaskIds). */
+    taskIdsCarried: boolean;
+  }>;
   handleLifecycleEvent: (event: PageLifecycleEvent) => Promise<void>;
   refreshLifecycleRooms: () => Promise<void>;
   dropRoom: (pageId: number) => Promise<void>;
@@ -302,17 +330,43 @@ function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
 }
 
 /**
- * Why a best-effort image mark did not happen (#1764). A refusal by the
- * page-write fence (the lifecycle changed, the page is frozen, another write is
- * pending, the admission was retired) is an expected outcome that costs one
- * more upload on the next Save; anything else is a failure.
+ * Task ids from a peer's `task_ids` message; an empty list only records that
+ * the room's tasks carry ids. Anything malformed marks nothing (#1751).
  */
-function logImageMarkersSkipped(error: unknown, pageId: number, step: 'room' | 'persisted'): void {
+function busTaskIdMarkers(value: unknown): TaskIdMarker[] | null {
+  if (!Array.isArray(value)) return null;
+  const markers: TaskIdMarker[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { client, clock, taskId } = entry as Record<string, unknown>;
+    if (
+      !Number.isSafeInteger(client) || (client as number) < 0
+      || !Number.isSafeInteger(clock) || (clock as number) < 0
+      || typeof taskId !== 'string' || !isConfluenceTaskId(taskId)
+    ) return null;
+    markers.push({ client: client as number, clock: clock as number, taskId });
+  }
+  return markers;
+}
+
+/**
+ * Why a best-effort post-commit mark did not happen (#1764, #1751). A refusal
+ * by the page-write fence (the lifecycle changed, the page is frozen, another
+ * write is pending, the admission was retired) is an expected outcome; the
+ * next Save then uploads the image again, or takes the task id back from the
+ * stored storage by its text. Anything else is a failure.
+ */
+function logMarksSkipped(
+  kind: 'image_markers' | 'task_ids',
+  error: unknown,
+  pageId: number,
+  step: 'room' | 'persisted',
+): void {
   if (error instanceof PageWriteError) {
-    logger.info({ pageId, step, reason: error.reason }, 'collab.image_markers_refused');
+    logger.info({ pageId, step, reason: error.reason }, `collab.${kind}_refused`);
     return;
   }
-  logger.warn({ err: error, pageId, step }, 'collab.image_markers_failed');
+  logger.warn({ err: error, pageId, step }, `collab.${kind}_failed`);
 }
 
 export async function createCollabRuntime(
@@ -653,7 +707,18 @@ export async function createCollabRuntime(
         try {
           await markRoomImages(room, message.lifecycleRevision, markers);
         } catch (error) {
-          logImageMarkersSkipped(error, room.pageId, 'room');
+          logMarksSkipped('image_markers', error, room.pageId, 'room');
+        }
+        return;
+      }
+      if (message.kind === 'task_ids') {
+        const markers = busTaskIdMarkers(message.taskIds);
+        if (!markers || typeof message.lifecycleRevision !== 'string') return;
+        await room.initializing;
+        try {
+          await markRoomTaskIds(room, message.lifecycleRevision, markers);
+        } catch (error) {
+          logMarksSkipped('task_ids', error, room.pageId, 'room');
         }
         return;
       }
@@ -1073,7 +1138,13 @@ export async function createCollabRuntime(
     pageId: number,
     userId: string,
     expectedLifecycleRevision: string,
-  ): Promise<{ admission: PageRuntimeAdmission; html: string; documentState: Y.Snapshot }> {
+  ): Promise<{
+    admission: PageRuntimeAdmission;
+    html: string;
+    documentState: Y.Snapshot;
+    taskItems: CollabTaskItem[];
+    taskIdsCarried: boolean;
+  }> {
     const room = await getOrCreateRoom(pageId);
     let admission: PageRuntimeAdmission | undefined;
     try {
@@ -1087,6 +1158,8 @@ export async function createCollabRuntime(
       const snapshot = await withFreshRoomState(room, admission, () => ({
         html: yDocToHtml(room.doc),
         documentState: Y.snapshot(room.doc),
+        taskItems: collabTaskItems(room.doc),
+        taskIdsCarried: collabCarriesTaskIds(room.doc),
       }));
       return { admission, ...snapshot };
     } catch (error) {
@@ -1120,6 +1193,28 @@ export async function createCollabRuntime(
     lifecycleRevision: string,
     markers: readonly AttachmentImageMarker[],
   ): Promise<boolean> {
+    return markRoomDoc(room, lifecycleRevision, (doc) => {
+      markAttachmentImages(doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+    });
+  }
+
+  /** The task ids a settled commit wrote, in place in a room this pod owns (#1751); as markRoomImages. */
+  async function markRoomTaskIds(
+    room: CollabRoom,
+    lifecycleRevision: string,
+    markers: readonly TaskIdMarker[],
+  ): Promise<boolean> {
+    return markRoomDoc(room, lifecycleRevision, (doc) => {
+      markTaskIds(doc, markers, COLLAB_TASK_ID_ORIGIN);
+    });
+  }
+
+  /** Apply `mark` to an owned room's document under its admission; false when this pod owns no such room. */
+  async function markRoomDoc(
+    room: CollabRoom,
+    lifecycleRevision: string,
+    mark: (doc: Y.Doc) => void,
+  ): Promise<boolean> {
     const admission = room.admission;
     // A room without a writable admission (read-only viewers) is not an owner:
     // it never persists, and it gets the marks with an owner's `sync` or the
@@ -1134,7 +1229,7 @@ export async function createCollabRuntime(
       // page's own pending collaborative Save does not fence it (#1763).
       if (rooms.get(room.pageId) !== room || room.admission?.id !== admission.id) return;
       owned = true;
-      markAttachmentImages(room.doc, markers, COLLAB_IMAGE_MARKER_ORIGIN);
+      mark(room.doc);
     }, { admission, ownCollabCommit: 'proceed' });
     return owned;
   }
@@ -1166,13 +1261,50 @@ export async function createCollabRuntime(
         });
       }
     } catch (error) {
-      logImageMarkersSkipped(error, pageId, 'room');
+      logMarksSkipped('image_markers', error, pageId, 'room');
     }
     try {
       const persisted = await persist.markPersistedAttachmentImages(pageId, admission, markers);
       logger.info({ pageId, images: markers.length, inRoom, persisted }, 'collab.image_markers');
     } catch (error) {
-      logImageMarkersSkipped(error, pageId, 'persisted');
+      logMarksSkipped('image_markers', error, pageId, 'persisted');
+    }
+  }
+
+  /**
+   * After a settled Confluence commit, store the task ids it wrote (#1751), as
+   * markUploadedImages stores image markers: in place in the room this pod
+   * owns, else by asking the owning pods over Redis; then in the persisted
+   * document. The same transaction records that the room's tasks carry ids;
+   * with no markers it records only that. Best effort: a task the marks miss
+   * takes its id back from the stored storage on the next Save while its text
+   * is unchanged.
+   */
+  async function markWrittenTaskIds(
+    pageId: number,
+    admission: PageRuntimeAdmission,
+    markers: readonly TaskIdMarker[],
+  ): Promise<void> {
+    let inRoom = false;
+    try {
+      const room = rooms.get(pageId);
+      inRoom = room ? await markRoomTaskIds(room, admission.lifecycleRevision, markers) : false;
+      if (!inRoom) {
+        await publish(pageId, {
+          origin: podId,
+          kind: 'task_ids',
+          lifecycleRevision: admission.lifecycleRevision,
+          taskIds: [...markers],
+        });
+      }
+    } catch (error) {
+      logMarksSkipped('task_ids', error, pageId, 'room');
+    }
+    try {
+      const persisted = await persist.markPersistedTaskIds(pageId, admission, markers);
+      logger.info({ pageId, tasks: markers.length, inRoom, persisted }, 'collab.task_ids');
+    } catch (error) {
+      logMarksSkipped('task_ids', error, pageId, 'persisted');
     }
   }
 
@@ -1671,6 +1803,7 @@ export async function createCollabRuntime(
     tombstoneAll,
     broadcastControl,
     markUploadedImages,
+    markWrittenTaskIds,
     prepareCommitSnapshot: (pageId, userId, revision) =>
       withRoomOwnership(pageId, () => prepareCommitSnapshot(pageId, userId, revision)),
     handleLifecycleEvent: (event) =>

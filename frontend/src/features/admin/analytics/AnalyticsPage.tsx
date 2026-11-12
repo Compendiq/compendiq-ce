@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   BarChart3, Brain, Search, AlertTriangle,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 import { useAuthStore } from '../../../stores/auth-store';
 import { cn } from '../../../shared/lib/cn';
@@ -22,7 +23,9 @@ export interface DashboardProps {
    * Export rows to PDF. The `kpis` argument is optional — dashboards that
    * have headline KPIs can surface them on the cover page; others can
    * skip it and the cover still renders (title + date range + integrity
-   * hash). Excel export was removed in #303 — CSV opens cleanly in Excel.
+   * hash). Excel export was removed in #303.
+   * Never rejects: AnalyticsPage reports a failed export with an error toast
+   * and downloads nothing (#1732).
    */
   onExportPdf: (
     rows: Record<string, unknown>[],
@@ -129,21 +132,31 @@ export function AnalyticsPage() {
       title: string,
       kpis?: Array<{ label: string; value: string | number; unit?: string }>,
     ) => {
-      const { exportToPdf } = await import('../../../shared/lib/export-helpers');
-      // Filename includes both dates so exports with the same start but a
-      // different end don't silently collide on the user's disk.
-      const slug = title.toLowerCase().replace(/\s+/g, '-');
-      await exportToPdf(
-        `${slug}-${dateRange.startDate}-to-${dateRange.endDate}.pdf`,
-        rows,
-        {
-          title,
-          dateRange,
-          generatedBy: authUser?.username,
-          instanceUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
-          kpis,
-        },
-      );
+      // Dashboards call this from onClick without awaiting it, so a failure
+      // must be reported here or it is an unhandled rejection (#1732).
+      try {
+        // Loaded on the first export, so the PDF code stays out of this chunk.
+        const { exportToPdf } = await import('../../../shared/lib/export-helpers');
+        // Filename includes both dates so exports with the same start but a
+        // different end don't silently collide on the user's disk.
+        const slug = title.toLowerCase().replace(/\s+/g, '-');
+        await exportToPdf(
+          `${slug}-${dateRange.startDate}-to-${dateRange.endDate}.pdf`,
+          rows,
+          {
+            title,
+            dateRange,
+            generatedBy: authUser?.username,
+            instanceUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
+            kpis,
+          },
+        );
+      } catch (err) {
+        console.error('[AnalyticsPage] PDF export failed:', err);
+        toast.error(`Could not export the ${title} PDF`, {
+          description: err instanceof Error && err.message ? err.message : undefined,
+        });
+      }
     },
     [dateRange, authUser],
   );
