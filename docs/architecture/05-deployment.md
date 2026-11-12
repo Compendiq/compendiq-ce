@@ -222,6 +222,15 @@ same value; the installer auto-generates it into `.env` on first install and
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
 | `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
 
+## PDF export fonts
+
+The backend runtime image carries the PDF export fonts (Noto Sans, Noto Sans
+Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
+`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
+copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
+copy the built `dist`, ship them without a step of their own. Without them every
+PDF export fails with `PDF export font missing`.
+
 ## Backup process boundaries
 
 ```mermaid
@@ -292,13 +301,6 @@ No database or attachment payload is staged on the backend root filesystem.
 Restore is not an API and does not run inside the serving Fastify process. The
 operator launches the standalone source-tree CLI where `POSTGRES_URL` can reach
 PostgreSQL, `pg_restore` is installed, and the real `ATTACHMENTS_DIR` is mounted.
-
-The backend runtime image also carries the PDF export fonts (Noto Sans, Noto
-Sans Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
-`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
-copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
-copy the built `dist`, ship them without a step of their own. Without them every
-PDF export fails with `PDF export font missing`.
 
 The restore stage is a temporary directory under the parent of
 `ATTACHMENTS_DIR`, with mode `0700`. It must be on the same filesystem as the

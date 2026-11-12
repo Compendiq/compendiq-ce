@@ -21,9 +21,9 @@ arrows, box drawing and similar symbols print as written. A character no
 bundled font covers prints as U+FFFD: Arabic, Hebrew, Armenian, Georgian, Indic
 and Thai scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤, and rare CJK. Controls and
 other invisible characters print nothing. Text is composed (NFC) first, a tab
-is four spaces and a newline is a space; each run is measured in the font that
-draws it. Fonts are embedded as subsets, SC and KR only when the text needs
-them; a missing font file fails the export.
+is four spaces and, outside code blocks, a newline is a space; each run is
+measured in the font that draws it. Fonts are embedded as subsets, SC and KR
+only when the text needs them; a missing font file fails the export.
 
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
