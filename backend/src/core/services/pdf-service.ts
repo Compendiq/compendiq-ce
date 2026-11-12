@@ -561,10 +561,11 @@ function renderTable(ctx: RenderContext, el: Element): void {
   const perBand = Math.ceil(width / Math.ceil(width / Math.floor(CONTENT_WIDTH / TABLE_MIN_COLUMN_WIDTH)));
   const colWidth = CONTENT_WIDTH / perBand;
   // The first band holds every row; a later band only the rows with a cell
-  // starting in it, and the header row where one of its cells reaches, if it
-  // repeats at all (repeatsAsHeader). Every cell prints in the band it starts
-  // in, so the work grows with the cells, not with bands × rows; a band in
-  // which no cell starts is skipped.
+  // starting in it, and the header row's share of it: the header cells that
+  // reach into the band, printed only if that share could repeat on a
+  // continuation page (repeatsAsHeader). Every cell prints in the band it
+  // starts in, so the work grows with the cells, not with bands × rows; a band
+  // in which no cell starts is skipped.
   const startingRows = new Map<number, number[]>();
   grid.forEach((row, r) => {
     for (const cell of row.cells) {
@@ -575,12 +576,11 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
-  let headerShares = false;
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
     if (from > 0 && starting.length === 0) continue;
     const to = Math.min(from + perBand, width);
-    const candidates = from === 0 ? grid.keys() : new Set(headerShares ? [0, ...starting] : starting);
+    const candidates = from === 0 ? grid.keys() : new Set(grid[0]!.isHeader ? [0, ...starting] : starting);
     const band: BandRow[] = [];
     let header: BandRow | undefined;
     for (const r of candidates) {
@@ -588,16 +588,17 @@ function renderTable(ctx: RenderContext, el: Element): void {
       let i = next[r]!;
       while (i < row.cells.length && row.cells[i]!.start < from) i++;
       next[r] = i;
-      // The first cell reaching into the band: one carried over its left edge, or the next to start.
-      const first = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? i - 1 : i;
-      // A header row that ends before this band has no share in it.
-      if (from > 0 && (row.cells[first]?.start ?? to) >= to) continue;
-      const slice = sliceRow(ctx, row, first, from, to, colWidth);
+      const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from;
+      const startsHere = i < row.cells.length && row.cells[i]!.start < to;
+      // A later band's header share: none of the header's cells starts here.
+      const share = from > 0 && !startsHere;
+      if (share && !carried) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth);
+      if (share && !repeatsAsHeader(slice)) continue;
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
     renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
-    if (from === 0) headerShares = header !== undefined && repeatsAsHeader(header);
   }
 }
 
@@ -645,9 +646,10 @@ function sliceRow(ctx: RenderContext, row: GridRow, first: number, from: number,
 }
 
 /**
- * Whether a header row repeats — on a continuation page or in a later band:
- * only when a line of the row below still fits under it on a fresh page, so an
- * oversized header prints once.
+ * Whether a header slice repeats — on a continuation page, or as the header
+ * row's share of a later band: only when a line of the row below still fits
+ * under it on a fresh page. A header cell too tall for that prints once, in
+ * the band it starts in.
  */
 function repeatsAsHeader(header: BandRow): boolean {
   const lineHeight = FONT_SIZE_BODY + 3;

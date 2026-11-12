@@ -448,6 +448,17 @@ describe('pdf-service (pdf-lib)', () => {
         expect(runs.filter((run) => /^m\d+$/.test(run.str)).map((run) => run.str)).toEqual(months);
       });
 
+      it('prints a header cell too tall to repeat only in the band it starts in', async () => {
+        // 40 columns → bands of 14, 14 and 12. The long cell starts in the second band and reaches
+        // into the third, where the header row's share would be some 70 lines: it does not repeat.
+        const words = Array.from({ length: 1000 }, (_, w) => `w${w}`).join(' ');
+        const { text, runs } = await tableLayout(`<table><tr>
+          ${Array.from({ length: 14 }, (_, c) => `<th>h${c}</th>`).join('')}<th colspan="26">${words} HEADEREND</th></tr>
+          <tr>${Array.from({ length: 40 }, (_, c) => `<td>d${c}</td>`).join('')}</tr></table>`);
+        expect(text.match(/HEADEREND/g)).toEqual(['HEADEREND']);
+        expect(runs.filter((run) => /^d\d+$/.test(run.str))).toHaveLength(40);
+      });
+
       it('repeats the header row\'s share on every continuation page of a later band', async () => {
         // 20 columns → 2 bands of 10; 60 rows run each band over two pages or more.
         const rows = Array.from({ length: 60 }, (_, r) =>
