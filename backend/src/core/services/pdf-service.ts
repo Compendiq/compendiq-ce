@@ -1,6 +1,7 @@
-import { PDFDocument, StandardFonts, rgb, PDFPage, PDFFont } from 'pdf-lib';
+import { PDFDocument, rgb, PDFPage, PDFFont } from 'pdf-lib';
 import { JSDOM } from 'jsdom';
 import { logger } from '../utils/logger.js';
+import { drawText, embedFonts, measureText, normalizeText } from './pdf-fonts.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 const PAGE_WIDTH = 595.28;   // A4 width in points
@@ -91,20 +92,14 @@ export async function generatePdf(
 ): Promise<Buffer> {
   try {
     const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-    const fontItalic = await doc.embedFont(StandardFonts.HelveticaOblique);
-    const fontMono = await doc.embedFont(StandardFonts.Courier);
+    const fonts = await embedFonts(doc);
 
     const ctx: RenderContext = {
       doc,
       page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
       y: PAGE_HEIGHT - MARGIN_TOP,
       pageNum: 1,
-      font,
-      fontBold,
-      fontItalic,
-      fontMono,
+      ...fonts,
       title: options.title,
     };
 
@@ -157,8 +152,8 @@ function addFooters(ctx: RenderContext): void {
     const page = pages[i]!;
     const pageNumber = i - startIdx + 1;
     const text = `Page ${pageNumber} of ${total - startIdx}`;
-    const w = ctx.font.widthOfTextAtSize(text, FONT_SIZE_FOOTER);
-    page.drawText(text, {
+    const w = measureText(text, ctx.font, FONT_SIZE_FOOTER);
+    drawText(page, text, {
       x: PAGE_WIDTH - MARGIN_RIGHT - w,
       y: MARGIN_BOTTOM / 2 - FONT_SIZE_FOOTER / 2,
       size: FONT_SIZE_FOOTER,
@@ -176,8 +171,8 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
   const startY = PAGE_HEIGHT / 2 + titleHeight / 2;
 
   for (let i = 0; i < titleLines.length; i++) {
-    const lineW = ctx.fontBold.widthOfTextAtSize(titleLines[i]!, FONT_SIZE_H1);
-    ctx.page.drawText(titleLines[i]!, {
+    const lineW = measureText(titleLines[i]!, ctx.fontBold, FONT_SIZE_H1);
+    drawText(ctx.page, titleLines[i]!, {
       x: (PAGE_WIDTH - lineW) / 2,
       y: startY - i * (FONT_SIZE_H1 + 6),
       size: FONT_SIZE_H1,
@@ -191,8 +186,8 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
     month: 'long',
     day: 'numeric',
   });
-  const dateW = ctx.font.widthOfTextAtSize(date, FONT_SIZE_BODY);
-  ctx.page.drawText(date, {
+  const dateW = measureText(date, ctx.font, FONT_SIZE_BODY);
+  drawText(ctx.page, date, {
     x: (PAGE_WIDTH - dateW) / 2,
     y: startY - titleHeight - 24,
     size: FONT_SIZE_BODY,
@@ -303,7 +298,7 @@ function renderHeading(ctx: RenderContext, text: string, fontSize: number): void
   const lines = wrapText(text, ctx.fontBold, fontSize, CONTENT_WIDTH);
   for (const line of lines) {
     ensureSpace(ctx, fontSize + 4);
-    ctx.page.drawText(line, {
+    drawText(ctx.page, line, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -365,7 +360,7 @@ function renderTextBlock(
   const lines = wrapText(text, font, fontSize, CONTENT_WIDTH);
   for (const line of lines) {
     ensureSpace(ctx, LINE_HEIGHT);
-    ctx.page.drawText(line, {
+    drawText(ctx.page, line, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -395,7 +390,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
     rendered.push({
       page: ctx.page,
       y: ctx.y,
-      text: sanitizeForStandardFont(lines[i]!.substring(0, 120)),
+      text: normalizeText(lines[i]!.substring(0, 120)),
     });
     ctx.y -= lineHeight;
   }
@@ -416,7 +411,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   // Pass 3: draw text on top of backgrounds
   for (const line of rendered) {
     if (line.text) {
-      line.page.drawText(line.text, {
+      drawText(line.page, line.text, {
         x: MARGIN_LEFT + CODE_PADDING,
         y: line.y,
         size: FONT_SIZE_CODE,
@@ -479,7 +474,7 @@ function renderBlockquote(ctx: RenderContext, text: string): void {
 
   // Draw text
   for (const line of rendered) {
-    line.page.drawText(line.text, {
+    drawText(line.page, line.text, {
       x: MARGIN_LEFT + indent,
       y: line.y,
       size: FONT_SIZE_BODY,
@@ -502,7 +497,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
     ensureSpace(ctx, LINE_HEIGHT);
 
     const bullet = ordered ? `${i + 1}.` : '•';
-    ctx.page.drawText(bullet, {
+    drawText(ctx.page, bullet, {
       x: MARGIN_LEFT + 4,
       y: ctx.y,
       size: FONT_SIZE_BODY,
@@ -513,7 +508,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
     const lines = wrapText(text, ctx.font, FONT_SIZE_BODY, CONTENT_WIDTH - indent);
     for (const line of lines) {
       ensureSpace(ctx, LINE_HEIGHT);
-      ctx.page.drawText(line, {
+      drawText(ctx.page, line, {
         x: MARGIN_LEFT + indent,
         y: ctx.y,
         size: FONT_SIZE_BODY,
@@ -571,7 +566,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
       const lines = row.lines[c]!;
       for (let l = start; l < Math.min(start + count, lines.length); l++) {
         try {
-          ctx.page.drawText(lines[l]!, {
+          drawText(ctx.page, lines[l]!, {
             x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
             y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
             size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
@@ -655,8 +650,8 @@ function renderImagePlaceholder(ctx: RenderContext, el: Element): void {
 
   const label = `[Image: ${alt}]`;
   try {
-    const textW = ctx.fontItalic.widthOfTextAtSize(label, FONT_SIZE_SMALL);
-    ctx.page.drawText(label, {
+    const textW = measureText(label, ctx.fontItalic, FONT_SIZE_SMALL);
+    drawText(ctx.page, label, {
       x: MARGIN_LEFT + (CONTENT_WIDTH - textW) / 2,
       y: ctx.y - 20,
       size: FONT_SIZE_SMALL,
@@ -672,22 +667,6 @@ function renderImagePlaceholder(ctx: RenderContext, el: Element): void {
 
 // ── Utilities ──────────────────────────────────────────────────────
 
-/** Replace characters outside WinAnsi (Latin-1) encoding that StandardFonts can't render. */
-function sanitizeForStandardFont(text: string): string {
-  return text
-    .replace(/\t/g, '    ')          // tabs to spaces
-    .replace(/[\u2018\u2019]/g, "'") // smart single quotes
-    .replace(/[\u201C\u201D]/g, '"') // smart double quotes
-    .replace(/\u2013/g, '-')         // en-dash
-    .replace(/\u2014/g, '--')        // em-dash
-    .replace(/\u2026/g, '...')       // ellipsis
-    .replace(/\u2192/g, '->')        // right arrow
-    .replace(/\u2190/g, '<-')        // left arrow
-    .replace(/\u2022/g, '*')         // bullet
-    .replace(/\u00A0/g, ' ')         // non-breaking space
-    .replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); // strip remaining non-Latin-1
-}
-
 function extractTextContent(el: Element): string {
   // Get text, collapsing whitespace
   return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -695,7 +674,7 @@ function extractTextContent(el: Element): string {
 
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
   if (!text) return [];
-  const sanitized = sanitizeForStandardFont(text);
+  const sanitized = normalizeText(text);
   if (!sanitized) return [];
   const lines: string[] = [];
   const paragraphs = sanitized.split('\n');
@@ -712,7 +691,7 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
       const testLine = currentLine ? `${currentLine} ${word}` : word;
       let width: number;
       try {
-        width = font.widthOfTextAtSize(testLine, fontSize);
+        width = measureText(testLine, font, fontSize);
       } catch {
         // Character encoding issue — skip this word
         continue;
