@@ -375,6 +375,26 @@ describe('pdf-service (pdf-lib)', () => {
           expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
         }
       });
+
+      it('counts the space between words, so a line of short words stays inside the margin', async () => {
+        // At 11 pt 'a' is 6.116 pt and a space 3.058 pt: 54 words fill 492.34 of 495.28 pt, 55 would not.
+        const { text, items } = await layout(`<p>${'a '.repeat(300)}</p>`);
+        expect(text).toContain('a'.repeat(300));
+        expect(items.map((item) => item.str.split(' ').length)).toEqual([54, 54, 54, 54, 54, 30]);
+        for (const item of items) {
+          expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+        }
+      });
+
+      it('stacks one character per line in a column narrower than a glyph', async () => {
+        // 45 columns leave each cell 495.28 / 45 - 2 * 6 = -0.99 pt to wrap in.
+        const row = ['<td>ABCD</td>', ...Array.from({ length: 44 }, () => '<td></td>')].join('');
+        const { text, items } = await layout(`<table><tr>${row}</tr></table>`);
+        expect(text).toContain('ABCD');
+        expect(items.map((item) => item.str)).toEqual(['A', 'B', 'C', 'D']);
+        // First baseline: 781.89 page top - 4 table offset - 6 cell padding - 11 font size; 14 pt pitch.
+        expect(items.map((item) => +item.y.toFixed(2))).toEqual([760.89, 746.89, 732.89, 718.89]);
+      });
     });
   });
 
