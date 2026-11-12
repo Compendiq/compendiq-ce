@@ -38,12 +38,19 @@ function urlCacheKey(url: string): string {
   return `mcp:docs:url:${hash}`;
 }
 
-function searchCacheKey(query: string, numResults: number): string {
+/**
+ * Versioned namespace: v2 keyed query + width, v3 adds the SearXNG categories
+ * (#1769). A v2 entry would answer the same query and width for any category
+ * list, so v2 keys are never read; they expire on their own TTL (never flush
+ * shared Redis). `categories` cannot contain ':' (tool schema), so the three
+ * parts stay unambiguous.
+ */
+function searchCacheKey(query: string, numResults: number, categories: string): string {
   const hash = createHash('sha256')
-    .update(`${query.toLowerCase()}:${numResults}`)
+    .update(`${query.toLowerCase()}:${numResults}:${categories}`)
     .digest('hex')
     .slice(0, 16);
-  return `mcp:docs:search:v2:${hash}`;
+  return `mcp:docs:search:v3:${hash}`;
 }
 
 export class DocsCache {
@@ -76,10 +83,10 @@ export class DocsCache {
     }
   }
 
-  async getCachedSearch(query: string, numResults: number): Promise<CachedSearch | null> {
+  async getCachedSearch(query: string, numResults: number, categories: string): Promise<CachedSearch | null> {
     if (!this.redis) return null;
     try {
-      const raw = await this.redis.get(searchCacheKey(query, numResults));
+      const raw = await this.redis.get(searchCacheKey(query, numResults, categories));
       return raw ? (JSON.parse(raw) as CachedSearch) : null;
     } catch (err) {
       logger.error({ err }, 'Cache get error');
@@ -90,12 +97,13 @@ export class DocsCache {
   async setCachedSearch(
     query: string,
     numResults: number,
+    categories: string,
     data: CachedSearch,
   ): Promise<void> {
     if (!this.redis) return;
     try {
       await this.redis.setEx(
-        searchCacheKey(query, numResults),
+        searchCacheKey(query, numResults, categories),
         this.searchTtl,
         JSON.stringify(data),
       );

@@ -96,9 +96,13 @@ function getSendButton() {
   return buttons[buttons.length - 1];
 }
 
+// `/mcp-docs/status` answer: the web-search toggle only renders when the sidecar is enabled.
+let mcpDocsEnabled = false;
+
 describe('GenerateMode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mcpDocsEnabled = false;
     mockPageData = { data: undefined };
     mockIsExtracting.value = false;
     mockSpacesData = {
@@ -127,6 +131,9 @@ describe('GenerateMode', () => {
       }
       if (path === '/llm/conversations') {
         return Promise.resolve([]);
+      }
+      if (path === '/mcp-docs/status') {
+        return Promise.resolve({ enabled: mcpDocsEnabled });
       }
       return Promise.resolve([]);
     });
@@ -183,6 +190,39 @@ describe('GenerateMode', () => {
           expect.any(Object),
         );
       });
+    });
+
+    it('sends searchWeb: true and no searchQuery when the web-search toggle is on (#1767)', async () => {
+      // The backend derives the query itself; the UI never sends `searchQuery`,
+      // so the contract's new 200-char / 30-word bound cannot touch this flow.
+      mcpDocsEnabled = true;
+      async function* fakeStream() {
+        yield { content: 'Searched and generated.' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const toggle = await screen.findByTestId('generate-search-web-toggle');
+      fireEvent.click(within(toggle).getByRole('checkbox'));
+      const input = screen.getByPlaceholderText('Describe the page to generate...');
+      fireEvent.change(input, { target: { value: 'Write a guide about Docker' } });
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      fireEvent.click(getSendButton());
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/generate',
+          expect.objectContaining({ prompt: 'Write a guide about Docker', model: 'llama3', searchWeb: true }),
+          expect.any(Object),
+        );
+      });
+      const body = streamSSEMock.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body).not.toHaveProperty('searchQuery');
+      expect(Object.keys(body).sort()).toEqual(['model', 'prompt', 'searchWeb']);
     });
 
     it('shows save panel after generation completes', async () => {

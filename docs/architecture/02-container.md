@@ -74,6 +74,15 @@ network isolation. The sidecar runs `NODE_ENV=production` and **fails closed**
 stays open). See [`05-deployment.md`](./05-deployment.md) → MCP sidecar
 authentication.
 
+The call runs over the MCP Streamable HTTP transport, whose session the
+sidecar owns: it evicts a session after `MCP_DOCS_SESSION_TTL_MS` of idleness
+(default 30 min) and forgets all sessions on restart, answering a stale
+`mcp-session-id` with `404 Session not found` (`-32001`). The backend client
+(`core/services/mcp-docs-client.ts`) treats a transport-level 404 (or 400
+from a pre-#1766 sidecar) as a lost session: it discards its cached
+connection and re-initializes exactly once per call, re-sending the same
+URL/keyword request. Tool-level errors are never retried.
+
 Backup downloads use two in-process backend components. The admin-only POST
 creates a 256-bit ticket in Redis; the browser then navigates through the
 frontend proxy to the public GET route. That GET has no JWT hook because a

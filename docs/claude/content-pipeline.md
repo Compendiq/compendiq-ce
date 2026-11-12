@@ -237,6 +237,34 @@ can echo request fragments and internal topology. It is truncated at
 `PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
 `dangerouslySetInnerHTML`, never a Markdown renderer.
 
+## MCP Sidecar Sessions
+
+The `mcp-docs` sidecar owns the Streamable HTTP session. An unknown or
+terminated `mcp-session-id` gets `404` with the SDK's JSON-RPC body
+(`-32001 Session not found`) on POST, GET and DELETE; a non-initialize request
+without the header gets `400 -32000`. The `/mcp` shared-secret guard runs
+before either answer. Idle eviction uses `MCP_DOCS_SESSION_TTL_MS` (default
+30 min); it is a sidecar-process variable and is not mapped by the stock
+Compose files.
+
+The backend client (`backend/src/core/services/mcp-docs-client.ts`) retries a
+request exactly once, after dropping its cached connection, and only on a
+transport-level `StreamableHTTPError` whose status is 404 or 400 (400 keeps a
+not-yet-upgraded sidecar working). Keep the predicate status-based. Never
+retry a tool `isError` result or any other error: a 4xx is produced before a
+tool runs, so re-sending cannot double outbound SearXNG/fetch traffic, whereas
+retrying a tool error would. The retry re-sends the same URL or keyword query
+only — no article content. Concurrent callers must share one in-flight
+connect; publish `client`/`transport` only after `initialize` succeeds.
+
+The real-sidecar validation
+(`backend/src/core/services/mcp-docs-client.integration.test.ts`) spawns the
+worktree's `mcp-docs/src` against a fake SearXNG through idle eviction and a
+restart. It installs the sidecar's production dependencies into a temp dir
+(`npm ci --omit=dev --prefer-offline`) because `mcp-docs` is not a root
+workspace; it runs in the PR Check `Tests` job and must fail, never skip, when
+npm, Redis or the sidecar is unavailable.
+
 ## SearXNG Sidecar
 
 `fetch_url` caches at most the first 100 000 characters of a document's
@@ -264,15 +292,68 @@ derived image keeps upstream ClearURLs fetches primary and patches only their
 all-failed branch to load the pinned local baseline. Keep the patch strict so
 an upstream integration-point change fails the image build.
 
-`search_web` caches only the requested bounded result width: its Redis key is
-the sanitized query plus that effective width. Keep the width in cache
-identity because cached results are already truncated; a narrower request
-must not poison a later wider request, or vice versa.
-Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
-can equal the new query-plus-width hashes. Never read legacy entries as
-width-aware results; let their TTL expire without flushing shared Redis.
+`search_web` caches only the requested bounded result width and category
+list: its Redis key is the sanitized query plus that effective width plus the
+`categories` string. Keep the width in cache identity because cached results
+are already truncated; a narrower request must not poison a later wider
+request, or vice versa. Keep the categories in it because SearXNG answers a
+different result set per category list.
+Use the versioned `mcp:docs:search:v3:` namespace: `v2` hashed query plus
+width, so one `v2` entry would answer every category list (and the
+unversioned legacy keys were query-only). Never read a legacy or `v2` entry as
+a `v3` result; let their TTL expire without flushing shared Redis. Bump the
+version again whenever the identity changes.
+
+Admin settings reach the sidecar as tool arguments on every call — never as a
+Redis config key or an environment override (#1769). `fetch_url` takes
+`cache_ttl` (60–86400 s: the admin Cache TTL; `CACHE_TTL_SECONDS` when absent;
+a cache hit never rewrites an entry's TTL) and a `max_length` the backend caps
+at the admin Max Content Length (1000–100000, the sidecar's
+`ABSOLUTE_MAX_LENGTH`; callers keep 5000 for web search, 2000 for test-fetch
+and 10 000 for attached URLs). `search_web` takes `categories`
+(`^[a-z0-9_]+(,[a-z0-9_]+)*$`, at most 200 characters, default `general`).
+The SearXNG URL is `SEARXNG_URL` on the sidecar only: no tool argument, Redis
+key, admin route or UI field may carry a search host. Stored values outside
+these ranges are clamped or fall back on read with a warning
+(`getMcpDocsSettings`, `getSearxngSettings`). The sidecar does not depend on
+contracts, so `MCP_DOCS_*` / `SearxngCategoriesSchema` and the tool schema are
+pinned by literal tests on both sides —
+`packages/contracts/src/schemas/{mcp-docs,searxng.categories}.test.ts` and
+`mcp-docs/src/admin-settings.integration.test.ts`, which boots the sidecar
+with real Redis (`MCP_DOCS_TEST_REDIS_URL`; never skip) and serves
+`fetch_url` from a preloaded `fetch` stub because the SSRF guard refuses
+loopback. Never widen one side alone.
+
+`search_web` accepts `num_results` 1–10 (`MAX_NUM_RESULTS`). The admin setting
+`searxng_max_results` shares that range through
+`SEARXNG_MAX_RESULTS_{MIN,MAX,DEFAULT}` in `@compendiq/contracts`; the sidecar
+does not depend on contracts, so both sides are pinned with literal tests —
+`packages/contracts/src/schemas/searxng.test.ts` for the constants and
+`mcp-docs/src/search-web-limits.test.ts`, which boots the sidecar against a
+loopback SearXNG and proves the tool accepts 1–10, defaults to 5 and rejects
+0/11 (real Redis via `MCP_DOCS_TEST_REDIS_URL`; never skip). Stored values
+outside the range are clamped on read (`getSearxngSettings`) with a warning,
+and `POST /admin/searxng/test` searches with the saved width. Never widen one
+side alone (#1768).
 
 The MCP cache-width regression is mandatory in the sidecar test suite and uses
 real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
 PR Check sidecar job provisions Redis and sets this explicitly. Missing
 configuration fails the suite rather than skipping the regression.
+
+`search_web` accepts a `query` of at most 200 characters and 30
+whitespace-separated words — a data-leakage control (`MAX_QUERY_LENGTH` /
+`MAX_WORD_COUNT` in `mcp-docs/src/security/query-sanitizer.ts`; the tool
+schema's `max(200)` in `mcp-docs/src/index.ts`). The public LLM contract
+enforces the same bounds up front: `searchQuery` on the
+ask/generate/improve/summarize request schemas is `WebSearchQuerySchema`
+(`trim().min(1).max(WEB_SEARCH_QUERY_MAX_CHARS)` plus a
+`WEB_SEARCH_QUERY_MAX_WORDS` refine) in `@compendiq/contracts`, so an
+over-long or blank query is a `400 ValidationError` at the API boundary
+instead of a silently empty search. The backend never truncates an explicit
+`searchQuery`; only the derived default queries are sliced to 200 characters.
+The sidecar does not depend on contracts, so both sides are pinned with
+literal tests — `packages/contracts/src/schemas/llm.test.ts`,
+`mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
+in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
+(#1767).

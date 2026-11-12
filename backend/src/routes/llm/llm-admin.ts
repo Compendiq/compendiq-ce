@@ -1,12 +1,18 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RetrievalBenchmarkRequestSchema } from '@compendiq/contracts';
+import {
+  RetrievalBenchmarkRequestSchema,
+  UpdateMcpDocsSettingsSchema,
+  UpdateSearxngSettingsSchema,
+  type SearxngSettings,
+} from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { query } from '../../core/db/postgres.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { getSearxngSettings } from './_helpers.js';
 import {
   createProductionBenchmarkRun,
   getActiveProductionBenchmark,
@@ -18,16 +24,6 @@ import { slotBusyMessage } from '../../domains/llm/eval/benchmark-run-lifecycle.
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
-
-const UpdateMcpDocsSchema = z.object({
-  enabled: z.boolean().optional(),
-  url: z.string().url().optional(),
-  domainMode: z.enum(['allowlist', 'blocklist']).optional(),
-  allowedDomains: z.array(z.string()).optional(),
-  blockedDomains: z.array(z.string()).optional(),
-  cacheTtl: z.number().int().min(60).max(86400).optional(),
-  maxContentLength: z.number().int().min(1000).max(500_000).optional(),
-});
 
 const TestFetchSchema = z.object({
   url: z.string().url(),
@@ -145,7 +141,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
     ...ADMIN_RATE_LIMIT,
   }, async (request) => {
-    const updates = UpdateMcpDocsSchema.parse(request.body);
+    const updates = UpdateMcpDocsSettingsSchema.parse(request.body);
     await upsertMcpDocsSettings(updates);
     return { message: 'MCP docs settings updated', ...await getMcpDocsSettings() };
   });
@@ -183,32 +179,19 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   });
 
   // ─── SearXNG Admin Routes ──────────────────────────────────────────
+  //
+  // There is deliberately no SearXNG URL here (#1769). The mcp-docs sidecar
+  // reads its search backend from its own SEARXNG_URL environment variable, so
+  // no admin action can redirect outbound search traffic. A `searxng_url` row
+  // left by an older version is never read or written.
 
-  const SEARXNG_KEYS = ['searxng_url', 'searxng_max_results', 'searxng_categories'] as const;
-
-  const UpdateSearxngSchema = z.object({
-    url: z.string().url().optional(),
-    maxResults: z.number().int().min(1).max(20).optional(),
-    categories: z.string().max(200).optional(),
-  });
-
-  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async () => {
-    const result = await query<{ setting_key: string; setting_value: string }>(
-      `SELECT setting_key, setting_value FROM admin_settings WHERE setting_key = ANY($1::text[])`,
-      [SEARXNG_KEYS as unknown as string[]],
-    );
-    const map: Record<string, string> = {};
-    for (const row of result.rows) map[row.setting_key] = row.setting_value;
-    return {
-      url: map['searxng_url'] ?? process.env.SEARXNG_URL ?? 'http://searxng:8080',
-      maxResults: parseInt(map['searxng_max_results'] ?? '5', 10),
-      categories: map['searxng_categories'] ?? 'general',
-    };
+  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (): Promise<SearxngSettings> => {
+    return getSearxngSettings();
   });
 
   fastify.put('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
-    const body = UpdateSearxngSchema.parse(request.body);
-    for (const [field, key] of [['url', 'searxng_url'], ['maxResults', 'searxng_max_results'], ['categories', 'searxng_categories']] as const) {
+    const body = UpdateSearxngSettingsSchema.parse(request.body);
+    for (const [field, key] of [['maxResults', 'searxng_max_results'], ['categories', 'searxng_categories']] as const) {
       const val = body[field as keyof typeof body];
       if (val !== undefined) {
         await query(
@@ -226,7 +209,11 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   fastify.post('/admin/searxng/test', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
     try {
-      const results = await searchDocumentation('test connection', request.userId, 3);
+      // Search with the saved configuration — the effective (normalized) width
+      // and categories, not a fixed 3 and the default category — so this button
+      // reports what web search actually uses (#1768, #1769).
+      const { maxResults, categories } = await getSearxngSettings();
+      const results = await searchDocumentation('test connection', request.userId, maxResults, categories);
       return { ok: true, resultCount: results.length, sample: results.slice(0, 3).map((r) => ({ title: r.title, url: r.url })) };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
