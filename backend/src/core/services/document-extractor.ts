@@ -516,9 +516,7 @@ const RTF_DEFAULT_ENCODING = 'windows-1252';
  * `\ansicpgN` values `TextDecoder` can read: the Windows, DOS-Cyrillic and Mac
  * pages of the RTF 1.9.1 code-page table, plus Windows' UTF-8 code page. Pages
  * without a WHATWG label (437, 850, …) read as {@link RTF_DEFAULT_ENCODING}.
- * Node's `euc-kr` is strict EUC-KR, so 949 decodes only its KS X 1001 part:
- * a syllable from cp949's UHC extension comes out as U+FFFD (U+0081 for lead
- * byte 0x81) followed by its trail letter.
+ * 949 reads through {@link createCp949Decoder}.
  */
 const RTF_CODE_PAGES: ReadonlyMap<number, string> = new Map([
   [866, 'ibm866'],
@@ -551,6 +549,76 @@ const RTF_LATIN1_DECODER: RtfByteDecoder = {
 };
 
 /**
+ * Windows code page 949 (Korean). Node's `euc-kr` decoder is strict EUC-KR
+ * (KS X 1001): it misreads the 8,822 Hangul syllables cp949 adds, its UHC
+ * extension, and by taking their trail byte as a new lead it garbles the
+ * characters after them too. Those syllables are exactly the ones KS X 1001
+ * lacks, in code point order, so their table is derived from the strict
+ * decoder itself; the euro and registered signs are the two later Windows
+ * additions it also lacks. Unmapped pairs follow the WHATWG EUC-KR decoder:
+ * U+FFFD, and an ASCII trail byte is read again.
+ */
+function createCp949Decoder(eucKr: TextDecoder): RtfByteDecoder {
+  // The UTF-16 unit for `lead << 8 | trail`, or 0 where cp949 maps nothing.
+  const table = new Uint16Array(0x10000);
+  const ksHangul = new Set<number>();
+  const pair = new Uint8Array(2);
+  for (let lead = 0xa1; lead <= 0xfe; lead += 1) {
+    for (let trail = 0xa1; trail <= 0xfe; trail += 1) {
+      pair[0] = lead;
+      pair[1] = trail;
+      const char = eucKr.decode(pair);
+      const unit = char.charCodeAt(0);
+      if (char.length !== 1 || unit === 0xfffd) continue;
+      table[(lead << 8) | trail] = unit;
+      if (unit >= 0xac00 && unit <= 0xd7a3) ksHangul.add(unit);
+    }
+  }
+  table[0xa2e6] = 0x20ac;
+  table[0xa2e7] = 0x00ae;
+  // UHC slots: leads 0x81-0xC6 with trails 0x41-0x5A, 0x61-0x7A and 0x81-0xFE,
+  // stopping at 0xA0 from lead 0xA1 on, where KS X 1001 rows begin.
+  let syllable = 0xac00;
+  for (let lead = 0x81; lead <= 0xc6; lead += 1) {
+    const lastTrail = lead <= 0xa0 ? 0xfe : 0xa0;
+    for (let trail = 0x41; trail <= lastTrail; trail += 1) {
+      if ((trail > 0x5a && trail < 0x61) || (trail > 0x7a && trail < 0x81)) continue;
+      while (ksHangul.has(syllable)) syllable += 1;
+      if (syllable > 0xd7a3) break;
+      table[(lead << 8) | trail] = syllable;
+      syllable += 1;
+    }
+  }
+
+  return {
+    decode(bytes) {
+      const units = new Uint16Array(bytes.length);
+      let length = 0;
+      for (let i = 0; i < bytes.length; i += 1) {
+        const byte = bytes[i] ?? 0;
+        if (byte < 0x80) {
+          units[length] = byte;
+          length += 1;
+          continue;
+        }
+        const trail = bytes[i + 1];
+        const mapped = trail === undefined ? 0 : table[(byte << 8) | trail] ?? 0;
+        units[length] = mapped || 0xfffd;
+        length += 1;
+        // A mapped pair, or a lead byte with a non-ASCII trail, uses up the trail.
+        if (mapped !== 0 || (byte >= 0x81 && byte <= 0xfe && trail !== undefined && trail >= 0x80)) i += 1;
+      }
+      // `fromCharCode` takes code units as arguments, so convert in slices.
+      const parts: string[] = [];
+      for (let start = 0; start < length; start += 4096) {
+        parts.push(String.fromCharCode(...units.subarray(start, Math.min(start + 4096, length))));
+      }
+      return parts.join('');
+    },
+  };
+}
+
+/**
  * A decoder for one code page. A Node built without full ICU lacks the legacy
  * encodings, so this falls back to windows-1252 and then to Latin-1 rather
  * than failing the upload. A decoded run is a fragment of the document, so a
@@ -558,7 +626,8 @@ const RTF_LATIN1_DECODER: RtfByteDecoder = {
  */
 function createRtfDecoder(encoding: string): RtfByteDecoder {
   try {
-    return new TextDecoder(encoding, { ignoreBOM: true });
+    const decoder = new TextDecoder(encoding, { ignoreBOM: true });
+    return encoding === 'euc-kr' ? createCp949Decoder(decoder) : decoder;
   } catch {
     return encoding === RTF_DEFAULT_ENCODING ? RTF_LATIN1_DECODER : createRtfDecoder(RTF_DEFAULT_ENCODING);
   }
@@ -574,6 +643,8 @@ const RTF_HEX_BYTE = /\\'[0-9a-fA-F]{2}/y;
 const RTF_TEXT_RUN = /[^\\{}\r\n]+/y;
 /** A run of source line breaks. */
 const RTF_LINE_BREAKS = /[\r\n]+/y;
+/** A raw byte outside ASCII: RTF escapes those, but some writers emit UTF-8. */
+const RTF_RAW_BYTE = /[\x80-\xff]/;
 
 /**
  * Output pieces joined per batch. A string built by millions of tiny `+=`
@@ -602,6 +673,8 @@ const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
 /**
  * Reads RTF token by token in one pass (RTF 1.9.1, "Conventions of an RTF
  * Reader") and returns the text it carries, before whitespace clean-up.
+ * `rtf` holds the file's bytes, one per character, so `\binN` can skip
+ * exactly N of them; raw non-ASCII text is read as UTF-8, as before.
  *
  * - `\uN` writes UTF-16 unit N (a negative N counts from 65536) and then
  *   skips its `\ucN` fallback: that many text characters, `\'hh` bytes,
@@ -617,6 +690,8 @@ const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
  *   charsets (`\fcharsetN`) are not read: bytes in a font whose charset
  *   differs from the document's decode wrongly, and on a double-byte page a
  *   letter after such a byte can be swallowed as its trail byte.
+ * - `\binN` and the N raw bytes after it (one fallback unit) are skipped,
+ *   even inside a skipped group, so binary data never reads as markup.
  * - Listed destination groups are skipped whole. Unbalanced braces are
  *   tolerated, and nothing recurses or backtracks.
  */
@@ -707,7 +782,10 @@ function scanRtf(rtf: string): string {
       if (skippedDepth === 0) {
         const dropped = Math.min(skip, end - i);
         skip -= dropped;
-        if (i + dropped < end) writeText(rtf.slice(i + dropped, end));
+        if (i + dropped < end) {
+          const text = rtf.slice(i + dropped, end);
+          writeText(RTF_RAW_BYTE.test(text) ? Buffer.from(text, 'latin1').toString('utf8') : text);
+        }
       }
       i = end;
       continue;
@@ -717,9 +795,16 @@ function scanRtf(rtf: string): string {
     const word = RTF_CONTROL_WORD.exec(rtf);
     if (word !== null) {
       i = RTF_CONTROL_WORD.lastIndex;
-      if (skippedDepth > 0) continue;
       const name = word[1] ?? '';
       const param = word[2] === undefined ? undefined : Number(word[2]);
+      if (param !== undefined && name === 'bin') {
+        // Raw binary data, braces and backslashes included: skip it whole,
+        // even inside a skipped group. With its data it is one fallback unit.
+        i = Math.min(rtf.length, i + Math.max(0, param));
+        if (skippedDepth === 0 && skip > 0) skip -= 1;
+        continue;
+      }
+      if (skippedDepth > 0) continue;
       const whitespace = RTF_WORD_TEXT.get(name);
       if (param !== undefined && name === 'u') {
         flushBytes();
@@ -772,12 +857,14 @@ function scanRtf(rtf: string): string {
 /**
  * Flattens RTF markup to text.
  *
+ * `rtf` is the file's bytes, one per character (`buffer.toString('latin1')`).
  * One linear pass reads the markup token by token ({@link scanRtf}): listed
  * destination groups are dropped whole, each `\uN` character replaces its
  * `\ucN` fallback, `\'hh` bytes decode in the `\ansicpgN` code page
- * (windows-1252 when absent or unsupported), the few control words that
- * mean whitespace become whitespace, and every other control word
- * disappears. Malformed input, unbalanced braces included, never throws.
+ * (windows-1252 when absent or unsupported), `\binN` data is skipped, the few
+ * control words that mean whitespace become whitespace, and every other
+ * control word disappears. Malformed input, unbalanced braces included, never
+ * throws.
  */
 export function rtfToText(rtf: string): string {
   return scanRtf(rtf)
@@ -810,7 +897,7 @@ export async function extractDocumentText(
     case 'odt':
       return extractOdt(buffer);
     case 'rtf':
-      return { format: 'rtf', text: rtfToText(buffer.toString('utf8')) };
+      return { format: 'rtf', text: rtfToText(buffer.toString('latin1')) };
     case 'md':
     case 'txt':
     case 'yaml':

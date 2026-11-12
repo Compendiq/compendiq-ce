@@ -335,10 +335,15 @@ describe('rtfToText', () => {
     expect(rtfToText(`{\\rtf1\\ansi\\ansicpg${codePage} ${bytes}}`)).toBe(expected);
   });
 
-  it('decodes \\ansicpg949 only as far as Node\'s strict EUC-KR reaches', () => {
-    // A KS X 1001 syllable decodes; one from cp949's UHC extension (힣) does
-    // not. This pins the documented limit, so a runtime that gains UHC shows up.
-    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'b0\\'a1 \\'c6\\'52}")).toBe('가 \uFFFDR');
+  it('decodes \\ansicpg949 as Windows cp949, UHC syllables included', () => {
+    // 됬 and 뷁 are in cp949's UHC extension; strict EUC-KR misreads them and
+    // the characters after them.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'89\\'e7\\'b0\\'a1\\'b3\\'aa\\'b4\\'d9 \\'94\\'ee\\'b0\\'a1}"))
+      .toBe('됬가나다 뷁가');
+    // The first and last UHC syllables, and the two signs Windows added.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'81\\'41\\'c6\\'52\\'a2\\'e6\\'a2\\'e7}")).toBe('갂힣€®');
+    // An unmapped pair is U+FFFD, and an ASCII trail byte is read again.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'c7\\'41\\'80x}")).toBe('\uFFFDA\uFFFDx');
   });
 
   it('keeps a double-byte character whole across a wrapped source line', () => {
@@ -420,7 +425,16 @@ describe('rtfToText', () => {
 
   it('keeps decoded bytes and private-use characters as literal text', () => {
     expect(rtfToText("{\\rtf1\\ansi \\'5cpar \\'7bx\\'7d}")).toBe('\\par {x}');
-    expect(rtfToText('{\\rtf1 a\uE000b}')).toBe('a\uE000b');
+    // rtfToText reads the file's bytes, one per character.
+    expect(rtfToText(Buffer.from('{\\rtf1 a\uE000b}', 'utf8').toString('latin1'))).toBe('a\uE000b');
+  });
+
+  it('skips the bytes of a \\binN payload, braces included', () => {
+    expect(rtfToText('{\\rtf1 Before{\\pict\\wmetafile8\\bin4 {{{{}After text.}')).toBe('BeforeAfter text.');
+    // \binN and its data are one fallback unit.
+    expect(rtfToText('{\\rtf1 \\u1055\\bin2 xyz}')).toBe('Пz');
+    // A length past the end of the input stops there.
+    expect(rtfToText('{\\rtf1 a\\bin99999999 bc')).toBe('a');
   });
 
   it('keeps text in order across many small output pieces', () => {
@@ -462,6 +476,17 @@ describe('rtfToText', () => {
     const cyrillic = buildRtf("\\uc1\\u1055\\'cf\\u1088\\'f0\\'e8\\'e2\\'e5\\'f2", 1251);
     expect(await extractDocumentText(cyrillic, 'memo.rtf')).toEqual({ format: 'rtf', text: 'Привет' });
     expect((await extractDocumentText(buildRtf("Total: 5\\'80"), 'memo.rtf')).text).toBe('Total: 5€');
+  });
+
+  it('extractDocumentText skips raw \\bin bytes exactly and still reads raw UTF-8 text', async () => {
+    // A binary payload with braces, a backslash and bytes that are not UTF-8.
+    const payload = Buffer.from([0x7b, 0xff, 0x5c, 0x7d, 0xc3, 0x28, 0x7b, 0x80]);
+    const rtf = Buffer.concat([
+      Buffer.from('{\\rtf1\\ansi Before{\\pict\\pngblip\\bin8 ', 'latin1'),
+      payload,
+      Buffer.from('}After café 日本}', 'utf8'),
+    ]);
+    expect(await extractDocumentText(rtf, 'image.rtf')).toEqual({ format: 'rtf', text: 'BeforeAfter café 日本' });
   });
 });
 
