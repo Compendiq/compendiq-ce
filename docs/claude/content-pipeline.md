@@ -20,7 +20,7 @@ their `colspan` (missing, 0 or non-numeric count as 1). `rowspan` is ignored:
 cells of the rows below shift left. A spanning cell wraps at its columns'
 combined width, with no border inside it. Grids wider than 14 columns print in
 bands of at most 14 equal columns (at least 35.38 pt, two glyphs wide), one
-below the other, each with its share of the header row; a later band holds
+below the other, each with its share of a fitting header row; a later band holds
 only the rows with a cell starting in it (a crossing cell repeats there), and
 a band in which no cell starts is skipped. Non-Latin font coverage is a
 separate limitation.
