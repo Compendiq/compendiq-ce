@@ -68,6 +68,14 @@ a fallback to the live attachment store. Authorize every source page before
 inspecting its files, and stream the same file descriptor that was verified.
 Only root-relative attachment route prefixes identify internal media; an
 external URL containing that route in its path, query or fragment is not local.
+A `#confluence-attachment:` link names the page's own attachment by its
+percent-encoded filename (#1748, `core/services/confluence-link.ts`); one whose
+parameters name another page or blog post as the attachment's container is not
+this page's media. A reference written before #1748 keeps its old decoding,
+unless it also parses as the #1748 grammar (a filename ending in a valid
+`?name=value` list): a new freeze reads that one by the grammar, as the
+write-back does, while rendering a baseline frozen before #1748 falls back to
+the old decoding when the grammar reading is not in its inventory.
 Install the protected-page trigger in migration 121, after `baseline_id` exists,
 so independently committed migration 120 does not break legacy writes.
 

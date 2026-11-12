@@ -9,6 +9,11 @@ import {
 } from './image-references.js';
 import { isConfluenceTaskId, MAX_CONFLUENCE_TASK_ID } from './confluence-task-id.js';
 import { logger } from '../utils/logger.js';
+import {
+  confluenceLinkAnchor,
+  confluenceLinkElement,
+  escapeConfluenceLinkAttributes,
+} from './confluence-link.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
 // NOT browser DOM. JSDOM is used purely as an HTML parser/transformer for
@@ -40,9 +45,9 @@ function stripCdata(xhtml: string): string {
 // namespaced elements that commonly appear in self-closing form and are NOT
 // meant to contain children (ri:user, ri:page, ri:attachment, ri:url,
 // ac:emoticon). This is narrow and surgical — it does not touch container
-// elements like ac:structured-macro, ac:rich-text-body, ac:link, etc.
+// elements like ac:structured-macro, ac:rich-text-body, etc.
 //
-// `ac:parameter` is the one entry that CAN legitimately hold children (the
+// `ac:parameter` CAN legitimately hold children (the
 // `<ac:parameter><ri:page/></ac:parameter>` that include / excerpt-include
 // use), and it is in the list anyway (#1222 review) because a *value-less*
 // parameter is empty, so an XML serializer may normalise it to `<ac:parameter
@@ -54,6 +59,11 @@ function stripCdata(xhtml: string): string {
 // never written self-closing, so the rewrite cannot reach it. Expanding the tag
 // is what lets the rest of this file treat "parameter" and "direct
 // ac:parameter child" as the same thing.
+//
+// `ac:link` (#1748) is the same case: a link to an anchor on the page may be
+// written body-less and self-closing, `<ac:link ac:anchor="x" />`, and
+// unexpanded it swallowed the text after it. A link with a resource or a body
+// has children and is never written self-closing.
 const SELF_CLOSING_XHTML_TAGS = [
   'ri:user',
   'ri:page',
@@ -61,6 +71,7 @@ const SELF_CLOSING_XHTML_TAGS = [
   'ri:url',
   'ac:emoticon',
   'ac:parameter',
+  'ac:link',
 ];
 
 function expandSelfClosingXhtmlTags(xhtml: string): string {
@@ -713,35 +724,24 @@ function confluenceToHtmlPass(
       continue;
     }
 
-    const pageRef = byTag(link, 'ri:page')[0];
-    const attachRef = byTag(link, 'ri:attachment')[0];
-    const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
+    // #1748: a page, attachment or anchor link becomes an <a> whose href
+    // carries the whole link (confluence-link.ts), since the editor keeps no
+    // data-* attribute of a link.
+    const replacement = confluenceLinkAnchor(link);
+    if (replacement) {
+      link.replaceWith(...replacement);
+      continue;
+    }
 
+    // Any other link — another resource (ri:blog-post, ri:space, ri:url, …),
+    // or a title, filename or anchor that is missing or no href can carry:
+    // its text only.
+    const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
     const a = doc.createElement('a');
-    if (pageRef) {
-      const pageTitle = pageRef.getAttribute('ri:content-title') ?? '';
-      a.href = `#confluence-page:${pageTitle}`;
-      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
-        transferInnerHtml(a, bodyEl);
-      } else {
-        a.textContent = bodyEl?.textContent ?? pageTitle;
-      }
-      a.setAttribute('data-confluence-link', 'page');
-    } else if (attachRef) {
-      const filename = attachRef.getAttribute('ri:filename') ?? '';
-      a.href = `#confluence-attachment:${filename}`;
-      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
-        transferInnerHtml(a, bodyEl);
-      } else {
-        a.textContent = bodyEl?.textContent ?? filename;
-      }
-      a.setAttribute('data-confluence-link', 'attachment');
+    if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
+      transferInnerHtml(a, bodyEl);
     } else {
-      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
-        transferInnerHtml(a, bodyEl);
-      } else {
-        a.textContent = bodyEl?.textContent ?? '';
-      }
+      a.textContent = bodyEl?.textContent ?? '';
     }
     link.replaceWith(a);
   }
@@ -1613,6 +1613,16 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     div.replaceWith(macro);
   }
 
+  // Convert Confluence links back to ac:link (#1748). The href carries the
+  // target, its attributes and when needed the body element
+  // (confluence-link.ts); the body's nodes move, so the image loop below still
+  // converts an image inside one. Runs after every loop that rebuilds a body
+  // by re-parsing, so it sees each link where it finally sits.
+  for (const a of doc.querySelectorAll('a[href^="#confluence-"]')) {
+    const acLink = confluenceLinkElement(a);
+    if (acLink) a.replaceWith(acLink);
+  }
+
   // Convert images with attachment references back
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
     const src = img.getAttribute('src') ?? '';
@@ -1663,6 +1673,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   }
 
   let result = doc.body.innerHTML;
+  // #1748: escape `<`, `>`, tab, LF and CR in ac:link / ri:* attribute values,
+  // before the void-element pass below can rewrite a `<br>` inside one.
+  result = escapeConfluenceLinkAttributes(result);
 
   // Post-process (#1750): write each emoticon self-closed, as Confluence
   // stores it, so an unchanged one goes back byte for byte. JSDOM escapes `"`,
@@ -1685,17 +1698,18 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   );
 
   // Post-process: wrap ac:plain-text-body content in CDATA sections.
-  // Confluence requires CDATA inside <ac:plain-text-body> for code macros.
+  // Confluence requires CDATA inside <ac:plain-text-body> for code macros,
+  // and writes a plain-text link body the same way (#1748).
   result = result.replace(
-    /<ac:plain-text-body>([\s\S]*?)<\/ac:plain-text-body>/g,
-    (_, content: string) => {
+    /<(ac:plain-text-body|ac:plain-text-link-body)>([\s\S]*?)<\/\1>/g,
+    (_, tag: string, content: string) => {
       // Unescape HTML entities back to raw text for CDATA
       const raw = he.decode(content);
       // #900: a literal ']]>' inside the content would prematurely close the
       // CDATA section, producing invalid XHTML. Split it across two adjacent
       // CDATA sections (the standard escape) so the terminator survives intact.
       const safe = raw.replace(/\]\]>/g, ']]]]><![CDATA[>');
-      return `<ac:plain-text-body><![CDATA[${safe}]]></ac:plain-text-body>`;
+      return `<${tag}><![CDATA[${safe}]]></${tag}>`;
     },
   );
 

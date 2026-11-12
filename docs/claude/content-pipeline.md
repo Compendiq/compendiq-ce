@@ -11,6 +11,23 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Confluence links live in the href (#1748).** The editor's Link mark keeps no
+`data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
+`#confluence-page:<title>`, `#confluence-attachment:<filename>` or
+`#confluence-anchor:<anchor>`, percent-encoded, then `?` and the link's other
+`ac:*` / `ri:*` attributes, and `htmlToConfluence` rebuilds the `ac:link` from
+that href alone. Parse and build it only through `core/services/confluence-link.ts`
+(the converter, `link-extractor.ts` and the baseline manifest do); keep reading
+the pre-#1748 shape, the title or filename as written, as the fallback to the
+encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is an image (a block node, so
+a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+excludes every other mark, so the Link mark leaves it; a fix changes the Code
+mark contract in both schemas), splits a link whose text mixes inline code with
+other text into two links around the code, and on a collaborative save splits a
+link around a line break (Yjs keeps marks on text only). Pinned by
+`content-converter.links.test.ts`.
+
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header

@@ -20,6 +20,7 @@ import { pagesCrudRoutes } from './pages-crud.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
 import { pagesConnectionRoutes } from './pages-connections.js';
 import { pagesEmbeddingRoutes } from './pages-embeddings.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = await isRedisAvailable();
@@ -266,6 +267,41 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     expect((await connections(1200)).linked).toEqual([]);
     await query('DELETE FROM pages WHERE id = 1201');
     expect((await connections(1200)).linked.map((item) => item.pageId)).toEqual(['1202']);
+  });
+
+  it('links through the Confluence link confluenceToHtml writes and one written before #1748, when only the target changes (#1748)', async () => {
+    // Both referrers are materialized before their targets exist, so each
+    // edge can only come from the incremental scan's LIKE patterns.
+    await seedPage({
+      id: 1250,
+      title: 'Referrer',
+      bodyHtml: confluenceToHtml(
+        '<p><ac:link ac:anchor="Upgrade"><ri:page ri:content-title="Q&amp;A: Runbook (OPS)" ri:space-key="OPS" /></ac:link></p>',
+      ),
+    });
+    await seedPage({ id: 1251, title: 'Legacy referrer', bodyHtml: '<a href="#confluence-page:Release Notes">notes</a>' });
+    expect((await connections(1250)).linked).toEqual([]);
+    expect((await connections(1251)).linked).toEqual([]);
+    await seedPage({ id: 1252, title: 'Q&A: Runbook (OPS)' });
+    await seedPage({ id: 1253, title: 'Release Notes' });
+    expect((await connections(1250)).linked.map((item) => item.pageId)).toEqual(['1252']);
+    expect((await connections(1251)).linked.map((item) => item.pageId)).toEqual(['1253']);
+  });
+
+  it('links both pages of a colliding pair (`A B`, `A%20B`) and a title holding LIKE wildcards, when only the targets change (#1748)', async () => {
+    await seedPage({
+      id: 1260,
+      title: 'Collision referrer',
+      bodyHtml: confluenceToHtml(
+        '<p><ac:link><ri:page ri:content-title="A B" /></ac:link> <ac:link><ri:page ri:content-title="A%20B" /></ac:link>'
+        + ' <ac:link><ri:page ri:content-title="100% done_now" /></ac:link></p>',
+      ),
+    });
+    expect((await connections(1260)).linked).toEqual([]);
+    await seedPage({ id: 1261, title: 'A B' });
+    await seedPage({ id: 1262, title: 'A%20B' });
+    await seedPage({ id: 1263, title: '100% done_now' });
+    expect((await connections(1260)).linked.map((item) => item.pageId).sort()).toEqual(['1261', '1262', '1263']);
   });
 
   it('never treats a synced parent internal id as an alternative Confluence key', async () => {

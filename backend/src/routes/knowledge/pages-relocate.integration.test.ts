@@ -46,6 +46,7 @@ import {
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import { encryptPat } from '../../core/utils/crypto.js';
 import { userHasGlobalPermission } from '../../core/services/rbac-service.js';
+import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { registerPageRelocateReconciler } from '../../domains/knowledge/services/page-relocate-service.js';
 
@@ -1050,6 +1051,38 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       // store rejects non-standalone pages), so they are removed.
       const localRows = await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [id]);
       expect(localRows.rowCount).toBe(0);
+    });
+
+    it('publishes the Confluence page and attachment links a body holds as ac:link elements (#1748)', async () => {
+      // A page moved to local keeps its Confluence links' hrefs; moving it
+      // back publishes them as links again, not as dead anchors.
+      const id = await createPage({
+        title: 'Links back',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+        bodyHtml: confluenceToHtml(
+          '<p><ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /></ac:link>'
+          + ' <ac:link ac:anchor="Q3"><ri:attachment ri:filename="report 2024.pdf" />'
+          + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link>'
+          + ' <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+          + '</ri:attachment></ac:link></p>',
+        ),
+      });
+      resolveCreatedPage('900004');
+
+      const res = await toConfluence(id);
+      expect(res.statusCode, res.body).toBe(200);
+
+      const storage = String(h.client.createPage.mock.calls[0]?.[2]);
+      expect(storage.match(/<ac:link\b[\s\S]*?<\/ac:link>/g)).toEqual([
+        '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page></ac:link>',
+        '<ac:link ac:anchor="Q3"><ri:attachment ri:filename="report 2024.pdf"></ri:attachment>'
+        + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link>',
+        '<ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
+        + '</ri:attachment></ac:link>',
+      ]);
+      expect((await getRow(id)).body_storage).toBe(storage);
     });
 
 
@@ -2097,6 +2130,42 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       expect(row.body_html).not.toContain('/api/attachments/700040/');
       expect(await storeBFiles(id)).toEqual(['spec.pdf']);
       expect(await storeAFiles('700040')).toEqual([]);
+    });
+
+    it('re-keys the image and leaves the Confluence attachment links as they are (#1748)', async () => {
+      // `#confluence-attachment:` hrefs never carry an attachment route
+      // prefix, so the move leaves both the page's own attachment link and
+      // the link to another page's attachment byte for byte.
+      const bodyHtml = confluenceToHtml(
+        '<p><ac:image><ri:attachment ri:filename="chart.png" /></ac:image>'
+        + '<ac:link ac:anchor="Q3"><ri:attachment ri:filename="report 2024.pdf" />'
+        + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link>'
+        + ' <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+        + '</ri:attachment></ac:link></p>',
+        '700042',
+      );
+      const ownLink = 'href="#confluence-attachment:report%202024.pdf?ac:anchor=Q3"';
+      const crossPageLink = 'href="#confluence-attachment:logo.png?page.ri:content-title=Shared%20Assets&amp;page.ri:space-key=ENG"';
+      expect(bodyHtml).toContain('src="/api/attachments/700042/chart.png"');
+      const id = await createPage({
+        title: 'Linked attachments',
+        source: 'confluence',
+        confluenceId: '700042',
+        spaceKey: 'CONF',
+        bodyHtml,
+      });
+      await writeStoreA('700042', 'chart.png', 'png-bytes');
+
+      const res = await toLocal(id, '700042');
+      expect(res.statusCode, res.body).toBe(200);
+
+      const row = await getRow(id);
+      expect(row.body_html).toContain(`src="/api/local-attachments/${id}/chart.png"`);
+      expect(row.body_html).not.toContain('/api/attachments/700042/');
+      expect(row.body_html).toContain(ownLink);
+      expect(row.body_html).toContain(crossPageLink);
+      expect(row.body_html!.replace(`/api/local-attachments/${id}/`, '/api/attachments/700042/')).toBe(bodyHtml);
+      expect(await storeBFiles(id)).toEqual(['chart.png']);
     });
 
     it('ignores a stray hidden file in the attachment cache (#1169)', async () => {

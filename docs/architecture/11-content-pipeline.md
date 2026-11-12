@@ -92,7 +92,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
-| `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); any other resource (`ri:blog-post`, `ri:space`, …) stays its text | `[text](href)` (the href is a valid link destination) |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
@@ -175,6 +175,67 @@ any change to the existing conflict policy.
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
+- **Confluence links keep their target (#1748).** TipTap's Link mark keeps
+  only `href`, `target`, `rel`, `class` and `title`, so the forward pass puts
+  the whole link in the href (`core/services/confluence-link.ts`):
+  `#confluence-page:<ri:content-title>`, `#confluence-attachment:<ri:filename>`
+  or `#confluence-anchor:<ac:anchor>` (a link to an anchor on the page), the
+  value UTF-8 percent-encoded down to `A-Z a-z 0-9 - . _ ~`, then `?` and
+  `name=value` pairs joined by `&`: every other `ac:*` attribute of the
+  `ac:link` (`ac:anchor`, `ac:card-appearance`, …), every other `ri:*`
+  attribute of the `ri:page` / `ri:attachment` (`ri:space-key`,
+  `ri:version-at-save`, …), the attachment's container as
+  `<element>.<attribute>` (`page.ri:space-key=ENG`), each in source order, and
+  `body=plain|rich` when the text alone would not tell the body element. The
+  resource is the link's first direct `ri:*` child, so the `ri:page` inside an
+  `ri:attachment` is the attachment's owner (it used to turn the link into a
+  link to that page). The text is the link body, or with no body the title,
+  filename or anchor Confluence shows. `htmlToConfluence` rebuilds the
+  `ac:link` from the href alone, after every loop that re-parses a body: the
+  title or filename first, then the carried attributes; markup in the link is
+  an `ac:link-body` (its nodes move, so images inside are still converted),
+  text an `ac:plain-text-link-body` in CDATA, and no body when the text is
+  what Confluence shows without one. Anything else inside an `ac:link`
+  (whitespace, a stray element) is dropped with it, as before; an anchor link
+  without a body is the exception, since its content can only be what an
+  unexpanded self-closing tag swallowed, and that moves back out. A carried
+  name is an ASCII QName in the element's namespace with a local part of at
+  most 64 characters (`xmlns` never is one), a value at most 1,024 characters
+  that XML can hold, and an attachment's container element name (`page`,
+  `blog-post`) at most 32 characters; at most 16 attributes are carried per
+  element and an href is at most 16,384 characters. An attribute in the
+  namespace that cannot be carried, or a container whose name is longer, is
+  logged (`Confluence link attributes not carried (#1748)`, names only), never
+  dropped silently. `<`, `>`, tab, LF and CR in `ac:link` /
+  `ri:*` attribute values are written as character references, and the HTML
+  entity `&nbsp;` as `&#160;`. An href that breaks the grammar's rules stays
+  the `<a>` it is. An href written before #1748
+  (`#confluence-page:<title as written>`) still converts, as a link by title
+  alone — its space, anchor and other attributes were never stored. An older
+  href that also parses as the grammar (its title made only of unreserved
+  characters and `%XX`, or ending in a valid `?name=value` list such as
+  `?body=plain`) is read as the grammar, because every href written since
+  #1748 is encoded: the write-back and `link-extractor.ts` both take the
+  decoded title first, the extractor falling back to the title as written.
+  With two titles that differ only by an escape sequence (`A B`, `A%20B`)
+  that is an accepted trade-off both ways: an older link to `A%20B` resolves
+  to `A B` when that page exists, and a new link to `A B` (href
+  `#confluence-page:A%20B`) resolves to `A%20B` when no page `A B` exists here
+  (it lives in a space that is not synced, say). The incremental `LIKE` scan
+  has a pattern for each shape, the encoded one escaped for `%` and `_`. A
+  self-closing anchor link (`<ac:link ac:anchor="x" />`) is expanded like
+  `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
+  out. Clicking these links in Compendiq does not navigate (non-goal).
+  Deferred, unchanged since before #1748 (the converters and Improve keep all
+  of these but the mention): in the editor, a link whose body is an image or
+  inline code is lost — the image is a block node, and StarterKit's Code mark
+  excludes every other mark — and a link whose text mixes inline code with
+  other text is split into two links around the code; on a collaborative
+  save, a line break, mention, status or emoticon inside a link is left out of
+  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
+  replacing the whole outer link, text included, with the mention (#314);
+  Confluence never writes that nesting.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
@@ -1338,8 +1399,8 @@ are *marked* for publish (`data-confluence-filename`), because only
 `img[src^="/api/attachments/"]` becomes an `ri:attachment`; an anchor's href
 therefore reaches Confluence as a raw internal URL, which is imperfect and
 pre-dates #1164. Confluence's own attachment links arrive as
-`<a href="#confluence-attachment:…">` and never match the prefix, so they are
-left alone.
+`<a href="#confluence-attachment:…">` (since #1748 a percent-encoded filename,
+then `?` attributes) and never match the prefix, so they are left alone.
 
 Hidden entries in a Store A directory are skipped rather than migrated (#1169).
 No write path in either store can create one, so a dot-named file is always
