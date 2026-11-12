@@ -527,6 +527,14 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
   ctx.y -= PARAGRAPH_SPACING;
 }
 
+/**
+ * The narrowest a table column may be (#1731): two em of text plus the cell
+ * padding. CONTENT_WIDTH holds 14 such columns — 35.38 pt, a 23.38 pt text box
+ * that fits any two Latin-1 glyphs (the widest, Helvetica `@`, is 11.17 pt) —
+ * so no word breaks one glyph per line; a wider grid prints in bands.
+ */
+const TABLE_MIN_COLUMN_WIDTH = 2 * FONT_SIZE_BODY + 2 * TABLE_CELL_PADDING;
+
 /** A cell on a table's logical grid: it covers columns [start, start + span). */
 interface GridCell { start: number; span: number; text: string }
 
@@ -546,9 +554,48 @@ function renderTable(ctx: RenderContext, el: Element): void {
   const rows = Array.from((el as HTMLTableElement).rows);
   if (rows.length === 0) return;
   const { grid, width } = tableGrid(rows);
-  const colWidth = CONTENT_WIDTH / width;
-  const band = grid.map((row) => sliceRow(ctx, row, 0, 0, width, colWidth));
-  renderTableBand(ctx, band, grid[0]!.isHeader ? band[0] : undefined, colWidth, width * colWidth);
+
+  // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
+  // a grid of more than 14 columns prints as bands of whole columns, one below
+  // the other, all at the same column width.
+  const perBand = Math.ceil(width / Math.ceil(width / Math.floor(CONTENT_WIDTH / TABLE_MIN_COLUMN_WIDTH)));
+  const colWidth = CONTENT_WIDTH / perBand;
+  // The first band holds every row; a later band only the rows with a cell
+  // starting in it, and the header row where one of its cells reaches. Every
+  // cell prints in the band it starts in, so the work grows with the cells,
+  // not with bands × rows; a band in which no cell starts is skipped.
+  const startingRows = new Map<number, number[]>();
+  grid.forEach((row, r) => {
+    for (const cell of row.cells) {
+      const band = Math.floor(cell.start / perBand);
+      const rowsHere = startingRows.get(band);
+      if (!rowsHere) startingRows.set(band, [r]);
+      else if (rowsHere.at(-1) !== r) rowsHere.push(r);
+    }
+  });
+  const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
+  for (let from = 0; from < width; from += perBand) {
+    const starting = startingRows.get(from / perBand) ?? [];
+    if (from > 0 && starting.length === 0) continue;
+    const to = Math.min(from + perBand, width);
+    const candidates = from === 0 ? grid.keys() : new Set(grid[0]!.isHeader ? [0, ...starting] : starting);
+    const band: BandRow[] = [];
+    let header: BandRow | undefined;
+    for (const r of candidates) {
+      const row = grid[r]!;
+      let i = next[r]!;
+      while (i < row.cells.length && row.cells[i]!.start < from) i++;
+      next[r] = i;
+      // The first cell reaching into the band: one carried over its left edge, or the next to start.
+      const first = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? i - 1 : i;
+      // A header row that ends before this band has no share in it.
+      if (from > 0 && (row.cells[first]?.start ?? to) >= to) continue;
+      const slice = sliceRow(ctx, row, first, from, to, colWidth);
+      if (r === 0 && row.isHeader) header = slice;
+      band.push(slice);
+    }
+    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
+  }
 }
 
 /**

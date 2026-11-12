@@ -313,6 +313,136 @@ describe('pdf-service (pdf-lib)', () => {
       expect(text.match(/N1|N2/g)).toEqual(['N1', 'N2']);
       expect(at(runs.filter((run) => run.str === 'RIGHT'))).toEqual([['RIGHT', 303.64]]);
     });
+
+    describe('narrow columns', () => {
+      // A column is never narrower than 495.28 / 14 = 35.38 pt: its 23.38 pt text box fits any two
+      // Latin-1 glyphs, so a word broken to fit its box (#1730) never ends up one glyph per line.
+      // Wider grids print in bands of at most 14 columns, one below the other.
+      it('keeps 14 columns in one band and prints 15 as two bands of 8 and 7', async () => {
+        const [fourteen, fifteen] = await Promise.all([14, 15].map((n) => tableLayout(
+          `<table><tr>${Array.from({ length: n }, (_, c) => `<td>k${c}</td>`).join('')}</tr></table>`,
+        )));
+        expect(fourteen!.runs.map((run) => +run.y.toFixed(2))).toEqual(Array(14).fill(760.89));
+        expect(fourteen!.runs.at(-1)!.x).toBeCloseTo(LEFT + 13 * (WIDTH / 14) + PAD);
+        expect(fifteen!.runs.map((run) => run.str)).toEqual(Array.from({ length: 15 }, (_, c) => `k${c}`));
+        expect(new Set(fifteen!.runs.map((run) => +run.y.toFixed(2))).size).toBe(2);
+        expect(fifteen!.runs.map((run) => +((run.x - LEFT - PAD) / (WIDTH / 8)).toFixed(2))).toEqual(
+          [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6],
+        );
+      });
+
+      it('prints a table wider than 14 columns in bands, every cell whole and inside its column', async () => {
+        const head = Array.from({ length: 40 }, (_, c) => `c${c + 1}`);
+        const body = Array.from({ length: 40 }, (_, c) => `v${c + 1}`);
+        const { text, runs, verticals, horizontals } = await tableLayout(`<table>
+          <tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr>
+          <tr>${body.map((v) => `<td>${v}</td>`).join('')}</tr></table>`);
+        // 40 columns → 3 bands of 14, 14 and 12 columns, each 495.28 / 14 = 35.38 pt wide.
+        const expected = [[0, 14], [14, 28], [28, 40]].flatMap(([from, to]) => [...head.slice(from, to), ...body.slice(from, to)]);
+        expect(runs.map((run) => run.str)).toEqual(expected);
+        expect(text).toBe(expected.join(''));
+        for (const run of runs) {
+          const left = LEFT + ((Number(run.str.slice(1)) - 1) % 14) * (WIDTH / 14);
+          expect(run.x, run.str).toBeCloseTo(left + PAD);
+          expect(run.x + run.width, run.str).toBeLessThanOrEqual(left + WIDTH / 14 - PAD + EPS);
+        }
+        expectNoBorderThrough(runs, verticals);
+        // The third band is 12 columns wide: its top and bottom borders stop at its right edge.
+        expect([...new Set(horizontals.map((rule) => +rule.right.toFixed(2)))].sort((a, b) => a - b)).toEqual([474.53, 545.28]);
+      });
+
+      it('prints a header that spans a band edge in each band, with no border inside it', async () => {
+        const months = Array.from({ length: 20 }, (_, m) => `m${m + 1}`);
+        const { runs, verticals } = await tableLayout(`<table>
+          <tr><th colspan="20">Quarterly figures</th></tr>
+          <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
+        // 20 columns → 2 bands of 10, each 49.53 pt wide.
+        expect(runs.map((run) => run.str)).toEqual(
+          ['Quarterly figures', ...months.slice(0, 10), 'Quarterly figures', ...months.slice(10)],
+        );
+        for (const run of runs.filter((run) => run.str === 'Quarterly figures')) {
+          expect(bordersAt(verticals, run)).toEqual([50, 545.28]);
+        }
+      });
+
+      it('wraps a cell that crosses a band edge mid-band at its width in each band', async () => {
+        // 20 columns of 49.53 pt. B covers columns 5-16: five in the first band (a 235.64 pt text box),
+        // seven in the second (334.70 pt), so it wraps in the first and not in the second.
+        const b = 'Spans twelve columns, from the sixth to the seventeenth';
+        const months = Array.from({ length: 20 }, (_, m) => `m${m + 1}`);
+        const { text, runs, verticals } = await tableLayout(`<table>
+          <tr><th colspan="5">A</th><th colspan="12">${b}</th><th colspan="3">C</th></tr>
+          <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
+        expect(text).toBe(['A', b, ...months.slice(0, 10), b, 'C', ...months.slice(10)].join('').replace(/\s+/g, ''));
+        const header = runs.filter((run) => !/^m\d+$/.test(run.str));
+        expect(at(header)).toEqual([
+          ['A', 56], ['Spans twelve columns, from the sixth to the', 303.64], ['seventeenth', 303.64],
+          [b, 56], ['C', 402.7],
+        ]);
+        expect(header[1]!.x + header[1]!.width).toBeLessThanOrEqual(LEFT + 10 * (WIDTH / 10) - PAD + EPS);
+        expect(header[3]!.x + header[3]!.width).toBeLessThanOrEqual(LEFT + 7 * (WIDTH / 10) - PAD + EPS);
+        expect(bordersAt(verticals, header[1]!)).toEqual([50, 297.64, 545.28]);
+        expect(bordersAt(verticals, header[3]!)).toEqual([50, 396.7, 545.28]);
+      });
+
+      it('finds a row\'s later cells again after a band in which nothing starts', async () => {
+        // 42 columns → 3 bands of 14 (35.38 pt). No cell starts in the middle band, so it is skipped;
+        // the third band holds Tail and z, each row with the cell it carries over from the first band.
+        const { runs, verticals, shades } = await tableLayout(`<table>
+          <tr><th colspan="30">Group</th><th colspan="12">Tail</th></tr>
+          <tr><td>a</td><td colspan="40">wide</td><td>z</td></tr></table>`);
+        expect(at(runs)).toEqual([
+          ['Group', 56], ['a', 56], ['wide', 91.38],
+          ['Group', 56], ['Tail', 126.75], ['wide', 56], ['z', 515.9],
+        ]);
+        expect(shades).toBe(2);
+        expect(bordersAt(verticals, runs.at(-1)!)).toEqual([50, 509.9, 545.28]);
+      });
+
+      it('prints only bands in which a cell starts, so colspan="1000" adds no empty bands', async () => {
+        const { runs, pages } = await tableLayout(
+          '<table><tr><th colspan="1000">Title</th></tr><tr><td>a</td><td>b</td></tr></table>',
+        );
+        // 1000 columns → 72 bands of 14; only the first holds the start of a cell.
+        expect(runs.map((run) => run.str)).toEqual(['Title', 'a', 'b']);
+        expect(pages).toBe(1);
+      });
+
+      it('prints a later band\'s rows only where a cell starts, so a 280-column header over 100 short rows stays on 6 pages', async () => {
+        // 20 bands of 14: the header prints its share in each; the one-cell rows only in the first.
+        // Printing every row in every band took 78 pages.
+        const { runs, pages } = await tableLayout(`<table>
+          <tr>${Array.from({ length: 280 }, (_, c) => `<th>${c}</th>`).join('')}</tr>
+          ${Array.from({ length: 100 }, (_, r) => `<tr><td>r${r}</td></tr>`).join('')}</table>`);
+        expect(pages).toBeLessThanOrEqual(6);
+        const labels = runs.filter((run) => /^\d+$/.test(run.str));
+        expect(new Set(labels.map((run) => run.str)).size).toBe(280);
+        for (const run of labels) expect(run.x, run.str).toBeCloseTo(LEFT + (Number(run.str) % 14) * (WIDTH / 14) + PAD);
+        expect(runs.filter((run) => /^r\d+$/.test(run.str))).toHaveLength(100);
+      });
+
+      it('leaves the header row out of the bands it does not reach', async () => {
+        const months = Array.from({ length: 20 }, (_, m) => `m${m + 1}`);
+        const { runs, shades } = await tableLayout(`<table>
+          <tr><th>H1</th><th>H2</th></tr>
+          <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
+        expect(runs.map((run) => run.str)).toEqual(['H1', 'H2', ...months]);
+        // One shaded header row: the second band starts with the body row, not an empty header.
+        expect(shades).toBe(1);
+      });
+
+      it('keeps a 40-column table of 32-character ids to 20 pages', async () => {
+        // With #1730's hard break, ids in 40 equal 12.38 pt columns stacked one character per line,
+        // one row per page (40 pages); in 35.38 pt band columns they wrap 3-5 characters per line.
+        const ids = Array.from({ length: 40 }, (_, r) => (r * 2654435761 >>> 0).toString(16).padStart(8, '0').repeat(4));
+        const head = `<tr>${Array.from({ length: 40 }, (_, c) => `<th>c${c}</th>`).join('')}</tr>`;
+        const body = ids.map((id) => `<tr><td>${id}</td>${'<td>ok</td>'.repeat(39)}</tr>`).join('');
+        const { text, runs, pages } = await tableLayout(`<table>${head}${body}</table>`);
+        expect(pages).toBeLessThanOrEqual(20);
+        for (const id of ids) expect(text).toContain(id);
+        expect(runs.filter((run) => run.str === 'ok')).toHaveLength(40 * 39);
+      });
+    });
   });
 
   // ========================================================================
