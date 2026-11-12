@@ -476,6 +476,17 @@ describe('pdf-service (pdf-lib)', () => {
         }
       });
 
+      it('prints a header cell too tall to repeat once, even where the next header cell starts in its last band', async () => {
+        // 21 columns → bands of 11 and 10. The long cell's last piece shares the second band with `tail`:
+        // the header row prints there for `tail`, and the long cell's piece stays blank.
+        const words = Array.from({ length: 1000 }, (_, w) => `w${w}`).join(' ');
+        const { text, runs } = await tableLayout(`<table>
+          <tr><th colspan="20">${words} HEADEREND</th><th>tail</th></tr>
+          <tr>${Array.from({ length: 21 }, (_, c) => `<td>d${c}</td>`).join('')}</tr></table>`);
+        expect(text.match(/HEADEREND|tail/g)).toEqual(['HEADEREND', 'tail']);
+        expect(runs.filter((run) => /^d\d+$/.test(run.str))).toHaveLength(21);
+      });
+
       it('drops each too-tall header share on its own and still prints a later fitting one', async () => {
         // 70 columns → 5 bands of 14. The long cell covers bands 1-3: its shares in bands 2 and 3 are too
         // tall and dropped, with no header row left there. `Second group` starts in band 4 and fits, so it

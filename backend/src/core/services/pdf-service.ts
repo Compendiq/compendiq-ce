@@ -562,8 +562,8 @@ function renderTable(ctx: RenderContext, el: Element): void {
   const colWidth = CONTENT_WIDTH / perBand;
   // The first band holds every row; a later band only the rows with a cell
   // starting in it, and the header row's share of it: the header cells that
-  // reach into the band, printed only if that share could repeat on a
-  // continuation page (repeatsAsHeader). Every cell prints in the band it
+  // reach into the band, each printed again only if its piece could repeat on
+  // a continuation page (repeatsAsHeader). Every cell prints in the band it
   // starts in, so the work grows with the cells, not with bands × rows; a band
   // in which no cell starts is skipped.
   const startingRows = new Map<number, number[]>();
@@ -576,8 +576,9 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
-  // A header cell whose share was too tall to repeat: later shares of it are
-  // no wider (full bands, then its last piece), so they are dropped unwrapped.
+  // Header cells too tall to repeat print once, in the band they start in. A
+  // cell's later pieces are no wider (full bands, then its last piece), and
+  // wrapText gives a narrower width no fewer lines, so one check per cell holds.
   const tooTall = new Set<GridCell>();
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
@@ -591,16 +592,17 @@ function renderTable(ctx: RenderContext, el: Element): void {
       let i = next[r]!;
       while (i < row.cells.length && row.cells[i]!.start < from) i++;
       next[r] = i;
-      const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from;
+      const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? row.cells[i - 1] : undefined;
       const startsHere = i < row.cells.length && row.cells[i]!.start < to;
-      // A later band's header share: none of the header's cells starts here.
-      const share = from > 0 && !startsHere;
-      if (share && (!carried || tooTall.has(row.cells[i - 1]!))) continue;
-      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth);
-      if (share && !repeatsAsHeader(slice)) {
-        tooTall.add(row.cells[i - 1]!);
-        continue;
+      if (from > 0 && r === 0 && row.isHeader && carried && !tooTall.has(carried)) {
+        const piece = sliceRow(ctx, row, i - 1, from, Math.min(carried.start + carried.span, to), colWidth);
+        if (!repeatsAsHeader(piece)) tooTall.add(carried);
       }
+      // Only header cells are ever too tall: their piece here stays blank, and
+      // with no header cell starting here the header row has nothing to show.
+      const blank = carried !== undefined && tooTall.has(carried);
+      if (from > 0 && !startsHere && (!carried || blank)) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, blank);
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
@@ -633,10 +635,13 @@ function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: numbe
 /**
  * A row's slice of columns [from, to): each cell from `first` on that reaches
  * into them, clipped to the band and wrapped at its clipped width (a cell that
- * crosses a band edge prints its text in each band its row prints in), then an
- * empty column for each column past the row's last cell.
+ * crosses a band edge prints its text in each band its row prints in, unless
+ * `blankFirst` leaves that first piece empty), then an empty column for each
+ * column past the row's last cell.
  */
-function sliceRow(ctx: RenderContext, row: GridRow, first: number, from: number, to: number, colWidth: number): BandRow {
+function sliceRow(
+  ctx: RenderContext, row: GridRow, first: number, from: number, to: number, colWidth: number, blankFirst = false,
+): BandRow {
   const font = row.isHeader ? ctx.fontBold : ctx.font;
   const pieces: BandRow['pieces'] = [];
   let column = from;
@@ -644,7 +649,8 @@ function sliceRow(ctx: RenderContext, row: GridRow, first: number, from: number,
     const cell = row.cells[i]!;
     const end = Math.min(cell.start + cell.span, to);
     const width = (end - column) * colWidth - 2 * TABLE_CELL_PADDING;
-    pieces.push({ column: column - from, lines: wrapText(cell.text, font, FONT_SIZE_BODY, width) });
+    const lines = i === first && blankFirst ? [] : wrapText(cell.text, font, FONT_SIZE_BODY, width);
+    pieces.push({ column: column - from, lines });
     column = end;
   }
   for (; column < to; column++) pieces.push({ column: column - from, lines: [] });
