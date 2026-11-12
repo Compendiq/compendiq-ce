@@ -26,6 +26,12 @@ const FONT_SIZE_CODE = 9.5;
 const FONT_SIZE_SMALL = 9;
 const FONT_SIZE_FOOTER = 8;
 
+// ── Code blocks (#1730) ────────────────────────────────────────────
+// Code text starts inside the shaded box and must end inside it too:
+// 475.28 pt is 83 Courier cells at FONT_SIZE_CODE (0.6 em = 5.7 pt each).
+const CODE_TEXT_X = MARGIN_LEFT + CODE_PADDING;
+const CODE_TEXT_WIDTH = CONTENT_WIDTH - 2 * CODE_PADDING;
+
 // ── Colors ─────────────────────────────────────────────────────────
 const COLOR_TEXT = rgb(0.1, 0.1, 0.1);
 const COLOR_HEADING = rgb(0.05, 0.05, 0.15);
@@ -378,25 +384,25 @@ function renderTextBlock(
 
 function renderCodeBlock(ctx: RenderContext, code: string): void {
   if (!code) return;
-  const lines = code.split('\n');
+  // A source line wider than the code box continues flush left on the next
+  // row (#1730); every row, continuation or not, is positioned like a line.
+  const rows = code.split('\n').flatMap((line) =>
+    breakToWidth(sanitizeForStandardFont(line), ctx.fontMono, FONT_SIZE_CODE, CODE_TEXT_WIDTH),
+  );
   const lineHeight = FONT_SIZE_CODE + 4;
 
-  ensureSpace(ctx, Math.min(lines.length * lineHeight + CODE_PADDING * 2, 200));
+  ensureSpace(ctx, Math.min(rows.length * lineHeight + CODE_PADDING * 2, 200));
   ctx.y -= 4;
 
-  // Collect line positions first, then draw backgrounds, then text.
+  // Collect row positions first, then draw backgrounds, then text.
   // This handles page breaks correctly: background per page segment, text on top.
   interface CodeLine { page: PDFPage; y: number; text: string }
   const rendered: CodeLine[] = [];
 
   // Pass 1: calculate positions (may trigger page breaks)
-  for (let i = 0; i < lines.length; i++) {
+  for (const text of rows) {
     ensureSpace(ctx, lineHeight + CODE_PADDING);
-    rendered.push({
-      page: ctx.page,
-      y: ctx.y,
-      text: sanitizeForStandardFont(lines[i]!.substring(0, 120)),
-    });
+    rendered.push({ page: ctx.page, y: ctx.y, text });
     ctx.y -= lineHeight;
   }
 
@@ -417,7 +423,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   for (const line of rendered) {
     if (line.text) {
       line.page.drawText(line.text, {
-        x: MARGIN_LEFT + CODE_PADDING,
+        x: CODE_TEXT_X,
         y: line.y,
         size: FONT_SIZE_CODE,
         font: ctx.fontMono,
@@ -731,4 +737,63 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
   }
 
   return lines.length > 0 ? lines : [''];
+}
+
+/**
+ * Advance widths in font units (per mille of the font size), per font and
+ * code point. Keyed by the embedded font, so each export's cache goes with
+ * its document; sanitized text needs at most 191 entries per font.
+ */
+const glyphAdvances = new WeakMap<PDFFont, Map<string, number>>();
+
+/**
+ * The width pdf-lib draws `text` at. `drawText` shows text with `Tj`, which
+ * applies no kerning, so this sums each code point's advance —
+ * `widthOfTextAtSize(text)` adds AFM kerning pairs and mismeasures drawn
+ * Helvetica. Code rows are measured through here (#1730), so a font fallback
+ * (#1729) changes measurement in one place. One map lookup per code point;
+ * throws, like pdf-lib, on a code point the font cannot encode.
+ */
+function measureText(text: string, font: PDFFont, fontSize: number): number {
+  let advances = glyphAdvances.get(font);
+  if (!advances) {
+    advances = new Map();
+    glyphAdvances.set(font, advances);
+  }
+  let units = 0;
+  for (const char of text) {
+    let advance = advances.get(char);
+    if (advance === undefined) {
+      advance = font.widthOfTextAtSize(char, 1000);
+      advances.set(char, advance);
+    }
+    units += advance;
+  }
+  return units * (fontSize / 1000);
+}
+
+/**
+ * Splits `text` between code points into consecutive slices, each at most
+ * `maxWidth` wide; joining them gives back `text`, and `''` yields `['']`.
+ * A code point wider than `maxWidth` still gets a slice of its own, so a
+ * `maxWidth` of zero or less yields one code point per slice. One pass, and
+ * nothing is re-measured or rebuilt character by character.
+ */
+function breakToWidth(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+  let end = 0;
+  let width = 0;
+  for (const char of text) {
+    const charWidth = measureText(char, font, fontSize);
+    if (end > start && width + charWidth > maxWidth) {
+      pieces.push(text.slice(start, end));
+      start = end;
+      width = 0;
+    }
+    width += charWidth;
+    end += char.length;
+  }
+  pieces.push(text.slice(start));
+  return pieces;
 }

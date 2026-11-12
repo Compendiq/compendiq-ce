@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getDocumentProxy, extractText } from 'unpdf';
+import { getDocumentProxy, extractText, getResolvedPDFJS } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
 
 describe('pdf-service (pdf-lib)', () => {
@@ -184,6 +184,156 @@ describe('pdf-service (pdf-lib)', () => {
       );
       expect(text).toContain('Release notes');
       expect(text).not.toContain('Click here to expand');
+    });
+  });
+
+  // ========================================================================
+  // #1730 — long lines stay inside the printable width
+  // ========================================================================
+  //
+  // Code lines were cut at 120 characters and even the kept part ran off the
+  // page: pdf.js extracted 94 of 150 `x` and no SENTINEL_END. These assert
+  // the drawn text AND where it is drawn — every code run inside the 475.28 pt
+  // code box and inside a code background on its own page — because text
+  // that survives extraction can still sit outside the shaded block.
+  describe('long lines (#1730)', () => {
+    // Geometry the renderer uses (pdf-service.ts constants).
+    const CODE_X = 60; // CODE_TEXT_X = MARGIN_LEFT + CODE_PADDING
+    const CODE_RIGHT = 535.28; // CODE_TEXT_X + CODE_TEXT_WIDTH = PAGE_WIDTH - MARGIN_RIGHT - CODE_PADDING
+    const CODE_ROW = 13.5; // FONT_SIZE_CODE + 4
+    const CELL = 5.7; // one Courier cell at 9.5 pt (0.6 em)
+    const CODE_BG = '#f0f2f5'; // COLOR_CODE_BG rgb(0.94, 0.95, 0.96), as pdf.js reports the fill
+    const EPS = 0.01;
+
+    interface Drawn { page: number; str: string; x: number; y: number; width: number; height: number }
+    interface Box { page: number; x: number; y: number; width: number; height: number }
+
+    /** Visible text runs (page footers excluded) and code-background rectangles; `text` has no whitespace. */
+    async function layout(html: string): Promise<{ text: string; items: Drawn[]; backgrounds: Box[] }> {
+      const pdf = await getDocumentProxy(new Uint8Array(await generatePdf(html, {})));
+      const { OPS } = await getResolvedPDFJS();
+      const items: Drawn[] = [];
+      const backgrounds: Box[] = [];
+      for (let n = 1; n <= pdf.numPages; n++) {
+        const page = await pdf.getPage(n);
+        for (const item of (await page.getTextContent()).items) {
+          if (!('str' in item) || !item.str.trim() || /^Page \d+ of \d+$/.test(item.str)) continue;
+          const [, , , , x, y] = item.transform as number[];
+          items.push({ page: n, str: item.str, x: x!, y: y!, width: item.width, height: item.height });
+        }
+        // pdf-lib fills a rectangle as: q, rg, cm (translate), path, f, Q.
+        const { fnArray, argsArray } = await page.getOperatorList();
+        const saved: Array<[number, number, string]> = [];
+        let [tx, ty, fill] = [0, 0, ''];
+        fnArray.forEach((fn, i) => {
+          const args = argsArray[i];
+          if (fn === OPS.save) saved.push([tx, ty, fill]);
+          else if (fn === OPS.restore) [tx, ty, fill] = saved.pop()!;
+          else if (fn === OPS.setFillRGBColor) fill = args[0];
+          else if (fn === OPS.transform) {
+            expect(args.slice(0, 4)).toEqual([1, 0, 0, 1]); // translations only
+            tx += args[4];
+            ty += args[5];
+          } else if (fn === OPS.constructPath && fill === CODE_BG) {
+            const [minX, minY, maxX, maxY] = args[2] as number[];
+            backgrounds.push({ page: n, x: tx + minX!, y: ty + minY!, width: maxX! - minX!, height: maxY! - minY! });
+          }
+        });
+      }
+      const { text } = await extractText(pdf, { mergePages: true });
+      return { text: (text as string).replace(/\s+/g, ''), items, backgrounds };
+    }
+
+    /** Each run fits the printable code width and lies inside a code background on its own page. */
+    function expectInsideCodeBox(items: Drawn[], backgrounds: Box[]): void {
+      for (const item of items) {
+        const where = `${item.str.slice(0, 16)}… on page ${item.page} at y=${item.y}`;
+        expect(item.x, where).toBeGreaterThanOrEqual(CODE_X - EPS);
+        expect(item.x + item.width, where).toBeLessThanOrEqual(CODE_RIGHT + EPS);
+        expect(item.y, where).toBeGreaterThanOrEqual(60);
+        expect(item.y + item.height, where).toBeLessThanOrEqual(841.89 - 50);
+        const inside = backgrounds.some((bg) => bg.page === item.page
+          && bg.x <= item.x && item.x + item.width <= bg.x + bg.width
+          && bg.y <= item.y && item.y + item.height <= bg.y + bg.height);
+        expect(inside, `${where} has no code background`).toBe(true);
+      }
+    }
+
+    /** Where each run starts, in Courier cells from the code box's left edge. */
+    const cells = (items: Drawn[]): number[] => items.map((item) => +((item.x - CODE_X) / CELL).toFixed(2));
+
+    describe('code blocks', () => {
+      const issueLine = `${'x'.repeat(150)}SENTINEL_END`;
+
+      it('keeps all 150 x and SENTINEL_END inside the code box', async () => {
+        const { text, items, backgrounds } = await layout(`<pre>${issueLine}</pre>`);
+        expect(text.match(/x/g)).toHaveLength(150);
+        expect(text).toContain(issueLine);
+        expectInsideCodeBox(items, backgrounds);
+      });
+
+      it('continues a long line flush left after 83 Courier cells, with no marker', async () => {
+        // 475.28 pt / 5.7 pt = 83 whole cells per row.
+        const { items } = await layout(`<pre>${issueLine}</pre>`);
+        expect(items.map((item) => item.str)).toEqual(['x'.repeat(83), `${'x'.repeat(67)}SENTINEL_END`]);
+        expect(cells(items)).toEqual([0, 0]);
+        expect(items[0]!.y - items[1]!.y).toBeCloseTo(CODE_ROW);
+      });
+
+      it('breaks only past 83 cells and never adds an empty row', async () => {
+        const { items } = await layout(`<pre>${'a'.repeat(83)}\n${'b'.repeat(84)}\n${'c'.repeat(166)}</pre>`);
+        expect(items.map((item) => item.str)).toEqual(
+          ['a'.repeat(83), 'b'.repeat(83), 'b', 'c'.repeat(83), 'c'.repeat(83)],
+        );
+        const top = items[0]!.y;
+        expect(items.map((item) => +((top - item.y) / CODE_ROW).toFixed(2))).toEqual([0, 1, 2, 3, 4]);
+      });
+
+      it('gives every wrapped row its own background entry across a page break', async () => {
+        // 40 lines of 200 characters, three rows each (83 + 83 + 34); 52 rows fit on page 1.
+        const lines = Array.from({ length: 40 }, (_, i) => {
+          const tag = String(i).padStart(2, '0');
+          return `L${tag}${'0123456789'.repeat(19)}abcdE${tag}`;
+        });
+        const { items, backgrounds } = await layout(`<pre>${lines.join('\n')}</pre>`);
+        expect(items.map((item) => item.str)).toEqual(
+          lines.flatMap((line) => [line.slice(0, 83), line.slice(83, 166), line.slice(166)]),
+        );
+        expectInsideCodeBox(items, backgrounds);
+        // The fixture does cross a page: some line starts on one page and ends on the next.
+        expect(lines.some((_, i) => items[3 * i]!.page !== items[3 * i + 2]!.page)).toBe(true);
+      });
+
+      it('keeps an empty line between wrapped rows as one blank row', async () => {
+        const { items, backgrounds } = await layout(`<pre>FIRST\n\n${'y'.repeat(100)}\n\nLAST</pre>`);
+        expect(items.map((item) => item.str)).toEqual(['FIRST', 'y'.repeat(83), 'y'.repeat(17), 'LAST']);
+        const top = items[0]!.y;
+        expect(items.map((item) => +((top - item.y) / CODE_ROW).toFixed(2))).toEqual([0, 2, 3, 5]);
+        expect(backgrounds).toHaveLength(1);
+        expectInsideCodeBox(items, backgrounds);
+      });
+
+      it('expands a tab to four spaces before measuring where to wrap', async () => {
+        const { items, backgrounds } = await layout(`<pre>start\n\t${'w'.repeat(80)}TAIL\na\tb</pre>`);
+        // '    ' + 79 w fill the 83 cells; pdf.js reports a run from its first visible glyph.
+        expect(items.map((item) => item.str)).toEqual(['start', 'w'.repeat(79), 'wTAIL', 'a', 'b']);
+        expect(cells(items)).toEqual([0, 4, 0, 0, 5]);
+        expectInsideCodeBox(items, backgrounds);
+      });
+
+      it('splits whitespace at a row break verbatim, even inside a tab\'s expansion', async () => {
+        // The tab's four spaces sit in cells 81-84: two end row 1, two open row 2.
+        const { items, backgrounds } = await layout(`<pre>${'w'.repeat(81)}\tz</pre>`);
+        expect(items.map((item) => item.str)).toEqual(['w'.repeat(81), 'z']);
+        expect(cells(items)).toEqual([0, 2]);
+        expectInsideCodeBox(items, backgrounds);
+      });
+
+      it('measures after sanitizing, so a stripped emoji neither splits nor shifts the wrap', async () => {
+        const { text, items } = await layout(`<pre>${'x'.repeat(82)}\u{1F600}${'x'.repeat(3)}</pre>`);
+        expect(items.map((item) => item.str)).toEqual(['x'.repeat(83), 'xx']);
+        expect(text.replace(/Page\d+of\d+$/, '')).toBe('x'.repeat(85));
+      });
     });
   });
 
