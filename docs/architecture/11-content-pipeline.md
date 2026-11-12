@@ -603,7 +603,7 @@ past the first 100 search hits was silently dropped from the rendered table.
   sanitized so we don't run the converter on every render.
 - **`body_text`** — the visible text: tags stripped, character references
   decoded once by the HTML parser (an escaped example `&amp;lt;br&amp;gt;`
-  stores `&lt;br&gt;`, #1735), whitespace collapsed; the input to the
+  stores `&lt;br&gt;`, #1735), whitespace collapsed by `htmlToText`; the input to the
   PostgreSQL `tsvector` column for hybrid search (and to snippets and the
   embedding coverage probe's length check).
 

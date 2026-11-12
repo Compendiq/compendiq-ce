@@ -50,10 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Search text keeps escaped entity examples (#1735):** a page that shows a
   literal entity such as `&lt;br&gt;`, `&amp;` or `&#60;` (typically in a code
   block documenting HTML) now stores exactly that in its search text, instead
-  of decoding it a second time to `<br>`, `&` or `<`. Keyword search and
-  snippets match what the page displays, and literal tag examples become
-  findable by their tag name. Existing pages pick up the corrected text on
-  their next sync or save; there is no backfill.
+  of decoding it a second time to `<br>`, `&` or `<`. Keyword search now
+  indexes what the page displays, so literal tag examples become findable by
+  their tag name, and visible URLs such as `?id=1&reg=eu` stay intact instead
+  of turning into `?id=1®=eu`. Result snippets are still rendered as HTML, so
+  an escaped example can show decoded once more in a snippet. Existing pages
+  pick up the corrected text the next time they are saved, or re-synced after
+  an edit in Confluence (or by a full sync); there is no backfill.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

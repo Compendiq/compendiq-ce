@@ -1249,6 +1249,12 @@ describe('content-converter', () => {
     it('collapses real non-breaking spaces but keeps an escaped &nbsp; example (#1735)', () => {
       expect(htmlToText('<p>a&nbsp;&nbsp;b &amp;nbsp;</p>')).toBe('a b &nbsp;');
     });
+
+    it('keeps a visible URL query string intact instead of decoding legacy references in it (#1735)', () => {
+      expect(htmlToText('<p>see https://x.test/?id=1&amp;reg=eu&amp;copy=2</p>')).toBe(
+        'see https://x.test/?id=1&reg=eu&copy=2',
+      );
+    });
   });
 
   // ========== Lossy macro documentation ==========
