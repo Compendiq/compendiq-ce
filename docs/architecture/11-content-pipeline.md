@@ -405,7 +405,8 @@ the rest of the outer paragraph on a new line (#1734). Comments
 (`text:note-citation`) are dropped; text deleted under change tracking is not
 filtered out. At most 64 paragraphs are tracked open (deeper ones join the
 innermost), character references are decoded once with invalid code points
-read as U+FFFD, and no DTD is read nor any declared entity expanded.
+read as U+FFFD, and no DTD is loaded or interpreted: a declared entity is never
+expanded.
 
 **Where the text goes.** The response is never persisted; the frontend holds it
 and sends it back on the *next* LLM call, as a dedicated bounded field of that
