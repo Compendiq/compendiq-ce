@@ -142,12 +142,17 @@ any change to the existing conflict policy.
   `ac:emoji-id`, else the classic name's emoji, else Confluence's text form
   (the shortname, `(name)`, `(emoticon)`). It is a `role="img"` named by
   `aria-label`: the shortname in words, else `ac:name` in words, else
-  `emoticon`. A label or name over 64 code points or holding `<`/`>` is not
-  used. The reverse pass ignores label, role and name. The
+  `emoticon`. A label or name over 64 code points, blank, or holding `<`,
+  `>`, a control character, a bidi override or isolate, or a lone surrogate
+  is not used (the next candidate applies); the attribute itself is still
+  carried and written back when its value passes the rule above. The reverse
+  pass ignores label, role and name. The
   reverse pass converts placeholders after every loop that rebuilds a body by
   re-parsing and serializes each element self-closed, as Confluence stores it
   (`<ac:emoticon ac:name="tick" />`), escaping `<` and `>` in its attribute
-  values (JSDOM escapes only `"` and `&`), so an unchanged emoticon goes back
+  values (JSDOM escapes only `"`, `&` and NBSP) and writing a tab, line feed
+  or carriage return as `&#9;` / `&#10;` / `&#13;` (raw, XML attribute-value
+  normalization would turn it into a space), so an unchanged emoticon goes back
   byte for byte. The carrier is always written (`{}` for an element without
   attributes); a span without one, or whose carrier is not a JSON object,
   was not made by the forward pass and writes its label as text rather than

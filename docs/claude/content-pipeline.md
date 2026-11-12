@@ -73,7 +73,8 @@ role="img" aria-label="tick">`: the JSON object holds every attribute in source 
 emoji, or Confluence's text form `:shortname:`/`(name)`) is drawn by
 `.confluence-emoticon::before`, so the span adds no text to `body_text`, embeddings,
 Markdown or #1751's task matching. `htmlToConfluence` writes exactly the carried
-attributes back, self-closed (`<ac:emoticon ac:name="tick" />`). `confluenceEmoticon`
+attributes back, self-closed (`<ac:emoticon ac:name="tick" />`; `<`, `>`, tab, LF and CR in a
+value as character references). `confluenceEmoticon`
 (inline atom: `emoticonAttrs`, `label`, `name`) is in both TipTap schemas, rendered
 by `renderHTML` alone (no node view), never a tab stop. `span.confluence-emoticon` is in `MEDIA_SELECTOR`: AI Improve freezes it
 as one inline token, never a div, so a task holding one stays a task (#1752). A

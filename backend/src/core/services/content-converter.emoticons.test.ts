@@ -148,6 +148,23 @@ describe('content-converter: #1750 Confluence emoticons survive write-back', () 
       expect(htmlToConfluence(yDocToHtml(htmlToYDoc(html)))).toBe(storage);
     });
 
+    it('writes a tab, line feed or carriage return in a value as a character reference', () => {
+      // Written raw, XML attribute-value normalization would turn each into a space on Confluence's side.
+      const storage = inProse('<ac:emoticon ac:name="a&#10;b" ac:emoji-fallback="&#9;x&#13;" />');
+      const html = confluenceToHtml(storage);
+      expect(placeholders(html).map((p) => p.attrs)).toEqual([{ 'ac:name': 'a\nb', 'ac:emoji-fallback': '\tx\r' }]);
+      expect(htmlToConfluence(html)).toBe(storage);
+      expect(htmlToConfluence(yDocToHtml(htmlToYDoc(html)))).toBe(storage);
+    });
+
+    it('carries and writes back a value holding a bidi override or a C1 control (only labels and names refuse them)', () => {
+      const emoticon = '<ac:emoticon ac:name="\u202Ekcit" ac:emoji-fallback="\u0085x" />';
+      const html = confluenceToHtml(inProse(emoticon));
+      expect(placeholders(html).map((p) => p.attrs)).toEqual([{ 'ac:name': '\u202Ekcit', 'ac:emoji-fallback': '\u0085x' }]);
+      expect(htmlToConfluence(html)).toBe(inProse(emoticon));
+      expect(htmlToConfluence(yDocToHtml(htmlToYDoc(html)))).toBe(inProse(emoticon));
+    });
+
     it('keeps emoticons inside a task, a link body, a table cell, a heading, a panel, an expand and an unknown macro', () => {
       const storage =
         `<ac:task-list><ac:task><ac:task-id>11</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Ship ${TICK} today</ac:task-body></ac:task></ac:task-list>`
@@ -165,7 +182,7 @@ describe('content-converter: #1750 Confluence emoticons survive write-back', () 
   });
 
   describe('the placeholder', () => {
-    it('carries every attribute in source order in data-emoticon-attrs, with its label as text', () => {
+    it('carries every attribute in source order in data-emoticon-attrs, and holds no text', () => {
       expect(confluenceToHtml(PAGE)).toBe(PAGE_HTML);
     });
 
@@ -180,7 +197,12 @@ describe('content-converter: #1750 Confluence emoticons survive write-back', () 
       ['the shortname when nothing gives an emoji', '<ac:emoticon ac:emoji-shortname=":face_exhaling:" />', ':face_exhaling:'],
       ['(name) for a classic emoticon without an emoji', CLOUD_BLUE_STAR, '(blue-star)'],
       ['(emoticon) when nothing names it', '<ac:emoticon />', '(emoticon)'],
-      ['the next candidate when one holds a control character', '<ac:emoticon ac:name="tick" ac:emoji-fallback="&#7;" />', '✅'],
+      // Values XML allows, so they are carried (and written back), but no label may show them:
+      // a bidi override, and a C1 control as a literal character (`&#x85;` would parse as `…`).
+      ['the next candidate when one holds a bidi override', '<ac:emoticon ac:name="tick" ac:emoji-fallback="&#x202E;x" />', '✅'],
+      ['the next candidate when one holds a C1 control', '<ac:emoticon ac:name="tick" ac:emoji-fallback="\u0085x" />', '✅'],
+      ['(emoticon) when the only name holds a bidi override', '<ac:emoticon ac:name="&#x202E;kcit" />', '(emoticon)'],
+      ['(emoticon) when the only name holds a C1 control', '<ac:emoticon ac:name="\u0085tick" />', '(emoticon)'],
     ])('labels %s', (_case, emoticon, label) => {
       expect(placeholders(confluenceToHtml(inProse(emoticon))).map((p) => p.label)).toEqual([label]);
     });
@@ -192,6 +214,9 @@ describe('content-converter: #1750 Confluence emoticons survive write-back', () 
       ['the shortname over a blue-star stand-in', CLOUD_PARTY, 'partying face'],
       ['a CLDR name', DC8_KEYCAP, 'keycap: 1'],
       ['emoticon when nothing names it', '<ac:emoticon />', 'emoticon'],
+      ['emoticon when ac:name holds a bidi override', '<ac:emoticon ac:name="&#x202E;kcit" />', 'emoticon'],
+      ['emoticon when ac:name holds a C1 control', '<ac:emoticon ac:name="\u0085tick" />', 'emoticon'],
+      ['ac:name when the shortname holds a bidi override', '<ac:emoticon ac:name="tick" ac:emoji-shortname=":&#x202E;x:" />', 'tick'],
     ])('names %s, and holds no text', (_case, emoticon, name) => {
       expect(placeholders(confluenceToHtml(inProse(emoticon))).map((p) => [p.name, p.text])).toEqual([[name, '']]);
     });

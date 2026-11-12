@@ -1342,13 +1342,15 @@ export function htmlToConfluence(html: string): string {
   let result = doc.body.innerHTML;
 
   // Post-process (#1750): write each emoticon self-closed, as Confluence
-  // stores it, so an unchanged one goes back byte for byte. JSDOM escapes `"`
-  // and `&` in attribute values but not `<` or `>`; XML forbids a raw `<`
-  // there, so both are escaped here. Runs before the void-element pass, which
-  // would otherwise rewrite a `<br>` inside a value.
+  // stores it, so an unchanged one goes back byte for byte. JSDOM escapes `"`,
+  // `&` and NBSP in attribute values but not `<` or `>`; XML forbids a raw `<`
+  // there, so both are escaped here. A raw tab, line feed or carriage return
+  // would become a space under XML attribute-value normalization, so each is
+  // written as a character reference. Runs before the void-element pass,
+  // which would otherwise rewrite a `<br>` inside a value.
   result = result.replace(
     /<ac:emoticon((?: [^\s="]+="[^"]*")*)><\/ac:emoticon>/g,
-    (_, attrs: string) => `<ac:emoticon${attrs.replace(/</g, '&lt;').replace(/>/g, '&gt;')} />`,
+    (_, attrs: string) => `<ac:emoticon${attrs.replace(/[<>\t\n\r]/g, (ch) => EMOTICON_VALUE_ESCAPES[ch] ?? ch)} />`,
   );
 
   // Post-process: self-close void elements for XHTML compatibility.
@@ -1397,6 +1399,11 @@ function pathBasename(urlString: string): string {
  * order, as one JSON object, and the reverse pass writes exactly those back.
  */
 const EMOTICON_ATTRS = 'data-emoticon-attrs';
+
+/** What the reverse pass writes for a character JSDOM leaves raw in an emoticon attribute value. */
+const EMOTICON_VALUE_ESCAPES: Readonly<Record<string, string>> = {
+  '<': '&lt;', '>': '&gt;', '\t': '&#9;', '\n': '&#10;', '\r': '&#13;',
+};
 
 /**
  * An attribute name the reverse pass can write: an ASCII XML QName. Storage is
