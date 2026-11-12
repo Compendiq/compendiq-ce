@@ -16,8 +16,7 @@
  * to a follow-up (see Risks on CE #303) because `recharts-to-png` has not
  * been validated against Tailwind 4.
  *
- * Excel export was removed in #303. CSV opens cleanly in Excel for every
- * dashboard that previously used the `.xlsx` path.
+ * Excel export was removed in #303.
  */
 
 /** Trigger a browser download from a Blob. */
@@ -566,9 +565,9 @@ function drawFooter(
 
 /**
  * Truncate a string so its rendered width at `size` fits within `maxWidth`.
- * Falls back to character-count truncation when the font metric lookup
- * ever throws (pdf-lib does not currently throw, but guard against future
- * behaviour changes).
+ * Falls back to character-count truncation if measuring throws (the
+ * standard fonts throw outside WinAnsi; callers pass `createTextGuard`
+ * output, so this is defensive).
  */
 function truncateToWidth(
   text: string,

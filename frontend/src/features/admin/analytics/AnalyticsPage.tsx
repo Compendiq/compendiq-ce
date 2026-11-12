@@ -23,7 +23,7 @@ export interface DashboardProps {
    * Export rows to PDF. The `kpis` argument is optional — dashboards that
    * have headline KPIs can surface them on the cover page; others can
    * skip it and the cover still renders (title + date range + integrity
-   * hash). Excel export was removed in #303 — CSV opens cleanly in Excel.
+   * hash). Excel export was removed in #303.
    * Never rejects: AnalyticsPage reports a failed export with an error toast
    * and downloads nothing (#1732).
    */
