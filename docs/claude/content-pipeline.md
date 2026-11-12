@@ -284,7 +284,36 @@ Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
 can equal the new query-plus-width hashes. Never read legacy entries as
 width-aware results; let their TTL expire without flushing shared Redis.
 
+`search_web` accepts `num_results` 1–10 (`MAX_NUM_RESULTS`). The admin setting
+`searxng_max_results` shares that range through
+`SEARXNG_MAX_RESULTS_{MIN,MAX,DEFAULT}` in `@compendiq/contracts`; the sidecar
+does not depend on contracts, so both sides are pinned with literal tests —
+`packages/contracts/src/schemas/searxng.test.ts` for the constants and
+`mcp-docs/src/search-web-limits.test.ts`, which boots the sidecar against a
+loopback SearXNG and proves the tool accepts 1–10, defaults to 5 and rejects
+0/11 (real Redis via `MCP_DOCS_TEST_REDIS_URL`; never skip). Stored values
+outside the range are clamped on read (`getSearxngMaxResults`) with a warning,
+and `POST /admin/searxng/test` searches with the saved width. Never widen one
+side alone (#1768).
+
 The MCP cache-width regression is mandatory in the sidecar test suite and uses
 real Redis; set `MCP_DOCS_TEST_REDIS_URL` to a test-only Redis endpoint. The
 PR Check sidecar job provisions Redis and sets this explicitly. Missing
 configuration fails the suite rather than skipping the regression.
+
+`search_web` accepts a `query` of at most 200 characters and 30
+whitespace-separated words — a data-leakage control (`MAX_QUERY_LENGTH` /
+`MAX_WORD_COUNT` in `mcp-docs/src/security/query-sanitizer.ts`; the tool
+schema's `max(200)` in `mcp-docs/src/index.ts`). The public LLM contract
+enforces the same bounds up front: `searchQuery` on the
+ask/generate/improve/summarize request schemas is `WebSearchQuerySchema`
+(`trim().min(1).max(WEB_SEARCH_QUERY_MAX_CHARS)` plus a
+`WEB_SEARCH_QUERY_MAX_WORDS` refine) in `@compendiq/contracts`, so an
+over-long or blank query is a `400 ValidationError` at the API boundary
+instead of a silently empty search. The backend never truncates an explicit
+`searchQuery`; only the derived default queries are sliced to 200 characters.
+The sidecar does not depend on contracts, so both sides are pinned with
+literal tests — `packages/contracts/src/schemas/llm.test.ts`,
+`mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
+in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
+(#1767).

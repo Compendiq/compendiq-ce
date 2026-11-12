@@ -23,7 +23,12 @@ import {
 import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
 import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
-import type { ConversationTurnAiProvenance } from '@compendiq/contracts';
+import {
+  SEARXNG_MAX_RESULTS_DEFAULT,
+  SEARXNG_MAX_RESULTS_MAX,
+  SEARXNG_MAX_RESULTS_MIN,
+  type ConversationTurnAiProvenance,
+} from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
 
@@ -523,13 +528,35 @@ export async function streamSSE(
 }
 
 /**
- * Get admin-configured SearXNG max results (reads from admin_settings, defaults to 5).
+ * Effective SearXNG result width for a stored `searxng_max_results` value.
+ * Rows written before #1768 can hold 11–20 (the old admin range); the sidecar's
+ * `search_web` schema rejects anything above SEARXNG_MAX_RESULTS_MAX with
+ * -32602, which fetchWebSources swallows into "no sources". Non-numeric →
+ * default; out of range → clamped; both logged so the operator re-saves.
  */
+export function normalizeSearxngMaxResults(stored: string | undefined): number {
+  if (stored === undefined) return SEARXNG_MAX_RESULTS_DEFAULT;
+  const parsed = parseInt(stored, 10);
+  if (!Number.isFinite(parsed)) {
+    logger.warn({ stored }, 'searxng_max_results is not a number — using the default; re-save SearXNG settings');
+    return SEARXNG_MAX_RESULTS_DEFAULT;
+  }
+  const effective = Math.min(SEARXNG_MAX_RESULTS_MAX, Math.max(SEARXNG_MAX_RESULTS_MIN, parsed));
+  if (effective !== parsed) {
+    logger.warn(
+      { stored, effective },
+      'searxng_max_results is outside the sidecar range — clamped; re-save SearXNG settings',
+    );
+  }
+  return effective;
+}
+
+/** Admin-configured SearXNG result width (admin_settings), normalized into the sidecar range. */
 export async function getSearxngMaxResults(): Promise<number> {
   const result = await query<{ setting_value: string }>(
     `SELECT setting_value FROM admin_settings WHERE setting_key = 'searxng_max_results'`,
   );
-  return parseInt(result.rows[0]?.setting_value ?? '5', 10);
+  return normalizeSearxngMaxResults(result.rows[0]?.setting_value);
 }
 
 /**

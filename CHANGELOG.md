@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed value and shows the server's reason inline (previously a toast), and
   an unreadable settings response shows a Retry notice instead of a
   fabricated 90-day value.
+- **Web-search query limit enforced at the API (#1767):** `searchQuery` on
+  `POST /api/llm/ask|generate|improve|summarize` now accepts at most 200
+  characters and 30 words (trimmed, non-empty) — the limits the mcp-docs
+  `search_web` tool already enforced. Longer, over-worded or blank queries are
+  rejected with `400 ValidationError` naming `searchQuery` instead of being
+  accepted and then silently yielding no web sources. **Breaking for direct
+  API callers** that sent 201–500-character queries (the contract previously
+  allowed 500); the web UI only sends `searchWeb: true` and is unaffected.
+  Derived default queries are unchanged.
 
 ### Fixed
 
@@ -95,6 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a restored location. **Cancel** asks **Discard changes?** when the form has
   content; creating the page or discarding it deletes both keys, and a failed
   create keeps them.
+- **SearXNG result count (#1768):** Settings → Integrations → SearXNG accepts
+  1–10 — the range the mcp-docs `search_web` tool enforces — instead of 1–20;
+  a count above 10 previously disabled web search silently (the sidecar
+  rejected every request and the backend fell back to no sources). Stored
+  values above 10 are read as 10 (logged until re-saved), and **Test** now
+  searches with the saved count rather than a fixed 3, so it reports the
+  effective configuration.
 - **MCP docs client recovers from lost sidecar sessions (#1766):** after the
   `mcp-docs` sidecar evicts an idle session (30 min) or restarts, the backend
   now drops its cached session and re-initializes exactly once instead of
