@@ -213,6 +213,22 @@ describe('baseline rendering-only media projection', () => {
     expect(renderBaselineBodyHtml(crossPage, 42, BASELINE_ID, [], '9001')).toBe(crossPage);
   });
 
+  it('reads a #1748 reference by its #1748 reading first, even when a file named as its old decoding is retained too', () => {
+    // A link to `x` whose plain body repeats the filename is written
+    // `#confluence-attachment:x?body=plain`; a retained file literally named
+    // `x?body=plain` must not capture it.
+    const linked = attachment('confluence', '9001', 'x');
+    const lookalike = attachment('confluence', '9001', 'x?body=plain');
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:attachment ri:filename="x" /><ac:plain-text-link-body><![CDATA[x]]></ac:plain-text-link-body></ac:link></p>',
+      '9001',
+    );
+    expect(html).toContain('href="#confluence-attachment:x?body=plain"');
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [lookalike, linked], '9001');
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${linked.identity}"`);
+    expect(rendered).not.toContain(lookalike.identity);
+  });
+
   it('keeps comma-bearing inline srcset URLs intact while rewriting only retained candidates', () => {
     const retained = attachment('confluence', '9001', 'diagram.png');
     const srcset = 'data:image/png;base64,AA,BB 1x,  /api/attachments/9001/diagram.png 2x';

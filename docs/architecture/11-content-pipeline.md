@@ -181,12 +181,15 @@ any change to the existing conflict policy.
   `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
   out. Clicking these links in Compendiq does not navigate (non-goal).
   Deferred, unchanged since before #1748 (the converters and Improve keep all
-  of these): in the editor, a link whose body is an image or inline code is
-  lost — the image is a block node, and StarterKit's Code mark excludes every
-  other mark — and a link whose text mixes inline code with other text is
-  split into two links around the code; on a collaborative save, a line
-  break, mention, status or emoticon inside a link is left out of it,
-  splitting the link around it (Yjs keeps marks on text only).
+  of these but the mention): in the editor, a link whose body is an image or
+  inline code is lost — the image is a block node, and StarterKit's Code mark
+  excludes every other mark — and a link whose text mixes inline code with
+  other text is split into two links around the code; on a collaborative
+  save, a line break, mention, status or emoticon inside a link is left out of
+  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
+  replacing the whole outer link, text included, with the mention (#314);
+  Confluence never writes that nesting.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
