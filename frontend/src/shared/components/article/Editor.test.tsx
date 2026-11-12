@@ -42,6 +42,7 @@ import { TextSelection } from '@tiptap/pm/state';
 import { CellSelection, cellAround } from '@tiptap/pm/tables';
 import { handleTableCellClick, handleTableCellTripleClick } from './table-cell-selection';
 import { useUiStore } from '../../../stores/ui-store';
+import { containsStructuredInline } from './block-menu-nodes';
 
 /**
  * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
@@ -286,6 +287,123 @@ describe('Editor', () => {
       // User mention.
       expect(html).toContain('confluence-user-mention');
       expect(html).toContain('data-username="alice"');
+    });
+
+    // #1749: the dedicated code / toc / status placeholders carry their other
+    // Confluence parameters in data-macro-params (and the code title in
+    // data-title). PAGE_HTML is confluenceToHtml's output for the issue's
+    // fixtures, byte for byte, pinned by the backend's
+    // content-converter.macro-params.test.ts.
+    it('keeps code, toc and status macro parameters through an unrelated edit (#1749)', async () => {
+      const PAGE_HTML =
+        '<p>Intro</p>'
+        + '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;,&quot;collapse&quot;:&quot;true&quot;}">'
+        + '<code class="language-c#">var app = builder.Build();</code></pre>'
+        + '<div class="confluence-toc" data-macro-params="{&quot;exclude&quot;:&quot;Secret&quot;}">[Table of Contents]</div>'
+        + '<p>State: <span class="confluence-status" data-color="green" data-macro-params="{&quot;subtle&quot;:&quot;true&quot;}">DONE</span></p>';
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content={PAGE_HTML}
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      // An edit no macro is part of: type at the end of the first paragraph.
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+
+      const saved = new DOMParser().parseFromString(editor!.getHTML(), 'text/html');
+      expect(saved.querySelector('p')?.textContent).toBe('Intro (edited)');
+      const pre = saved.querySelector('pre');
+      expect(pre?.querySelector('code')?.className).toBe('language-c#');
+      expect(pre?.getAttribute('data-title')).toBe('Startup.cs');
+      expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null'))
+        .toEqual({ linenumbers: 'true', collapse: 'true' });
+      expect(JSON.parse(saved.querySelector('div.confluence-toc')?.getAttribute('data-macro-params') ?? 'null'))
+        .toEqual({ exclude: 'Secret' });
+      const status = saved.querySelector('span.confluence-status');
+      expect(status?.getAttribute('data-color')).toBe('green');
+      expect(JSON.parse(status?.getAttribute('data-macro-params') ?? 'null')).toEqual({ subtle: 'true' });
+    });
+  });
+
+  // #1750: PAGE_HTML is confluenceToHtml's output for the backend fixture, byte
+  // for byte, pinned by content-converter.emoticons.test.ts.
+  describe('Confluence emoticons (#1750)', () => {
+    const PAGE_HTML =
+      '<p>Intro</p>'
+      + '<p>State <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;tick&quot;}"'
+      + ' data-emoticon-label="✅" role="img" aria-label="tick"></span> complete</p>'
+      + '<p>Risk <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;warning&quot;}"'
+      + ' data-emoticon-label="⚠️" role="img" aria-label="warning"></span> open</p>'
+      + '<p>Great job! <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;smile&quot;}"'
+      + ' data-emoticon-label="🙂" role="img" aria-label="smile"></span></p>'
+      + '<p>Cloud <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;cross&quot;,'
+      + '&quot;ac:emoji-shortname&quot;:&quot;:cross_mark:&quot;,&quot;ac:emoji-id&quot;:&quot;atlassian-cross_mark&quot;,'
+      + '&quot;ac:emoji-fallback&quot;:&quot;:cross_mark:&quot;}" data-emoticon-label="❌" role="img" aria-label="cross mark"></span>'
+      + ' and <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;laugh&quot;,'
+      + '&quot;ac:emoji-shortname&quot;:&quot;:grinning:&quot;,&quot;ac:emoji-id&quot;:&quot;1f600&quot;,'
+      + '&quot;ac:emoji-fallback&quot;:&quot;😀&quot;}" data-emoticon-label="😀" role="img" aria-label="grinning"></span></p>';
+
+    /** Each emoticon placeholder of an HTML body: carrier, label, name and (empty) text. */
+    function placeholders(html: string): Array<{ attrs: unknown; label: string | null; name: string | null; text: string | null }> {
+      return [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('span.confluence-emoticon')]
+        .map((span) => ({
+          attrs: JSON.parse(span.getAttribute('data-emoticon-attrs') ?? 'null'),
+          label: span.getAttribute('data-emoticon-label'),
+          name: span.getAttribute('aria-label'),
+          text: span.textContent,
+        }));
+    }
+
+    async function renderEditor(): Promise<EditorType> {
+      let editor: EditorType | null = null;
+      render(<Editor content={PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('keeps every emoticon with all its attributes through an unrelated edit', async () => {
+      const editor = await renderEditor();
+      // An edit no emoticon is part of: type at the end of the first paragraph.
+      act(() => {
+        editor.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+
+      const saved = editor.getHTML();
+      expect(new DOMParser().parseFromString(saved, 'text/html').querySelector('p')?.textContent).toBe('Intro (edited)');
+      expect(placeholders(saved)).toHaveLength(5);
+      expect(placeholders(saved)).toEqual(placeholders(PAGE_HTML));
+    });
+
+    it('withholds Improve over an emoticon, which a rewrite would delete', async () => {
+      const editor = await renderEditor();
+      // The second block, "State ✅ complete".
+      const start = editor.state.doc.child(0).nodeSize;
+      const end = start + editor.state.doc.child(1).nodeSize;
+      expect(containsStructuredInline(editor.state.doc, start + 1, end - 1)).toBe(true);
+    });
+
+    it('shows each emoticon as a named image that is not a tab stop', async () => {
+      await renderEditor();
+      // The glyph is drawn by CSS from data-emoticon-label; the element holds no text.
+      const tick = await screen.findByRole('img', { name: 'tick' });
+      expect(tick).toHaveAttribute('data-emoticon-label', '✅');
+      expect(tick).toBeEmptyDOMElement();
+      expect(tick).not.toHaveAttribute('tabindex');
+      expect(screen.getByRole('img', { name: 'warning' })).toHaveAttribute('data-emoticon-label', '⚠️');
+      // A shortname names the emoji, also next to a classic ac:name.
+      expect(screen.getByRole('img', { name: 'cross mark' })).toHaveAttribute('data-emoticon-label', '❌');
+      expect(screen.getByRole('img', { name: 'grinning' })).toHaveAttribute('data-emoticon-label', '😀');
     });
   });
 
@@ -1542,6 +1660,56 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
           style.remove();
         }
       });
+    });
+  });
+  describe('Confluence task ids (#1751)', () => {
+    // confluenceToHtml's output for a page with tasks 42 and 7, byte for byte,
+    // pinned by the backend's content-converter.task-ids.test.ts.
+    const TASK_PAGE_HTML =
+      '<p>Intro</p>'
+      + '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true" data-task-id="42">Ship it</li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="7">Write <strong>docs</strong></li>'
+      + '</ul>';
+
+    function savedTaskIds(editor: EditorType): Array<string | null> {
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      return [...saved.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id'));
+    }
+
+    it('keeps the task ids through an unrelated edit', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+
+      expect(new DOMParser().parseFromString(editor!.getHTML(), 'text/html').querySelector('p')?.textContent)
+        .toBe('Intro (edited)');
+      expect(savedTaskIds(editor!)).toEqual(['42', '7']);
+    });
+
+    it('starts a new task without the id when Enter splits a task', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      // The cursor after "Ship it", then the command TaskItem binds to Enter.
+      let end = -1;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Ship it') end = pos + node.nodeSize;
+      });
+      act(() => {
+        editor!.chain().setTextSelection(end).splitListItem('taskItem').run();
+      });
+
+      expect(savedTaskIds(editor!)).toEqual(['42', null, '7']);
     });
   });
 });

@@ -502,6 +502,81 @@ describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real Po
     });
   });
 
+  it('keeps the Confluence ids of tasks synced before ids were carried when the page is saved (#1751)', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [
+      pageId,
+      '<p>original</p><ac:task-list>'
+      + '<ac:task><ac:task-id>794464</ac:task-id><ac:task-status>complete</ac:task-status>'
+      + '<ac:task-body>Ship it</ac:task-body></ac:task>'
+      + '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body>Write docs</ac:task-body></ac:task></ac:task-list>',
+    ]);
+    // What the editor saves after an unrelated edit when the stored body
+    // predates the carrier: TaskItem's markup, no data-task-id.
+    const bodyHtml = '<p>original (edited)</p><ul data-type="taskList">'
+      + '<li data-checked="true" data-type="taskItem"><label><input type="checkbox" checked="checked">'
+      + '<span></span></label><div><p>Ship it</p></div></li>'
+      + '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>'
+      + '<div><p>Write docs</p></div></li></ul>';
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Original', bodyHtml, version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    const sent = confluenceRequests[0]!.body.body.storage.value;
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['794464', '12']);
+    // TaskItem's checkbox markup stays in the editor: the task bodies are the content.
+    expect(sent).not.toMatch(/<input|<label/);
+    // The stored body is re-derived from the storage Confluence returned, so it carries them now.
+    const row = await pageRow(pageId);
+    expect([...row.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['794464', '12']);
+  });
+
+  describe('the order pairing of a page synced before ids were carried (#1751)', () => {
+    const STORAGE = '<p>original</p><ac:task-list>'
+      + '<ac:task><ac:task-id>794464</ac:task-id><ac:task-status>complete</ac:task-status>'
+      + '<ac:task-body>Ship it</ac:task-body></ac:task>'
+      + '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body>Write docs</ac:task-body></ac:task></ac:task-list>';
+
+    /** TaskItem's markup for `texts`, without data-task-id. */
+    function editorTasks(...texts: string[]): string {
+      return `<p>original</p><ul data-type="taskList">${texts.map((text) => '<li data-checked="false" data-type="taskItem">'
+        + `<label><input type="checkbox"><span></span></label><div><p>${text}</p></div></li>`).join('')}</ul>`;
+    }
+
+    async function sentTaskIds(storedBodyHtml: string, bodyHtml: string): Promise<string[]> {
+      const pageId = await seedConfluencePage(currentUserId);
+      await query('UPDATE pages SET body_storage = $2, body_html = $3 WHERE id = $1', [pageId, STORAGE, storedBodyHtml]);
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Original', bodyHtml, version: 7 },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      return [...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]!);
+    }
+
+    it('gives edited tasks their stored ids in order when the stored body carries no id and no task was added or removed (#1751)', async () => {
+      const legacyBody = '<p>original</p><ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="true">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false">Write docs</li></ul>';
+      expect(await sentTaskIds(legacyBody, editorTasks('Ship it today', 'Write docs'))).toEqual(['794464', '12']);
+    });
+
+    it('gives the tasks that replace every task of a page whose stored body carries ids new ids (#1751)', async () => {
+      const carriedBody = '<p>original</p><ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="true" data-task-id="794464">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="12">Write docs</li></ul>';
+      expect(await sentTaskIds(carriedBody, editorTasks('Alpha', 'Beta'))).toEqual(['794465', '794466']);
+    });
+  });
+
   it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {
     const pageId = await seedConfluencePage(currentUserId);
     compactPutReply = true;

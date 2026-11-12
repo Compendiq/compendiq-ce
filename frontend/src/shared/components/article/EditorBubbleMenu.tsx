@@ -127,7 +127,7 @@ export function selectionShouldShow(editor: EditorType, aiOpen: boolean): boolea
  * Formatting toggles stay: a mark toggle rewrites marks, not nodes.
  */
 const MACRO_NOTICE =
-  'Improve is unavailable: a rewrite would drop the inline macros in this selection. Select text around them instead.';
+  'Improve is unavailable: a rewrite would drop the inline macros or emojis in this selection. Select text around them instead.';
 
 /**
  * Shown in the AI section when an atom lands *inside* the passage after the
@@ -147,7 +147,7 @@ const MACRO_NOTICE =
  * multi-block-heading refusal and is amber for the same reason.
  */
 const MACRO_REPLACE_BLOCKED =
-  'This passage now contains an inline macro, and replacing would delete it. Insert below instead.';
+  'This passage now contains an inline macro or emoji, and replacing would delete it. Insert below instead.';
 
 const SELECTION_COPY: ImprovePanelCopy = {
   ariaLabel: 'Improve selection with AI',

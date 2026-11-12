@@ -104,6 +104,7 @@ const BLOCK_LABELS: Readonly<Record<string, string>> = {
   confluenceAttachments: 'Attachments',
   confluenceJiraIssue: 'Jira issue',
   confluenceUserMention: 'Mention',
+  confluenceEmoticon: 'Emoticon',
   confluenceIncludeMacro: 'Included page',
   confluenceLabelsMacro: 'Labels',
   confluenceLayout: 'Layout',
