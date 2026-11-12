@@ -10,6 +10,7 @@ an even length, then checks the result's SHA-256. Run from this directory:
 Why each step: see README.md.
 """
 
+import functools
 import hashlib
 import io
 import sys
@@ -52,8 +53,14 @@ LICENCES = {
 }
 
 
+@functools.cache
+def download(url):
+    """The SC package carries a font and the CJK licence: fetch it once."""
+    return urllib.request.urlopen(url).read()
+
+
 def fetch(url, member, sha256):
-    data = urllib.request.urlopen(url).read()
+    data = download(url)
     if member:
         data = tarfile.open(fileobj=io.BytesIO(data)).extractfile(member).read()
     if hashlib.sha256(data).hexdigest() != sha256:
