@@ -1,6 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RetrievalBenchmarkRequestSchema, SearxngCategoriesSchema, UpdateMcpDocsSettingsSchema } from '@compendiq/contracts';
+import {
+  RetrievalBenchmarkRequestSchema,
+  UpdateMcpDocsSettingsSchema,
+  UpdateSearxngSettingsSchema,
+  type SearxngSettings,
+} from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
@@ -180,20 +185,12 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   // no admin action can redirect outbound search traffic. A `searxng_url` row
   // left by an older version is never read or written.
 
-  // Deliberately NOT `.strict()`: a `url` sent by a pre-#1769 client (cached
-  // SPA, rolling deploy) is stripped and the rest of the body still applies —
-  // the reasoning of UpdateAdminSettingsSchema in @compendiq/contracts.
-  const UpdateSearxngSchema = z.object({
-    maxResults: z.number().int().min(1).max(20).optional(),
-    categories: SearxngCategoriesSchema.optional(),
-  });
-
-  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async () => {
+  fastify.get('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (): Promise<SearxngSettings> => {
     return getSearxngSettings();
   });
 
   fastify.put('/admin/searxng', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
-    const body = UpdateSearxngSchema.parse(request.body);
+    const body = UpdateSearxngSettingsSchema.parse(request.body);
     for (const [field, key] of [['maxResults', 'searxng_max_results'], ['categories', 'searxng_categories']] as const) {
       const val = body[field as keyof typeof body];
       if (val !== undefined) {
@@ -212,9 +209,11 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
 
   fastify.post('/admin/searxng/test', { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT }, async (request) => {
     try {
-      // Search the saved categories, so Test exercises the configuration web search uses.
-      const { categories } = await getSearxngSettings();
-      const results = await searchDocumentation('test connection', request.userId, 3, categories);
+      // Search with the saved configuration — the effective (normalized) width
+      // and categories, not a fixed 3 and the default category — so this button
+      // reports what web search actually uses (#1768, #1769).
+      const { maxResults, categories } = await getSearxngSettings();
+      const results = await searchDocumentation('test connection', request.userId, maxResults, categories);
       return { ok: true, resultCount: results.length, sample: results.slice(0, 3).map((r) => ({ title: r.title, url: r.url })) };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };

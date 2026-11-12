@@ -7,11 +7,7 @@
  * Security: GET-only outbound, SSRF guard, domain filtering, query sanitization, audit logging.
  */
 
-import { randomUUID } from 'node:crypto';
-import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createClient, type RedisClientType } from 'redis';
 import { z } from 'zod';
 import { fetchUrl } from './tools/fetch-url.js';
@@ -19,7 +15,8 @@ import { searchWeb } from './tools/search-web.js';
 import { listCached } from './tools/list-cached.js';
 import { logger } from './logger.js';
 import { makeMcpAuth } from './auth.js';
-import { parsePort, parseCacheTtl } from './config.js';
+import { createMcpApp } from './app.js';
+import { parsePort, parseCacheTtl, parseSessionTtlMs } from './config.js';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +42,8 @@ const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const MCP_DOCS_TOKEN = process.env.MCP_DOCS_TOKEN;
 // CACHE_TTL is non-fatal: falls back to the default when unset/malformed.
 const CACHE_TTL = parseCacheTtl(process.env.CACHE_TTL_SECONDS);
+// Idle-session eviction; non-fatal like CACHE_TTL (default 30 minutes).
+const SESSION_TTL_MS = parseSessionTtlMs(process.env.MCP_DOCS_SESSION_TTL_MS);
 
 // ── Redis connection ────────────────────────────────────────────────────
 
@@ -187,124 +186,13 @@ function createMcpServerInstance(): McpServer {
 
 // ── Express + Streamable HTTP transport ─────────────────────────────────
 
-const transports = new Map<string, StreamableHTTPServerTransport>();
-const servers = new Map<string, McpServer>();
-const sessionLastSeen = new Map<string, number>();
-
-const SESSION_TTL_MS = 30 * 60_000; // 30 minutes idle timeout
-const SESSION_REAP_INTERVAL_MS = 5 * 60_000; // Check every 5 minutes
-
-// Evict stale sessions to prevent memory leaks from disconnected clients
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, lastSeen] of sessionLastSeen) {
-    if (now - lastSeen > SESSION_TTL_MS) {
-      transports.delete(id);
-      const server = servers.get(id);
-      if (server) {
-        server.close().catch(() => {});
-        servers.delete(id);
-      }
-      sessionLastSeen.delete(id);
-      logger.debug({ sessionId: id }, 'Evicted stale MCP session');
-    }
-  }
-}, SESSION_REAP_INTERVAL_MS).unref();
-
-const app = express();
-// Don't advertise the framework/version to callers.
-app.disable('x-powered-by');
-
-// Shared-secret guard on /mcp (all methods) — registered BEFORE express.json so
-// an unauthenticated request's body is never parsed. /health below stays open.
-// In production the guard fails closed: no MCP_DOCS_TOKEN → every /mcp request
-// gets 401 (the container still boots and /health stays up).
-app.use('/mcp', makeMcpAuth(MCP_DOCS_TOKEN, process.env.NODE_ENV === 'production'));
-app.use(express.json());
-
-// MCP endpoint
-app.post('/mcp', async (req, res) => {
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-  try {
-    if (sessionId && transports.has(sessionId)) {
-      sessionLastSeen.set(sessionId, Date.now());
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
-      return;
-    }
-
-    if (!sessionId && isInitializeRequest(req.body)) {
-      const mcpServer = createMcpServerInstance();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newId: string) => {
-          transports.set(newId, transport);
-          servers.set(newId, mcpServer);
-          sessionLastSeen.set(newId, Date.now());
-          logger.debug({ sessionId: newId }, 'MCP session initialized');
-        },
-      });
-
-      await mcpServer.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-      return;
-    }
-
-    res.status(400).json({
-      jsonrpc: '2.0',
-      error: { code: -32000, message: 'Invalid or missing session' },
-      id: null,
-    });
-  } catch (err) {
-    logger.error({ err }, 'MCP request error');
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: '2.0',
-        error: { code: -32603, message: 'Internal server error' },
-        id: null,
-      });
-    }
-  }
-});
-
-// GET /mcp for SSE streams (required by Streamable HTTP spec)
-app.get('/mcp', async (req, res) => {
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  if (sessionId && transports.has(sessionId)) {
-    sessionLastSeen.set(sessionId, Date.now());
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
-    return;
-  }
-  res.status(400).json({ error: 'Invalid or missing session' });
-});
-
-// DELETE /mcp for session termination
-app.delete('/mcp', async (req, res) => {
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
-    transports.delete(sessionId);
-    sessionLastSeen.delete(sessionId);
-    const server = servers.get(sessionId);
-    if (server) {
-      await server.close();
-      servers.delete(sessionId);
-    }
-    return;
-  }
-  res.status(400).json({ error: 'Invalid or missing session' });
-});
-
-// Health endpoint
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    redis: redis ? 'connected' : 'disconnected',
-    sessions: transports.size,
-  });
+// The /mcp guard fails closed in production: no MCP_DOCS_TOKEN → every /mcp
+// request gets 401 (the container still boots and /health stays up).
+const { app } = createMcpApp({
+  mcpAuth: makeMcpAuth(MCP_DOCS_TOKEN, process.env.NODE_ENV === 'production'),
+  createMcpServer: createMcpServerInstance,
+  redisStatus: () => (redis ? 'connected' : 'disconnected'),
+  sessionTtlMs: SESSION_TTL_MS,
 });
 
 // ── Start ───────────────────────────────────────────────────────────────

@@ -1,6 +1,20 @@
 import { z } from 'zod';
 
 /**
+ * Admin-configurable SearXNG result width (`admin_settings.searxng_max_results`).
+ * The range is the sidecar's: mcp-docs `search_web` declares
+ * `num_results: z.number().min(1).max(10).default(5)` (mcp-docs/src/index.ts) and
+ * `MAX_NUM_RESULTS = 10` / `DEFAULT_NUM_RESULTS = 5` (mcp-docs/src/tools/search-web.ts).
+ * The sidecar does not depend on this package, so both sides are pinned with
+ * literal tests: schemas/searxng.test.ts (these numbers) and
+ * mcp-docs/src/search-web-limits.test.ts (the running sidecar's behaviour).
+ * Never widen one side without the other (#1768).
+ */
+export const SEARXNG_MAX_RESULTS_MIN = 1;
+export const SEARXNG_MAX_RESULTS_MAX = 10;
+export const SEARXNG_MAX_RESULTS_DEFAULT = 5;
+
+/**
  * SearXNG categories (`admin_settings.searxng_categories`), Settings → Integrations → SearXNG.
  *
  * The backend sends the saved value with every search as the mcp-docs
@@ -23,3 +37,27 @@ export const SearxngCategoriesSchema = z
   .regex(/^[a-z0-9_]+(,[a-z0-9_]+)*$/, {
     message: 'Use SearXNG category names in lowercase, separated by commas without spaces — for example general,it',
   });
+
+/**
+ * GET /api/admin/searxng. There is deliberately no `url`: the SearXNG endpoint
+ * is `SEARXNG_URL` on the mcp-docs service, not an admin setting (#1769).
+ */
+export const SearxngSettingsSchema = z.object({
+  maxResults: z.number().int().min(SEARXNG_MAX_RESULTS_MIN).max(SEARXNG_MAX_RESULTS_MAX),
+  categories: SearxngCategoriesSchema,
+});
+export type SearxngSettings = z.infer<typeof SearxngSettingsSchema>;
+
+/**
+ * PUT /api/admin/searxng — every field optional; an absent field is left unchanged.
+ *
+ * Deliberately NOT `.strict()`: a `url` sent by a pre-#1769 client (cached SPA,
+ * rolling deploy) is stripped and the rest of the body still applies — the
+ * reasoning of `UpdateAdminSettingsSchema` in schemas/admin.ts. Nothing is
+ * written under `searxng_url`.
+ */
+export const UpdateSearxngSettingsSchema = z.object({
+  maxResults: z.number().int().min(SEARXNG_MAX_RESULTS_MIN).max(SEARXNG_MAX_RESULTS_MAX).optional(),
+  categories: SearxngCategoriesSchema.optional(),
+});
+export type UpdateSearxngSettingsInput = z.infer<typeof UpdateSearxngSettingsSchema>;
