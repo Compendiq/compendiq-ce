@@ -601,9 +601,11 @@ past the first 100 search hits was silently dropped from the rendered table.
   future write-back needs the exact original serialization.
 - **`body_html`** — what the viewer and TipTap editor consume; already
   sanitized so we don't run the converter on every render.
-- **`body_text`** — stripped of all tags; the input to the PostgreSQL
-  `tsvector` column for hybrid search (and to snippets and the embedding
-  coverage probe's length check).
+- **`body_text`** — the visible text: tags stripped, character references
+  decoded once by the HTML parser (an escaped example `&amp;lt;br&amp;gt;`
+  stores `&lt;br&gt;`, #1735), whitespace collapsed; the input to the
+  PostgreSQL `tsvector` column for hybrid search (and to snippets and the
+  embedding coverage probe's length check).
 
 Markdown is regenerated on demand because (a) LLM prompt sizes vary by
 model so partial/windowed serialisation is common, and (b) the conversion

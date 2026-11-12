@@ -11,6 +11,11 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+`htmlToText` writes `body_text` on every write path (sync, saves, collab, imports, drafts,
+version text), so it must equal what the page shows: the HTML parser decodes entities once and
+nothing decodes again (#1735). Rows written before #1735 keep their double-decoded text until
+their next write; there is no backfill.
+
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header
