@@ -406,83 +406,293 @@ async function extractDocx(buffer: Buffer): Promise<ExtractedDocument> {
   }
 }
 
-/** ODF entities are the XML five plus numeric references. */
-function decodeXmlEntities(input: string): string {
-  return input
-    .replace(/&#x([0-9A-Fa-f]+);/g, (_m, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_m, dec: string) => String.fromCodePoint(parseInt(dec, 10)))
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
+/** What each predefined XML entity stands for. */
+const XML_PREDEFINED_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  amp: '&',
+};
+
+/** XML 1.0 `Char`: the code points a character reference may name. */
+function isXmlChar(code: number): boolean {
+  return (
+    code === 0x9 ||
+    code === 0xa ||
+    code === 0xd ||
+    (code >= 0x20 && code <= 0xd7ff) ||
+    (code >= 0xe000 && code <= 0xfffd) ||
+    (code >= 0x10000 && code <= 0x10ffff)
+  );
 }
 
 /**
- * Attribute stamped onto paragraphs nested in a list item so the block pass can
- * bullet them. Namespaced under `cq:` so it can never collide with real ODF.
+ * ODF entities are the XML five plus numeric references, decoded in one pass so
+ * a decoded `&` never starts another reference (`&#38;lt;` is the text `&lt;`).
+ * A reference to a code point XML does not allow — NUL, a surrogate, anything
+ * past U+10FFFF — becomes U+FFFD instead of failing the extraction.
  */
-const ODF_LIST_MARKER = 'cq:list="1"';
+function decodeXmlEntities(input: string): string {
+  return input.replace(
+    /&(?:#x([0-9A-Fa-f]+)|#(\d+)|(lt|gt|quot|apos|amp));/g,
+    (reference: string, hex: string | undefined, decimal: string | undefined, name: string | undefined) => {
+      if (name !== undefined) return XML_PREDEFINED_ENTITIES[name] ?? reference;
+      const code = hex !== undefined ? parseInt(hex, 16) : Number(decimal);
+      return isXmlChar(code) ? String.fromCodePoint(code) : '\uFFFD';
+    },
+  );
+}
+
+/** One piece of an XML document as {@link xmlTokens} reads it. */
+type XmlToken =
+  /** Character data, still entity-encoded. */
+  | { type: 'text'; raw: string }
+  /** The content of a CDATA section: literal text. */
+  | { type: 'cdata'; text: string }
+  | { type: 'start'; name: string; attrs: string; selfClosing: boolean }
+  | { type: 'end' };
 
 /**
- * Reads ODF text content out of `content.xml`.
- *
- * Deliberately a tag-level transform rather than a DOM parse: only the handful
- * of `text:*` elements that carry visible content matter, headings and list
- * items are worth keeping as Markdown, and everything else (styles, tracked
- * changes, metadata) is noise that a blanket tag-strip removes correctly.
+ * The index of the `>` that closes the tag opened at `lt`, of a `<` showing it
+ * was no tag, or -1 when the input ends first. A `>` inside a quoted value does
+ * not close a tag. XML allows `<` nowhere inside one, so meeting `<` means the
+ * tag is malformed: it then closes at its first `>`, quoted or not (what a plain
+ * `[^>]*` scan does), or, with no `>` at all, the `<` was stray text.
  */
-function odfContentToText(xml: string): string {
-  const bodyMatch = /<office:body\b[^>]*>([\s\S]*)<\/office:body>/.exec(xml);
-  let body = bodyMatch?.[1] ?? xml;
-
-  // Drop elements whose content is not document text.
-  body = body.replace(/<office:(annotation|forms|binary-data)\b[\s\S]*?<\/office:\1>/g, '');
-
-  // Bound the combined expansion, not just each text:s: a small XML entry can
-  // encode many large runs. Count the existing body as part of the budget.
-  let expandedBytes = Buffer.byteLength(body, 'utf8');
-  body = body
-    .replace(/<text:tab\b[^>]*\/?>/g, '\t')
-    .replace(/<text:line-break\b[^>]*\/?>/g, '\n')
-    .replace(/<text:s\b([^>]*)\/?>/g, (_tag, attrs: string) => {
-      const raw = /(?:^|\s)text:c\s*=\s*(['"])(\d+)\1/.exec(attrs)?.[2];
-      const count = raw === undefined ? 1 : Number(raw);
-      if (!Number.isSafeInteger(count) || count > ZIP_LIMITS.maxEntryBytes - expandedBytes) {
-        throw new DocumentExtractionError('unprocessable', 'ODT repeated spaces exceed the document limit');
-      }
-      expandedBytes += count;
-      return ' '.repeat(count);
-    });
-
-  // Empty blocks are written self-closing; normalise so one pass handles both.
-  body = body.replace(/<text:(h|p)\b([^>]*)\/>/g, '<text:$1$2></text:$1>');
-
-  // Mark list paragraphs before the generic block pass, which then treats them
-  // as ordinary paragraphs carrying one extra attribute.
-  body = body.replace(
-    /<text:list-item\b[^>]*>([\s\S]*?)<\/text:list-item>/g,
-    (_m, inner: string) => inner.replace(/<text:p\b/g, `<text:p ${ODF_LIST_MARKER}`),
-  );
-
-  const lines: string[] = [];
-  const block = /<text:(h|p)\b([^>]*)>([\s\S]*?)<\/text:\1>/g;
-  let match: RegExpExecArray | null;
-  while ((match = block.exec(body)) !== null) {
-    const attrs = match[2] ?? '';
-    const text = decodeXmlEntities((match[3] ?? '').replace(/<[^>]*>/g, '')).trim();
-
-    if (!text) {
-      lines.push('');
-    } else if (match[1] === 'h') {
-      const level = Number(/text:outline-level="(\d+)"/.exec(attrs)?.[1] ?? '1');
-      lines.push(`${'#'.repeat(Math.min(Math.max(level, 1), 6))} ${text}`);
-    } else if (attrs.includes(ODF_LIST_MARKER)) {
-      lines.push(`- ${text}`);
-    } else {
-      lines.push(text);
+function tagEnd(xml: string, lt: number): number {
+  let quote = '';
+  let firstGt = -1;
+  for (let i = lt + 1; i < xml.length; i += 1) {
+    const char = xml.charAt(i);
+    if (char === '<') return firstGt === -1 ? i : firstGt;
+    if (char === '>') {
+      if (quote === '') return i;
+      if (firstGt === -1) firstGt = i;
+    } else if (quote === '') {
+      if (char === '"' || char === "'") quote = char;
+    } else if (char === quote) {
+      quote = '';
     }
   }
+  return firstGt;
+}
+
+/**
+ * Splits XML into character data and tags in one forward pass, with no regex
+ * spanning a tag, so time stays linear and nothing can overflow whatever the
+ * input's shape. Comments, processing instructions and declarations
+ * (`<!DOCTYPE …>`, any `<!ENTITY …>` inside it) are skipped unread: no DTD is
+ * loaded and no declared entity is ever expanded. Input that ends inside a tag,
+ * comment, processing instruction or CDATA section ends the walk, so a
+ * truncated document yields what precedes the cut.
+ */
+function* xmlTokens(xml: string): Generator<XmlToken> {
+  let pos = 0;
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    const textEnd = lt === -1 ? xml.length : lt;
+    if (textEnd > pos) yield { type: 'text', raw: xml.slice(pos, textEnd) };
+    if (lt === -1) return;
+
+    if (xml.startsWith('<!--', lt)) {
+      const end = xml.indexOf('-->', lt + 4);
+      if (end === -1) return;
+      pos = end + 3;
+      continue;
+    }
+    if (xml.startsWith('<?', lt)) {
+      const end = xml.indexOf('?>', lt + 2);
+      if (end === -1) return;
+      pos = end + 2;
+      continue;
+    }
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      if (end === -1) return;
+      yield { type: 'cdata', text: xml.slice(lt + 9, end) };
+      pos = end + 3;
+      continue;
+    }
+
+    const end = tagEnd(xml, lt);
+    if (end === -1) return;
+    if (xml.charAt(end) === '<') {
+      // A `<` that opens no tag is text, unless it began a declaration.
+      if (xml.charAt(lt + 1) !== '!') yield { type: 'text', raw: xml.slice(lt, end) };
+      pos = end;
+      continue;
+    }
+    pos = end + 1;
+    const tag = xml.slice(lt + 1, end);
+    const closing = tag.startsWith('/');
+    const name = /^[^\s/]*/.exec(closing ? tag.slice(1) : tag)?.[0] ?? '';
+    // `<!DOCTYPE …>` and the declarations inside it are never interpreted.
+    if (name === '' || name.startsWith('!')) continue;
+    yield closing
+      ? { type: 'end' }
+      : { type: 'start', name, attrs: tag.slice(name.length), selfClosing: tag.endsWith('/') };
+  }
+}
+
+/** The content of `office:body`, or the whole document when it has none. */
+function odfBody(xml: string): string {
+  const open = xml.indexOf('<office:body');
+  const start = open === -1 ? 0 : xml.indexOf('>', open) + 1;
+  const end = xml.lastIndexOf('</office:body>');
+  return start > 0 && start <= end ? xml.slice(start, end) : xml;
+}
+
+/**
+ * Open paragraphs, and separately open list items, that the walk tracks at
+ * once. Real documents nest a few (a footnote's paragraph inside a paragraph is
+ * two); deeper ones are read as part of the innermost tracked one, which bounds
+ * the walk's memory however a hostile document nests.
+ */
+const ODF_MAX_NESTING = 64;
+
+/** A `text:p` / `text:h` that is open while {@link odfContentToText} walks. */
+interface OdfBlock {
+  /** Element depth of the block; the end tag at this depth closes it. */
+  depth: number;
+  /** `#`… for a heading, `- ` for a list item's paragraph: before its first line only. */
+  prefix: string;
+  /** Text gathered since the block's last line. */
+  text: string;
+  /** The block has written a line of its own. */
+  wroteLine: boolean;
+  /** A block nested inside has split this one. */
+  split: boolean;
+}
+
+/**
+ * Reads ODF text content out of `content.xml` as Markdown-ish lines.
+ *
+ * A walk over the element structure, not a regex per element: a paragraph
+ * nested in another (a footnote or endnote body, a frame's text box) would
+ * otherwise end the outer paragraph at the nested `</text:p>` and lose the rest
+ * of it (#1734). Element depth decides what closes what, so one pass handles
+ * any nesting:
+ *
+ * - Each `text:p` / `text:h` is a block: its character data, with `text:tab`,
+ *   `text:line-break` and `text:s` expanded, trimmed into a line. Headings get
+ *   `#` per outline level and paragraphs whose parent is a `text:list-item` get
+ *   `- `; an empty block is an empty line.
+ * - A block opening inside another splits it in document order: the outer text
+ *   so far becomes a line, the nested block's lines follow, and the outer text
+ *   after it starts a new line. The outer's marker goes on its first line only.
+ * - Comments, forms, binary data and the rendered footnote mark
+ *   (`text:note-citation`) are dropped with their content. Character data
+ *   outside every block (declarations, metadata) is not text. Text deleted
+ *   under change tracking (`text:tracked-changes`) is not filtered out.
+ */
+function odfContentToText(xml: string): string {
+  const body = odfBody(xml);
+  // Bound the combined expansion, not just each text:s: a small XML entry can
+  // encode many large runs. Count the walked body as part of the budget.
+  let expandedBytes = Buffer.byteLength(body, 'utf8');
+  const lines: string[] = [];
+  const blocks: OdfBlock[] = [];
+  const listItemDepths: number[] = [];
+  let depth = 0;
+  /** Depth of the element being dropped with its content; 0 when none. */
+  let skipDepth = 0;
+
+  const writeLine = (block: OdfBlock): void => {
+    const text = block.text.trim();
+    block.text = '';
+    if (!text) return;
+    lines.push(block.wroteLine ? text : block.prefix + text);
+    block.wroteLine = true;
+  };
+  const closeBlock = (): void => {
+    const block = blocks.pop();
+    if (block === undefined) return;
+    writeLine(block);
+    if (!block.wroteLine && !block.split) lines.push('');
+  };
+  const append = (text: string): void => {
+    const block = blocks.at(-1);
+    if (block) block.text += text;
+  };
+
+  for (const token of xmlTokens(body)) {
+    if (token.type === 'end') {
+      if (depth === 0) continue;
+      if (skipDepth === depth) {
+        skipDepth = 0;
+      } else if (skipDepth === 0) {
+        if (blocks.at(-1)?.depth === depth) closeBlock();
+        if (listItemDepths.at(-1) === depth) listItemDepths.pop();
+      }
+      depth -= 1;
+      continue;
+    }
+    if (skipDepth !== 0) {
+      if (token.type === 'start' && !token.selfClosing) depth += 1;
+      continue;
+    }
+    if (token.type === 'text') {
+      if (blocks.length > 0) append(decodeXmlEntities(token.raw));
+      continue;
+    }
+    if (token.type === 'cdata') {
+      append(token.text);
+      continue;
+    }
+
+    const { name, attrs, selfClosing } = token;
+    switch (name) {
+      // Not document text: comments, form controls, embedded binaries and the
+      // rendered footnote mark (the note body itself is kept).
+      case 'office:annotation':
+      case 'office:forms':
+      case 'office:binary-data':
+      case 'text:note-citation':
+        if (!selfClosing) skipDepth = depth + 1;
+        break;
+      case 'text:p':
+      case 'text:h': {
+        if (blocks.length >= ODF_MAX_NESTING) break;
+        const outer = blocks.at(-1);
+        if (outer) {
+          writeLine(outer);
+          outer.split = true;
+        }
+        let prefix = '';
+        if (name === 'text:h') {
+          const level = Number(/(?:^|\s)text:outline-level\s*=\s*(['"])(\d+)\1/.exec(attrs)?.[2] ?? '1');
+          prefix = `${'#'.repeat(Math.min(Math.max(level, 1), 6))} `;
+        } else if (listItemDepths.at(-1) === depth) {
+          prefix = '- ';
+        }
+        blocks.push({ depth: depth + 1, prefix, text: '', wroteLine: false, split: false });
+        if (selfClosing) closeBlock();
+        break;
+      }
+      case 'text:list-item':
+        if (!selfClosing && listItemDepths.length < ODF_MAX_NESTING) listItemDepths.push(depth + 1);
+        break;
+      case 'text:tab':
+        append('\t');
+        break;
+      case 'text:line-break':
+        append('\n');
+        break;
+      case 'text:s': {
+        const raw = /(?:^|\s)text:c\s*=\s*(['"])(\d+)\1/.exec(attrs)?.[2];
+        const count = raw === undefined ? 1 : Number(raw);
+        if (!Number.isSafeInteger(count) || count > ZIP_LIMITS.maxEntryBytes - expandedBytes) {
+          throw new DocumentExtractionError('unprocessable', 'ODT repeated spaces exceed the document limit');
+        }
+        expandedBytes += count;
+        append(' '.repeat(count));
+        break;
+      }
+    }
+    if (!selfClosing) depth += 1;
+  }
+  while (blocks.length > 0) closeBlock();
 
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

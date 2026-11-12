@@ -71,14 +71,30 @@ const ODT_MANIFEST = `<?xml version="1.0" encoding="UTF-8"?>
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>`;
 
+/** Shape switches for {@link buildOdt}; the defaults produce what writers emit. */
+interface OdtOptions {
+  /** `false` puts `bodyXml` straight into `<office:body>`, with no `<office:text>`. */
+  officeText?: boolean;
+  /** A `<!DOCTYPE …>` placed between the XML declaration and the root element. */
+  doctype?: string;
+  /** `false` ends content.xml right after `bodyXml`, as a truncated entry would. */
+  closed?: boolean;
+}
+
 /**
  * A minimal but genuine .odt. `bodyXml` is the inner content of
  * `<office:text>`; the `mimetype` entry is stored uncompressed as ODF requires.
  */
-export function buildOdt(bodyXml: string, extraEntries: Zippable = {}): Buffer {
-  const content = `<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">
-<office:body><office:text>${bodyXml}</office:text></office:body></office:document-content>`;
+export function buildOdt(
+  bodyXml: string,
+  extraEntries: Zippable = {},
+  { officeText = true, doctype = '', closed = true }: OdtOptions = {},
+): Buffer {
+  const [textOpen, textClose] = officeText ? ['<office:text>', '</office:text>'] : ['', ''];
+  const trailer = closed ? `${textClose}</office:body></office:document-content>` : '';
+  const content = `<?xml version="1.0" encoding="UTF-8"?>${doctype}
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.2">
+<office:body>${textOpen}${bodyXml}${trailer}`;
 
   return Buffer.from(zipSync({
     mimetype: [strToU8('application/vnd.oasis.opendocument.text'), { level: 0 }],
@@ -99,6 +115,23 @@ export function buildZip(entries: Zippable): Buffer {
  */
 export function compressibleEntry(uncompressedBytes: number): Uint8Array {
   return new Uint8Array(uncompressedBytes);
+}
+
+/**
+ * Bytes that do not compress (xorshift32 noise, fixed seed). Padding an archive
+ * with them lowers its expansion ratio, so a large but legitimate test entry
+ * gets past the ratio check to the reader.
+ */
+export function incompressibleEntry(bytes: number): Uint8Array {
+  const noise = new Uint8Array(bytes);
+  let state = 0x9e3779b9;
+  for (let i = 0; i < bytes; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    noise[i] = state & 0xff;
+  }
+  return noise;
 }
 
 /**
