@@ -357,3 +357,19 @@ literal tests — `packages/contracts/src/schemas/llm.test.ts`,
 `mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
 in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
 (#1767).
+
+## Analytics PDF Export
+
+The analytics dashboards' PDF is built in the browser by
+`frontend/src/shared/lib/export-helpers.ts`, which loads `pdf-lib` on demand,
+unless an EE renderer is registered with `setPdfRendererOverlay` (it receives
+the rows and metadata unchanged). The CE renderer draws with pdf-lib's standard
+Helvetica fonts, which encode only WinAnsi (Windows-1252), so the cover prints
+the date range as `<start> to <end>` and every caller-supplied string (title,
+user name, instance URL, KPIs, column names, cells) passes through
+`createTextGuard`: NFC first, whitespace the font lacks becomes a space, any
+other character it lacks becomes `?`, and the cover then says so. Non-Latin
+analytics data (Cyrillic or CJK titles and queries) is therefore lossy in this
+PDF; the dashboards themselves show it intact, and the integrity hash still
+covers the original rows. A failed export downloads nothing and shows an error
+toast (see `docs/claude/ui-ux.md`) (#1732).
