@@ -47,6 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ODT uploads keep the text after footnotes and text boxes (#1734):**
+  extracting an `.odt` lost the rest of any paragraph after an embedded
+  footnote, endnote or text box, glued the footnote number to the previous
+  word (`Before1Footnote`), and dropped the text between two ranged comments.
+  Notes and text boxes now appear where they sit — the paragraph's text before
+  them, their own lines, then the rest of the paragraph — without the footnote
+  number. Only paragraphs a list item holds directly get a bullet: a paragraph
+  after a nested list now does, a footnote's or table cell's paragraph inside a
+  list item no longer does. Character references are decoded once (`&#38;lt;`
+  stays `&lt;`) and references to invalid code points read as U+FFFD instead of
+  failing the extraction; heading levels written in single quotes are honoured.
+  Unclosed tags no longer make extraction time grow quadratically with the
+  document's size.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

@@ -395,6 +395,18 @@ line breaks. The combined expansion and original body are bounded by the
 existing 20 MB entry limit; excessive counts fail extraction with 422 rather
 than allocating an unbounded string.
 
+The `content.xml` reader is one linear pass that tracks element depth. Each
+`text:p` / `text:h` becomes one line: `#` per outline level, `- ` for a
+paragraph directly inside a list item, an empty line for an empty paragraph. A
+paragraph nested inside another — a footnote or endnote body, a frame's text
+box — splits it in document order: the text before it, the nested lines, then
+the rest of the outer paragraph on a new line (#1734). Comments
+(`office:annotation`), forms, binary data and the rendered footnote mark
+(`text:note-citation`) are dropped; text deleted under change tracking is not
+filtered out. At most 64 paragraphs are tracked open (deeper ones join the
+innermost), character references are decoded once with invalid code points
+read as U+FFFD, and no DTD is read nor any declared entity expanded.
+
 **Where the text goes.** The response is never persisted; the frontend holds it
 and sends it back on the *next* LLM call, as a dedicated bounded field of that
 call's request:

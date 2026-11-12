@@ -161,10 +161,16 @@ the `---` block renders as body and the import reports success with title and la
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
-(`content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
+(structural `content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
 by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
 extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
 repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+ODT is read by one linear pass over `content.xml` that tracks element depth — never a regex
+per element, which ended a paragraph at a nested note's `</text:p>` (#1734): a note or text
+box splits its paragraph in document order, at most 64 paragraphs are tracked open, and
+character references are decoded once (invalid code points become U+FFFD). It reads no DTD
+and expands only the five XML entities and numeric references; do not swap in an XML/DOM
+parser that expands declared entities (jsdom's XML mode does).
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
 
