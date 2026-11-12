@@ -14,8 +14,16 @@ Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, m
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header
-itself continues without repetition. Spanning cells and non-Latin font coverage
-are separate limitations.
+itself continues without repetition. Cells sit on a span-aware grid as wide as
+its widest row: thead, tbody, then tfoot rows, each row's own cells covering
+their `colspan` (missing, 0 or non-numeric count as 1). `rowspan` is ignored:
+cells of the rows below shift left. A spanning cell wraps at its columns'
+combined width, with no border inside it. Grids wider than 14 columns print in
+bands of at most 14 equal columns (at least 35.38 pt, two glyphs wide), one
+below the other, each with its share of the header row; a later band holds
+only the rows with a cell starting in it (a crossing cell repeats there), and
+a band in which no cell starts is skipped. Non-Latin font coverage is a
+separate limitation.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
