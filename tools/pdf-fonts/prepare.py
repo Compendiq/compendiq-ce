@@ -1,8 +1,9 @@
 """Rebuild backend/src/core/services/fonts: the Noto fonts article PDFs embed (#1729).
 
 Downloads each upstream font at a pinned revision, checks its SHA-256, drops
-the OpenType layout tables (GSUB, GPOS, GDEF) and pads every glyph record to
-an even length, then checks the result's SHA-256. Run from this directory:
+the OpenType layout tables (GSUB, GPOS, GDEF), gives every code point a glyph
+of its own and pads every glyph record to an even length, then checks the
+result's SHA-256. Run from this directory:
 
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
     .venv/bin/python prepare.py
@@ -18,7 +19,9 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables._g_l_y_f import ROUND_XY_TO_GRID, USE_MY_METRICS, Glyph
 
 OUT = Path(__file__).resolve().parents[2] / 'backend' / 'src' / 'core' / 'services' / 'fonts'
 NOTO = 'https://raw.githubusercontent.com/notofonts/notofonts.github.io/4cf78353cd1668040ba8efa13029cd910fcdf9e2/fonts'
@@ -41,10 +44,10 @@ FONTS = {
                                  'a310eb66b889b071602fcd3e7911a1fb3e2c3cb11133a9467153a2baea1616f8'),
     'NotoSansSC-Regular.ttf': (f'{NPM}/noto-sans-sc/-/noto-sans-sc-0.4.4.tgz', 'package/400Regular/NotoSansSC_400Regular.ttf',
                                'd45f67f0a7c0ca3f256950777ce6a61cc7ce5f9696d02900cbbaac25f8aa7d16',
-                               'a1d6b7087d48357b2d39e5f219a249de6de8e4589f49d36d4f297dabb1037f82'),
+                               '425b430cc27579448fbf9c3e4d48f023780431eef164c83885606c781e8c8684'),
     'NotoSansKR-Regular.ttf': (f'{NPM}/noto-sans-kr/-/noto-sans-kr-0.4.4.tgz', 'package/400Regular/NotoSansKR_400Regular.ttf',
                                'b4a747e78805bc25b610dcfc3003cb5fb2e2ec034763774b24216ed15889eef4',
-                               'daf7bec6cb059242d8a84da4f65417aec5dfd427816390c203a5765808706c46'),
+                               'f5483c226c23b474c6ae5eb2b73539c643d0430e9e67a99a6721d8983435bb93'),
 }
 LICENCES = {
     'OFL-NotoSans.txt': (f'{LGC}/OFL.txt', None, 'cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a'),
@@ -68,6 +71,51 @@ def fetch(url, member, sha256):
     return data
 
 
+def unshare_glyphs(font):
+    """Gives each code point that shares its glyph with a lower one a glyph of
+    its own, appended after the existing glyphs: a composite of the shared glyph
+    (same outline, unmoved, same metrics), or an empty glyph if it draws nothing.
+    Returns how many glyphs it added."""
+    claimed = set()
+    copies = {}  # code point: (shared glyph, its own glyph)
+    for cp, name in sorted(font.getBestCmap().items()):
+        if name in claimed:
+            copies[cp] = (name, f'cp{cp:04X}')
+        claimed.add(name)
+    if not copies:
+        return 0
+    order = font.getGlyphOrder()
+    added = [copy for _, copy in copies.values()]
+    if set(added) & set(order):
+        sys.exit('unshare_glyphs: a new glyph name is taken')
+    font.setGlyphOrder(order + added)
+    glyf, hmtx, maxp = font['glyf'], font['hmtx'], font['maxp']
+    vmtx = font['vmtx'] if 'vmtx' in font else None
+    glyph_set = font.getGlyphSet()
+    for name, copy in copies.values():
+        if glyf[name].numberOfContours == 0:
+            glyf[copy] = Glyph()
+        else:
+            pen = TTGlyphPen(glyph_set)
+            pen.addComponent(name, (1, 0, 0, 1, 0, 0))
+            glyph = pen.glyph(componentFlags=ROUND_XY_TO_GRID | USE_MY_METRICS)
+            glyph.recalcBounds(glyf)
+            glyf[copy] = glyph
+            points, contours, depth = glyph.getCompositeMaxpValues(glyf)
+            maxp.maxCompositePoints = max(maxp.maxCompositePoints, points)
+            maxp.maxCompositeContours = max(maxp.maxCompositeContours, contours)
+            maxp.maxComponentElements = max(maxp.maxComponentElements, 1)
+            maxp.maxComponentDepth = max(maxp.maxComponentDepth, depth)
+        hmtx[copy] = hmtx[name]
+        if vmtx is not None:
+            vmtx[copy] = vmtx[name]
+    for table in font['cmap'].tables:
+        for cp, (_, copy) in copies.items():
+            if cp in table.cmap:
+                table.cmap[cp] = copy
+    return len(added)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, (url, member, sha256) in LICENCES.items():
@@ -77,12 +125,13 @@ def main():
         for tag in ('GSUB', 'GPOS', 'GDEF'):
             if tag in font:
                 del font[tag]
+        added = unshare_glyphs(font)
         font['glyf'].padding = 2
         font.save(OUT / name)
         digest = hashlib.sha256((OUT / name).read_bytes()).hexdigest()
         if digest != output_sha256:
             sys.exit(f'{name}: output SHA-256 {digest} differs from the pinned {output_sha256}')
-        print(f'{name} {digest}')
+        print(f'{name} {digest} (+{added} glyphs)')
 
 
 if __name__ == '__main__':

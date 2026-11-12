@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import fontkit from '@pdf-lib/fontkit';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PDFDocument, rgb } from 'pdf-lib';
@@ -58,6 +59,24 @@ describe('pdf-fonts (#1729)', () => {
       const offsets = Array.from({ length: glyphCount + 1 }, (_, g) =>
         longOffsets ? font.getUint32(loca + 4 * g) : 2 * font.getUint16(loca + 2 * g));
       expect(offsets.filter((offset) => offset % 2), file).toEqual([]);
+    }
+  });
+
+  it('gives every code point a glyph of its own, so each extracts as itself', () => {
+    // pdf-lib's ToUnicode maps a glyph to the first character drawn with it: of two code points
+    // that share a glyph, the second extracts as the first. Upstream Noto Sans SC and KR share
+    // glyphs (〜 and ～, a Kangxi radical and its ideograph, ① and ➀); prepare.py splits them.
+    for (const file of readdirSync(FONT_DIR).filter((name) => name.endsWith('.ttf'))) {
+      const font = fontkit.create(readFileSync(join(FONT_DIR, file)));
+      const owner = new Map<number, number>();
+      const shared: string[] = [];
+      for (const cp of font.characterSet) {
+        const id = font.glyphForCodePoint(cp).id;
+        const first = owner.get(id);
+        if (first === undefined) owner.set(id, cp);
+        else shared.push(String.fromCodePoint(first, cp));
+      }
+      expect(shared, file).toEqual([]);
     }
   });
 

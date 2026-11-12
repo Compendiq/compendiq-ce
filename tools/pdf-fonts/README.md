@@ -45,6 +45,13 @@ advance widths are unchanged (checked for every mapped code point).
    from its measured width (`1⁄2` draws 830 units with the fraction forms but
    measures 1,274 one code point at a time), which is what wrapping relies on.
    Parsing them also tripled the time per export.
+3. **Every code point given a glyph of its own.** Noto Sans SC and KR draw some
+   code points with one shared glyph: `〜` and `～`, a Kangxi radical and its
+   ideograph (`⽇` and `日`), `①` and `➀`. pdf-lib's ToUnicode maps a glyph to
+   the first character drawn with it, so the second of such a pair extracted,
+   searched and copied as the first. Each code point but the lowest of a group
+   now gets a composite of the shared glyph — same outline, same metrics —
+   appended after the existing glyphs: 497 in SC, 723 in KR, 40 KB together.
 
 Hinting is not added (the Noto Sans files are the unhinted builds): subsets stay
 about half the size.

@@ -438,6 +438,18 @@ describe('pdf-service (pdf-lib)', () => {
       expect([...new Set(`${fixture.replace(/\s|😀/gu, '')}\uFFFD`)].filter((char) => !drawnChars.has(char))).toEqual([]);
     });
 
+    it('extracts look-alike characters that share a glyph upstream as written, each drawn with its outline', async () => {
+      // Upstream Noto Sans SC draws each of these pairs with one glyph: the wave dash 〜 and the
+      // fullwidth tilde ～, the Kangxi radicals ⽇ ⼿ and the ideographs 日 手, ① and ➀, ∕ and ／.
+      // pdf-lib's ToUnicode keeps the character first drawn with a glyph, so the second of a pair
+      // extracted as the first; tools/pdf-fonts/prepare.py gives each its own copy of the glyph.
+      const lines = ['10〜20時 と 10～20時', '⽇本 と 日本', '手 ⼿ ① ➀ ∕ ／'];
+      const { text, pdf } = await drawn(lines.map((line) => `<p>${line}</p>`).join(''));
+      expect(text).toBe(lines.join(' '));
+      const glyphs = (await embeddedFonts(pdf)).flatMap((font) => font.glyphs.map((glyph) => ({ font: font.name, ...glyph })));
+      expect(glyphs.filter((glyph) => !glyph.sameOutline || (!glyph.inked && glyph.char.trim()))).toEqual([]);
+    });
+
     it('embeds each font as a subset, and Noto Sans SC and KR only for characters that need them', async () => {
       const latin = await embeddedFonts((await drawn('<p>Hello</p>')).pdf);
       const cjk = await embeddedFonts((await drawn('<p>手順 한국어</p>')).pdf);
