@@ -6,12 +6,25 @@ import { createHash } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import { logger } from '../logger.js';
 
+/**
+ * Most markdown characters one document entry stores (#1770). It equals
+ * fetch_url's ABSOLUTE_MAX_LENGTH — change the two together: no call can
+ * return more, so the stored prefix answers every first page, while a download
+ * of up to 5 MiB can no longer become a Redis value of that size. The instance
+ * is shared with the BullMQ queues and runs `noeviction` (#658).
+ */
+const CACHE_MAX_CHARS = 100_000;
+
 export interface CachedDoc {
+  /** The first `storedLength` characters of the converted document. */
   markdown: string;
   title: string;
   url: string;
   fetchedAt: string;
+  /** Length of the whole converted document; exceeds `markdown.length` when the entry is bounded. */
   contentLength: number;
+  /** Characters held in `markdown`. Entries written before #1770 lack it and hold the whole document. */
+  storedLength?: number;
 }
 
 export interface CachedSearch {
@@ -58,10 +71,13 @@ export class DocsCache {
     }
   }
 
+  /** Stores at most the first CACHE_MAX_CHARS characters of `doc.markdown` and records how many as `storedLength`. */
   async setCachedDoc(url: string, doc: CachedDoc): Promise<void> {
     if (!this.redis) return;
+    const markdown = doc.markdown.slice(0, CACHE_MAX_CHARS);
+    const entry: CachedDoc = { ...doc, markdown, storedLength: markdown.length };
     try {
-      await this.redis.setEx(urlCacheKey(url), this.docTtl, JSON.stringify(doc));
+      await this.redis.setEx(urlCacheKey(url), this.docTtl, JSON.stringify(entry));
     } catch (err) {
       logger.error({ err }, 'Cache set error');
     }
