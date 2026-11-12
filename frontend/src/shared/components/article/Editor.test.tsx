@@ -1588,6 +1588,56 @@ it('declines a click outside any table so ProseMirror\'s default runs', async ()
       });
     });
   });
+  describe('Confluence task ids (#1751)', () => {
+    // confluenceToHtml's output for a page with tasks 42 and 7, byte for byte,
+    // pinned by the backend's content-converter.task-ids.test.ts.
+    const TASK_PAGE_HTML =
+      '<p>Intro</p>'
+      + '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true" data-task-id="42">Ship it</li>'
+      + '<li data-type="taskItem" data-checked="false" data-task-id="7">Write <strong>docs</strong></li>'
+      + '</ul>';
+
+    function savedTaskIds(editor: EditorType): Array<string | null> {
+      const saved = new DOMParser().parseFromString(editor.getHTML(), 'text/html');
+      return [...saved.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id'));
+    }
+
+    it('keeps the task ids through an unrelated edit', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      act(() => {
+        editor!.chain().setTextSelection(1 + 'Intro'.length).insertContent(' (edited)').run();
+      });
+
+      expect(new DOMParser().parseFromString(editor!.getHTML(), 'text/html').querySelector('p')?.textContent)
+        .toBe('Intro (edited)');
+      expect(savedTaskIds(editor!)).toEqual(['42', '7']);
+    });
+
+    it('starts a new task without the id when Enter splits a task', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={TASK_PAGE_HTML} editable={true} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+
+      // The cursor after "Ship it", then the command TaskItem binds to Enter.
+      let end = -1;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Ship it') end = pos + node.nodeSize;
+      });
+      act(() => {
+        editor!.chain().setTextSelection(end).splitListItem('taskItem').run();
+      });
+
+      expect(savedTaskIds(editor!)).toEqual(['42', null, '7']);
+    });
+  });
 });
 
 describe('draft auto-save flush on unmount (#877)', () => {

@@ -15,7 +15,7 @@ import { isConfluenceEnabled } from '../../core/services/confluence-integration.
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { type ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
 import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
-import { htmlToConfluence } from '../../core/services/content-converter.js';
+import { hasOnlyUncarriedTasks, htmlToConfluence } from '../../core/services/content-converter.js';
 import {
   describeConfluencePagePut,
   publishConfluencePagePut,
@@ -540,7 +540,16 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       if (intendedHistorical.body_html === null) {
         throw fastify.httpErrors.conflict('Historical version body is unavailable');
       }
-      const storageBody = htmlToConfluence(intendedHistorical.body_html);
+      // #1751: tasks keep the ids Confluence has, as publication re-derives
+      // the digest from this same stored page (publishConfluencePagePut).
+      const current = await query<{ body_storage: string | null; body_html: string | null }>(
+        'SELECT body_storage, body_html FROM pages WHERE id = $1',
+        [ctx.id],
+      );
+      const storageBody = htmlToConfluence(intendedHistorical.body_html, {
+        previousStorage: current.rows[0]?.body_storage,
+        legacyTasks: hasOnlyUncarriedTasks(current.rows[0]?.body_html),
+      });
       const publication = describeConfluencePagePut({
         kind: 'page.version_restore',
         actorId: userId,

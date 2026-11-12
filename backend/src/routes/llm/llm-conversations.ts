@@ -307,11 +307,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       id: number; version: number; title: string; space_key: string | null;
       source: string; confluence_id: string | null; body_html: string | null;
       created_by_user_id: string | null; visibility: string;
-      contentRevision: string; lifecycleRevision: string;
+      contentRevision: string; lifecycleRevision: string; bodyStorage: string | null;
     };
     const PAGE_COLUMNS = `id, version, title, space_key, source, confluence_id, body_html,
               created_by_user_id, visibility, content_revision::text AS "contentRevision",
-              lifecycle_revision::text AS "lifecycleRevision"`;
+              lifecycle_revision::text AS "lifecycleRevision", body_storage AS "bodyStorage"`;
     const currentConfluenceClient = async (
       client: PoolClient,
       intent: PageWriteIntent,
@@ -569,7 +569,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       }
 
       const confluenceId = existingPage.confluence_id;
-      const storageBody = htmlToConfluence(bodyHtml);
+      const storageBody = htmlToConfluence(bodyHtml, { previousStorage: existingPage.bodyStorage });
       const publication = describeConfluencePagePut({
         kind: 'page.ai_apply',
         actorId: userId,

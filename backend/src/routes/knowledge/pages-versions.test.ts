@@ -717,6 +717,160 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(confluenceRequests.map((entry) => entry.method)).toEqual(['PUT']);
   });
 
+  it('restores a Confluence version that holds new tasks (#1751)', async () => {
+    // Publication re-derives the restored version's storage and compares its
+    // digest with the intent's (page-put-intent-reconciler.ts), so the task ids
+    // htmlToConfluence gives the version's new tasks must not vary between calls.
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-tasks',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live before restore',
+      bodyHtml: '<p>Live before restore</p>',
+      bodyText: 'Live before restore',
+    });
+    await seedVersion(
+      pageId,
+      1,
+      'Checklist',
+      '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true"><p>Ship it</p></li>'
+      + '<li data-type="taskItem" data-checked="false"><p>Write docs</p></li>'
+      + '</ul>',
+      'Ship it Write docs',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ id: pageId, version: 4, restoredFrom: 1, pushedToConfluence: true });
+    const intent = await query<{ status: string }>(
+      `SELECT status FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(intent.rows.map((row) => row.status)).toEqual(['completed']);
+    expect(confluenceRequests.map((entry) => entry.method)).toEqual(['PUT']);
+    expect(confluenceRequests[0]?.body?.body.storage.value).toBe(
+      '<ac:task-list>'
+      + '<ac:task><ac:task-id>1</ac:task-id><ac:task-status>complete</ac:task-status>'
+      + '<ac:task-body><p>Ship it</p></ac:task-body></ac:task>'
+      + '<ac:task><ac:task-id>2</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body><p>Write docs</p></ac:task-body></ac:task>'
+      + '</ac:task-list>',
+    );
+  });
+
+  it('restores a version saved before task ids were carried with the ids Confluence has (#1751)', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-legacy-tasks',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live before restore',
+      bodyHtml: '<p>Live before restore</p>',
+      bodyText: 'Live before restore',
+    });
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [
+      pageId,
+      '<ac:task-list><ac:task><ac:task-id>794464</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+    ]);
+    await seedVersion(
+      pageId,
+      1,
+      'Checklist',
+      '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true">Ship it</li>'
+      + '<li data-type="taskItem" data-checked="false">Write docs</li>'
+      + '</ul>',
+      'Ship it Write docs',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    // Publication re-derives the storage with the same stored storage, so the digests match.
+    expect(response.statusCode, response.body).toBe(200);
+    const sent = confluenceRequests[0]?.body?.body.storage.value ?? '';
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['794464', '794465']);
+  });
+
+  describe('the order pairing of a page synced before ids were carried (#1751)', () => {
+    const STORAGE = '<ac:task-list>'
+      + '<ac:task><ac:task-id>794464</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task>'
+      + '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Write docs</ac:task-body></ac:task>'
+      + '</ac:task-list>';
+
+    /** Restore version 1 (`texts` as tasks without ids) over a live page whose body is `liveBodyHtml`. */
+    async function restoredTaskIds(confluenceId: string, liveBodyHtml: string, ...texts: string[]): Promise<string[]> {
+      await configureConfluence('OPS');
+      const pageId = await seedPage({
+        source: 'confluence',
+        confluenceId,
+        spaceKey: 'OPS',
+        visibility: 'shared',
+        ownerId: null,
+        version: 3,
+        title: 'Live before restore',
+        bodyHtml: liveBodyHtml,
+        bodyText: 'Live before restore',
+      });
+      await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [pageId, STORAGE]);
+      await seedVersion(
+        pageId,
+        1,
+        'Checklist',
+        `<ul data-type="taskList">${texts.map((text) => `<li data-type="taskItem" data-checked="false">${text}</li>`).join('')}</ul>`,
+        texts.join(' '),
+      );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/pages/${pageId}/versions/1/restore`,
+        headers: { 'x-test-user': userId },
+        payload: { version: 3 },
+      });
+
+      // The publication decides as the request did, so the digests match.
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = confluenceRequests[0]?.body?.body.storage.value ?? '';
+      return [...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]!);
+    }
+
+    it('restores edited tasks with the stored ids in order when the live body carries no id (#1751)', async () => {
+      const legacyLive = '<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false">Write docs</li></ul>';
+      expect(await restoredTaskIds('restore-legacy-pairing', legacyLive, 'Ship it today', 'Write docs'))
+        .toEqual(['794464', '12']);
+    });
+
+    it('restores tasks that replace every task of a live body that carries ids with new ids (#1751)', async () => {
+      const carriedLive = '<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="794464">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="12">Write docs</li></ul>';
+      expect(await restoredTaskIds('restore-carried-replace', carriedLive, 'Alpha', 'Beta'))
+        .toEqual(['794465', '794466']);
+    });
+  });
+
   it('recovers a compact acknowledged restore after readback failure without issuing a second PUT', async () => {
     await configureConfluence('OPS');
     const pageId = await seedPage({

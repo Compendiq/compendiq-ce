@@ -86,7 +86,7 @@ Custom turndown rules handle Confluence-specific macros:
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
 | `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
-| `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
+| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
@@ -302,6 +302,62 @@ any change to the existing conflict policy.
   columns and unknown macros). The one exception is a duplicate sibling
   `ac:task` an earlier write-back already created: by then it is a real,
   well-formed task, indistinguishable from one the author typed, so it stays.
+- **A task keeps its Confluence id (#1751).** Confluence numbers a page's
+  tasks and needs the numbers unique within the page: two tasks that share an
+  `ac:task-id` check and uncheck together (Atlassian KB "Checking/unchecking
+  a Task Item in a page causes other Tasks Items to trigger the same
+  behavior"); it keeps the number as a 64-bit integer. The forward pass
+  copies a task's own `ac:task-id` (its direct child, trimmed, canonical
+  decimal of at most 2^63 − 1, `isConfluenceTaskId`) into `data-task-id`;
+  anything else is not carried and its task counts as new. `taskItem`
+  declares it as `taskId` in both TipTap schemas (`ConfluenceTaskItem` in
+  collab-schema.ts and in article-extensions.ts, which the editor and read
+  mode register), with `keepOnSplit: false` so Enter starts a new task. Every
+  write-back over an existing page passes the page's stored storage
+  (`body_storage`) — PUT, collaborative Save, draft publish, version restore,
+  AI Improve apply — and `htmlToConfluence` decides every id before its
+  innermost-first loop, in document order: a task keeps the id it carries,
+  and when several tasks carry one id (pasted from another page, or
+  duplicated) the one whose own text is the stored task's keeps it, else the
+  first; a task without an id takes the id of the first stored task nothing
+  claimed whose own text it repeats exactly; every other task gets the next
+  free number above every id in the document and in the stored storage, so a
+  task deleted in the same write never lends its number (past 2^63 − 1, the
+  smallest free number). Only on a page synced before #1751 (`legacyTasks`)
+  do the tasks left then take the stored tasks left, in document order, when
+  they are as many, and a task without an id with a stored task's text goes
+  before a pasted carrier of that id. Callers decide it from the page's
+  stored state, never from the HTML being written: the stored `body_html`
+  holds tasks and none carries an id (`hasOnlyUncarriedTasks`); for a
+  collaborative Save, whose room rewrites `body_html` every 2 s, the room's
+  collaborative document lacks the `confluenceTaskIds` flag of its
+  `compendiq.meta` Y.Map, which is set when the document is seeded or reset
+  from HTML whose tasks carry ids and by every settled Confluence commit that
+  wrote task ids, in the transaction of its post-commit task-id marks (with
+  no marker when every task already carried its id, a `task_ids` message with
+  no entries). AI Improve apply never pairs. The same input always gets the
+  same ids: publishing a version restore re-derives the storage, with the
+  same stored page, and compares digests (`page-put-intent-reconciler.ts`),
+  which per-call random ids made fail. PUT, restore and Improve apply store a
+  body re-derived from the storage Confluence returns, so the ids come back
+  with it. The two writers that keep their own HTML store the ids they wrote:
+  draft publish stores `assignTaskIds`' HTML as the live body, and a
+  collaborative Save sets them on the room's task items by Yjs identity once
+  its intent settles (`markWrittenTaskIds`, the #1764 pattern: in place in
+  the owning room, over Redis to the pod that owns it, and in the persisted
+  document). The task body is the content `div` TaskItem serializes, not its
+  `<label><input type="checkbox">` chrome, which every editor save used to
+  write into `ac:task-body`; any other `li` shape is copied whole, so a body
+  polluted that way heals on its next save. Not covered: the AI Improve path
+  carries no ids (turndown writes `- [ ]` / `- [x]`), so on apply only tasks
+  whose text is unchanged get theirs back and a reworded task gets a new id;
+  in the first save of a page synced before #1751, a task typed in place of a
+  deleted one takes its id when the counts match, and an edited task gets a
+  new id when they do not; when two tasks carry one id and neither has the
+  stored task's text, the first keeps it; and the editor PUT, draft publish
+  and restore decide from the stored `body_html`, so after an unsaved
+  collaborative session, or a local-only edit, that replaced every task, the
+  next such write pairs those tasks with the stored ones once.
 - **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
   `ui-expand` comes from the Refined Macro Toolkit and is a different macro
   from Atlassian's native `expand`, not a rename. Verified against a

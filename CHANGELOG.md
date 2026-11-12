@@ -65,10 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numbered task list becomes an unnumbered task list (the editor has no
   numbered tasks), and a task item that contains a diagram or other block
   HTML stays a bullet with its `[x]` / `[ ]` as text, so nothing in it is
-  lost. Known limitation: when such a page is created in a Confluence space,
-  the task bodies written to Confluence still carry the editor's checkbox
-  markup, as they already do for any task created in the editor; the fix is
-  tracked with #1751.
+  lost.
 - **Confluence code, table-of-contents and status macros keep all their
   parameters (#1749):** saving a synced page (editor save, collaborative save,
   draft publish, version restore) dropped every code-macro parameter except
@@ -100,6 +97,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed only by backticks or tildes) is not imported, because it would
   break the page's Markdown, and an empty name still imports as an unnamed
   diagram.
+- **Confluence tasks keep their identity on save (#1751):** saving a synced
+  page (editor save, collaborative save, draft publish, version restore,
+  applying an AI Improve result) gave every task a new random `ac:task-id`,
+  so Confluence saw every task deleted and re-created on each save, and two
+  tasks could end up sharing an id (they then check and uncheck together). A
+  task now keeps its id. A new task gets the next free id, never the number
+  of a task deleted in the same save, and a task pasted with an id the page
+  already uses gets a new one while the page's own task keeps it. Applying an
+  AI Improve result keeps the id of a task whose text it left unchanged; a
+  reworded task gets a new id. A page synced before this release gets its ids
+  back from the stored Confluence copy on its next save: by task text, and
+  for the remaining tasks in order when as many remain on both sides (a task
+  typed in place of a deleted one then takes its id; otherwise an edited task
+  gets a new id). Saves no longer write the editor's checkbox markup into
+  each Confluence task body, and a body an earlier save wrote that way is
+  cleaned on its next save. Restoring a version of a Confluence page that has
+  tasks no longer fails with "Historical version … no longer matches the
+  durable restore intent" after Confluence has already accepted the restore.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
