@@ -293,6 +293,13 @@ Restore is not an API and does not run inside the serving Fastify process. The
 operator launches the standalone source-tree CLI where `POSTGRES_URL` can reach
 PostgreSQL, `pg_restore` is installed, and the real `ATTACHMENTS_DIR` is mounted.
 
+The backend runtime image also carries the PDF export fonts (Noto Sans, Noto
+Sans Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
+`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
+copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
+copy the built `dist`, ship them without a step of their own. Without them every
+PDF export fails with `PDF export font missing`.
+
 The restore stage is a temporary directory under the parent of
 `ATTACHMENTS_DIR`, with mode `0700`. It must be on the same filesystem as the
 live tree so attachment installation and rollback use atomic renames. The
@@ -380,7 +387,10 @@ normal mode neither provisions nor relaxes instance rate limits.
 ## Enterprise image
 
 `docker/Dockerfile.enterprise` is a multi-stage template that overlays the
-`@compendiq/enterprise` package onto the backend image. It does **not**
+`@compendiq/enterprise` package onto the backend image. It builds the backend
+with the same `npm run build -w backend`, so the PDF export fonts arrive with
+`dist`; an overlay that compiles another way must copy
+`backend/src/core/services/fonts` to `dist/core/services/fonts`. It does **not**
 modify the frontend image — the frontend is identical in CE and EE
 deployments and gates Enterprise UI at runtime (see
 [`04-frontend-structure.md`](./04-frontend-structure.md)).

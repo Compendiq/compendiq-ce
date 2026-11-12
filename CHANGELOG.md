@@ -47,6 +47,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Exported article PDFs keep non-Latin text (#1729):** Cyrillic, Greek,
+  Chinese, Japanese, Korean and extended-Latin text (`ł`, `ğ`, Vietnamese) is
+  no longer deleted from titles, headings, paragraphs, lists, quotes, code,
+  table cells and image labels. Article PDFs now use bundled Noto Sans, Noto
+  Sans Mono, Noto Sans SC and Noto Sans KR fonts (SIL OFL 1.1) instead of
+  Helvetica and Courier, so every export looks slightly different, and arrows,
+  dashes, quotes and similar symbols print as written instead of as `->`, `--`
+  or `'`. A character no bundled font covers (Arabic, Hebrew, Indic and Thai
+  scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤) prints as `�` instead of
+  disappearing, and a quote made only of such characters no longer fails the
+  export. Words separated only by a line break in the HTML stay two words, and
+  decomposed accents and Hangul print composed. Fonts are embedded as subsets:
+  a Latin-only article grows by about 14 KB, and the backend image by about
+  12 MB compressed. **Custom images:** `npm run build -w backend` copies the
+  fonts into `dist/`; an image that compiles the backend another way must copy
+  `backend/src/core/services/fonts` to `dist/core/services/fonts`, or every PDF
+  export fails with `PDF export font missing`.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

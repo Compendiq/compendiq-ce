@@ -11,11 +11,24 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+PDF export draws text in fonts vendored under `backend/src/core/services/fonts`
+(SIL OFL 1.1, rebuilt by `tools/pdf-fonts/prepare.py`; the backend build copies
+them into `dist`): Noto Sans Regular, Bold and Italic, Noto Sans Mono for code,
+Noto Sans SC for Chinese and Japanese and Noto Sans KR for Hangul (both in their
+Regular weight, also in bold or italic text). A character its face lacks falls
+back to Noto Sans Mono (in code: Noto Sans Regular), then SC, then KR, so
+arrows, box drawing and similar symbols print as written. A character no
+bundled font covers prints as U+FFFD: Arabic, Hebrew, Armenian, Georgian, Indic
+and Thai scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤, and rare CJK. Controls and
+other invisible characters print nothing. Text is composed (NFC) first, a tab
+is four spaces and a newline is a space; each run is measured in the font that
+draws it. Fonts are embedded as subsets, SC and KR only when the text needs
+them; a missing font file fails the export.
+
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header
-itself continues without repetition. Spanning cells and non-Latin font coverage
-are separate limitations.
+itself continues without repetition. Spanning cells are a separate limitation.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
