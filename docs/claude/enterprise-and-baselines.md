@@ -238,6 +238,9 @@ A Confluence collaborative commit that uploaded pasted images then marks them
 in the live room (an in-place Yjs transaction on the owning pod) and in
 `page_collaborative_docs`, after its intent settles and before its
 `pages_version` control, never through `doc_reset` (#1764).
+It marks the task ids it wrote the same way (`markWrittenTaskIds`, bus kind
+`task_ids`), and that transaction also sets `confluenceTaskIds` in the document's
+`compendiq.meta` Y.Map (#1751).
 
 Page Save is single-flight per editing session. Claim the flight synchronously
 before draw.io draining (the first await), and release it after success or
