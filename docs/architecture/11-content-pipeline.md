@@ -527,9 +527,31 @@ writes as `- [x]` / `- [ ]`) back as `ac:task-list`, mentions, status lozenges
 and Jira links inside its tasks included, instead of a bullet list with raw
 `<input>` elements in the stored body, and the retrieval-eval seeders store the
 same markup. The import sanitiser admits exactly `start` and `type`
-(`OrderedList`) and `data-type` and `data-checked`, by name. `ALLOW_DATA_ATTR`
-stays `false`, so every other `data-*` attribute is still stripped, and
-`<input>` is never admitted.
+(`OrderedList`), `data-type` and `data-checked`, and `data-diagram-name`
+(draw.io, below), by name. `ALLOW_DATA_ATTR` stays `false`, so every other
+`data-*` attribute is still stripped, and `<input>` is never admitted.
+
+**Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
+` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the
+import sanitiser admits `data-diagram-name` by name, so the editor parses the
+node with its `diagramName`, the Create Page save keeps it with the
+`drawio-preview-unavailable` marker, and the Confluence write-back names the
+diagram instead of the fallback `diagram`. The attribute is also URI-safe
+(`ADD_URI_SAFE_ATTR`, the way DOMPurify treats `alt` and `title`): its scheme
+check would drop a name such as `Network: DMZ`, and no consumer uses the name
+as a URL — the editor and read view show it as text or pass it through
+`encodeURIComponent`, the backend through `safeAttachmentPath`. `htmlToMarkdown`
+writes a name-only placeholder's name raw inside its ` ```drawio ` fence, so the
+import drops a name that contains a line break or another control character, or
+that marked reads as a closing fence (three backticks followed only by backticks
+or tildes); it drops an empty or whitespace-only name too, which `htmlToConfluence`
+would write as an empty `diagramName`. Such a placeholder imports nameless. A
+fence's `data-drawio-source` and `data-drawio-xml` are still stripped with every
+other `data-*` attribute (`ALLOW_DATA_ATTR` stays `false`): the source locator
+names another page's attachment, and the inline XML would reach the same-origin
+draw.io editor unvetted. The name is what the existing lookups resolve once the
+page has that attachment (read mode's Edit Diagram, `materializeDrawioPreviews`
+after a Confluence write); the import itself creates none.
 
 **Four size limits, deliberately ordered so the app is always what rejects.**
 Each layer clears the one below it, so a user never meets a limit that cannot
@@ -818,6 +840,13 @@ the diagram name, source, inline XML, preview and edit link; name-only
 wrappers retain the plain-name form. `markdownToHtml()` restores both forms,
 including explicit unavailable text when no preview is present, so copy,
 export and re-import do not silently discard the editable source reference.
+The Markdown import route keeps the name, the preview image and the edit link
+of either form, but its sanitiser strips the source locator and the inline XML
+(#1754; see Markdown import). A name-only wrapper's name is written raw, so a
+name with a line break, or one that marked reads as a closing fence (three
+backticks followed only by backticks or tildes), ends the fence early: the
+import drops such names, while names from Confluence storage or API writes are
+not checked yet.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|

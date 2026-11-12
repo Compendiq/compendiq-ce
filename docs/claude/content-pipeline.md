@@ -175,8 +175,18 @@ draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
 which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
 text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
 status lozenges, Jira links and images are inline and keep their tasks. The
-import sanitiser admits exactly `start`, `type`, `data-type` and `data-checked`
-by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
+`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
+`data-diagram-name` is admitted by name and as URI-safe, so a
+` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
+(#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
+`safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
+placeholder's name raw into its fence, so the import drops a name with a line break or other
+control character, one that marked reads as a closing fence (three backticks, then only backticks
+or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
+`data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
+the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
