@@ -92,7 +92,10 @@ export async function generatePdf(
 ): Promise<Buffer> {
   try {
     const doc = await PDFDocument.create();
-    const fonts = await embedFonts(doc);
+    // Parse first: which fonts to embed depends on the characters to draw.
+    const body = new JSDOM(html).window.document.body;
+    const alts = Array.from(body.querySelectorAll('img'), (img) => img.getAttribute('alt') ?? '');
+    const fonts = await embedFonts(doc, [options.title ?? '', body.textContent ?? '', ...alts].join('\n'));
 
     const ctx: RenderContext = {
       doc,
@@ -108,9 +111,6 @@ export async function generatePdf(
       renderCoverPage(ctx, options.title);
     }
 
-    // Parse HTML and render content
-    const dom = new JSDOM(html);
-    const body = dom.window.document.body;
     renderChildren(ctx, body);
 
     // Add footers to all pages
@@ -390,7 +390,8 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
     rendered.push({
       page: ctx.page,
       y: ctx.y,
-      text: normalizeText(lines[i]!.substring(0, 120)),
+      // Cut by code point, so a surrogate pair is never split.
+      text: normalizeText(Array.from(lines[i]!).slice(0, 120).join('')),
     });
     ctx.y -= lineHeight;
   }
@@ -565,15 +566,11 @@ function renderTable(ctx: RenderContext, el: Element): void {
     for (let c = 0; c < colCount; c++) {
       const lines = row.lines[c]!;
       for (let l = start; l < Math.min(start + count, lines.length); l++) {
-        try {
-          drawText(ctx.page, lines[l]!, {
-            x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
-            y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
-            size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
-          });
-        } catch {
-          // Skip unencodable characters
-        }
+        drawText(ctx.page, lines[l]!, {
+          x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
+          y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
+          size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
+        });
       }
     }
     for (const y of [top, bottom]) {
@@ -648,19 +645,15 @@ function renderImagePlaceholder(ctx: RenderContext, el: Element): void {
     color: rgb(0.97, 0.97, 0.98),
   });
 
-  const label = `[Image: ${alt}]`;
-  try {
-    const textW = measureText(label, ctx.fontItalic, FONT_SIZE_SMALL);
-    drawText(ctx.page, label, {
-      x: MARGIN_LEFT + (CONTENT_WIDTH - textW) / 2,
-      y: ctx.y - 20,
-      size: FONT_SIZE_SMALL,
-      font: ctx.fontItalic,
-      color: COLOR_MUTED,
-    });
-  } catch {
-    // skip unencodable alt text
-  }
+  const label = normalizeText(`[Image: ${alt}]`);
+  const textW = measureText(label, ctx.fontItalic, FONT_SIZE_SMALL);
+  drawText(ctx.page, label, {
+    x: MARGIN_LEFT + (CONTENT_WIDTH - textW) / 2,
+    y: ctx.y - 20,
+    size: FONT_SIZE_SMALL,
+    font: ctx.fontItalic,
+    color: COLOR_MUTED,
+  });
 
   ctx.y -= 36 + PARAGRAPH_SPACING;
 }
@@ -675,7 +668,6 @@ function extractTextContent(el: Element): string {
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
   if (!text) return [];
   const sanitized = normalizeText(text);
-  if (!sanitized) return [];
   const lines: string[] = [];
   const paragraphs = sanitized.split('\n');
 
@@ -689,14 +681,7 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
     let currentLine = '';
     for (const word of words) {
       const testLine = currentLine ? `${currentLine} ${word}` : word;
-      let width: number;
-      try {
-        width = measureText(testLine, font, fontSize);
-      } catch {
-        // Character encoding issue — skip this word
-        continue;
-      }
-
+      const width = measureText(testLine, font, fontSize);
       if (width > maxWidth && currentLine) {
         lines.push(currentLine);
         currentLine = word;
