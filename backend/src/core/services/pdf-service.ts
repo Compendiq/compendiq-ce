@@ -705,6 +705,7 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
   if (!sanitized) return [];
   const lines: string[] = [];
   const paragraphs = sanitized.split('\n');
+  const spaceWidth = measureText(' ', font, fontSize);
 
   for (const paragraph of paragraphs) {
     const words = paragraph.split(/\s+/).filter(Boolean);
@@ -714,22 +715,31 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
     }
 
     let currentLine = '';
+    let currentWidth = 0;
     for (const word of words) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      let width: number;
+      let wordWidth: number;
       try {
-        width = font.widthOfTextAtSize(testLine, fontSize);
+        wordWidth = measureText(word, font, fontSize);
       } catch {
         // Character encoding issue — skip this word
         continue;
       }
 
-      if (width > maxWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
+      // Widths add up (nothing is kerned), so each word is measured once.
+      const width = currentLine ? currentWidth + spaceWidth + wordWidth : wordWidth;
+      if (width <= maxWidth) {
+        currentLine = currentLine ? `${currentLine} ${word}` : word;
+        currentWidth = width;
+        continue;
       }
+      if (currentLine) lines.push(currentLine);
+      // The word starts a new line; one wider than a whole line (URL, hash)
+      // breaks between characters (#1730), its last piece left open for the
+      // words that follow.
+      const pieces = breakToWidth(word, font, fontSize, maxWidth);
+      for (let i = 0; i < pieces.length - 1; i++) lines.push(pieces[i]!);
+      currentLine = pieces[pieces.length - 1]!;
+      currentWidth = measureText(currentLine, font, fontSize);
     }
     if (currentLine) {
       lines.push(currentLine);
@@ -750,9 +760,9 @@ const glyphAdvances = new WeakMap<PDFFont, Map<string, number>>();
  * The width pdf-lib draws `text` at. `drawText` shows text with `Tj`, which
  * applies no kerning, so this sums each code point's advance —
  * `widthOfTextAtSize(text)` adds AFM kerning pairs and mismeasures drawn
- * Helvetica. Code rows are measured through here (#1730), so a font fallback
- * (#1729) changes measurement in one place. One map lookup per code point;
- * throws, like pdf-lib, on a code point the font cannot encode.
+ * Helvetica. Every wrapping decision measures through here (#1730), so a font
+ * fallback (#1729) changes measurement in one place. One map lookup per code
+ * point; throws, like pdf-lib, on a code point the font cannot encode.
  */
 function measureText(text: string, font: PDFFont, fontSize: number): number {
   let advances = glyphAdvances.get(font);

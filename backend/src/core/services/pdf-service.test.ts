@@ -192,14 +192,16 @@ describe('pdf-service (pdf-lib)', () => {
   // ========================================================================
   //
   // Code lines were cut at 120 characters and even the kept part ran off the
-  // page: pdf.js extracted 94 of 150 `x` and no SENTINEL_END. These assert
-  // the drawn text AND where it is drawn — every code run inside the 475.28 pt
-  // code box and inside a code background on its own page — because text
-  // that survives extraction can still sit outside the shaded block.
+  // page: pdf.js extracted 94 of 150 `x` and no SENTINEL_END. A word wider
+  // than its line overflowed paragraphs and table cells the same way. These
+  // assert the drawn text AND where it is drawn — every code run inside the
+  // 475.28 pt code box and inside a code background on its own page — because
+  // text that survives extraction can still sit outside its box.
   describe('long lines (#1730)', () => {
     // Geometry the renderer uses (pdf-service.ts constants).
     const CODE_X = 60; // CODE_TEXT_X = MARGIN_LEFT + CODE_PADDING
     const CODE_RIGHT = 535.28; // CODE_TEXT_X + CODE_TEXT_WIDTH = PAGE_WIDTH - MARGIN_RIGHT - CODE_PADDING
+    const BODY_RIGHT = 545.28; // PAGE_WIDTH - MARGIN_RIGHT
     const CODE_ROW = 13.5; // FONT_SIZE_CODE + 4
     const CELL = 5.7; // one Courier cell at 9.5 pt (0.6 em)
     const CODE_BG = '#f0f2f5'; // COLOR_CODE_BG rgb(0.94, 0.95, 0.96), as pdf.js reports the fill
@@ -333,6 +335,45 @@ describe('pdf-service (pdf-lib)', () => {
         const { text, items } = await layout(`<pre>${'x'.repeat(82)}\u{1F600}${'x'.repeat(3)}</pre>`);
         expect(items.map((item) => item.str)).toEqual(['x'.repeat(83), 'xx']);
         expect(text.replace(/Page\d+of\d+$/, '')).toBe('x'.repeat(85));
+      });
+    });
+
+    describe('wrapped text', () => {
+      it('breaks a paragraph word wider than the line and keeps the next word on its last row', async () => {
+        const token = `T${'0123456789'.repeat(25)}TOKEN_END`;
+        const { text, items } = await layout(`<p>Lead ${token} trail</p>`);
+        expect(text).toContain(`Lead${token}trail`);
+        for (const item of items) {
+          expect(item.x, item.str).toBeGreaterThanOrEqual(50 - EPS);
+          expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+        }
+        expect(items[0]!.str).toBe('Lead');
+        expect(items.at(-1)!.str).toMatch(/TOKEN_END trail$/);
+      });
+
+      it('keeps a long token inside its table column', async () => {
+        const hash = `${'0123456789abcdef'.repeat(8)}HASH_END`;
+        const { text, items } = await layout(
+          `<table><tr><th>Key</th><th>Value</th></tr><tr><td>${hash}</td><td>right</td></tr></table>`,
+        );
+        expect(text).toContain(hash);
+        // Two 247.64 pt columns from x = 50; cell text keeps 6 pt padding on both sides.
+        for (const item of items.filter((i) => i.x < 50 + 247.64)) {
+          expect(item.x + item.width, item.str).toBeLessThanOrEqual(50 + 247.64 - 6 + EPS);
+        }
+        expect(items.find((item) => item.str === 'right')!.x).toBeCloseTo(50 + 247.64 + 6);
+      });
+
+      it('measures wrapped lines as drawn, without kerning', async () => {
+        // Helvetica's AFM kerns A-V/V-A by -70/-80 per mille. widthOfTextAtSize subtracts that,
+        // but pdf-lib draws with Tj, which never applies it: three of these words measure
+        // 477.62 pt kerned and are drawn 534.38 pt wide.
+        const words = Array.from({ length: 6 }, () => 'AV'.repeat(12));
+        const { text, items } = await layout(`<p>${words.join(' ')}</p>`);
+        expect(text).toContain(words.join(''));
+        for (const item of items) {
+          expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+        }
       });
     });
   });
