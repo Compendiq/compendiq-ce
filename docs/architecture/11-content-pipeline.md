@@ -85,7 +85,7 @@ Custom turndown rules handle Confluence-specific macros:
 
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
-| `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
+| `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
 | `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
@@ -96,7 +96,8 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
-| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
+| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…" data-macro-params="{…}">[Table of Contents]</div>` — the seven named parameters as `data-*`, every other one (`exclude`, `include`, `indent`, `separator`, `class`, …) in `data-macro-params` (#1749) | `[Table of Contents]` placeholder; opaque-protected on Improve |
+| `ac:structured-macro[status]`        | `<span class="confluence-status" data-color="…" data-macro-params="{…}">TITLE</span>` — `colour` → `data-color`, `title` → badge text, every other parameter (`subtle`, …) in `data-macro-params` (#1749) | `[STATUS: TITLE]` (inline); opaque-protected on Improve |
 | `ac:structured-macro[labels]`        | `<div class="confluence-labels-macro" data-showlabels="…">[Labels]</div>` (#765; was dropped per #348) | `[Labels]` placeholder; opaque-protected on Improve |
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
@@ -125,7 +126,9 @@ any change to the existing conflict policy.
 - `jira`, `include`, `excerpt-include`, and `toc` all round-trip
   losslessly by stashing the original parameters on `data-*` attributes
   of the placeholder element; `htmlToConfluence` reads them back to
-  reconstruct the `<ac:structured-macro>` with its parameters. The
+  reconstruct the `<ac:structured-macro>` with its parameters — `toc`,
+  `code` and `status` additionally carry every direct text parameter that
+  has no named attribute in a JSON `data-macro-params` (#1749). The
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
@@ -175,6 +178,42 @@ any change to the existing conflict policy.
   grandchildren (dropped by a direct-child lookup, though the old descendant
   search still found them), and an empty `title` parameter absorbed the body,
   titling the section with its own opening prose. Expanding the tag closes both.
+- **Dedicated handlers keep every direct text parameter (#1749).** `code`,
+  `toc` and `status` keep their canonical parameters in their own attributes
+  (code `language` class + `data-title`, toc `data-<name>`, status
+  `data-color` + badge text) and carry every other direct text parameter
+  (`collectDirectTextParams`) in `data-macro-params`. One value, one home:
+  the forward pass removes a parameter from the carrier exactly when it wrote
+  its canonical attribute, and the reverse pass writes canonical parameters
+  first while `appendSerializedMacroParams(…, emitted)` skips a carried copy
+  of any name already written — so a value the editor changes always wins.
+  The code macro writes its attributes only for values they give back
+  exactly — a non-empty title, a language that is one class token
+  (`/^\S+$/`) — so an empty `language` / `title` stays carried and writes
+  back empty (the #1227 rule). The language class is the same `\S` class in
+  the reverse pass, collab-schema.ts and `TitledCodeBlock.ts` (turndown's
+  fenced-code rule reads it the same way). In both editor schemas TipTap's
+  own CodeBlock `language` parse (the first element child's class token)
+  overrides the parse rule's `getAttrs`, so the rule's regex decides only
+  when `<code>` is not `<pre>`'s first element child. Values only ever travel
+  as attribute values (`body_html`) or element text (storage), which the DOM
+  serializers escape (`"`/`&` in attributes, `<`/`>`/`&` in text), so a
+  hostile value stays inert and intact; the storage void-element
+  post-process can only rewrite `<br …>`-like text inside attribute values —
+  for these macros a carried parameter *name*, as for the #865 net. On
+  Improve, toc and status are frozen by `protectMedia` and keep their
+  carrier; a code block keeps only its language. Parameter order is
+  canonical first, then carried in source order (Confluence reads
+  parameters as a map). A code macro whose language is `mermaid` is claimed
+  by `mermaidBlock` (priority 200) rather than the code block in both
+  schemas, so `mermaidBlock` declares the same `title` (`data-title`) and
+  `macroParams` attributes. Only `body_html` converted after #1749 holds the
+  carriers: a page synced earlier gets them when its body is next re-derived
+  from Confluence (an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All**, all calling `POST /api/pages/bulk/sync`;
+  **Sync Now** is incremental and does not refresh unchanged pages). Saving it
+  before then still writes back without them.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as
   `data-macro-name="expand|ui-expand"` (plus
@@ -407,7 +446,15 @@ any change to the existing conflict policy.
   class + `data-*` attributes. The `details` node likewise declares
   `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
   attributes, so dropping those declarations silently reintroduces the
-  rewrite bug. ProseMirror silently unwraps any element
+  rewrite bug. `confluenceToc`, `confluenceStatus`, the code block
+  (`TitledCodeBlock`) and `mermaidBlock` declare `macroParams` in both schemas
+  for the same reason (#1749), and so does read mode's own code block in
+  `ArticleViewer.tsx`: read mode never saves, but ProseMirror serializes a
+  copy with the viewer's schema, and a block copied from the read view is
+  pasted into the editor and written back. `collab-schema-parity.test.ts` is
+  one-way — it fails when the collab schema lacks an attribute the frontend
+  declares — so the frontend declarations are pinned by their own editor and
+  viewer tests. ProseMirror silently unwraps any element
   with no matching parse rule, so a placeholder the editor doesn't know
   about is dropped from `getHTML()` and then permanently deleted from the
   Confluence page on the next save. The edit-mode schema
@@ -498,12 +545,69 @@ and the title and labels are gone. So `parseFrontMatter` strips a leading UTF-8
 BOM (which otherwise sits in front of the first `---` and defeats `^`) and
 accepts CRLF as well as LF (the `\n`-only pattern meant no Windows-authored
 file ever matched). The body is returned with its own line endings untouched.
+Labels come from `tags` (or, when that is not a list, `labels`), written either
+inline (`[a, b]`) or as a YAML block list (`- a` lines under a top-level key);
+the block form used to be dropped silently (#1753). A block list under any
+other top-level key stays under that key and never becomes labels. An indented
+key opens no list (its dash lines are ignored) but is still read as a top-level
+key, as before #1753 — so a nested `tags:` replaces a top-level `tags` list
+with `''`. A scalar `tags: ops` is not a label either.
 
 **Nothing imports to nothing.** Whitespace-only Markdown is rejected by the
 schema, and a conversion that yields an empty `bodyHtml` — a file that is only
 front-matter, or whose body the sanitizer stripped — is a **422**. An
 unexpected throw anywhere in the conversion is also a 422 naming what to try,
 not a 500 saying `Internal Server Error`.
+
+**Task lists and list numbering survive (#1752).** `markdownToHtml()` renders
+GFM task items (`- [x]` / `- [ ]`, under any list marker) as the editor's own
+task markup, `<ul data-type="taskList"><li data-type="taskItem"
+data-checked="true|false">`, instead of marked's `<input type="checkbox">`,
+which neither TipTap schema parses. A list that mixes task and plain items is
+split into consecutive runs: a task list holds task items only, and
+`htmlToConfluence` rebuilds `ac:task-list` from `li[data-type="taskItem"]`
+alone, so a plain item left inside one would vanish on write-back. A task item
+whose content holds a `<div>` stays a plain item with its `[x]` / `[ ]` kept
+as text, because TipTap's TaskItem parses its content from the first
+descendant `div` and would drop the rest. That covers raw HTML (`<div/>`
+included), a draw.io fence, and — on AI Improve Accept, which passes its
+protectMedia map as `protectedMedia` — a placeholder whose original HTML holds
+a div (a draw.io or mermaid diagram, a macro placeholder). Inline placeholders
+(an assignee mention, a status lozenge, a Jira link, an image) hold no div, so
+their tasks stay tasks. A plain run of an ordered list keeps its number through
+`start`; a task run has no numbering in either schema or in `ac:task-list`. No
+task id is emitted — a converted task is new. Lists without a task item render
+exactly as before. The conversion is in `markdownToHtml`, so it holds for every
+caller: AI Improve Accept now brings a page's task list (which `htmlToMarkdown`
+writes as `- [x]` / `- [ ]`) back as `ac:task-list`, mentions, status lozenges
+and Jira links inside its tasks included, instead of a bullet list with raw
+`<input>` elements in the stored body, and the retrieval-eval seeders store the
+same markup. The import sanitiser admits exactly `start` and `type`
+(`OrderedList`), `data-type` and `data-checked`, and `data-diagram-name`
+(draw.io, below), by name. `ALLOW_DATA_ATTR` stays `false`, so every other
+`data-*` attribute is still stripped, and `<input>` is never admitted.
+
+**Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
+` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the
+import sanitiser admits `data-diagram-name` by name, so the editor parses the
+node with its `diagramName`, the Create Page save keeps it with the
+`drawio-preview-unavailable` marker, and the Confluence write-back names the
+diagram instead of the fallback `diagram`. The attribute is also URI-safe
+(`ADD_URI_SAFE_ATTR`, the way DOMPurify treats `alt` and `title`): its scheme
+check would drop a name such as `Network: DMZ`, and no consumer uses the name
+as a URL — the editor and read view show it as text or pass it through
+`encodeURIComponent`, the backend through `safeAttachmentPath`. `htmlToMarkdown`
+writes a name-only placeholder's name raw inside its ` ```drawio ` fence, so the
+import drops a name that contains a line break or another control character, or
+that marked reads as a closing fence (three backticks followed only by backticks
+or tildes); it drops an empty or whitespace-only name too, which `htmlToConfluence`
+would write as an empty `diagramName`. Such a placeholder imports nameless. A
+fence's `data-drawio-source` and `data-drawio-xml` are still stripped with every
+other `data-*` attribute (`ALLOW_DATA_ATTR` stays `false`): the source locator
+names another page's attachment, and the inline XML would reach the same-origin
+draw.io editor unvetted. The name is what the existing lookups resolve once the
+page has that attachment (read mode's Edit Diagram, `materializeDrawioPreviews`
+after a Confluence write); the import itself creates none.
 
 **Four size limits, deliberately ordered so the app is always what rejects.**
 Each layer clears the one below it, so a user never meets a limit that cannot
@@ -792,6 +896,13 @@ the diagram name, source, inline XML, preview and edit link; name-only
 wrappers retain the plain-name form. `markdownToHtml()` restores both forms,
 including explicit unavailable text when no preview is present, so copy,
 export and re-import do not silently discard the editable source reference.
+The Markdown import route keeps the name, the preview image and the edit link
+of either form, but its sanitiser strips the source locator and the inline XML
+(#1754; see Markdown import). A name-only wrapper's name is written raw, so a
+name with a line break, or one that marked reads as a closing fence (three
+backticks followed only by backticks or tildes), ends the fence early: the
+import drops such names, while names from Confluence storage or API writes are
+not checked yet.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor, fireEvent } from '@testing-library/react';
+import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { handleTableCellTripleClick } from './table-cell-selection';
+import type { Editor as TipTapEditor } from '@tiptap/core';
 
 // Records every options object passed to `useEditor`, so a test can assert what
 // ArticleViewer wires into its editor without needing a reference to the view.
@@ -660,6 +661,46 @@ describe('ArticleViewer', () => {
 
     const pre = container.querySelector('pre')!;
     expect(pre.getAttribute('data-title')).toBeNull();
+  });
+
+  // #1749: read mode never saves, but ProseMirror serializes a copy with the
+  // viewer's own schema, and a block copied from here is pasted into the editor
+  // and written back, so read mode must carry the macro parameters too.
+  it('copies Confluence macro parameters out of the read view (#1749)', async () => {
+    const html =
+      '<p>Intro</p>'
+      + '<pre data-title="Startup.cs" data-macro-params="{&quot;linenumbers&quot;:&quot;true&quot;,&quot;collapse&quot;:&quot;true&quot;}">'
+      + '<code class="language-c#">var app = builder.Build();</code></pre>'
+      + '<div class="confluence-toc" data-macro-params="{&quot;exclude&quot;:&quot;Secret&quot;}">[Table of Contents]</div>'
+      + '<p>State: <span class="confluence-status" data-color="green" data-macro-params="{&quot;subtle&quot;:&quot;true&quot;}">DONE</span></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+    await waitFor(() => {
+      expect(container.querySelector('.ProseMirror pre')).toBeTruthy();
+    });
+
+    const view = container.querySelector('.ProseMirror') as HTMLElement & { editor: TipTapEditor };
+    act(() => {
+      view.editor.commands.selectAll();
+    });
+    let copied = '';
+    fireEvent.copy(view, {
+      clipboardData: {
+        clearData: vi.fn(),
+        setData: (type: string, value: string) => {
+          if (type === 'text/html') copied = value;
+        },
+      },
+    });
+
+    const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+    const pre = clipboard.querySelector('pre');
+    expect(pre?.getAttribute('data-title')).toBe('Startup.cs');
+    expect(pre?.querySelector('code')?.className).toBe('language-c#');
+    expect(JSON.parse(pre?.getAttribute('data-macro-params') ?? 'null')).toEqual({ linenumbers: 'true', collapse: 'true' });
+    expect(JSON.parse(clipboard.querySelector('div.confluence-toc')?.getAttribute('data-macro-params') ?? 'null'))
+      .toEqual({ exclude: 'Secret' });
+    expect(JSON.parse(clipboard.querySelector('span.confluence-status')?.getAttribute('data-macro-params') ?? 'null'))
+      .toEqual({ subtle: 'true' });
   });
 
   // Prose ink is owned by the CSS cascade (`[data-theme-type] .prose` in

@@ -1,7 +1,7 @@
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import he from 'he';
 import {
   getAttachmentImageSource,
@@ -235,12 +235,35 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
   target.innerHTML = source?.innerHTML ?? fallback;
 }
 
-function appendSerializedMacroParams(macro: Element, rawParams: string | null): void {
+/**
+ * A code block's language is ONE class token, `language-<token>` (#1749).
+ * Every reader takes the whole token: this reverse pass, the code-block parse
+ * rule in collab-schema.ts and frontend TitledCodeBlock.ts share the `\S`
+ * class, so `c#`, `objective-c` and `c++` survive (`\w` cut them at the first
+ * `#`, `-` or `+`). TipTap's own CodeBlock `language` attribute and turndown's
+ * fenced-code rule already read the whole token, and the forward pass writes
+ * the class only for a value that is one such token.
+ */
+const CODE_LANGUAGE_CLASS = /language-(\S+)/;
+
+/**
+ * Re-emit the parameters a forward handler stashed in `data-macro-params`.
+ * `emitted` names the parameters the caller already wrote from the macro's
+ * canonical attributes (#1749): a carried copy of one of those is skipped, so
+ * each parameter has one home and a canonical value the editor can change
+ * always wins over a stale carried one.
+ */
+function appendSerializedMacroParams(
+  macro: Element,
+  rawParams: string | null,
+  emitted?: ReadonlySet<string>,
+): void {
   if (!rawParams) return;
   try {
     const params = JSON.parse(rawParams) as Record<string, unknown>;
     for (const [paramName, paramValue] of Object.entries(params)) {
       if (typeof paramValue !== 'string') continue;
+      if (emitted?.has(paramName)) continue;
       const parameter = macro.ownerDocument.createElement('ac:parameter');
       parameter.setAttribute('ac:name', paramName);
       parameter.textContent = paramValue;
@@ -530,15 +553,34 @@ function confluenceToHtmlPass(
   const macrosBefore = countRawStructuredMacros(doc.body);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
+  // #1749: `language` keeps its class and `title` the editor's existing
+  // `data-title` on <pre>; every other direct text parameter (linenumbers,
+  // collapse, firstline, theme, …) rides in `data-macro-params`, the #865
+  // carrier. A canonical attribute is written only for a value it gives back
+  // exactly (a non-empty title, a language that is one class token), and a
+  // parameter leaves the carrier only when its attribute was written, so an
+  // empty `language`/`title` stays carried: the #1227 rule for expand titles.
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'code') continue;
     const language = getParamValue(macro, 'language') ?? '';
+    const title = getParamValue(macro, 'title') ?? '';
+    const params = collectDirectTextParams(macro);
     const bodyEl = byTag(macro, 'ac:plain-text-body')[0];
     const code = bodyEl?.textContent ?? '';
 
     const pre = doc.createElement('pre');
+    if (title !== '') {
+      pre.setAttribute('data-title', title);
+      delete params.title;
+    }
     const codeEl = doc.createElement('code');
-    if (language) codeEl.className = `language-${language}`;
+    if (/^\S+$/.test(language)) {
+      codeEl.className = `language-${language}`;
+      delete params.language;
+    }
+    if (Object.keys(params).length > 0) {
+      pre.setAttribute('data-macro-params', JSON.stringify(params));
+    }
     codeEl.textContent = code;
     pre.appendChild(codeEl);
     macro.replaceWith(pre);
@@ -788,6 +830,14 @@ function confluenceToHtmlPass(
     const span = doc.createElement('span');
     span.className = 'confluence-status';
     span.setAttribute('data-color', colour);
+    // #1749: `colour` and `title` keep their homes; every other direct text
+    // parameter (`subtle`, …) rides in `data-macro-params`.
+    const params = collectDirectTextParams(macro);
+    delete params.colour;
+    delete params.title;
+    if (Object.keys(params).length > 0) {
+      span.setAttribute('data-macro-params', JSON.stringify(params));
+    }
     span.textContent = title;
     macro.replaceWith(span);
   }
@@ -795,16 +845,25 @@ function confluenceToHtmlPass(
   // Process table of contents macro -> placeholder, preserving key params
   // (#300). Common TOC params — `maxLevel`, `minLevel`, `outline`, `style`,
   // `type` — are round-tripped as data attributes so htmlToConfluence can
-  // rebuild the macro losslessly.
+  // rebuild the macro losslessly; every other direct text parameter
+  // (`exclude`, `include`, `indent`, `separator`, `class`, …) rides in
+  // `data-macro-params` (#1749).
   const tocParamNames = ['maxLevel', 'minLevel', 'outline', 'style', 'type', 'printable', 'absoluteUrl'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'toc') continue;
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
+    const params = collectDirectTextParams(macro);
     for (const paramName of tocParamNames) {
       const val = getParamValue(macro, paramName);
-      if (val !== null && val !== undefined) div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+      if (val !== null && val !== undefined) {
+        div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+        delete params[paramName];
+      }
+    }
+    if (Object.keys(params).length > 0) {
+      div.setAttribute('data-macro-params', JSON.stringify(params));
     }
     macro.replaceWith(div);
   }
@@ -1027,23 +1086,35 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     div.remove();
   }
 
-  // Convert code blocks back
+  // Convert code blocks back. #1749: the language class, the `data-title`
+  // title, then whatever `data-macro-params` carries besides those two.
   for (const pre of doc.querySelectorAll('pre')) {
     const codeEl = pre.querySelector('code');
     if (!codeEl) continue;
 
-    const language = (codeEl.className.match(/language-(\w+)/) ?? [])[1] ?? '';
+    const language = (codeEl.className.match(CODE_LANGUAGE_CLASS) ?? [])[1] ?? '';
+    const title = pre.getAttribute('data-title') ?? '';
     const code = codeEl.textContent ?? '';
 
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'code');
+    const emitted = new Set<string>();
 
     if (language) {
       const param = doc.createElement('ac:parameter');
       param.setAttribute('ac:name', 'language');
       param.textContent = language;
       macro.appendChild(param);
+      emitted.add('language');
     }
+    if (title) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'title');
+      param.textContent = title;
+      macro.appendChild(param);
+      emitted.add('title');
+    }
+    appendSerializedMacroParams(macro, pre.getAttribute('data-macro-params'), emitted);
 
     const body = doc.createElement('ac:plain-text-body');
     body.textContent = code;
@@ -1406,6 +1477,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
       'printable': 'printable',
       'absoluteurl': 'absoluteUrl',
     };
+    const emitted = new Set<string>();
     for (const [dataAttr, paramName] of Object.entries(tocReverseParams)) {
       const val = div.getAttribute(`data-${dataAttr}`);
       if (val !== null) {
@@ -1413,8 +1485,10 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
         p.setAttribute('ac:name', paramName);
         p.textContent = val;
         macro.appendChild(p);
+        emitted.add(paramName);
       }
     }
+    appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'), emitted);
     div.replaceWith(macro);
   }
 
@@ -1478,7 +1552,9 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     span.replaceWith(acLink);
   }
 
-  // Convert status badges back to ac:structured-macro[name=status]
+  // Convert status badges back to ac:structured-macro[name=status]. Both
+  // canonical parameters are always written, so a carried copy never is (#1749).
+  const statusCanonicalParams: ReadonlySet<string> = new Set(['colour', 'title']);
   for (const span of doc.querySelectorAll('span.confluence-status')) {
     const colour = span.getAttribute('data-color') ?? 'grey';
     const title = span.textContent ?? '';
@@ -1492,6 +1568,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     titleParam.textContent = title;
     macro.appendChild(colourParam);
     macro.appendChild(titleParam);
+    appendSerializedMacroParams(macro, span.getAttribute('data-macro-params'), statusCanonicalParams);
     span.replaceWith(macro);
   }
 
@@ -3307,6 +3384,110 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   });
 }
 
+/**
+ * #1752: a `<div>` start tag. The HTML tokenizer ends a tag name at
+ * whitespace, `/` or `>`, so `<div/>` opens a div too (the slash is ignored).
+ */
+const DIV_START_TAG = /<div[\s/>]/i;
+
+/**
+ * #1752: either spelling (turndown escapes `_`) of every protectMedia token
+ * whose original HTML holds a `<div>` — the tokens the caller's restoreMedia
+ * turns back into a div. `_1` never matches `_10`. Null when there are none,
+ * or when nothing will restore the tokens (no media given).
+ */
+function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): RegExp | null {
+  const spellings = (media ?? [])
+    .filter((entry) => DIV_START_TAG.test(entry.html))
+    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
+    .map(escapeRegExp);
+  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})(?![0-9])`) : null;
+}
+
+/**
+ * #1752: does this rendered task-item body hold a `<div>`, or something that
+ * becomes one — a draw.io fence (markdownToHtml turns it into
+ * `div.confluence-drawio` after parsing) or a block-media token
+ * (blockMediaTokenPattern)? TipTap's TaskItem parses its content from the
+ * first descendant `div` (`contentElement` in @tiptap/extension-list
+ * task-item.ts), so a task item holding one would lose all content outside
+ * that div in the editor. Inline placeholders (image, mention, status, Jira)
+ * hold no div, so their task items stay tasks.
+ */
+function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
+  return DIV_START_TAG.test(body)
+    || body.includes('<code class="language-drawio">')
+    || (blockMediaToken !== null && blockMediaToken.test(body));
+}
+
+/**
+ * #1752: the Markdown parser behind markdownToHtml — marked's defaults (GFM
+ * on), except for lists that contain GFM task items.
+ *
+ * marked renders `- [x] done` as `<li><input checked="" disabled=""
+ * type="checkbox"> done</li>`. Neither TipTap schema parses that as a task:
+ * both read a task only as `ul[data-type="taskList"] >
+ * li[data-type="taskItem"][data-checked]` (TaskList/TaskItem in
+ * collab-schema.ts, Editor.tsx, ArticleViewer.tsx). So the checked state was
+ * lost on import, and on AI Improve Accept, whose htmlToMarkdown writes task
+ * items as `- [x]` / `- [ ]`, the `<input>` elements reached the stored body
+ * while the task list did not.
+ *
+ * Task items are emitted as that markup, in runs. A TaskList holds task items
+ * only, and htmlToConfluence rebuilds `ac:task-list` from
+ * `li[data-type="taskItem"]` alone, so a plain item inside one would vanish on
+ * write-back. A task item whose body would break the TaskItem parse
+ * (breaksTaskItemParse) stays a plain item instead, with the author's
+ * `[x]`/`[ ]` kept as text: its content and its state both survive. A plain
+ * run of an ordered list keeps its number via `start`; a task run has no
+ * numbering in either schema or in `ac:task-list`. No task id is emitted,
+ * because every converted task is new. Each item body is rendered exactly
+ * once. A list without a task item returns `false`: marked's own rendering,
+ * byte for byte.
+ */
+function createEditorMarked(blockMediaToken: RegExp | null): Marked {
+  return new Marked({
+    renderer: {
+      list(token) {
+        if (!token.items.some((item) => item.task)) return false;
+        const items = token.items.map((item) => {
+          const body = this.parser.parse(item.tokens, item.loose);
+          if (item.task && !breaksTaskItemParse(body, blockMediaToken)) {
+            return {
+              task: true,
+              html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
+            };
+          }
+          if (!item.task) return { task: false, html: `<li>${body}</li>\n` };
+          const marker = item.checked ? '[x] ' : '[ ] ';
+          const kept = body.startsWith('<p>') ? `<p>${marker}${body.slice(3)}` : `${marker}${body}`;
+          return { task: false, html: `<li>${kept}</li>\n` };
+        });
+        let html = '';
+        let index = 0;
+        while (index < items.length) {
+          const runStart = index;
+          const task = items[runStart]!.task;
+          while (index < items.length && items[index]!.task === task) index += 1;
+          const lis = items.slice(runStart, index).map((item) => item.html).join('');
+          if (task) {
+            html += `<ul data-type="taskList">\n${lis}</ul>\n`;
+          } else if (typeof token.start === 'number') {
+            const start = token.start + runStart;
+            html += `<ol${start === 1 ? '' : ` start="${start}"`}>\n${lis}</ol>\n`;
+          } else {
+            html += `<ul>\n${lis}</ul>\n`;
+          }
+        }
+        return html;
+      },
+    },
+  });
+}
+
+/** #1752: the parser for every call with no block media to restore. */
+const EDITOR_MARKED = createEditorMarked(null);
+
 export interface MarkdownToHtmlOptions {
   /**
    * #781: the expected layout-token skeleton of the document being edited
@@ -3317,10 +3498,19 @@ export interface MarkdownToHtmlOptions {
    * drop-guard applies (markdown imports, no expected structure).
    */
   layoutSkeleton?: LayoutSkeletonToken[];
+  /**
+   * #1752: the protectMedia map the caller restores into the result (AI
+   * Improve Accept). A task item holding a token whose original HTML has a
+   * `<div>` stays a plain item: restoreMedia would put that div inside it, and
+   * TipTap's TaskItem would parse only the div. Without it the tokens are
+   * plain text, because nothing restores them (import, eval seeders).
+   */
+  protectedMedia?: readonly ProtectedMedia[];
 }
 
 /**
- * Converts Markdown to HTML (for LLM output -> editor).
+ * Converts Markdown to HTML (for LLM output -> editor). GFM task items become
+ * the editor's task markup (see createEditorMarked, #1752).
  */
 export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
   const skeleton = options?.layoutSkeleton;
@@ -3372,7 +3562,9 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
-  let html = await marked(normalized) as string;
+  const blockMediaToken = blockMediaTokenPattern(options?.protectedMedia);
+  const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
+  let html = await parser.parse(normalized) as string;
 
   // Older authored fences contain just a name; exported wrappers also carry
   // their source and preview attributes in a single JSON line.

@@ -517,7 +517,8 @@ const TOC_PARAMS = ['maxlevel', 'minlevel', 'outline', 'style', 'type', 'printab
 /**
  * ConfluenceToc node — placeholder for Confluence TOC macros. Round-trips the
  * macro's parameters as data-* attributes so htmlToConfluence can rebuild the
- * ac:structured-macro[name=toc] losslessly (#857).
+ * ac:structured-macro[name=toc] losslessly (#857). Parameters outside
+ * TOC_PARAMS (exclude, include, indent, …) ride in `data-macro-params` (#1749).
  */
 export const ConfluenceToc = Node.create({
   name: 'confluenceToc',
@@ -525,7 +526,13 @@ export const ConfluenceToc = Node.create({
   atom: true,
 
   addAttributes() {
-    return dataParamAttributes(TOC_PARAMS);
+    return {
+      ...dataParamAttributes(TOC_PARAMS),
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+      },
+    };
   },
 
   parseHTML() {
@@ -533,11 +540,9 @@ export const ConfluenceToc = Node.create({
   },
 
   renderHTML({ node }) {
-    return [
-      'div',
-      renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' }),
-      'Table of Contents is displayed in the sidebar',
-    ];
+    const attrs = renderDataParams(node.attrs, TOC_PARAMS, { class: 'confluence-toc' });
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['div', attrs, 'Table of Contents is displayed in the sidebar'];
   },
 });
 
@@ -561,6 +566,12 @@ export const ConfluenceStatus = Node.create({
         default: '',
         parseHTML: (element) => element.textContent ?? '',
       },
+      // #1749: every status parameter except colour and title (subtle, …),
+      // stashed by the backend forward pass so write-back can re-emit it.
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+      },
     };
   },
 
@@ -569,14 +580,12 @@ export const ConfluenceStatus = Node.create({
   },
 
   renderHTML({ node }) {
-    return [
-      'span',
-      {
-        class: 'confluence-status',
-        'data-color': node.attrs.color,
-      },
-      node.attrs.label,
-    ];
+    const attrs: Record<string, string> = {
+      class: 'confluence-status',
+      'data-color': node.attrs.color,
+    };
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['span', attrs, node.attrs.label];
   },
 
   addNodeView() {
