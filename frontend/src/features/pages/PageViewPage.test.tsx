@@ -371,7 +371,8 @@ describe('PageViewPage', () => {
     mockRefetchPage.mockReset();
     capturedShortcuts = [];
     mockNavigate.mockReset();
-    mockUpdatePage.mockReset().mockResolvedValue(undefined);
+    // Mirrors useUpdatePage's contract: it resolves the version the PUT wrote.
+    mockUpdatePage.mockReset().mockResolvedValue({ version: mockPage.version + 1 });
     mockPinMutate.mockReset();
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);

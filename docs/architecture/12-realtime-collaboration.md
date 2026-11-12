@@ -103,26 +103,42 @@ sequenceDiagram
         F-->>B: close 4401
         B->>B: refreshAccessTokenOnce then reconnect
     else flag off or upgrade rate limited
-        F-->>B: close 4403
-        B->>B: destroy provider do not reconnect
+        F-->>B: close 4403 flag_off or rate_limited
+        B->>B: no reconnect, show the reason, Retry after the upgrade window for rate_limited
     else missing or no page access or folder or trashed
         F-->>B: close 4404
         B->>B: destroy provider do not reconnect
     else ok
+        Note over F: frames before live are buffered in order, 64 frames and 1 MiB, overflow closes 1013
         F->>G: load or create room then stamp awareness
         B->>G: binary SyncStep1
-        G-->>B: SyncStep2 then server SyncStep1
+        G-->>B: SyncStep2 only, the server does not currently send SyncStep1, see issue 1928
         Note over G: read-only peers drop SyncStep2 and Update by first two bytes
     end
 ```
 
-| Code | When |
-|------|------|
-| **4401** | Missing / invalid / expired JWT, deactivated user (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) |
-| **4403** | Flag off at join or mid-session, upgrade rate limit, page access revoked mid-session, or write attempted while read-only |
-| **4404** | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) |
-| **1001** | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect |
-| HTTP 401 (no socket) | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. |
+| Code | Reason | When | Client before the first sync | Client after the first sync |
+|------|--------|------|------------------------------|-----------------------------|
+| **4401** | `unauthorized` | Missing / invalid / expired JWT, deactivated user or changed role (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) | Refresh and rejoin. No session left: "Your session expired" | Refresh and rejoin. No session left: read-only draft |
+| **4403** | `forbidden` | Page access revoked mid-session (60 s permission refresh) | "You cannot join this collaborative session." Fail closed, no Retry | Read-only draft (`permission_loss`) |
+| **4403** | `rate_limited` | More than 20 upgrades by the user in the fixed `COLLAB_UPGRADE_WINDOW_SEC` (60 s) window | "Too many connection attempts". Retry becomes available one full window after the refusal | Read-only draft (`permission_loss`), see #1927 |
+| **4403** | `flag_off` | Flag off at join, or mid-session (every pod tombstones its rooms) | "Collaborative editing has been turned off". The client refetches `GET /api/collab/config`, no Retry | Read-only draft (`permission_loss`), see #1927 |
+| **4403** | `readonly` | 8 refused write frames from a read-only socket after the join (`COLLAB_READONLY_DROP_LIMIT`). Never sent for pre-live buffering | "The collaborative session closed before it finished loading." with Retry | Read-only draft (`permission_loss`), see #1927 |
+| **4403** | any other | — | Treated as `forbidden` (fail closed) | Treated as `forbidden` |
+| **4404** | `not_found`, `trashed`, `folder`, `committed_delete` | Missing page, no page access at join (answered exactly like a missing page, checked before lifecycle state), `page_type = 'folder'`, or committed trash (`deleted_at`) | "This page is no longer available for collaborative editing." | Read-only draft (`not_found`) |
+| **1013** | `join_backlog` | The pre-live buffer overflowed (below) — reconnect | "Could not connect to the collaborative session. Retrying…" while y-websocket reconnects | Working offline, then reconnect |
+| **1001** | `doc_reset` and transient reasons | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect | "Could not connect…"; `doc_reset`: "This page was replaced while the editor was opening" | Working offline, then reconnect; `doc_reset`: read-only draft |
+| HTTP 401 (no socket) | — | Optional Node-only `inject()` of a non-upgrade GET. Not the browser path. | — | — |
+
+**Before live (#1895).** Until the join completes (JWT, flag, page row,
+access, upgrade limit, edit permission, `attachSocket`), the gateway buffers
+inbound frames in arrival order, at most 64 frames and 1 MiB. When the socket
+goes live they are handled before any later frame, under the same read-only
+rules, so a read-only socket that queued writes still reaches the drop limit.
+An overflow closes `1013 join_backlog`, which y-websocket retries. Buffering
+never produces a 4403. Before the first sync the editor shows exactly one of
+the messages above, never the read-only draft banner or **Download draft**;
+Save stays blocked, and title, tags and icon unlock with the first sync.
 
 Close **after** the 101, **before** any SyncStep1. Do not throw
 `fastify.authenticate` in `onRequest` on this route.
@@ -148,8 +164,8 @@ client-claimed identity. Color is deterministic from `userId`.
 |----------------|---------------|---------------------------|
 | In-memory `Y.Doc` + Redis **incremental** `doc.on('update')` | Every keystroke | Live truth. `Y.applyUpdate(..., 'redis')` on receive so the handler does not loop. |
 | `page_collaborative_docs.doc_state` / `state_vector` | Debounced **2 s** after last applied update, and immediately when the last editor disconnects | Increments **this table's** `version` (persistence generation). Always. |
-| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. |
-| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds) |
+| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. **Does** advance `pages.content_revision` (migration 120 trigger), so a Confluence commit pins lifecycle and version, not that revision, across its provider read (#1762). |
+| `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds). It also resets `pages.body_html` / `body_text` to the committed snapshot: edits typed after that snapshot stay in the room; a persist that falls inside the Save's intent waits for it (#1763), so they reach `page_collaborative_docs` and `body_html` on the flush that the Save's `pages_version` control starts, the next edit's 2 s debounce, or the last-writer flush (#1762). |
 | Confluence DC | Collab commit for `source = 'confluence'` | Remote write **first**, same order as today's PUT |
 
 Stamping `local_modified_*` on the 2 s path is forbidden:
@@ -161,6 +177,32 @@ would overwrite live CRDT work on the next sync tick.
 BYTEA persist is always the full `Y.encodeStateAsUpdate`. Redis pub/sub is
 **never** that — it publishes the incremental `update` argument. Mixing
 those two floods every keystroke as a full document.
+
+**Images a Confluence commit uploaded (#1764).** The commit publishes
+`body_html` with `data-confluence-filename` and
+`data-confluence-image-source="attachment"` on the pasted images it uploaded;
+those markers make the next commit's image plan skip them. After the intent
+settles, and before its `pages_version` control, the commit marks the same
+images in the room so the next persist keeps them. The pod that owns the room
+applies an in-place Yjs transaction under its room admission (the fence a
+client frame uses) with its own origin, `COLLAB_IMAGE_MARKER_ORIGIN`:
+`doc.on('update')` persists it, publishes it once as an incremental `sync` and
+sends it to every socket; peers apply it with origin `'redis'` and do not
+republish it. A commit pod whose own room did not take the mark (no room for
+the page, a room without a writable admission, a room at another lifecycle
+revision, or a room released while the step waited for the page lock)
+publishes `image_markers` with the Save's lifecycle revision, and each pod
+whose room owns the page at that revision applies the same transaction. A pod
+without such a room ignores the message, and every pod ignores a malformed
+one. The commit also marks `page_collaborative_docs` under its own request
+admission, so a room that loads later, a persist (which merges the persisted
+document first) and the next commit snapshot keep the markers even when no
+room owned the page or the owning pod missed the message. Only `image` nodes
+whose current `src` was uploaded and that carry neither marker change; the
+document is never reset, so editors stay open. Both steps are best effort: one
+that the write fence refuses (lifecycle changed, page frozen, another pending
+write) is logged as `collab.image_markers_refused`, and the next Save uploads
+again the images that neither step marked.
 
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with
@@ -174,6 +216,29 @@ restore, Apply, draft-publish, inbound sync with `sCard = 0`, flag-off
 rollback) must `DELETE FROM page_collaborative_docs WHERE page_id = $1`.
 The no-row init path is how the next join recovers — not first-ever join
 only. A live room still 409s those HTTP writers; it does not DELETE.
+
+**While the page's own collaborative Save is pending (#1763).** A Confluence
+commit reserves a `collab.commit.confluence[.media]` intent after its provider
+read and keeps it pending until its local publication settles. That intent
+fences every writer of the page; for its own room it is transient. Writable
+frames and peer-pod updates keep applying to the in-memory `Y.Doc` on every
+pod, state dumps are still answered, and writable and read-only joins are still
+admitted, because the commit publishes the snapshot it captured before
+reserving. Only the room's persists wait: the 2 s snapshot and the last-writer
+flush answer `collab_commit_pending`, because a `body_html` write would advance
+`content_revision` under the intent and fail its completion after Confluence
+accepted the page. The `pages_version` control that follows a successful commit
+resumes both at once on every pod: a waiting persist while a writer is
+connected, and a deferred last-writer release. Without that control (a
+cancelled Save, or one settled by recovery) a waiting persist runs again on the
+next edit or the last-writer flush, and a deferred release retries from 1 s,
+doubling to 30 s. A Save whose Confluence write failed after dispatch stays
+pending as an unknown outcome until it is reconciled, and the room's edits stay
+unpersisted until then (see the immutable-page baselines runbook and #1934).
+Any other pending page write, a stale lifecycle or admission, and a fenced
+runtime still close a writable socket with `1001 collab_validation_unavailable`,
+and that refused frame is not requested again (#1928). No close code or control
+frame is added.
 
 ## Neighborhoods
 
@@ -245,26 +310,41 @@ Subscribe (and queue) **before** the BYTEA load. Pub/sub does not replay.
 refreshed on every ping (15 s) and every inbound frame. Yjs state is not
 stored in Redis.
 
-Last disconnect: persist BYTEA + HTML **immediately**. Do **not** `SREM`
-the last member until the 10 s empty-room grace fires **and** the
-in-memory `Y.Doc` is dropped (a `{podId}:grace` sentinel is equivalent),
-so `assertNoLiveCollabRoom` and the heap agree. A reconnect during grace
-cancels the timer.
+Last disconnect: flush BYTEA + HTML **immediately**, then release the room's
+durable admission and `SREM` its members, so `assertNoLiveCollabRoom` passes as
+soon as that flush lands. The heap keeps the clean room for the 10 s empty-room
+grace; a reconnect during grace cancels the timer, and a join after the release
+rebuilds the room from PostgreSQL. A failed flush keeps the admission (fail
+closed, see the runbook). A flush that waits for the page's own pending
+collaborative Save is retried after it (see *While the page's own collaborative
+Save is pending*).
+
+A committed hide/delete closes the page's rooms with **4404**
+`committed_delete` on every pod (`collab-tombstone.ts`: local close, then a
+Redis `tombstone` message). Intent recovery converges on the same close: a
+recovered Confluence delete tombstones after its settlement COMMIT, never inside
+it (a writable room's final flush takes the page lifecycle lock that
+transaction holds); an undispatched one restores `deleted_at` and closes
+nothing.
 
 ## Feature flag
 
 `admin_settings.collab_editing_enabled`, `'0'` / `'1'`, default `'0'`
 (migration 104, `ON CONFLICT DO NOTHING`). Soft-fail default is **false**.
 
-- Flag off: gateway completes 101 then closes **4403** before SyncStep1;
-  frontend mounts today's editor; SSE presence only.
+- Flag off: gateway completes 101 then closes **4403** `flag_off` before
+  SyncStep1; frontend mounts today's editor when `GET /api/collab/config`
+  says off; SSE presence only. A join that raced the flag (cached config)
+  shows the flag-off message and refetches the config, so reopening the
+  editor edits locally.
 - Flag on: `PageViewPage` mounts the provider **only in edit mode**. Read
   mode keeps the #301 SSE heartbeat. Read-only WS joins (ACE without
   write) are an **explicit** edit-mode (or "follow" toggle) path, not
   implied for every page view. In edit mode, Editor mounts Collaboration +
   CollaborationCaret; Save goes to `/collab/commit`.
 - Mid-session off: cache-bus `collab:enabled:changed`; every pod tombstones
-  its rooms (**4403**). Rollback `DELETE`s `page_collaborative_docs` rows.
+  its rooms (**4403** `flag_off`; synced tabs keep the read-only draft).
+  Rollback `DELETE`s `page_collaborative_docs` rows.
 
 Hard cutover is unsafe because `Editor.tsx` carries many custom Confluence
 nodes through y-prosemirror. The flag is the rollback.

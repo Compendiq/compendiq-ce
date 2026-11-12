@@ -30,6 +30,7 @@ export * from './schemas/ai-policy.js';
 export * from './schemas/ai-policy-activation.js';
 export * from './schemas/ai-governance.js';
 export * from './schemas/ai-policy-cascade.js';
+export * from './schemas/searxng.js';
 export * from './types/common.js';
 export * from './llm.js';
 export * from './image-analysis.js';

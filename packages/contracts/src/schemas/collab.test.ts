@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  COLLAB_UPGRADE_WINDOW_SEC,
   COLLAB_WS_PROTOCOL,
   CollabConfigSchema,
   CollabCommitSchema,
   CollabCommitResponseSchema,
+  CollabRefusalReasonSchema,
   CollabWritableAdmissionControlSchema,
 } from './collab.js';
 
@@ -17,6 +19,16 @@ describe('collab contracts (#1444)', () => {
     expect(CollabConfigSchema.parse({ enabled: true })).toEqual({ enabled: true });
     expect(() => CollabConfigSchema.parse({})).toThrow();
     expect(() => CollabConfigSchema.parse({ enabled: '1' })).toThrow();
+  });
+
+  it('names the 4403 refusal reasons and the upgrade window (#1895)', () => {
+    expect(CollabRefusalReasonSchema.options).toEqual(['forbidden', 'readonly', 'rate_limited', 'flag_off']);
+    expect(CollabRefusalReasonSchema.safeParse('rate_limited').success).toBe(true);
+    // A reason the client does not know must not be mapped to a relaxed state.
+    expect(CollabRefusalReasonSchema.safeParse('denied').success).toBe(false);
+    expect(CollabRefusalReasonSchema.safeParse('').success).toBe(false);
+    // The client's rate-limit Retry waits exactly this long; its copy says "a minute".
+    expect(COLLAB_UPGRADE_WINDOW_SEC).toBe(60);
   });
 
   it('requires an exact lifecycle revision on writable admission', () => {

@@ -3,7 +3,7 @@ import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { type AddressInfo, createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   isDbAvailable,
   setupTestDb,
@@ -12,6 +12,7 @@ import {
   waitForDatabaseCondition,
 } from '../../test-db-helper.js';
 import { closePool, getPool, query } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 import { PAGE_WRITER_ENFORCEMENT_VERSION } from './page-baseline-governance.js';
 import {
   type PageWriteIntent,
@@ -1310,6 +1311,119 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       failingRepairFixture = null;
       await rm(repairFixtureDirectory, { recursive: true, force: true });
     }
+  });
+
+  describe('reconciler afterCommit side effects (#1780)', () => {
+    let sideEffect: (intentId: string) => void | Promise<void> = () => undefined;
+
+    beforeAll(() => {
+      registerPageWriteIntentReconciler('pages.image.upload', async (_client, intent) => ({
+        outcome: 'applied' as const,
+        proof: {
+          kind: 'local_bytes_verified' as const,
+          observedAt: new Date().toISOString(),
+          reference: 'image-upload:after-commit-fixture',
+          details: {
+            syscallSettled: true as const,
+            intendedStateDigest: '6'.repeat(64),
+            observedStateDigest: '6'.repeat(64),
+            intendedSize: 1,
+            observedSize: 1,
+          },
+        },
+        result: undefined,
+        afterCommit: () => sideEffect(intent.id),
+      }));
+    });
+
+    async function fencedImageUploadIntent(): Promise<{ intentId: string; administrator: string }> {
+      const writer = await insertUser();
+      const administrator = await insertUser('admin');
+      const pageId = await insertPage(writer, 'Post-commit side effect');
+      const revision = await revisionOf(pageId);
+      const runtimeId = `after-commit-origin-${randomUUID()}`;
+      await query(
+        `INSERT INTO page_writer_runtimes
+           (runtime_id, deployment_identity, fenced_at, fenced_by, fence_reason, fence_proof,
+            enforcement_version)
+         VALUES ($1, $2::jsonb, NOW(), $3, 'Verified terminated original writer', $4::jsonb, $5)`,
+        [
+          runtimeId,
+          JSON.stringify({ host: 'terminated-origin', pid: 45, startedAt: new Date().toISOString() }),
+          administrator,
+          JSON.stringify({ kind: 'verified_local_termination', deploymentIdentity: { host: 'terminated-origin' } }),
+          PAGE_WRITER_ENFORCEMENT_VERSION,
+        ],
+      );
+      const intentId = randomUUID();
+      await query(
+        `INSERT INTO page_write_intents
+           (id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+            effect_started_at)
+         VALUES ($1, $2, 'pages.image.upload', $3, ARRAY[$4]::integer[], $5::jsonb,
+                 'local_verified', $6::jsonb, NOW())`,
+        [
+          intentId,
+          runtimeId,
+          writer,
+          pageId,
+          JSON.stringify({
+            [pageId]: { contentRevision: revision.content, lifecycleRevision: revision.lifecycle },
+          }),
+          JSON.stringify({ effectClass: 'local', identity: `image-upload:${pageId}` }),
+        ],
+      );
+      return { intentId, administrator };
+    }
+
+    it('awaits a reconciler afterCommit side effect after the settlement commits', async () => {
+      const { intentId, administrator } = await fencedImageUploadIntent();
+      let observed: string | undefined;
+      sideEffect = async (settledId) => {
+        // Another pool connection sees the settlement only once it committed.
+        observed = (await intentState(settledId)).status;
+      };
+      try {
+        await expect(reconcilePageWriteIntent(intentId, {
+          actorId: administrator,
+          reason: 'Settle the verified upload and run its post-commit side effect',
+        })).resolves.toEqual({ intentId, status: 'reconciled_applied' });
+        expect(observed).toBe('reconciled_applied');
+      } finally {
+        sideEffect = () => undefined;
+      }
+    });
+
+    it.each(['rejected promise', 'synchronous throw'] as const)(
+      'returns the settled recovery and logs when an afterCommit side effect fails (%s)',
+      async (failure) => {
+        const { intentId, administrator } = await fencedImageUploadIntent();
+        const sideEffectError = new Error('post-commit side effect failed');
+        sideEffect = failure === 'synchronous throw'
+          ? () => {
+              throw sideEffectError;
+            }
+          : async (settledId) => {
+              await intentState(settledId);
+              throw sideEffectError;
+            };
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+        try {
+          await expect(reconcilePageWriteIntent(intentId, {
+            actorId: administrator,
+            reason: 'A failing post-commit side effect cannot undo this settlement',
+          })).resolves.toEqual({ intentId, status: 'reconciled_applied' });
+          expect((await intentState(intentId)).status).toBe('reconciled_applied');
+          expect(warn).toHaveBeenCalledWith(
+            { err: sideEffectError, intentId },
+            'page-write recovery: a post-settlement side effect failed after the intent settled',
+          );
+        } finally {
+          warn.mockRestore();
+          sideEffect = () => undefined;
+        }
+      },
+    );
   });
 
   it('refuses non-admin quiescence before closing the process write gate', async () => {

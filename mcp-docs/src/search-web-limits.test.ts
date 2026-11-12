@@ -118,6 +118,102 @@ async function stopChild(child: ChildProcess): Promise<void> {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
 }
 
+describe('search_web result-width limits against the running sidecar (#1768)', () => {
+  const searxngQueries: string[] = [];
+  let searxng: Server;
+  let child: ChildProcess;
+  let transport: StreamableHTTPClientTransport;
+  let client: Client;
+
+  beforeAll(async () => {
+    searxng = createServer((request, response) => {
+      searxngQueries.push(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        results: Array.from({ length: FAKE_RESULT_COUNT }, (_, index) => ({
+          title: `Result ${index + 1}`,
+          url: `https://example.test/${index + 1}`,
+          content: `Snippet ${index + 1}`,
+        })),
+      }));
+    });
+    const listening = Promise.withResolvers<void>();
+    searxng.listen(0, '127.0.0.1', listening.resolve);
+    await listening.promise;
+    const address = searxng.address();
+    if (!address || typeof address === 'string') throw new Error('Loopback SearXNG did not bind');
+
+    const started = await startSidecar(`http://127.0.0.1:${address.port}`);
+    child = started.child;
+    transport = new StreamableHTTPClientTransport(new URL(`${started.baseUrl}/mcp`), {
+      requestInit: { headers: { 'x-mcp-docs-token': TOKEN } },
+    });
+    client = new Client({ name: 'search-web-limits-test', version: '0' });
+    await client.connect(transport);
+  }, 60_000);
+
+  afterAll(async () => {
+    await transport?.terminateSession().catch(() => {});
+    await client?.close().catch(() => {});
+    if (child) await stopChild(child);
+    if (searxng?.listening) {
+      const closed = Promise.withResolvers<void>();
+      searxng.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  /** One `search_web` call with a fresh query, so the Redis search cache (query + width) can never answer. */
+  async function search(args: { num_results?: number }) {
+    const query = `limits ${randomUUID()}`;
+    const result = await client.callTool({
+      name: 'search_web',
+      arguments: { query, user_id: 'limits-test', ...args },
+    });
+    const text = (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? '';
+    return {
+      isError: result.isError === true,
+      text,
+      results: (text.match(/^\d+\. \*\*/gm) ?? []).length,
+      searxngRequests: searxngQueries.filter((q) => q === query).length,
+    };
+  }
+
+  it('accepts num_results 10 (the maximum) and returns exactly 10 results', async () => {
+    const outcome = await search({ num_results: 10 });
+    expect(outcome.isError).toBe(false);
+    expect(outcome.results).toBe(10);
+    expect(outcome.searxngRequests).toBe(1);
+  });
+
+  it('accepts num_results 1 (the minimum)', async () => {
+    const outcome = await search({ num_results: 1 });
+    expect(outcome.isError).toBe(false);
+    expect(outcome.results).toBe(1);
+  });
+
+  it('defaults to 5 results when num_results is omitted', async () => {
+    const outcome = await search({});
+    expect(outcome.isError).toBe(false);
+    expect(outcome.results).toBe(5);
+  });
+
+  it.each([11, 15])('rejects num_results %i as an isError result naming the <=10 bound, without calling SearXNG', async (numResults) => {
+    const outcome = await search({ num_results: numResults });
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toMatch(/MCP error -32602/);
+    expect(outcome.text).toMatch(/Too big: expected number to be <=10 at num_results/);
+    expect(outcome.searxngRequests).toBe(0);
+  });
+
+  it('rejects num_results 0 with the >=1 bound, without calling SearXNG', async () => {
+    const outcome = await search({ num_results: 0 });
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toMatch(/Too small: expected number to be >=1 at num_results/);
+    expect(outcome.searxngRequests).toBe(0);
+  });
+});
+
 describe('search_web query limits against the running sidecar (#1767)', () => {
   // The issue's reproduction: a fake SearXNG returning 2 results must yield
   // exactly 2 through a 200-character query (AC3). The numbers are literal on

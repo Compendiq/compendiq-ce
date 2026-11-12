@@ -38,6 +38,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence collaborative Save no longer conflicts with its own autosave
+  (#1762):** saving a Confluence page in a collaborative session right after
+  typing could fail with `409 stale_content_revision` when the room's 2 s
+  autosave landed while the Save was reading the page from Confluence;
+  retrying succeeded. The Save now goes through, on the editor's pod or a
+  peer pod. A lifecycle change during the Save still refuses with
+  `409 stale_lifecycle`, and a page changed in Confluence still returns
+  `confluence_modified`.
+- **Collaborative Edit no longer rejects slow joins as unauthorized (#1895):**
+  frames a browser sends before its collaborative join completes are kept in
+  order (up to 64 frames / 1 MiB) and applied once the socket is live, instead
+  of closing the third one with `4403 readonly`. An overflow closes
+  `1013 join_backlog`, which the client retries, and is never reported as a
+  permission loss. Until the first sync the editor now shows one message per
+  close reason, with no read-only draft banner and no **Download draft**:
+  `rate_limited` offers Retry once the server's upgrade window has passed,
+  an interrupted join offers Retry at once, `flag_off` says collaborative
+  editing was turned off and reopening the editor edits locally, and
+  `forbidden` and unknown reasons still refuse. Title, tags, icon and Save stay
+  locked until the first sync (Save was enabled once write admission arrived,
+  so Ctrl+S could post a commit before the document had loaded). After the
+  first sync every 4403 keeps the existing read-only draft treatment.
+- **Typing during a Confluence collaborative Save no longer disconnects
+  editors, and the room releases after the Save (#1763):** while a co-editor's
+  or your own Save waited for Confluence, typing closed the socket
+  (`1001 collab_validation_unavailable`), rejoins failed until the Save
+  finished, and that typing never reached the server. Edits now keep flowing
+  live on every pod during the Save and are saved as soon as it succeeds.
+  When the last editor leaves during a Save, the room's admission is released
+  once the Save settles instead of answering other writers
+  `409 collab_session_active`.
+- **A pasted image is uploaded once, not on every collaborative Save (#1764):**
+  after a Confluence collaborative Save uploaded a pasted image, the session's
+  next autosave dropped the image's attachment markers, so every later Save
+  uploaded the image again (a new attachment version each time) and was
+  recorded as a media commit. The Save now marks the uploaded images in the
+  open editors and in the saved collaborative state, without reloading the
+  editor; a following text-only Save uploads nothing.
+- **Remote-delete recovery closes collaborative rooms (#1780):** when an admin
+  recovers a crashed Confluence or bulk-remote delete, open collaborative
+  editors are now closed with 4404 `committed_delete` on every pod after the
+  recovery settles. An undispatched delete restores the page and keeps its
+  rooms open.
+- **A stale editor draft no longer overwrites a newer version (#1746):** the
+  ordinary (non-collaborative) Save now sends the version the editing session
+  started from instead of whatever the page query last refetched, so after
+  someone else saves, the draft is refused with the actionable *Version
+  conflict* toast — on every repeated Save too — until it is reconciled with
+  **Reload** and then **Restore draft** or **Edit published version**.
+  Restoring a draft or choosing *Edit published version* bases the session —
+  its version and its title — on the page shown at that moment, and the
+  session's own successful Save becomes its new base. A save whose reply does
+  not say which version was written is now reported as unconfirmed.
+  Collaborative editing is unchanged.
+- **New-page drafts are offered back (#1747):** `/pages/new` autosaved the body
+  for the signed-in account but never read it back, and the title, space and
+  parent were not stored at all, so a reload or a stray navigation lost the
+  page. The form now also keeps the title, space key and parent id
+  (`new-page:meta`, same per-account draft storage) and offers **Restore
+  draft?** on return. **Start blank** and Escape delete nothing, and the first
+  edit afterwards replaces the whole kept draft, so a restore never mixes an old
+  title with a new body. A restored space that no longer exists leaves the
+  location for you to pick, and the Confluence preselection no longer overrides
+  a restored location. **Cancel** asks **Discard changes?** when the form has
+  content; creating the page or discarding it deletes both keys, and a failed
+  create keeps them.
+- **SearXNG result count (#1768):** Settings → Integrations → SearXNG accepts
+  1–10 — the range the mcp-docs `search_web` tool enforces — instead of 1–20;
+  a count above 10 previously disabled web search silently (the sidecar
+  rejected every request and the backend fell back to no sources). Stored
+  values above 10 are read as 10 (logged until re-saved), and **Test** now
+  searches with the saved count rather than a fixed 3, so it reports the
+  effective configuration.
 - **Bulk re-sync respects the sync conflict policy (#1779):** a page's Re-sync
   and Force re-sync (`POST /api/pages/bulk/sync`) no longer overwrite local
   edits unconditionally. They apply the configured conflict policy like the
