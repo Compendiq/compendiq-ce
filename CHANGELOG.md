@@ -443,6 +443,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output-token ceiling, analysis version pair, embedder and FTS configuration.
   A wrong, incomplete or reconfigured arm state is refused before any
   completion request instead of being answered under the `--arm` label.
+- **Analytics PDF export works with a date range (#1732):** the built-in
+  renderer printed the cover's date range with `→`, which its WinAnsi
+  Helvetica font cannot encode, so the PDF export of every analytics dashboard
+  failed before downloading and showed nothing. The cover now reads
+  `<start> to <end>`; characters the font cannot draw in titles, user names,
+  KPIs and table cells print as `?`, with a note on the cover, instead of
+  aborting the export; and a failed export shows an error toast naming the
+  report instead of failing silently.
 
 ## [0.9.2] - 2026-10-29
 
