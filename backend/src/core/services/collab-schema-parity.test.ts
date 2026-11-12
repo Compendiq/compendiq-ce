@@ -147,7 +147,8 @@ function frontendDocumentSpecs(): Spec[] {
   const table = parseNamedExtend(article, 'Table', 'table', 'node');
   const code = parseNamedExtend(titled, 'CodeBlockLowlight', 'codeBlock', 'node');
   const highlight = parseNamedExtend(article, 'Highlight', 'highlight', 'mark');
-  for (const extra of [image, table, code, highlight]) {
+  const taskItem = parseNamedExtend(article, 'TaskItem', 'taskItem', 'node');
+  for (const extra of [image, table, code, highlight, taskItem]) {
     if (extra) specs.push(extra);
   }
   return specs.filter((s) => !EDITOR_ONLY_EXTENSION_NAMES.has(s.name));

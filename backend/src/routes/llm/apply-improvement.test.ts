@@ -485,6 +485,67 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
     });
 
+    it('keeps the Confluence id of a task whose text the improvement left unchanged (#1751)', async () => {
+      const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+      await setPageContent(
+        pageId,
+        '<p>Old body</p>',
+        5,
+        '<p>Old</p><ac:task-list><ac:task><ac:task-id>794464</ac:task-id>'
+        + '<ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+      );
+      await enableConfluence(true);
+      // htmlToMarkdown writes no task ids, so the improvement's tasks carry none
+      // (raw task markup here; with #1752 a GFM task list renders the same).
+      const improvedMarkdown = '## Improved\n\n<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false">Celebrate</li></ul>\n';
+      acceptNextConfluenceUpdate();
+
+      const response = await apply({ pageId: 'page-1', improvedMarkdown, version: 5 });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+      expect([...sent.body.storage.value.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+        .toEqual(['794464', '794465']);
+    });
+
+    describe('tasks the improvement changed (#1751)', () => {
+      // htmlToMarkdown writes no task ids, so the improvement's tasks carry none
+      // (raw task markup here; with #1752 a GFM task list renders the same).
+      async function applyTasks(...texts: string[]): Promise<string[]> {
+        const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+        await setPageContent(
+          pageId,
+          '<p>Old body</p>',
+          5,
+          '<p>Old</p><ac:task-list>'
+          + [[1, 'Buy milk'], [2, 'Call Bob'], [3, 'Book flights']].map(([id, text]) => `<ac:task><ac:task-id>${id}</ac:task-id>`
+            + `<ac:task-status>incomplete</ac:task-status><ac:task-body>${text}</ac:task-body></ac:task>`).join('')
+          + '</ac:task-list>',
+        );
+        await enableConfluence(true);
+        const improvedMarkdown = '## Improved\n\n<ul data-type="taskList">'
+          + texts.map((text) => `<li data-type="taskItem" data-checked="false">${text}</li>`).join('')
+          + '</ul>\n';
+        acceptNextConfluenceUpdate();
+
+        const response = await apply({ pageId: 'page-1', improvedMarkdown, version: 5 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+        return [...sent.body.storage.value.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]!);
+      }
+
+      it('gives a task the improvement reworded a new id (#1751)', async () => {
+        expect(await applyTasks('Buy milk', 'Phone Bob', 'Book flights')).toEqual(['1', '4', '3']);
+      });
+
+      it('never gives a task the improvement added the id of one it dropped (#1751)', async () => {
+        expect(await applyTasks('Buy milk', 'Book flights', 'Pack bags')).toEqual(['1', '3', '4']);
+      });
+    });
+
     it('publishes a successful sparse Confluence response without requiring recovery', async () => {
       const pageId = await insertConfluencePage('page-sparse', 'Sparse article', 'OPS');
       await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');

@@ -4,7 +4,7 @@ import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-import { TaskList, TaskItem } from '@tiptap/extension-list';
+import { TaskList } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
@@ -39,6 +39,7 @@ import {
   ExtendedTable,
   CommentMark,
   SafeHighlight,
+  ConfluenceTaskItem,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -173,7 +174,7 @@ export function ArticleViewer({
       TableCell,
       TableHeader,
       TaskList,
-      TaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
+      ConfluenceTaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
         addAttributes() {
           return {
@@ -183,6 +184,15 @@ export function ArticleViewer({
               parseHTML: (element) => element.getAttribute('data-title'),
               renderHTML: (attributes) =>
                 attributes.title ? { 'data-title': attributes.title } : {},
+            },
+            // #1749: the code macro's other parameters. Read mode never saves,
+            // but ProseMirror's copy serializes with this schema, and a block
+            // copied from here is pasted into the editor and written back.
+            macroParams: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-macro-params'),
+              renderHTML: (attributes) =>
+                attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
             },
           };
         },
