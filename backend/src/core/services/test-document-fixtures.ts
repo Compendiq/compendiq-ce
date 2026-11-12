@@ -118,10 +118,10 @@ export function forgeUncompressedSizes(zip: Buffer, declared: number): Buffer {
   return forged;
 }
 
-/** An RTF document body wrapped in the header a real writer emits. */
-export function buildRtf(body: string): Buffer {
+/** An RTF document body wrapped in the header a real writer emits; `codePage` is its `\ansicpgN`. */
+export function buildRtf(body: string, codePage = 1252): Buffer {
   return Buffer.from(
-    '{\\rtf1\\ansi\\ansicpg1252\\deff0' +
+    `{\\rtf1\\ansi\\ansicpg${codePage}\\deff0` +
     '{\\fonttbl{\\f0\\fnil\\fcharset0 Calibri;}}' +
     '{\\colortbl ;\\red0\\green0\\blue0;}' +
     '{\\*\\generator Riched20 10.0.0;}' +
