@@ -570,17 +570,22 @@ describe('parseFrontMatter block lists (#1753)', () => {
   // match (a lone CR — lines split only on `\r?\n` — or U+2028) is not an
   // item. With two quantifiers that could both take the blanks, rejecting it
   // backtracked quadratically: ~14 s here at 200k blanks, ~6 min for a 1 MB
-  // import, with the event loop blocked throughout. Linear now (< 1 ms); the
-  // generous limit keeps the test flake-safe while still catching a regression.
+  // import, with the event loop blocked throughout. Linear now (< 1 ms). The
+  // bound is wall-clock, so the fastest of up to three attempts is asserted:
+  // correct code would need three consecutive scheduler stalls to fail, while
+  // a quadratic regex misses the bound on every attempt.
   it('rejects a dash line with a long blank run and a stray line terminator in linear time', () => {
     for (const sep of ['\r', '\u2028']) {
       const markdown = `---\ntags:\n- ${' '.repeat(200_000)}${sep}x\n---\nBody`;
-      const start = performance.now();
-      const result = parseFrontMatter(markdown);
-      const elapsedMs = performance.now() - start;
+      let fastestMs = Infinity;
+      for (let attempt = 0; attempt < 3 && fastestMs >= 1000; attempt++) {
+        const start = performance.now();
+        const result = parseFrontMatter(markdown);
+        fastestMs = Math.min(fastestMs, performance.now() - start);
+        expect(result.metadata).toEqual({ tags: '' });
+      }
 
-      expect(result.metadata).toEqual({ tags: '' });
-      expect(elapsedMs).toBeLessThan(1000);
+      expect(fastestMs).toBeLessThan(1000);
     }
   });
 
