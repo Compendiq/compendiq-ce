@@ -576,6 +576,9 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
   });
   const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
+  // A header cell whose share was too tall to repeat: later shares of it are
+  // no wider (full bands, then its last piece), so they are dropped unwrapped.
+  const tooTall = new Set<GridCell>();
   for (let from = 0; from < width; from += perBand) {
     const starting = startingRows.get(from / perBand) ?? [];
     if (from > 0 && starting.length === 0) continue;
@@ -592,9 +595,12 @@ function renderTable(ctx: RenderContext, el: Element): void {
       const startsHere = i < row.cells.length && row.cells[i]!.start < to;
       // A later band's header share: none of the header's cells starts here.
       const share = from > 0 && !startsHere;
-      if (share && !carried) continue;
+      if (share && (!carried || tooTall.has(row.cells[i - 1]!))) continue;
       const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth);
-      if (share && !repeatsAsHeader(slice)) continue;
+      if (share && !repeatsAsHeader(slice)) {
+        tooTall.add(row.cells[i - 1]!);
+        continue;
+      }
       if (r === 0 && row.isHeader) header = slice;
       band.push(slice);
     }
