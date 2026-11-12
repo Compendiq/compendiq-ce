@@ -163,6 +163,8 @@ comments) as arrays — they used to import as no labels without a warning (#175
 top-level (unindented) key opens a list, and items end at the first line that is not an item,
 blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
 rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
+An indented key opens no list but is still read as a top-level key (pre-existing), so a nested
+`tags:` replaces a top-level `tags` list with `''`.
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt

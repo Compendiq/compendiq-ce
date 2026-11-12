@@ -445,8 +445,10 @@ file ever matched). The body is returned with its own line endings untouched.
 Labels come from `tags` (or, when that is not a list, `labels`), written either
 inline (`[a, b]`) or as a YAML block list (`- a` lines under a top-level key);
 the block form used to be dropped silently (#1753). A block list under any
-other key, or under an indented key, stays under that key and never becomes
-labels; a scalar `tags: ops` is not a label either.
+other top-level key stays under that key and never becomes labels. An indented
+key opens no list (its dash lines are ignored) but is still read as a top-level
+key, as before #1753 — so a nested `tags:` replaces a top-level `tags` list
+with `''`. A scalar `tags: ops` is not a label either.
 
 **Nothing imports to nothing.** Whitespace-only Markdown is rejected by the
 schema, and a conversion that yields an empty `bodyHtml` — a file that is only

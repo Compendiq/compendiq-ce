@@ -362,9 +362,11 @@ Content`;
       expect(labels[49]).toBe('l49');
     });
 
-    // Pinned as it was before block lists: a scalar is not a label list.
+    // Pinned as it was before block lists: a scalar is not a label list, and
+    // dash lines after it do not turn it into one — only an empty or
+    // comment-only value opens a list.
     it('keeps a scalar tags: ops out of labels, as before', async () => {
-      for (const markdown of ['---\ntags: ops\n---\nBody', '---\ntags: "ops"\n---\nBody']) {
+      for (const markdown of ['---\ntags: ops\n---\nBody', '---\ntags: "ops"\n---\nBody', '---\ntags: ops\n  - x\n---\nBody']) {
         const response = await preview(markdown);
         expect(response.statusCode).toBe(200);
         expect(JSON.parse(response.body).labels).toEqual([]);
@@ -555,10 +557,38 @@ describe('parseFrontMatter block lists (#1753)', () => {
     expect(result.metadata.tags).toEqual(['#runbook', 'ops']);
   });
 
+  // Pinned non-goal: an indented key is still read as a top-level key (as it
+  // always was), and it opens no list — so a nested `tags:` replaces the
+  // top-level list with its empty value and its own items are ignored.
+  it('still reads an indented key as top-level, so a nested tags: replaces the list', () => {
+    const result = parseFrontMatter('---\ntags:\n  - ops\nmeta:\n  tags:\n    - leak\n---\nBody');
+
+    expect(result.metadata).toEqual({ tags: '', meta: '' });
+  });
+
+  // ReDoS guard: a dash line whose blank run ends in a character `.` cannot
+  // match (a lone CR — lines split only on `\r?\n` — or U+2028) is not an
+  // item. With two quantifiers that could both take the blanks, rejecting it
+  // backtracked quadratically: ~14 s here at 200k blanks, ~6 min for a 1 MB
+  // import, with the event loop blocked throughout. Linear now (< 1 ms); the
+  // generous limit keeps the test flake-safe while still catching a regression.
+  it('rejects a dash line with a long blank run and a stray line terminator in linear time', () => {
+    for (const sep of ['\r', '\u2028']) {
+      const markdown = `---\ntags:\n- ${' '.repeat(200_000)}${sep}x\n---\nBody`;
+      const start = performance.now();
+      const result = parseFrontMatter(markdown);
+      const elapsedMs = performance.now() - start;
+
+      expect(result.metadata).toEqual({ tags: '' });
+      expect(elapsedMs).toBeLessThan(1000);
+    }
+  });
+
   // Pinned as it was before block lists.
   it('keeps a key with no items and a scalar tags value as the strings they were', () => {
     expect(parseFrontMatter('---\ntags:\ntitle: X\n---\nBody').metadata).toEqual({ tags: '', title: 'X' });
     expect(parseFrontMatter('---\ntags: ops\n---\nBody').metadata.tags).toBe('ops');
     expect(parseFrontMatter('---\ntags: "ops"\n---\nBody').metadata.tags).toBe('ops');
+    expect(parseFrontMatter('---\ntags: ops\n  - x\n---\nBody').metadata.tags).toBe('ops');
   });
 });

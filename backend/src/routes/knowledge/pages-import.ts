@@ -109,8 +109,13 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
   });
 }
 
-/** `  - item` in a YAML block list: the dash needs whitespace or the line end after it, so `-ops` and `---` are not items. */
-const BLOCK_ITEM = /^[ \t]*-(?:[ \t]+(.*))?$/;
+/**
+ * `  - item` in a YAML block list: the dash needs whitespace or the line end after it, so `-ops` and `---` are not items.
+ * Exactly one blank after the dash: `[ \t]+(.*)` let both quantifiers take a blank run, and a line `.` cannot finish
+ * (a lone CR, U+2028) then backtracked quadratically — minutes of blocked event loop for one 1 MB import.
+ * The item text is trimmed by the caller, so the extra blanks still go.
+ */
+const BLOCK_ITEM = /^[ \t]*-(?:[ \t](.*))?$/;
 /** Blank and comment-only lines, which YAML allows anywhere inside a block list. */
 const BLANK_OR_COMMENT = /^[ \t]*(?:#.*)?$/;
 
@@ -147,9 +152,11 @@ function blockItemValue(text: string): string {
  *   as silent: no labels, no warning. A top-level key whose value is empty
  *   (or only a `#` comment) opens a list; items may be quoted and may carry a
  *   trailing comment. The list ends at the first line that is not an item,
- *   blank or comment, so a list under any other key — or under a nested,
- *   indented key — stays where it is. A scalar `tags: ops` is still a string,
- *   not a label.
+ *   blank or comment, so a list under any other key stays under that key.
+ *   An indented key opens no list (its dash lines are ignored), but it is
+ *   still read as a top-level key, as it always was — so a nested `tags:`
+ *   replaces a top-level `tags` list with `''`. A scalar `tags: ops` is still
+ *   a string, not a label.
  */
 export function parseFrontMatter(markdown: string): { metadata: Record<string, string | string[]>; content: string } {
   const source = markdown.replace(/^\uFEFF/, '');
