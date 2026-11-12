@@ -160,16 +160,16 @@ describe('pdf-service (pdf-lib)', () => {
     interface Rule { page: number; x: number; bottom: number; top: number }
     interface Edge { page: number; y: number; left: number; right: number }
 
-    /** Visible text runs (page footers excluded), border lines, header backgrounds, and the text without whitespace or footers. */
+    /** Visible text runs (page footers excluded), border lines, header background widths, and the text without whitespace or footers. */
     async function tableLayout(html: string): Promise<{
-      text: string; runs: Run[]; verticals: Rule[]; horizontals: Edge[]; shades: number; pages: number;
+      text: string; runs: Run[]; verticals: Rule[]; horizontals: Edge[]; shades: number[]; pages: number;
     }> {
       const pdf = await getDocumentProxy(new Uint8Array(await generatePdf(html, {})));
       const { OPS } = await getResolvedPDFJS();
       const runs: Run[] = [];
       const verticals: Rule[] = [];
       const horizontals: Edge[] = [];
-      let shades = 0;
+      const shades: number[] = [];
       for (let n = 1; n <= pdf.numPages; n++) {
         const page = await pdf.getPage(n);
         for (const item of (await page.getTextContent()).items) {
@@ -185,8 +185,10 @@ describe('pdf-service (pdf-lib)', () => {
           const args = argsArray[i];
           if (fn === OPS.setStrokeRGBColor) stroke = args[0];
           else if (fn === OPS.setFillRGBColor) fill = args[0];
-          else if (fn === OPS.constructPath && args[0] === OPS.fill && fill === SHADE) shades++;
-          else if (fn === OPS.constructPath && args[0] === OPS.stroke && stroke === BORDER) {
+          else if (fn === OPS.constructPath && args[0] === OPS.fill && fill === SHADE) {
+            const [minX, , maxX] = args[2] as number[];
+            shades.push(maxX! - minX!);
+          } else if (fn === OPS.constructPath && args[0] === OPS.stroke && stroke === BORDER) {
             const [minX, minY, maxX, maxY] = args[2] as number[];
             if (minX === maxX) verticals.push({ page: n, x: minX!, bottom: minY!, top: maxY! });
             else if (minY === maxY) horizontals.push({ page: n, y: minY!, left: minX!, right: maxX! });
@@ -334,7 +336,7 @@ describe('pdf-service (pdf-lib)', () => {
       it('prints a table wider than 14 columns in bands, every cell whole and inside its column', async () => {
         const head = Array.from({ length: 40 }, (_, c) => `c${c + 1}`);
         const body = Array.from({ length: 40 }, (_, c) => `v${c + 1}`);
-        const { text, runs, verticals, horizontals } = await tableLayout(`<table>
+        const { text, runs, verticals, horizontals, shades } = await tableLayout(`<table>
           <tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr>
           <tr>${body.map((v) => `<td>${v}</td>`).join('')}</tr></table>`);
         // 40 columns → 3 bands of 14, 14 and 12 columns, each 495.28 / 14 = 35.38 pt wide.
@@ -347,8 +349,11 @@ describe('pdf-service (pdf-lib)', () => {
           expect(run.x + run.width, run.str).toBeLessThanOrEqual(left + WIDTH / 14 - PAD + EPS);
         }
         expectNoBorderThrough(runs, verticals);
-        // The third band is 12 columns wide: its top and bottom borders stop at its right edge.
+        // The third band is 12 columns wide: its shading, its top and bottom borders and its right
+        // border stop at its right edge, 50 + 12 * 35.38 = 474.53.
         expect([...new Set(horizontals.map((rule) => +rule.right.toFixed(2)))].sort((a, b) => a - b)).toEqual([474.53, 545.28]);
+        expect(shades.map((width) => +width.toFixed(2))).toEqual([495.28, 495.28, 424.53]);
+        expect(bordersAt(verticals, runs.find((run) => run.str === 'c29')!).at(-1)).toBe(474.53);
       });
 
       it('prints a header that spans a band edge in each band, with no border inside it', async () => {
@@ -395,7 +400,7 @@ describe('pdf-service (pdf-lib)', () => {
           ['Group', 56], ['a', 56], ['wide', 91.38],
           ['Group', 56], ['Tail', 126.75], ['wide', 56], ['z', 515.9],
         ]);
-        expect(shades).toBe(2);
+        expect(shades).toHaveLength(2);
         expect(bordersAt(verticals, runs.at(-1)!)).toEqual([50, 509.9, 545.28]);
       });
 
@@ -428,7 +433,7 @@ describe('pdf-service (pdf-lib)', () => {
           <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
         expect(runs.map((run) => run.str)).toEqual(['H1', 'H2', ...months]);
         // One shaded header row: the second band starts with the body row, not an empty header.
-        expect(shades).toBe(1);
+        expect(shades).toHaveLength(1);
       });
 
       it('prints a header too tall to repeat only in its first band', async () => {
@@ -441,6 +446,23 @@ describe('pdf-service (pdf-lib)', () => {
           <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
         expect(text.match(/HEADEREND/g)).toEqual(['HEADEREND']);
         expect(runs.filter((run) => /^m\d+$/.test(run.str)).map((run) => run.str)).toEqual(months);
+      });
+
+      it('repeats the header row\'s share on every continuation page of a later band', async () => {
+        // 20 columns → 2 bands of 10; 60 rows run each band over two pages or more.
+        const rows = Array.from({ length: 60 }, (_, r) =>
+          `<tr>${Array.from({ length: 20 }, (_, c) => `<td>r${r}c${c}</td>`).join('')}</tr>`,
+        );
+        const { runs, verticals, pages } = await tableLayout(
+          `<table><tr><th colspan="20">Spanning header</th></tr>${rows.join('')}</table>`,
+        );
+        expect(runs.filter((run) => /^r\d+c\d+$/.test(run.str))).toHaveLength(60 * 20);
+        expect(new Set(runs.filter((run) => /^r\d+c1\d$/.test(run.str)).map((run) => run.page)).size).toBeGreaterThan(1);
+        for (let n = 1; n <= pages; n++) {
+          const first = runs.find((run) => run.page === n)!;
+          expect(first.str, `page ${n}`).toBe('Spanning header');
+          expect(bordersAt(verticals, first), `page ${n}`).toEqual([50, 545.28]);
+        }
       });
 
       it('keeps a 40-column table of 32-character ids to 20 pages', async () => {
