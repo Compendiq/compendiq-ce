@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { setupTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
-import { getSearxngMaxResults } from './_helpers.js';
+import { getSearxngSettings } from './_helpers.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -15,13 +15,17 @@ async function store(value: string): Promise<void> {
   );
 }
 
-describe.skipIf(!dbAvailable)('getSearxngMaxResults — stored value normalized into the sidecar range (#1768)', () => {
+async function savedMaxResults(): Promise<number> {
+  return (await getSearxngSettings()).maxResults;
+}
+
+describe.skipIf(!dbAvailable)('getSearxngSettings — stored result width normalized into the sidecar range (#1768)', () => {
   beforeAll(async () => {
     await setupTestDb();
   });
 
   beforeEach(async () => {
-    await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
+    await query(`DELETE FROM admin_settings WHERE setting_key LIKE 'searxng_%'`);
   });
 
   // The worker DB is shared with every other suite: leave no SearXNG row behind.
@@ -42,18 +46,18 @@ describe.skipIf(!dbAvailable)('getSearxngMaxResults — stored value normalized 
     ['10', 10],
   ])('reads stored %j as %i', async (stored, expected) => {
     await store(stored);
-    expect(await getSearxngMaxResults()).toBe(expected);
+    expect(await savedMaxResults()).toBe(expected);
   });
 
   it('reads the default 5 when nothing is stored', async () => {
-    expect(await getSearxngMaxResults()).toBe(5);
+    expect(await savedMaxResults()).toBe(5);
   });
 
   it('warns with the stored and effective values when clamping', async () => {
     const warn = vi.spyOn(logger, 'warn');
     await store('15');
 
-    await getSearxngMaxResults();
+    await savedMaxResults();
 
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ stored: '15', effective: 10 }),
@@ -65,7 +69,7 @@ describe.skipIf(!dbAvailable)('getSearxngMaxResults — stored value normalized 
     const warn = vi.spyOn(logger, 'warn');
     await store('abc');
 
-    expect(await getSearxngMaxResults()).toBe(5);
+    expect(await savedMaxResults()).toBe(5);
 
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ stored: 'abc' }),
@@ -78,7 +82,7 @@ describe.skipIf(!dbAvailable)('getSearxngMaxResults — stored value normalized 
     const warn = vi.spyOn(logger, 'warn');
     await store('7');
 
-    await getSearxngMaxResults();
+    await savedMaxResults();
 
     expect(warn).not.toHaveBeenCalled();
   });

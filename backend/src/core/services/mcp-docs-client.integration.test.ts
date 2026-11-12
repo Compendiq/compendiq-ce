@@ -48,9 +48,9 @@ vi.mock('./mcp-docs-settings.js', () => ({
   }),
 }));
 
-// Keeps the LLM route graph out of this file; the saved count is #1768's concern.
+// Keeps the LLM route graph out of this file; the saved settings are #1768's / #1769's concern.
 vi.mock('../../routes/llm/_helpers.js', () => ({
-  getSearxngMaxResults: async () => 3,
+  getSearxngSettings: async () => ({ maxResults: 3, categories: 'general' }),
 }));
 
 import { searchDocumentation, testConnection } from './mcp-docs-client.js';

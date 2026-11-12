@@ -213,7 +213,7 @@ describe.skipIf(!available)('searchQuery bound on the LLM routes (#1767)', () =>
 
     expect(response.statusCode, response.body).toBe(200);
     expect(mcp.searchDocumentation).toHaveBeenCalledTimes(1);
-    expect(mcp.searchDocumentation).toHaveBeenCalledWith(QUERY_200, userId, 5);
+    expect(mcp.searchDocumentation).toHaveBeenCalledWith(QUERY_200, userId, 5, 'general');
     const sources = sseEvents(response.body).find((event) => event.final)!.sources as Array<Record<string, unknown>>;
     expect(sources).toHaveLength(2);
     expect(sources.map((source) => source.url)).toEqual(['https://example.test/1', 'https://example.test/2']);
@@ -224,6 +224,6 @@ describe.skipIf(!available)('searchQuery bound on the LLM routes (#1767)', () =>
     const response = await post('generate', { prompt: 'hi', model: 'm', searchWeb: true, searchQuery: ` ${QUERY_200} ` });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(mcp.searchDocumentation).toHaveBeenCalledWith(QUERY_200, userId, 5);
+    expect(mcp.searchDocumentation).toHaveBeenCalledWith(QUERY_200, userId, 5, 'general');
   });
 });

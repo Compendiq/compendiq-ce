@@ -123,20 +123,32 @@ interface McpSearchResult {
 }
 
 /**
+ * `max_length` for a caller that names none (the external-URL path of
+ * /llm/ask). Every caller's value is capped by the admin Max Content Length.
+ */
+const DEFAULT_FETCH_MAX_LENGTH = 10_000;
+
+/**
  * Fetch documentation from a URL via the MCP sidecar.
  * Only sends the URL — no article content (data leakage prevention layer 3).
+ *
+ * The admin MCP Docs settings travel with the call (#1769): `maxContentLength`
+ * caps the caller's `maxLength` (5000 for web search, 2000 for test-fetch), and
+ * `cacheTtl` is the sidecar's cache TTL for the fetched document.
  */
 export async function fetchDocumentation(
   url: string,
   userId: string,
   maxLength?: number,
 ): Promise<McpDocResult> {
+  const settings = await getMcpDocsSettings();
   const result = await withSession((mcp) => mcp.callTool({
     name: 'fetch_url',
     arguments: {
       url,
-      max_length: maxLength ?? 10_000,
+      max_length: Math.min(maxLength ?? DEFAULT_FETCH_MAX_LENGTH, settings.maxContentLength),
       user_id: userId,
+      cache_ttl: settings.cacheTtl,
     },
   }));
 
@@ -169,11 +181,15 @@ export async function fetchDocumentation(
 /**
  * Search the web for documentation via the MCP sidecar.
  * Only sends short keyword query — no article content.
+ *
+ * `categories` is the admin SearXNG category list (`getSearxngSettings`); when
+ * omitted the sidecar searches its default category (#1769).
  */
 export async function searchDocumentation(
   query: string,
   userId: string,
   numResults?: number,
+  categories?: string,
 ): Promise<McpSearchResult[]> {
   const result = await withSession((mcp) => mcp.callTool({
     name: 'search_web',
@@ -181,6 +197,7 @@ export async function searchDocumentation(
       query,
       num_results: numResults ?? 5,
       user_id: userId,
+      ...(categories !== undefined ? { categories } : {}),
     },
   }));
 

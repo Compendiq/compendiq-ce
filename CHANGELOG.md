@@ -38,6 +38,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
+  Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
+  (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
+  documents; **Max Content Length** now caps every `max_length` the backend
+  requests (web search keeps 5,000 per source, Test fetch 2,000 and attached
+  URLs 10,000 unless the ceiling is lower), and its range is the sidecar's
+  1,000–100,000 — a stored larger value is read as 100,000 and logged until
+  re-saved, and `PUT /api/admin/mcp-docs` now rejects values above 100,000.
+  SearXNG **Search Categories** (lowercase names separated by commas without
+  spaces, e.g. `general,it`; anything else is a `400`) are sent on every
+  search, including **Test**, and are part of the search-cache key
+  (`mcp:docs:search:v3:`; older entries expire unread). Previously all three
+  saved successfully and changed nothing. **On upgrade:** `MCP_CACHE_TTL`
+  (the sidecar's `CACHE_TTL_SECONDS`) no longer governs the backend's fetches
+  — the backend always sends the admin Cache TTL, 3600 s until an admin saves
+  one — so a deployment that tuned the env var sets the value under Settings
+  → Integrations → MCP Docs instead; the env var still applies to MCP clients
+  that send no `cache_ttl`. A stored **Search Categories** value in the old
+  free-text form with spaces (e.g. `general, it`) is read as `general` — what
+  was searched before — and logged until it is re-saved. The admin
+  **SearXNG URL** control is removed: the search backend is configured only
+  through `SEARXNG_URL` on the `mcp-docs` service, `GET /api/admin/searxng`
+  no longer returns `url`, and a `url` sent to `PUT /api/admin/searxng` is
+  ignored. **Breaking for direct API callers** that sent a `maxContentLength`
+  above 100,000, free-text `categories`, or relied on the SearXNG `url` field.
 - **Confluence collaborative Save no longer conflicts with its own autosave
   (#1762):** saving a Confluence page in a collaborative session right after
   typing could fail with `409 stale_content_revision` when the room's 2 s

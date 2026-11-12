@@ -18,12 +18,12 @@ vi.mock('../../core/services/mcp-docs-client.js', () => ({
 // NOTE: sanitize-llm-input is deliberately NOT mocked — it is a pure utility
 // and the tests below assert real prompt-injection filtering (#820).
 
-// --- Mock: _helpers (getSearxngMaxResults) ---
+// --- Mock: _helpers (getSearxngSettings) ---
 // Default implementation is set once here; the file-level clearAllMocks only
 // clears calls. The real-DB describe below swaps in the actual reader.
-const mockGetSearxngMaxResults = vi.fn().mockResolvedValue(5);
+const mockGetSearxngSettings = vi.fn().mockResolvedValue({ maxResults: 5, categories: 'general' });
 vi.mock('./_helpers.js', () => ({
-  getSearxngMaxResults: (...args: unknown[]) => mockGetSearxngMaxResults(...args),
+  getSearxngSettings: (...args: unknown[]) => mockGetSearxngSettings(...args),
 }));
 
 // --- Mock: logger ---
@@ -68,12 +68,32 @@ describe('_web-search-helper', () => {
 
       const { sources, injectionWarnings } = await fetchWebSources('test query', 'user-1');
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 5, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 5000);
       expect(sources).toEqual([
         { url: 'https://example.com/doc1', title: 'Doc 1', snippet: 'Full markdown content' },
       ]);
       expect(injectionWarnings).toEqual([]);
+    });
+
+    it('forwards the saved SearXNG width and categories to search_web (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'general,it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1');
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 7, 'general,it');
+    });
+
+    it('keeps the saved categories when the caller overrides the width (#1769)', async () => {
+      mockGetSearxngSettings.mockResolvedValueOnce({ maxResults: 7, categories: 'it' });
+      mockIsEnabled.mockResolvedValue(true);
+      mockSearchDocumentation.mockResolvedValue([]);
+
+      await fetchWebSources('test query', 'user-1', { maxResults: 3 });
+
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('test query', 'user-1', 3, 'it');
     });
 
     it('falls back to snippet on individual fetch failure', async () => {
@@ -226,7 +246,7 @@ describe('_web-search-helper', () => {
 
       await fetchWebSources('query', 'user-1', { maxResults: 10, maxLength: 8000 });
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('query', 'user-1', 10, 'general');
       expect(mockFetchDocumentation).toHaveBeenCalledWith('https://example.com/doc1', 'user-1', 8000);
     });
 
@@ -244,7 +264,7 @@ describe('_web-search-helper', () => {
 
       const { sources } = await fetchWebSources(query200, 'user-1');
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith(query200, 'user-1', 5);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith(query200, 'user-1', 5, 'general');
       expect(sources.map((s) => s.url)).toEqual(['https://example.test/1', 'https://example.test/2']);
     });
   });
@@ -258,8 +278,8 @@ describe('_web-search-helper', () => {
       // Runs after the outer clearAllMocks: route the mocked export to the REAL
       // reader so the stored row, not a stub, decides what reaches search_web.
       const actual = await vi.importActual<typeof Helpers>('./_helpers.js');
-      mockGetSearxngMaxResults.mockImplementation(actual.getSearxngMaxResults);
-      await query(`DELETE FROM admin_settings WHERE setting_key = 'searxng_max_results'`);
+      mockGetSearxngSettings.mockImplementation(actual.getSearxngSettings);
+      await query(`DELETE FROM admin_settings WHERE setting_key LIKE 'searxng_%'`);
     });
 
     // The worker DB is shared with every other suite: leave no SearXNG row behind.
@@ -268,7 +288,7 @@ describe('_web-search-helper', () => {
     });
 
     afterAll(() => {
-      mockGetSearxngMaxResults.mockReset().mockResolvedValue(5);
+      mockGetSearxngSettings.mockReset().mockResolvedValue({ maxResults: 5, categories: 'general' });
     });
 
     it.each([
@@ -286,7 +306,7 @@ describe('_web-search-helper', () => {
 
       await fetchWebSources('saved width', 'user-1');
 
-      expect(mockSearchDocumentation).toHaveBeenCalledWith('saved width', 'user-1', expected);
+      expect(mockSearchDocumentation).toHaveBeenCalledWith('saved width', 'user-1', expected, 'general');
       const forwarded = mockSearchDocumentation.mock.calls[0]?.[2] as number;
       expect(forwarded).toBeGreaterThanOrEqual(SEARXNG_MAX_RESULTS_MIN);
       expect(forwarded).toBeLessThanOrEqual(SEARXNG_MAX_RESULTS_MAX);

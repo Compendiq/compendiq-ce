@@ -13,7 +13,7 @@ vi.mock('../../stores/auth-store', () => ({
   ),
 }));
 
-const savedSettings = { url: 'http://searxng:8080', maxResults: 5, categories: 'general' };
+const savedSettings = { maxResults: 5, categories: 'general' };
 
 /** Answers GET/PUT /admin/searxng at the network boundary and records every PUT body. */
 function mockSearxngApi() {

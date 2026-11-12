@@ -10,6 +10,7 @@ export * from './schemas/page-write-recovery.js';
 export * from './schemas/spaces.js';
 export * from './schemas/space-ai-policy.js';
 export * from './schemas/llm.js';
+export * from './schemas/mcp-docs.js';
 export * from './schemas/client-assets.js';
 export * from './schemas/browser-inline.js';
 export * from './schemas/admin.js';

@@ -78,6 +78,8 @@ vi.mock('./mcp-docs-settings.js', () => ({
   getMcpDocsSettings: vi.fn().mockResolvedValue({
     enabled: true,
     url: 'http://mcp-docs:3100/mcp',
+    cacheTtl: 3600,
+    maxContentLength: 50_000,
   }),
 }));
 
@@ -168,10 +170,10 @@ describe('mcp-docs-client session recovery (#1766)', () => {
 
     expect(doc).toMatchObject({ title: 'Doc', url: 'https://docs.example/a', markdown: '# Hello', contentLength: 7, cached: false });
     expect(h.callTool).toHaveBeenCalledTimes(2);
-    const expectedArgs = { name: 'fetch_url', arguments: { url: 'https://docs.example/a', max_length: 10_000, user_id: 'u1' } };
+    const expectedArgs = { name: 'fetch_url', arguments: { url: 'https://docs.example/a', max_length: 10_000, user_id: 'u1', cache_ttl: 3600 } };
     expect(h.callTool.mock.calls[0]![0]).toEqual(expectedArgs);
     expect(h.callTool.mock.calls[1]![0]).toEqual(expectedArgs);
-    expect(Object.keys(h.callTool.mock.calls[1]![0].arguments)).toEqual(['url', 'max_length', 'user_id']);
+    expect(Object.keys(h.callTool.mock.calls[1]![0].arguments)).toEqual(['url', 'max_length', 'user_id', 'cache_ttl']);
     expect(h.connect).toHaveBeenCalledTimes(2);
     expect(h.transports).toHaveLength(2);
     expect(h.transports[0]!.closed).toBe(true);

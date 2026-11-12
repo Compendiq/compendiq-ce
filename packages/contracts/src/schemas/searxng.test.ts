@@ -37,7 +37,7 @@ describe('SearXNG result-width contract (#1768)', () => {
   });
 
   it('SearxngSettingsSchema parses the GET shape and rejects maxResults 11', () => {
-    const settings = { url: 'http://searxng:8080', maxResults: 10, categories: 'general' };
+    const settings = { maxResults: 10, categories: 'general' };
     expect(SearxngSettingsSchema.parse(settings)).toEqual(settings);
     expect(SearxngSettingsSchema.safeParse({ ...settings, maxResults: 11 }).success).toBe(false);
   });

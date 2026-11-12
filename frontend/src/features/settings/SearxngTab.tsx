@@ -26,7 +26,7 @@ export function SearxngTab() {
     queryFn: () => apiFetch('/admin/searxng'),
   });
 
-  const [form, setForm] = useState<SearxngSettings>({ url: 'http://searxng:8080', maxResults: SEARXNG_MAX_RESULTS_DEFAULT, categories: 'general' });
+  const [form, setForm] = useState<SearxngSettings>({ maxResults: SEARXNG_MAX_RESULTS_DEFAULT, categories: 'general' });
   const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => { if (settings) { setForm(settings); setIsDirty(false); } }, [settings]);
@@ -63,22 +63,24 @@ export function SearxngTab() {
         </div>
       </div>
 
-      <div>
-        <label htmlFor="searxng-url" className="mb-1.5 block text-sm font-medium">SearXNG URL</label>
-        <div className="flex gap-2">
-          <input id="searxng-url" value={form.url} onChange={(e) => updateField('url', e.target.value)}
-            className="flex-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
-            placeholder="http://searxng:8080" data-testid="searxng-url" />
-          <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending}
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50" data-testid="searxng-test">
-            {testMutation.isPending ? <Loader2 size={14} className="animate-spin" />
-              : testMutation.data?.ok ? <CheckCircle2 size={14} className="text-success" />
-              : testMutation.data && !testMutation.data.ok ? <XCircle size={14} className="text-destructive" />
-              : <ExternalLink size={14} />}
-            Test
-          </button>
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">Internal Docker URL of the SearXNG instance. Default: http://searxng:8080</p>
+      {/* The SearXNG endpoint is deployment configuration (SEARXNG_URL on the
+          mcp-docs service), not an admin setting: nothing in the app may
+          redirect outbound search traffic (#1769). Test stays here — it runs a
+          search against that endpoint with the saved categories. */}
+      <div className="flex items-center justify-between gap-4">
+        <p id="searxng-url-note" className="text-sm text-muted-foreground" data-testid="searxng-url-note">
+          The SearXNG URL is set by the operator via{' '}
+          <code className="rounded bg-foreground/10 px-1 text-xs">SEARXNG_URL</code> on the mcp-docs service.
+        </p>
+        <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending}
+          aria-describedby="searxng-url-note"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm hover:bg-foreground/[0.06] disabled:opacity-50" data-testid="searxng-test">
+          {testMutation.isPending ? <Loader2 size={14} className="animate-spin" />
+            : testMutation.data?.ok ? <CheckCircle2 size={14} className="text-success" />
+            : testMutation.data && !testMutation.data.ok ? <XCircle size={14} className="text-destructive" />
+            : <ExternalLink size={14} />}
+          Test
+        </button>
       </div>
 
       {testMutation.data?.ok && testMutation.data.sample && (
@@ -118,9 +120,13 @@ export function SearxngTab() {
         <div>
           <label htmlFor="searxng-categories" className="mb-1.5 block text-sm font-medium">Search Categories</label>
           <input id="searxng-categories" value={form.categories} onChange={(e) => updateField('categories', e.target.value)}
+            aria-describedby="searxng-categories-help"
             className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
             placeholder="general" data-testid="searxng-categories" />
-          <p className="mt-1 text-xs text-muted-foreground">Comma-separated: general, it, science, files</p>
+          <p id="searxng-categories-help" className="mt-1 text-xs text-muted-foreground">
+            SearXNG category names in lowercase, separated by commas without spaces — for example{' '}
+            <code className="rounded bg-foreground/10 px-1 text-xs">general,it</code>. Sent with every web search.
+          </p>
         </div>
       </div>
 

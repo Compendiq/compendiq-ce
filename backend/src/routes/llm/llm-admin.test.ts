@@ -271,7 +271,7 @@ describe.skipIf(!dbAvailable)('SearXNG admin routes — shared result limit (#17
     const response = await app.inject({ method: 'POST', url: '/api/admin/searxng/test' });
 
     expect(response.statusCode).toBe(200);
-    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 7);
+    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 7, 'general');
     const body = response.json();
     expect(body.ok).toBe(true);
     expect(body.resultCount).toBe(4);
@@ -283,12 +283,12 @@ describe.skipIf(!dbAvailable)('SearXNG admin routes — shared result limit (#17
 
     await app.inject({ method: 'POST', url: '/api/admin/searxng/test' });
 
-    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 10);
+    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 10, 'general');
   });
 
   it('POST /api/admin/searxng/test uses the default width when nothing is saved', async () => {
     await app.inject({ method: 'POST', url: '/api/admin/searxng/test' });
 
-    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 5);
+    expect(mockSearchDocumentation).toHaveBeenCalledWith('test connection', 'admin-user', 5, 'general');
   });
 });

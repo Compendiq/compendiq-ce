@@ -3,6 +3,14 @@
  * Same pattern as admin-settings-service.ts for LLM settings.
  */
 
+import {
+  MCP_DOCS_CACHE_TTL_DEFAULT,
+  MCP_DOCS_CACHE_TTL_MAX,
+  MCP_DOCS_CACHE_TTL_MIN,
+  MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT,
+  MCP_DOCS_MAX_CONTENT_LENGTH_MAX,
+  MCP_DOCS_MAX_CONTENT_LENGTH_MIN,
+} from '@compendiq/contracts';
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -12,7 +20,9 @@ interface McpDocsSettings {
   domainMode: 'allowlist' | 'blocklist';
   allowedDomains: string[];
   blockedDomains: string[];
+  /** Seconds a fetched document stays cached in the sidecar; sent per fetch_url call as `cache_ttl` (#1769). */
   cacheTtl: number;
+  /** Ceiling on every fetch_url `max_length` the backend sends; equals the sidecar's hard cap (#1769). */
   maxContentLength: number;
 }
 
@@ -22,8 +32,8 @@ const DEFAULTS: McpDocsSettings = {
   domainMode: 'blocklist',
   allowedDomains: ['*'],
   blockedDomains: [],
-  cacheTtl: 3600,
-  maxContentLength: 50_000,
+  cacheTtl: MCP_DOCS_CACHE_TTL_DEFAULT,
+  maxContentLength: MCP_DOCS_MAX_CONTENT_LENGTH_DEFAULT,
 };
 
 const MCP_SETTING_KEYS = [
@@ -73,6 +83,34 @@ function parseDomainList(raw: string | undefined, fallback: string[]): string[] 
   }
 }
 
+/**
+ * Effective value of a stored integer setting that is forwarded to the sidecar
+ * as a tool argument. A row outside the tool's range (a pre-#1769
+ * `mcp_docs_max_content_length` of up to 500 000, or a row written by hand)
+ * would make the sidecar reject every call with -32602, so it is clamped on
+ * read and logged until the operator re-saves; non-numeric → default.
+ */
+function normalizeStoredInt(
+  key: McpSettingKey,
+  stored: string | undefined,
+  range: { min: number; max: number; fallback: number },
+): number {
+  if (stored === undefined) return range.fallback;
+  const parsed = parseInt(stored, 10);
+  if (!Number.isFinite(parsed)) {
+    logger.warn({ key, stored }, 'MCP docs setting is not a number — using the default; re-save MCP Docs settings');
+    return range.fallback;
+  }
+  const effective = Math.min(range.max, Math.max(range.min, parsed));
+  if (effective !== parsed) {
+    logger.warn(
+      { key, stored, effective },
+      'MCP docs setting is outside the sidecar range — clamped; re-save MCP Docs settings',
+    );
+  }
+  return effective;
+}
+
 export async function getMcpDocsSettings(): Promise<McpDocsSettings> {
   try {
     const settings = await getSettingsMap();
@@ -82,8 +120,12 @@ export async function getMcpDocsSettings(): Promise<McpDocsSettings> {
       domainMode: (settings['mcp_docs_domain_mode'] as 'allowlist' | 'blocklist') ?? DEFAULTS.domainMode,
       allowedDomains: parseDomainList(settings['mcp_docs_allowed_domains'], DEFAULTS.allowedDomains),
       blockedDomains: parseDomainList(settings['mcp_docs_blocked_domains'], DEFAULTS.blockedDomains),
-      cacheTtl: parseInt(settings['mcp_docs_cache_ttl'] ?? String(DEFAULTS.cacheTtl), 10),
-      maxContentLength: parseInt(settings['mcp_docs_max_content_length'] ?? String(DEFAULTS.maxContentLength), 10),
+      cacheTtl: normalizeStoredInt('mcp_docs_cache_ttl', settings['mcp_docs_cache_ttl'], {
+        min: MCP_DOCS_CACHE_TTL_MIN, max: MCP_DOCS_CACHE_TTL_MAX, fallback: DEFAULTS.cacheTtl,
+      }),
+      maxContentLength: normalizeStoredInt('mcp_docs_max_content_length', settings['mcp_docs_max_content_length'], {
+        min: MCP_DOCS_MAX_CONTENT_LENGTH_MIN, max: MCP_DOCS_MAX_CONTENT_LENGTH_MAX, fallback: DEFAULTS.maxContentLength,
+      }),
     };
   } catch (err) {
     logger.warn({ err }, 'Failed to load MCP docs settings, using defaults');

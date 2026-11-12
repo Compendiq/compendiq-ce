@@ -276,13 +276,37 @@ derived image keeps upstream ClearURLs fetches primary and patches only their
 all-failed branch to load the pinned local baseline. Keep the patch strict so
 an upstream integration-point change fails the image build.
 
-`search_web` caches only the requested bounded result width: its Redis key is
-the sanitized query plus that effective width. Keep the width in cache
-identity because cached results are already truncated; a narrower request
-must not poison a later wider request, or vice versa.
-Use the versioned `mcp:docs:search:v2:` namespace: legacy query-only hashes
-can equal the new query-plus-width hashes. Never read legacy entries as
-width-aware results; let their TTL expire without flushing shared Redis.
+`search_web` caches only the requested bounded result width and category
+list: its Redis key is the sanitized query plus that effective width plus the
+`categories` string. Keep the width in cache identity because cached results
+are already truncated; a narrower request must not poison a later wider
+request, or vice versa. Keep the categories in it because SearXNG answers a
+different result set per category list.
+Use the versioned `mcp:docs:search:v3:` namespace: `v2` hashed query plus
+width, so one `v2` entry would answer every category list (and the
+unversioned legacy keys were query-only). Never read a legacy or `v2` entry as
+a `v3` result; let their TTL expire without flushing shared Redis. Bump the
+version again whenever the identity changes.
+
+Admin settings reach the sidecar as tool arguments on every call — never as a
+Redis config key or an environment override (#1769). `fetch_url` takes
+`cache_ttl` (60–86400 s: the admin Cache TTL; `CACHE_TTL_SECONDS` when absent;
+a cache hit never rewrites an entry's TTL) and a `max_length` the backend caps
+at the admin Max Content Length (1000–100000, the sidecar's
+`ABSOLUTE_MAX_LENGTH`; callers keep 5000 for web search, 2000 for test-fetch
+and 10 000 for attached URLs). `search_web` takes `categories`
+(`^[a-z0-9_]+(,[a-z0-9_]+)*$`, at most 200 characters, default `general`).
+The SearXNG URL is `SEARXNG_URL` on the sidecar only: no tool argument, Redis
+key, admin route or UI field may carry a search host. Stored values outside
+these ranges are clamped or fall back on read with a warning
+(`getMcpDocsSettings`, `getSearxngSettings`). The sidecar does not depend on
+contracts, so `MCP_DOCS_*` / `SearxngCategoriesSchema` and the tool schema are
+pinned by literal tests on both sides —
+`packages/contracts/src/schemas/{mcp-docs,searxng.categories}.test.ts` and
+`mcp-docs/src/admin-settings.integration.test.ts`, which boots the sidecar
+with real Redis (`MCP_DOCS_TEST_REDIS_URL`; never skip) and serves
+`fetch_url` from a preloaded `fetch` stub because the SSRF guard refuses
+loopback. Never widen one side alone.
 
 `search_web` accepts `num_results` 1–10 (`MAX_NUM_RESULTS`). The admin setting
 `searxng_max_results` shares that range through
@@ -292,7 +316,7 @@ does not depend on contracts, so both sides are pinned with literal tests —
 `mcp-docs/src/search-web-limits.test.ts`, which boots the sidecar against a
 loopback SearXNG and proves the tool accepts 1–10, defaults to 5 and rejects
 0/11 (real Redis via `MCP_DOCS_TEST_REDIS_URL`; never skip). Stored values
-outside the range are clamped on read (`getSearxngMaxResults`) with a warning,
+outside the range are clamped on read (`getSearxngSettings`) with a warning,
 and `POST /admin/searxng/test` searches with the saved width. Never widen one
 side alone (#1768).
 

@@ -24,10 +24,13 @@ import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm
 import { StreamIncompleteError, type StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 import { admitArticleStage, ArticleStageRefusedError } from '../../domains/llm/services/article-stage-admission.js';
 import {
+  SEARXNG_CATEGORIES_DEFAULT,
   SEARXNG_MAX_RESULTS_DEFAULT,
   SEARXNG_MAX_RESULTS_MAX,
   SEARXNG_MAX_RESULTS_MIN,
+  SearxngCategoriesSchema,
   type ConversationTurnAiProvenance,
+  type SearxngSettings,
 } from '@compendiq/contracts';
 
 export { sanitizeLlmInput };
@@ -551,12 +554,35 @@ export function normalizeSearxngMaxResults(stored: string | undefined): number {
   return effective;
 }
 
-/** Admin-configured SearXNG result width (admin_settings), normalized into the sidecar range. */
-export async function getSearxngMaxResults(): Promise<number> {
-  const result = await query<{ setting_value: string }>(
-    `SELECT setting_value FROM admin_settings WHERE setting_key = 'searxng_max_results'`,
+/**
+ * Effective SearXNG categories for a stored `searxng_categories` value. Rows
+ * written before #1769 were only length-checked, so one can hold a value the
+ * sidecar's `search_web` schema rejects with -32602 (e.g. "general, it"),
+ * which fetchWebSources swallows into "no sources". Such a row falls back to
+ * the default — what the sidecar searched before #1769 — and is logged so the
+ * operator re-saves.
+ */
+function normalizeSearxngCategories(stored: string | undefined): string {
+  if (stored === undefined) return SEARXNG_CATEGORIES_DEFAULT;
+  if (SearxngCategoriesSchema.safeParse(stored).success) return stored;
+  logger.warn(
+    { stored, effective: SEARXNG_CATEGORIES_DEFAULT },
+    'searxng_categories is not a comma-separated category list — using the default; re-save SearXNG settings',
   );
-  return normalizeSearxngMaxResults(result.rows[0]?.setting_value);
+  return SEARXNG_CATEGORIES_DEFAULT;
+}
+
+/** Admin-configured SearXNG search settings (admin_settings), normalized into the sidecar's ranges. */
+export async function getSearxngSettings(): Promise<SearxngSettings> {
+  const result = await query<{ setting_key: string; setting_value: string }>(
+    `SELECT setting_key, setting_value FROM admin_settings
+     WHERE setting_key IN ('searxng_max_results', 'searxng_categories')`,
+  );
+  const stored = new Map(result.rows.map((row) => [row.setting_key, row.setting_value]));
+  return {
+    maxResults: normalizeSearxngMaxResults(stored.get('searxng_max_results')),
+    categories: normalizeSearxngCategories(stored.get('searxng_categories')),
+  };
 }
 
 /**

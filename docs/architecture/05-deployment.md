@@ -98,6 +98,12 @@ limiter consequently trusts loopback only by default and treats the mcp-docs
 socket address as the client; it must not trust the whole Docker subnet and
 then demand a forwarded-IP header from that direct caller.
 
+The endpoint `mcp-docs` calls is its own `SEARXNG_URL` environment variable
+(compose default `http://searxng:8080`) and is operator configuration only:
+the admin UI and API expose no SearXNG URL, and the backend never sends a
+search host to the sidecar — the admin SearXNG settings that do reach it
+(result count, categories) travel as `search_web` tool arguments (#1769).
+
 An operator who puts SearXNG behind a reverse proxy may set
 `SEARXNG_TRUSTED_PROXIES` to comma-separated IP addresses or CIDRs. Container
 startup validates and normalizes every entry before generating
