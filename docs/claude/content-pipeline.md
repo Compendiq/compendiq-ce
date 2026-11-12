@@ -90,14 +90,20 @@ arbitrary direct text parameters through the editor, so write-back emits
 **Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
 `status` keep canonical parameters in their own attributes (code `language`
 class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
-other direct text parameter in `data-macro-params`. `codeBlock`,
-`confluenceToc` and `confluenceStatus` declare it as `macroParams` in both
-TipTap schemas (the parity test enforces the pair), and so does read mode's
-code block, because a copy out of read mode is serialized with that schema. The
+other direct text parameter in `data-macro-params`. `codeBlock`, `mermaidBlock`
+(which claims a code macro whose language is mermaid), `confluenceToc` and
+`confluenceStatus` declare it as `macroParams` in both TipTap schemas, and so
+does read mode's code block, because a copy out of read mode is serialized with
+that schema. The parity test is one-way: it fails when the collab schema lacks
+an attribute the frontend declares; the frontend declarations are pinned by
+Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
 reverse pass skips a carried copy of a canonical name. The code language is the
 whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
 TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
-code language, but not a code block's `data-title`/`data-macro-params`.
+code language, but not a code block's `data-title`/`data-macro-params`. Only
+`body_html` converted after #1749 holds the carriers: a page synced earlier gets
+them when its body is next re-derived from Confluence (an upstream change, or
+the bulk Sync action); a save before that still drops them.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without

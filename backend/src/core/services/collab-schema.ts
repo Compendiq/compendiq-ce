@@ -816,6 +816,16 @@ const MermaidBlock = Node.create({
           return codeEl?.textContent ?? '';
         },
       },
+      // #1749: a code macro whose language is mermaid lands here, not in the
+      // code block, so it keeps the code block's title and parameter carrier.
+      title: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-title'),
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+      },
     };
   },
   parseHTML() {
@@ -832,11 +842,10 @@ const MermaidBlock = Node.create({
     ];
   },
   renderHTML({ node }) {
-    return [
-      'pre',
-      mergeAttributes({}),
-      ['code', { class: 'language-mermaid' }, node.attrs.code],
-    ];
+    const attrs: Record<string, string> = {};
+    if (node.attrs.title) attrs['data-title'] = node.attrs.title;
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['pre', attrs, ['code', { class: 'language-mermaid' }, node.attrs.code]];
   },
 });
 

@@ -204,7 +204,13 @@ any change to the existing conflict policy.
   Improve, toc and status are frozen by `protectMedia` and keep their
   carrier; a code block keeps only its language. Parameter order is
   canonical first, then carried in source order (Confluence reads
-  parameters as a map).
+  parameters as a map). A code macro whose language is `mermaid` is claimed
+  by `mermaidBlock` (priority 200) rather than the code block in both
+  schemas, so `mermaidBlock` declares the same `title` (`data-title`) and
+  `macroParams` attributes. Only `body_html` converted after #1749 holds the
+  carriers: a page synced earlier gets them when its body is next re-derived
+  from Confluence (an upstream change, or the bulk Sync action); saving it
+  before then still writes back without them.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as
   `data-macro-name="expand|ui-expand"` (plus
@@ -381,12 +387,15 @@ any change to the existing conflict policy.
   class + `data-*` attributes. The `details` node likewise declares
   `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
   attributes, so dropping those declarations silently reintroduces the
-  rewrite bug. `confluenceToc`, `confluenceStatus` and the code block
-  (`TitledCodeBlock`, both schemas) declare `macroParams` for the same reason
-  (#1749), and so does read mode's own code block in `ArticleViewer.tsx`:
-  read mode never saves, but ProseMirror serializes a copy with the viewer's
-  schema, and a block copied from the read view is pasted into the editor
-  and written back. ProseMirror silently unwraps any element
+  rewrite bug. `confluenceToc`, `confluenceStatus`, the code block
+  (`TitledCodeBlock`) and `mermaidBlock` declare `macroParams` in both schemas
+  for the same reason (#1749), and so does read mode's own code block in
+  `ArticleViewer.tsx`: read mode never saves, but ProseMirror serializes a
+  copy with the viewer's schema, and a block copied from the read view is
+  pasted into the editor and written back. `collab-schema-parity.test.ts` is
+  one-way — it fails when the collab schema lacks an attribute the frontend
+  declares — so the frontend declarations are pinned by their own editor and
+  viewer tests. ProseMirror silently unwraps any element
   with no matching parse rule, so a placeholder the editor doesn't know
   about is dropped from `getHTML()` and then permanently deleted from the
   Confluence page on the next save. The edit-mode schema

@@ -53,11 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the language — and cut `c#` to `c` and `objective-c` to `objective` — plus
   the table-of-contents macro's `exclude`, `include`, `indent`, … and the
   status macro's `subtle`. They now write back unchanged, and synced code
-  blocks show their Confluence title. AI Improve keeps the table-of-contents
-  and status parameters and the code language; applying an Improve result
-  still drops a code block's title and display options (line numbers,
-  collapse, …). Pages pick the parameters up again on their next sync from
-  Confluence; a page already written back without them stays without them.
+  blocks show their Confluence title, including mermaid code blocks. AI Improve
+  keeps the table-of-contents and status parameters and the code language;
+  applying an Improve result still drops a code block's title and display
+  options (line numbers, collapse, …). A page synced before this release
+  regains the parameters only when its body is next re-derived from
+  Confluence — an upstream change, or the bulk **Sync** action; saving it
+  before then still drops them, and a page already written back without them
+  stays without them.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

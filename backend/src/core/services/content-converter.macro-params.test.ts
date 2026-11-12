@@ -3,8 +3,11 @@
  * parameter on write-back. Canonical parameters keep their own attributes
  * (code: `language` class + `data-title`; toc: `data-<name>`; status:
  * `data-color` + badge text); every other one rides in `data-macro-params`,
- * declared as `macroParams` on codeBlock / confluenceToc / confluenceStatus in
- * both TipTap schemas (the parity test pins the pair).
+ * declared as `macroParams` on codeBlock / mermaidBlock / confluenceToc /
+ * confluenceStatus in both TipTap schemas. The parity test is one-way: it fails
+ * when the collab schema lacks an attribute the frontend declares. The frontend
+ * declarations are pinned by Editor.test.tsx, ArticleViewer.test.tsx and
+ * MermaidBlockExtension.test.tsx (#1749).
  */
 import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -222,8 +225,8 @@ describe('content-converter: #1749 dedicated macro parameters survive write-back
   });
 
   describe('collab TipTap schema', () => {
-    // htmlToYDoc parses with collabExtensions() into a Y.Doc of getCollabSchema()
-    // (collab-schema.ts:938-941); yDocToHtml serializes it back (943-946).
+    // htmlToYDoc parses with collabExtensions() into a Y.Doc of getCollabSchema();
+    // yDocToHtml serializes it back with the same extensions.
     it.each([
       { name: 'code', selector: 'pre', params: { linenumbers: 'true', collapse: 'true' } },
       { name: 'toc', selector: 'div.confluence-toc', params: { exclude: 'Secret' } },
@@ -250,6 +253,25 @@ describe('content-converter: #1749 dedicated macro parameters survive write-back
       expect(macroParams(xhtml, 'code')).toEqual([CODE_FIXTURE_PARAMS]);
       expect(macroParams(xhtml, 'toc')).toEqual([TOC_FIXTURE_PARAMS]);
       expect(macroParams(xhtml, 'status')).toEqual([STATUS_FIXTURE_PARAMS]);
+    });
+
+    it('keeps a mermaid code macro\'s title and parameters through the collab schema (mermaidBlock)', () => {
+      // `<pre><code class="language-mermaid">` belongs to mermaidBlock (priority
+      // 200), not codeBlock, in both schemas, so it needs the same carrier.
+      const html = confluenceToHtml(
+        '<ac:structured-macro ac:name="code">'
+        + '<ac:parameter ac:name="language">mermaid</ac:parameter>'
+        + '<ac:parameter ac:name="title">Flow</ac:parameter>'
+        + '<ac:parameter ac:name="linenumbers">true</ac:parameter>'
+        + '<ac:plain-text-body><![CDATA[graph TD\n  A --> B]]></ac:plain-text-body></ac:structured-macro>',
+      );
+      expect(generateJSON(html, collabExtensions()).content?.[0]?.type).toBe('mermaidBlock');
+      const saved = yDocToHtml(htmlToYDoc(html));
+      const pre = new JSDOM(`<body>${saved}</body>`).window.document.querySelector('pre');
+      expect(pre?.getAttribute('data-title')).toBe('Flow');
+      expect(carried(saved, 'pre')).toEqual({ linenumbers: 'true' });
+      expect(macroParams(htmlToConfluence(saved), 'code'))
+        .toEqual([sorted({ language: 'mermaid', title: 'Flow', linenumbers: 'true' })]);
     });
   });
 
