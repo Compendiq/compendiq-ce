@@ -294,6 +294,104 @@ Content`;
       expect(message.length).toBeGreaterThan(40);
     });
   });
+
+  // ── YAML block lists in front-matter (#1753) ──────────────────────────────
+  // `tags:` followed by `- ops` lines is how most editors write tags. It used
+  // to import as no labels with no warning — the same silent loss #1178 fixed
+  // for CRLF and BOM files.
+  describe('front-matter block lists (#1753)', () => {
+    const preview = (markdown: string, extra: Record<string, unknown> = {}) => app.inject({
+      method: 'POST',
+      url: '/api/pages/import/preview',
+      payload: { markdown, ...extra },
+    });
+
+    it('imports a block-list tags: sequence as labels', async () => {
+      const response = await preview('---\ntitle: Import probe\ntags:\n  - ops\n  - runbook\n---\nBody');
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.title).toBe('Import probe');
+      expect(body.labels).toEqual(['ops', 'runbook']);
+    });
+
+    it('imports a block-list labels: sequence as labels', async () => {
+      const response = await preview('---\nlabels:\n  - ops\n  - runbook\n---\nBody');
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).labels).toEqual(['ops', 'runbook']);
+    });
+
+    it('unquotes quoted block-list items', async () => {
+      const response = await preview('---\ntags:\n  - "ops"\n  - \'runbook\'\n---\nBody');
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).labels).toEqual(['ops', 'runbook']);
+    });
+
+    it('imports a CRLF block list, behind a BOM too', async () => {
+      const crlf = await preview('---\r\ntags:\r\n  - ops\r\n  - runbook\r\n---\r\n# Body\r\n');
+      expect(crlf.statusCode).toBe(200);
+      expect(JSON.parse(crlf.body).labels).toEqual(['ops', 'runbook']);
+
+      const bom = await preview('\uFEFF---\r\nlabels:\r\n  - ops\r\n  - runbook\r\n---\r\n# Body\r\n');
+      expect(bom.statusCode).toBe(200);
+      expect(JSON.parse(bom.body).labels).toEqual(['ops', 'runbook']);
+    });
+
+    it('does not leak a block list under an unrelated key into labels', async () => {
+      // Two ways to get this wrong: items after `authors:` still landing in the
+      // open `labels` list (→ ops, alice, bob), or the nested `  tags:` opening
+      // a list of its own, which then wins over `labels` (→ leak).
+      const response = await preview(
+        '---\nlabels:\n  - ops\nauthors:\n  - alice\n  - bob\nmeta:\n  tags:\n    - leak\n---\nBody',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).labels).toEqual(['ops']);
+    });
+
+    it('bounds a block-list label set the same way as an inline one', async () => {
+      const items = Array.from({ length: 60 }, (_, i) => `  - ${i === 0 ? 'x'.repeat(150) : 'l' + i}`).join('\n');
+      const response = await preview(`---\ntags:\n${items}\n---\nBody`);
+
+      expect(response.statusCode).toBe(200);
+      const { labels } = JSON.parse(response.body);
+      expect(labels).toHaveLength(50);
+      expect(labels[0]).toBe('x'.repeat(100));
+      expect(labels[49]).toBe('l49');
+    });
+
+    // Pinned as it was before block lists: a scalar is not a label list, and
+    // dash lines after it do not turn it into one — only an empty or
+    // comment-only value opens a list.
+    it('keeps a scalar tags: ops out of labels, as before', async () => {
+      for (const markdown of ['---\ntags: ops\n---\nBody', '---\ntags: "ops"\n---\nBody', '---\ntags: ops\n  - x\n---\nBody']) {
+        const response = await preview(markdown);
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).labels).toEqual([]);
+      }
+    });
+
+    it('prefers a tags block list over labels, and falls back to labels when tags is a scalar', async () => {
+      const both = await preview('---\ntags:\n  - ops\nlabels:\n  - x\n---\nBody');
+      expect(JSON.parse(both.body).labels).toEqual(['ops']);
+
+      const scalarTags = await preview('---\ntags: ops\nlabels:\n  - x\n---\nBody');
+      expect(JSON.parse(scalarTags.body).labels).toEqual(['x']);
+    });
+
+    // `title: #1 ranked` is, to YAML, an empty title followed by a comment, so
+    // dash lines under it make `title` a list. A list is not a title: the
+    // request's title (or the default) is used, exactly as for `title:` alone.
+    it('falls back to the request title when the front-matter title is a block list', async () => {
+      const empty = await preview('---\ntitle:\n  - a\n---\nBody', { title: 'Given' });
+      expect(JSON.parse(empty.body).title).toBe('Given');
+
+      const commented = await preview('---\ntitle: #1 ranked\n  - x\n---\nBody', { title: 'Given' });
+      expect(JSON.parse(commented.body).title).toBe('Given');
+    });
+  });
 });
 
 describe('parseFrontMatter', () => {
@@ -387,5 +485,115 @@ Body`;
 
     expect(result.metadata.title).toBe('Only Front-Matter');
     expect(result.content).toBe('');
+  });
+});
+
+describe('parseFrontMatter block lists (#1753)', () => {
+  it('reads an indented block list into an array and keeps the body', () => {
+    const result = parseFrontMatter('---\ntitle: Import probe\ntags:\n  - ops\n  - runbook\n---\nBody');
+
+    expect(result.metadata).toEqual({ title: 'Import probe', tags: ['ops', 'runbook'] });
+    expect(result.content).toBe('Body');
+  });
+
+  it("accepts items at the key's own indentation and ends the list at the next key", () => {
+    const result = parseFrontMatter('---\ntags:\n- ops\n- runbook\ntitle: T\n---\nBody');
+
+    expect(result.metadata).toEqual({ tags: ['ops', 'runbook'], title: 'T' });
+  });
+
+  it('skips blank and comment lines inside a list and drops trailing comments', () => {
+    const result = parseFrontMatter('---\ntags:\n\n  # primary first\n  - ops # the team\n\n  - runbook\n---\nBody');
+
+    expect(result.metadata.tags).toEqual(['ops', 'runbook']);
+  });
+
+  it('opens a list after a key whose value is only a comment', () => {
+    const result = parseFrontMatter('---\ntags: # list\n  - ops\n  - runbook\n---\nBody');
+
+    expect(result.metadata.tags).toEqual(['ops', 'runbook']);
+  });
+
+  it('unquotes items and keeps the colons and # that YAML keeps', () => {
+    const result = parseFrontMatter(
+      "---\ntags:\n  - \"ops: core\"\n  - 'it''s'\n  - \"a # b\"\n  - http://x\n  - c# lang\n  - '#hash' # c\n---\nBody",
+    );
+
+    // Also proves the item lines no longer turn into junk keys like `- "ops`.
+    expect(result.metadata).toEqual({ tags: ['ops: core', "it's", 'a # b', 'http://x', 'c# lang', '#hash'] });
+  });
+
+  it("parses CRLF and BOM block lists and leaves the body's line endings alone", () => {
+    const result = parseFrontMatter('\uFEFF---\r\ntitle: Win\r\ntags:\r\n  - ops\r\n  - runbook\r\n---\r\nBody\r\n');
+
+    expect(result.metadata).toEqual({ title: 'Win', tags: ['ops', 'runbook'] });
+    expect(result.content).toBe('Body\r\n');
+  });
+
+  it('gives a block list under an unrelated key to that key only', () => {
+    const result = parseFrontMatter('---\nauthors:\n  - alice\n  - bob\ntags:\n  - ops\nrelated:\n  - leak\n---\nBody');
+
+    expect(result.metadata).toEqual({ authors: ['alice', 'bob'], tags: ['ops'], related: ['leak'] });
+  });
+
+  it('does not open a list from an indented key', () => {
+    const result = parseFrontMatter('---\ntags:\n  - ops\nmeta:\n  labels:\n    - leak\n---\nBody');
+
+    expect(result.metadata.tags).toEqual(['ops']);
+    expect(JSON.stringify(result.metadata)).not.toContain('leak');
+  });
+
+  it('reads a list of only empty items as an empty array', () => {
+    const result = parseFrontMatter('---\ntags:\n  -\n  - ""\n---\nBody');
+
+    expect(result.metadata.tags).toEqual([]);
+  });
+
+  // YAML reads an unquoted `#` after the dash as a comment, so `- #ops` is an
+  // empty item; quoting it keeps the hash.
+  it('drops a plain item that is only a comment and keeps a quoted #tag', () => {
+    const result = parseFrontMatter("---\ntags:\n  - #ops\n  - '#runbook'\n  - ops\n---\nBody");
+
+    expect(result.metadata.tags).toEqual(['#runbook', 'ops']);
+  });
+
+  // Pinned non-goal: an indented key is still read as a top-level key (as it
+  // always was), and it opens no list — so a nested `tags:` replaces the
+  // top-level list with its empty value and its own items are ignored.
+  it('still reads an indented key as top-level, so a nested tags: replaces the list', () => {
+    const result = parseFrontMatter('---\ntags:\n  - ops\nmeta:\n  tags:\n    - leak\n---\nBody');
+
+    expect(result.metadata).toEqual({ tags: '', meta: '' });
+  });
+
+  // ReDoS guard: a dash line whose blank run ends in a character `.` cannot
+  // match (a lone CR — lines split only on `\r?\n` — or U+2028) is not an
+  // item. With two quantifiers that could both take the blanks, rejecting it
+  // backtracked quadratically: ~14 s here at 200k blanks, ~6 min for a 1 MB
+  // import, with the event loop blocked throughout. Linear now (< 1 ms). The
+  // bound is wall-clock, so the fastest of up to three attempts is asserted:
+  // correct code would need three consecutive scheduler stalls to fail, while
+  // a quadratic regex misses the bound on every attempt.
+  it('rejects a dash line with a long blank run and a stray line terminator in linear time', () => {
+    for (const sep of ['\r', '\u2028']) {
+      const markdown = `---\ntags:\n- ${' '.repeat(200_000)}${sep}x\n---\nBody`;
+      let fastestMs = Infinity;
+      for (let attempt = 0; attempt < 3 && fastestMs >= 1000; attempt++) {
+        const start = performance.now();
+        const result = parseFrontMatter(markdown);
+        fastestMs = Math.min(fastestMs, performance.now() - start);
+        expect(result.metadata).toEqual({ tags: '' });
+      }
+
+      expect(fastestMs).toBeLessThan(1000);
+    }
+  });
+
+  // Pinned as it was before block lists.
+  it('keeps a key with no items and a scalar tags value as the strings they were', () => {
+    expect(parseFrontMatter('---\ntags:\ntitle: X\n---\nBody').metadata).toEqual({ tags: '', title: 'X' });
+    expect(parseFrontMatter('---\ntags: ops\n---\nBody').metadata.tags).toBe('ops');
+    expect(parseFrontMatter('---\ntags: "ops"\n---\nBody').metadata.tags).toBe('ops');
+    expect(parseFrontMatter('---\ntags: ops\n  - x\n---\nBody').metadata.tags).toBe('ops');
   });
 });

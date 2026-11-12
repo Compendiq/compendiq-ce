@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
+  `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
+  files included) now imports as page labels; previously the list was dropped
+  and the import returned no labels without a warning. Inline `[a, b]` lists
+  and scalar values behave as before. YAML comment rules apply: an unquoted
+  `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
