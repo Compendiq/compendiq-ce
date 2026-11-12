@@ -211,8 +211,11 @@ describe('pdf-service (pdf-lib)', () => {
     interface Box { page: number; x: number; y: number; width: number; height: number }
 
     /** Visible text runs (page footers excluded) and code-background rectangles; `text` has no whitespace. */
-    async function layout(html: string): Promise<{ text: string; items: Drawn[]; backgrounds: Box[] }> {
-      const pdf = await getDocumentProxy(new Uint8Array(await generatePdf(html, {})));
+    async function layout(
+      html: string,
+      options: { title?: string } = {},
+    ): Promise<{ text: string; items: Drawn[]; backgrounds: Box[] }> {
+      const pdf = await getDocumentProxy(new Uint8Array(await generatePdf(html, options)));
       const { OPS } = await getResolvedPDFJS();
       const items: Drawn[] = [];
       const backgrounds: Box[] = [];
@@ -394,6 +397,19 @@ describe('pdf-service (pdf-lib)', () => {
         expect(items.map((item) => item.str)).toEqual(['A', 'B', 'C', 'D']);
         // First baseline: 781.89 page top - 4 table offset - 6 cell padding - 11 font size; 14 pt pitch.
         expect(items.map((item) => +item.y.toFixed(2))).toEqual([760.89, 746.89, 732.89, 718.89]);
+      });
+
+      it('centres a wrapped cover title by its drawn width', async () => {
+        // Two 16-letter A/V words fill 495.05 of 495.28 pt in bold 22 pt; kerning would claim 442.24 pt.
+        const title = Array.from({ length: 6 }, () => 'AV'.repeat(8)).join(' ');
+        const { items } = await layout('<p>body</p>', { title });
+        const titleLines = items.filter((item) => /^[AV ]+$/.test(item.str));
+        expect(titleLines.map((item) => item.str).join(' ')).toBe(title);
+        for (const item of titleLines) {
+          expect(item.x, item.str).toBeGreaterThanOrEqual(50 - EPS);
+          expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+          expect(item.x, `${item.str} is centred`).toBeCloseTo(595.28 - (item.x + item.width));
+        }
       });
     });
   });

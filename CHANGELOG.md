@@ -55,8 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or hash — now breaks between characters in paragraphs, headings, lists and
   table cells instead of running past the margin or into the next column, and
   wrapped text is measured as drawn, so lines dense in kerned pairs such as
-  `AV` or `To` no longer overrun the margin. Characters outside Latin-1 are
-  still dropped from PDFs (#1729).
+  `AV` or `To` no longer overrun the margin, and a wrapped cover title is
+  centred by that width. Characters outside Latin-1 are still dropped from
+  PDFs (#1729).
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

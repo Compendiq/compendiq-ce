@@ -182,7 +182,8 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
   const startY = PAGE_HEIGHT / 2 + titleHeight / 2;
 
   for (let i = 0; i < titleLines.length; i++) {
-    const lineW = ctx.fontBold.widthOfTextAtSize(titleLines[i]!, FONT_SIZE_H1);
+    // Centre by the drawn width, the width the line was wrapped to (#1730).
+    const lineW = measureText(titleLines[i]!, ctx.fontBold, FONT_SIZE_H1);
     ctx.page.drawText(titleLines[i]!, {
       x: (PAGE_WIDTH - lineW) / 2,
       y: startY - i * (FONT_SIZE_H1 + 6),
