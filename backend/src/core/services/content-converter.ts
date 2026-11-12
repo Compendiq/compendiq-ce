@@ -234,12 +234,35 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
   target.innerHTML = source?.innerHTML ?? fallback;
 }
 
-function appendSerializedMacroParams(macro: Element, rawParams: string | null): void {
+/**
+ * A code block's language is ONE class token, `language-<token>` (#1749).
+ * Every reader takes the whole token: this reverse pass, the code-block parse
+ * rule in collab-schema.ts and frontend TitledCodeBlock.ts share the `\S`
+ * class, so `c#`, `objective-c` and `c++` survive (`\w` cut them at the first
+ * `#`, `-` or `+`). TipTap's own CodeBlock `language` attribute and turndown's
+ * fenced-code rule already read the whole token, and the forward pass writes
+ * the class only for a value that is one such token.
+ */
+const CODE_LANGUAGE_CLASS = /language-(\S+)/;
+
+/**
+ * Re-emit the parameters a forward handler stashed in `data-macro-params`.
+ * `emitted` names the parameters the caller already wrote from the macro's
+ * canonical attributes (#1749): a carried copy of one of those is skipped, so
+ * each parameter has one home and a canonical value the editor can change
+ * always wins over a stale carried one.
+ */
+function appendSerializedMacroParams(
+  macro: Element,
+  rawParams: string | null,
+  emitted?: ReadonlySet<string>,
+): void {
   if (!rawParams) return;
   try {
     const params = JSON.parse(rawParams) as Record<string, unknown>;
     for (const [paramName, paramValue] of Object.entries(params)) {
       if (typeof paramValue !== 'string') continue;
+      if (emitted?.has(paramName)) continue;
       const parameter = macro.ownerDocument.createElement('ac:parameter');
       parameter.setAttribute('ac:name', paramName);
       parameter.textContent = paramValue;
@@ -296,15 +319,34 @@ function confluenceToHtmlPass(
   const macrosBefore = countRawStructuredMacros(doc.body);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
+  // #1749: `language` keeps its class and `title` the editor's existing
+  // `data-title` on <pre>; every other direct text parameter (linenumbers,
+  // collapse, firstline, theme, …) rides in `data-macro-params`, the #865
+  // carrier. A canonical attribute is written only for a value it gives back
+  // exactly (a non-empty title, a language that is one class token), and a
+  // parameter leaves the carrier only when its attribute was written, so an
+  // empty `language`/`title` stays carried: the #1227 rule for expand titles.
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'code') continue;
     const language = getParamValue(macro, 'language') ?? '';
+    const title = getParamValue(macro, 'title') ?? '';
+    const params = collectDirectTextParams(macro);
     const bodyEl = byTag(macro, 'ac:plain-text-body')[0];
     const code = bodyEl?.textContent ?? '';
 
     const pre = doc.createElement('pre');
+    if (title !== '') {
+      pre.setAttribute('data-title', title);
+      delete params.title;
+    }
     const codeEl = doc.createElement('code');
-    if (language) codeEl.className = `language-${language}`;
+    if (/^\S+$/.test(language)) {
+      codeEl.className = `language-${language}`;
+      delete params.language;
+    }
+    if (Object.keys(params).length > 0) {
+      pre.setAttribute('data-macro-params', JSON.stringify(params));
+    }
     codeEl.textContent = code;
     pre.appendChild(codeEl);
     macro.replaceWith(pre);
@@ -547,6 +589,14 @@ function confluenceToHtmlPass(
     const span = doc.createElement('span');
     span.className = 'confluence-status';
     span.setAttribute('data-color', colour);
+    // #1749: `colour` and `title` keep their homes; every other direct text
+    // parameter (`subtle`, …) rides in `data-macro-params`.
+    const params = collectDirectTextParams(macro);
+    delete params.colour;
+    delete params.title;
+    if (Object.keys(params).length > 0) {
+      span.setAttribute('data-macro-params', JSON.stringify(params));
+    }
     span.textContent = title;
     macro.replaceWith(span);
   }
@@ -554,16 +604,25 @@ function confluenceToHtmlPass(
   // Process table of contents macro -> placeholder, preserving key params
   // (#300). Common TOC params — `maxLevel`, `minLevel`, `outline`, `style`,
   // `type` — are round-tripped as data attributes so htmlToConfluence can
-  // rebuild the macro losslessly.
+  // rebuild the macro losslessly; every other direct text parameter
+  // (`exclude`, `include`, `indent`, `separator`, `class`, …) rides in
+  // `data-macro-params` (#1749).
   const tocParamNames = ['maxLevel', 'minLevel', 'outline', 'style', 'type', 'printable', 'absoluteUrl'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'toc') continue;
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
+    const params = collectDirectTextParams(macro);
     for (const paramName of tocParamNames) {
       const val = getParamValue(macro, paramName);
-      if (val !== null && val !== undefined) div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+      if (val !== null && val !== undefined) {
+        div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+        delete params[paramName];
+      }
+    }
+    if (Object.keys(params).length > 0) {
+      div.setAttribute('data-macro-params', JSON.stringify(params));
     }
     macro.replaceWith(div);
   }
@@ -786,23 +845,35 @@ export function htmlToConfluence(html: string): string {
     div.remove();
   }
 
-  // Convert code blocks back
+  // Convert code blocks back. #1749: the language class, the `data-title`
+  // title, then whatever `data-macro-params` carries besides those two.
   for (const pre of doc.querySelectorAll('pre')) {
     const codeEl = pre.querySelector('code');
     if (!codeEl) continue;
 
-    const language = (codeEl.className.match(/language-(\w+)/) ?? [])[1] ?? '';
+    const language = (codeEl.className.match(CODE_LANGUAGE_CLASS) ?? [])[1] ?? '';
+    const title = pre.getAttribute('data-title') ?? '';
     const code = codeEl.textContent ?? '';
 
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'code');
+    const emitted = new Set<string>();
 
     if (language) {
       const param = doc.createElement('ac:parameter');
       param.setAttribute('ac:name', 'language');
       param.textContent = language;
       macro.appendChild(param);
+      emitted.add('language');
     }
+    if (title) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'title');
+      param.textContent = title;
+      macro.appendChild(param);
+      emitted.add('title');
+    }
+    appendSerializedMacroParams(macro, pre.getAttribute('data-macro-params'), emitted);
 
     const body = doc.createElement('ac:plain-text-body');
     body.textContent = code;
@@ -1160,6 +1231,7 @@ export function htmlToConfluence(html: string): string {
       'printable': 'printable',
       'absoluteurl': 'absoluteUrl',
     };
+    const emitted = new Set<string>();
     for (const [dataAttr, paramName] of Object.entries(tocReverseParams)) {
       const val = div.getAttribute(`data-${dataAttr}`);
       if (val !== null) {
@@ -1167,8 +1239,10 @@ export function htmlToConfluence(html: string): string {
         p.setAttribute('ac:name', paramName);
         p.textContent = val;
         macro.appendChild(p);
+        emitted.add(paramName);
       }
     }
+    appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'), emitted);
     div.replaceWith(macro);
   }
 
@@ -1232,7 +1306,9 @@ export function htmlToConfluence(html: string): string {
     span.replaceWith(acLink);
   }
 
-  // Convert status badges back to ac:structured-macro[name=status]
+  // Convert status badges back to ac:structured-macro[name=status]. Both
+  // canonical parameters are always written, so a carried copy never is (#1749).
+  const statusCanonicalParams: ReadonlySet<string> = new Set(['colour', 'title']);
   for (const span of doc.querySelectorAll('span.confluence-status')) {
     const colour = span.getAttribute('data-color') ?? 'grey';
     const title = span.textContent ?? '';
@@ -1246,6 +1322,7 @@ export function htmlToConfluence(html: string): string {
     titleParam.textContent = title;
     macro.appendChild(colourParam);
     macro.appendChild(titleParam);
+    appendSerializedMacroParams(macro, span.getAttribute('data-macro-params'), statusCanonicalParams);
     span.replaceWith(macro);
   }
 

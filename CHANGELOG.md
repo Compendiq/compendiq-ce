@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the task bodies written to Confluence still carry the editor's checkbox
   markup, as they already do for any task created in the editor; the fix is
   tracked with #1751.
+- **Confluence code, table-of-contents and status macros keep all their
+  parameters (#1749):** saving a synced page (editor save, collaborative save,
+  draft publish, version restore) dropped every code-macro parameter except
+  the language — and cut `c#` to `c` and `objective-c` to `objective` — plus
+  the table-of-contents macro's `exclude`, `include`, `indent`, … and the
+  status macro's `subtle`. They now write back unchanged. A synced code
+  block's Confluence title shows in the editor and read mode; for a mermaid
+  block, the title and the other code-macro parameters are carried through
+  editor saves but not displayed. AI Improve keeps the table-of-contents and
+  status parameters and the code language; applying an Improve result still
+  drops a code block's title and display options (line numbers, collapse,
+  …). A page synced before this release regains the parameters only when its
+  body is next re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages). Saving it before
+  then still drops them, and a page already written back without them stays
+  without them.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
