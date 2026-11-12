@@ -351,7 +351,7 @@ export function EditorBlockMenu({
 
           {textActions && live.dropsMacros && (
             <p className="px-2.5 py-1 text-[11px] text-muted-foreground">
-              Improve is unavailable here: a rewrite would drop this block&rsquo;s inline macros.
+              Improve is unavailable here: a rewrite would drop this block&rsquo;s inline macros or emojis.
             </p>
           )}
 

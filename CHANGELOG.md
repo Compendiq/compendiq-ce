@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Confluence emoticons survive saving a synced page (#1750):** saving a page
+  synced from Confluence (editor save, collaborative save, draft publish,
+  version restore, AI Improve apply) deleted every emoticon — status ticks,
+  warnings, smileys and Confluence emoji — from the Confluence page. They now
+  write back unchanged, every attribute included (`ac:name` and the newer
+  `ac:emoji-shortname`, `ac:emoji-id` and `ac:emoji-fallback`). The editor
+  and read mode show each one as its emoji, or as Confluence's text form
+  (`(blue-star)`, `:face_exhaling:`) when there is no emoji; screen readers
+  announce it by name, and it is not a separate tab stop. A page synced
+  before this release shows its emoticons once its body is re-derived from
+  Confluence — an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All** (**Sync Now** is incremental and does
+  not refresh unchanged pages). Saving it before then still drops them.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

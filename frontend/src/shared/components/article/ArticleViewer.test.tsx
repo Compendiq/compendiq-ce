@@ -971,3 +971,45 @@ describe('ArticleViewer', () => {
     });
   });
 });
+
+// #1750: read mode shows emoticons through the same node as the editor, and a
+// copy out of it (serialized with the viewer's schema, then pasted into the
+// editor and written back) keeps every attribute.
+describe('ArticleViewer: Confluence emoticons (#1750)', () => {
+  it('shows each emoticon as a named image that is not a tab stop, and a copy keeps its attributes', async () => {
+    const html =
+      '<p>State <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;tick&quot;}"'
+      + ' data-emoticon-label="✅" role="img" aria-label="tick"></span> complete</p>'
+      + '<p>Cloud <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;laugh&quot;,'
+      + '&quot;ac:emoji-shortname&quot;:&quot;:grinning:&quot;,&quot;ac:emoji-id&quot;:&quot;1f600&quot;,'
+      + '&quot;ac:emoji-fallback&quot;:&quot;😀&quot;}" data-emoticon-label="😀" role="img" aria-label="grinning"></span></p>';
+    const { container, findByRole, getByRole } = render(<ArticleViewer content={html} />);
+    const tick = await findByRole('img', { name: 'tick' });
+    expect(tick).toHaveAttribute('data-emoticon-label', '✅');
+    expect(tick).toBeEmptyDOMElement();
+    expect(tick).not.toHaveAttribute('tabindex');
+    expect(getByRole('img', { name: 'grinning' })).toHaveAttribute('data-emoticon-label', '😀');
+
+    const view = container.querySelector('.ProseMirror') as HTMLElement & {
+      editor: { commands: { selectAll: () => boolean } };
+    };
+    view.editor.commands.selectAll();
+    let copied = '';
+    fireEvent.copy(view, {
+      clipboardData: {
+        clearData: vi.fn(),
+        setData: (type: string, value: string) => {
+          if (type === 'text/html') copied = value;
+        },
+      },
+    });
+
+    const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+    expect([...clipboard.querySelectorAll('span.confluence-emoticon')]
+      .map((span) => [JSON.parse(span.getAttribute('data-emoticon-attrs') ?? 'null'), span.getAttribute('data-emoticon-label')]))
+      .toEqual([
+        [{ 'ac:name': 'tick' }, '✅'],
+        [{ 'ac:name': 'laugh', 'ac:emoji-shortname': ':grinning:', 'ac:emoji-id': '1f600', 'ac:emoji-fallback': '😀' }, '😀'],
+      ]);
+  });
+});

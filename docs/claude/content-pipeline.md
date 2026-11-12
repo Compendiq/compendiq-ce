@@ -66,6 +66,19 @@ Read mode uses the draw.io schema renderer, not the editor-only React node view,
 so the admitted Edit Diagram callback remains reachable for source-only nodes.
 Remove its overlay when that callback is withdrawn (including a live freeze).
 
+**Emoticons round-trip (#1750).** `confluenceToHtml` turns each `ac:emoticon` into an
+empty `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅"
+role="img" aria-label="tick">`: the JSON object holds every attribute in source order
+(`ac:name`, `ac:emoji-*`, any other; `<`/`>` written `\u003c`/`\u003e`); the label (an
+emoji, or Confluence's text form `:shortname:`/`(name)`) is drawn by
+`.confluence-emoticon::before`, so the span adds no text to `body_text`, embeddings,
+Markdown or #1751's task matching. `htmlToConfluence` writes exactly the carried
+attributes back, self-closed (`<ac:emoticon ac:name="tick" />`). `confluenceEmoticon`
+(inline atom: `emoticonAttrs`, `label`, `name`) is in both TipTap schemas, rendered
+by `renderHTML` alone (no node view), never a tab stop. `span.confluence-emoticon` is in `MEDIA_SELECTOR`: AI Improve freezes it
+as one inline token, never a div, so a task holding one stays a task (#1752). A
+page synced before #1750 shows emoticons only after its body is re-derived.
+
 A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
 `img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
 `data-confluence-image-source`, and gives it both (`attachment`): the shape

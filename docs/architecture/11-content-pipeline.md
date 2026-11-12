@@ -91,6 +91,7 @@ Custom turndown rules handle Confluence-specific macros:
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
+| `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
@@ -122,6 +123,43 @@ any change to the existing conflict policy.
   detects a nested `ri:user` and unwraps the link, delegating to the
   `ri:user` handler so a second round-trip (edit → push-back → re-pull)
   still produces a mention span instead of an empty `<a>`.
+- **Emoticons keep every attribute (#1750).** Confluence versions write
+  different attributes on `ac:emoticon`: `ac:name` alone (`tick`, `warning`,
+  `smile`, …); `ac:name` plus `ac:emoji-shortname`, `ac:emoji-id` and
+  `ac:emoji-fallback` (Confluence 7 and Cloud — Cloud writes the shortname as
+  the fallback, older versions the emoji); a CLDR `ac:name` with
+  `ac:emoji-id` (DC 8.5+); some carry no `ac:name`. So nothing is assumed:
+  the forward pass carries every attribute whose name is an ASCII XML QName
+  that declares no namespace (`xmlns`, `xmlns:*` are never carried or
+  written) and whose value is at most 1,024 characters with none XML 1.0
+  forbids, in source order, as one JSON object in `data-emoticon-attrs` (`<` and `>`
+  written `\u003c` / `\u003e`, so the placeholder's HTML holds no `<` or `>`
+  outside its own tags), and the reverse pass writes exactly those back. The
+  span holds no text, so it adds nothing to `body_text`, embedding input,
+  Markdown outside Improve or #1751's task-text matching. Its display label,
+  `data-emoticon-label`, is drawn by `.confluence-emoticon::before` (index.css):
+  the emoji in `ac:emoji-fallback`, else the code points of a hexadecimal
+  `ac:emoji-id`, else the classic name's emoji, else Confluence's text form
+  (the shortname, `(name)`, `(emoticon)`). It is a `role="img"` named by
+  `aria-label`: the shortname in words, else `ac:name` in words, else
+  `emoticon`. A label or name over 64 code points or holding `<`/`>` is not
+  used. The reverse pass ignores label, role and name. The
+  reverse pass converts placeholders after every loop that rebuilds a body by
+  re-parsing and serializes each element self-closed, as Confluence stores it
+  (`<ac:emoticon ac:name="tick" />`), escaping `<` and `>` in its attribute
+  values (JSDOM escapes only `"` and `&`), so an unchanged emoticon goes back
+  byte for byte. The carrier is always written (`{}` for an element without
+  attributes); a span without one, or whose carrier is not a JSON object,
+  was not made by the forward pass and writes its label as text rather than
+  an emoticon with no identity. An emoticon whose attribute value holds `/` escapes the
+  self-closing expansion above, opens as an element and swallows what follows
+  it; the forward pass moves that content back out behind the placeholder
+  (it used to be deleted with the element). Attribute names are those the
+  HTML parser reports, lowercased; every known Confluence attribute is
+  lowercase. Only `body_html` converted after #1750 holds the placeholders: a
+  page synced earlier gets them when its body is next re-derived from
+  Confluence (an upstream change, or a re-sync); saving it before then still
+  writes it back without emoticons.
 - `jira`, `include`, `excerpt-include`, and `toc` all round-trip
   losslessly by stashing the original parameters on `data-*` attributes
   of the placeholder element; `htmlToConfluence` reads them back to
@@ -347,7 +385,7 @@ any change to the existing conflict policy.
   whose `parseHTML` matches each placeholder (`panel-*`,
   `confluence-toc`, `confluence-jira-issue`, `confluence-include-macro`,
   `confluence-labels-macro`, `confluence-macro-unknown`,
-  `confluence-user-mention`) and whose `renderHTML` re-emits the same
+  `confluence-user-mention`, `confluence-emoticon`) and whose `renderHTML` re-emits the same
   class + `data-*` attributes. The `details` node likewise declares
   `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
   attributes, so dropping those declarations silently reintroduces the
@@ -654,7 +692,8 @@ captured range.
 - This path has **no macro protection**, unlike the `/llm/improvements/apply`
   route it deliberately bypasses (`protectMedia` / `restoreMedia`, #723).
   `doc.textBetween` builds `content` and it **skips inline atom nodes** —
-  `confluenceStatus`, `confluenceUserMention`, `confluenceJiraIssue` — so a
+  `confluenceStatus`, `confluenceUserMention`, `confluenceJiraIssue`,
+  `confluenceEmoticon` (#1750) — so a
   selection reading "Ask @jdoe about DONE" reaches the model as `"Ask  about "`,
   and the returned HTML then overwrites the range those nodes live in. Both
   editor surfaces therefore **withhold Improve** over such a range rather than
@@ -702,6 +741,15 @@ Native `panel` nodes are also opaque-frozen: they reuse the visual
 `data-macro-params` are the only lossless record of their identity and
 arbitrary parameters. Nested media travels inside that single capture rather
 than receiving a second token.
+Emoticons (`span.confluence-emoticon`, #1750) are frozen like the #901 inline
+placeholders (Jira, status, mention): each becomes one inline token whose
+original HTML is a single `<span>` with no `<` or `>` in its carrier, so a
+task holding one stays a task on Accept (#1752 keeps a task item plain only
+for a token whose HTML holds a `<div`). Two limits are inherited from every
+inline placeholder: an emoticon alone in a paragraph comes back without that
+`<p>` (restoreMedia consumes the wrapping paragraph of a lone token), and
+identical emoticons are identical media, so the drop-guard cannot re-append
+one the model dropped while its twin survives.
 
 `assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
 caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
