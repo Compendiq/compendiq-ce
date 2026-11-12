@@ -1280,6 +1280,11 @@ describe('content-converter', () => {
         '<ul>\n<li>[x] see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n'
         + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">ping CQ_MEDIA_PLACEHOLDER_10</li>\n</ul>\n',
       );
+      // Inside a code span marked keeps turndown's `\_`, and restoreMedia
+      // restores that spelling too, so it counts as well.
+      expect(await markdownToHtml('- [x] see `CQ\\_MEDIA\\_PLACEHOLDER\\_1`', { protectedMedia: media })).toBe(
+        '<ul>\n<li>[x] see <code>CQ\\_MEDIA\\_PLACEHOLDER\\_1</code></li>\n</ul>\n',
+      );
       // Without the map nothing restores the tokens, so they are plain text.
       expect(await markdownToHtml('- [x] see CQ\\_MEDIA\\_PLACEHOLDER\\_1')).toBe(
         '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n',
