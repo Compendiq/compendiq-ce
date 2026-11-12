@@ -4,7 +4,7 @@
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { logger } from '../utils/logger.js';
 import { APP_VERSION } from '../utils/version.js';
 import { getMcpDocsSettings } from './mcp-docs-settings.js';
@@ -12,6 +12,17 @@ import { getMcpDocsSettings } from './mcp-docs-settings.js';
 let client: Client | null = null;
 let transport: StreamableHTTPClientTransport | null = null;
 let connectedUrl: string | null = null;
+/** In-flight connect shared by concurrent callers so only one transport is ever built per reset. */
+let connecting: Promise<Client> | null = null;
+
+/**
+ * HTTP statuses that mean the sidecar no longer knows our session.
+ * 404 is the MCP spec / SDK answer (`-32001 Session not found`, after the sidecar
+ * evicted an idle session or restarted); 400 is what sidecars built before #1766
+ * answered (`-32000 Invalid or missing session`). Either way the request never
+ * reached a tool, so re-sending it cannot double outbound traffic.
+ */
+const SESSION_LOST_STATUSES: ReadonlySet<number> = new Set([404, 400]);
 
 async function ensureConnected(): Promise<Client> {
   const settings = await getMcpDocsSettings();
@@ -26,35 +37,74 @@ async function ensureConnected(): Promise<Client> {
   }
 
   if (client) return client;
+  if (connecting) return connecting;
 
-  try {
-    // Send the shared secret (if configured) so the sidecar's /mcp guard accepts us.
-    const token = process.env.MCP_DOCS_TOKEN;
-    transport = new StreamableHTTPClientTransport(new URL(settings.url), {
-      requestInit: token ? { headers: { 'x-mcp-docs-token': token } } : undefined,
-    });
-    client = new Client({ name: 'compendiq-backend', version: APP_VERSION });
-    await client.connect(transport);
-    connectedUrl = settings.url;
-    logger.info({ url: settings.url }, 'MCP Docs client connected');
-    return client;
-  } catch (err) {
-    client = null;
-    transport = null;
-    connectedUrl = null;
-    throw err;
-  }
+  connecting = connect(settings.url).finally(() => {
+    connecting = null;
+  });
+  return connecting;
+}
+
+/** Build a transport + client and run `initialize`; publish them only once connected. */
+async function connect(url: string): Promise<Client> {
+  // Send the shared secret (if configured) so the sidecar's /mcp guard accepts us.
+  const token = process.env.MCP_DOCS_TOKEN;
+  const nextTransport = new StreamableHTTPClientTransport(new URL(url), {
+    requestInit: token ? { headers: { 'x-mcp-docs-token': token } } : undefined,
+  });
+  const nextClient = new Client({ name: 'compendiq-backend', version: APP_VERSION });
+  // On failure the SDK closes the transport itself; nothing was published.
+  await nextClient.connect(nextTransport);
+  client = nextClient;
+  transport = nextTransport;
+  connectedUrl = url;
+  logger.info({ url }, 'MCP Docs client connected');
+  return nextClient;
 }
 
 async function disconnect(): Promise<void> {
-  try {
-    if (transport) {
-      await transport.close();
-    }
-  } catch { /* ignore */ }
+  const closing = transport;
   client = null;
   transport = null;
   connectedUrl = null;
+  try {
+    await closing?.close();
+  } catch { /* ignore */ }
+}
+
+/** Drop the cached connection, but only if `failed` is still the cached client — a concurrent caller may already have replaced it. */
+async function resetConnection(failed: Client): Promise<void> {
+  if (client !== failed) return;
+  await disconnect();
+}
+
+function isSessionLost(err: unknown): err is StreamableHTTPError {
+  return err instanceof StreamableHTTPError && err.code !== undefined && SESSION_LOST_STATUSES.has(err.code);
+}
+
+/**
+ * Run one request on the sidecar session. When the sidecar reports the session
+ * gone (see SESSION_LOST_STATUSES) drop the cached connection and retry exactly
+ * once on a fresh `initialize`, re-sending the same arguments. Tool-level
+ * `isError` results are ordinary results (`callTool` resolves), so they never
+ * reach this path and are never retried.
+ */
+async function withSession<T>(op: (mcp: Client) => Promise<T>): Promise<T> {
+  const first = await ensureConnected();
+  try {
+    return await op(first);
+  } catch (err) {
+    if (!isSessionLost(err)) throw err;
+    logger.warn({ status: err.code }, 'MCP Docs session lost; reconnecting once');
+    await resetConnection(first);
+    const second = await ensureConnected();
+    try {
+      return await op(second);
+    } catch (retryErr) {
+      if (isSessionLost(retryErr)) await resetConnection(second);
+      throw retryErr;
+    }
+  }
 }
 
 interface McpDocResult {
@@ -81,16 +131,14 @@ export async function fetchDocumentation(
   userId: string,
   maxLength?: number,
 ): Promise<McpDocResult> {
-  const mcp = await ensureConnected();
-
-  const result = await mcp.callTool({
+  const result = await withSession((mcp) => mcp.callTool({
     name: 'fetch_url',
     arguments: {
       url,
       max_length: maxLength ?? 10_000,
       user_id: userId,
     },
-  });
+  }));
 
   const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
 
@@ -127,16 +175,14 @@ export async function searchDocumentation(
   userId: string,
   numResults?: number,
 ): Promise<McpSearchResult[]> {
-  const mcp = await ensureConnected();
-
-  const result = await mcp.callTool({
+  const result = await withSession((mcp) => mcp.callTool({
     name: 'search_web',
     arguments: {
       query,
       num_results: numResults ?? 5,
       user_id: userId,
     },
-  });
+  }));
 
   const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
 
@@ -175,8 +221,7 @@ export async function searchDocumentation(
  */
 export async function testConnection(): Promise<{ ok: boolean; tools: string[]; error?: string }> {
   try {
-    const mcp = await ensureConnected();
-    const toolList = await mcp.listTools();
+    const toolList = await withSession((mcp) => mcp.listTools());
     const tools = toolList.tools.map((t) => t.name);
     return { ok: true, tools };
   } catch (err) {

@@ -28,3 +28,15 @@ export function parseCacheTtl(raw: string | undefined): number {
   const ttl = parseInt(raw ?? String(DEFAULT_CACHE_TTL), 10);
   return Number.isInteger(ttl) && ttl > 0 ? ttl : DEFAULT_CACHE_TTL;
 }
+
+/** Idle-session TTL of the Streamable HTTP transport: 30 minutes. */
+const DEFAULT_SESSION_TTL_MS = 30 * 60_000;
+
+/**
+ * Parse `MCP_DOCS_SESSION_TTL_MS` (milliseconds), falling back to
+ * {@link DEFAULT_SESSION_TTL_MS} when unset, non-numeric, or non-positive.
+ */
+export function parseSessionTtlMs(raw: string | undefined): number {
+  const ttl = parseInt(raw ?? String(DEFAULT_SESSION_TTL_MS), 10);
+  return Number.isInteger(ttl) && ttl > 0 ? ttl : DEFAULT_SESSION_TTL_MS;
+}

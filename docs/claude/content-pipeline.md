@@ -237,6 +237,34 @@ can echo request fragments and internal topology. It is truncated at
 `PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
 `dangerouslySetInnerHTML`, never a Markdown renderer.
 
+## MCP Sidecar Sessions
+
+The `mcp-docs` sidecar owns the Streamable HTTP session. An unknown or
+terminated `mcp-session-id` gets `404` with the SDK's JSON-RPC body
+(`-32001 Session not found`) on POST, GET and DELETE; a non-initialize request
+without the header gets `400 -32000`. The `/mcp` shared-secret guard runs
+before either answer. Idle eviction uses `MCP_DOCS_SESSION_TTL_MS` (default
+30 min); it is a sidecar-process variable and is not mapped by the stock
+Compose files.
+
+The backend client (`backend/src/core/services/mcp-docs-client.ts`) retries a
+request exactly once, after dropping its cached connection, and only on a
+transport-level `StreamableHTTPError` whose status is 404 or 400 (400 keeps a
+not-yet-upgraded sidecar working). Keep the predicate status-based. Never
+retry a tool `isError` result or any other error: a 4xx is produced before a
+tool runs, so re-sending cannot double outbound SearXNG/fetch traffic, whereas
+retrying a tool error would. The retry re-sends the same URL or keyword query
+only — no article content. Concurrent callers must share one in-flight
+connect; publish `client`/`transport` only after `initialize` succeeds.
+
+The real-sidecar validation
+(`backend/src/core/services/mcp-docs-client.integration.test.ts`) spawns the
+worktree's `mcp-docs/src` against a fake SearXNG through idle eviction and a
+restart. It installs the sidecar's production dependencies into a temp dir
+(`npm ci --omit=dev --prefer-offline`) because `mcp-docs` is not a root
+workspace; it runs in the PR Check `Tests` job and must fail, never skip, when
+npm, Redis or the sidecar is unavailable.
+
 ## SearXNG Sidecar
 
 `mcp-docs` calls SearXNG directly, so `[botdetection].trusted_proxies`
