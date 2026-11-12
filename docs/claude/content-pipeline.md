@@ -150,10 +150,12 @@ a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart
 li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
 plain items into runs (ordered plain runs keep `start`), for every caller —
 AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
-draw.io fence, a media placeholder) stays plain with `[x]` / `[ ]` as text:
-TipTap's TaskItem parses only the first descendant `div`. The import sanitiser
-admits exactly `start`, `type`, `data-type` and `data-checked` by name: never
-`ALLOW_DATA_ATTR: true`, never `<input>`.
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type` and `data-checked`
+by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →

@@ -52,6 +52,9 @@ import {
   TOC_WITH_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
+import type { JSONContent } from '@tiptap/core';
+import { generateJSON } from '@tiptap/html';
+import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 
 describe('content-converter', () => {
   // ========== confluenceToHtml ==========
@@ -1244,8 +1247,9 @@ describe('content-converter', () => {
     it('keeps a task item whose body holds, or will hold, a div as a plain item with its marker as text (#1752)', async () => {
       // TipTap's TaskItem parses its content from the first descendant <div>, so
       // a task item holding one would lose everything else in the editor. A
-      // draw.io fence becomes a div after parsing; a media token becomes one in
-      // restoreMedia. Such an item stays plain and keeps `[x]` / `[ ]` as text.
+      // draw.io fence becomes a div after parsing, and a media token whose
+      // original HTML has a div becomes one in restoreMedia. Such an item stays
+      // plain and keeps `[x]` / `[ ]` as text.
       expect(await markdownToHtml('- [x] done\n\n  ```drawio\n  arch.drawio\n  ```\n\n- [ ] todo')).toBe(
         '<ul>\n<li><p>[x] done</p>\n'
         + '<div class="confluence-drawio" data-diagram-name="arch.drawio">'
@@ -1257,9 +1261,28 @@ describe('content-converter', () => {
         '<ul>\n<li>[ ] see <div>raw block</div></li>\n</ul>\n'
         + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">fine</li>\n</ul>\n',
       );
-      expect(await markdownToHtml('- [x] Fix CQ\\_MEDIA\\_PLACEHOLDER\\_0 now\n- [ ] todo')).toBe(
-        '<ul>\n<li>[x] Fix CQ_MEDIA_PLACEHOLDER_0 now</li>\n</ul>\n'
+      // `<div/>` opens a div too: the HTML tokenizer ignores the slash.
+      expect(await markdownToHtml('- [x] text <div/>more\n- [ ] todo')).toBe(
+        '<ul>\n<li>[x] text <div/>more</li>\n</ul>\n'
         + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">todo</li>\n</ul>\n',
+      );
+      // A media token counts only when restoreMedia will put a div there:
+      // its original HTML has one. An inline placeholder keeps its task, and
+      // token 1 never matches token 10.
+      const media = [
+        { token: 'CQ_MEDIA_PLACEHOLDER_1', html: '<div class="confluence-drawio" data-diagram-name="d"></div>' },
+        { token: 'CQ_MEDIA_PLACEHOLDER_10', html: '<span class="confluence-user-mention" data-username="jdoe">@jdoe</span>' },
+      ];
+      expect(await markdownToHtml(
+        '- [x] see CQ\\_MEDIA\\_PLACEHOLDER\\_1\n- [ ] ping CQ\\_MEDIA\\_PLACEHOLDER\\_10',
+        { protectedMedia: media },
+      )).toBe(
+        '<ul>\n<li>[x] see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">ping CQ_MEDIA_PLACEHOLDER_10</li>\n</ul>\n',
+      );
+      // Without the map nothing restores the tokens, so they are plain text.
+      expect(await markdownToHtml('- [x] see CQ\\_MEDIA\\_PLACEHOLDER\\_1')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n',
       );
       // The lookup is a descendant search, so a div in a nested item also keeps
       // its ancestors plain.
@@ -1282,7 +1305,7 @@ describe('content-converter', () => {
       const { html: protectedHtml, media } = protectMedia(confluenceToHtml(TASK_LIST_PAGE));
       const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
       const html = restoreMedia(
-        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml) }),
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media }),
         media,
       );
       const xhtml = htmlToConfluence(html);
@@ -1291,6 +1314,64 @@ describe('content-converter', () => {
       expect([...xhtml.matchAll(/<ac:task-body>([\s\S]*?)<\/ac:task-body>/g)].map((m) => m[1]))
         .toEqual(['Set up CI pipeline', 'Write integration tests', 'Deploy to <strong>staging</strong>']);
       expect(xhtml).not.toContain('<input');
+    });
+
+    it('keeps tasks holding a mention, status or Jira placeholder as tasks through AI Improve Accept, and a task holding a diagram plain (#1752)', async () => {
+      // The common Confluence task shape: an assignee mention, a status lozenge,
+      // a Jira link. protectMedia freezes each as a token; the Improve route
+      // passes the same map to markdownToHtml as protectedMedia, then restores
+      // it. Only the draw.io placeholder restores to a div.
+      const storage = '<ac:task-list>'
+        + '<ac:task><ac:task-id>11</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + '<ac:task-body><ri:user ri:userkey="abc123" /> review the draft</ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + '<ac:task-body>blocked by <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter>'
+        + '<ac:parameter ac:name="title">WAITING</ac:parameter></ac:structured-macro></ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>13</ac:task-id><ac:task-status>complete</ac:task-status>'
+        + '<ac:task-body>ship <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OPS-42</ac:parameter>'
+        + '</ac:structured-macro></ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>14</ac:task-id><ac:task-status>complete</ac:task-status>'
+        + '<ac:task-body>see <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter>'
+        + '</ac:structured-macro></ac:task-body></ac:task>'
+        + '</ac:task-list>';
+      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(storage));
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media }),
+        media,
+      );
+      const statuses = (xhtml: string) => [...xhtml.matchAll(/<ac:task-status>(\w+)<\/ac:task-status>/g)].map((m) => m[1]);
+
+      // The editor parses the stored body: three tasks with their inline nodes.
+      // generateJSON is typed Record<string, any>; its output is TipTap document JSON.
+      const doc = generateJSON(html, collabExtensions()) as JSONContent;
+      expect((doc.content?.[0]?.content ?? []).map((item) => [
+        item.type,
+        item.attrs?.checked,
+        (item.content?.[0]?.content ?? []).map((node) => node.type).filter((type) => type !== 'text'),
+      ])).toEqual([
+        ['taskItem', false, ['confluenceUserMention']],
+        ['taskItem', false, ['confluenceStatus']],
+        ['taskItem', true, ['confluenceJiraIssue']],
+      ]);
+
+      // What Accept writes to Confluence: an ac:task-list carrying the macros.
+      const xhtml = htmlToConfluence(html);
+      expect(statuses(xhtml)).toEqual(['incomplete', 'incomplete', 'complete']);
+      expect([...xhtml.matchAll(/<ac:task-body>([\s\S]*?)<\/ac:task-body>/g)].map((m) => m[1])).toEqual([
+        '<ac:link><ri:user ri:userkey="abc123"></ri:user></ac:link> review the draft',
+        'blocked by <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter>'
+          + '<ac:parameter ac:name="title">WAITING</ac:parameter></ac:structured-macro>',
+        'ship <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OPS-42</ac:parameter></ac:structured-macro>',
+      ]);
+      // The diagram's task stays a plain item with its marker and its macro.
+      expect(xhtml).toContain(
+        '<li>[x] see <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter>'
+        + '</ac:structured-macro></li>',
+      );
+
+      // After an editor load and save the same body still writes the three tasks.
+      expect(statuses(htmlToConfluence(yDocToHtml(htmlToYDoc(html))))).toEqual(['incomplete', 'incomplete', 'complete']);
     });
   });
 
