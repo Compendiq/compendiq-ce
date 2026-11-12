@@ -209,11 +209,28 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
 }
 
 /**
+ * #1754: a draw.io name the import must not keep. htmlToMarkdown writes a
+ * name-only placeholder's name, raw, as the body of a ```drawio fence: a line
+ * break would end that line and let the rest of the name escape the fence, and
+ * a name that marked reads as a closing fence (three backticks followed only by
+ * backticks or tildes; names are trimmed) ends the fence by itself. Control
+ * characters are never part of a real name. An empty or whitespace-only name
+ * would reach Confluence as an empty diagramName instead of the nameless
+ * placeholder's `diagram`. Such a placeholder imports nameless, as every
+ * placeholder did before #1754. Each branch is linear: a `{3,}` run in front
+ * of `[`~]*` would backtrack quadratically on a long run of backticks.
+ */
+const UNWRITABLE_DIAGRAM_NAME = /^\s*$|[\p{Cc}\u2028\u2029]|^```[`~]*$/u;
+
+/**
  * Sanitize HTML to prevent XSS using DOMPurify with a strict allowlist.
  * Strips all tags/attributes not explicitly permitted.
  */
 function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
+  // RETURN_DOM so the draw.io names get one more check below (#1754); the
+  // body's innerHTML is the string DOMPurify itself would have returned.
+  const body = DOMPurify.sanitize(html, {
+    RETURN_DOM: true,
     ALLOWED_TAGS: [
       'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
       'p', 'br', 'hr',
@@ -224,9 +241,37 @@ function sanitizeHtml(html: string): string {
       'strong', 'em', 'del', 'sup', 'sub', 'mark',
       'span', 'div',
     ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel'],
+    // #1752: the editor's own list attributes, admitted by name. `start`/`type`
+    // are OrderedList's, and `data-type`/`data-checked` are the TaskList/TaskItem
+    // markup markdownToHtml emits for GFM task items. ALLOW_DATA_ATTR stays
+    // false, so any other data-* (bar data-diagram-name, below) is still
+    // stripped, and <input> is never admitted: a task's state travels in
+    // data-checked, not in a checkbox.
+    // #1754: a draw.io placeholder's identity, admitted by name. markdownToHtml
+    // turns a ```drawio fence into div.confluence-drawio[data-diagram-name],
+    // and the editor and the Confluence write-back find the diagram by that
+    // name. A name is text, never a URL, so like alt and title it skips
+    // DOMPurify's URI-scheme check, which would drop `Network: DMZ` as a
+    // scheme. ALLOW_DATA_ATTR stays false: a fence's data-drawio-source and
+    // data-drawio-xml are stripped with every other data-* attribute, since
+    // they would tie the new page to another page's attachment or hand the
+    // draw.io editor XML from the file.
+    ALLOWED_ATTR: [
+      'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel',
+      'start', 'type',
+      'data-type', 'data-checked',
+      'data-diagram-name',
+    ],
+    ADD_URI_SAFE_ATTR: ['data-diagram-name'],
     ALLOW_DATA_ATTR: false,
-  });
+  }) as Element | null;
+  if (!body) return '';
+  for (const element of body.querySelectorAll('[data-diagram-name]')) {
+    if (UNWRITABLE_DIAGRAM_NAME.test(element.getAttribute('data-diagram-name') ?? '')) {
+      element.removeAttribute('data-diagram-name');
+    }
+  }
+  return body.innerHTML;
 }
 
 /**

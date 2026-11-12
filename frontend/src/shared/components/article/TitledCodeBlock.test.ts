@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { TitledCodeBlock } from './TitledCodeBlock';
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { lowlight } from '../../lib/lowlight';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -122,4 +125,30 @@ describe('TitledCodeBlock', () => {
     const result = attrs.title.renderHTML({ title: null });
     expect(result).toEqual({});
   });
+});
+
+describe('TitledCodeBlock language class through the real extension (#1749)', () => {
+  // TipTap spreads CodeBlock's own `language` parse (the class token of <pre>'s
+  // first element child) over this rule's getAttrs, so the rule's regex decides
+  // only when <code> is not that first child: the second shape.
+  it.each(['c#', 'objective-c', 'c++'])(
+    'keeps language-%s whole, also when <code> is not the first element of <pre>',
+    (language) => {
+      for (const html of [
+        `<pre><code class="language-${language}">x</code></pre>`,
+        `<pre><span></span><code class="language-${language}">x</code></pre>`,
+      ]) {
+        const editor = new Editor({
+          extensions: [StarterKit.configure({ codeBlock: false }), TitledCodeBlock.configure({ lowlight })],
+          content: html,
+        });
+        try {
+          expect(editor.state.doc.firstChild?.attrs.language, html).toBe(language);
+          expect(editor.getHTML(), html).toContain(`<code class="language-${language}">`);
+        } finally {
+          editor.destroy();
+        }
+      }
+    },
+  );
 });

@@ -85,18 +85,20 @@ Custom turndown rules handle Confluence-specific macros:
 
 | Confluence macro                     | HTML form                                                    | Markdown form                 |
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
-| `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
-| `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
+| `ac:structured-macro[code]`          | `<pre data-title="…" data-macro-params="{…}"><code class="language-x">` — `language` is the whole class token (`language-(\S+)`, so `c#` / `objective-c` / `c++` survive), `title` lives in `data-title`, every other direct text parameter (`linenumbers`, `collapse`, `firstline`, `theme`, …) in `data-macro-params` (#1749) | ` ```x … ``` ` fenced block — the language survives Improve; `data-title` / `data-macro-params` do not (#1749, out of scope) |
+| `ac:task-list` / `ac:task`           | `<ul data-type="taskList"><li data-type="taskItem" data-checked="true\|false" data-task-id="…">` — the task's own `ac:task-id` rides in `data-task-id` (`taskId` on `taskItem`); write-back keeps it and gives a new or copied task the next free id (#1751) | `- [ ]` / `- [x]` — the id is not carried: AI Improve apply gives back only the ids of tasks whose text it left unchanged |
 | `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
 | native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
-| `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
+| `ac:emoticon`                        | `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅" role="img" aria-label="tick"></span>` — every attribute of the element, in source order, as one JSON object; empty: the label is drawn by CSS, the name is the `aria-label` (#1750) | nothing (it holds no text); opaque-protected on Improve |
+| `ac:link` (`ri:page` / `ri:attachment` / `ac:anchor`) | `<a href="#confluence-page:<title>[?…]" data-confluence-link="page">` / `#confluence-attachment:<filename>[?…]` / `#confluence-anchor:<anchor>[?…]` — the href carries the whole link, values percent-encoded, then the link's other `ac:*` / `ri:*` attributes (#1748, grammar below); any other resource (`ri:blog-post`, `ri:space`, …) stays its text | `[text](href)` (the href is a valid link destination) |
 | `ac:structured-macro[drawio]`        | `div.confluence-drawio` with raster preview or explicit unavailable text and editable source | fenced `drawio` name |
 | `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
-| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
+| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…" data-macro-params="{…}">[Table of Contents]</div>` — the seven named parameters as `data-*`, every other one (`exclude`, `include`, `indent`, `separator`, `class`, …) in `data-macro-params` (#1749) | `[Table of Contents]` placeholder; opaque-protected on Improve |
+| `ac:structured-macro[status]`        | `<span class="confluence-status" data-color="…" data-macro-params="{…}">TITLE</span>` — `colour` → `data-color`, `title` → badge text, every other parameter (`subtle`, …) in `data-macro-params` (#1749) | `[STATUS: TITLE]` (inline); opaque-protected on Improve |
 | `ac:structured-macro[labels]`        | `<div class="confluence-labels-macro" data-showlabels="…">[Labels]</div>` (#765; was dropped per #348) | `[Labels]` placeholder; opaque-protected on Improve |
 | `ac:layout` / `ac:layout-section` / `ac:layout-cell` | `div.confluence-layout` / `div.confluence-layout-section[data-layout-type]` / `div.confluence-layout-cell` | flattened content (default); `[[[LAYOUT]]]` / `[[[LAYOUT-SECTION type]]]` / `[[[LAYOUT-CELL]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
 | `ac:structured-macro[section]` / `[column]` (legacy) | `div.confluence-section[data-border]` / `div.confluence-column[data-cell-width]` | flattened content (default); `[[[SECTION border=…]]]` / `[[[COLUMN width=…]]]` boundary tokens with `{ layoutTokens: true }` (#765, Improve only) |
@@ -122,13 +124,118 @@ any change to the existing conflict policy.
   detects a nested `ri:user` and unwraps the link, delegating to the
   `ri:user` handler so a second round-trip (edit → push-back → re-pull)
   still produces a mention span instead of an empty `<a>`.
+- **Emoticons keep every attribute (#1750).** Confluence versions write
+  different attributes on `ac:emoticon`: `ac:name` alone (`tick`, `warning`,
+  `smile`, …); `ac:name` plus `ac:emoji-shortname`, `ac:emoji-id` and
+  `ac:emoji-fallback` (Confluence 7 and Cloud — Cloud writes the shortname as
+  the fallback, older versions the emoji); a CLDR `ac:name` with
+  `ac:emoji-id` (DC 8.5+); some carry no `ac:name`. So nothing is assumed:
+  the forward pass carries every attribute whose name is an ASCII XML QName
+  that declares no namespace (`xmlns`, `xmlns:*` are never carried or
+  written) and whose value is at most 1,024 characters with none XML 1.0
+  forbids, in source order, as one JSON object in `data-emoticon-attrs` (`<` and `>`
+  written `\u003c` / `\u003e`, so the placeholder's HTML holds no `<` or `>`
+  outside its own tags), and the reverse pass writes exactly those back. The
+  span holds no text, so it adds nothing to `body_text`, embedding input,
+  Markdown outside Improve or #1751's task-text matching. Its display label,
+  `data-emoticon-label`, is drawn by `.confluence-emoticon::before` (index.css):
+  the emoji in `ac:emoji-fallback`, else the code points of a hexadecimal
+  `ac:emoji-id`, else the classic name's emoji, else Confluence's text form
+  (the shortname, `(name)`, `(emoticon)`). It is a `role="img"` named by
+  `aria-label`: the shortname in words, else `ac:name` in words, else
+  `emoticon`. A label or name over 64 code points, blank, or holding `<`,
+  `>`, a control character, a bidi override or isolate, or a lone surrogate
+  is not used (the next candidate applies); the attribute itself is still
+  carried and written back when its value passes the rule above. The reverse
+  pass ignores label, role and name. The
+  reverse pass converts placeholders after every loop that rebuilds a body by
+  re-parsing and serializes each element self-closed, as Confluence stores it
+  (`<ac:emoticon ac:name="tick" />`), escaping `<` and `>` in its attribute
+  values (JSDOM escapes only `"`, `&` and NBSP) and writing a tab, line feed
+  or carriage return as `&#9;` / `&#10;` / `&#13;` (raw, XML attribute-value
+  normalization would turn it into a space), so an unchanged emoticon goes back
+  byte for byte. The carrier is always written (`{}` for an element without
+  attributes); a span without one, or whose carrier is not a JSON object,
+  was not made by the forward pass and writes its label as text rather than
+  an emoticon with no identity. An emoticon whose attribute value holds `/` escapes the
+  self-closing expansion above, opens as an element and swallows what follows
+  it; the forward pass moves that content back out behind the placeholder
+  (it used to be deleted with the element). Attribute names are those the
+  HTML parser reports, lowercased; every known Confluence attribute is
+  lowercase. Only `body_html` converted after #1750 holds the placeholders: a
+  page synced earlier gets them when its body is next re-derived from
+  Confluence (an upstream change, or a re-sync); saving it before then still
+  writes it back without emoticons.
 - `jira`, `include`, `excerpt-include`, and `toc` all round-trip
   losslessly by stashing the original parameters on `data-*` attributes
   of the placeholder element; `htmlToConfluence` reads them back to
-  reconstruct the `<ac:structured-macro>` with its parameters. The
+  reconstruct the `<ac:structured-macro>` with its parameters — `toc`,
+  `code` and `status` additionally carry every direct text parameter that
+  has no named attribute in a JSON `data-macro-params` (#1749). The
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
+- **Confluence links keep their target (#1748).** TipTap's Link mark keeps
+  only `href`, `target`, `rel`, `class` and `title`, so the forward pass puts
+  the whole link in the href (`core/services/confluence-link.ts`):
+  `#confluence-page:<ri:content-title>`, `#confluence-attachment:<ri:filename>`
+  or `#confluence-anchor:<ac:anchor>` (a link to an anchor on the page), the
+  value UTF-8 percent-encoded down to `A-Z a-z 0-9 - . _ ~`, then `?` and
+  `name=value` pairs joined by `&`: every other `ac:*` attribute of the
+  `ac:link` (`ac:anchor`, `ac:card-appearance`, …), every other `ri:*`
+  attribute of the `ri:page` / `ri:attachment` (`ri:space-key`,
+  `ri:version-at-save`, …), the attachment's container as
+  `<element>.<attribute>` (`page.ri:space-key=ENG`), each in source order, and
+  `body=plain|rich` when the text alone would not tell the body element. The
+  resource is the link's first direct `ri:*` child, so the `ri:page` inside an
+  `ri:attachment` is the attachment's owner (it used to turn the link into a
+  link to that page). The text is the link body, or with no body the title,
+  filename or anchor Confluence shows. `htmlToConfluence` rebuilds the
+  `ac:link` from the href alone, after every loop that re-parses a body: the
+  title or filename first, then the carried attributes; markup in the link is
+  an `ac:link-body` (its nodes move, so images inside are still converted),
+  text an `ac:plain-text-link-body` in CDATA, and no body when the text is
+  what Confluence shows without one. Anything else inside an `ac:link`
+  (whitespace, a stray element) is dropped with it, as before; an anchor link
+  without a body is the exception, since its content can only be what an
+  unexpanded self-closing tag swallowed, and that moves back out. A carried
+  name is an ASCII QName in the element's namespace with a local part of at
+  most 64 characters (`xmlns` never is one), a value at most 1,024 characters
+  that XML can hold, and an attachment's container element name (`page`,
+  `blog-post`) at most 32 characters; at most 16 attributes are carried per
+  element and an href is at most 16,384 characters. An attribute in the
+  namespace that cannot be carried, or a container whose name is longer, is
+  logged (`Confluence link attributes not carried (#1748)`, names only), never
+  dropped silently. `<`, `>`, tab, LF and CR in `ac:link` /
+  `ri:*` attribute values are written as character references, and the HTML
+  entity `&nbsp;` as `&#160;`. An href that breaks the grammar's rules stays
+  the `<a>` it is. An href written before #1748
+  (`#confluence-page:<title as written>`) still converts, as a link by title
+  alone — its space, anchor and other attributes were never stored. An older
+  href that also parses as the grammar (its title made only of unreserved
+  characters and `%XX`, or ending in a valid `?name=value` list such as
+  `?body=plain`) is read as the grammar, because every href written since
+  #1748 is encoded: the write-back and `link-extractor.ts` both take the
+  decoded title first, the extractor falling back to the title as written.
+  With two titles that differ only by an escape sequence (`A B`, `A%20B`)
+  that is an accepted trade-off both ways: an older link to `A%20B` resolves
+  to `A B` when that page exists, and a new link to `A B` (href
+  `#confluence-page:A%20B`) resolves to `A%20B` when no page `A B` exists here
+  (it lives in a space that is not synced, say). The incremental `LIKE` scan
+  has a pattern for each shape, the encoded one escaped for `%` and `_`. A
+  self-closing anchor link (`<ac:link ac:anchor="x" />`) is expanded like
+  `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
+  out. Clicking these links in Compendiq does not navigate (non-goal).
+  Deferred, unchanged since before #1748 (the converters and Improve keep all
+  of these but the mention): in the editor, a link whose body is an image or
+  inline code is lost — the image is a block node, and StarterKit's Code mark
+  excludes every other mark — and a link whose text mixes inline code with
+  other text is split into two links around the code; on a collaborative
+  save, a line break, mention, status or emoticon inside a link is left out of
+  it, splitting the link around it (Yjs keeps marks on text only). A mention
+  inside a link is a nested `ac:link`, which `confluenceToHtml` unwraps by
+  replacing the whole outer link, text included, with the mention (#314);
+  Confluence never writes that nesting.
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's
@@ -175,6 +282,42 @@ any change to the existing conflict policy.
   grandchildren (dropped by a direct-child lookup, though the old descendant
   search still found them), and an empty `title` parameter absorbed the body,
   titling the section with its own opening prose. Expanding the tag closes both.
+- **Dedicated handlers keep every direct text parameter (#1749).** `code`,
+  `toc` and `status` keep their canonical parameters in their own attributes
+  (code `language` class + `data-title`, toc `data-<name>`, status
+  `data-color` + badge text) and carry every other direct text parameter
+  (`collectDirectTextParams`) in `data-macro-params`. One value, one home:
+  the forward pass removes a parameter from the carrier exactly when it wrote
+  its canonical attribute, and the reverse pass writes canonical parameters
+  first while `appendSerializedMacroParams(…, emitted)` skips a carried copy
+  of any name already written — so a value the editor changes always wins.
+  The code macro writes its attributes only for values they give back
+  exactly — a non-empty title, a language that is one class token
+  (`/^\S+$/`) — so an empty `language` / `title` stays carried and writes
+  back empty (the #1227 rule). The language class is the same `\S` class in
+  the reverse pass, collab-schema.ts and `TitledCodeBlock.ts` (turndown's
+  fenced-code rule reads it the same way). In both editor schemas TipTap's
+  own CodeBlock `language` parse (the first element child's class token)
+  overrides the parse rule's `getAttrs`, so the rule's regex decides only
+  when `<code>` is not `<pre>`'s first element child. Values only ever travel
+  as attribute values (`body_html`) or element text (storage), which the DOM
+  serializers escape (`"`/`&` in attributes, `<`/`>`/`&` in text), so a
+  hostile value stays inert and intact; the storage void-element
+  post-process can only rewrite `<br …>`-like text inside attribute values —
+  for these macros a carried parameter *name*, as for the #865 net. On
+  Improve, toc and status are frozen by `protectMedia` and keep their
+  carrier; a code block keeps only its language. Parameter order is
+  canonical first, then carried in source order (Confluence reads
+  parameters as a map). A code macro whose language is `mermaid` is claimed
+  by `mermaidBlock` (priority 200) rather than the code block in both
+  schemas, so `mermaidBlock` declares the same `title` (`data-title`) and
+  `macroParams` attributes. Only `body_html` converted after #1749 holds the
+  carriers: a page synced earlier gets them when its body is next re-derived
+  from Confluence (an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All**, all calling `POST /api/pages/bulk/sync`;
+  **Sync Now** is incremental and does not refresh unchanged pages). Saving it
+  before then still writes back without them.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as
   `data-macro-name="expand|ui-expand"` (plus
@@ -263,6 +406,62 @@ any change to the existing conflict policy.
   columns and unknown macros). The one exception is a duplicate sibling
   `ac:task` an earlier write-back already created: by then it is a real,
   well-formed task, indistinguishable from one the author typed, so it stays.
+- **A task keeps its Confluence id (#1751).** Confluence numbers a page's
+  tasks and needs the numbers unique within the page: two tasks that share an
+  `ac:task-id` check and uncheck together (Atlassian KB "Checking/unchecking
+  a Task Item in a page causes other Tasks Items to trigger the same
+  behavior"); it keeps the number as a 64-bit integer. The forward pass
+  copies a task's own `ac:task-id` (its direct child, trimmed, canonical
+  decimal of at most 2^63 − 1, `isConfluenceTaskId`) into `data-task-id`;
+  anything else is not carried and its task counts as new. `taskItem`
+  declares it as `taskId` in both TipTap schemas (`ConfluenceTaskItem` in
+  collab-schema.ts and in article-extensions.ts, which the editor and read
+  mode register), with `keepOnSplit: false` so Enter starts a new task. Every
+  write-back over an existing page passes the page's stored storage
+  (`body_storage`) — PUT, collaborative Save, draft publish, version restore,
+  AI Improve apply — and `htmlToConfluence` decides every id before its
+  innermost-first loop, in document order: a task keeps the id it carries,
+  and when several tasks carry one id (pasted from another page, or
+  duplicated) the one whose own text is the stored task's keeps it, else the
+  first; a task without an id takes the id of the first stored task nothing
+  claimed whose own text it repeats exactly; every other task gets the next
+  free number above every id in the document and in the stored storage, so a
+  task deleted in the same write never lends its number (past 2^63 − 1, the
+  smallest free number). Only on a page synced before #1751 (`legacyTasks`)
+  do the tasks left then take the stored tasks left, in document order, when
+  they are as many, and a task without an id with a stored task's text goes
+  before a pasted carrier of that id. Callers decide it from the page's
+  stored state, never from the HTML being written: the stored `body_html`
+  holds tasks and none carries an id (`hasOnlyUncarriedTasks`); for a
+  collaborative Save, whose room rewrites `body_html` every 2 s, the room's
+  collaborative document lacks the `confluenceTaskIds` flag of its
+  `compendiq.meta` Y.Map, which is set when the document is seeded or reset
+  from HTML whose tasks carry ids and by every settled Confluence commit that
+  wrote task ids, in the transaction of its post-commit task-id marks (with
+  no marker when every task already carried its id, a `task_ids` message with
+  no entries). AI Improve apply never pairs. The same input always gets the
+  same ids: publishing a version restore re-derives the storage, with the
+  same stored page, and compares digests (`page-put-intent-reconciler.ts`),
+  which per-call random ids made fail. PUT, restore and Improve apply store a
+  body re-derived from the storage Confluence returns, so the ids come back
+  with it. The two writers that keep their own HTML store the ids they wrote:
+  draft publish stores `assignTaskIds`' HTML as the live body, and a
+  collaborative Save sets them on the room's task items by Yjs identity once
+  its intent settles (`markWrittenTaskIds`, the #1764 pattern: in place in
+  the owning room, over Redis to the pod that owns it, and in the persisted
+  document). The task body is the content `div` TaskItem serializes, not its
+  `<label><input type="checkbox">` chrome, which every editor save used to
+  write into `ac:task-body`; any other `li` shape is copied whole, so a body
+  polluted that way heals on its next save. Not covered: the AI Improve path
+  carries no ids (turndown writes `- [ ]` / `- [x]`), so on apply only tasks
+  whose text is unchanged get theirs back and a reworded task gets a new id;
+  in the first save of a page synced before #1751, a task typed in place of a
+  deleted one takes its id when the counts match, and an edited task gets a
+  new id when they do not; when two tasks carry one id and neither has the
+  stored task's text, the first keeps it; and the editor PUT, draft publish
+  and restore decide from the stored `body_html`, so after an unsaved
+  collaborative session, or a local-only edit, that replaced every task, the
+  next such write pairs those tasks with the stored ones once.
 - **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
   `ui-expand` comes from the Refined Macro Toolkit and is a different macro
   from Atlassian's native `expand`, not a rename. Verified against a
@@ -347,11 +546,19 @@ any change to the existing conflict policy.
   whose `parseHTML` matches each placeholder (`panel-*`,
   `confluence-toc`, `confluence-jira-issue`, `confluence-include-macro`,
   `confluence-labels-macro`, `confluence-macro-unknown`,
-  `confluence-user-mention`) and whose `renderHTML` re-emits the same
+  `confluence-user-mention`, `confluence-emoticon`) and whose `renderHTML` re-emits the same
   class + `data-*` attributes. The `details` node likewise declares
   `macroName`/`macroParams` (#1211) — ProseMirror serializes only declared
   attributes, so dropping those declarations silently reintroduces the
-  rewrite bug. ProseMirror silently unwraps any element
+  rewrite bug. `confluenceToc`, `confluenceStatus`, the code block
+  (`TitledCodeBlock`) and `mermaidBlock` declare `macroParams` in both schemas
+  for the same reason (#1749), and so does read mode's own code block in
+  `ArticleViewer.tsx`: read mode never saves, but ProseMirror serializes a
+  copy with the viewer's schema, and a block copied from the read view is
+  pasted into the editor and written back. `collab-schema-parity.test.ts` is
+  one-way — it fails when the collab schema lacks an attribute the frontend
+  declares — so the frontend declarations are pinned by their own editor and
+  viewer tests. ProseMirror silently unwraps any element
   with no matching parse rule, so a placeholder the editor doesn't know
   about is dropped from `getHTML()` and then permanently deleted from the
   Confluence page on the next save. The edit-mode schema
@@ -455,6 +662,56 @@ schema, and a conversion that yields an empty `bodyHtml` — a file that is only
 front-matter, or whose body the sanitizer stripped — is a **422**. An
 unexpected throw anywhere in the conversion is also a 422 naming what to try,
 not a 500 saying `Internal Server Error`.
+
+**Task lists and list numbering survive (#1752).** `markdownToHtml()` renders
+GFM task items (`- [x]` / `- [ ]`, under any list marker) as the editor's own
+task markup, `<ul data-type="taskList"><li data-type="taskItem"
+data-checked="true|false">`, instead of marked's `<input type="checkbox">`,
+which neither TipTap schema parses. A list that mixes task and plain items is
+split into consecutive runs: a task list holds task items only, and
+`htmlToConfluence` rebuilds `ac:task-list` from `li[data-type="taskItem"]`
+alone, so a plain item left inside one would vanish on write-back. A task item
+whose content holds a `<div>` stays a plain item with its `[x]` / `[ ]` kept
+as text, because TipTap's TaskItem parses its content from the first
+descendant `div` and would drop the rest. That covers raw HTML (`<div/>`
+included), a draw.io fence, and — on AI Improve Accept, which passes its
+protectMedia map as `protectedMedia` — a placeholder whose original HTML holds
+a div (a draw.io or mermaid diagram, a macro placeholder). Inline placeholders
+(an assignee mention, a status lozenge, a Jira link, an image) hold no div, so
+their tasks stay tasks. A plain run of an ordered list keeps its number through
+`start`; a task run has no numbering in either schema or in `ac:task-list`. No
+task id is emitted — a converted task is new. Lists without a task item render
+exactly as before. The conversion is in `markdownToHtml`, so it holds for every
+caller: AI Improve Accept now brings a page's task list (which `htmlToMarkdown`
+writes as `- [x]` / `- [ ]`) back as `ac:task-list`, mentions, status lozenges
+and Jira links inside its tasks included, instead of a bullet list with raw
+`<input>` elements in the stored body, and the retrieval-eval seeders store the
+same markup. The import sanitiser admits exactly `start` and `type`
+(`OrderedList`), `data-type` and `data-checked`, and `data-diagram-name`
+(draw.io, below), by name. `ALLOW_DATA_ATTR` stays `false`, so every other
+`data-*` attribute is still stripped, and `<input>` is never admitted.
+
+**Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
+` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the
+import sanitiser admits `data-diagram-name` by name, so the editor parses the
+node with its `diagramName`, the Create Page save keeps it with the
+`drawio-preview-unavailable` marker, and the Confluence write-back names the
+diagram instead of the fallback `diagram`. The attribute is also URI-safe
+(`ADD_URI_SAFE_ATTR`, the way DOMPurify treats `alt` and `title`): its scheme
+check would drop a name such as `Network: DMZ`, and no consumer uses the name
+as a URL — the editor and read view show it as text or pass it through
+`encodeURIComponent`, the backend through `safeAttachmentPath`. `htmlToMarkdown`
+writes a name-only placeholder's name raw inside its ` ```drawio ` fence, so the
+import drops a name that contains a line break or another control character, or
+that marked reads as a closing fence (three backticks followed only by backticks
+or tildes); it drops an empty or whitespace-only name too, which `htmlToConfluence`
+would write as an empty `diagramName`. Such a placeholder imports nameless. A
+fence's `data-drawio-source` and `data-drawio-xml` are still stripped with every
+other `data-*` attribute (`ALLOW_DATA_ATTR` stays `false`): the source locator
+names another page's attachment, and the inline XML would reach the same-origin
+draw.io editor unvetted. The name is what the existing lookups resolve once the
+page has that attachment (read mode's Edit Diagram, `materializeDrawioPreviews`
+after a Confluence write); the import itself creates none.
 
 **Four size limits, deliberately ordered so the app is always what rejects.**
 Each layer clears the one below it, so a user never meets a limit that cannot
@@ -663,7 +920,8 @@ captured range.
 - This path has **no macro protection**, unlike the `/llm/improvements/apply`
   route it deliberately bypasses (`protectMedia` / `restoreMedia`, #723).
   `doc.textBetween` builds `content` and it **skips inline atom nodes** —
-  `confluenceStatus`, `confluenceUserMention`, `confluenceJiraIssue` — so a
+  `confluenceStatus`, `confluenceUserMention`, `confluenceJiraIssue`,
+  `confluenceEmoticon` (#1750) — so a
   selection reading "Ask @jdoe about DONE" reaches the model as `"Ask  about "`,
   and the returned HTML then overwrites the range those nodes live in. Both
   editor surfaces therefore **withhold Improve** over such a range rather than
@@ -711,6 +969,15 @@ Native `panel` nodes are also opaque-frozen: they reuse the visual
 `data-macro-params` are the only lossless record of their identity and
 arbitrary parameters. Nested media travels inside that single capture rather
 than receiving a second token.
+Emoticons (`span.confluence-emoticon`, #1750) are frozen like the #901 inline
+placeholders (Jira, status, mention): each becomes one inline token whose
+original HTML is a single `<span>` with no `<` or `>` in its carrier, so a
+task holding one stays a task on Accept (#1752 keeps a task item plain only
+for a token whose HTML holds a `<div`). Two limits are inherited from every
+inline placeholder: an emoticon alone in a paragraph comes back without that
+`<p>` (restoreMedia consumes the wrapping paragraph of a lone token), and
+identical emoticons are identical media, so the drop-guard cannot re-append
+one the model dropped while its twin survives.
 
 `assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
 caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
@@ -745,6 +1012,13 @@ the diagram name, source, inline XML, preview and edit link; name-only
 wrappers retain the plain-name form. `markdownToHtml()` restores both forms,
 including explicit unavailable text when no preview is present, so copy,
 export and re-import do not silently discard the editable source reference.
+The Markdown import route keeps the name, the preview image and the edit link
+of either form, but its sanitiser strips the source locator and the inline XML
+(#1754; see Markdown import). A name-only wrapper's name is written raw, so a
+name with a line break, or one that marked reads as a closing fence (three
+backticks followed only by backticks or tildes), ends the fence early: the
+import drops such names, while names from Confluence storage or API writes are
+not checked yet.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|
@@ -1127,8 +1401,8 @@ are *marked* for publish (`data-confluence-filename`), because only
 `img[src^="/api/attachments/"]` becomes an `ri:attachment`; an anchor's href
 therefore reaches Confluence as a raw internal URL, which is imperfect and
 pre-dates #1164. Confluence's own attachment links arrive as
-`<a href="#confluence-attachment:…">` and never match the prefix, so they are
-left alone.
+`<a href="#confluence-attachment:…">` (since #1748 a percent-encoded filename,
+then `?` attributes) and never match the prefix, so they are left alone.
 
 Hidden entries in a Store A directory are skipped rather than migrated (#1169).
 No write path in either store can create one, so a dot-named file is always

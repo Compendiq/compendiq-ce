@@ -11,6 +11,23 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Confluence links live in the href (#1748).** The editor's Link mark keeps no
+`data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
+`#confluence-page:<title>`, `#confluence-attachment:<filename>` or
+`#confluence-anchor:<anchor>`, percent-encoded, then `?` and the link's other
+`ac:*` / `ri:*` attributes, and `htmlToConfluence` rebuilds the `ac:link` from
+that href alone. Parse and build it only through `core/services/confluence-link.ts`
+(the converter, `link-extractor.ts` and the baseline manifest do); keep reading
+the pre-#1748 shape, the title or filename as written, as the fallback to the
+encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is an image (a block node, so
+a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+excludes every other mark, so the Link mark leaves it; a fix changes the Code
+mark contract in both schemas), splits a link whose text mixes inline code with
+other text into two links around the code, and on a collaborative save splits a
+link around a line break (Yjs keeps marks on text only). Pinned by
+`content-converter.links.test.ts`.
+
 `body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
 imports, drafts, version text; Notion imports join parts with blank lines, restores copy
 stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
@@ -72,6 +89,20 @@ Read mode uses the draw.io schema renderer, not the editor-only React node view,
 so the admitted Edit Diagram callback remains reachable for source-only nodes.
 Remove its overlay when that callback is withdrawn (including a live freeze).
 
+**Emoticons round-trip (#1750).** `confluenceToHtml` turns each `ac:emoticon` into an
+empty `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅"
+role="img" aria-label="tick">`: the JSON object holds every attribute in source order
+(`ac:name`, `ac:emoji-*`, any other; `<`/`>` written `\u003c`/`\u003e`); the label (an
+emoji, or Confluence's text form `:shortname:`/`(name)`) is drawn by
+`.confluence-emoticon::before`, so the span adds no text to `body_text`, embeddings,
+Markdown or #1751's task matching. `htmlToConfluence` writes exactly the carried
+attributes back, self-closed (`<ac:emoticon ac:name="tick" />`; `<`, `>`, tab, LF and CR in a
+value as character references). `confluenceEmoticon`
+(inline atom: `emoticonAttrs`, `label`, `name`) is in both TipTap schemas, rendered
+by `renderHTML` alone (no node view), never a tab stop. `span.confluence-emoticon` is in `MEDIA_SELECTOR`: AI Improve freezes it
+as one inline token, never a div, so a task holding one stays a task (#1752). A
+page synced before #1750 shows emoticons only after its body is re-derived.
+
 A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
 `img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
 `data-confluence-image-source`, and gives it both (`attachment`): the shape
@@ -80,6 +111,26 @@ into `ri:attachment`. A collaborative Confluence Save copies those markers into
 the room's live and persisted Yjs document after its intent settles (#1764);
 otherwise the room's next 2 s persist drops them and every later Save uploads
 the image again.
+
+**A Confluence task keeps its id (#1751).** `ac:task-id` (canonical, at most
+2^63 − 1) rides in `data-task-id`, declared as `taskId` on `taskItem` in both
+TipTap schemas (`ConfluenceTaskItem`, registered by the editor and by read mode,
+whose copy is serialized with its schema; `keepOnSplit: false`). Every
+write-back over an existing page passes the stored `body_storage`: a task keeps
+the id it carries (of two carriers of one id, the one with the stored task's
+text), a task without one takes the id of a stored task with exactly its text,
+and any other task gets the next free number above every id in the page and its
+storage (deterministic: publishing a version restore re-derives the digest).
+Only on a page synced before #1751 (`legacyTasks`: its stored `body_html` holds
+tasks and none carries an id; for a collaborative Save, the room's
+`compendiq.meta` Y.Map lacks `confluenceTaskIds`) do the tasks left pair with
+the stored tasks left in order when they are as many. Draft publish stores the
+ids it wrote in the live body; like the image markers above, a collaborative
+Save sets them on the room's task items after its intent settles, in the
+transaction that also sets `confluenceTaskIds`. The task body is TaskItem's
+content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
+writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
+on apply.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
@@ -92,6 +143,27 @@ the lossless long-tail `confluence-macro-unknown` node. Native `panel` renders
 through the existing info-panel node but carries `data-macro-name="panel"` and
 arbitrary direct text parameters through the editor, so write-back emits
 `ac:name="panel"` rather than permanently coercing it to `info`.
+
+**Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
+`status` keep canonical parameters in their own attributes (code `language`
+class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
+other direct text parameter in `data-macro-params`. `codeBlock`, `mermaidBlock`
+(which claims a code macro whose language is mermaid), `confluenceToc` and
+`confluenceStatus` declare it as `macroParams` in both TipTap schemas, and so
+does read mode's code block, because a copy out of read mode is serialized with
+that schema. The parity test is one-way: it fails when the collab schema lacks
+an attribute the frontend declares; the frontend declarations are pinned by
+Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
+reverse pass skips a carried copy of a canonical name. The code language is the
+whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
+code language, but not a code block's `data-title`/`data-macro-params`. Only
+`body_html` converted after #1749 holds the carriers: a page synced earlier gets
+them when its body is next re-derived from Confluence (an upstream change, or
+a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
+or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
+`POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
+unchanged pages). A save before that still drops them.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without
@@ -151,6 +223,27 @@ sanitizes — and persists nothing. The form loads the result into the editor th
 parent and visibility the user chose. It replaces `POST /api/pages/import`, which
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
+
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
+`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
+`data-diagram-name` is admitted by name and as URI-safe, so a
+` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
+(#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
+`safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
+placeholder's name raw into its fence, so the import drops a name with a line break or other
+control character, one that marked reads as a closing fence (three backticks, then only backticks
+or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
+`data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
+the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
 
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →

@@ -52,6 +52,9 @@ import {
   TOC_WITH_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
+import type { JSONContent } from '@tiptap/core';
+import { generateJSON } from '@tiptap/html';
+import { collabExtensions, htmlToYDoc, yDocToHtml } from './collab-schema.js';
 
 describe('content-converter', () => {
   // ========== confluenceToHtml ==========
@@ -112,7 +115,7 @@ describe('content-converter', () => {
 
     it('converts Confluence links (page and attachment)', () => {
       const html = confluenceToHtml(LINKS_PAGE);
-      expect(html).toContain('href="#confluence-page:Architecture Overview"');
+      expect(html).toContain('href="#confluence-page:Architecture%20Overview?body=plain"');
       expect(html).toContain('data-confluence-link="page"');
       expect(html).toContain('Architecture Overview</a>');
       expect(html).toContain('href="#confluence-attachment:report.pdf"');
@@ -146,7 +149,7 @@ describe('content-converter', () => {
 
     it('preserves images inside rich link bodies', () => {
       const html = confluenceToHtml(CROSS_PAGE_IMAGES_PAGE, '55', 'OPS');
-      expect(html).toContain('<a href="#confluence-page:Shared Assets"');
+      expect(html).toContain('<a href="#confluence-page:Shared%20Assets"');
       expect(html).toContain('<img');
       expect(html).not.toContain('thumbnail.png</a>');
     });
@@ -224,8 +227,11 @@ describe('content-converter', () => {
       // Raw `<ri:user>` is rewritten into `<span class="confluence-user-mention">`.
       expect(html).not.toContain('ri:user'); // raw tag removed
       expect(html).toContain('class="confluence-user-mention"');
-      // Emoticons still stripped (no round-trip for those).
-      expect(html).not.toContain('ac:emoticon');
+      // #1750: the fixture's emoticon is a placeholder now, not stripped.
+      expect(html).toContain(
+        '<p>Great job! <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;smile&quot;}"'
+        + ' data-emoticon-label="🙂" role="img" aria-label="smile"></span></p>',
+      );
       expect(html).toContain('Contact');
     });
 
@@ -301,7 +307,7 @@ describe('content-converter', () => {
       // Task list
       expect(html).toContain('data-type="taskList"');
       // Links inside tasks
-      expect(html).toContain('#confluence-page:Backup Procedures');
+      expect(html).toContain('#confluence-page:Backup%20Procedures');
       // Draw.io
       expect(html).toContain('class="confluence-drawio"');
       expect(html).toContain('data-diagram-name="migration-flow"');
@@ -994,11 +1000,11 @@ describe('content-converter', () => {
   // ========== Double round-trip stability ==========
 
   describe('double round-trip stability', () => {
-    // Task lists and expand macros have known non-deterministic round-trips:
-    // - Task lists: random task-id generation on each htmlToConfluence call
-    // - Expand macros: extra <div> wrapper added on each confluenceToHtml pass
-    // These are tested separately below.
+    // Expand macros have a known non-deterministic round-trip (an extra <div>
+    // wrapper added on each confluenceToHtml pass), tested separately below.
+    // Task lists are stable since #1751: a task keeps its ac:task-id.
     const stableFixtures = [
+      { name: 'task lists', xhtml: TASK_LIST_PAGE },
       { name: 'panels', xhtml: PANELS_PAGE },
       { name: 'draw.io', xhtml: DRAWIO_PAGE },
       { name: 'tables', xhtml: TABLE_PAGE },
@@ -1031,12 +1037,12 @@ describe('content-converter', () => {
       expect(html2).toBe(html1);
     });
 
-    it('preserves task list content across round-trips', () => {
+    it('preserves task list content and task ids across round-trips (#1751)', () => {
       const html1 = confluenceToHtml(TASK_LIST_PAGE, '1');
       const xhtml1 = htmlToConfluence(html1);
       const html2 = confluenceToHtml(xhtml1, '1');
-      // HTML output is stable (task-ids change but aren't in HTML)
       expect(html2).toBe(html1);
+      expect([...xhtml1.matchAll(/<ac:task-id>(\d+)<\/ac:task-id>/g)].map((m) => m[1])).toEqual(['1', '2', '3']);
     });
 
     it('preserves expand content across round-trips', () => {
@@ -1192,6 +1198,188 @@ describe('content-converter', () => {
       const html = await markdownToHtml('```js\nconsole.log("hi");\n```');
       expect(html).toContain('<code');
       expect(html).toContain('console.log');
+    });
+
+    // #1752: GFM task items render as the editor's own task markup — the only
+    // shape either TipTap schema parses as a task — not as marked's
+    // <input type="checkbox">, which both schemas drop.
+    it('renders GFM task items as the editor task markup with their checked state, tight or loose (#1752)', async () => {
+      expect(await markdownToHtml('- [x] done\n- [ ] todo')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true">done</li>\n'
+        + '<li data-type="taskItem" data-checked="false">todo</li>\n'
+        + '</ul>\n',
+      );
+      expect(await markdownToHtml('- [x] done\n\n- [ ] todo')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true"><p>done</p>\n</li>\n'
+        + '<li data-type="taskItem" data-checked="false"><p>todo</p>\n</li>\n'
+        + '</ul>\n',
+      );
+    });
+
+    it('splits a list mixing task and plain items into runs, keeping ordered numbering (#1752)', async () => {
+      // A task list holds task items only, and htmlToConfluence rebuilds
+      // ac:task-list from li[data-type="taskItem"] alone — a plain item left
+      // inside one would vanish on write-back.
+      expect(await markdownToHtml('1. [x] a\n2. b\n3. [ ] c')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">a</li>\n</ul>\n'
+        + '<ol start="2">\n<li>b</li>\n</ol>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">c</li>\n</ul>\n',
+      );
+      expect(await markdownToHtml('- [x] parent\n  - [ ] child\n  - plain child')).toBe(
+        '<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="true">parent<ul data-type="taskList">\n'
+        + '<li data-type="taskItem" data-checked="false">child</li>\n</ul>\n'
+        + '<ul>\n<li>plain child</li>\n</ul>\n</li>\n'
+        + '</ul>\n',
+      );
+    });
+
+    it('keeps plain lists, ordered starts and code-fenced task syntax as marked renders them, and converts a trailing task item (#1752)', async () => {
+      const md = '- plain\n- list\n\n3. a\n4. b\n\n`- [x] inline`\n\n```\n- [x] fenced\n```\n\n- [x] real';
+      expect(await markdownToHtml(md)).toBe(
+        '<ul>\n<li>plain</li>\n<li>list</li>\n</ul>\n'
+        + '<ol start="3">\n<li>a</li>\n<li>b</li>\n</ol>\n'
+        + '<p><code>- [x] inline</code></p>\n'
+        + '<pre><code>- [x] fenced\n</code></pre>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">real</li>\n</ul>\n',
+      );
+    });
+
+    it('keeps a task item whose body holds, or will hold, a div as a plain item with its marker as text (#1752)', async () => {
+      // TipTap's TaskItem parses its content from the first descendant <div>, so
+      // a task item holding one would lose everything else in the editor. A
+      // draw.io fence becomes a div after parsing, and a media token whose
+      // original HTML has a div becomes one in restoreMedia. Such an item stays
+      // plain and keeps `[x]` / `[ ]` as text.
+      expect(await markdownToHtml('- [x] done\n\n  ```drawio\n  arch.drawio\n  ```\n\n- [ ] todo')).toBe(
+        '<ul>\n<li><p>[x] done</p>\n'
+        + '<div class="confluence-drawio" data-diagram-name="arch.drawio">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: arch.drawio</span></div>\n'
+        + '</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false"><p>todo</p>\n</li>\n</ul>\n',
+      );
+      expect(await markdownToHtml('- [ ] see <div>raw block</div>\n- [x] fine')).toBe(
+        '<ul>\n<li>[ ] see <div>raw block</div></li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">fine</li>\n</ul>\n',
+      );
+      // `<div/>` opens a div too: the HTML tokenizer ignores the slash.
+      expect(await markdownToHtml('- [x] text <div/>more\n- [ ] todo')).toBe(
+        '<ul>\n<li>[x] text <div/>more</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">todo</li>\n</ul>\n',
+      );
+      // A media token counts only when restoreMedia will put a div there:
+      // its original HTML has one. An inline placeholder keeps its task, and
+      // token 1 never matches token 10.
+      const media = [
+        { token: 'CQ_MEDIA_PLACEHOLDER_1', html: '<div class="confluence-drawio" data-diagram-name="d"></div>' },
+        { token: 'CQ_MEDIA_PLACEHOLDER_10', html: '<span class="confluence-user-mention" data-username="jdoe">@jdoe</span>' },
+      ];
+      expect(await markdownToHtml(
+        '- [x] see CQ\\_MEDIA\\_PLACEHOLDER\\_1\n- [ ] ping CQ\\_MEDIA\\_PLACEHOLDER\\_10',
+        { protectedMedia: media },
+      )).toBe(
+        '<ul>\n<li>[x] see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n'
+        + '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="false">ping CQ_MEDIA_PLACEHOLDER_10</li>\n</ul>\n',
+      );
+      // Inside a code span marked keeps turndown's `\_`, and restoreMedia
+      // restores that spelling too, so it counts as well.
+      expect(await markdownToHtml('- [x] see `CQ\\_MEDIA\\_PLACEHOLDER\\_1`', { protectedMedia: media })).toBe(
+        '<ul>\n<li>[x] see <code>CQ\\_MEDIA\\_PLACEHOLDER\\_1</code></li>\n</ul>\n',
+      );
+      // Without the map nothing restores the tokens, so they are plain text.
+      expect(await markdownToHtml('- [x] see CQ\\_MEDIA\\_PLACEHOLDER\\_1')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">see CQ_MEDIA_PLACEHOLDER_1</li>\n</ul>\n',
+      );
+      // The lookup is a descendant search, so a div in a nested item also keeps
+      // its ancestors plain.
+      expect(await markdownToHtml('- [x] parent\n  - [x] child\n\n    ```drawio\n    a.drawio\n    ```')).toBe(
+        '<ul>\n<li>[x] parent<ul>\n<li><p>[x] child</p>\n'
+        + '<div class="confluence-drawio" data-diagram-name="a.drawio">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: a.drawio</span></div>\n'
+        + '</li>\n</ul>\n</li>\n</ul>\n',
+      );
+      // Escaped markup in code is text, not a div.
+      expect(await markdownToHtml('- [x] use `<div>` tags')).toBe(
+        '<ul data-type="taskList">\n<li data-type="taskItem" data-checked="true">use <code>&lt;div&gt;</code> tags</li>\n</ul>\n',
+      );
+    });
+
+    it('brings a Confluence task list back as tasks after the AI Improve Markdown round trip (#1752)', async () => {
+      // Mirrors POST /llm/improvements/apply (llm-conversations.ts): protected
+      // HTML goes out as Markdown; the reply comes back through the
+      // skeleton-guided markdownToHtml, restoreMedia and htmlToConfluence.
+      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(TASK_LIST_PAGE));
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media }),
+        media,
+      );
+      const xhtml = htmlToConfluence(html);
+      expect([...xhtml.matchAll(/<ac:task-status>(\w+)<\/ac:task-status>/g)].map((m) => m[1]))
+        .toEqual(['complete', 'incomplete', 'incomplete']);
+      expect([...xhtml.matchAll(/<ac:task-body>([\s\S]*?)<\/ac:task-body>/g)].map((m) => m[1]))
+        .toEqual(['Set up CI pipeline', 'Write integration tests', 'Deploy to <strong>staging</strong>']);
+      expect(xhtml).not.toContain('<input');
+    });
+
+    it('keeps tasks holding a mention, status or Jira placeholder as tasks through AI Improve Accept, and a task holding a diagram plain (#1752)', async () => {
+      // The common Confluence task shape: an assignee mention, a status lozenge,
+      // a Jira link. protectMedia freezes each as a token; the Improve route
+      // passes the same map to markdownToHtml as protectedMedia, then restores
+      // it. Only the draw.io placeholder restores to a div.
+      const storage = '<ac:task-list>'
+        + '<ac:task><ac:task-id>11</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + '<ac:task-body><ri:user ri:userkey="abc123" /> review the draft</ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>12</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+        + '<ac:task-body>blocked by <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter>'
+        + '<ac:parameter ac:name="title">WAITING</ac:parameter></ac:structured-macro></ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>13</ac:task-id><ac:task-status>complete</ac:task-status>'
+        + '<ac:task-body>ship <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OPS-42</ac:parameter>'
+        + '</ac:structured-macro></ac:task-body></ac:task>'
+        + '<ac:task><ac:task-id>14</ac:task-id><ac:task-status>complete</ac:task-status>'
+        + '<ac:task-body>see <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter>'
+        + '</ac:structured-macro></ac:task-body></ac:task>'
+        + '</ac:task-list>';
+      const { html: protectedHtml, media } = protectMedia(confluenceToHtml(storage));
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml), protectedMedia: media }),
+        media,
+      );
+      const statuses = (xhtml: string) => [...xhtml.matchAll(/<ac:task-status>(\w+)<\/ac:task-status>/g)].map((m) => m[1]);
+
+      // The editor parses the stored body: three tasks with their inline nodes.
+      // generateJSON is typed Record<string, any>; its output is TipTap document JSON.
+      const doc = generateJSON(html, collabExtensions()) as JSONContent;
+      expect((doc.content?.[0]?.content ?? []).map((item) => [
+        item.type,
+        item.attrs?.checked,
+        (item.content?.[0]?.content ?? []).map((node) => node.type).filter((type) => type !== 'text'),
+      ])).toEqual([
+        ['taskItem', false, ['confluenceUserMention']],
+        ['taskItem', false, ['confluenceStatus']],
+        ['taskItem', true, ['confluenceJiraIssue']],
+      ]);
+
+      // What Accept writes to Confluence: an ac:task-list carrying the macros.
+      const xhtml = htmlToConfluence(html);
+      expect(statuses(xhtml)).toEqual(['incomplete', 'incomplete', 'complete']);
+      expect([...xhtml.matchAll(/<ac:task-body>([\s\S]*?)<\/ac:task-body>/g)].map((m) => m[1])).toEqual([
+        '<ac:link><ri:user ri:userkey="abc123"></ri:user></ac:link> review the draft',
+        'blocked by <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter>'
+          + '<ac:parameter ac:name="title">WAITING</ac:parameter></ac:structured-macro>',
+        'ship <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OPS-42</ac:parameter></ac:structured-macro>',
+      ]);
+      // The diagram's task stays a plain item with its marker and its macro.
+      expect(xhtml).toContain(
+        '<li>[x] see <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter>'
+        + '</ac:structured-macro></li>',
+      );
+
+      // After an editor load and save the same body still writes the three tasks.
+      expect(statuses(htmlToConfluence(yDocToHtml(htmlToYDoc(html))))).toEqual(['incomplete', 'incomplete', 'complete']);
     });
   });
 
@@ -1352,10 +1540,9 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:name="toc"');
     });
 
-    it('documents emoticons are stripped', () => {
-      const html = confluenceToHtml(USER_MENTIONS_PAGE);
-      expect(html).not.toContain('ac:emoticon');
-      // Cannot be restored
+    it('emoticons now round-trip back to ac:emoticon (#1750)', () => {
+      const xhtml = htmlToConfluence(confluenceToHtml(USER_MENTIONS_PAGE));
+      expect(xhtml).toContain('<p>Great job! <ac:emoticon ac:name="smile" /></p>');
     });
   });
 });
@@ -3662,12 +3849,13 @@ describe('content-converter: #1220 self-nested placeholders on write-back', () =
       // the outer ac:task-body, never also hoisted as a sibling ac:task.
       expect(xhtml.match(/<p>inner<\/p>/g)).toHaveLength(1);
       expect(xhtml.match(/<ac:task-status>complete<\/ac:task-status>/g)).toHaveLength(1);
-      // Task ids are random; normalise them to compare the whole structure.
-      expect(xhtml.replace(/<ac:task-id>\d+<\/ac:task-id>/g, '<ac:task-id>#</ac:task-id>')).toBe(
-        '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+      // Both tasks are new: they get the next free ids in document order,
+      // the outer task 1 and its subtask 2 (#1751).
+      expect(xhtml).toBe(
+        '<ac:task-list><ac:task><ac:task-id>1</ac:task-id>' +
           '<ac:task-status>incomplete</ac:task-status>' +
           '<ac:task-body><p>outer</p>' +
-          '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-list><ac:task><ac:task-id>2</ac:task-id>' +
           '<ac:task-status>complete</ac:task-status>' +
           '<ac:task-body><p>inner</p></ac:task-body>' +
           '</ac:task></ac:task-list>' +
