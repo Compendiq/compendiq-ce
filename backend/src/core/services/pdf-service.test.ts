@@ -431,6 +431,18 @@ describe('pdf-service (pdf-lib)', () => {
         expect(shades).toBe(1);
       });
 
+      it('prints a header too tall to repeat only in its first band', async () => {
+        // A header that leaves no room for a body line does not repeat on continuation pages (#1845),
+        // so it does not repeat in later bands either: a long spanning header is printed once.
+        const words = Array.from({ length: 1000 }, (_, w) => `w${w}`).join(' ');
+        const months = Array.from({ length: 20 }, (_, m) => `m${m + 1}`);
+        const { text, runs } = await tableLayout(`<table>
+          <tr><th colspan="20">${words} HEADEREND</th></tr>
+          <tr>${months.map((m) => `<td>${m}</td>`).join('')}</tr></table>`);
+        expect(text.match(/HEADEREND/g)).toEqual(['HEADEREND']);
+        expect(runs.filter((run) => /^m\d+$/.test(run.str)).map((run) => run.str)).toEqual(months);
+      });
+
       it('keeps a 40-column table of 32-character ids to 20 pages', async () => {
         // With #1730's hard break, ids in 40 equal 12.38 pt columns stacked one character per line,
         // one row per page (40 pages); in 35.38 pt band columns they wrap 3-5 characters per line.
