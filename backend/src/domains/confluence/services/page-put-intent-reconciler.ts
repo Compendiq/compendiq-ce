@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import {
   confluenceToHtml,
+  hasOnlyUncarriedTasks,
   htmlToConfluence,
   htmlToText,
 } from '../../../core/services/content-converter.js';
@@ -296,7 +297,10 @@ export async function publishConfluencePagePut(
         `Historical version ${publication.targetVersion} is unavailable for local publication`,
       );
     }
-    const targetStorage = htmlToConfluence(target.body_html, { previousStorage: page.body_storage });
+    const targetStorage = htmlToConfluence(target.body_html, {
+      previousStorage: page.body_storage,
+      legacyTasks: hasOnlyUncarriedTasks(page.body_html),
+    });
     const targetDigest = confluencePagePutDigest({
       pageId: publication.pageId,
       confluenceId: publication.confluenceId,

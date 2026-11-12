@@ -451,6 +451,8 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       expect(response.statusCode, response.body).toBe(200);
       const sent = confluenceRequests[0]!.body.body.storage.value;
       expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['7', '8']);
+      // TaskItem's checkbox markup stays in the editor: the task bodies are the content.
+      expect(sent).not.toMatch(/<input|<label/);
       // Publication keeps the draft's HTML as the live body: with the ids it was published with.
       const stored = await storedPage(pageId);
       expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);

@@ -34,6 +34,7 @@ import {
   COLLAB_EMPTY_ROOM_GRACE_MS,
   COLLAB_IMAGE_MARKER_ORIGIN,
   COLLAB_READONLY_DROP_LIMIT,
+  COLLAB_TASK_ID_ORIGIN,
   type CollabRoom,
   type CollabRuntime,
   type CollabInboundResult,
@@ -48,7 +49,7 @@ import {
   reservePageWriteIntent,
   withPageWriteTransaction,
 } from './page-write-admission.js';
-import { yDocToHtml } from './collab-schema.js';
+import { collabTaskItems, yDocToHtml } from './collab-schema.js';
 import { confluenceToHtml, htmlToConfluence } from './content-converter.js';
 import type * as PageBaselineServiceModule from './page-baseline-service.js';
 import type * as PageBaselineGovernanceModule from './page-baseline-governance.js';
@@ -1771,6 +1772,53 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
     }, { timeout: 4_000 });
   });
 
+  /** Every message on the page's channel; `drain` returns once earlier publications arrived. */
+  async function observeBus(pageId: number) {
+    const messages: Array<{ origin: string; kind: string }> = [];
+    const observer = main!.duplicate() as RedisClientType;
+    await observer.connect();
+    await observer.subscribe(collabDocChannel(pageId), (raw) => messages.push(JSON.parse(raw)));
+    return {
+      messages,
+      async drain(): Promise<void> {
+        // Both runtimes publish through `main`, so its barrier arrives last.
+        await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'probe', kind: 'barrier' }));
+        await vi.waitFor(() => {
+          expect(messages.some((message) => message.kind === 'barrier')).toBe(true);
+        });
+      },
+      async close(): Promise<void> {
+        await observer.unsubscribe(collabDocChannel(pageId));
+        await observer.quit();
+      },
+    };
+  }
+
+  /** A message on the page's channel from a pod that is neither runtime. */
+  async function publishFromCommitPod(pageId: number, message: Record<string, unknown>): Promise<void> {
+    await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'commit-pod', ...message }));
+  }
+
+  /**
+   * A room handles its inbound messages one at a time, in order: once it took
+   * this control, it has finished with every message published before it.
+   */
+  async function inboundHandled(room: CollabRoom): Promise<void> {
+    const version = room.pagesVersion + 1;
+    await publishFromCommitPod(room.pageId, {
+      kind: 'control',
+      update: Buffer.from(JSON.stringify({ type: 'pages_version', version }), 'utf8').toString('base64'),
+    });
+    await vi.waitFor(() => expect(room.pagesVersion).toBe(version), { timeout: 4_000 });
+  }
+
+  /** The origin of every transaction the document applies from now on. */
+  function updateOrigins(doc: Y.Doc): unknown[] {
+    const origins: unknown[] = [];
+    doc.on('update', (_update: Uint8Array, origin: unknown) => { origins.push(origin); });
+    return origins;
+  }
+
   describe('image markers after a Confluence commit (#1764)', () => {
     const IMAGE_SRC = '/api/attachments/local-src/x.png';
     const MARKERS = [{ src: IMAGE_SRC, filename: 'x.png' }];
@@ -1797,53 +1845,6 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
 
     function imageAttributes(doc: Y.Doc): Array<Record<string, unknown>> {
       return elements(doc, 'image').map((image) => image.getAttributes());
-    }
-
-    /** Every message on the page's channel; `drain` returns once earlier publications arrived. */
-    async function observeBus(pageId: number) {
-      const messages: Array<{ origin: string; kind: string }> = [];
-      const observer = main!.duplicate() as RedisClientType;
-      await observer.connect();
-      await observer.subscribe(collabDocChannel(pageId), (raw) => messages.push(JSON.parse(raw)));
-      return {
-        messages,
-        async drain(): Promise<void> {
-          // Both runtimes publish through `main`, so its barrier arrives last.
-          await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'probe', kind: 'barrier' }));
-          await vi.waitFor(() => {
-            expect(messages.some((message) => message.kind === 'barrier')).toBe(true);
-          });
-        },
-        async close(): Promise<void> {
-          await observer.unsubscribe(collabDocChannel(pageId));
-          await observer.quit();
-        },
-      };
-    }
-
-    /** A message on the page's channel from a pod that is neither runtime. */
-    async function publishFromCommitPod(pageId: number, message: Record<string, unknown>): Promise<void> {
-      await main!.publish(collabDocChannel(pageId), JSON.stringify({ origin: 'commit-pod', ...message }));
-    }
-
-    /**
-     * A room handles its inbound messages one at a time, in order: once it took
-     * this control, it has finished with every message published before it.
-     */
-    async function inboundHandled(room: CollabRoom): Promise<void> {
-      const version = room.pagesVersion + 1;
-      await publishFromCommitPod(room.pageId, {
-        kind: 'control',
-        update: Buffer.from(JSON.stringify({ type: 'pages_version', version }), 'utf8').toString('base64'),
-      });
-      await vi.waitFor(() => expect(room.pagesVersion).toBe(version), { timeout: 4_000 });
-    }
-
-    /** The origin of every transaction the document applies from now on. */
-    function updateOrigins(doc: Y.Doc): unknown[] {
-      const origins: unknown[] = [];
-      doc.on('update', (_update: Uint8Array, origin: unknown) => { origins.push(origin); });
-      return origins;
     }
 
     it('marks the owning room in place with one incremental sync that the peer runtime applies without an echo (#1764)', async () => {
@@ -2213,6 +2214,143 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
         await releasePageRuntime(request);
       }
     });
+  });
+
+  describe('task ids after a Confluence commit (#1751)', () => {
+    /** A page whose first writable join seeds the room with one task that carries no id. */
+    async function taskPage(): Promise<number> {
+      const pageId = nextPageId();
+      await query('UPDATE pages SET body_html = $2 WHERE id = $1', [
+        pageId,
+        '<ul data-type="taskList"><li data-type="taskItem" data-checked="false">A</li></ul>',
+      ]);
+      return pageId;
+    }
+
+    function taskIds(doc: Y.Doc): Array<string | null> {
+      return collabTaskItems(doc).map((item) => item.taskId);
+    }
+
+    function carriesTaskIds(doc: Y.Doc): boolean {
+      return doc.getMap('compendiq.meta').get('confluenceTaskIds') === true;
+    }
+
+    /** A task_ids entry that gives the room's only task `taskId`. */
+    function markerFor(doc: Y.Doc, taskId: string): Record<string, unknown> {
+      const [item] = collabTaskItems(doc);
+      return { client: item!.client, clock: item!.clock, taskId };
+    }
+
+    it('ignores a task_ids message that is malformed or names another lifecycle revision (#1751)', async () => {
+      const pageId = await taskPage();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      const roomB = runtimeB!.getRoom(pageId)!;
+      const revision = roomB.lifecycleRevision;
+      const valid = markerFor(roomB.doc, '42');
+      const origins = updateOrigins(roomB.doc);
+      const bus = await observeBus(pageId);
+      const ignored: Array<[string, Record<string, unknown>]> = [
+        ['task ids that are not a list', { lifecycleRevision: revision, taskIds: valid }],
+        ['an empty list', { lifecycleRevision: revision, taskIds: [] }],
+        ['a negative clock', { lifecycleRevision: revision, taskIds: [{ ...valid, clock: -1 }] }],
+        ['a client that is not an integer', { lifecycleRevision: revision, taskIds: [{ ...valid, client: 1.5 }] }],
+        ['a task id with a leading zero', { lifecycleRevision: revision, taskIds: [{ ...valid, taskId: '042' }] }],
+        ['a task id above 2^63 - 1', {
+          lifecycleRevision: revision,
+          taskIds: [{ ...valid, taskId: '9223372036854775808' }],
+        }],
+        ['a task id that is not a string', { lifecycleRevision: revision, taskIds: [{ ...valid, taskId: 42 }] }],
+        ['a valid entry beside a malformed one', {
+          lifecycleRevision: revision,
+          taskIds: [valid, { ...valid, taskId: '' }],
+        }],
+        ['no lifecycle revision', { taskIds: [valid] }],
+        ['another lifecycle revision', { lifecycleRevision: String(BigInt(revision) + 1n), taskIds: [valid] }],
+      ];
+      try {
+        for (const [label, message] of ignored) {
+          await publishFromCommitPod(pageId, { kind: 'task_ids', ...message });
+          await inboundHandled(roomB);
+          expect(taskIds(roomB.doc), label).toEqual([null]);
+          expect(carriesTaskIds(roomB.doc), label).toBe(false);
+          expect(origins, label).toEqual([]);
+        }
+        await bus.drain();
+        expect(bus.messages.filter((message) => message.origin === runtimeB!.podId)).toEqual([]);
+
+        // The same envelope with a well-formed payload at the room's revision is
+        // applied in one transaction, which records that the tasks carry ids.
+        await publishFromCommitPod(pageId, { kind: 'task_ids', lifecycleRevision: revision, taskIds: [valid] });
+        await vi.waitFor(() => expect(taskIds(roomB.doc)).toEqual(['42']), { timeout: 4_000 });
+        expect(carriesTaskIds(roomB.doc)).toBe(true);
+        expect(origins).toEqual([COLLAB_TASK_ID_ORIGIN]);
+      } finally {
+        await bus.close();
+      }
+    });
+
+    it('a room that holds no writable admission leaves its document as it is on task_ids (#1751)', async () => {
+      const pageId = await taskPage();
+      await runtimeB!.attachSocket(pageId, { id: 'viewer', ws: stubWs(), userId: USER_B, writable: false });
+      const roomB = runtimeB!.getRoom(pageId)!;
+      expect(roomB.admission).toBeNull();
+      const origins = updateOrigins(roomB.doc);
+      const bus = await observeBus(pageId);
+      try {
+        await publishFromCommitPod(pageId, {
+          kind: 'task_ids',
+          lifecycleRevision: roomB.lifecycleRevision,
+          taskIds: [markerFor(roomB.doc, '42')],
+        });
+        await inboundHandled(roomB);
+
+        expect(taskIds(roomB.doc)).toEqual([null]);
+        expect(carriesTaskIds(roomB.doc)).toBe(false);
+        expect(origins).toEqual([]);
+        await bus.drain();
+        expect(bus.messages.filter((message) => message.origin === runtimeB!.podId)).toEqual([]);
+      } finally {
+        await bus.close();
+      }
+    });
+
+    it.each(['stale_lifecycle', 'admission_token_mismatch'] as const)(
+      'an owning room whose fenced transaction is refused (%s) leaves its document as it is on task_ids (#1751)',
+      async (fence) => {
+        const pageId = await taskPage();
+        await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+        const roomB = runtimeB!.getRoom(pageId)!;
+        const revision = roomB.lifecycleRevision;
+        const valid = markerFor(roomB.doc, '42');
+        const origins = updateOrigins(roomB.doc);
+        // PostgreSQL has moved on; the room has not been told yet.
+        if (fence === 'stale_lifecycle') {
+          await query('UPDATE pages SET lifecycle_revision = lifecycle_revision + 1 WHERE id = $1', [pageId]);
+        } else {
+          await releasePageRuntime(roomB.admission!);
+        }
+        const info = vi.spyOn(logger, 'info');
+        const warn = vi.spyOn(logger, 'warn');
+        try {
+          await publishFromCommitPod(pageId, { kind: 'task_ids', lifecycleRevision: revision, taskIds: [valid] });
+          await inboundHandled(roomB);
+
+          expect(taskIds(roomB.doc)).toEqual([null]);
+          expect(carriesTaskIds(roomB.doc)).toBe(false);
+          expect(origins).toEqual([]);
+          // An expected refusal, logged with its reason; not a failure.
+          expect(info).toHaveBeenCalledWith({ pageId, step: 'room', reason: fence }, 'collab.task_ids_refused');
+          expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'collab.task_ids_failed');
+          expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'collab: bus apply failed');
+        } finally {
+          info.mockRestore();
+          warn.mockRestore();
+          if (fence === 'stale_lifecycle') {
+            await query('UPDATE pages SET lifecycle_revision = lifecycle_revision - 1 WHERE id = $1', [pageId]);
+          }
+        }
+      },
+    );
   });
 
 });

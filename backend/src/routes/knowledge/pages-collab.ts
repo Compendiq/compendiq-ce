@@ -179,10 +179,11 @@ async function commitConfluencePage(args: {
   body: CollabCommit;
   html: string;
   taskItems: CollabTaskItem[];
+  taskIdsCarried: boolean;
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
 }) {
-  const { fastify, request, pageId, userId, existing, body, html, taskItems, runtime, admission } = args;
+  const { fastify, request, pageId, userId, existing, body, html, taskItems, taskIdsCarried, runtime, admission } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
   }
@@ -190,8 +191,13 @@ async function commitConfluencePage(args: {
   const imagePlan = await planLocalImagesForConfluence(html);
   // #1751: the room keeps its HTML, so the Save stores the task ids it writes
   // in the room once it settles (markWrittenTaskIds below); the n-th task item
-  // of the snapshot is the n-th task of `html`.
-  const assigned = assignTaskIds(imagePlan.bodyHtml, existing.body_storage);
+  // of the snapshot is the n-th task of `html`. The room persists its own HTML
+  // into body_html every 2 s, so whether the page predates carried ids comes
+  // from the room's flag (collabCarriesTaskIds), not from that column.
+  const assigned = assignTaskIds(imagePlan.bodyHtml, {
+    previousStorage: existing.body_storage,
+    legacyTasks: !taskIdsCarried,
+  });
   const storageBody = htmlToConfluence(assigned.html);
   const taskIdMarkers = assigned.taskIds.length === taskItems.length
     ? taskItems.flatMap((item, index) => {
@@ -594,6 +600,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           body,
           html,
           taskItems: snapshot.taskItems,
+          taskIdsCarried: snapshot.taskIdsCarried,
           runtime,
           admission,
         });

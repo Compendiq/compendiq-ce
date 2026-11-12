@@ -19,7 +19,13 @@ import {
   CONFLUENCE_DISABLED_MESSAGE,
   pageWriteStaysLocal,
 } from '../../domains/confluence/services/standalone-mode.js';
-import { assignTaskIds, htmlToConfluence, confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
+import {
+  assignTaskIds,
+  confluenceToHtml,
+  hasOnlyUncarriedTasks,
+  htmlToConfluence,
+  htmlToText,
+} from '../../core/services/content-converter.js';
 import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
@@ -2413,11 +2419,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string; confluence_id: string | null; deleted_at: Date | null;
       page_type: string;
       content_revision: string; lifecycle_revision: string;
-      body_storage: string | null;
+      body_storage: string | null; body_html: string | null;
     }>(
       `SELECT id, version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
-              lifecycle_revision::text, body_storage
+              lifecycle_revision::text, body_storage, body_html
          FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
@@ -2749,7 +2755,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           admittedClient,
           request.log,
         );
-        const nextStorageBody = htmlToConfluence(uploadedBodyHtml, { previousStorage: existingPage.body_storage });
+        const nextStorageBody = htmlToConfluence(uploadedBodyHtml, {
+          previousStorage: existingPage.body_storage,
+          legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
+        });
         const currentVersion = existingPage.version ?? body.version ?? 1;
         const nextPage = await admittedClient.updatePage(
           existingPage.confluence_id!,
@@ -3490,7 +3499,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // the storage Confluence returns, so a remote publication stores the task
     // ids it writes there.
     const publishedHtml = remotePublicationRequired
-      ? assignTaskIds(page.draft_body_html, page.body_storage).html
+      ? assignTaskIds(page.draft_body_html, {
+        previousStorage: page.body_storage,
+        legacyTasks: hasOnlyUncarriedTasks(page.body_html),
+      }).html
       : page.draft_body_html;
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);

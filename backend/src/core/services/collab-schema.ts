@@ -26,6 +26,7 @@ import { Color } from '@tiptap/extension-color';
 import { generateHTML, generateJSON } from '@tiptap/html';
 import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
+import { isConfluenceTaskId } from './confluence-task-id.js';
 
 const COLLAB_FIELD = 'default';
 
@@ -967,9 +968,17 @@ export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(json, collabExtensions());
 }
 
+/**
+ * Seed or reset `doc` from HTML. When the HTML's tasks carry Confluence task
+ * ids, the same update records that in the document's metadata (#1751;
+ * {@link collabCarriesTaskIds}).
+ */
 export function applyHtmlToYDoc(doc: Y.Doc, html: string): void {
   const src = htmlToYDoc(html);
   try {
+    if (taskItemElements(src).some((element) => carriesTaskId(element))) {
+      src.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
+    }
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(src), 'load');
   } finally {
     src.destroy();
@@ -1035,10 +1044,36 @@ export interface TaskIdMarker {
   taskId: string;
 }
 
+/**
+ * The collaborative document's metadata (#1751): a Y.Map beside the content
+ * fragment, which editors do not bind. Its `confluenceTaskIds` key is `true`
+ * once the document's tasks carry Confluence task ids. It is set only when the
+ * document is seeded or reset from HTML whose tasks carry them
+ * ({@link applyHtmlToYDoc}), and in the transaction that marks the ids a
+ * settled Confluence commit wrote ({@link markTaskIds}).
+ */
+export const COLLAB_META_MAP = 'compendiq.meta';
+export const COLLAB_META_TASK_IDS = 'confluenceTaskIds';
+
+/**
+ * Whether the document's tasks carry Confluence task ids (#1751). Without the
+ * flag, the room was seeded from a body converted before ids were carried, and
+ * a collaborative Save over a storage with task ids treats the page as legacy
+ * (htmlToConfluence's `legacyTasks`).
+ */
+export function collabCarriesTaskIds(doc: Y.Doc): boolean {
+  return doc.getMap(COLLAB_META_MAP).get(COLLAB_META_TASK_IDS) === true;
+}
+
 function taskItemElements(doc: Y.Doc): Y.XmlElement[] {
   return [...doc.getXmlFragment(COLLAB_FIELD).createTreeWalker(
     (type) => type instanceof Y.XmlElement && type.nodeName === 'taskItem',
   )] as Y.XmlElement[];
+}
+
+function carriesTaskId(element: Y.XmlElement): boolean {
+  const taskId: unknown = element.getAttribute('taskId');
+  return typeof taskId === 'string' && isConfluenceTaskId(taskId);
 }
 
 /**
@@ -1055,10 +1090,11 @@ export function collabTaskItems(doc: Y.Doc): CollabTaskItem[] {
 
 /**
  * Give each task item a marker names the Confluence task id a settled commit
- * wrote for it (#1751), so the room's next Save keeps it. An item is found by
- * its Yjs identity, so edits made meanwhile elsewhere do not matter; a deleted
- * one is skipped. One transaction with `origin`, none when nothing changes;
- * returns the number of items marked.
+ * wrote for it (#1751), so the room's next Save keeps it, and record in the
+ * same transaction that the document's tasks carry ids. An item is found by its
+ * Yjs identity, so edits made meanwhile elsewhere do not matter; a deleted one
+ * is skipped. One transaction with `origin`, none when nothing changes; returns
+ * the number of items marked.
  */
 export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin: unknown): number {
   const wanted = new Map(markers.map((marker) => [`${marker.client}:${marker.clock}`, marker.taskId]));
@@ -1071,6 +1107,7 @@ export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin
   if (unmarked.length === 0) return 0;
   doc.transact(() => {
     for (const { element, taskId } of unmarked) element.setAttribute('taskId', taskId);
+    if (!collabCarriesTaskIds(doc)) doc.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
   }, origin);
   return unmarked.length;
 }

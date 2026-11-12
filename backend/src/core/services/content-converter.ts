@@ -7,6 +7,7 @@ import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
 } from './image-references.js';
+import { isConfluenceTaskId, MAX_CONFLUENCE_TASK_ID } from './confluence-task-id.js';
 import { logger } from '../utils/logger.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
@@ -281,25 +282,37 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   }
 }
 
-/**
- * A Confluence task id: the number in `ac:task-id` (#1751). Confluence numbers
- * a page's tasks 1, 2, 3, … and needs them unique within the page — two tasks
- * that share an id check and uncheck together (Atlassian KB "Checking/unchecking
- * a Task Item in a page causes other Tasks Items to trigger the same behavior").
- * Canonical decimal only (no sign, no leading zero), so equal ids are equal
- * strings.
- */
-const CONFLUENCE_TASK_ID = /^(?:0|[1-9]\d*)$/;
-
 /** Options for {@link htmlToConfluence}. */
 export interface HtmlToConfluenceOptions {
   /**
    * The page's current Confluence storage (`pages.body_storage`) when the HTML
    * is written back over an existing page (#1751). Its tasks are the ones
    * Confluence has: a task without an id of its own takes the id of the stored
-   * task with the same text, and a new task never gets a stored id.
+   * task with the same text, a copy of a task does not take its id, and a new
+   * task never gets a stored id.
    */
   previousStorage?: string | null;
+  /**
+   * The page was synced before task ids were carried (#1751): its stored body
+   * holds tasks and none carries an id ({@link hasOnlyUncarriedTasks} of the
+   * stored `body_html`; for a collaborative Save, a room without the carried-ids
+   * flag). Only then do the tasks left after the exact-text match take the
+   * stored tasks left over, in document order, when they are as many. Callers
+   * decide it from the page's stored state, never from the HTML being written;
+   * AI Improve apply never sets it.
+   */
+  legacyTasks?: boolean;
+}
+
+/**
+ * Whether a page's stored HTML was converted before task ids were carried
+ * (#1751): it holds task items and none carries a task id.
+ */
+export function hasOnlyUncarriedTasks(html: string | null | undefined): boolean {
+  if (!html?.includes('taskItem')) return false;
+  const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+  const items = [...doc.querySelectorAll('li[data-type="taskItem"]')];
+  return items.length > 0 && items.every((li) => !isConfluenceTaskId(li.getAttribute('data-task-id') ?? ''));
 }
 
 /** A task item's own text, without its subtasks' text, whitespace collapsed (#1751). */
@@ -311,22 +324,31 @@ function taskText(li: Element): string {
   return (content.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
+interface StoredTasks {
+  /** The stored tasks in document order, each id once (its first task). */
+  tasks: Array<{ id: string; text: string }>;
+  /** The own text of each stored id's task. */
+  textById: Map<string, string>;
+}
+
 /**
  * The tasks a storage body holds, as confluenceToHtml writes them: each id
  * once (its first task), in document order, with the task's own text (#1751).
  */
-function storedTasks(storage: string): Array<{ id: string; text: string }> {
-  const html = confluenceToHtml(storage);
-  const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+function storedTasks(storage: string | null | undefined): StoredTasks {
   const tasks: Array<{ id: string; text: string }> = [];
-  const seen = new Set<string>();
-  for (const li of doc.querySelectorAll('li[data-type="taskItem"][data-task-id]')) {
-    const id = li.getAttribute('data-task-id')!;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    tasks.push({ id, text: taskText(li) });
+  const textById = new Map<string, string>();
+  if (storage) {
+    const doc = new JSDOM(`<body>${confluenceToHtml(storage)}</body>`, { contentType: 'text/html' }).window.document;
+    for (const li of doc.querySelectorAll('li[data-type="taskItem"][data-task-id]')) {
+      const id = li.getAttribute('data-task-id')!;
+      if (textById.has(id)) continue;
+      const text = taskText(li);
+      textById.set(id, text);
+      tasks.push({ id, text });
+    }
   }
-  return tasks;
+  return { tasks, textById };
 }
 
 interface TaskIdAllocation {
@@ -340,67 +362,99 @@ interface TaskIdAllocation {
  * Decide the `ac:task-id` of every task item before htmlToConfluence's
  * innermost-first loop writes them, in document order (#1751):
  *
- * 1. Keep: a task keeps the id it carries in `data-task-id`. The first carrier
- *    of an id keeps it; a later one is a copy (pasted, duplicated) and is new.
- *    An `ac:task-id` that passes through as raw storage keeps its id first.
- * 2. Reconcile: with the page's current storage, a task that carries no valid
- *    id takes the id of the first stored task that nothing claimed and whose
- *    own text it repeats exactly. In a body that carries no id at all, one
- *    converted before ids were carried, the tasks left then take the stored
- *    tasks left in document order when they are as many: that first save
- *    edited tasks without adding or removing any.
+ * 1. Keep: a task keeps the id it carries in `data-task-id`. When several tasks
+ *    carry one id (a pasted or duplicated task), the first whose own text is
+ *    the stored task's keeps it, else the first; the others are copies and new.
+ *    On a legacy page, whose own tasks carry no id, a task without an id whose
+ *    text is the stored task's goes before a carrier whose text is not. An
+ *    `ac:task-id` that passes through as raw storage keeps its id first.
+ * 2. Reconcile: a task that carries no id takes the id of the first stored task
+ *    nothing claimed whose own text it repeats exactly. On a legacy page, the
+ *    tasks left then take the stored tasks left, in document order, when they
+ *    are as many: that first save edited tasks without adding or removing any.
  * 3. Mint: every other task gets the next free number above the highest id in
  *    the document and in the stored page, each checked against every id taken
- *    so far. No id the page has, or had before this write, goes to another task.
+ *    so far, so a task deleted in this write never lends its number. Past
+ *    2^63 - 1 the smallest free number is used instead.
  *
  * The same input always gives the same ids: publishing a version restore
  * re-derives the storage and compares digests (page-put-intent-reconciler.ts).
  * An item the snapshot did not hold (a clone a re-parse made) is minted when
  * it is written.
  */
-function allocateTaskIds(doc: Document, previousStorage?: string | null): TaskIdAllocation {
+function allocateTaskIds(doc: Document, options: HtmlToConfluenceOptions): TaskIdAllocation {
   const taken = new Set(byTag(doc, 'ac:task-id').map((el) => (el.textContent ?? '').trim()));
   const items = [...doc.querySelectorAll('ul[data-type="taskList"] li[data-type="taskItem"]')];
-  const ids = new Map<Element, string>();
-  const unidentified: Element[] = [];
+  let storedCache: StoredTasks | undefined;
+  const stored = (): StoredTasks => (storedCache ??= storedTasks(options.previousStorage));
+  const texts = new Map<Element, string>();
+  const textOf = (li: Element): string => {
+    let text = texts.get(li);
+    if (text === undefined) {
+      text = taskText(li);
+      texts.set(li, text);
+    }
+    return text;
+  };
+  const carriers = new Map<string, Element[]>();
+  const uncarried: Element[] = [];
   for (const li of items) {
     const carried = li.getAttribute('data-task-id') ?? '';
-    if (!CONFLUENCE_TASK_ID.test(carried)) {
-      unidentified.push(li);
-    } else if (!taken.has(carried)) {
-      taken.add(carried);
-      ids.set(li, carried);
+    if (isConfluenceTaskId(carried)) carriers.set(carried, [...(carriers.get(carried) ?? []), li]);
+    else uncarried.push(li);
+  }
+  let uncarriedTexts: Set<string> | undefined;
+
+  const ids = new Map<Element, string>();
+  for (const [id, list] of carriers) {
+    if (taken.has(id)) continue;
+    const text = list.length > 1 || options.legacyTasks ? stored().textById.get(id) : undefined;
+    let keeper = text === undefined ? list[0] : list.find((li) => textOf(li) === text);
+    if (!keeper) {
+      uncarriedTexts ??= new Set(uncarried.map(textOf));
+      if (!(options.legacyTasks && uncarriedTexts.has(text!))) keeper = list[0];
+    }
+    if (keeper) {
+      taken.add(id);
+      ids.set(keeper, id);
     }
   }
-  const carriesIds = ids.size > 0;
-  const stored = ids.size < items.length && previousStorage ? storedTasks(previousStorage) : [];
-  const unclaimed = new Map<string, string[]>();
-  for (const task of stored) {
-    if (!taken.has(task.id)) unclaimed.set(task.text, [...(unclaimed.get(task.text) ?? []), task.id]);
-  }
-  for (const li of unidentified) {
-    const id = unclaimed.get(taskText(li))?.shift();
-    if (id === undefined) continue;
-    taken.add(id);
-    ids.set(li, id);
-  }
-  if (!carriesIds) {
-    const unmatched = unidentified.filter((li) => !ids.has(li));
-    const left = stored.filter((task) => !taken.has(task.id));
-    if (unmatched.length === left.length) {
-      unmatched.forEach((li, index) => {
-        const { id } = left[index]!;
-        taken.add(id);
-        ids.set(li, id);
-      });
+
+  if (uncarried.length > 0 && stored().tasks.length > 0) {
+    const unclaimed = new Map<string, string[]>();
+    for (const task of stored().tasks) {
+      if (!taken.has(task.id)) unclaimed.set(task.text, [...(unclaimed.get(task.text) ?? []), task.id]);
+    }
+    for (const li of uncarried) {
+      const id = unclaimed.get(textOf(li))?.shift();
+      if (id === undefined) continue;
+      taken.add(id);
+      ids.set(li, id);
+    }
+    if (options.legacyTasks) {
+      const unmatched = uncarried.filter((li) => !ids.has(li));
+      const left = stored().tasks.filter((task) => !taken.has(task.id));
+      if (unmatched.length === left.length) {
+        unmatched.forEach((li, index) => {
+          const { id } = left[index]!;
+          taken.add(id);
+          ids.set(li, id);
+        });
+      }
     }
   }
-  const retired = new Set(stored.map((task) => task.id));
-  let next = 1n;
-  for (const id of [...taken, ...retired]) {
-    if (CONFLUENCE_TASK_ID.test(id) && BigInt(id) >= next) next = BigInt(id) + 1n;
-  }
+
+  let next: bigint | undefined;
   const mint = (): string => {
+    const retired = stored().textById;
+    if (next === undefined) {
+      next = 1n;
+      for (const id of [...taken, ...retired.keys()]) {
+        if (isConfluenceTaskId(id) && BigInt(id) >= next) next = BigInt(id) + 1n;
+      }
+    }
+    // No task id is above 2^63 - 1: count on from the smallest free number.
+    if (next > MAX_CONFLUENCE_TASK_ID) next = 1n;
     while (taken.has(String(next)) || retired.has(String(next))) next += 1n;
     const id = String(next);
     taken.add(id);
@@ -415,17 +469,17 @@ function allocateTaskIds(doc: Document, previousStorage?: string | null): TaskId
 
 /**
  * `html` with each task item's write-back id in `data-task-id`, and those ids
- * in document order: what htmlToConfluence(html, { previousStorage }) writes
- * (#1751). A writer that keeps its HTML instead of re-deriving it from the
- * storage Confluence returns (draft publish, a collaborative Save) stores
- * these ids, so the next write keeps them.
+ * in document order: what htmlToConfluence(html, options) writes (#1751). A
+ * writer that keeps its HTML instead of re-deriving it from the storage
+ * Confluence returns (draft publish, a collaborative Save) stores these ids,
+ * so the next write keeps them.
  */
 export function assignTaskIds(
   html: string,
-  previousStorage?: string | null,
+  options: HtmlToConfluenceOptions = {},
 ): { html: string; taskIds: string[] } {
   const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
-  const { items, idFor } = allocateTaskIds(doc, previousStorage);
+  const { items, idFor } = allocateTaskIds(doc, options);
   let changed = false;
   const taskIds = items.map((li) => {
     const id = idFor(li);
@@ -509,7 +563,7 @@ function confluenceToHtmlPass(
       const li = doc.createElement('li');
       li.setAttribute('data-type', 'taskItem');
       li.setAttribute('data-checked', checked ? 'true' : 'false');
-      if (CONFLUENCE_TASK_ID.test(taskId)) li.setAttribute('data-task-id', taskId);
+      if (isConfluenceTaskId(taskId)) li.setAttribute('data-task-id', taskId);
       transferInnerHtml(li, bodyEl);
       ul.appendChild(li);
     }
@@ -1026,7 +1080,7 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
   // #1751: each task keeps its carried id, takes a stored one or gets the next
   // free one (allocateTaskIds, decided in document order before this loop), and
   // its body is the task's content without the editor's checkbox (taskItemContent).
-  const { idFor: taskIdFor } = allocateTaskIds(doc, options.previousStorage);
+  const { idFor: taskIdFor } = allocateTaskIds(doc, options);
   for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 

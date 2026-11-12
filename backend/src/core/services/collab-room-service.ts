@@ -36,6 +36,7 @@ import {
 } from './page-write-admission.js';
 import * as persist from './collab-persistence.js';
 import {
+  collabCarriesTaskIds,
   collabTaskItems,
   markAttachmentImages,
   markTaskIds,
@@ -44,6 +45,7 @@ import {
   type CollabTaskItem,
   type TaskIdMarker,
 } from './collab-schema.js';
+import { isConfluenceTaskId } from './confluence-task-id.js';
 
 export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
 export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
@@ -208,6 +210,8 @@ export interface CollabRuntime {
     documentState: Y.Snapshot;
     /** The snapshot's task items, in the order of `html` (#1751). */
     taskItems: CollabTaskItem[];
+    /** Whether the room's tasks carry Confluence task ids (#1751; collabCarriesTaskIds). */
+    taskIdsCarried: boolean;
   }>;
   handleLifecycleEvent: (event: PageLifecycleEvent) => Promise<void>;
   refreshLifecycleRooms: () => Promise<void>;
@@ -335,7 +339,7 @@ function busTaskIdMarkers(value: unknown): TaskIdMarker[] | null {
     if (
       !Number.isSafeInteger(client) || (client as number) < 0
       || !Number.isSafeInteger(clock) || (clock as number) < 0
-      || typeof taskId !== 'string' || !/^(?:0|[1-9]\d*)$/.test(taskId)
+      || typeof taskId !== 'string' || !isConfluenceTaskId(taskId)
     ) return null;
     markers.push({ client: client as number, clock: clock as number, taskId });
   }
@@ -1136,6 +1140,7 @@ export async function createCollabRuntime(
     html: string;
     documentState: Y.Snapshot;
     taskItems: CollabTaskItem[];
+    taskIdsCarried: boolean;
   }> {
     const room = await getOrCreateRoom(pageId);
     let admission: PageRuntimeAdmission | undefined;
@@ -1151,6 +1156,7 @@ export async function createCollabRuntime(
         html: yDocToHtml(room.doc),
         documentState: Y.snapshot(room.doc),
         taskItems: collabTaskItems(room.doc),
+        taskIdsCarried: collabCarriesTaskIds(room.doc),
       }));
       return { admission, ...snapshot };
     } catch (error) {
