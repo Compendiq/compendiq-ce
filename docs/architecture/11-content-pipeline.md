@@ -209,7 +209,10 @@ any change to the existing conflict policy.
   schemas, so `mermaidBlock` declares the same `title` (`data-title`) and
   `macroParams` attributes. Only `body_html` converted after #1749 holds the
   carriers: a page synced earlier gets them when its body is next re-derived
-  from Confluence (an upstream change, or the bulk Sync action); saving it
+  from Confluence (an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All**, all calling `POST /api/pages/bulk/sync`;
+  **Sync Now** is incremental and does not refresh unchanged pages). Saving it
   before then still writes back without them.
 - `<details>` carries its producing macro's identity (#1211):
   the forward expand branch stamps the source `ac:name` as

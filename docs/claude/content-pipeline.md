@@ -103,7 +103,10 @@ TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
 code language, but not a code block's `data-title`/`data-macro-params`. Only
 `body_html` converted after #1749 holds the carriers: a page synced earlier gets
 them when its body is next re-derived from Confluence (an upstream change, or
-the bulk Sync action); a save before that still drops them.
+a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
+or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
+`POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
+unchanged pages). A save before that still drops them.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without
