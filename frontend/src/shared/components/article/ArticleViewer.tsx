@@ -4,7 +4,7 @@ import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-import { TaskList, TaskItem } from '@tiptap/extension-list';
+import { TaskList } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
@@ -38,6 +38,7 @@ import {
   ExtendedTable,
   CommentMark,
   SafeHighlight,
+  ConfluenceTaskItem,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -172,7 +173,7 @@ export function ArticleViewer({
       TableCell,
       TableHeader,
       TaskList,
-      TaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
+      ConfluenceTaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
         addAttributes() {
           return {

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-import { TaskList, TaskItem } from '@tiptap/extension-list';
+import { TaskList } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
@@ -52,6 +52,7 @@ import {
   BlockShortcutsExtension,
   CommentMark,
   SafeHighlight,
+  ConfluenceTaskItem,
 } from './article-extensions';
 import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
@@ -849,7 +850,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TableCell,
       TableHeader,
       TaskList,
-      TaskItem.configure({ nested: true }),
+      ConfluenceTaskItem.configure({ nested: true }),
       MermaidBlock,
       Details,
       DetailsSummary,

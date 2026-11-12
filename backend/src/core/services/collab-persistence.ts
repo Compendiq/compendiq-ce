@@ -14,8 +14,10 @@ import { logger } from '../utils/logger.js';
 import {
   applyHtmlToYDoc,
   markAttachmentImages,
+  markTaskIds,
   yDocToHtml,
   type AttachmentImageMarker,
+  type TaskIdMarker,
 } from './collab-schema.js';
 import {
   isCollabCommitPending,
@@ -179,6 +181,20 @@ export async function markPersistedAttachmentImages(
   markers: readonly AttachmentImageMarker[],
 ): Promise<number> {
   return markPersistedDoc(pageId, admission, (doc) => markAttachmentImages(doc, markers, COLLAB_LOAD_ORIGIN));
+}
+
+/**
+ * Give the persisted document the task ids a settled Confluence commit wrote
+ * (#1751), as markPersistedAttachmentImages does for image markers. No row:
+ * the next writable join seeds from `body_html`, which the commit published
+ * with those ids.
+ */
+export async function markPersistedTaskIds(
+  pageId: number,
+  admission: PageRuntimeAdmission,
+  markers: readonly TaskIdMarker[],
+): Promise<number> {
+  return markPersistedDoc(pageId, admission, (doc) => markTaskIds(doc, markers, COLLAB_LOAD_ORIGIN));
 }
 
 /** Apply `mark` to the persisted document in one fenced transaction and store it when it changed. */

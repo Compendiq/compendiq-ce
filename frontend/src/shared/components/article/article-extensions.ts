@@ -1,6 +1,7 @@
 import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { Table } from '@tiptap/extension-table';
 import { Highlight } from '@tiptap/extension-highlight';
+import { TaskItem } from '@tiptap/extension-list';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
@@ -1435,6 +1436,28 @@ export const ExtendedTable = Table.extend({
       ...(this.parent?.() || []),
       createTableSelectionPerimeterPlugin(),
     ];
+  },
+});
+
+/**
+ * ConfluenceTaskItem — TaskItem plus the task's Confluence identity (#1751):
+ * `ac:task-id` rides in `data-task-id`, so a save writes the same id back
+ * instead of minting a new one. Edit and read mode both register it; read
+ * mode because a copy out of it is serialized with its schema and pasted into
+ * the editor. `keepOnSplit: false` like `checked`: Enter starts a new task.
+ */
+export const ConfluenceTaskItem = TaskItem.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      taskId: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: (element) => element.getAttribute('data-task-id'),
+        renderHTML: (attributes) =>
+          attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
+      },
+    };
   },
 });
 

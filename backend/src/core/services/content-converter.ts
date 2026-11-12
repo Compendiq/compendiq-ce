@@ -282,6 +282,186 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
 }
 
 /**
+ * A Confluence task id: the number in `ac:task-id` (#1751). Confluence numbers
+ * a page's tasks 1, 2, 3, … and needs them unique within the page — two tasks
+ * that share an id check and uncheck together (Atlassian KB "Checking/unchecking
+ * a Task Item in a page causes other Tasks Items to trigger the same behavior").
+ * Canonical decimal only (no sign, no leading zero), so equal ids are equal
+ * strings.
+ */
+const CONFLUENCE_TASK_ID = /^(?:0|[1-9]\d*)$/;
+
+/** Options for {@link htmlToConfluence}. */
+export interface HtmlToConfluenceOptions {
+  /**
+   * The page's current Confluence storage (`pages.body_storage`) when the HTML
+   * is written back over an existing page (#1751). Its tasks are the ones
+   * Confluence has: a task without an id of its own takes the id of the stored
+   * task with the same text, and a new task never gets a stored id.
+   */
+  previousStorage?: string | null;
+}
+
+/** A task item's own text, without its subtasks' text, whitespace collapsed (#1751). */
+function taskText(li: Element): string {
+  const content = taskItemContent(li).cloneNode(true) as Element;
+  for (const nested of [...content.querySelectorAll('ul[data-type="taskList"]'), ...byTag(content, 'ac:task-list')]) {
+    nested.remove();
+  }
+  return (content.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The tasks a storage body holds, as confluenceToHtml writes them: each id
+ * once (its first task), in document order, with the task's own text (#1751).
+ */
+function storedTasks(storage: string): Array<{ id: string; text: string }> {
+  const html = confluenceToHtml(storage);
+  const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+  const tasks: Array<{ id: string; text: string }> = [];
+  const seen = new Set<string>();
+  for (const li of doc.querySelectorAll('li[data-type="taskItem"][data-task-id]')) {
+    const id = li.getAttribute('data-task-id')!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    tasks.push({ id, text: taskText(li) });
+  }
+  return tasks;
+}
+
+interface TaskIdAllocation {
+  /** The task items of the document, in document order. */
+  items: Element[];
+  /** The id a task item is written with; an item not in `items` gets the next free id. */
+  idFor: (li: Element) => string;
+}
+
+/**
+ * Decide the `ac:task-id` of every task item before htmlToConfluence's
+ * innermost-first loop writes them, in document order (#1751):
+ *
+ * 1. Keep: a task keeps the id it carries in `data-task-id`. The first carrier
+ *    of an id keeps it; a later one is a copy (pasted, duplicated) and is new.
+ *    An `ac:task-id` that passes through as raw storage keeps its id first.
+ * 2. Reconcile: with the page's current storage, a task that carries no valid
+ *    id takes the id of the first stored task that nothing claimed and whose
+ *    own text it repeats exactly. In a body that carries no id at all, one
+ *    converted before ids were carried, the tasks left then take the stored
+ *    tasks left in document order when they are as many: that first save
+ *    edited tasks without adding or removing any.
+ * 3. Mint: every other task gets the next free number above the highest id in
+ *    the document and in the stored page, each checked against every id taken
+ *    so far. No id the page has, or had before this write, goes to another task.
+ *
+ * The same input always gives the same ids: publishing a version restore
+ * re-derives the storage and compares digests (page-put-intent-reconciler.ts).
+ * An item the snapshot did not hold (a clone a re-parse made) is minted when
+ * it is written.
+ */
+function allocateTaskIds(doc: Document, previousStorage?: string | null): TaskIdAllocation {
+  const taken = new Set(byTag(doc, 'ac:task-id').map((el) => (el.textContent ?? '').trim()));
+  const items = [...doc.querySelectorAll('ul[data-type="taskList"] li[data-type="taskItem"]')];
+  const ids = new Map<Element, string>();
+  const unidentified: Element[] = [];
+  for (const li of items) {
+    const carried = li.getAttribute('data-task-id') ?? '';
+    if (!CONFLUENCE_TASK_ID.test(carried)) {
+      unidentified.push(li);
+    } else if (!taken.has(carried)) {
+      taken.add(carried);
+      ids.set(li, carried);
+    }
+  }
+  const carriesIds = ids.size > 0;
+  const stored = ids.size < items.length && previousStorage ? storedTasks(previousStorage) : [];
+  const unclaimed = new Map<string, string[]>();
+  for (const task of stored) {
+    if (!taken.has(task.id)) unclaimed.set(task.text, [...(unclaimed.get(task.text) ?? []), task.id]);
+  }
+  for (const li of unidentified) {
+    const id = unclaimed.get(taskText(li))?.shift();
+    if (id === undefined) continue;
+    taken.add(id);
+    ids.set(li, id);
+  }
+  if (!carriesIds) {
+    const unmatched = unidentified.filter((li) => !ids.has(li));
+    const left = stored.filter((task) => !taken.has(task.id));
+    if (unmatched.length === left.length) {
+      unmatched.forEach((li, index) => {
+        const { id } = left[index]!;
+        taken.add(id);
+        ids.set(li, id);
+      });
+    }
+  }
+  const retired = new Set(stored.map((task) => task.id));
+  let next = 1n;
+  for (const id of [...taken, ...retired]) {
+    if (CONFLUENCE_TASK_ID.test(id) && BigInt(id) >= next) next = BigInt(id) + 1n;
+  }
+  const mint = (): string => {
+    while (taken.has(String(next)) || retired.has(String(next))) next += 1n;
+    const id = String(next);
+    taken.add(id);
+    next += 1n;
+    return id;
+  };
+  for (const li of items) {
+    if (!ids.has(li)) ids.set(li, mint());
+  }
+  return { items, idFor: (li) => ids.get(li) ?? mint() };
+}
+
+/**
+ * `html` with each task item's write-back id in `data-task-id`, and those ids
+ * in document order: what htmlToConfluence(html, { previousStorage }) writes
+ * (#1751). A writer that keeps its HTML instead of re-deriving it from the
+ * storage Confluence returns (draft publish, a collaborative Save) stores
+ * these ids, so the next write keeps them.
+ */
+export function assignTaskIds(
+  html: string,
+  previousStorage?: string | null,
+): { html: string; taskIds: string[] } {
+  const doc = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' }).window.document;
+  const { items, idFor } = allocateTaskIds(doc, previousStorage);
+  let changed = false;
+  const taskIds = items.map((li) => {
+    const id = idFor(li);
+    if (li.getAttribute('data-task-id') !== id) {
+      li.setAttribute('data-task-id', id);
+      changed = true;
+    }
+    return id;
+  });
+  // Unchanged HTML is returned as given, not re-serialized.
+  return { html: changed ? doc.body.innerHTML : html, taskIds };
+}
+
+/**
+ * The element that holds a task item's content (#1751). TipTap's TaskItem
+ * renders `<li><label><input type="checkbox"><span></span></label><div>…</div></li>`
+ * and parses the content from that div: the label is editor chrome, and copied
+ * into `ac:task-body` it put a checkbox inside every task an editor save wrote
+ * back. Any other shape (converter output, Markdown import, Notion import)
+ * holds its content in the li itself.
+ */
+function taskItemContent(li: Element): Element {
+  const label = li.children[0];
+  const content = li.children[1];
+  if (
+    li.children.length === 2
+    && label?.tagName === 'LABEL'
+    && label.querySelector('input[type="checkbox"]') !== null
+    && content?.tagName === 'DIV'
+  ) {
+    return content;
+  }
+  return li;
+}
+
+/**
  * Run one static-snapshot conversion pass.
  */
 function confluenceToHtmlPass(
@@ -310,7 +490,9 @@ function confluenceToHtmlPass(
     macro.replaceWith(pre);
   }
 
-  // Process task lists: ac:task-list -> <ul data-type="taskList">
+  // Process task lists: ac:task-list -> <ul data-type="taskList">. The task's
+  // own ac:task-id rides in data-task-id (#1751), so write-back keeps it; a
+  // value that is not a Confluence task id is not carried and the task is new.
   for (const taskList of byTag(doc, 'ac:task-list')) {
     const ul = doc.createElement('ul');
     ul.setAttribute('data-type', 'taskList');
@@ -319,10 +501,15 @@ function confluenceToHtmlPass(
       const statusEl = byTag(task, 'ac:task-status')[0];
       const bodyEl = byTag(task, 'ac:task-body')[0];
       const checked = statusEl?.textContent === 'complete';
+      // A direct child only (the #1222 rule): a subtask's id is not this task's.
+      const taskId = [...task.children]
+        .find((child) => child.tagName.toLowerCase() === 'ac:task-id')
+        ?.textContent?.trim() ?? '';
 
       const li = doc.createElement('li');
       li.setAttribute('data-type', 'taskItem');
       li.setAttribute('data-checked', checked ? 'true' : 'false');
+      if (CONFLUENCE_TASK_ID.test(taskId)) li.setAttribute('data-task-id', taskId);
       transferInnerHtml(li, bodyEl);
       ul.appendChild(li);
     }
@@ -777,7 +964,7 @@ function confluenceToHtmlPass(
  * Converts clean HTML back to Confluence storage format.
  * Reverses the conversions done by confluenceToHtml.
  */
-export function htmlToConfluence(html: string): string {
+export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions = {}): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
@@ -835,17 +1022,22 @@ export function htmlToConfluence(html: string): string {
   // arrives here in this shape: the forward pass has the mirror-image
   // stale-snapshot bug and hands over an already-duplicated list (pre-existing,
   // unchanged by #1220, out of its scope).
+  //
+  // #1751: each task keeps its carried id, takes a stored one or gets the next
+  // free one (allocateTaskIds, decided in document order before this loop), and
+  // its body is the task's content without the editor's checkbox (taskItemContent).
+  const { idFor: taskIdFor } = allocateTaskIds(doc, options.previousStorage);
   for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 
     for (const li of ul.querySelectorAll('li[data-type="taskItem"]')) {
       const task = doc.createElement('ac:task');
       const taskId = doc.createElement('ac:task-id');
-      taskId.textContent = String(Math.floor(Math.random() * 1000000));
+      taskId.textContent = taskIdFor(li);
       const taskStatus = doc.createElement('ac:task-status');
       taskStatus.textContent = li.getAttribute('data-checked') === 'true' ? 'complete' : 'incomplete';
       const taskBody = doc.createElement('ac:task-body');
-      transferInnerHtml(taskBody, li);
+      transferInnerHtml(taskBody, taskItemContent(li));
 
       task.appendChild(taskId);
       task.appendChild(taskStatus);

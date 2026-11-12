@@ -433,6 +433,29 @@ describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes â
       });
     });
 
+    it('publishes a Confluence draft\'s tasks with the ids Confluence has, and the live body keeps them (#1751)', async () => {
+      const pageId = await seedConfluencePage();
+      await query('UPDATE pages SET body_storage = $2, draft_body_html = $3 WHERE id = $1', [
+        pageId,
+        '<p>live storage</p><ac:task-list><ac:task><ac:task-id>7</ac:task-id>'
+        + '<ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+        '<p>draft</p><ul data-type="taskList">'
+        + '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>'
+        + '<div><p>Ship it</p></div></li>'
+        + '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>'
+        + '<div><p>New task</p></div></li></ul>',
+      ]);
+
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = confluenceRequests[0]!.body.body.storage.value;
+      expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['7', '8']);
+      // Publication keeps the draft's HTML as the live body: with the ids it was published with.
+      const stored = await storedPage(pageId);
+      expect([...stored.body_html.matchAll(/data-task-id="([^"]*)"/g)].map((match) => match[1])).toEqual(['7', '8']);
+    });
+
     it('rolls back draft publication when its collaborative snapshot cannot be invalidated', async () => {
       const pageId = await seedConfluencePage();
       const before = await storedPage(pageId);

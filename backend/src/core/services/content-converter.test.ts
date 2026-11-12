@@ -994,11 +994,11 @@ describe('content-converter', () => {
   // ========== Double round-trip stability ==========
 
   describe('double round-trip stability', () => {
-    // Task lists and expand macros have known non-deterministic round-trips:
-    // - Task lists: random task-id generation on each htmlToConfluence call
-    // - Expand macros: extra <div> wrapper added on each confluenceToHtml pass
-    // These are tested separately below.
+    // Expand macros have a known non-deterministic round-trip (an extra <div>
+    // wrapper added on each confluenceToHtml pass), tested separately below.
+    // Task lists are stable since #1751: a task keeps its ac:task-id.
     const stableFixtures = [
+      { name: 'task lists', xhtml: TASK_LIST_PAGE },
       { name: 'panels', xhtml: PANELS_PAGE },
       { name: 'draw.io', xhtml: DRAWIO_PAGE },
       { name: 'tables', xhtml: TABLE_PAGE },
@@ -1031,12 +1031,12 @@ describe('content-converter', () => {
       expect(html2).toBe(html1);
     });
 
-    it('preserves task list content across round-trips', () => {
+    it('preserves task list content and task ids across round-trips (#1751)', () => {
       const html1 = confluenceToHtml(TASK_LIST_PAGE, '1');
       const xhtml1 = htmlToConfluence(html1);
       const html2 = confluenceToHtml(xhtml1, '1');
-      // HTML output is stable (task-ids change but aren't in HTML)
       expect(html2).toBe(html1);
+      expect([...xhtml1.matchAll(/<ac:task-id>(\d+)<\/ac:task-id>/g)].map((m) => m[1])).toEqual(['1', '2', '3']);
     });
 
     it('preserves expand content across round-trips', () => {
@@ -3627,12 +3627,13 @@ describe('content-converter: #1220 self-nested placeholders on write-back', () =
       // the outer ac:task-body, never also hoisted as a sibling ac:task.
       expect(xhtml.match(/<p>inner<\/p>/g)).toHaveLength(1);
       expect(xhtml.match(/<ac:task-status>complete<\/ac:task-status>/g)).toHaveLength(1);
-      // Task ids are random; normalise them to compare the whole structure.
-      expect(xhtml.replace(/<ac:task-id>\d+<\/ac:task-id>/g, '<ac:task-id>#</ac:task-id>')).toBe(
-        '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+      // Both tasks are new: they get the next free ids in document order,
+      // the outer task 1 and its subtask 2 (#1751).
+      expect(xhtml).toBe(
+        '<ac:task-list><ac:task><ac:task-id>1</ac:task-id>' +
           '<ac:task-status>incomplete</ac:task-status>' +
           '<ac:task-body><p>outer</p>' +
-          '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-list><ac:task><ac:task-id>2</ac:task-id>' +
           '<ac:task-status>complete</ac:task-status>' +
           '<ac:task-body><p>inner</p></ac:task-body>' +
           '</ac:task></ac:task-list>' +

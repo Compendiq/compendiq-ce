@@ -945,6 +945,38 @@ describe('ArticleViewer', () => {
       fireEvent.click(checkbox);
       expect(checkbox.checked).toBe(true);
     });
+
+    // #1751: read mode never saves, but ProseMirror serializes a copy with the
+    // viewer's own schema, and a task copied from here is pasted into the
+    // editor and written back, so read mode carries the task id too.
+    it('keeps the Confluence task id in a copy out of the read view (#1751)', async () => {
+      const html =
+        '<p>Intro</p><ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="true" data-task-id="42">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false" data-task-id="7">Write <strong>docs</strong></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+      await waitFor(() => {
+        expect(container.querySelector('.ProseMirror ul[data-type="taskList"] li')).toBeTruthy();
+      });
+
+      const view = container.querySelector('.ProseMirror') as HTMLElement & {
+        editor: { commands: { selectAll: () => boolean } };
+      };
+      view.editor.commands.selectAll();
+      let copied = '';
+      fireEvent.copy(view, {
+        clipboardData: {
+          clearData: vi.fn(),
+          setData: (type: string, value: string) => {
+            if (type === 'text/html') copied = value;
+          },
+        },
+      });
+
+      const clipboard = new DOMParser().parseFromString(copied, 'text/html');
+      expect([...clipboard.querySelectorAll('li[data-type="taskItem"]')].map((li) => li.getAttribute('data-task-id')))
+        .toEqual(['42', '7']);
+    });
   });
 
   describe('text color and highlight in read mode', () => {

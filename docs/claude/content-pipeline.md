@@ -75,6 +75,22 @@ the room's live and persisted Yjs document after its intent settles (#1764);
 otherwise the room's next 2 s persist drops them and every later Save uploads
 the image again.
 
+**A Confluence task keeps its id (#1751).** `ac:task-id` rides in
+`data-task-id`, declared as `taskId` on `taskItem` in both TipTap schemas
+(`ConfluenceTaskItem`, registered by the editor and by read mode, whose copy is
+serialized with its schema; `keepOnSplit: false`). Every write-back over an
+existing page passes the stored `body_storage`: the first carrier of an id keeps
+it, a task without one takes the id of a stored task with exactly its text (in a
+body carrying no id at all, converted before #1751, the tasks left take the
+stored tasks left in order when they are as many), and any other task gets the
+next free number above every id in the page and its storage (deterministic:
+publishing a version restore re-derives the digest). Draft publish stores the
+ids it wrote in the live body; like the image markers above, a collaborative
+Save sets them on the room's task items after its intent settles. The task body
+is TaskItem's content `div`, never its checkbox `<label>`. AI Improve carries no
+ids (turndown writes `- [ ]`): only tasks with unchanged text get theirs back on
+apply.
+
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
 clone nested `ac:structured-macro` nodes after their dedicated handler pass.

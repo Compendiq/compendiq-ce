@@ -29,7 +29,8 @@ import {
   refreshCollabActiveTtl,
   type CollabRuntime,
 } from '../../core/services/collab-room-service.js';
-import { htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
+import { assignTaskIds, htmlToConfluence, htmlToText } from '../../core/services/content-converter.js';
+import type { CollabTaskItem } from '../../core/services/collab-schema.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -95,6 +96,7 @@ type CollabCommitPage = {
   space_key: string | null;
   lifecycle_revision: string;
   baseline_id: string | null;
+  body_storage: string | null;
 };
 
 async function assertCurrentCollabMutationAuthority(
@@ -176,16 +178,27 @@ async function commitConfluencePage(args: {
   existing: CollabCommitPage;
   body: CollabCommit;
   html: string;
+  taskItems: CollabTaskItem[];
   runtime: CollabRuntime;
   admission: PageRuntimeAdmission;
 }) {
-  const { fastify, request, pageId, userId, existing, body, html, runtime, admission } = args;
+  const { fastify, request, pageId, userId, existing, body, html, taskItems, runtime, admission } = args;
   if (!existing.confluence_id) {
     throw fastify.httpErrors.badRequest('Confluence page is missing a remote id');
   }
 
   const imagePlan = await planLocalImagesForConfluence(html);
-  const storageBody = htmlToConfluence(imagePlan.bodyHtml);
+  // #1751: the room keeps its HTML, so the Save stores the task ids it writes
+  // in the room once it settles (markWrittenTaskIds below); the n-th task item
+  // of the snapshot is the n-th task of `html`.
+  const assigned = assignTaskIds(imagePlan.bodyHtml, existing.body_storage);
+  const storageBody = htmlToConfluence(assigned.html);
+  const taskIdMarkers = assigned.taskIds.length === taskItems.length
+    ? taskItems.flatMap((item, index) => {
+      const taskId = assigned.taskIds[index]!;
+      return item.taskId === taskId ? [] : [{ client: item.client, clock: item.clock, taskId }];
+    })
+    : [];
 
   // The room admission and a fresh authority/client read immediately precede
   // the provider read. A revoked actor must not carry initial-route authority
@@ -348,12 +361,13 @@ async function commitConfluencePage(args: {
       title: confPage.title,
       bodyStorage: confPage.body.storage.value,
       remoteVersion: confPage.version.number,
-    }, intent.id, imagePlan.bodyHtml));
+    }, intent.id, assigned.html));
   // The published body carries the markers of the images this commit
   // uploaded; the room must carry them too, or its next persist drops them and
   // the next Save uploads every image again. After settlement and before the
   // `pages_version` control, so the flush that control starts keeps them (#1764).
   await runtime.markUploadedImages(pageId, admission, imagePlan.markers);
+  await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers);
   runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
   logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
 
@@ -517,10 +531,11 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       lifecycle_revision: string;
       baseline_id: string | null;
+      body_storage: string | null;
     }>(
       `SELECT id, version, source, visibility, deleted_at, page_type,
               confluence_id, space_key,
-              lifecycle_revision::text, baseline_id
+              lifecycle_revision::text, baseline_id, body_storage
          FROM pages
         WHERE id = $1`,
       [pageId],
@@ -578,6 +593,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
           existing,
           body,
           html,
+          taskItems: snapshot.taskItems,
           runtime,
           admission,
         });

@@ -717,6 +717,101 @@ describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real 
     expect(confluenceRequests.map((entry) => entry.method)).toEqual(['PUT']);
   });
 
+  it('restores a Confluence version that holds new tasks (#1751)', async () => {
+    // Publication re-derives the restored version's storage and compares its
+    // digest with the intent's (page-put-intent-reconciler.ts), so the task ids
+    // htmlToConfluence gives the version's new tasks must not vary between calls.
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-tasks',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live before restore',
+      bodyHtml: '<p>Live before restore</p>',
+      bodyText: 'Live before restore',
+    });
+    await seedVersion(
+      pageId,
+      1,
+      'Checklist',
+      '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true"><p>Ship it</p></li>'
+      + '<li data-type="taskItem" data-checked="false"><p>Write docs</p></li>'
+      + '</ul>',
+      'Ship it Write docs',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ id: pageId, version: 4, restoredFrom: 1, pushedToConfluence: true });
+    const intent = await query<{ status: string }>(
+      `SELECT status FROM page_write_intents
+        WHERE kind = 'page.version_restore' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(intent.rows.map((row) => row.status)).toEqual(['completed']);
+    expect(confluenceRequests.map((entry) => entry.method)).toEqual(['PUT']);
+    expect(confluenceRequests[0]?.body?.body.storage.value).toBe(
+      '<ac:task-list>'
+      + '<ac:task><ac:task-id>1</ac:task-id><ac:task-status>complete</ac:task-status>'
+      + '<ac:task-body><p>Ship it</p></ac:task-body></ac:task>'
+      + '<ac:task><ac:task-id>2</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body><p>Write docs</p></ac:task-body></ac:task>'
+      + '</ac:task-list>',
+    );
+  });
+
+  it('restores a version saved before task ids were carried with the ids Confluence has (#1751)', async () => {
+    await configureConfluence('OPS');
+    const pageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restore-legacy-tasks',
+      spaceKey: 'OPS',
+      visibility: 'shared',
+      ownerId: null,
+      version: 3,
+      title: 'Live before restore',
+      bodyHtml: '<p>Live before restore</p>',
+      bodyText: 'Live before restore',
+    });
+    await query('UPDATE pages SET body_storage = $2 WHERE id = $1', [
+      pageId,
+      '<ac:task-list><ac:task><ac:task-id>794464</ac:task-id><ac:task-status>incomplete</ac:task-status>'
+      + '<ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+    ]);
+    await seedVersion(
+      pageId,
+      1,
+      'Checklist',
+      '<ul data-type="taskList">'
+      + '<li data-type="taskItem" data-checked="true">Ship it</li>'
+      + '<li data-type="taskItem" data-checked="false">Write docs</li>'
+      + '</ul>',
+      'Ship it Write docs',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    // Publication re-derives the storage with the same stored storage, so the digests match.
+    expect(response.statusCode, response.body).toBe(200);
+    const sent = confluenceRequests[0]?.body?.body.storage.value ?? '';
+    expect([...sent.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1])).toEqual(['794464', '794465']);
+  });
+
   it('recovers a compact acknowledged restore after readback failure without issuing a second PUT', async () => {
     await configureConfluence('OPS');
     const pageId = await seedPage({

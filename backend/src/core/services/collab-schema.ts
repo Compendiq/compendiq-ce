@@ -676,6 +676,28 @@ const ExtendedTable = Table.extend({
   },
 });
 
+/**
+ * TaskItem plus the task's Confluence identity (#1751): `ac:task-id` rides in
+ * `data-task-id`, which the converter writes and reads back. ProseMirror keeps
+ * declared attributes only, so without it every save minted new ids.
+ * `keepOnSplit: false` like TaskItem's own `checked`: Enter in a task starts a
+ * new task, not a second carrier of this one's id.
+ */
+const ConfluenceTaskItem = TaskItem.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      taskId: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-task-id'),
+        renderHTML: (attributes: { taskId?: string | null }) =>
+          attributes.taskId ? { 'data-task-id': attributes.taskId } : {},
+      },
+    };
+  },
+});
+
 const ConfluenceImage = Image.extend({
   addAttributes() {
     return {
@@ -898,7 +920,7 @@ export function collabExtensions(): AnyExtension[] {
     TableCell,
     TableHeader,
     TaskList,
-    TaskItem.configure({ nested: true }),
+    ConfluenceTaskItem.configure({ nested: true }),
     MermaidBlock,
     Details,
     DetailsSummary,
@@ -995,6 +1017,60 @@ export function markAttachmentImages(
       image.setAttribute('data-confluence-filename', filename);
       image.setAttribute('data-confluence-image-source', 'attachment');
     }
+  }, origin);
+  return unmarked.length;
+}
+
+/** A task item of a collaborative document: its Yjs identity and the Confluence task id it carries (#1751). */
+export interface CollabTaskItem {
+  client: number;
+  clock: number;
+  taskId: string | null;
+}
+
+/** The Confluence task id a settled commit wrote for the task item with this Yjs identity (#1751). */
+export interface TaskIdMarker {
+  client: number;
+  clock: number;
+  taskId: string;
+}
+
+function taskItemElements(doc: Y.Doc): Y.XmlElement[] {
+  return [...doc.getXmlFragment(COLLAB_FIELD).createTreeWalker(
+    (type) => type instanceof Y.XmlElement && type.nodeName === 'taskItem',
+  )] as Y.XmlElement[];
+}
+
+/**
+ * The task items of a collaborative document in the order yDocToHtml writes
+ * them, so the n-th one is the n-th task item of that HTML (#1751).
+ */
+export function collabTaskItems(doc: Y.Doc): CollabTaskItem[] {
+  return taskItemElements(doc).map((element) => {
+    const { client, clock } = element._item!.id;
+    const taskId: unknown = element.getAttribute('taskId');
+    return { client, clock, taskId: typeof taskId === 'string' ? taskId : null };
+  });
+}
+
+/**
+ * Give each task item a marker names the Confluence task id a settled commit
+ * wrote for it (#1751), so the room's next Save keeps it. An item is found by
+ * its Yjs identity, so edits made meanwhile elsewhere do not matter; a deleted
+ * one is skipped. One transaction with `origin`, none when nothing changes;
+ * returns the number of items marked.
+ */
+export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin: unknown): number {
+  const wanted = new Map(markers.map((marker) => [`${marker.client}:${marker.clock}`, marker.taskId]));
+  const unmarked: Array<{ element: Y.XmlElement; taskId: string }> = [];
+  for (const element of taskItemElements(doc)) {
+    const { client, clock } = element._item!.id;
+    const taskId = wanted.get(`${client}:${clock}`);
+    if (taskId !== undefined && element.getAttribute('taskId') !== taskId) unmarked.push({ element, taskId });
+  }
+  if (unmarked.length === 0) return 0;
+  doc.transact(() => {
+    for (const { element, taskId } of unmarked) element.setAttribute('taskId', taskId);
   }, origin);
   return unmarked.length;
 }

@@ -540,7 +540,15 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       if (intendedHistorical.body_html === null) {
         throw fastify.httpErrors.conflict('Historical version body is unavailable');
       }
-      const storageBody = htmlToConfluence(intendedHistorical.body_html);
+      // #1751: tasks keep the ids Confluence has, as publication re-derives
+      // the digest from this same stored storage (publishConfluencePagePut).
+      const current = await query<{ body_storage: string | null }>(
+        'SELECT body_storage FROM pages WHERE id = $1',
+        [ctx.id],
+      );
+      const storageBody = htmlToConfluence(intendedHistorical.body_html, {
+        previousStorage: current.rows[0]?.body_storage,
+      });
       const publication = describeConfluencePagePut({
         kind: 'page.version_restore',
         actorId: userId,
