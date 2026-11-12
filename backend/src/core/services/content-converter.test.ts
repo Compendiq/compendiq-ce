@@ -112,7 +112,7 @@ describe('content-converter', () => {
 
     it('converts Confluence links (page and attachment)', () => {
       const html = confluenceToHtml(LINKS_PAGE);
-      expect(html).toContain('href="#confluence-page:Architecture Overview"');
+      expect(html).toContain('href="#confluence-page:Architecture%20Overview?body=plain"');
       expect(html).toContain('data-confluence-link="page"');
       expect(html).toContain('Architecture Overview</a>');
       expect(html).toContain('href="#confluence-attachment:report.pdf"');
@@ -146,7 +146,7 @@ describe('content-converter', () => {
 
     it('preserves images inside rich link bodies', () => {
       const html = confluenceToHtml(CROSS_PAGE_IMAGES_PAGE, '55', 'OPS');
-      expect(html).toContain('<a href="#confluence-page:Shared Assets"');
+      expect(html).toContain('<a href="#confluence-page:Shared%20Assets"');
       expect(html).toContain('<img');
       expect(html).not.toContain('thumbnail.png</a>');
     });
@@ -301,7 +301,7 @@ describe('content-converter', () => {
       // Task list
       expect(html).toContain('data-type="taskList"');
       // Links inside tasks
-      expect(html).toContain('#confluence-page:Backup Procedures');
+      expect(html).toContain('#confluence-page:Backup%20Procedures');
       // Draw.io
       expect(html).toContain('class="confluence-drawio"');
       expect(html).toContain('data-diagram-name="migration-flow"');

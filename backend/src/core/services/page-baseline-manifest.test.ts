@@ -7,6 +7,7 @@ import {
   renderBaselineBodyHtml,
   type BaselineAttachment,
 } from './page-baseline-manifest.js';
+import { confluenceToHtml } from './content-converter.js';
 
 const BASELINE_ID = '018f47a8-4a19-7cc2-a747-8f4ef65d9a22';
 
@@ -168,6 +169,24 @@ describe('baseline rendering-only media projection', () => {
         [foreign],
         '9001',
       )).toThrowError(expect.objectContaining({ reason: 'baseline_storage_unavailable' }));
+  });
+
+  it("binds a #1748 attachment link by its decoded filename and leaves a link to another page's attachment alone", () => {
+    const own = attachment('confluence', '9001', 'Q3 100% plan.pdf');
+    const sameName = attachment('confluence', '9001', 'logo.png');
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:attachment ri:filename="Q3 100% plan.pdf" />'
+      + '<ac:plain-text-link-body><![CDATA[plan]]></ac:plain-text-link-body></ac:link>'
+      + ' <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+      + '</ri:attachment></ac:link></p>',
+      '9001',
+    );
+    const rendered = renderBaselineBodyHtml(html, 42, BASELINE_ID, [own, sameName], '9001');
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${own.identity}"`);
+    expect(rendered).not.toContain(sameName.identity);
+    expect(rendered).toContain(
+      'href="#confluence-attachment:logo.png?page.ri:content-title=Shared%20Assets&amp;page.ri:space-key=ENG"',
+    );
   });
 
   it('keeps comma-bearing inline srcset URLs intact while rewriting only retained candidates', () => {

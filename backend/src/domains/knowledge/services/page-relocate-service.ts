@@ -348,8 +348,10 @@ export function rewriteAttachmentRefs(
    * `img[src^="/api/attachments/"]` into an `ri:attachment`, so an anchor's
    * rewritten href survives to Confluence as a raw internal URL either way —
    * imperfect, pre-dates #1164, and out of scope here. Confluence's own
-   * attachment links arrive as `<a href="#confluence-attachment:…">`, which
-   * never carries the prefix and is left alone by the prefix test below.
+   * attachment links arrive as `<a href="#confluence-attachment:…">` (since
+   * #1748 a percent-encoded filename, then `?<params>` for its anchor or
+   * container page), which never carries the prefix and is left alone by the
+   * prefix test below.
    */
   const rewriteOne = (el: Element, attr: string): void => {
     const value = el.getAttribute(attr) ?? '';

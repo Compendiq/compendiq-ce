@@ -11,6 +11,7 @@ import {
   type PageWriteIntent,
 } from './page-write-admission.js';
 import { userCanAccessPage } from './rbac-service.js';
+import { CONFLUENCE_ATTACHMENT_HREF_PREFIX, parseConfluenceLinkHref } from './confluence-link.js';
 import {
   BASELINE_STORE_DIRNAME,
   attachmentsRootNow,
@@ -310,6 +311,20 @@ function decodeUrlSegment(value: string): string {
   }
 }
 
+/**
+ * The filename a `#confluence-attachment:` reference names in the page's own
+ * attachment namespace, else null. Since #1748 the filename is percent-encoded
+ * and may be followed by `?<params>`; a link whose params name another page or
+ * blog post as the attachment's container is that page's attachment, not this
+ * page's, so it is null. A reference written before #1748 decodes as before.
+ */
+function confluenceAttachmentFilename(value: string): string | null {
+  if (!value.startsWith(CONFLUENCE_ATTACHMENT_HREF_PREFIX)) return null;
+  const link = parseConfluenceLinkHref(value);
+  if (link?.kind === 'attachment' && !link.legacy) return link.container ? null : link.value;
+  return decodeUrlSegment(value.slice(CONFLUENCE_ATTACHMENT_HREF_PREFIX.length));
+}
+
 function mediaIdentity(store: BaselineAttachment['store'], pageKey: string, filename: string): string {
   const framed = encodeBaselineManifest([store, pageKey, filename]);
   return createHash('sha256').update(framed).digest('hex');
@@ -444,9 +459,8 @@ function collectMediaSources(page: PageRow): MediaSource[] {
       }
     }
     if (tagName === 'a') {
-      const href = element.getAttribute('href');
-      if (href?.startsWith('#confluence-attachment:')) {
-        const filename = decodeUrlSegment(href.slice('#confluence-attachment:'.length));
+      const filename = confluenceAttachmentFilename(element.getAttribute('href') ?? '');
+      if (filename !== null) {
         const pageKey = page.source === 'confluence' && page.confluence_id
           ? page.confluence_id
           : String(page.id);
@@ -461,8 +475,8 @@ function collectMediaSources(page: PageRow): MediaSource[] {
       if (raw === null) continue;
       for (const candidate of mediaAttributeValues(tagName, attribute, raw)) {
         if (isPinnedInlineMedia(candidate) || parseInternalAttachmentUrl(candidate)) continue;
-        if (candidate.startsWith('#confluence-attachment:')) {
-          const filename = decodeUrlSegment(candidate.slice('#confluence-attachment:'.length));
+        const filename = confluenceAttachmentFilename(candidate);
+        if (filename !== null) {
           const pageKey = page.source === 'confluence' && page.confluence_id
             ? page.confluence_id
             : String(page.id);
@@ -590,8 +604,8 @@ export function renderBaselineBodyHtml(
     return `/api/pages/${pageId}/baselines/${baselineId}/media/${identity}`;
   };
   const hashSource = (value: string): StoredMediaSource | null => {
-    if (!value.startsWith('#confluence-attachment:')) return null;
-    const filename = decodeUrlSegment(value.slice('#confluence-attachment:'.length));
+    const filename = confluenceAttachmentFilename(value);
+    if (filename === null) return null;
     const source = mediaSource('confluence', legacyAttachmentPageKey, filename);
     const identity = mediaIdentity(source.store, source.pageKey, source.filename);
     if (!inventory.has(identity)) {

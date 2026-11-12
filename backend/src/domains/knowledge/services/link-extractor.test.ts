@@ -5,6 +5,7 @@ import {
   getInternalHosts,
   runExplicitLinkProducer,
 } from './link-extractor.js';
+import { confluenceToHtml } from '../../../core/services/content-converter.js';
 
 // vi.mock the postgres module so any accidental fall-through to the global
 // `query()` helper would throw — tightens the assertion that the producer
@@ -44,6 +45,38 @@ describe('extractInternalLinks', () => {
   it('drops #confluence-page:<title> when title is unknown to the map', () => {
     const html = `<a href="#confluence-page:NoSuchTitle">x</a>`;
     expect(extractInternalLinks(html, new Map())).toEqual([]);
+  });
+
+  it('resolves a #1748 page href by its percent-encoded title, whatever attributes follow', () => {
+    const html = '<a href="#confluence-page:Release%20Notes%20%282026%29?ac:anchor=Upgrade&amp;ri:space-key=OPS">notes</a>';
+    expect(extractInternalLinks(html, new Map([['Release Notes (2026)', 12]]))).toEqual([{ targetPageId: 12 }]);
+  });
+
+  it('resolves the cross-space anchor link confluenceToHtml writes (#1748)', () => {
+    // A guard before #1748 too, which wrote the title as written and dropped the rest.
+    const html = confluenceToHtml(
+      '<p><ac:link ac:anchor="Upgrade"><ri:page ri:content-title="Release Notes (2026)" ri:space-key="OPS" /></ac:link></p>',
+    );
+    expect(extractInternalLinks(html, new Map([['Release Notes (2026)', 12]]))).toEqual([{ targetPageId: 12 }]);
+  });
+
+  it('reads the encoded title first, so a page titled `A%20B` never captures a link to `A B` (#1748)', () => {
+    // A guard before #1748 too (it wrote both titles as written); with the
+    // title as written read first, the link to `A B` would land on `A%20B`.
+    const html = confluenceToHtml(
+      '<p><ac:link><ri:page ri:content-title="A B" /></ac:link><ac:link><ri:page ri:content-title="A%20B" /></ac:link></p>',
+    );
+    expect(extractInternalLinks(html, new Map([['A%20B', 13], ['A B', 14]]))).toEqual([{ targetPageId: 14 }, { targetPageId: 13 }]);
+  });
+
+  it('reads an href written before #1748 by its title as written, unless it also reads as an existing encoded title (#1748, accepted)', () => {
+    const html = '<a href="#confluence-page:Release Notes">notes</a><a href="#confluence-page:A%20B">ab</a>';
+    expect(extractInternalLinks(html, new Map([['Release Notes', 12], ['A%20B', 13]])))
+      .toEqual([{ targetPageId: 12 }, { targetPageId: 13 }]);
+    // The trade-off: an older href to a page literally titled `A%20B` resolves
+    // to `A B` when that page exists, as the write-back does.
+    expect(extractInternalLinks(html, new Map([['Release Notes', 12], ['A%20B', 13], ['A B', 14]])))
+      .toEqual([{ targetPageId: 12 }, { targetPageId: 14 }]);
   });
 
   it('dedupes the same target referenced multiple times in one page', () => {
@@ -439,5 +472,7 @@ describe('runExplicitLinkProducer — Finding 1 (symmetric incremental rescan)',
     // The title's `%` is escaped (`\%`) inside the substring pattern so
     // PostgreSQL treats it literally; the outer `%…%` wildcards remain.
     expect(patterns).toContain('%#confluence-page:Weird \\% Title%');
+    // #1748: the percent-encoded title too, its `%` escaped for LIKE.
+    expect(patterns).toContain('%#confluence-page:Weird\\%20\\%25\\%20Title%');
   });
 });

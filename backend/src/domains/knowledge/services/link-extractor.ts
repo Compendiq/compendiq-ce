@@ -20,8 +20,11 @@
  *      CORS origin and email login links). Foreign hosts are dropped.
  *
  *   3. Confluence sync placeholders — what `confluenceToHtml` emits for
- *      `<ac:link><ri:page ri:content-title="…"/></ac:link>` (see
- *      `content-converter.ts:184`):
+ *      `<ac:link><ri:page ri:content-title="…"/></ac:link>` (grammar in
+ *      `core/services/confluence-link.ts`, #1748): the title percent-encoded,
+ *      then the link's other attributes,
+ *        `<a href="#confluence-page:My%20Title?ri:space-key=OPS">…</a>`
+ *      — or, written before #1748, the title as written:
  *        `<a href="#confluence-page:My Title">…</a>`
  *      We resolve the title back to a `pages.id` (matching by exact title
  *      first; ambiguous titles emit no edge).
@@ -34,9 +37,13 @@
 import { JSDOM } from 'jsdom';
 import type { PoolClient } from 'pg';
 import { logger } from '../../../core/utils/logger.js';
+import {
+  CONFLUENCE_PAGE_HREF_PREFIX,
+  encodeConfluenceLinkValue,
+  parseConfluenceLinkHref,
+} from '../../../core/services/confluence-link.js';
 
 const APP_PAGE_PATH_RE = /^\/pages\/(\d+)(?:\/|$|\?|#)/;
-const CONFLUENCE_PAGE_HASH_PREFIX = '#confluence-page:';
 
 /**
  * Keyset page size for the full-recompute corpus scan (#908). Bounds how much
@@ -106,10 +113,16 @@ export function extractInternalLinks(
       continue;
     }
 
-    // Shape 3: #confluence-page:<title>
-    if (href.startsWith(CONFLUENCE_PAGE_HASH_PREFIX)) {
-      const title = href.slice(CONFLUENCE_PAGE_HASH_PREFIX.length).trim();
-      const id = titleToId.get(title);
+    // Shape 3: #confluence-page:<title>. Since #1748 the title is percent-
+    // encoded and may be followed by `?<params>`: that reading comes first,
+    // because every href written since is encoded. An href written before
+    // holds the title as written, the fallback: the two readings differ only
+    // for such a title that also reads as an encoded one (`A%20B`), which then
+    // resolves to the decoded title's page when one exists (accepted, #1748).
+    if (href.startsWith(CONFLUENCE_PAGE_HREF_PREFIX)) {
+      const link = parseConfluenceLinkHref(href);
+      const id = (link?.kind === 'page' ? titleToId.get(link.value.trim()) : undefined)
+        ?? titleToId.get(href.slice(CONFLUENCE_PAGE_HREF_PREFIX.length).trim());
       if (id != null && !seen.has(id)) {
         seen.add(id);
         out.push({ targetPageId: id });
@@ -280,7 +293,11 @@ export async function runExplicitLinkProducer(
       patterns.push(`%/pages/${id}%`);
       const title = idToTitle.get(id);
       if (title && title.length > 0) {
-        patterns.push(`%#confluence-page:${escapeLikePattern(title)}%`);
+        // An href written before #1748 starts with the title as written, one
+        // written since with the percent-encoded title (then `?<params>`).
+        patterns.push(`%${CONFLUENCE_PAGE_HREF_PREFIX}${escapeLikePattern(title)}%`);
+        const encoded = encodeConfluenceLinkValue(title);
+        if (encoded !== title) patterns.push(`%${CONFLUENCE_PAGE_HREF_PREFIX}${escapeLikePattern(encoded)}%`);
       }
     }
     const pagesResult = await client.query<{ id: number; body_html: string | null }>(

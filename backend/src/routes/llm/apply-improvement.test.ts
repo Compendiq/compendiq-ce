@@ -786,6 +786,42 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect((await readPage(pageId)).body_html).toContain('data-macro-name="expand"');
     });
 
+    it('keeps Confluence page, attachment and anchor links through Apply (#1748); the model is not called', async () => {
+      // The accepted improvement stands in for the model's output: the page's
+      // own Markdown, as Improve sends it, with one word changed. Everything
+      // after it is the production Apply path (Markdown → HTML, media restore,
+      // layout recovery, htmlToConfluence, the Confluence PUT, whose HTTP alone
+      // is mocked). What a model does to a link's Markdown is not covered.
+      const storage = '<p>Intro</p>'
+        + '<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" />'
+        + '<ac:plain-text-link-body><![CDATA[see runbook]]></ac:plain-text-link-body></ac:link> and '
+        + '<ac:link ac:anchor="Restore"><ri:page ri:content-title="Runbook" ri:space-key="OPS" /></ac:link>.</p>'
+        + '<p>Jump to <ac:link ac:anchor="Restore"><ac:plain-text-link-body><![CDATA[restore]]></ac:plain-text-link-body></ac:link>'
+        + ' or get <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+        + '</ri:attachment></ac:link>.</p>';
+      const pageId = await insertConfluencePage('page-links', 'Links article', 'OPS');
+      const bodyHtml = confluenceToHtml(storage, 'page-links', 'OPS');
+      await setPageContent(pageId, bodyHtml, 7, storage);
+      await enableConfluence(true);
+      acceptNextConfluenceUpdate();
+      const faithfulMarkdown = htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true })
+        .replace('Intro', 'Introduction');
+
+      const response = await apply({ pageId: 'page-links', improvedMarkdown: faithfulMarkdown, version: 7 });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+      expect(sent.body.storage.value).toContain('Introduction');
+      expect(sent.body.storage.value.match(/<ac:link\b[\s\S]*?<\/ac:link>/g)).toEqual([
+        '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
+        + '<ac:plain-text-link-body><![CDATA[see runbook]]></ac:plain-text-link-body></ac:link>',
+        '<ac:link ac:anchor="Restore"><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page></ac:link>',
+        '<ac:link ac:anchor="Restore"><ac:plain-text-link-body><![CDATA[restore]]></ac:plain-text-link-body></ac:link>',
+        '<ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
+        + '</ri:attachment></ac:link>',
+      ]);
+    });
+
     it('rejects unrecoverable layout loss before any remote effect and keeps the page unchanged', async () => {
       const bodyHtml = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal"><div class="confluence-layout-cell"><p>Left</p></div><div class="confluence-layout-cell"><p>Right</p></div></div></div>';
       const pageId = await insertConfluencePage('page-layout', 'Layout article', 'OPS');

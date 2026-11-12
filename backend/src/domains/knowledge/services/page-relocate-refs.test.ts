@@ -231,6 +231,23 @@ describe('rewriteAttachmentRefs (#1123)', () => {
     expect(html).not.toContain('data-confluence-filename');
   });
 
+  it('leaves a Confluence attachment link alone, and it still writes back as one (#1748)', () => {
+    const synced = confluenceToHtml(
+      '<p><ac:image><ri:attachment ri:filename="chart.png" /></ac:image>'
+      + '<ac:link><ri:attachment ri:filename="report 2024.pdf" />'
+      + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link></p>',
+      '42',
+    );
+    const { html, refs } = rewriteAttachmentRefs(synced, ['/api/attachments/42/'], '/api/attachments/900001/', true);
+
+    expect(refs).toEqual([{ local: 'chart.png', target: 'chart.png' }]);
+    expect(html).toContain('href="#confluence-attachment:report%202024.pdf"');
+    expect(htmlToConfluence(html)).toContain(
+      '<ac:link><ri:attachment ri:filename="report 2024.pdf"></ri:attachment>'
+      + '<ac:plain-text-link-body><![CDATA[report]]></ac:plain-text-link-body></ac:link>',
+    );
+  });
+
   it('leaves an unrelated page\'s attachments alone', () => {
     const input = '<p><img src="/api/attachments/99/other.png" /></p>';
 
