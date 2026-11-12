@@ -516,6 +516,9 @@ const RTF_DEFAULT_ENCODING = 'windows-1252';
  * `\ansicpgN` values `TextDecoder` can read: the Windows, DOS-Cyrillic and Mac
  * pages of the RTF 1.9.1 code-page table, plus Windows' UTF-8 code page. Pages
  * without a WHATWG label (437, 850, …) read as {@link RTF_DEFAULT_ENCODING}.
+ * Node's `euc-kr` is strict EUC-KR, so 949 decodes only its KS X 1001 part:
+ * a syllable from cp949's UHC extension comes out as U+FFFD (U+0081 for lead
+ * byte 0x81) followed by its trail letter.
  */
 const RTF_CODE_PAGES: ReadonlyMap<number, string> = new Map([
   [866, 'ibm866'],
@@ -569,6 +572,15 @@ const RTF_CONTROL_WORD = /\\([a-zA-Z]+)(-?\d+)? ?/y;
 const RTF_HEX_BYTE = /\\'[0-9a-fA-F]{2}/y;
 /** Plain text up to the next backslash, brace or source line break. */
 const RTF_TEXT_RUN = /[^\\{}\r\n]+/y;
+/** A run of source line breaks. */
+const RTF_LINE_BREAKS = /[\r\n]+/y;
+
+/**
+ * Output pieces joined per batch. A string built by millions of tiny `+=`
+ * appends is a rope of millions of nodes, which outgrows the production heap
+ * on a 20 MiB upload; batches keep the output flat.
+ */
+const RTF_OUTPUT_BATCH = 4096;
 
 /** Control words that stand for whitespace. */
 const RTF_WORD_TEXT: ReadonlyMap<string, string> = new Map([
@@ -601,12 +613,25 @@ const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
  * - `\'hh` bytes collect into one run, decoded in the `\ansicpgN` code page
  *   once other text is written, so double-byte pages decode. The character
  *   written right after the run joins it, because a trail byte may be written
- *   unescaped, and a source line break inside the run is ignored.
+ *   unescaped, and a source line break inside the run is ignored. Per-font
+ *   charsets (`\fcharsetN`) are not read: bytes in a font whose charset
+ *   differs from the document's decode wrongly, and on a double-byte page a
+ *   letter after such a byte can be swallowed as its trail byte.
  * - Listed destination groups are skipped whole. Unbalanced braces are
  *   tolerated, and nothing recurses or backtracks.
  */
 function scanRtf(rtf: string): string {
-  let out = '';
+  // Joined batches of output, then the pieces of the batch being filled.
+  const output: string[] = [];
+  const pieces: string[] = [];
+  const write = (text: string): void => {
+    pieces.push(text);
+    if (pieces.length === RTF_OUTPUT_BATCH) {
+      output.push(pieces.join(''));
+      pieces.length = 0;
+    }
+  };
+
   let depth = 0;
   // 0, or the depth of the destination group being skipped.
   let skippedDepth = 0;
@@ -627,7 +652,7 @@ function scanRtf(rtf: string): string {
       decoder = createRtfDecoder(encoding);
       decoders.set(encoding, decoder);
     }
-    out += decoder.decode(Uint8Array.from(bytes));
+    write(decoder.decode(Uint8Array.from(bytes)));
     bytes.length = 0;
   };
   const writeText = (text: string): void => {
@@ -637,7 +662,7 @@ function scanRtf(rtf: string): string {
       rest = rest.slice(1);
     }
     flushBytes();
-    out += rest;
+    write(rest);
   };
 
   let i = 0;
@@ -666,10 +691,12 @@ function scanRtf(rtf: string): string {
     }
 
     if (char === '\r' || char === '\n') {
-      // Kept as a line break, except inside a byte run, where a wrapped
+      RTF_LINE_BREAKS.lastIndex = i;
+      RTF_LINE_BREAKS.test(rtf);
+      // Kept as line breaks, except inside a byte run, where a wrapped
       // source line would split a double-byte character.
-      if (skippedDepth === 0 && bytes.length === 0) out += char;
-      i += 1;
+      if (skippedDepth === 0 && bytes.length === 0) write(rtf.slice(i, RTF_LINE_BREAKS.lastIndex));
+      i = RTF_LINE_BREAKS.lastIndex;
       continue;
     }
 
@@ -696,7 +723,7 @@ function scanRtf(rtf: string): string {
       const whitespace = RTF_WORD_TEXT.get(name);
       if (param !== undefined && name === 'u') {
         flushBytes();
-        out += String.fromCharCode(param < 0 ? param + 65536 : param);
+        write(String.fromCharCode(param < 0 ? param + 65536 : param));
         skip = uc;
       } else if (param !== undefined && name === 'uc') {
         if (savedUc.at(-1)?.depth !== depth) savedUc.push({ depth, uc });
@@ -738,7 +765,8 @@ function scanRtf(rtf: string): string {
   }
 
   flushBytes();
-  return out;
+  output.push(pieces.join(''));
+  return output.join('');
 }
 
 /**

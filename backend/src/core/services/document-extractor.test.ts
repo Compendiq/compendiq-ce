@@ -335,6 +335,12 @@ describe('rtfToText', () => {
     expect(rtfToText(`{\\rtf1\\ansi\\ansicpg${codePage} ${bytes}}`)).toBe(expected);
   });
 
+  it('decodes \\ansicpg949 only as far as Node\'s strict EUC-KR reaches', () => {
+    // A KS X 1001 syllable decodes; one from cp949's UHC extension (힣) does
+    // not. This pins the documented limit, so a runtime that gains UHC shows up.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'b0\\'a1 \\'c6\\'52}")).toBe('가 \uFFFDR');
+  });
+
   it('keeps a double-byte character whole across a wrapped source line', () => {
     expect(rtfToText("{\\rtf1\\ansi\\ansicpg932 \\'82\r\n\\'a0\\'81\r\nB}")).toBe('あ。');
   });
@@ -415,6 +421,11 @@ describe('rtfToText', () => {
   it('keeps decoded bytes and private-use characters as literal text', () => {
     expect(rtfToText("{\\rtf1\\ansi \\'5cpar \\'7bx\\'7d}")).toBe('\\par {x}');
     expect(rtfToText('{\\rtf1 a\uE000b}')).toBe('a\uE000b');
+  });
+
+  it('keeps text in order across many small output pieces', () => {
+    // Two pieces per unit cross several output batches.
+    expect(rtfToText(`{\\rtf1 ${'a\\~'.repeat(10_000)}}`)).toBe('a '.repeat(10_000).trim());
   });
 
   it('never throws on unbalanced braces or other malformed input', () => {
