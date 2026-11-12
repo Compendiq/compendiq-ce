@@ -312,6 +312,19 @@ describe('extractDocumentText', () => {
       expect(text).toBe('## Scope\nDraft.\nand limits\nLead note.\nBody text');
     });
 
+    it('writes a note that opens a heading or list item before its marker', async () => {
+      // Document order: the note comes first, so the item's marker follows it.
+      // In Markdown the note line then reads as part of the previous item.
+      const text = await odtText(
+        '<text:list>' +
+        '<text:list-item><text:p>Prev</text:p></text:list-item>' +
+        `<text:list-item><text:p>${footnote('1', 'Item note')}Item</text:p></text:list-item>` +
+        '</text:list>' +
+        `<text:h text:outline-level="2">${footnote('2', 'Heading note')}Title</text:h>`,
+      );
+      expect(text).toBe('- Prev\nItem note\n- Item\nHeading note\n## Title');
+    });
+
     it('reads heading levels written with single quotes or spaces', async () => {
       expect(await odtText("<text:h text:outline-level='3'>Deep</text:h>")).toBe('### Deep');
       expect(await odtText('<text:h text:outline-level = "4">Spaced</text:h>')).toBe('#### Spaced');
@@ -381,6 +394,8 @@ describe('extractDocumentText', () => {
       ['a stray <', '<text:p>a < b</text:p><text:p>Next</text:p>', 'a < b\nNext'],
       ['stray end tags', '</x></y><text:p>a</text:p>', 'a'],
       ['a mismatched end tag', '<text:p>a<text:span>b</text:p><text:p>c</text:p>', 'ab\nc'],
+      ['an input cut inside a quoted value holding >', '<text:p>Kept</text:p><text:p text:style-name="x>tail', 'Kept\ntail'],
+      ['declarations inside a paragraph', '<text:p>a<!x>b</text:p>c<text:p>d<!y <text:span>e</text:span></text:p>', 'ab\nde'],
     ])('never fails on %s and keeps the text it can read', async (_shape, bodyXml, expected) => {
       // `closed: false` ends content.xml right after the body, as a cut-off entry does.
       expect(await odtText(bodyXml, { closed: false })).toBe(expected);

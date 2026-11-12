@@ -455,10 +455,12 @@ type XmlToken =
 
 /**
  * The index of the `>` that closes the tag opened at `lt`, of a `<` showing it
- * was no tag, or -1 when the input ends first. A `>` inside a quoted value does
- * not close a tag. XML allows `<` nowhere inside one, so meeting `<` means the
- * tag is malformed: it then closes at its first `>`, quoted or not (what a plain
- * `[^>]*` scan does), or, with no `>` at all, the `<` was stray text.
+ * was no tag, or -1 when the input ends inside the tag. A `>` inside a quoted
+ * value does not close a tag. XML allows `<` nowhere inside one, so meeting `<`
+ * means the tag is malformed: it then closes at its first `>`, quoted or not
+ * (what a plain `[^>]*` scan does), or, with no `>` at all, the `<` was stray
+ * text. Input that ends inside an open quoted value is read the same way: the
+ * tag closes at that value's first `>` when it holds one.
  */
 function tagEnd(xml: string, lt: number): number {
   let quote = '';
@@ -481,11 +483,14 @@ function tagEnd(xml: string, lt: number): number {
 /**
  * Splits XML into character data and tags in one forward pass, with no regex
  * spanning a tag, so time stays linear and nothing can overflow whatever the
- * input's shape. Comments, processing instructions and declarations
- * (`<!DOCTYPE …>`, any `<!ENTITY …>` inside it) are skipped unread: no DTD is
- * loaded and no declared entity is ever expanded. Input that ends inside a tag,
- * comment, processing instruction or CDATA section ends the walk, so a
- * truncated document yields what precedes the cut.
+ * input's shape. Comments and processing instructions are skipped. A
+ * declaration (`<!DOCTYPE …>`, `<!ENTITY …>`) is passed over as markup that
+ * ends at its first `>` outside quotes or at a `<`, so markup quoted inside it
+ * can still be read as markup; nothing it declares is ever expanded, since only
+ * {@link decodeXmlEntities}' fixed set is decoded, and no DTD is ever loaded.
+ * Input that ends inside a tag, comment, processing instruction or CDATA
+ * section ends the walk (unless {@link tagEnd} can still close the tag at a
+ * quoted `>`), so a truncated document yields what precedes the cut.
  */
 function* xmlTokens(xml: string): Generator<XmlToken> {
   let pos = 0;
