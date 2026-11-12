@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RTF uploads keep non-Latin text and code-page characters (#1733):** a
+  `\uN` Unicode character now replaces its fallback instead of appearing
+  beside it (`Пр`, not `ПÏрð`), honouring `\ucN` and its group scope, and
+  `\'hh` bytes decode in the document's `\ansicpgN` code page instead of as
+  Latin-1 — windows-1252 when none is declared, so `\'80` is `€` and smart
+  quotes survive; Japanese, Chinese and Korean double-byte pages included.
+  Font tables and pictures that nest further groups no longer leak into the
+  extracted text, and an RTF whose font table or another skipped group holds
+  millions of entries no longer fails to extract.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

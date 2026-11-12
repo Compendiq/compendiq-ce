@@ -371,7 +371,7 @@ upload zones; the per-format rules live in
 | `pdf`  | `unpdf` → plain text + page count | leading `%PDF-` |
 | `docx` | `mammoth` → HTML → `htmlToMarkdown()` | `PK\x03\x04` **and** a `word/document.xml` entry |
 | `odt`  | `content.xml` → ODF `text:*` walk → Markdown-ish text | `PK\x03\x04` **and** a `mimetype` entry equal to `application/vnd.oasis.opendocument.text` |
-| `rtf`  | control-word strip → plain text | leading `{\rtf` |
+| `rtf`  | control-word scan → plain text (`\uN` replaces its `\ucN` fallback; `\'hh` decoded in the `\ansicpgN` code page, windows-1252 by default) | leading `{\rtf` |
 | `md` / `txt` | read directly | UTF-8 decodes losslessly **and** carries no NUL byte |
 
 The filename extension states only what the caller *claims*; the sniffed format
