@@ -2989,6 +2989,41 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
         editor.ws.close();
       });
 
+      it('records carried ids after a Save in which every task already carried its id, so a task typed in place of a deleted one gets a new id (#1751)', async () => {
+        // A page with no task yet; tasks pasted from another page keep that page's ids (TipTap parses data-task-id).
+        const { token, pageId, confluenceId } = await seedTaskPage('<p>Tasks</p>', '<p>Tasks</p>');
+        const editor = await joinTaskEditor(pageId, token);
+        const provider = mockTaskProvider(confluenceId);
+        const room = getDefaultCollabRuntime()!.getRoom(pageId)!;
+        editor.doc.transact(() => {
+          const list = new Y.XmlElement('taskList');
+          const x = newTask('X');
+          x.setAttribute('taskId', '5');
+          const y = newTask('Y');
+          y.setAttribute('taskId', '6');
+          list.insert(0, [x, y]);
+          editor.doc.getXmlFragment('default').push([list]);
+        });
+        editor.ws.send(encodeSyncUpdate(Y.encodeStateAsUpdate(editor.doc)));
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('<p>Y</p>'));
+        const first = await save(pageId, token, commitPayload(editor.ws, 'Save 1', Y.snapshot(editor.doc)));
+        expect(first.statusCode, first.body).toBe(200);
+        expect(storageTaskIds(provider.storages[0]!)).toEqual(['5', '6']);
+        await vi.waitFor(() => expect(editor.controls).toContain('pages_version'));
+        expect(carriesTaskIds(room.doc)).toBe(true);
+
+        // Delete Y and type a new task Z: Z is new and must not take Y's id.
+        editTasks(editor, (list) => {
+          list.delete(1, 1);
+          list.push([newTask('Z')]);
+        });
+        await vi.waitFor(() => expect(yDocToHtml(room.doc)).toContain('<p>Z</p>'));
+        const second = await save(pageId, token, commitPayload(editor.ws, 'Save 2', Y.snapshot(editor.doc)));
+        expect(second.statusCode, second.body).toBe(200);
+        expect(storageTaskIds(provider.storages[1]!)).toEqual(['5', '7']);
+        editor.ws.close();
+      });
+
       it('pairs the edited tasks of a page synced before ids were carried in order on its first collaborative Save (#1751)', async () => {
         const { token, pageId, confluenceId } = await seedTaskPage(LEGACY_BODY, LEGACY_STORAGE);
         const editor = await joinTaskEditor(pageId, token);

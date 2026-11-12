@@ -213,8 +213,13 @@ async function markPersistedDoc(
     const doc = new Y.Doc();
     try {
       Y.applyUpdate(doc, new Uint8Array(persisted.rows[0].doc_state), COLLAB_LOAD_ORIGIN);
+      const before = Y.encodeStateVector(doc);
       const marked = mark(doc);
-      if (marked > 0) await upsertDocState(client, pageId, doc);
+      // A mark can change the document without marking a node: the task-id
+      // record of a commit whose tasks all carried their ids (#1751).
+      if (!Buffer.from(before).equals(Buffer.from(Y.encodeStateVector(doc)))) {
+        await upsertDocState(client, pageId, doc);
+      }
       return marked;
     } finally {
       doc.destroy();

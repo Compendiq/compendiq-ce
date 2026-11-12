@@ -2251,7 +2251,6 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       const bus = await observeBus(pageId);
       const ignored: Array<[string, Record<string, unknown>]> = [
         ['task ids that are not a list', { lifecycleRevision: revision, taskIds: valid }],
-        ['an empty list', { lifecycleRevision: revision, taskIds: [] }],
         ['a negative clock', { lifecycleRevision: revision, taskIds: [{ ...valid, clock: -1 }] }],
         ['a client that is not an integer', { lifecycleRevision: revision, taskIds: [{ ...valid, client: 1.5 }] }],
         ['a task id with a leading zero', { lifecycleRevision: revision, taskIds: [{ ...valid, taskId: '042' }] }],
@@ -2287,6 +2286,42 @@ describe.skipIf(!canRun)('collab-room-service Redis fan-out (#1444)', () => {
       } finally {
         await bus.close();
       }
+    });
+
+    it('records only that the tasks carry ids on a task_ids message with no entries (#1751)', async () => {
+      const pageId = await taskPage();
+      await runtimeB!.attachSocket(pageId, { id: 'b1', ws: stubWs(), userId: USER_A, writable: true });
+      const roomB = runtimeB!.getRoom(pageId)!;
+      const origins = updateOrigins(roomB.doc);
+
+      // A commit whose tasks all carried their ids has no marker to send.
+      await publishFromCommitPod(pageId, { kind: 'task_ids', lifecycleRevision: roomB.lifecycleRevision, taskIds: [] });
+      await vi.waitFor(() => expect(carriesTaskIds(roomB.doc)).toBe(true), { timeout: 4_000 });
+      expect(taskIds(roomB.doc)).toEqual([null]);
+      expect(origins).toEqual([COLLAB_TASK_ID_ORIGIN]);
+    });
+
+    it('records carried ids in the persisted document when no room owns the page, without a marker (#1751)', async () => {
+      const pageId = await taskPage();
+      await runtimeA!.attachSocket(pageId, { id: 'a1', ws: stubWs(), userId: USER_A, writable: true });
+      await runtimeA!.detachSocket(pageId, 'a1');
+      await runtimeA!.dropRoom(pageId);
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+      const request = await admitPageRuntime(pageId, USER_A, 'collab_request');
+      try {
+        await runtimeA!.markWrittenTaskIds(pageId, request, []);
+      } finally {
+        await releasePageRuntime(request);
+      }
+
+      const persisted = await query<{ doc_state: Buffer }>(
+        'SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1',
+        [pageId],
+      );
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, new Uint8Array(persisted.rows[0]!.doc_state));
+      expect(carriesTaskIds(doc)).toBe(true);
+      expect(taskIds(doc)).toEqual([null]);
     });
 
     it('a room that holds no writable admission leaves its document as it is on task_ids (#1751)', async () => {

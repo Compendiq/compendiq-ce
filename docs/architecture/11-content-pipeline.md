@@ -293,8 +293,10 @@ any change to the existing conflict policy.
   collaborative Save, whose room rewrites `body_html` every 2 s, the room's
   collaborative document lacks the `confluenceTaskIds` flag of its
   `compendiq.meta` Y.Map, which is set when the document is seeded or reset
-  from HTML whose tasks carry ids and in the transaction of the post-commit
-  task-id marks. AI Improve apply never pairs. The same input always gets the
+  from HTML whose tasks carry ids and by every settled Confluence commit that
+  wrote task ids, in the transaction of its post-commit task-id marks (with
+  no marker when every task already carried its id, a `task_ids` message with
+  no entries). AI Improve apply never pairs. The same input always gets the
   same ids: publishing a version restore re-derives the storage, with the
   same stored page, and compares digests (`page-put-intent-reconciler.ts`),
   which per-call random ids made fail. PUT, restore and Improve apply store a
@@ -313,7 +315,10 @@ any change to the existing conflict policy.
   in the first save of a page synced before #1751, a task typed in place of a
   deleted one takes its id when the counts match, and an edited task gets a
   new id when they do not; when two tasks carry one id and neither has the
-  stored task's text, the first keeps it.
+  stored task's text, the first keeps it; and the editor PUT, draft publish
+  and restore decide from the stored `body_html`, so after an unsaved
+  collaborative session, or a local-only edit, that replaced every task, the
+  next such write pairs those tasks with the stored ones once.
 - **Refined's "UI Expand" is the second macro on `<details>` (#1129).**
   `ui-expand` comes from the Refined Macro Toolkit and is a different macro
   from Atlassian's native `expand`, not a rename. Verified against a

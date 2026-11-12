@@ -216,13 +216,15 @@ deleted item is skipped. The owning pod applies one transaction with origin
 at most 2^63 − 1, plus the Save's lifecycle revision), and the persisted
 document is marked under the request admission. The same transaction sets
 `confluenceTaskIds: true` in the document's `compendiq.meta` Y.Map, which
-editors do not bind; seeding or resetting the document from HTML whose tasks
-carry ids sets it too. A collaborative Save treats the page as synced before
-ids were carried only while that flag is absent, because the room's persist
-rewrites `body_html` every 2 s and that column cannot tell. Best effort as
-above: a refusal logs `collab.task_ids_refused`, a failure
-`collab.task_ids_failed`, and the next Save takes the ids back from
-`body_storage` while the tasks' text is unchanged.
+editors do not bind; a commit whose tasks all carried their ids still records
+it, with no marker (a `task_ids` message with no entries), and seeding or
+resetting the document from HTML whose tasks carry ids sets it too. A
+collaborative Save treats the page as synced before ids were carried only
+while that flag is absent, because the room's persist rewrites `body_html`
+every 2 s and that column cannot tell. Best effort as above: a refusal logs
+`collab.task_ids_refused`, a failure `collab.task_ids_failed`, and the next
+Save takes the ids back from `body_storage` while the tasks' text is
+unchanged.
 
 First join with no row: `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`,
 read `body_html`, parse into `Y.XmlFragment` field `'default'` with

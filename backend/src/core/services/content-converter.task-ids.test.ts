@@ -309,6 +309,15 @@ describe('content-converter: #1751 Confluence task ids survive write-back', () =
       expect(markTaskIds(legacy, [{ client: ship!.client, clock: ship!.clock, taskId: '42' }], 'marks')).toBe(1);
       expect(carried(legacy)).toBe(true);
       expect(origins).toEqual(['marks']);
+      // A commit whose tasks all carried their ids records it without a marker, once.
+      const pasted = htmlToYDoc(PAGE_HTML);
+      expect(carried(pasted)).toBeUndefined();
+      expect(markTaskIds(pasted, [], 'marks')).toBe(0);
+      expect(carried(pasted)).toBe(true);
+      const updates: unknown[] = [];
+      pasted.on('update', (_update: Uint8Array, origin: unknown) => { updates.push(origin); });
+      expect(markTaskIds(pasted, [], 'marks')).toBe(0);
+      expect(updates).toEqual([]);
     });
   });
 

@@ -373,7 +373,11 @@ async function commitConfluencePage(args: {
   // the next Save uploads every image again. After settlement and before the
   // `pages_version` control, so the flush that control starts keeps them (#1764).
   await runtime.markUploadedImages(pageId, admission, imagePlan.markers);
-  await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers);
+  // The room also records that its tasks carry ids, when it has not yet: also
+  // after a Save in which every task already carried its id (#1751).
+  if (taskIdMarkers.length > 0 || (!taskIdsCarried && assigned.taskIds.length > 0)) {
+    await runtime.markWrittenTaskIds(pageId, admission, taskIdMarkers);
+  }
   runtime.broadcastControl(pageId, { type: 'pages_version', version: result.newVersion });
   logger.info({ pageId, version: result.newVersion, confluence: true }, 'collab.commit');
 

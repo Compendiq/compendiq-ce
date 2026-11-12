@@ -329,9 +329,12 @@ function busImageMarkers(value: unknown): AttachmentImageMarker[] | null {
   return markers;
 }
 
-/** Task ids from a peer's `task_ids` message; anything malformed marks nothing (#1751). */
+/**
+ * Task ids from a peer's `task_ids` message; an empty list only records that
+ * the room's tasks carry ids. Anything malformed marks nothing (#1751).
+ */
 function busTaskIdMarkers(value: unknown): TaskIdMarker[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
+  if (!Array.isArray(value)) return null;
   const markers: TaskIdMarker[] = [];
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null) return null;
@@ -1272,15 +1275,16 @@ export async function createCollabRuntime(
    * After a settled Confluence commit, store the task ids it wrote (#1751), as
    * markUploadedImages stores image markers: in place in the room this pod
    * owns, else by asking the owning pods over Redis; then in the persisted
-   * document. Best effort: a task the marks miss takes its id back from the
-   * stored storage on the next Save while its text is unchanged.
+   * document. The same transaction records that the room's tasks carry ids;
+   * with no markers it records only that. Best effort: a task the marks miss
+   * takes its id back from the stored storage on the next Save while its text
+   * is unchanged.
    */
   async function markWrittenTaskIds(
     pageId: number,
     admission: PageRuntimeAdmission,
     markers: readonly TaskIdMarker[],
   ): Promise<void> {
-    if (markers.length === 0) return;
     let inRoom = false;
     try {
       const room = rooms.get(pageId);

@@ -1091,10 +1091,10 @@ export function collabTaskItems(doc: Y.Doc): CollabTaskItem[] {
 /**
  * Give each task item a marker names the Confluence task id a settled commit
  * wrote for it (#1751), so the room's next Save keeps it, and record in the
- * same transaction that the document's tasks carry ids. An item is found by its
- * Yjs identity, so edits made meanwhile elsewhere do not matter; a deleted one
- * is skipped. One transaction with `origin`, none when nothing changes; returns
- * the number of items marked.
+ * same transaction that the document's tasks carry ids, also when every item
+ * already carries its id. An item is found by its Yjs identity, so edits made
+ * meanwhile elsewhere do not matter; a deleted one is skipped. One transaction
+ * with `origin`, none when nothing changes; returns the number of items marked.
  */
 export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin: unknown): number {
   const wanted = new Map(markers.map((marker) => [`${marker.client}:${marker.clock}`, marker.taskId]));
@@ -1104,10 +1104,11 @@ export function markTaskIds(doc: Y.Doc, markers: readonly TaskIdMarker[], origin
     const taskId = wanted.get(`${client}:${clock}`);
     if (taskId !== undefined && element.getAttribute('taskId') !== taskId) unmarked.push({ element, taskId });
   }
-  if (unmarked.length === 0) return 0;
+  const recorded = collabCarriesTaskIds(doc);
+  if (unmarked.length === 0 && recorded) return 0;
   doc.transact(() => {
     for (const { element, taskId } of unmarked) element.setAttribute('taskId', taskId);
-    if (!collabCarriesTaskIds(doc)) doc.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
+    if (!recorded) doc.getMap(COLLAB_META_MAP).set(COLLAB_META_TASK_IDS, true);
   }, origin);
   return unmarked.length;
 }
