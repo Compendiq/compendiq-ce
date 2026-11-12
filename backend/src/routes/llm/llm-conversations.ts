@@ -470,7 +470,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const layoutSkeleton = extractLayoutSkeleton(protectedCurrentHtml);
     let bodyHtml: string;
     try {
-      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton });
+      // #1752: `protectedMedia` names the tokens restoreMedia turns back into
+      // block HTML below, so a task item holding one stays a plain item.
+      bodyHtml = await markdownToHtml(improvedMarkdown, { layoutSkeleton, protectedMedia: media });
     } catch (err) {
       if (err instanceof LayoutRecoveryError) {
         fastify.log.warn(

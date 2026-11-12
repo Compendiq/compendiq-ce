@@ -183,6 +183,15 @@ export function ArticleViewer({
               renderHTML: (attributes) =>
                 attributes.title ? { 'data-title': attributes.title } : {},
             },
+            // #1749: the code macro's other parameters. Read mode never saves,
+            // but ProseMirror's copy serializes with this schema, and a block
+            // copied from here is pasted into the editor and written back.
+            macroParams: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-macro-params'),
+              renderHTML: (attributes) =>
+                attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+            },
           };
         },
       }).configure({ lowlight }),

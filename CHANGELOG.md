@@ -47,6 +47,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
+  `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
+  files included) now imports as page labels; previously the list was dropped
+  and the import returned no labels without a warning. Inline `[a, b]` lists
+  and scalar values behave as before. YAML comment rules apply: an unquoted
+  `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
+- **Markdown import keeps task completion and list numbering (#1752):**
+  importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
+  `- [ ] todo`) as editor task lists with their checked state, and ordered
+  lists keep a start number other than 1 (`3. a` stays item 3). Previously
+  both were silently dropped. Applying an AI Improve result uses the same
+  conversion, so a page's task list now comes back as a task list —
+  assignee mentions, status lozenges, Jira links and images inside its tasks
+  included — instead of a bullet list with raw checkbox elements in the saved
+  body. A list mixing tasks and plain items becomes separate lists, a
+  numbered task list becomes an unnumbered task list (the editor has no
+  numbered tasks), and a task item that contains a diagram or other block
+  HTML stays a bullet with its `[x]` / `[ ]` as text, so nothing in it is
+  lost. Known limitation: when such a page is created in a Confluence space,
+  the task bodies written to Confluence still carry the editor's checkbox
+  markup, as they already do for any task created in the editor; the fix is
+  tracked with #1751.
+- **Confluence code, table-of-contents and status macros keep all their
+  parameters (#1749):** saving a synced page (editor save, collaborative save,
+  draft publish, version restore) dropped every code-macro parameter except
+  the language — and cut `c#` to `c` and `objective-c` to `objective` — plus
+  the table-of-contents macro's `exclude`, `include`, `indent`, … and the
+  status macro's `subtle`. They now write back unchanged. A synced code
+  block's Confluence title shows in the editor and read mode; for a mermaid
+  block, the title and the other code-macro parameters are carried through
+  editor saves but not displayed. AI Improve keeps the table-of-contents and
+  status parameters and the code language; applying an Improve result still
+  drops a code block's title and display options (line numbers, collapse,
+  …). A page synced before this release regains the parameters only when its
+  body is next re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages). Saving it before
+  then still drops them, and a page already written back without them stays
+  without them.
 - **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
   fence in an imported `.md` file now reaches the editor as a diagram
   placeholder that carries its name, the created page keeps that name, and a

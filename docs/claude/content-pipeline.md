@@ -87,6 +87,27 @@ through the existing info-panel node but carries `data-macro-name="panel"` and
 arbitrary direct text parameters through the editor, so write-back emits
 `ac:name="panel"` rather than permanently coercing it to `info`.
 
+**Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
+`status` keep canonical parameters in their own attributes (code `language`
+class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
+other direct text parameter in `data-macro-params`. `codeBlock`, `mermaidBlock`
+(which claims a code macro whose language is mermaid), `confluenceToc` and
+`confluenceStatus` declare it as `macroParams` in both TipTap schemas, and so
+does read mode's code block, because a copy out of read mode is serialized with
+that schema. The parity test is one-way: it fails when the collab schema lacks
+an attribute the frontend declares; the frontend declarations are pinned by
+Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
+reverse pass skips a carried copy of a canonical name. The code language is the
+whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
+code language, but not a code block's `data-title`/`data-macro-params`. Only
+`body_html` converted after #1749 holds the carriers: a page synced earlier gets
+them when its body is next re-derived from Confluence (an upstream change, or
+a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
+or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
+`POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
+unchanged pages). A save before that still drops them.
+
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without
 listing every page body; existing bounded row probes only advise table defaults.
@@ -146,7 +167,18 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
-The import sanitiser admits `data-diagram-name` by name, and as URI-safe, so a
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
+`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
+`data-diagram-name` is admitted by name and as URI-safe, so a
 ` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
 (#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
 `safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
@@ -168,6 +200,13 @@ working on; `frontend/src/nginx-api-body-limit.test.ts` parses them out of the b
 fails if the edge drops below any of them.
 `parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
 the `---` block renders as body and the import reports success with title and labels gone.
+It also reads YAML block lists (`tags:` then `  - ops` lines, quoted items, trailing `#`
+comments) as arrays — they used to import as no labels without a warning (#1753). Only a
+top-level (unindented) key opens a list, and items end at the first line that is not an item,
+blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
+rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
+An indented key opens no list but is still read as a top-level key (pre-existing), so a nested
+`tags:` replaces a top-level `tags` list with `''`.
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
