@@ -17,6 +17,14 @@ pages only when it leaves room for at least one body line; an oversized header
 itself continues without repetition. Spanning cells and non-Latin font coverage
 are separate limitations.
 
+PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Courier
+cells): the rest of a long line continues flush left on the next row, unmarked,
+and each row is placed and paginated like a source line. Tabs expand to four
+spaces before measuring; blank lines keep their row. Text is measured as drawn
+(pdf-lib applies no kerning), and a word wider than its line (URL, hash)
+breaks between characters in body text and table cells. This covers Latin-1
+text; other characters are still removed before measuring.
+
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
 and raster stream; otherwise the wrapper names the unavailable preview and
