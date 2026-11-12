@@ -382,6 +382,47 @@ const ConfluenceUserMention = Node.create({
   },
 });
 
+/**
+ * A Confluence emoticon (#1750): `emoticonAttrs` is every attribute of the
+ * `ac:emoticon`, a JSON object in source order (`data-emoticon-attrs`);
+ * `label` (`data-emoticon-label`, drawn by CSS) and `name` (`aria-label`) are
+ * display only. The span holds no text.
+ */
+const ConfluenceEmoticon = Node.create({
+  name: 'confluenceEmoticon',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  addAttributes() {
+    return {
+      emoticonAttrs: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-emoticon-attrs'),
+      },
+      label: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-emoticon-label'),
+      },
+      name: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('aria-label'),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span.confluence-emoticon' }];
+  },
+  renderHTML({ node }) {
+    // Empty, like the converter's placeholder: index.css draws the label.
+    const attrs: Record<string, string> = { class: 'confluence-emoticon' };
+    if (node.attrs.emoticonAttrs) attrs['data-emoticon-attrs'] = node.attrs.emoticonAttrs;
+    if (node.attrs.label) attrs['data-emoticon-label'] = node.attrs.label;
+    attrs.role = 'img';
+    attrs['aria-label'] = node.attrs.name || 'emoticon';
+    return ['span', attrs];
+  },
+});
+
 const ConfluenceIncludeMacro = Node.create({
   name: 'confluenceIncludeMacro',
   group: 'block',
@@ -956,6 +997,7 @@ export function collabExtensions(): AnyExtension[] {
     ConfluenceToc,
     ConfluenceJiraIssue,
     ConfluenceUserMention,
+    ConfluenceEmoticon,
     ConfluenceIncludeMacro,
     ConfluenceLabelsMacro,
     UnknownMacro,

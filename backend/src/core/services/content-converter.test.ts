@@ -227,8 +227,11 @@ describe('content-converter', () => {
       // Raw `<ri:user>` is rewritten into `<span class="confluence-user-mention">`.
       expect(html).not.toContain('ri:user'); // raw tag removed
       expect(html).toContain('class="confluence-user-mention"');
-      // Emoticons still stripped (no round-trip for those).
-      expect(html).not.toContain('ac:emoticon');
+      // #1750: the fixture's emoticon is a placeholder now, not stripped.
+      expect(html).toContain(
+        '<p>Great job! <span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;smile&quot;}"'
+        + ' data-emoticon-label="🙂" role="img" aria-label="smile"></span></p>',
+      );
       expect(html).toContain('Contact');
     });
 
@@ -1502,10 +1505,9 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:name="toc"');
     });
 
-    it('documents emoticons are stripped', () => {
-      const html = confluenceToHtml(USER_MENTIONS_PAGE);
-      expect(html).not.toContain('ac:emoticon');
-      // Cannot be restored
+    it('emoticons now round-trip back to ac:emoticon (#1750)', () => {
+      const xhtml = htmlToConfluence(confluenceToHtml(USER_MENTIONS_PAGE));
+      expect(xhtml).toContain('<p>Great job! <ac:emoticon ac:name="smile" /></p>');
     });
   });
 });

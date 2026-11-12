@@ -1063,9 +1063,14 @@ function confluenceToHtmlPass(
     el.replaceWith(span);
   }
 
-  // Clean remaining Confluence-specific elements (emoticons strip unchanged)
+  // Emoticons -> <span class="confluence-emoticon"> (#1750): every attribute
+  // rides in data-emoticon-attrs, the text is a display label
+  // (emoticonPlaceholder). An emoticon whose self-closing tag the expansion
+  // above could not match (an attribute value holding `/`) was parsed as an
+  // open element and swallowed the content after it; that content moves back
+  // out behind the placeholder instead of being deleted with the element.
   for (const el of byTag(doc, 'ac:emoticon')) {
-    el.remove();
+    el.replaceWith(emoticonPlaceholder(el), ...el.childNodes);
   }
 
   const html = doc.body.innerHTML;
@@ -1648,7 +1653,28 @@ export function htmlToConfluence(html: string, options: HtmlToConfluenceOptions 
     img.replaceWith(acImage);
   }
 
+  // Convert emoticon placeholders back to ac:emoticon (#1750): every carried
+  // attribute, in carried order; the label is display only. Runs after every
+  // loop that rebuilds a body by re-parsing (task lists, panels, expands,
+  // sections, columns, unknown macros), so it sees each emoticon where it
+  // finally sits.
+  for (const span of doc.querySelectorAll('span.confluence-emoticon')) {
+    span.replaceWith(emoticonWriteBack(span));
+  }
+
   let result = doc.body.innerHTML;
+
+  // Post-process (#1750): write each emoticon self-closed, as Confluence
+  // stores it, so an unchanged one goes back byte for byte. JSDOM escapes `"`,
+  // `&` and NBSP in attribute values but not `<` or `>`; XML forbids a raw `<`
+  // there, so both are escaped here. A raw tab, line feed or carriage return
+  // would become a space under XML attribute-value normalization, so each is
+  // written as a character reference. Runs before the void-element pass,
+  // which would otherwise rewrite a `<br>` inside a value.
+  result = result.replace(
+    /<ac:emoticon((?: [^\s="]+="[^"]*")*)><\/ac:emoticon>/g,
+    (_, attrs: string) => `<ac:emoticon${attrs.replace(/[<>\t\n\r]/g, (ch) => EMOTICON_VALUE_ESCAPES[ch] ?? ch)} />`,
+  );
 
   // Post-process: self-close void elements for XHTML compatibility.
   // JSDOM innerHTML uses HTML serialization (<br>, <img ...>) but Confluence
@@ -1683,6 +1709,202 @@ function pathBasename(urlString: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Confluence emoticons (#1750). `<ac:emoticon/>` is an empty element whose
+ * attributes are its whole identity, and they differ by Confluence version:
+ * `ac:name` alone (`tick`, `warning`, `smile`, …); Confluence 7 and Cloud add
+ * `ac:emoji-shortname`, `ac:emoji-id` and `ac:emoji-fallback` (Cloud writes
+ * the shortname as the fallback, older versions the emoji itself); DC 8.5+
+ * writes a CLDR `ac:name` plus `ac:emoji-id`, and some carry no `ac:name`. So
+ * no attribute is assumed: the placeholder carries every attribute, in source
+ * order, as one JSON object, and the reverse pass writes exactly those back.
+ */
+const EMOTICON_ATTRS = 'data-emoticon-attrs';
+
+/** What the reverse pass writes for a character JSDOM leaves raw in an emoticon attribute value. */
+const EMOTICON_VALUE_ESCAPES: Readonly<Record<string, string>> = {
+  '<': '&lt;', '>': '&gt;', '\t': '&#9;', '\n': '&#10;', '\r': '&#13;',
+};
+
+/**
+ * An attribute name the reverse pass can write: an ASCII XML QName. Storage is
+ * XML, so every real attribute name passes; one that does not could be
+ * neither set (JSDOM throws InvalidCharacterError) nor written well-formed.
+ */
+const XML_ATTRIBUTE_NAME = /^[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?$/;
+
+/** A label candidate longer than this many code points is skipped. */
+const EMOTICON_LABEL_MAX = 64;
+
+/**
+ * A carried attribute name: an XML QName that declares no namespace. Storage
+ * never declares one on an element, and `xmlns:ac` on an emoticon would rebind
+ * its own prefix (`xmlns:ac=""` is a namespace error Confluence refuses).
+ */
+function isCarriedName(name: string): boolean {
+  return XML_ATTRIBUTE_NAME.test(name) && !/^xmlns(?::|$)/i.test(name);
+}
+
+/** The longest carried attribute value; real ones are under 100 characters. */
+const EMOTICON_VALUE_MAX = 1024;
+
+/** Characters XML 1.0 forbids even escaped: a value holding one would make Confluence refuse the page. */
+// eslint-disable-next-line no-control-regex -- matching the control characters XML forbids is the point
+const XML_FORBIDDEN_CHAR = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|\p{Cs}/u;
+
+/** A carried attribute value: at most EMOTICON_VALUE_MAX characters, none XML forbids. */
+function isCarriedValue(value: string): boolean {
+  return value.length <= EMOTICON_VALUE_MAX && !XML_FORBIDDEN_CHAR.test(value);
+}
+
+/** Characters a label or an accessible name never holds: controls, bidi overrides and isolates, `<` and `>`. */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const EMOTICON_TEXT_EXCLUDED = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069<>]|\p{Cs}/u;
+
+/** `ac:emoji-fallback` / `ac:emoji-shortname` in shortname form: `:cross_mark:`. */
+const EMOJI_SHORTNAME = /^:[^:\s]+:$/;
+
+/**
+ * The emoji each classic Confluence emoticon is shown as. `light-off` and the
+ * red, green and blue stars have no standard emoji and fall back to
+ * Confluence's own text form, `(name)`.
+ */
+const EMOTICON_GLYPHS: Record<string, string> = {
+  smile: '\u{1F642}',
+  sad: '\u{1F641}',
+  cheeky: '\u{1F61B}',
+  laugh: '\u{1F600}',
+  wink: '\u{1F609}',
+  'thumbs-up': '\u{1F44D}',
+  'thumbs-down': '\u{1F44E}',
+  information: '\u2139\uFE0F',
+  tick: '\u2705',
+  cross: '\u274C',
+  warning: '\u26A0\uFE0F',
+  plus: '\u2795',
+  minus: '\u2796',
+  question: '\u2753',
+  'light-on': '\u{1F4A1}',
+  'yellow-star': '\u2B50',
+  heart: '\u2764\uFE0F',
+};
+
+/** `ac:emoji-id` as hyphen-joined hex code points (`1f4cb`, `31-20e3`) → the emoji; else undefined. */
+function emojiFromCodePoints(id: string): string | undefined {
+  if (!/^[0-9a-f]{1,6}(?:-[0-9a-f]{1,6}){0,15}$/i.test(id)) return undefined;
+  const points = id.split('-').map((hex) => parseInt(hex, 16));
+  const printable = (cp: number): boolean =>
+    cp >= 0x20 && !(cp >= 0x7f && cp <= 0x9f) && !(cp >= 0xd800 && cp <= 0xdfff) && cp <= 0x10ffff;
+  return points.every(printable) ? String.fromCodePoint(...points) : undefined;
+}
+
+/**
+ * What an emoticon placeholder shows (#1750), the first that applies: the
+ * emoji itself in `ac:emoji-fallback`; the code points of `ac:emoji-id`; the
+ * classic `ac:name`'s emoji; Confluence's text forms — the shortname, then
+ * `(name)` (the alt text Confluence gives its own emoticon images) — and
+ * `(emoticon)` when nothing names it. Display only: the reverse pass ignores it.
+ */
+function emoticonLabel(attrs: Readonly<Record<string, string>>): string {
+  const name = attrs['ac:name'];
+  const fallback = attrs['ac:emoji-fallback'];
+  const id = attrs['ac:emoji-id'];
+  const candidates = [
+    fallback !== undefined && !EMOJI_SHORTNAME.test(fallback) ? fallback : undefined,
+    id !== undefined ? emojiFromCodePoints(id) : undefined,
+    name !== undefined && Object.hasOwn(EMOTICON_GLYPHS, name) ? EMOTICON_GLYPHS[name] : undefined,
+    attrs['ac:emoji-shortname'],
+    fallback,
+    name ? `(${name})` : undefined,
+  ];
+  return candidates.find(isEmoticonText) ?? '(emoticon)';
+}
+
+/**
+ * A usable label or name: not blank, at most EMOTICON_LABEL_MAX code points,
+ * no control or bidi-override character, and no `<` or `>` — both are
+ * attribute values of the placeholder, which must hold no markup character
+ * (see emoticonPlaceholder).
+ */
+function isEmoticonText(text: string | undefined): text is string {
+  return text !== undefined
+    && text.trim() !== ''
+    && !EMOTICON_TEXT_EXCLUDED.test(text)
+    && [...text].length <= EMOTICON_LABEL_MAX;
+}
+
+/**
+ * The emoticon's accessible name (#1750): the shortname in words
+ * (`:partying_face:` → `partying face`) — Confluence 7 and Cloud name every
+ * non-classic emoji `blue-star` and keep its identity in the shortname — else
+ * `ac:name` in words (`thumbs-up` → `thumbs up`), else `emoticon`.
+ */
+function emoticonName(attrs: Readonly<Record<string, string>>): string {
+  const shortname = [attrs['ac:emoji-shortname'], attrs['ac:emoji-fallback']]
+    .find((value) => value !== undefined && EMOJI_SHORTNAME.test(value));
+  return [shortname?.slice(1, -1).replace(/_/g, ' '), attrs['ac:name']?.replace(/-/g, ' ')]
+    .find(isEmoticonText) ?? 'emoticon';
+}
+
+/**
+ * `<ac:emoticon …/>` → `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅"
+ * role="img" aria-label="tick"></span>` (#1750): empty, every value an attribute.
+ * The carrier is always written, `{}` for an element without attributes, so
+ * the reverse pass can tell a converted emoticon from a span it never made.
+ * It is JSON with `<` and `>` written as `\u003c` / `\u003e`: it parses back
+ * to the same values, and the placeholder's HTML then holds no `<` or `>`
+ * outside its own tags — so no value can read as markup to a consumer that
+ * scans the HTML as text (#1752's `<div` test on protected media, DOMPurify's
+ * SAFE_FOR_XML attribute check in read mode).
+ */
+function emoticonPlaceholder(el: Element): Element {
+  const pairs = [...el.attributes]
+    .filter((attr) => isCarriedName(attr.name) && isCarriedValue(attr.value))
+    .map((attr): [string, string] => [attr.name, attr.value]);
+  // fromEntries defines own properties, so even a `__proto__` attribute is carried.
+  const attrs: Record<string, string> = Object.fromEntries(pairs);
+  const span = el.ownerDocument.createElement('span');
+  span.className = 'confluence-emoticon';
+  span.setAttribute(
+    EMOTICON_ATTRS,
+    JSON.stringify(attrs).replace(/[<>]/g, (ch) => (ch === '<' ? '\\u003c' : '\\u003e')),
+  );
+  // No text node: the label and the name are attributes, the glyph is drawn by
+  // CSS (`.confluence-emoticon::before`) and read as `role="img"`. So the
+  // emoticon adds nothing to body text, embedding input, Markdown outside
+  // Improve or #1751's task text — all exactly what they were before #1750.
+  span.setAttribute('data-emoticon-label', emoticonLabel(attrs));
+  span.setAttribute('role', 'img');
+  span.setAttribute('aria-label', emoticonName(attrs));
+  return span;
+}
+
+/**
+ * What a placeholder writes back (#1750): the `ac:emoticon` with every
+ * carried attribute that has a string value and a writable name, in carried
+ * order. A span whose carrier is missing or not a JSON object was not made by
+ * the forward pass (hand-written or imported HTML): it writes its label
+ * (`data-emoticon-label`, else its text) as text rather than invent an
+ * emoticon with no identity, and the write-back does not fail. The label,
+ * `role` and `aria-label` are display only.
+ */
+function emoticonWriteBack(span: Element): Node {
+  let attrs: unknown = null;
+  try {
+    attrs = JSON.parse(span.getAttribute(EMOTICON_ATTRS) ?? 'null');
+  } catch {
+    // Not the forward pass's carrier: falls through to the label.
+  }
+  if (!attrs || typeof attrs !== 'object' || Array.isArray(attrs)) {
+    return span.ownerDocument.createTextNode(span.getAttribute('data-emoticon-label') ?? span.textContent ?? '');
+  }
+  const emoticon = span.ownerDocument.createElement('ac:emoticon');
+  for (const [name, value] of Object.entries(attrs)) {
+    if (typeof value === 'string' && isCarriedName(name) && isCarriedValue(value)) emoticon.setAttribute(name, value);
+  }
+  return emoticon;
 }
 
 export interface ProtectedMedia { token: string; html: string; }
@@ -1727,6 +1949,9 @@ const MEDIA_SELECTOR = [
   'span.confluence-jira-issue',
   'span.confluence-status',
   'span.confluence-user-mention',
+  // #1750: emoticons — inline atoms with no prose, frozen like the #901
+  // inline placeholders above. Their frozen HTML is one <span>, never a div.
+  'span.confluence-emoticon',
   // #1221: expand sections. Stage 1 froze every `<details>` here — `details`
   // has no turndown rule, so the Improve round-trip flattened the section into
   // bare paragraphs, the #1211 `data-macro-name` stamp was lost, and

@@ -748,6 +748,53 @@ export const ConfluenceUserMention = Node.create({
 });
 
 /**
+ * ConfluenceEmoticon node — inline placeholder for a Confluence emoticon
+ * (`ac:emoticon`, #1750). `emoticonAttrs` carries every attribute of the
+ * element (`data-emoticon-attrs`, a JSON object in source order) so
+ * htmlToConfluence writes it back byte for byte. The span holds no text:
+ * `label` (`data-emoticon-label`) is drawn by `.confluence-emoticon::before`
+ * in index.css and `name` (`aria-label`) names the `role="img"`, in edit and
+ * read mode alike. Inline atom (non-editable, not focusable).
+ */
+export const ConfluenceEmoticon = Node.create({
+  name: 'confluenceEmoticon',
+  group: 'inline',
+  inline: true,
+  atom: true,
+
+  addAttributes() {
+    return {
+      emoticonAttrs: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-emoticon-attrs'),
+      },
+      label: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-emoticon-label'),
+      },
+      name: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('aria-label'),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span.confluence-emoticon' }];
+  },
+
+  renderHTML({ node }) {
+    // Empty, like the converter's placeholder: index.css draws the label.
+    const attrs: Record<string, string> = { class: 'confluence-emoticon' };
+    if (node.attrs.emoticonAttrs) attrs['data-emoticon-attrs'] = node.attrs.emoticonAttrs;
+    if (node.attrs.label) attrs['data-emoticon-label'] = node.attrs.label;
+    attrs.role = 'img';
+    attrs['aria-label'] = node.attrs.name || 'emoticon';
+    return ['span', attrs];
+  },
+});
+
+/**
  * ConfluenceIncludeMacro node — block placeholder for include / excerpt-include
  * macros. Preserves the referenced page title + space key so htmlToConfluence
  * can rebuild the ac:structured-macro with its ri:page reference (#857).

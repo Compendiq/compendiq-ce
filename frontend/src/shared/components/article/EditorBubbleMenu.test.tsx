@@ -807,7 +807,7 @@ describe('BubbleMenuContent — inline macros in the selection', () => {
 
     expect(screen.queryByTestId('bubble-ai-trigger')).toBeNull();
     expect(screen.getByTestId('bubble-menu-macro-notice')).toHaveTextContent(
-      /a rewrite would drop the inline macros in this selection/i,
+      /a rewrite would drop the inline macros or emojis in this selection/i,
     );
   });
 
@@ -891,13 +891,13 @@ describe('BubbleMenuContent — inline macros in the selection', () => {
 });
 
 // `containsStructuredInline` matches ANY inline node that is not text and not a
-// hardBreak — it does not name the three Confluence atoms. That is deliberate
-// (an unknown inline atom is exactly as lossy), but it couples the copy to the
-// schema: MACRO_NOTICE says "inline macros", so a fourth inline node added
-// later would silently start withholding Improve under a message that no longer
-// describes why. Today the coupling holds, and this is what says so.
+// hardBreak — it does not name the Confluence atoms. That is deliberate (an
+// unknown inline atom is exactly as lossy), but it couples the copy to the
+// schema: MACRO_NOTICE says "inline macros or emojis", so a fifth inline node
+// added later would silently start withholding Improve under a message that no
+// longer describes why. Today the coupling holds, and this is what says so.
 describe('the predicate matches exactly what the copy claims', () => {
-  it('has no inline node in the article schema beyond the three named macros', async () => {
+  it('has no inline node in the article schema beyond the three macros and the emoji the copy names', async () => {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
 
@@ -916,7 +916,7 @@ describe('the predicate matches exactly what the copy claims', () => {
       .map((d) => d.name);
 
     expect(new Set(inlineNodes)).toEqual(
-      new Set(['confluenceStatus', 'confluenceJiraIssue', 'confluenceUserMention']),
+      new Set(['confluenceStatus', 'confluenceJiraIssue', 'confluenceUserMention', 'confluenceEmoticon']),
     );
     // The one inline node that would NOT be a macro is configured out of the
     // group on purpose; `Editor.tsx` passes `inline: false`.
