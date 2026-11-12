@@ -109,9 +109,26 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
   });
 }
 
+/** `  - item` in a YAML block list: the dash needs whitespace or the line end after it, so `-ops` and `---` are not items. */
+const BLOCK_ITEM = /^[ \t]*-(?:[ \t]+(.*))?$/;
+/** Blank and comment-only lines, which YAML allows anywhere inside a block list. */
+const BLANK_OR_COMMENT = /^[ \t]*(?:#.*)?$/;
+
+/**
+ * One block-list item, read the way YAML reads it: a quoted item keeps the
+ * `:` and `#` inside its quotes (`''` is a literal `'`); a plain item loses a
+ * comment that starts the item or follows whitespace, so `- #ops` is empty.
+ */
+function blockItemValue(text: string): string {
+  const quoted = text.match(/^(["'])(.*?)\1(?:[ \t]+#.*)?$/);
+  if (quoted) return quoted[1] === "'" ? quoted[2]!.replace(/''/g, "'") : quoted[2]!;
+  return text.replace(/(?:^|[ \t])#.*$/, '').trim();
+}
+
 /**
  * Parse YAML front-matter from Markdown.
- * Supports simple key: value lines and bracket arrays [a, b, c].
+ * Supports simple key: value lines, bracket arrays [a, b, c] and block lists
+ * (`key:` followed by `  - a` lines; see the last bullet).
  *
  * Tolerant of what real editors write, because failing to match here is
  * *silent* — the `---` block falls through to the body, renders as an `<hr>`
@@ -125,6 +142,14 @@ export async function pagesImportRoutes(fastify: FastifyInstance) {
  * - **A leading UTF-8 BOM.** U+FEFF sits in front of the first `---` and
  *   defeats `^` identically. It is stripped up front, so it also stops riding
  *   into the editor on files that have no front-matter at all.
+ * - **Block lists (#1753).** `tags:` followed by `- ops` lines is how most
+ *   editors and static-site generators write tags, and dropping it was just
+ *   as silent: no labels, no warning. A top-level key whose value is empty
+ *   (or only a `#` comment) opens a list; items may be quoted and may carry a
+ *   trailing comment. The list ends at the first line that is not an item,
+ *   blank or comment, so a list under any other key — or under a nested,
+ *   indented key — stays where it is. A scalar `tags: ops` is still a string,
+ *   not a label.
  */
 export function parseFrontMatter(markdown: string): { metadata: Record<string, string | string[]>; content: string } {
   const source = markdown.replace(/^\uFEFF/, '');
@@ -139,7 +164,25 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
   const content = match[2] ?? '';
   const metadata: Record<string, string | string[]> = {};
 
+  // Block list: only an unindented key with no value opens one, and the first
+  // line that is not an item, blank or comment closes it — so items under any
+  // other key never reach `tags`/`labels`.
+  let listKey: string | null = null;
+  let listItems: string[] | null = null;
+
   for (const line of yaml.split(/\r?\n/)) {
+    if (listKey !== null) {
+      if (BLANK_OR_COMMENT.test(line)) continue;
+      const item = BLOCK_ITEM.exec(line);
+      if (item) {
+        if (!listItems) metadata[listKey] = listItems = [];
+        const value = blockItemValue((item[1] ?? '').trim());
+        if (value) listItems.push(value);
+        continue;
+      }
+      listKey = null;
+      listItems = null;
+    }
     const colonIdx = line.indexOf(':');
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim();
@@ -150,6 +193,7 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
         metadata[key] = inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
       } else {
         metadata[key] = rawValue.replace(/^['"]|['"]$/g, '');
+        if (!/^[ \t]/.test(line) && (rawValue === '' || rawValue.startsWith('#'))) listKey = key;
       }
     }
   }

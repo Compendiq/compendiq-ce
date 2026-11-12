@@ -158,6 +158,11 @@ working on; `frontend/src/nginx-api-body-limit.test.ts` parses them out of the b
 fails if the edge drops below any of them.
 `parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
 the `---` block renders as body and the import reports success with title and labels gone.
+It also reads YAML block lists (`tags:` then `  - ops` lines, quoted items, trailing `#`
+comments) as arrays — they used to import as no labels without a warning (#1753). Only a
+top-level (unindented) key opens a list, and items end at the first line that is not an item,
+blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
+rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
