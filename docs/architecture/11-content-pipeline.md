@@ -489,12 +489,47 @@ and the title and labels are gone. So `parseFrontMatter` strips a leading UTF-8
 BOM (which otherwise sits in front of the first `---` and defeats `^`) and
 accepts CRLF as well as LF (the `\n`-only pattern meant no Windows-authored
 file ever matched). The body is returned with its own line endings untouched.
+Labels come from `tags` (or, when that is not a list, `labels`), written either
+inline (`[a, b]`) or as a YAML block list (`- a` lines under a top-level key);
+the block form used to be dropped silently (#1753). A block list under any
+other top-level key stays under that key and never becomes labels. An indented
+key opens no list (its dash lines are ignored) but is still read as a top-level
+key, as before #1753 — so a nested `tags:` replaces a top-level `tags` list
+with `''`. A scalar `tags: ops` is not a label either.
 
 **Nothing imports to nothing.** Whitespace-only Markdown is rejected by the
 schema, and a conversion that yields an empty `bodyHtml` — a file that is only
 front-matter, or whose body the sanitizer stripped — is a **422**. An
 unexpected throw anywhere in the conversion is also a 422 naming what to try,
 not a 500 saying `Internal Server Error`.
+
+**Task lists and list numbering survive (#1752).** `markdownToHtml()` renders
+GFM task items (`- [x]` / `- [ ]`, under any list marker) as the editor's own
+task markup, `<ul data-type="taskList"><li data-type="taskItem"
+data-checked="true|false">`, instead of marked's `<input type="checkbox">`,
+which neither TipTap schema parses. A list that mixes task and plain items is
+split into consecutive runs: a task list holds task items only, and
+`htmlToConfluence` rebuilds `ac:task-list` from `li[data-type="taskItem"]`
+alone, so a plain item left inside one would vanish on write-back. A task item
+whose content holds a `<div>` stays a plain item with its `[x]` / `[ ]` kept
+as text, because TipTap's TaskItem parses its content from the first
+descendant `div` and would drop the rest. That covers raw HTML (`<div/>`
+included), a draw.io fence, and — on AI Improve Accept, which passes its
+protectMedia map as `protectedMedia` — a placeholder whose original HTML holds
+a div (a draw.io or mermaid diagram, a macro placeholder). Inline placeholders
+(an assignee mention, a status lozenge, a Jira link, an image) hold no div, so
+their tasks stay tasks. A plain run of an ordered list keeps its number through
+`start`; a task run has no numbering in either schema or in `ac:task-list`. No
+task id is emitted — a converted task is new. Lists without a task item render
+exactly as before. The conversion is in `markdownToHtml`, so it holds for every
+caller: AI Improve Accept now brings a page's task list (which `htmlToMarkdown`
+writes as `- [x]` / `- [ ]`) back as `ac:task-list`, mentions, status lozenges
+and Jira links inside its tasks included, instead of a bullet list with raw
+`<input>` elements in the stored body, and the retrieval-eval seeders store the
+same markup. The import sanitiser admits exactly `start` and `type`
+(`OrderedList`) and `data-type` and `data-checked`, by name. `ALLOW_DATA_ATTR`
+stays `false`, so every other `data-*` attribute is still stripped, and
+`<input>` is never admitted.
 
 **Four size limits, deliberately ordered so the app is always what rejects.**
 Each layer clears the one below it, so a user never meets a limit that cannot

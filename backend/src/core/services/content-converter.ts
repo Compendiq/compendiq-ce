@@ -1,7 +1,7 @@
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import he from 'he';
 import {
   getAttachmentImageSource,
@@ -3138,6 +3138,110 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   });
 }
 
+/**
+ * #1752: a `<div>` start tag. The HTML tokenizer ends a tag name at
+ * whitespace, `/` or `>`, so `<div/>` opens a div too (the slash is ignored).
+ */
+const DIV_START_TAG = /<div[\s/>]/i;
+
+/**
+ * #1752: either spelling (turndown escapes `_`) of every protectMedia token
+ * whose original HTML holds a `<div>` — the tokens the caller's restoreMedia
+ * turns back into a div. `_1` never matches `_10`. Null when there are none,
+ * or when nothing will restore the tokens (no media given).
+ */
+function blockMediaTokenPattern(media: readonly ProtectedMedia[] | undefined): RegExp | null {
+  const spellings = (media ?? [])
+    .filter((entry) => DIV_START_TAG.test(entry.html))
+    .flatMap(({ token }) => [token, token.replace(/_/g, '\\_')])
+    .map(escapeRegExp);
+  return spellings.length > 0 ? new RegExp(`(?:${spellings.join('|')})(?![0-9])`) : null;
+}
+
+/**
+ * #1752: does this rendered task-item body hold a `<div>`, or something that
+ * becomes one — a draw.io fence (markdownToHtml turns it into
+ * `div.confluence-drawio` after parsing) or a block-media token
+ * (blockMediaTokenPattern)? TipTap's TaskItem parses its content from the
+ * first descendant `div` (`contentElement` in @tiptap/extension-list
+ * task-item.ts), so a task item holding one would lose all content outside
+ * that div in the editor. Inline placeholders (image, mention, status, Jira)
+ * hold no div, so their task items stay tasks.
+ */
+function breaksTaskItemParse(body: string, blockMediaToken: RegExp | null): boolean {
+  return DIV_START_TAG.test(body)
+    || body.includes('<code class="language-drawio">')
+    || (blockMediaToken !== null && blockMediaToken.test(body));
+}
+
+/**
+ * #1752: the Markdown parser behind markdownToHtml — marked's defaults (GFM
+ * on), except for lists that contain GFM task items.
+ *
+ * marked renders `- [x] done` as `<li><input checked="" disabled=""
+ * type="checkbox"> done</li>`. Neither TipTap schema parses that as a task:
+ * both read a task only as `ul[data-type="taskList"] >
+ * li[data-type="taskItem"][data-checked]` (TaskList/TaskItem in
+ * collab-schema.ts, Editor.tsx, ArticleViewer.tsx). So the checked state was
+ * lost on import, and on AI Improve Accept, whose htmlToMarkdown writes task
+ * items as `- [x]` / `- [ ]`, the `<input>` elements reached the stored body
+ * while the task list did not.
+ *
+ * Task items are emitted as that markup, in runs. A TaskList holds task items
+ * only, and htmlToConfluence rebuilds `ac:task-list` from
+ * `li[data-type="taskItem"]` alone, so a plain item inside one would vanish on
+ * write-back. A task item whose body would break the TaskItem parse
+ * (breaksTaskItemParse) stays a plain item instead, with the author's
+ * `[x]`/`[ ]` kept as text: its content and its state both survive. A plain
+ * run of an ordered list keeps its number via `start`; a task run has no
+ * numbering in either schema or in `ac:task-list`. No task id is emitted,
+ * because every converted task is new. Each item body is rendered exactly
+ * once. A list without a task item returns `false`: marked's own rendering,
+ * byte for byte.
+ */
+function createEditorMarked(blockMediaToken: RegExp | null): Marked {
+  return new Marked({
+    renderer: {
+      list(token) {
+        if (!token.items.some((item) => item.task)) return false;
+        const items = token.items.map((item) => {
+          const body = this.parser.parse(item.tokens, item.loose);
+          if (item.task && !breaksTaskItemParse(body, blockMediaToken)) {
+            return {
+              task: true,
+              html: `<li data-type="taskItem" data-checked="${item.checked ? 'true' : 'false'}">${body}</li>\n`,
+            };
+          }
+          if (!item.task) return { task: false, html: `<li>${body}</li>\n` };
+          const marker = item.checked ? '[x] ' : '[ ] ';
+          const kept = body.startsWith('<p>') ? `<p>${marker}${body.slice(3)}` : `${marker}${body}`;
+          return { task: false, html: `<li>${kept}</li>\n` };
+        });
+        let html = '';
+        let index = 0;
+        while (index < items.length) {
+          const runStart = index;
+          const task = items[runStart]!.task;
+          while (index < items.length && items[index]!.task === task) index += 1;
+          const lis = items.slice(runStart, index).map((item) => item.html).join('');
+          if (task) {
+            html += `<ul data-type="taskList">\n${lis}</ul>\n`;
+          } else if (typeof token.start === 'number') {
+            const start = token.start + runStart;
+            html += `<ol${start === 1 ? '' : ` start="${start}"`}>\n${lis}</ol>\n`;
+          } else {
+            html += `<ul>\n${lis}</ul>\n`;
+          }
+        }
+        return html;
+      },
+    },
+  });
+}
+
+/** #1752: the parser for every call with no block media to restore. */
+const EDITOR_MARKED = createEditorMarked(null);
+
 export interface MarkdownToHtmlOptions {
   /**
    * #781: the expected layout-token skeleton of the document being edited
@@ -3148,10 +3252,19 @@ export interface MarkdownToHtmlOptions {
    * drop-guard applies (markdown imports, no expected structure).
    */
   layoutSkeleton?: LayoutSkeletonToken[];
+  /**
+   * #1752: the protectMedia map the caller restores into the result (AI
+   * Improve Accept). A task item holding a token whose original HTML has a
+   * `<div>` stays a plain item: restoreMedia would put that div inside it, and
+   * TipTap's TaskItem would parse only the div. Without it the tokens are
+   * plain text, because nothing restores them (import, eval seeders).
+   */
+  protectedMedia?: readonly ProtectedMedia[];
 }
 
 /**
- * Converts Markdown to HTML (for LLM output -> editor).
+ * Converts Markdown to HTML (for LLM output -> editor). GFM task items become
+ * the editor's task markup (see createEditorMarked, #1752).
  */
 export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
   const skeleton = options?.layoutSkeleton;
@@ -3203,7 +3316,9 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
-  let html = await marked(normalized) as string;
+  const blockMediaToken = blockMediaTokenPattern(options?.protectedMedia);
+  const parser = blockMediaToken ? createEditorMarked(blockMediaToken) : EDITOR_MARKED;
+  let html = await parser.parse(normalized) as string;
 
   // Older authored fences contain just a name; exported wrappers also carry
   // their source and preview attributes in a single JSON line.

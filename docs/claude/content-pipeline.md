@@ -167,6 +167,17 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type` and `data-checked`
+by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
 `ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.
@@ -179,6 +190,13 @@ working on; `frontend/src/nginx-api-body-limit.test.ts` parses them out of the b
 fails if the edge drops below any of them.
 `parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
 the `---` block renders as body and the import reports success with title and labels gone.
+It also reads YAML block lists (`tags:` then `  - ops` lines, quoted items, trailing `#`
+comments) as arrays — they used to import as no labels without a warning (#1753). Only a
+top-level (unindented) key opens a list, and items end at the first line that is not an item,
+blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
+rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
+An indented key opens no list but is still read as a top-level key (pre-existing), so a nested
+`tags:` replaces a top-level `tags` list with `''`.
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
