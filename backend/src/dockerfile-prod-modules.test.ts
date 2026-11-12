@@ -116,4 +116,8 @@ describe('backend images ship the PDF export fonts (#1729)', () => {
     expect(dockerfileEnterprise).toMatch(/RUN npm run build -w backend/);
     expect(runtimeStage(dockerfileEnterprise)).toMatch(/COPY [^\n]*dist\/ (\/app\/)?dist\//);
   });
+
+  it('renders a CJK and Hangul PDF in the image smoke test, which reads every font file', () => {
+    expect(smokeStep(dockerBuildWorkflow)).toMatch(/generatePdf\('<p>Установка 手順 한국어<\/p>'/);
+  });
 });
