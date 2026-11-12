@@ -400,8 +400,10 @@ describe('pdf-service (pdf-lib)', () => {
       });
 
       it('centres a wrapped cover title by its drawn width', async () => {
-        // Two 16-letter A/V words fill 495.05 of 495.28 pt in bold 22 pt; kerning would claim 442.24 pt.
-        const title = Array.from({ length: 6 }, () => 'AV'.repeat(8)).join(' ');
+        // Two 16-letter A/V words fill 495.04 of 495.28 pt in bold 22 pt; kerning would claim 442.24 pt.
+        // The closing `AVA` (46.44 pt) only fits on its own line at the content width; wrapped to
+        // the page width it would join the third line, 547.60 pt wide and starting at x 23.84.
+        const title = `${Array.from({ length: 6 }, () => 'AV'.repeat(8)).join(' ')} AVA`;
         const { items } = await layout('<p>body</p>', { title });
         const titleLines = items.filter((item) => /^[AV ]+$/.test(item.str));
         expect(titleLines.map((item) => item.str).join(' ')).toBe(title);
