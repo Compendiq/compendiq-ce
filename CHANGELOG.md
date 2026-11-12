@@ -59,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second time. Tables wider than 14 columns print in bands of at most 14
   columns (15 columns become 8 + 7), one below the other, instead of
   squeezing every column until its text runs over the borders; a later band
-  repeats the header and holds only the rows that have a cell starting in it.
+  repeats the header where it fits and holds only the rows that have a cell
+  starting in it.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
