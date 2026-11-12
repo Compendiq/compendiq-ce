@@ -213,3 +213,126 @@ describe('search_web result-width limits against the running sidecar (#1768)', (
     expect(outcome.searxngRequests).toBe(0);
   });
 });
+
+describe('search_web query limits against the running sidecar (#1767)', () => {
+  // The issue's reproduction: a fake SearXNG returning 2 results must yield
+  // exactly 2 through a 200-character query (AC3). The numbers are literal on
+  // purpose — the sidecar cannot import `WEB_SEARCH_QUERY_MAX_CHARS` /
+  // `WEB_SEARCH_QUERY_MAX_WORDS` from `@compendiq/contracts`, whose
+  // `schemas/llm.test.ts` pins the same 200 / 30; `security/query-sanitizer.test.ts`
+  // pins the sanitizer's `MAX_QUERY_LENGTH` / `MAX_WORD_COUNT` (#1767).
+  const QUERY_FAKE_RESULTS = 2;
+  const receivedQueries: string[] = [];
+  let fakeSearxng: Server | undefined;
+  let sidecar: ChildProcess | undefined;
+  let mcpTransport: StreamableHTTPClientTransport | undefined;
+  let mcpClient: Client | undefined;
+
+  // 200 chars / 21 words; every token <= 11 chars (no 40+ base64-alphabet run),
+  // no URL, code or JSON, no surrounding whitespace — the sanitizer passes it
+  // through unchanged. The per-run id keeps the Redis search cache (sanitized
+  // query + width) from ever answering this case.
+  const run = randomUUID().replace(/-/g, '').slice(0, 12);
+  const QUERY_200 = `${'kubernetes scaling '.repeat(9)}q${run} autoscaler pods`;
+  const QUERY_201 = `${QUERY_200}s`;
+  // The 30-word case ends in the same per-run token, so it never meets a cached
+  // entry either (119 chars); the 31-word case is refused before the cache.
+  const WORDS_30 = [...Array.from({ length: 29 }, (_, i) => `w${i}`), `q${run}`].join(' ');
+  const WORDS_31 = Array.from({ length: 31 }, (_, i) => `w${i}`).join(' ');
+
+  beforeAll(async () => {
+    fakeSearxng = createServer((request, response) => {
+      receivedQueries.push(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? '');
+      const results = Array.from({ length: QUERY_FAKE_RESULTS }, (_, index) => ({
+        title: `Result ${index + 1}`, url: `https://example.test/${index + 1}`, content: `Snippet ${index + 1}`,
+      }));
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ results }));
+    });
+    const bound = Promise.withResolvers<void>();
+    fakeSearxng.listen(0, '127.0.0.1', bound.resolve);
+    await bound.promise;
+    const fakeAddress = fakeSearxng.address();
+    if (!fakeAddress || typeof fakeAddress === 'string') throw new Error('Loopback SearXNG (query limits) did not bind');
+
+    const booted = await startSidecar(`http://127.0.0.1:${fakeAddress.port}`);
+    sidecar = booted.child;
+    mcpTransport = new StreamableHTTPClientTransport(new URL(`${booted.baseUrl}/mcp`), {
+      requestInit: { headers: { 'x-mcp-docs-token': TOKEN } },
+    });
+    mcpClient = new Client({ name: 'search-web-query-limits-test', version: '0' });
+    await mcpClient.connect(mcpTransport);
+  }, 60_000);
+
+  afterAll(async () => {
+    await mcpTransport?.terminateSession().catch(() => {});
+    await mcpClient?.close().catch(() => {});
+    if (sidecar) await stopChild(sidecar);
+    if (fakeSearxng?.listening) {
+      const closed = Promise.withResolvers<void>();
+      fakeSearxng.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  /** One `search_web` call at the default width; reports the fake SearXNG's request count and last `q`. */
+  async function searchFor(query: string) {
+    const requestsBefore = receivedQueries.length;
+    const outcome = await mcpClient!.callTool({ name: 'search_web', arguments: { query, user_id: 'query-limits-test' } });
+    const text = (outcome.content as Array<{ type: string; text?: string }>)[0]?.text ?? '';
+    return {
+      isError: outcome.isError === true,
+      text,
+      resultCount: (text.match(/^\d+\. \*\*/gm) ?? []).length,
+      searxngRequests: receivedQueries.length - requestsBefore,
+      lastQuery: receivedQueries.at(-1),
+    };
+  }
+
+  it('declares query with minLength 1 and maxLength 200 in tools/list', async () => {
+    const tool = (await mcpClient!.listTools()).tools.find((candidate) => candidate.name === 'search_web');
+    expect(tool).toBeDefined();
+    const properties = tool!.inputSchema.properties as Record<string, unknown>;
+    expect(properties.query).toMatchObject({ type: 'string', minLength: 1, maxLength: 200 });
+  });
+
+  it("accepts an exactly-200-character, 21-word query and returns the fake SearXNG's 2 results from one request", async () => {
+    expect(QUERY_200).toHaveLength(200);
+    const outcome = await searchFor(QUERY_200);
+    expect(outcome.isError, outcome.text).toBe(false);
+    expect(outcome.resultCount).toBe(2);
+    expect(outcome.searxngRequests).toBe(1);
+    expect(outcome.lastQuery).toBe(QUERY_200);
+  });
+
+  it('refuses 201 characters as an isError result naming the <=200 bound, without calling SearXNG', async () => {
+    const outcome = await searchFor(QUERY_201);
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toMatch(/MCP error -32602/);
+    expect(outcome.text).toMatch(/Too big: expected string to have <=200 characters at query/);
+    expect(outcome.searxngRequests).toBe(0);
+  });
+
+  it('refuses 31 words (113 chars) in the sanitizer, without calling SearXNG', async () => {
+    expect(WORDS_31).toHaveLength(113);
+    const outcome = await searchFor(WORDS_31);
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toBe('Error: Query too complex (31 words) — use keywords only');
+    expect(outcome.searxngRequests).toBe(0);
+  });
+
+  it('accepts exactly 30 words and searches once', async () => {
+    expect(WORDS_30.split(/\s+/)).toHaveLength(30);
+    const outcome = await searchFor(WORDS_30);
+    expect(outcome.isError, outcome.text).toBe(false);
+    expect(outcome.resultCount).toBe(2);
+    expect(outcome.searxngRequests).toBe(1);
+    expect(outcome.lastQuery).toBe(WORDS_30);
+  });
+
+  it('refuses a whitespace-only query as empty after sanitization, without calling SearXNG', async () => {
+    const outcome = await searchFor('   ');
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toBe('Error: Query is empty after sanitization');
+    expect(outcome.searxngRequests).toBe(0);
+  });
+});

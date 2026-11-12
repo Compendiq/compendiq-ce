@@ -3,8 +3,12 @@ import {
   SUPPORTED_IMAGE_FORMATS,
   ImageHandleSchema,
   PrepareImageResponseSchema,
+  AskRequestSchema,
   GenerateRequestSchema,
   ImproveRequestSchema,
+  SummarizeRequestSchema,
+  WEB_SEARCH_QUERY_MAX_CHARS,
+  WEB_SEARCH_QUERY_MAX_WORDS,
   TITLE_SOURCES,
   SourceSchema,
   StoredChatMessageSchema,
@@ -82,6 +86,96 @@ describe('imageHandle on request schemas', () => {
     expect(() => ImproveRequestSchema.parse({
       content: 'x', type: 'clarity', imageHandle: 'nope',
     })).toThrow();
+  });
+});
+
+describe('searchQuery — WebSearchQuerySchema (#1767)', () => {
+  // 200 chars / 21 words, every token <= 11 chars, no URL/code/JSON, no
+  // surrounding whitespace: the sidecar's sanitizer passes it through unchanged.
+  const QUERY_200 = 'kubernetes scaling '.repeat(10) + 'autoscaler';
+  const QUERY_201 = `${QUERY_200}s`;
+  const WORDS_30 = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
+  const WORDS_31 = Array.from({ length: 31 }, (_, i) => `w${i}`).join(' ');
+
+  const SCHEMAS = [
+    ['AskRequestSchema', AskRequestSchema, { question: 'q', inputKind: 'independent' }],
+    ['GenerateRequestSchema', GenerateRequestSchema, { prompt: 'p' }],
+    ['ImproveRequestSchema', ImproveRequestSchema, { content: 'c', type: 'grammar' }],
+    ['SummarizeRequestSchema', SummarizeRequestSchema, { content: 'c' }],
+  ] as const;
+
+  function parseQuery(schema: (typeof SCHEMAS)[number][1], base: Record<string, unknown>, searchQuery: string) {
+    return schema.safeParse({ ...base, searchWeb: true, searchQuery });
+  }
+
+  it('pins the shared web-search query bounds to the sidecar literals (200 chars / 30 words)', () => {
+    // mcp-docs cannot import this package: its sanitizer's MAX_QUERY_LENGTH /
+    // MAX_WORD_COUNT and the search_web schema's max(200) are pinned to the same
+    // literals in mcp-docs/src/security/query-sanitizer.test.ts and
+    // mcp-docs/src/search-web-limits.test.ts. Never widen one side alone.
+    expect({ chars: WEB_SEARCH_QUERY_MAX_CHARS, words: WEB_SEARCH_QUERY_MAX_WORDS }).toEqual({ chars: 200, words: 30 });
+  });
+
+  it.each(SCHEMAS)('%s accepts exactly 200 characters / 21 words and keeps the value verbatim', (_name, schema, base) => {
+    expect(QUERY_200).toHaveLength(200);
+    const result = parseQuery(schema, base, QUERY_200);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.searchQuery).toBe(QUERY_200);
+  });
+
+  it.each(SCHEMAS)('%s rejects 201 characters with an issue at searchQuery', (_name, schema, base) => {
+    const result = parseQuery(schema, base, QUERY_201);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]!.path).toEqual(['searchQuery']);
+      expect(result.error.issues[0]!.message).toBe('Too big: expected string to have <=200 characters');
+    }
+  });
+
+  it.each(SCHEMAS)('%s rejects 31 whitespace-separated words (113 chars) as "keywords only (max 30 words)" at searchQuery', (_name, schema, base) => {
+    expect(WORDS_31).toHaveLength(113);
+    const result = parseQuery(schema, base, WORDS_31);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]!.path).toEqual(['searchQuery']);
+      expect(result.error.issues[0]!.message).toBe('keywords only (max 30 words)');
+    }
+  });
+
+  it('accepts exactly 30 words on every schema', () => {
+    for (const [, schema, base] of SCHEMAS) {
+      expect(parseQuery(schema, base, WORDS_30).success).toBe(true);
+    }
+  });
+
+  it.each(SCHEMAS)('%s rejects a whitespace-only or empty searchQuery (min(1) after trim())', (_name, schema, base) => {
+    for (const blank of ['', '   ', ' \t\n ']) {
+      const result = parseQuery(schema, base, blank);
+      expect(result.success, JSON.stringify(blank)).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]!.path).toEqual(['searchQuery']);
+        expect(result.error.issues[0]!.message).toBe('Too small: expected string to have >=1 characters');
+      }
+    }
+  });
+
+  it('trims before measuring: " " + 200 chars + " " (202 raw) parses to the 200-char query', () => {
+    const result = GenerateRequestSchema.safeParse({ prompt: 'p', searchWeb: true, searchQuery: ` ${QUERY_200} ` });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.searchQuery).toBe(QUERY_200);
+      expect(result.data.searchQuery).toHaveLength(200);
+    }
+  });
+
+  it('leaves searchQuery optional (absent still parses; searchWeb alone is unchanged)', () => {
+    for (const [, schema, base] of SCHEMAS) {
+      const result = schema.safeParse({ ...base, searchWeb: true });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.searchQuery).toBeUndefined();
+    }
   });
 });
 
