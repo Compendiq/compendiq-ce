@@ -189,6 +189,30 @@ describe('baseline rendering-only media projection', () => {
     );
   });
 
+  it('renders a reference frozen before #1748 by its old decoding when the #1748 reading is not retained', () => {
+    // A baseline frozen before #1748 retained each reference by the filename
+    // as written. One that also reads as the #1748 grammar (a body flag, a
+    // container) reads as another file now, which that inventory never held.
+    const bodyFlag = attachment('confluence', '9001', 'x?body=plain');
+    const containerLike = attachment('confluence', '9001', 'logo.png?page.ri:content-title=A');
+    const rendered = renderBaselineBodyHtml(
+      '<p><a href="#confluence-attachment:x?body=plain">x</a>'
+      + '<img src="#confluence-attachment:logo.png?page.ri:content-title=A"></p>',
+      42,
+      BASELINE_ID,
+      [bodyFlag, containerLike],
+      '9001',
+    );
+    expect(rendered).toContain(`href="/api/pages/42/baselines/${BASELINE_ID}/media/${bodyFlag.identity}"`);
+    expect(rendered).toContain(`src="/api/pages/42/baselines/${BASELINE_ID}/media/${containerLike.identity}"`);
+    // Neither reading retained: still refused. A link to another page's
+    // attachment whose old decoding is no safe filename is still left alone.
+    expect(() => renderBaselineBodyHtml('<a href="#confluence-attachment:x?body=plain">x</a>', 42, BASELINE_ID, [], '9001'))
+      .toThrowError(expect.objectContaining({ reason: 'baseline_storage_unavailable' }));
+    const crossPage = '<a href="#confluence-attachment:logo.png?page.ri:content-title=CI%2FCD">logo.png</a>';
+    expect(renderBaselineBodyHtml(crossPage, 42, BASELINE_ID, [], '9001')).toBe(crossPage);
+  });
+
   it('keeps comma-bearing inline srcset URLs intact while rewriting only retained candidates', () => {
     const retained = attachment('confluence', '9001', 'diagram.png');
     const srcset = 'data:image/png;base64,AA,BB 1x,  /api/attachments/9001/diagram.png 2x';

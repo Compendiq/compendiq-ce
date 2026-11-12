@@ -49,20 +49,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Confluence page, attachment and anchor links survive saving a synced page
   (#1748):** saving a page synced from Confluence (editor save, collaborative
-  save, draft publish, version restore, AI Improve apply) wrote every
-  Confluence link back as a dead `#confluence-page:…` anchor without its space,
-  turned a link to another page's attachment into a link to that page, and
-  dropped links to anchors. Links now write back as Confluence links: the page
-  and its space, the attachment and the page that owns it, the anchor, the
-  original link text, and their other attributes. A page synced before this
-  release keeps its link titles and filenames but not their space or anchor
-  until its body is re-derived from Confluence — an upstream change, or a
-  re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
-  or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  save, draft publish, version restore, AI Improve apply) wrote Confluence
+  page and attachment links back as dead `#confluence-page:…` /
+  `#confluence-attachment:…` anchors without their space, turned a link to
+  another page's attachment into a link to that page, and dropped links to
+  anchors. Links now write back as Confluence links: the page and its space,
+  the attachment and the page that owns it, the anchor, the link text with its
+  formatting, and their other attributes. A page synced before this release
+  keeps its link titles and filenames but not their space or anchor until its
+  body is re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
   Now** is incremental and does not refresh unchanged pages); saving it before
   then writes a cross-space link back as a link in the page's own space.
-  Clicking such a link inside Compendiq still does not navigate, and a link
-  whose body is an image is still lost when the page is saved from the editor.
+  Unchanged: clicking such a link inside Compendiq does not navigate; saving
+  from the editor still loses a link whose text is an image or inline code and
+  splits a link around inline code inside its text, and a collaborative save
+  splits a link around a line break inside it.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

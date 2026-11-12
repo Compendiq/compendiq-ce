@@ -326,6 +326,21 @@ describe('content-converter: #1748 Confluence links survive write-back', () => {
 
       expect(htmlToConfluence(yDocToHtml(doc))).toBe(PAGE_OUT.replace('<p>Intro</p>', '<p>Intro (edited)</p>'));
     });
+
+    it('loses a link whose text is inline code and splits one around inline code or a line break, as before #1748 (deferred, decisions.md item 12)', () => {
+      // Pins today's editor behaviour (orchestrator decision on review r1 F1.1):
+      // the converters keep these links, but StarterKit's Code mark excludes
+      // every other mark, so the Link mark leaves inline code, and Yjs keeps
+      // marks on text only, so a line break splits the link in two.
+      const save = (body: string): string => htmlToConfluence(yDocToHtml(htmlToYDoc(confluenceToHtml(
+        `<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" /><ac:link-body>${body}</ac:link-body></ac:link> here.</p>`,
+      ))));
+      const plain = (text: string): string => '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
+        + `<ac:plain-text-link-body><![CDATA[${text}]]></ac:plain-text-link-body></ac:link>`;
+      expect(save('<code>deploy()</code>')).toBe('<p>See <code>deploy()</code> here.</p>');
+      expect(save('run <code>deploy()</code> now')).toBe(`<p>See ${plain('run ')}<code>deploy()</code>${plain(' now')} here.</p>`);
+      expect(save('line one<br />line two')).toBe(`<p>See ${plain('line one')}<br />${plain('line two')} here.</p>`);
+    });
   });
 
   describe('AI Improve round trip', () => {

@@ -276,7 +276,11 @@ Inspection starts from both `body_html` and `body_storage`:
   followed by `?<attributes>`; one whose attributes name another page or blog
   post as the attachment's container is that page's attachment and is neither
   inspected nor rewritten from the HTML. A reference written before #1748 keeps
-  its old decoding.
+  its old decoding, unless it also parses as the #1748 grammar (a filename
+  ending in a valid `?name=value` list): a new freeze reads that one by the
+  grammar, and rendering a baseline frozen before #1748 falls back to the old
+  decoding when the grammar reading is not in its inventory, so it still
+  renders.
 - Storage-format `ri:filename` references are included even when converted HTML
   no longer exposes them.
 - Draw.io captures both the rendered PNG and its `.drawio` XML sibling, from

@@ -60,13 +60,24 @@ describe('extractInternalLinks', () => {
     expect(extractInternalLinks(html, new Map([['Release Notes (2026)', 12]]))).toEqual([{ targetPageId: 12 }]);
   });
 
-  it('reads the encoded title first, so a page titled `A%20B` never captures a link to `A B` (#1748)', () => {
+  it('reads the encoded title first, so a page titled `A%20B` never captures a link to `A B` when both pages exist (#1748)', () => {
     // A guard before #1748 too (it wrote both titles as written); with the
     // title as written read first, the link to `A B` would land on `A%20B`.
     const html = confluenceToHtml(
       '<p><ac:link><ri:page ri:content-title="A B" /></ac:link><ac:link><ri:page ri:content-title="A%20B" /></ac:link></p>',
     );
     expect(extractInternalLinks(html, new Map([['A%20B', 13], ['A B', 14]]))).toEqual([{ targetPageId: 14 }, { targetPageId: 13 }]);
+  });
+
+  it('falls back to a page titled `A%20B` for a link to `A B` when no page `A B` exists (#1748, accepted)', () => {
+    // The trade-off's other facet: the href written for `A B` is
+    // `#confluence-page:A%20B`, which is also how an href written before #1748
+    // names a page titled `A%20B`. With no page `A B` here (it lives in a
+    // space that is not synced, say), the fallback to the title as written
+    // resolves the link to that page.
+    const html = confluenceToHtml('<p><ac:link><ri:page ri:content-title="A B" /></ac:link></p>');
+    expect(html).toContain('href="#confluence-page:A%20B"');
+    expect(extractInternalLinks(html, new Map([['A%20B', 13]]))).toEqual([{ targetPageId: 13 }]);
   });
 
   it('reads an href written before #1748 by its title as written, unless it also reads as an existing encoded title (#1748, accepted)', () => {

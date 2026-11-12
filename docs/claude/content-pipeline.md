@@ -19,9 +19,14 @@ Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, m
 that href alone. Parse and build it only through `core/services/confluence-link.ts`
 (the converter, `link-extractor.ts` and the baseline manifest do); keep reading
 the pre-#1748 shape, the title or filename as written, as the fallback to the
-encoded reading. Deferred: a link whose body is an image does not survive the
-editor (the image is a block node, so a save lifts it out of the paragraph and
-the link is lost; the converters and Improve keep it) — unchanged by #1748.
+encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is an image (a block node, so
+a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+excludes every other mark, so the Link mark leaves it; a fix changes the Code
+mark contract in both schemas), splits a link whose text mixes inline code with
+other text into two links around the code, and on a collaborative save splits a
+link around a line break (Yjs keeps marks on text only). Pinned by
+`content-converter.links.test.ts`.
 
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation

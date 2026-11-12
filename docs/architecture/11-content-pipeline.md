@@ -170,17 +170,23 @@ any change to the existing conflict policy.
   characters and `%XX`, or ending in a valid `?name=value` list such as
   `?body=plain`) is read as the grammar, because every href written since
   #1748 is encoded: the write-back and `link-extractor.ts` both take the
-  decoded title first, the extractor falling back to the title as written,
-  so such an older link resolves to the decoded title's page when one exists
-  (accepted). The incremental `LIKE` scan has a pattern for each shape, the
-  encoded one escaped for `%` and `_`. A self-closing anchor link
-  (`<ac:link ac:anchor="x" />`) is expanded like `ri:page`; one whose value
-  holds `/` or `>` moves what it swallowed back out. Clicking these links in
-  Compendiq does not navigate (non-goal). Deferred, unchanged since before
-  #1748: in the editor, an image as a link's body leaves the link, because the
-  image is a block node (the converters keep it), and a mention, status or
-  emoticon inside a link leaves it on a collaborative save (Yjs keeps marks on
-  text only).
+  decoded title first, the extractor falling back to the title as written.
+  With two titles that differ only by an escape sequence (`A B`, `A%20B`)
+  that is an accepted trade-off both ways: an older link to `A%20B` resolves
+  to `A B` when that page exists, and a new link to `A B` (href
+  `#confluence-page:A%20B`) resolves to `A%20B` when no page `A B` exists here
+  (it lives in a space that is not synced, say). The incremental `LIKE` scan
+  has a pattern for each shape, the encoded one escaped for `%` and `_`. A
+  self-closing anchor link (`<ac:link ac:anchor="x" />`) is expanded like
+  `ri:page`; one whose value holds `/` or `>` moves what it swallowed back
+  out. Clicking these links in Compendiq does not navigate (non-goal).
+  Deferred, unchanged since before #1748 (the converters and Improve keep all
+  of these): in the editor, a link whose body is an image or inline code is
+  lost — the image is a block node, and StarterKit's Code mark excludes every
+  other mark — and a link whose text mixes inline code with other text is
+  split into two links around the code; on a collaborative save, a line
+  break, mention, status or emoticon inside a link is left out of it,
+  splitting the link around it (Yjs keeps marks on text only).
 - `confluenceToHtml` terminates only when `body_html` contains no raw
   `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
   replacing an outer macro can clone a nested macro after that nested macro's

@@ -116,9 +116,11 @@ export function extractInternalLinks(
     // Shape 3: #confluence-page:<title>. Since #1748 the title is percent-
     // encoded and may be followed by `?<params>`: that reading comes first,
     // because every href written since is encoded. An href written before
-    // holds the title as written, the fallback: the two readings differ only
-    // for such a title that also reads as an encoded one (`A%20B`), which then
-    // resolves to the decoded title's page when one exists (accepted, #1748).
+    // holds the title as written, the fallback. The two readings differ only
+    // for a title that also reads as an encoded one, so with two titles that
+    // differ by an escape sequence (`A B`, `A%20B`; accepted, #1748) an older
+    // link to `A%20B` resolves to `A B` when that page exists, and a new link
+    // to `A B` resolves to `A%20B` when no page `A B` exists here.
     if (href.startsWith(CONFLUENCE_PAGE_HREF_PREFIX)) {
       const link = parseConfluenceLinkHref(href);
       const id = (link?.kind === 'page' ? titleToId.get(link.value.trim()) : undefined)
