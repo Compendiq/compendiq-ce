@@ -476,6 +476,25 @@ describe('pdf-service (pdf-lib)', () => {
         }
       });
 
+      it('drops each too-tall header share on its own and still prints a later fitting one', async () => {
+        // 70 columns → 5 bands of 14. The long cell covers bands 1-3: its shares in bands 2 and 3 are too
+        // tall and dropped, with no header row left there. `Second group` starts in band 4 and fits, so it
+        // repeats in band 5. Shaded header rows: 2 (the long header split over two pages) + 1 + 1.
+        const words = Array.from({ length: 1000 }, (_, w) => `w${w}`).join(' ');
+        const { text, shades } = await tableLayout(`<table>
+          <tr><th colspan="42">${words} HEADEREND</th><th colspan="28">Second group</th></tr>
+          <tr>${Array.from({ length: 70 }, (_, c) => `<td>d${c}</td>`).join('')}</tr></table>`);
+        expect(text.match(/HEADEREND|Secondgroup/g)).toEqual(['HEADEREND', 'Secondgroup', 'Secondgroup']);
+        expect(shades).toHaveLength(4);
+      });
+
+      it('gives a first row of td cells no share in later bands', async () => {
+        const { text } = await tableLayout(`<table>
+          <tr><td colspan="20">Bodylabel</td></tr>
+          <tr>${Array.from({ length: 20 }, (_, c) => `<td>d${c}</td>`).join('')}</tr></table>`);
+        expect(text.match(/Bodylabel/g)).toEqual(['Bodylabel']);
+      });
+
       it('keeps a 40-column table of 32-character ids to 20 pages', async () => {
         // With #1730's hard break, ids in 40 equal 12.38 pt columns stacked one character per line,
         // one row per page (40 pages); in 35.38 pt band columns they wrap 3-5 characters per line.
