@@ -146,6 +146,15 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
+The import sanitiser admits `data-diagram-name` by name, and as URI-safe, so a
+` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
+(#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
+`safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
+placeholder's name raw into its fence, so the import drops a name with a line break or other
+control character, or one that is a bare backtick run. A fence's `data-drawio-source` and
+`data-drawio-xml` stay stripped — another page's attachment, and XML for the same-origin
+draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
 `ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.

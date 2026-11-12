@@ -449,6 +449,26 @@ front-matter, or whose body the sanitizer stripped — is a **422**. An
 unexpected throw anywhere in the conversion is also a 422 naming what to try,
 not a 500 saying `Internal Server Error`.
 
+**Draw.io placeholders keep their name (#1754).** `markdownToHtml()` turns a
+` ```drawio ` fence into `div.confluence-drawio[data-diagram-name]`, and the
+import sanitiser admits `data-diagram-name` by name, so the editor parses the
+node with its `diagramName`, the Create Page save keeps it with the
+`drawio-preview-unavailable` marker, and the Confluence write-back names the
+diagram instead of the fallback `diagram`. The attribute is also URI-safe
+(`ADD_URI_SAFE_ATTR`, the way DOMPurify treats `alt` and `title`): its scheme
+check would drop a name such as `Network: DMZ`, and no consumer uses the name
+as a URL — the editor and read view show it as text or pass it through
+`encodeURIComponent`, the backend through `safeAttachmentPath`. `htmlToMarkdown`
+writes a name-only placeholder's name raw inside its ` ```drawio ` fence, so the
+import drops a name that contains a line break or another control character, or
+is a bare run of three or more backticks: such a placeholder imports nameless. A
+fence's `data-drawio-source` and `data-drawio-xml` are still stripped with every
+other `data-*` attribute (`ALLOW_DATA_ATTR` stays `false`): the source locator
+names another page's attachment, and the inline XML would reach the same-origin
+draw.io editor unvetted. The name is what the existing lookups resolve once the
+page has that attachment (read mode's Edit Diagram, `materializeDrawioPreviews`
+after a Confluence write); the import itself creates none.
+
 **Four size limits, deliberately ordered so the app is always what rejects.**
 Each layer clears the one below it, so a user never meets a limit that cannot
 explain itself:
@@ -736,6 +756,12 @@ the diagram name, source, inline XML, preview and edit link; name-only
 wrappers retain the plain-name form. `markdownToHtml()` restores both forms,
 including explicit unavailable text when no preview is present, so copy,
 export and re-import do not silently discard the editable source reference.
+The Markdown import route keeps the name, the preview image and the edit link
+of either form, but its sanitiser strips the source locator and the inline XML
+(#1754; see Markdown import). A name-only wrapper's name is written raw, so a
+name with a line break, or one that is a bare backtick run, ends the fence
+early: the import drops such names, while names from Confluence storage or API
+writes are not checked yet.
 
 | Custom rule | HTML form | Markdown form |
 |-------------|-----------|---------------|

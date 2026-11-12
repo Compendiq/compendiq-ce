@@ -47,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
+  fence in an imported `.md` file now reaches the editor as a diagram
+  placeholder that carries its name, the created page keeps that name, and a
+  page created in a Confluence space names the diagram in its draw.io macro.
+  Previously the import stripped the name: the editor offered an empty
+  "Click to create a draw.io diagram" placeholder, and Confluence got the
+  generic name `diagram`. Once the page has the diagram's attachment, read
+  mode's **Edit Diagram** opens it by that name; the import itself creates no
+  attachment, and it still drops a fence's source location and inline XML. A
+  name that spans several lines, or is only backticks, is not imported: it
+  would break the page's Markdown.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
