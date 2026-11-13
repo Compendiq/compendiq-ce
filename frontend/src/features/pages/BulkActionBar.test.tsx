@@ -298,8 +298,8 @@ describe('BulkActionBar', () => {
   });
 
   it('says so when the server accepted the request and acted on nothing', async () => {
-    // Re-embed skips pages with no confluence_id, so a standalone-only
-    // selection comes back all zeroes. Staying silent would read as success.
+    // A 200 that counts nothing in either bucket (re-sync answers one for pages
+    // without a Confluence id). Staying silent would read as success.
     apiFetchMock.mockResolvedValue({ succeeded: 0, failed: 0, errors: [] });
 
     render(

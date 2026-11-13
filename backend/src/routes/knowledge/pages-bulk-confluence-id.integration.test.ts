@@ -29,9 +29,12 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
+  activeEmbeddingHolders,
   buildKnowledgeTestApp,
+  holdOtherEmbeddingLease,
   insertLocalSpace,
   insertUser,
+  OTHER_EMBEDDING_HOLDER,
 } from './pages.test-helpers.js';
 
 const NUMERIC_CONFLUENCE_ID = '12345';
@@ -179,6 +182,30 @@ async function pageState(id: number): Promise<{
       [id],
     )
   ).rows[0];
+}
+
+async function embeddingDirty(id: number): Promise<boolean | undefined> {
+  const result = await query<{ embedding_dirty: boolean }>(
+    'SELECT embedding_dirty FROM pages WHERE id = $1',
+    [id],
+  );
+  return result.rows[0]?.embedding_dirty;
+}
+
+/** Waits until some backend is blocked behind a row lock `holderPid` holds. */
+async function waitForBlockedRowLock(holderPid: number): Promise<void> {
+  const reachedBarrier = await waitForDatabaseCondition(async () => {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [holderPid],
+    );
+    return result.rows[0]?.waiting ?? false;
+  });
+  if (!reachedBarrier) {
+    throw new Error('bulk embed did not reach the held page-row lock');
+  }
 }
 
 describe.skipIf(!dbAvailable || !redisAvailable)(
@@ -815,6 +842,102 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
           url: `/rest/api/content/${NUMERIC_CONFLUENCE_ID}/label`,
         }),
       ]);
+    });
+
+    it('queues a standalone page addressed by its primary key and fires the real embedding worker', async () => {
+      const native = await insertStandalone({ title: 'Native page' });
+      const unselected = await insertStandalone({ title: 'Not selected' });
+      await holdOtherEmbeddingLease(redis);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: [String(native)] },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ succeeded: 1, failed: 0, errors: [] });
+      expect(await embeddingDirty(native)).toBe(true);
+      expect(await embeddingDirty(unselected)).toBe(false);
+      await expect
+        .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+        .toEqual([OTHER_EMBEDDING_HOLDER]);
+      expect(await redis.exists(`embedding:lock:${userId}`)).toBe(0);
+    });
+
+    it('keeps not-found and ambiguous ids under failed while queueing a standalone member', async () => {
+      const { byPk, byConfluenceId } = await seedCollision();
+      const native = await insertStandalone({ title: 'Native member' });
+      await holdOtherEmbeddingLease(redis);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: [String(COLLIDING_ID), String(native), 'missing-page'] },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({
+        succeeded: 1,
+        failed: 2,
+        errors: [
+          'Page missing-page not found',
+          `Page ${COLLIDING_ID}: ambiguous identifier — it is one page's id and another page's Confluence id; no action taken`,
+        ],
+      });
+      expect(await embeddingDirty(native)).toBe(true);
+      expect(await embeddingDirty(byPk)).toBe(false);
+      expect(await embeddingDirty(byConfluenceId)).toBe(false);
+      await expect
+        .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+        .toEqual([OTHER_EMBEDDING_HOLDER]);
+    });
+
+    it('reports a page trashed between resolution and marking as not found and leaves it unmarked', async () => {
+      const pageId = await insertSynced({ confluenceId: '727272', title: 'Vanishing upstream' });
+
+      const blocker = await getPool().connect();
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM pages WHERE id = $1 FOR UPDATE', [pageId]);
+      const holder = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      const pending = app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['727272'] },
+      });
+      try {
+        // The resolver's SELECT does not wait on a row lock; the marking
+        // UPDATE does, so the request parks exactly between the two.
+        await waitForBlockedRowLock(holder.rows[0]!.pid);
+        // What sync's softDeleteVanishedPage writes for a page gone upstream.
+        await blocker.query(
+          `UPDATE pages SET deleted_at = NOW()
+            WHERE source = 'confluence' AND confluence_id = $1 AND deleted_at IS NULL`,
+          ['727272'],
+        );
+        await blocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toEqual({
+          succeeded: 0,
+          failed: 1,
+          errors: ['Page 727272 not found'],
+        });
+        const row = await query<{ embedding_dirty: boolean; trashed: boolean }>(
+          'SELECT embedding_dirty, deleted_at IS NOT NULL AS trashed FROM pages WHERE id = $1',
+          [pageId],
+        );
+        expect(row.rows[0]).toEqual({ embedding_dirty: false, trashed: true });
+      } catch (error) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        // The rollback frees the parked request; let it settle so neither it
+        // nor an unobserved rejection outlives this test.
+        await pending.catch(() => undefined);
+        throw error;
+      } finally {
+        blocker.release();
+      }
     });
   },
 );
