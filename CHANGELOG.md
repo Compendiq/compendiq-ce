@@ -186,8 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list's bulk bar and an article's *Index now* (*Re-embed for search* in the
   article rail) now queue standalone pages for embedding; previously
   `POST /api/pages/bulk/embed` marked only pages with a Confluence id, so a
-  standalone selection was answered with `succeeded: 0, failed: 0` and never
-  embedded. Pages are now marked by their internal id and every selected page
+  standalone selection was answered with `succeeded: 0, failed: 0` and not
+  queued. Pages are now marked by their internal id and every selected page
   is counted once: `succeeded` means queued for the embedding worker, not
   embedded — policy-blocked, folder and bodiless pages are queued and counted,
   and the worker skips them — while a page that is not found, ambiguous, or

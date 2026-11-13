@@ -659,8 +659,9 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
     const blocked = await insertStandalonePage('Blocked', 'private', actorId, 'LOCAL');
     const folder = await insertStandalonePage('Folder', 'private', actorId, 'LOCAL');
     const bodiless = await insertStandalonePage('Bodiless', 'private', actorId, 'LOCAL');
-    // `none`, not `all`: worker recovery un-parks an `all` row and would then
-    // embed it, which needs a provider this suite does not have.
+    // `none`, not `all`: with an embedding provider configured, worker
+    // recovery would un-park an `all` row and embed it; a `none` row stays
+    // parked either way.
     await query(
       `UPDATE pages
           SET ai_policy = 'none', ai_policy_block_reason = 'policy_none',
