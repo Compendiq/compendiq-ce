@@ -1082,7 +1082,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       //    numbering covers the retrieved pages; inserting entries in the
       //    middle would renumber everything below them against an answer that
       //    was written before this array existed.
-      //  - Best fused rank first, deduped on the identity triple: a
+      //  - Final result order first (array position, reranking and identifier
+      //    pins included — #1716), deduped on the identity triple: a
       //    multi-part serialization puts several chunks of one picture in the
       //    index, and two of them in one top-K must not spend two of the four
       //    citation slots.
