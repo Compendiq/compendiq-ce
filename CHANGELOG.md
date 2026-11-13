@@ -97,6 +97,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed only by backticks or tildes) is not imported, because it would
   break the page's Markdown, and an empty name still imports as an unnamed
   diagram.
+- **Force-embed-tree embeds the local copy and skips trashed pages (#1717):**
+  `POST /api/embeddings/force-embed-tree` now uses Confluence only to find
+  the pages of the tree (the root page and its descendant listing) and embeds
+  each one from its live local copy, without fetching any page from
+  Confluence again. A page that was skipped because its Confluence body was
+  empty is now embedded from its local copy. A page whose local copy is in
+  the trash is skipped with `Page is in the trash, skipping`, and a
+  standalone page that still carries the page's former Confluence id is
+  reported as `Page not yet synced to local DB, skipping` instead of being
+  embedded. Every page now reports exactly one progress event, so
+  `completed` reaches `total` (pages with no new embeddings were not
+  counted, and pages without a cached body were reported twice). While the
+  user's embedding run or a global re-embed is in progress, the route
+  answers 409 instead of starting.
 - **Confluence tasks keep their identity on save (#1751):** saving a synced
   page (editor save, collaborative save, draft publish, version restore,
   applying an AI Improve result) gave every task a new random `ac:task-id`,
