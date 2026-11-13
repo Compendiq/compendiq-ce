@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cancelled baseline previews retry immediately (#1765):** a same-user
+  re-preview safely cleans a settled, never-started preparation before
+  reserving a new baseline, without waiting for maintenance or returning a
+  unique-constraint 500. Existing writer admission and exactly-once retained
+  capacity accounting remain intact.
 - **Deep search pins only identifiers found in the user's own question (#1718):**
   the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
   deep search pins only what the #1107 detector finds in the question itself,

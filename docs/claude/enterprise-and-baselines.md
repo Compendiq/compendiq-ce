@@ -261,9 +261,16 @@ deleted, synced and foreign-owned intermediates, but rows outside the authorized
 component neither block nor leak.
 
 Publication abandons other prepared previews of that page in the same commit;
-guarded cleanup releases only their unpublished bytes and capacity. A
-`preparing` reservation whose intent was durably cancelled before any effect is
-also reclaimable. Pending or started preparations never expire by age.
+guarded cleanup releases only their unpublished bytes and capacity.
+For the same page and acting user, re-preview also reclaims a `preparing`
+reservation whose `baseline.prepare` intent is durably `cancelled`, has
+`settled_at`, and has neither a local nor a remote effect-start marker.
+Commit abandonment first, then use the existing guarded cleanup to remove only
+that unpublished UUID and release its stored capacity exactly once before
+fresh admission. Only `prepared` rows are reusable. Cleanup failure propagates:
+the failing reservation remains abandoned, retryable and charged; no replacement
+is admitted by that failed preview. Pending or started preparations never expire
+by age or heartbeat; uncertain outcomes stay pending.
 A durable governed marker still vetoes direct manual freeze when EE is
 unavailable. It never prevents authorized audited thaw, including a manual
 baseline frozen before that policy was enabled. #278 signing/governance and
