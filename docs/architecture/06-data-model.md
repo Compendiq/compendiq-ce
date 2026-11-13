@@ -1143,7 +1143,9 @@ together, which matters most for #1114's query-side prefix.
   `pages.page_avg_embedding_next` exist as **runtime-created** nullable columns
   typed at the server-probed dimension of the NEW model (same tier table as
   above; there is deliberately no numbered migration — the type is only known
-  at probe time). `embedPage` dual-writes both columns while the backfill runs;
+  at probe time). `embedPage` dual-writes both columns while the backfill runs,
+  and NULLs `page_avg_embedding_next`/`_prev` with the live average when it
+  settles a page with nothing to embed (#1714);
   the swap is one transaction of column/index RENAMEs under an explicit
   `lock_timeout` with bounded retries (live→`_prev`, `_next`→live, the prev
   column's NOT NULL dropped because post-swap inserts never provide it), which
@@ -1317,7 +1319,9 @@ together, which matters most for #1114's query-side prefix.
   `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
-  transaction as the chunk inserts, with its own HNSW index
+  transaction as the chunk inserts, and cleared, with the chunks, the runtime
+  shadow averages and the page's similarity edges, in the transaction that
+  settles a page with nothing to embed (#1714), with its own HNSW index
   (`idx_pages_page_avg_embedding_hnsw`, same type/opclass/params as
   `page_embeddings.embedding`; kept in lockstep by `enqueueReembedAll`). The
   knowledge-graph relationship builder (`computePageRelationships`) serves

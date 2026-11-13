@@ -141,7 +141,13 @@ vi.mock('./embedding-article-stage.js', async (importOriginal) => ({
   validateEmbeddingSourceOnClient: async () => {},
   validateEmbeddingPublicationOnClient: async () => {},
   settleEmbeddingArticle: async (_page: unknown, publish: (client: unknown) => Promise<void>) => {
-    await publish({ query: mocks.query });
+    // The settle's content_revision fence reads the same revision the
+    // postgres mock above binds; every other statement stays scripted.
+    await publish({
+      query: (...args: unknown[]) => (typeof args[0] === 'string' && args[0].startsWith('SELECT content_revision::text')
+        ? Promise.resolve({ rows: [{ content_revision: '1' }] })
+        : mocks.query(...args)),
+    });
     return true;
   },
 }));
@@ -1384,11 +1390,16 @@ describe('embedPage', () => {
     // 'not_embedded' status (clearing any error) so short pages don't stay stuck
     // showing the transient 'embedding' status (using pages.id, not confluence_id).
     // The clear is guarded on `image_analysis_revision` like the embed write
-    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0.
-    expect(mocks.query).toHaveBeenCalledTimes(1);
+    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0. The
+    // same transaction clears the page's derived vector state (#1714).
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL,\s+embedded_at = NULL, page_avg_embedding = NULL\s+WHERE id = \$1 AND image_analysis_revision = \$2/),
       [101, 0],
+    );
+    expect(mocks.query).toHaveBeenCalledWith('DELETE FROM page_embeddings WHERE page_id = $1', [101]);
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringMatching(/DELETE FROM page_relationships\s+WHERE relationship_type = 'embedding_similarity' AND \(page_id_1 = \$1 OR page_id_2 = \$1\)/),
+      [101],
     );
   });
 
@@ -1399,12 +1410,12 @@ describe('embedPage', () => {
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
 
     expect(result).toBe(0);
-    // Same terminal-status write as the too-short case for empty text.
-    expect(mocks.query).toHaveBeenCalledTimes(1);
+    // Same settle as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded'/),
+      expect.stringMatching(/embedding_dirty = FALSE,\s+embedding_status = 'not_embedded', embedding_error = NULL,\s+embedded_at = NULL, page_avg_embedding = NULL\s+WHERE id = \$1 AND image_analysis_revision = \$2/),
       [102, 0],
     );
+    expect(mocks.query).toHaveBeenCalledWith('DELETE FROM page_embeddings WHERE page_id = $1', [102]);
   });
 
   // ── Atomicity tests ──────────────────────────────────────────────────────────

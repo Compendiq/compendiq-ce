@@ -674,6 +674,25 @@ class AiPolicyMutationRollback extends Error {
 }
 
 /**
+ * The #1116 runtime shadow averages present on `pages` right now:
+ * `page_avg_embedding_next` while a migration backfills,
+ * `page_avg_embedding_prev` through the post-swap rollback window. A writer
+ * that clears a page's derived vectors clears these with the live average —
+ * a retained rollback average is derived state too: rollback must not
+ * resurrect it. Read on the caller's transaction after it holds a lock the
+ * migration DDL conflicts with, so the set cannot change before its UPDATE.
+ */
+export async function runtimeShadowAverageColumns(client: PoolClient): Promise<string[]> {
+  const shadow = await client.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'pages'
+        AND column_name IN ('page_avg_embedding_next', 'page_avg_embedding_prev')`,
+  );
+  return ['page_avg_embedding_next', 'page_avg_embedding_prev']
+    .filter((column) => shadow.rows.some((row) => row.column_name === column));
+}
+
+/**
  * SPEC-WORK-001 — a page set to `none` keeps its authored content (body,
  * attachments, versions, FTS) and loses every AI-derived artefact in the
  * SAME transaction as the policy write: vectors (live and shadow), the
@@ -693,16 +712,7 @@ export async function purgeDerivedAiState(client: PoolClient, ids: number[]): Pr
         AND (page_id_1 = ANY($1::int[]) OR page_id_2 = ANY($1::int[]))`,
     [ids],
   );
-  const shadow = await client.query<{ column_name: string }>(
-    `SELECT column_name FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'pages'
-        AND column_name IN ('page_avg_embedding_next', 'page_avg_embedding_prev')`,
-  );
-  // Runtime shadow columns may exist before or after a swap. A retained
-  // rollback average is derived state too: rollback must not resurrect it.
-  const shadowSet = ['page_avg_embedding_next', 'page_avg_embedding_prev']
-    .filter((column) => shadow.rows.some((row) => row.column_name === column))
-    .map((column) => `, ${column} = NULL`).join('');
+  const shadowSet = (await runtimeShadowAverageColumns(client)).map((column) => `, ${column} = NULL`).join('');
   await client.query(
     `UPDATE pages
         SET page_avg_embedding = NULL${shadowSet},
