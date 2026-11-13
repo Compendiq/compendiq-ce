@@ -391,13 +391,8 @@ describe('Content Analytics report trash eligibility (#1744)', () => {
     expect(dbAvailable, 'Real PostgreSQL is required for #1744').toBe(true);
     expect(await isRedisAvailable(), 'Real Redis is required for #1744').toBe(true);
     const workerId = workerIdFromEnv();
-    let expectedDatabase = workerDatabaseName(workerId);
-    if (process.env.TEST_DATABASE_NAMESPACE !== undefined) {
-      expect(process.env.TEST_DATABASE_NAMESPACE).toBe('epic1905_a8zoun_1744');
-      expect(workerId).toBe(1);
-      expectedDatabase = 'kb_creator_test_epic1905_a8zoun_1744_w1';
-      expect(new URL(process.env.REDIS_URL!).pathname).toBe('/1');
-    }
+    const expectedDatabase = workerDatabaseName(workerId, process.env.TEST_DATABASE_NAMESPACE);
+    expect(new URL(process.env.REDIS_URL!).pathname).toBe(`/${workerId}`);
     expect(new URL(process.env.POSTGRES_URL!).pathname).toBe(`/${expectedDatabase}`);
     // Do not print credential-bearing URLs even on an assertion failure.
     expect(process.env.POSTGRES_TEST_URL === process.env.POSTGRES_URL).toBe(true);
