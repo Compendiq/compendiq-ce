@@ -1974,7 +1974,8 @@ describe('POST /api/llm/ask', () => {
         // found by the TEXT legs, and the page's own cosine is already on the
         // page entry beside this one (ADR-027 `:4323`).
         similarity: null,
-        // `score` is the PAGE's fused ordering value, like every other entry.
+        // `score` is the carrying row's `score`, unchanged — the value its
+        // page entry carries too — and never the image's rank (#1716).
         score: 0.0328,
         // ADR-027 D12's four provenance fields, and they travel TOGETHER —
         // `SourceSchema` rejects a subset and rejects any of them on a
@@ -2008,7 +2009,9 @@ describe('POST /api/llm/ask', () => {
       expect(sources[0].similarity).toBe(0.5);
     });
 
-    it('caps the answer at MAX_IMAGE_SOURCES, best image first across pages', async () => {
+    it('caps the answer at MAX_IMAGE_SOURCES, in the final result order — not by score (#1716)', async () => {
+      // Page 2's rows carry the higher scores but come second in the array
+      // hybridSearch returned, and that order is the pipeline's verdict.
       mockHybridSearch.mockResolvedValue([
         pageWithImages(1, [
           { key: 'a1.png', rank: 0.40 },
@@ -2034,10 +2037,10 @@ describe('POST /api/llm/ask', () => {
 
       expect(images).toHaveLength(4);
       expect(images.map((i) => i.attachmentUrl)).toEqual([
-        '/api/attachments/2/b1.png',
-        '/api/attachments/2/b2.png',
         '/api/attachments/1/a1.png',
         '/api/attachments/1/a2.png',
+        '/api/attachments/1/a3.png',
+        '/api/attachments/2/b1.png',
       ]);
     });
 

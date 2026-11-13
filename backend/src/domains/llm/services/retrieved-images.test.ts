@@ -14,6 +14,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 }));
 
 import {
+  orderRetrievedImageCandidates,
   pickRetrievedImages,
   retrievedImagesCacheComponent,
   RETRIEVED_IMAGES_BYTE_BUDGET,
@@ -73,14 +74,20 @@ async function writeLocalFile(pageId: number, name: string, bytes: Buffer) {
 
 interface ImageSpec {
   key: string;
-  /** The carrying row's fused rank — the only ordering quantity D11 leaves. */
-  rank: number;
+  /**
+   * The carrying row's `score`, set the way retrieval sets it — and never an
+   * ordering input (#1716): the row's position in the list is its rank.
+   */
+  score: number;
   source: 'confluence' | 'local';
 }
 
-function hit(key: string, rank: number, source: 'confluence' | 'local' = 'confluence'): ImageSpec {
-  return { key, rank, source };
+function hit(key: string, score: number, source: 'confluence' | 'local' = 'confluence'): ImageSpec {
+  return { key, score, source };
 }
+
+/** A result row as the route hands it over: `score` included, which the pick never reads. */
+type ResultRow = RetrievedImagePage & { score: number; pinned?: true };
 
 /**
  * One page's derived rows, in serialization order (ADR-027 D11).
@@ -96,10 +103,10 @@ function hit(key: string, rank: number, source: 'confluence' | 'local' = 'conflu
  * provenance now reads no page row and sends no picture — pinned by
  * "reads no page row when no result carries derived provenance" above.
  */
-function page(pageId: number, images: ImageSpec[]): RetrievedImagePage[] {
+function page(pageId: number, images: ImageSpec[]): ResultRow[] {
   return images.map((image, i) => ({
     pageId,
-    score: image.rank,
+    score: image.score,
     derived: {
       attachmentSource: image.source,
       attachmentKey: image.key,
@@ -112,8 +119,8 @@ function page(pageId: number, images: ImageSpec[]): RetrievedImagePage[] {
   }));
 }
 
-/** The flat top-K row list, from per-page groups. */
-function rows(...groups: RetrievedImagePage[][]): RetrievedImagePage[] {
+/** The flat top-K row list, from per-page groups, in the order given. */
+function rows(...groups: ResultRow[][]): ResultRow[] {
   return groups.flat();
 }
 
@@ -150,7 +157,7 @@ describe('pickRetrievedImages — the gate costs nothing when there is nothing t
 
   it('reads no page row when no result carries derived provenance', async () => {
     const picked = await pickRetrievedImages(
-      [{ pageId: 1, score: 0.4 }, { pageId: 2, score: 0.3 }],
+      [{ pageId: 1 }, { pageId: 2 }],
       { max: 4 },
     );
 
@@ -185,7 +192,10 @@ describe('pickRetrievedImages — selection order', () => {
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['a1.png', 'b1.png']);
   });
 
-  it('orders a round by the carrying row’s fused rank — the only rank D11 leaves', async () => {
+  it('orders a round by the carrying row’s position in the final array, not by its score (#1716)', async () => {
+    // b1's row has the higher fused score, but a1's row comes first in the
+    // final order — a rerank or a pin put it there — and that order is the
+    // pipeline's verdict (`SearchResult`'s contract in `rag-service.ts`).
     pageRows([
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
@@ -198,46 +208,40 @@ describe('pickRetrievedImages — selection order', () => {
       { max: 2 },
     );
 
-    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['b1.png', 'a1.png']);
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['a1.png', 'b1.png']);
   });
 
-  it('takes a page’s BEST-RANKED image even when its rows arrive out of order', async () => {
-    // The ordering in `distinctDerivedImages` is what makes this function's
-    // contract "best image per page" rather than "first image per page". At
-    // `max: 1` the two read differently: with the sort the model is shown the
-    // 0.93 row's picture, without it the 0.41 one that happens to be listed
-    // first, and D8 forbids any signal that the wrong picture was chosen.
+  it('takes the image of a page’s EARLIEST row at max 1, whatever the scores say', async () => {
+    // At `max: 1` the model is shown one picture, and the cited list leads
+    // with the same one: both follow the final order (D8 forbids any signal
+    // that a different picture was chosen).
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
-    await writeConfluenceFile('c1', 'weak.png', distinctPng('weak'));
-    await writeConfluenceFile('c1', 'best.png', distinctPng('best'));
+    await writeConfluenceFile('c1', 'head.png', distinctPng('head'));
+    await writeConfluenceFile('c1', 'tail.png', distinctPng('tail'));
 
     const picked = await pickRetrievedImages(
-      rows(page(1, [hit('weak.png', 0.41), hit('best.png', 0.93)])),
+      rows(page(1, [hit('head.png', 0.41), hit('tail.png', 0.93)])),
       { max: 1 },
     );
 
-    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['best.png']);
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['head.png']);
   });
 
-  it('breaks a tie inside one page by part — an earlier part is the head of the description', async () => {
-    // The realistic same-page case, and the one the rank cannot decide: a
-    // multi-part serialization puts several chunks of one picture in the
-    // index, and rows of the same page carry the SAME fused score. Without
-    // the `part` tiebreak the choice falls to array order, which is the
-    // arbitrary result of a fusion sort.
+  it('lets an earlier position beat an earlier part inside one page — `part` only follows the position', async () => {
+    // Before #1716 a same-score pair fell to `part`, on the reasoning that the
+    // array order was the arbitrary result of a fusion sort. It is the final
+    // result order, so `part` is a tiebreak after it.
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
     await writeConfluenceFile('c1', 'first.png', distinctPng('first'));
     await writeConfluenceFile('c1', 'second.png', distinctPng('second'));
+    const listed: ResultRow[] = [
+      { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'second.png', contentHash: 'h2', analysisId: 2, analysisVersion: 1, part: 2, parts: 2 } },
+      { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'first.png', contentHash: 'h1', analysisId: 1, analysisVersion: 1, part: 1, parts: 2 } },
+    ];
 
-    const picked = await pickRetrievedImages(
-      [
-        { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'second.png', contentHash: 'h2', analysisId: 2, analysisVersion: 1, part: 2, parts: 2 } },
-        { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'first.png', contentHash: 'h1', analysisId: 1, analysisVersion: 1, part: 1, parts: 2 } },
-      ],
-      { max: 1 },
-    );
+    const picked = await pickRetrievedImages(listed, { max: 1 });
 
-    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['first.png']);
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['second.png']);
   });
 
   it('takes one image per distinct (pageId, store, key), however many rows name it', async () => {
@@ -276,6 +280,49 @@ describe('pickRetrievedImages — selection order', () => {
     );
 
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['a1.png', 'b1.png', 'a2.png']);
+  });
+});
+
+describe('orderRetrievedImageCandidates — the final result order is the rank (#1716)', () => {
+  it('puts a pinned derived row (score 0) at position 0 first, and picks only it at max 1', async () => {
+    // A NEW identifier pin carries `score: 0` and leads by array position
+    // alone; before #1716 its picture sorted last and `max: 1` showed the
+    // model the next page's picture instead.
+    pageRows([
+      { id: 9, confluence_id: 'c9', source: 'confluence' },
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c9', 'inc.png', distinctPng('inc'));
+    await writeConfluenceFile('c1', 'a.png', distinctPng('a'));
+    await writeConfluenceFile('c2', 'b.png', distinctPng('b'));
+    const pinnedHead = page(9, [hit('inc.png', 0)]).map((r) => ({ ...r, pinned: true as const }));
+    const listed = rows(pinnedHead, page(1, [hit('a.png', 0.0328)]), page(2, [hit('b.png', 0.0161)]));
+
+    expect(orderRetrievedImageCandidates(listed).map((c) => c.key)).toEqual(['inc.png', 'a.png', 'b.png']);
+    const picked = await pickRetrievedImages(listed, { max: 1 });
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['inc.png']);
+  });
+
+  it('round-robins with the carrying row’s position as rank: one image per page per round, lower position first', () => {
+    // Positions: a1 0, b1 1, b2 2, c1 3, a2 4 — scores rising the other way.
+    // Round 0 visits the pages in first-appearance order (1, 2, 3); round 1
+    // holds page 1's and page 2's second images, and b2 (position 2) beats
+    // a2 (position 4) although page 1 was visited first.
+    const listed = rows(
+      page(1, [hit('a1.png', 0.01)]),
+      page(2, [hit('b1.png', 0.02), hit('b2.png', 0.03)]),
+      page(3, [hit('c1.png', 0.04)]),
+      page(1, [hit('a2.png', 0.05)]),
+    );
+
+    expect(orderRetrievedImageCandidates(listed).map((c) => [c.pageId, c.key, c.rank])).toEqual([
+      [1, 'a1.png', 0],
+      [2, 'b1.png', 1],
+      [3, 'c1.png', 3],
+      [2, 'b2.png', 2],
+      [1, 'a2.png', 4],
+    ]);
   });
 });
 
