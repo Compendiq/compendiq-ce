@@ -27,6 +27,7 @@ const UPSTREAM = [
   { id: 'conf-empty', title: 'Empty upstream', storage: '' },
   { id: 'conf-trashed', title: 'Trashed', storage: '<p>REMOTE trashed storage.</p>' },
   { id: 'conf-moved', title: 'Moved to local', storage: '<p>REMOTE moved storage.</p>' },
+  { id: 'conf-moved-trashed', title: 'Moved then trashed', storage: '<p>REMOTE moved-then-trashed storage.</p>' },
   { id: 'conf-missing', title: 'Never synced', storage: '<p>REMOTE missing storage.</p>' },
 ];
 
@@ -107,9 +108,22 @@ async function confluenceRow(confluenceId: string, title: string, deletedAt: Dat
   return result.rows[0]!.id;
 }
 
+/** A standalone article that keeps the Confluence id it was created from: history, not identity. */
+async function standaloneRow(confluenceId: string, title: string, ownerId: string, deletedAt: Date | null = null): Promise<number> {
+  const text = `LOCAL ${title}, long enough to embed.`;
+  const result = await query<{ id: number }>(
+    `INSERT INTO pages (source, confluence_id, title, body_html, body_text, version, visibility,
+                        created_by_user_id, owner_id, embedding_dirty, embedding_status, deleted_at)
+     VALUES ('standalone', $1, $2, $3, $4, 1, 'private', $5, $5, TRUE, 'not_embedded', $6)
+     RETURNING id`,
+    [confluenceId, title, `<p>${text}</p>`, text, ownerId, deletedAt],
+  );
+  return result.rows[0]!.id;
+}
+
 describe.skipIf(!dbAvailable)('POST /api/embeddings/force-embed-tree on real pages rows (#1717)', () => {
   let app: FastifyInstance;
-  let ids: { root: number; empty: number; trashed: number; moved: number };
+  let ids: { root: number; empty: number; trashed: number; moved: number; movedTrashed: number };
   let events: Array<Record<string, unknown>>;
   // The one route run's embedPage calls, captured right after it: the tests only
   // read them, whatever the runner does to mock history between tests.
@@ -147,14 +161,9 @@ describe.skipIf(!dbAvailable)('POST /api/embeddings/force-embed-tree on real pag
       root: await confluenceRow('conf-root', 'Local root'),
       empty: await confluenceRow('conf-empty', 'Local child'),
       trashed: await confluenceRow('conf-trashed', 'Local trashed child', new Date()),
-      // A standalone article that keeps the Confluence id it was created from.
-      moved: (await query<{ id: number }>(
-        `INSERT INTO pages (source, confluence_id, title, body_html, body_text, version, visibility,
-                            created_by_user_id, owner_id, embedding_dirty, embedding_status)
-         VALUES ('standalone', 'conf-moved', 'Local moved article', $1, $2, 1, 'private', $3, $3, TRUE, 'not_embedded')
-         RETURNING id`,
-        ['<p>LOCAL moved article, long enough to embed.</p>', 'LOCAL moved article, long enough to embed.', userId],
-      )).rows[0]!.id,
+      moved: await standaloneRow('conf-moved', 'Local moved article', userId),
+      // Trashed AND standalone: only a source-aware trash probe calls this "not yet synced".
+      movedTrashed: await standaloneRow('conf-moved-trashed', 'Local moved-then-trashed article', userId, new Date()),
     };
 
     app = Fastify({ logger: false });
@@ -189,7 +198,7 @@ describe.skipIf(!dbAvailable)('POST /api/embeddings/force-embed-tree on real pag
     await teardownTestDb();
   });
 
-  it('passes only live Confluence rows to embedPage: not the trashed row, not the standalone row with that historical confluence_id', () => {
+  it('passes only live Confluence rows to embedPage: not the trashed row, not the standalone rows (live or trashed) carrying a historical confluence_id', () => {
     expect(embeddedIds).toEqual([ids.root, ids.empty]);
   });
 
@@ -202,9 +211,23 @@ describe.skipIf(!dbAvailable)('POST /api/embeddings/force-embed-tree on real pag
       { currentPage: 'Empty upstream', completed: 2, warning: undefined },
       { currentPage: 'Trashed', completed: 3, warning: 'Page is in the trash, skipping' },
       { currentPage: 'Moved to local', completed: 4, warning: 'Page not yet synced to local DB, skipping' },
-      { currentPage: 'Never synced', completed: 5, warning: 'Page not yet synced to local DB, skipping' },
+      { currentPage: 'Moved then trashed', completed: 5, warning: 'Page not yet synced to local DB, skipping' },
+      { currentPage: 'Never synced', completed: 6, warning: 'Page not yet synced to local DB, skipping' },
     ]);
-    expect(events.at(-1)).toEqual({ phase: 'complete', total: 5, completed: 5, errors: 0, done: true });
+    expect(events.at(-1)).toEqual({ phase: 'complete', total: 6, completed: 6, errors: 0, done: true });
+  });
+
+  it('keeps the trash probe source-aware: a trashed standalone row carrying the discovered id is "not yet synced", not "in the trash"', () => {
+    expect(events.filter((event) => event.currentPage === 'Moved then trashed')).toEqual([{
+      phase: 'embedding',
+      total: 6,
+      completed: 5,
+      errors: 0,
+      currentPage: 'Moved then trashed',
+      warning: 'Page not yet synced to local DB, skipping',
+      done: false,
+    }]);
+    expect(embeddedIds).not.toContain(ids.movedTrashed);
   });
 
   it('embeds the live rows from their local copy and leaves the trashed and standalone rows untouched', async () => {
@@ -224,6 +247,7 @@ describe.skipIf(!dbAvailable)('POST /api/embeddings/force-embed-tree on real pag
       { id: ids.empty, status: 'embedded', embeddedAt: true, chunks: true },
       { id: ids.trashed, status: 'not_embedded', embeddedAt: false, chunks: false },
       { id: ids.moved, status: 'not_embedded', embeddedAt: false, chunks: false },
+      { id: ids.movedTrashed, status: 'not_embedded', embeddedAt: false, chunks: false },
     ]);
     const sent = embeddingInputs.join('\n');
     expect(sent).toContain('LOCAL Local root copy');

@@ -598,6 +598,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
       expect(response.json()).toMatchObject({ message });
       expect(client.getPage).not.toHaveBeenCalled();
       expect(client.getDescendantPages).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
       expect(mockEmbedPage).not.toHaveBeenCalled();
     });
 
