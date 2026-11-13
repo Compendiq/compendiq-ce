@@ -76,6 +76,12 @@ npx playwright test                 # local E2E against an already-running stack
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
 
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
+
 ## Architecture
 
 Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boundaries`):
