@@ -76,6 +76,12 @@ npx playwright test                 # local E2E against an already-running stack
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
 
+Independent backend test runs can set `TEST_DATABASE_NAMESPACE` and use
+`--maxWorkers=1 --no-file-parallelism` for one namespaced worker database.
+The default database names, Redis slots and pub/sub prefixes are unchanged;
+serialize runs sharing Redis. See `docs/claude/testing-and-retrieval-eval.md`
+for the namespace grammar and active-worker CREATE guard.
+
 ## Architecture
 
 Domain-based backend with ESLint-enforced import boundaries (`eslint-plugin-boundaries`):
@@ -214,6 +220,11 @@ can be chosen; admission never reads it and a lapsed licence never closes it.
 Never reintroduce a plugin activation hook or env flag for it. See
 `docs/claude/enterprise-and-baselines.md` and
 `docs/architecture/article-ai-policy-activation.md`.
+
+Baseline re-preview reclaims only the acting user's durably cancelled,
+settled, no-effect preparations through core's committed-abandonment cleanup.
+Only prepared rows are reusable; pending work and writer admission are never
+cleared or bypassed to retry. See `docs/claude/enterprise-and-baselines.md`.
 
 License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2; v1 omits `licenseId`). Persisted in `admin_settings` under key `license_key`. Full design in `docs/ENTERPRISE-ARCHITECTURE.md`.
 

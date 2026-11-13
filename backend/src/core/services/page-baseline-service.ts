@@ -840,14 +840,25 @@ export async function previewPageBaseline(
       }
 
       const active = await client.query<BaselineRow>(
-        `SELECT * FROM page_baselines
-          WHERE original_page_id = $1 AND prepared_by_user_id = $2
-            AND status = 'prepared'
-          FOR UPDATE`,
+        `SELECT b.* FROM page_baselines b
+          WHERE b.original_page_id = $1 AND b.prepared_by_user_id = $2
+            AND (
+              b.status = 'prepared'
+              OR (b.status = 'preparing' AND EXISTS (
+                SELECT 1 FROM page_write_intents i
+                 WHERE i.id = b.preparation_intent_id
+                   AND i.kind = 'baseline.prepare' AND i.status = 'cancelled'
+                   AND i.settled_at IS NOT NULL
+                   AND i.effect_started_at IS NULL
+                   AND i.remote_effect_started_at IS NULL
+              ))
+            )
+          FOR UPDATE OF b`,
         [pageId, actorId],
       );
       const reusable = active.rows.find((row) =>
-        row.content_revision === page.content_revision
+        row.status === 'prepared'
+        && row.content_revision === page.content_revision
         && row.lifecycle_revision === page.lifecycle_revision);
       if (reusable) {
         const current = await inspectManifest(client, pageId, reusable.id, actorId);
