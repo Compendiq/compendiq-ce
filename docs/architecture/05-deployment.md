@@ -222,6 +222,15 @@ same value; the installer auto-generates it into `.env` on first install and
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
 | `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
 
+## PDF export fonts
+
+The backend runtime image carries the PDF export fonts (Noto Sans, Noto Sans
+Mono, Noto Sans SC and KR; about 17 MiB, SIL OFL 1.1) in
+`dist/core/services/fonts`. tsc emits no assets: `npm run build -w backend`
+copies them from `backend/src/core/services/fonts`, so both Dockerfiles, which
+copy the built `dist`, ship them without a step of their own. Without them every
+PDF export fails with `PDF export font missing`.
+
 ## Backup process boundaries
 
 ```mermaid
@@ -380,7 +389,10 @@ normal mode neither provisions nor relaxes instance rate limits.
 ## Enterprise image
 
 `docker/Dockerfile.enterprise` is a multi-stage template that overlays the
-`@compendiq/enterprise` package onto the backend image. It does **not**
+`@compendiq/enterprise` package onto the backend image. It builds the backend
+with the same `npm run build -w backend`, so the PDF export fonts arrive with
+`dist`; an overlay that compiles another way must copy
+`backend/src/core/services/fonts` to `dist/core/services/fonts`. It does **not**
 modify the frontend image — the frontend is identical in CE and EE
 deployments and gates Enterprise UI at runtime (see
 [`04-frontend-structure.md`](./04-frontend-structure.md)).

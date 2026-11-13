@@ -99,7 +99,8 @@ jobs:
       # disappears at runtime and the container crash-loops on boot —
       # invisible to `npm run build` and to `docker build` alike. Simulate
       # the Docker prod-deps install in a tmpdir and assert the two
-      # historically-fragile packages stay at the root.
+      # historically-fragile packages and the PDF export's font engine stay
+      # at the root.
       - name: Verify prod-deps hoist runtime-critical packages to root
         run: |
           set -euo pipefail
@@ -111,7 +112,7 @@ jobs:
           cp frontend/package.json "$T/frontend/"
           (cd "$T" && npm ci --omit=dev -w backend -w @compendiq/contracts >/dev/null)
           missing=()
-          for pkg in p-limit ipaddr.js; do
+          for pkg in p-limit ipaddr.js @pdf-lib/fontkit; do
             test -d "$T/node_modules/$pkg" || missing+=("$pkg")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
@@ -120,7 +121,7 @@ jobs:
             echo "  See the //deps-note in package.json for context."
             exit 1
           fi
-          echo "✓ p-limit + ipaddr.js hoisted to root node_modules"
+          echo "✓ p-limit + ipaddr.js + @pdf-lib/fontkit hoisted to root node_modules"
 
       - name: Typecheck (contracts + backend + frontend)
         run: npm run typecheck

@@ -11,6 +11,20 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+PDF export draws text in fonts vendored under `backend/src/core/services/fonts`
+(SIL OFL 1.1, rebuilt by `tools/pdf-fonts/prepare.py`; the backend build copies
+them into `dist`): Noto Sans Regular, Bold and Italic, Noto Sans Mono for code,
+Noto Sans SC for Chinese and Japanese and Noto Sans KR for Hangul (both in their
+Regular weight, also in bold or italic text). A character its face lacks falls
+back to Noto Sans Mono (in code: Noto Sans Regular), then SC, then KR, so
+arrows, box drawing and similar symbols print as written. A character no
+bundled font covers prints as U+FFFD: Arabic, Hebrew, Armenian, Georgian, Indic
+and Thai scripts, emoji, symbols such as ✔ ✘ ☑ ➜ ❤, and rare CJK. Controls and
+other invisible characters print nothing. Text is composed (NFC) first, a tab
+is four spaces and, outside code blocks, a newline is a space; each run is
+measured in the font that draws it. Fonts are embedded as subsets, SC and KR
+only when the text needs them; a missing font file fails the export.
+
 **Confluence links live in the href (#1748).** The editor's Link mark keeps no
 `data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
 `#confluence-page:<title>`, `#confluence-attachment:<filename>` or
@@ -47,16 +61,14 @@ glyphs wide), one below the other. A later band holds only the rows with a
 cell starting in it (a crossing cell repeats there), plus the header row's
 share of the band; a header cell prints again in a later band only if its
 piece there would also repeat on a continuation page, so an oversized header
-cell prints once. A band in which no cell starts is skipped. Non-Latin font
-coverage is a separate limitation.
+cell prints once. A band in which no cell starts is skipped.
 
-PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Courier
+PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Noto Sans Mono
 cells): the rest of a long line continues flush left on the next row, unmarked,
 and each row is placed and paginated like a source line. Tabs expand to four
 spaces before measuring; blank lines keep their row. Text is measured as drawn
 (pdf-lib applies no kerning), and a word wider than its line (URL, hash)
-breaks between characters in body text and table cells. This covers Latin-1
-text; other characters are still removed before measuring.
+breaks between characters in body text and table cells.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums

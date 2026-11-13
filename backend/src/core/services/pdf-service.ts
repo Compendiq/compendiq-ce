@@ -1,6 +1,7 @@
-import { PDFDocument, StandardFonts, rgb, PDFPage, PDFFont } from 'pdf-lib';
+import { PDFDocument, rgb, PDFPage, PDFFont } from 'pdf-lib';
 import { JSDOM } from 'jsdom';
 import { logger } from '../utils/logger.js';
+import { drawText, embedFonts, measureText, normalizeText } from './pdf-fonts.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 const PAGE_WIDTH = 595.28;   // A4 width in points
@@ -28,7 +29,7 @@ const FONT_SIZE_FOOTER = 8;
 
 // ── Code blocks (#1730) ────────────────────────────────────────────
 // Code text starts inside the shaded box and must end inside it too:
-// 475.28 pt is 83 Courier cells at FONT_SIZE_CODE (0.6 em = 5.7 pt each).
+// 475.28 pt is 83 Noto Sans Mono cells at FONT_SIZE_CODE (0.6 em = 5.7 pt each).
 const CODE_TEXT_X = MARGIN_LEFT + CODE_PADDING;
 const CODE_TEXT_WIDTH = CONTENT_WIDTH - 2 * CODE_PADDING;
 
@@ -97,20 +98,17 @@ export async function generatePdf(
 ): Promise<Buffer> {
   try {
     const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-    const fontItalic = await doc.embedFont(StandardFonts.HelveticaOblique);
-    const fontMono = await doc.embedFont(StandardFonts.Courier);
+    // Parse first: which fonts to embed depends on the characters to draw.
+    const body = new JSDOM(html).window.document.body;
+    const alts = Array.from(body.querySelectorAll('img'), (img) => img.getAttribute('alt') ?? '');
+    const fonts = await embedFonts(doc, [options.title ?? '', body.textContent ?? '', ...alts].join('\n'));
 
     const ctx: RenderContext = {
       doc,
       page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
       y: PAGE_HEIGHT - MARGIN_TOP,
       pageNum: 1,
-      font,
-      fontBold,
-      fontItalic,
-      fontMono,
+      ...fonts,
       title: options.title,
     };
 
@@ -119,9 +117,6 @@ export async function generatePdf(
       renderCoverPage(ctx, options.title);
     }
 
-    // Parse HTML and render content
-    const dom = new JSDOM(html);
-    const body = dom.window.document.body;
     renderChildren(ctx, body);
 
     // Add footers to all pages
@@ -163,8 +158,8 @@ function addFooters(ctx: RenderContext): void {
     const page = pages[i]!;
     const pageNumber = i - startIdx + 1;
     const text = `Page ${pageNumber} of ${total - startIdx}`;
-    const w = ctx.font.widthOfTextAtSize(text, FONT_SIZE_FOOTER);
-    page.drawText(text, {
+    const w = measureText(text, ctx.font, FONT_SIZE_FOOTER);
+    drawText(page, text, {
       x: PAGE_WIDTH - MARGIN_RIGHT - w,
       y: MARGIN_BOTTOM / 2 - FONT_SIZE_FOOTER / 2,
       size: FONT_SIZE_FOOTER,
@@ -184,7 +179,7 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
   for (let i = 0; i < titleLines.length; i++) {
     // Centre by the drawn width, the width the line was wrapped to (#1730).
     const lineW = measureText(titleLines[i]!, ctx.fontBold, FONT_SIZE_H1);
-    ctx.page.drawText(titleLines[i]!, {
+    drawText(ctx.page, titleLines[i]!, {
       x: (PAGE_WIDTH - lineW) / 2,
       y: startY - i * (FONT_SIZE_H1 + 6),
       size: FONT_SIZE_H1,
@@ -198,8 +193,8 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
     month: 'long',
     day: 'numeric',
   });
-  const dateW = ctx.font.widthOfTextAtSize(date, FONT_SIZE_BODY);
-  ctx.page.drawText(date, {
+  const dateW = measureText(date, ctx.font, FONT_SIZE_BODY);
+  drawText(ctx.page, date, {
     x: (PAGE_WIDTH - dateW) / 2,
     y: startY - titleHeight - 24,
     size: FONT_SIZE_BODY,
@@ -310,7 +305,7 @@ function renderHeading(ctx: RenderContext, text: string, fontSize: number): void
   const lines = wrapText(text, ctx.fontBold, fontSize, CONTENT_WIDTH);
   for (const line of lines) {
     ensureSpace(ctx, fontSize + 4);
-    ctx.page.drawText(line, {
+    drawText(ctx.page, line, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -372,7 +367,7 @@ function renderTextBlock(
   const lines = wrapText(text, font, fontSize, CONTENT_WIDTH);
   for (const line of lines) {
     ensureSpace(ctx, LINE_HEIGHT);
-    ctx.page.drawText(line, {
+    drawText(ctx.page, line, {
       x: MARGIN_LEFT,
       y: ctx.y,
       size: fontSize,
@@ -388,7 +383,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   // A source line wider than the code box continues flush left on the next
   // row (#1730); every row, continuation or not, is positioned like a line.
   const rows = code.split('\n').flatMap((line) =>
-    breakToWidth(sanitizeForStandardFont(line), ctx.fontMono, FONT_SIZE_CODE, CODE_TEXT_WIDTH),
+    breakToWidth(normalizeText(line), ctx.fontMono, FONT_SIZE_CODE, CODE_TEXT_WIDTH),
   );
   const lineHeight = FONT_SIZE_CODE + 4;
 
@@ -423,7 +418,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   // Pass 3: draw text on top of backgrounds
   for (const line of rendered) {
     if (line.text) {
-      line.page.drawText(line.text, {
+      drawText(line.page, line.text, {
         x: CODE_TEXT_X,
         y: line.y,
         size: FONT_SIZE_CODE,
@@ -486,7 +481,7 @@ function renderBlockquote(ctx: RenderContext, text: string): void {
 
   // Draw text
   for (const line of rendered) {
-    line.page.drawText(line.text, {
+    drawText(line.page, line.text, {
       x: MARGIN_LEFT + indent,
       y: line.y,
       size: FONT_SIZE_BODY,
@@ -509,7 +504,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
     ensureSpace(ctx, LINE_HEIGHT);
 
     const bullet = ordered ? `${i + 1}.` : '•';
-    ctx.page.drawText(bullet, {
+    drawText(ctx.page, bullet, {
       x: MARGIN_LEFT + 4,
       y: ctx.y,
       size: FONT_SIZE_BODY,
@@ -520,7 +515,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
     const lines = wrapText(text, ctx.font, FONT_SIZE_BODY, CONTENT_WIDTH - indent);
     for (const line of lines) {
       ensureSpace(ctx, LINE_HEIGHT);
-      ctx.page.drawText(line, {
+      drawText(ctx.page, line, {
         x: MARGIN_LEFT + indent,
         y: ctx.y,
         size: FONT_SIZE_BODY,
@@ -537,8 +532,10 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
 /**
  * The narrowest a table column may be (#1731): two em of text plus the cell
  * padding. CONTENT_WIDTH holds 14 such columns — 35.38 pt, a 23.38 pt text box
- * that fits any two Latin-1 glyphs (the widest, Helvetica `@`, is 11.17 pt) —
- * so no word breaks one glyph per line; a wider grid prints in bands.
+ * that fits any two glyphs of Latin-1 (the widest, Noto Sans Bold `m`, is
+ * 10.73 pt), CJK, Hangul or U+FFFD (at most 11 pt) — so words in those scripts
+ * never break one glyph per line; a wider grid prints in bands. Only U+2E3B
+ * THREE-EM DASH (31.24 pt) is wider than the box: it gets a line of its own.
  */
 const TABLE_MIN_COLUMN_WIDTH = 2 * FONT_SIZE_BODY + 2 * TABLE_CELL_PADDING;
 
@@ -705,15 +702,11 @@ function renderTableBand(
     }
     for (const piece of row.pieces) {
       for (let l = start; l < Math.min(start + count, piece.lines.length); l++) {
-        try {
-          ctx.page.drawText(piece.lines[l]!, {
-            x: MARGIN_LEFT + piece.column * colWidth + TABLE_CELL_PADDING,
-            y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
-            size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
-          });
-        } catch {
-          // Skip unencodable characters
-        }
+        drawText(ctx.page, piece.lines[l]!, {
+          x: MARGIN_LEFT + piece.column * colWidth + TABLE_CELL_PADDING,
+          y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
+          size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
+        });
       }
     }
     for (const y of [top, bottom]) {
@@ -788,40 +781,20 @@ function renderImagePlaceholder(ctx: RenderContext, el: Element): void {
     color: rgb(0.97, 0.97, 0.98),
   });
 
-  const label = `[Image: ${alt}]`;
-  try {
-    const textW = ctx.fontItalic.widthOfTextAtSize(label, FONT_SIZE_SMALL);
-    ctx.page.drawText(label, {
-      x: MARGIN_LEFT + (CONTENT_WIDTH - textW) / 2,
-      y: ctx.y - 20,
-      size: FONT_SIZE_SMALL,
-      font: ctx.fontItalic,
-      color: COLOR_MUTED,
-    });
-  } catch {
-    // skip unencodable alt text
-  }
+  const label = normalizeText(`[Image: ${alt}]`);
+  const textW = measureText(label, ctx.fontItalic, FONT_SIZE_SMALL);
+  drawText(ctx.page, label, {
+    x: MARGIN_LEFT + (CONTENT_WIDTH - textW) / 2,
+    y: ctx.y - 20,
+    size: FONT_SIZE_SMALL,
+    font: ctx.fontItalic,
+    color: COLOR_MUTED,
+  });
 
   ctx.y -= 36 + PARAGRAPH_SPACING;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
-
-/** Replace characters outside WinAnsi (Latin-1) encoding that StandardFonts can't render. */
-function sanitizeForStandardFont(text: string): string {
-  return text
-    .replace(/\t/g, '    ')          // tabs to spaces
-    .replace(/[\u2018\u2019]/g, "'") // smart single quotes
-    .replace(/[\u201C\u201D]/g, '"') // smart double quotes
-    .replace(/\u2013/g, '-')         // en-dash
-    .replace(/\u2014/g, '--')        // em-dash
-    .replace(/\u2026/g, '...')       // ellipsis
-    .replace(/\u2192/g, '->')        // right arrow
-    .replace(/\u2190/g, '<-')        // left arrow
-    .replace(/\u2022/g, '*')         // bullet
-    .replace(/\u00A0/g, ' ')         // non-breaking space
-    .replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); // strip remaining non-Latin-1
-}
 
 function extractTextContent(el: Element): string {
   // Get text, collapsing whitespace
@@ -830,85 +803,35 @@ function extractTextContent(el: Element): string {
 
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
   if (!text) return [];
-  const sanitized = sanitizeForStandardFont(text);
-  if (!sanitized) return [];
+  // normalizeText turns every line break into a space: the text is one paragraph.
+  const words = normalizeText(text).split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
   const lines: string[] = [];
-  const paragraphs = sanitized.split('\n');
   const spaceWidth = measureText(' ', font, fontSize);
 
-  for (const paragraph of paragraphs) {
-    const words = paragraph.split(/\s+/).filter(Boolean);
-    if (words.length === 0) {
-      lines.push('');
+  let currentLine = '';
+  let currentWidth = 0;
+  for (const word of words) {
+    // Widths add up (nothing is kerned), so each word is measured once.
+    const wordWidth = measureText(word, font, fontSize);
+    const width = currentLine ? currentWidth + spaceWidth + wordWidth : wordWidth;
+    if (width <= maxWidth) {
+      currentLine = currentLine ? `${currentLine} ${word}` : word;
+      currentWidth = width;
       continue;
     }
-
-    let currentLine = '';
-    let currentWidth = 0;
-    for (const word of words) {
-      let wordWidth: number;
-      try {
-        wordWidth = measureText(word, font, fontSize);
-      } catch {
-        // Character encoding issue — skip this word
-        continue;
-      }
-
-      // Widths add up (nothing is kerned), so each word is measured once.
-      const width = currentLine ? currentWidth + spaceWidth + wordWidth : wordWidth;
-      if (width <= maxWidth) {
-        currentLine = currentLine ? `${currentLine} ${word}` : word;
-        currentWidth = width;
-        continue;
-      }
-      if (currentLine) lines.push(currentLine);
-      // The word starts a new line; one wider than a whole line (URL, hash)
-      // breaks between characters (#1730), its last piece left open for the
-      // words that follow.
-      const pieces = breakToWidth(word, font, fontSize, maxWidth);
-      for (let i = 0; i < pieces.length - 1; i++) lines.push(pieces[i]!);
-      currentLine = pieces[pieces.length - 1]!;
-      currentWidth = measureText(currentLine, font, fontSize);
-    }
-    if (currentLine) {
-      lines.push(currentLine);
-    }
+    if (currentLine) lines.push(currentLine);
+    // The word starts a new line; one wider than a whole line (URL, hash)
+    // breaks between characters (#1730), its last piece left open for the
+    // words that follow.
+    const pieces = breakToWidth(word, font, fontSize, maxWidth);
+    for (let i = 0; i < pieces.length - 1; i++) lines.push(pieces[i]!);
+    currentLine = pieces[pieces.length - 1]!;
+    currentWidth = measureText(currentLine, font, fontSize);
   }
-
-  return lines.length > 0 ? lines : [''];
-}
-
-/**
- * Advance widths in font units (per mille of the font size), per font and
- * code point. Keyed by the embedded font, so each export's cache goes with
- * its document; sanitized text needs at most 191 entries per font.
- */
-const glyphAdvances = new WeakMap<PDFFont, Map<string, number>>();
-
-/**
- * The width pdf-lib draws `text` at. `drawText` shows text with `Tj`, which
- * applies no kerning, so this sums each code point's advance —
- * `widthOfTextAtSize(text)` adds AFM kerning pairs and mismeasures drawn
- * Helvetica. Every wrapping decision measures through here (#1730), so a font
- * fallback (#1729) changes measurement in one place. One map lookup per code
- * point; throws, like pdf-lib, on a code point the font cannot encode.
- */
-function measureText(text: string, font: PDFFont, fontSize: number): number {
-  let advances = glyphAdvances.get(font);
-  if (!advances) {
-    advances = new Map();
-    glyphAdvances.set(font, advances);
-  }
-  let units = 0;
-  for (const char of text) {
-    let advance = advances.get(char);
-    if (advance === undefined) {
-      advance = font.widthOfTextAtSize(char, 1000);
-      advances.set(char, advance);
-    }
-    units += advance;
-  }
-  return units * (fontSize / 1000);
+  // A word, or the last piece of one: never empty.
+  lines.push(currentLine);
+  return lines;
 }
 
 /**

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getDocumentProxy, extractText, getResolvedPDFJS } from 'unpdf';
 import { generatePdf, closeBrowser } from './pdf-service.js';
+import fontkit from '@pdf-lib/fontkit';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream, type PDFObject } from 'pdf-lib';
 
 describe('pdf-service (pdf-lib)', () => {
   beforeEach(() => {
@@ -381,7 +385,7 @@ describe('pdf-service (pdf-lib)', () => {
         expect(text).toBe(['A', b, ...months.slice(0, 10), b, 'C', ...months.slice(10)].join('').replace(/\s+/g, ''));
         const header = runs.filter((run) => !/^m\d+$/.test(run.str));
         expect(at(header)).toEqual([
-          ['A', 56], ['Spans twelve columns, from the sixth to the', 303.64], ['seventeenth', 303.64],
+          ['A', 56], ['Spans twelve columns, from the sixth to', 303.64], ['the seventeenth', 303.64],
           [b, 56], ['C', 402.7],
         ]);
         expect(header[1]!.x + header[1]!.width).toBeLessThanOrEqual(LEFT + 10 * (WIDTH / 10) - PAD + EPS);
@@ -585,7 +589,7 @@ describe('pdf-service (pdf-lib)', () => {
     const CODE_RIGHT = 535.28; // CODE_TEXT_X + CODE_TEXT_WIDTH = PAGE_WIDTH - MARGIN_RIGHT - CODE_PADDING
     const BODY_RIGHT = 545.28; // PAGE_WIDTH - MARGIN_RIGHT
     const CODE_ROW = 13.5; // FONT_SIZE_CODE + 4
-    const CELL = 5.7; // one Courier cell at 9.5 pt (0.6 em)
+    const CELL = 5.7; // one Noto Sans Mono cell at 9.5 pt (0.6 em)
     const CODE_BG = '#f0f2f5'; // COLOR_CODE_BG rgb(0.94, 0.95, 0.96), as pdf.js reports the fill
     const EPS = 0.01;
 
@@ -646,7 +650,7 @@ describe('pdf-service (pdf-lib)', () => {
       }
     }
 
-    /** Where each run starts, in Courier cells from the code box's left edge. */
+    /** Where each run starts, in Noto Sans Mono cells from the code box's left edge. */
     const cells = (items: Drawn[]): number[] => items.map((item) => +((item.x - CODE_X) / CELL).toFixed(2));
 
     describe('code blocks', () => {
@@ -659,7 +663,7 @@ describe('pdf-service (pdf-lib)', () => {
         expectInsideCodeBox(items, backgrounds);
       });
 
-      it('continues a long line flush left after 83 Courier cells, with no marker', async () => {
+      it('continues a long line flush left after 83 Noto Sans Mono cells, with no marker', async () => {
         // 475.28 pt / 5.7 pt = 83 whole cells per row.
         const { items } = await layout(`<pre>${issueLine}</pre>`);
         expect(items.map((item) => item.str)).toEqual(['x'.repeat(83), `${'x'.repeat(67)}SENTINEL_END`]);
@@ -716,10 +720,16 @@ describe('pdf-service (pdf-lib)', () => {
         expectInsideCodeBox(items, backgrounds);
       });
 
-      it('measures after sanitizing, so a stripped emoji neither splits nor shifts the wrap', async () => {
-        const { text, items } = await layout(`<pre>${'x'.repeat(82)}\u{1F600}${'x'.repeat(3)}</pre>`);
-        expect(items.map((item) => item.str)).toEqual(['x'.repeat(83), 'xx']);
-        expect(text.replace(/Page\d+of\d+$/, '')).toBe('x'.repeat(85));
+      it('keeps a surrogate pair whole when a code row breaks next to it', async () => {
+        // U+20087 (Noto Sans SC, 9.5 pt) still fits after 81 cells (471.2 of 475.28 pt), so the row
+        // breaks after it. U+1F600 is in no bundled font: its U+FFFD (Noto Sans Mono, 11.4 pt) does not
+        // fit after 82 cells and opens the next row. A break between the two UTF-16 halves would draw
+        // each half as a U+FFFD of its own.
+        const lines = [`${'x'.repeat(81)}\u{20087}xxx`, `${'x'.repeat(82)}\u{1F600}xxx`];
+        const { text, items, backgrounds } = await layout(`<pre>${lines.join('\n')}</pre>`);
+        expect(items.map((item) => item.str)).toEqual(['x'.repeat(81), '\u{20087}', 'xxx', 'x'.repeat(82), '\uFFFDxxx']);
+        expect(text.replace(/Page\d+of\d+$/, '')).toBe(`${'x'.repeat(81)}\u{20087}xxx${'x'.repeat(82)}\uFFFDxxx`);
+        expectInsideCodeBox(items, backgrounds);
       });
     });
 
@@ -750,9 +760,8 @@ describe('pdf-service (pdf-lib)', () => {
       });
 
       it('measures wrapped lines as drawn, without kerning', async () => {
-        // Helvetica's AFM kerns A-V/V-A by -70/-80 per mille. widthOfTextAtSize subtracts that,
-        // but pdf-lib draws with Tj, which never applies it: three of these words measure
-        // 477.62 pt kerned and are drawn 534.38 pt wide.
+        // pdf-lib draws with Tj, which never kerns, and the vendored fonts carry no kerning
+        // (tools/pdf-fonts/prepare.py drops GPOS): a line is as wide as the sum of its advances.
         const words = Array.from({ length: 6 }, () => 'AV'.repeat(12));
         const { text, items } = await layout(`<p>${words.join(' ')}</p>`);
         expect(text).toContain(words.join(''));
@@ -762,10 +771,10 @@ describe('pdf-service (pdf-lib)', () => {
       });
 
       it('counts the space between words, so a line of short words stays inside the margin', async () => {
-        // At 11 pt 'a' is 6.116 pt and a space 3.058 pt: 54 words fill 492.34 of 495.28 pt, 55 would not.
+        // At 11 pt Noto Sans 'a' is 6.171 pt and a space 2.86 pt: 55 words fill 493.85 of 495.28 pt, 56 would not.
         const { text, items } = await layout(`<p>${'a '.repeat(300)}</p>`);
         expect(text).toContain('a'.repeat(300));
-        expect(items.map((item) => item.str.split(' ').length)).toEqual([54, 54, 54, 54, 54, 30]);
+        expect(items.map((item) => item.str.split(' ').length)).toEqual([55, 55, 55, 55, 55, 25]);
         for (const item of items) {
           expect(item.x + item.width, item.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
         }
@@ -774,7 +783,7 @@ describe('pdf-service (pdf-lib)', () => {
       it('breaks a long token in a banded table column into rows of several characters', async () => {
         // 45 columns print as four bands of at most 12 (#1731): 495.28 / 12 = 41.27 pt per column leaves a
         // 29.27 pt text box, so the token breaks 3-5 characters per row (in 45 equal columns, a -0.99 pt
-        // box, it stacked one per row). No glyph is wider than a band column's box any more.
+        // box, it stacked one per row). Only U+2E3B THREE-EM DASH (31.24 pt) is wider than that box.
         const token = '0123456789abcdef'.repeat(2);
         const row = [`<td>${token}</td>`, ...Array.from({ length: 44 }, () => '<td></td>')].join('');
         const { text, items } = await layout(`<table><tr>${row}</tr></table>`);
@@ -789,10 +798,11 @@ describe('pdf-service (pdf-lib)', () => {
       });
 
       it('centres a wrapped cover title by its drawn width', async () => {
-        // Two 16-letter A/V words fill 495.04 of 495.28 pt in bold 22 pt; kerning would claim 442.24 pt.
-        // The closing `AVA` (46.44 pt) only fits on its own line at the content width; wrapped to
-        // the page width it would join the third line, 547.60 pt wide and starting at x 23.84.
-        const title = `${Array.from({ length: 6 }, () => 'AV'.repeat(8)).join(' ')} AVA`;
+        // Two 16-letter A/V words fill 478.10 of 495.28 pt in Noto Sans Bold 22 pt. The closing `A`
+        // (15.22 pt) only fits on its own line at the content width; at any wrap width from 499.05 pt
+        // (the page width, or the page width minus one margin) it joins the third line, which then
+        // starts at x 48.12.
+        const title = `${Array.from({ length: 6 }, () => 'AV'.repeat(8)).join(' ')} A`;
         const { items } = await layout('<p>body</p>', { title });
         const titleLines = items.filter((item) => /^[AV ]+$/.test(item.str));
         expect(titleLines.map((item) => item.str).join(' ')).toBe(title);
@@ -808,6 +818,318 @@ describe('pdf-service (pdf-lib)', () => {
   describe('closeBrowser', () => {
     it('should be a no-op (pdf-lib has no browser)', async () => {
       await expect(closeBrowser()).resolves.toBeUndefined();
+    });
+  });
+
+  // ========================================================================
+  // #1729 — non-Latin text survives the export
+  // ========================================================================
+  //
+  // Text was run through a WinAnsi sanitizer for the four standard fonts,
+  // which deleted every character outside Latin-1: the issue's
+  // `<p>ASCII Установка 手順 łść ğ</p>` exported as 'ASCII'. These assert the
+  // extracted text AND which vendored font draws each run where — a run in
+  // the wrong font, or a glyph drawn as an empty box, still extracts.
+  describe('non-Latin text (#1729)', () => {
+    const ISSUE = 'ASCII Установка 手順 łść ğ';
+    const FONT_DIR = join(import.meta.dirname, 'fonts');
+    const BODY_RIGHT = 545.28; // PAGE_WIDTH - MARGIN_RIGHT
+    const EPS = 0.01;
+
+    interface Run { page: number; str: string; font: string; x: number; y: number; width: number }
+
+    /** Visible runs (page footers excluded) with the font each is drawn in; `text` has its whitespace collapsed. */
+    async function drawn(html: string, options: { title?: string } = {}): Promise<{ text: string; runs: Run[]; pdf: Uint8Array }> {
+      const pdf = new Uint8Array(await generatePdf(html, options));
+      const doc = await getDocumentProxy(pdf.slice());
+      const runs: Run[] = [];
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        const { items } = await page.getTextContent();
+        await page.getOperatorList(); // loads the page's fonts into commonObjs
+        for (const item of items) {
+          if (!('str' in item) || !item.str.trim() || /^Page \d+ of \d+$/.test(item.str)) continue;
+          // pdf-lib names an embedded font `<PostScript name>-<random suffix>`.
+          const loaded: unknown = page.commonObjs.get(item.fontName);
+          const name = loaded && typeof loaded === 'object' && 'name' in loaded ? String(loaded.name) : '';
+          const [, , , , x, y] = item.transform as number[];
+          runs.push({ page: n, str: item.str, font: name.replace(/-\d+$/, ''), x: x!, y: y!, width: item.width });
+        }
+      }
+      const { text } = await extractText(doc, { mergePages: true });
+      return { text: (text as string).replace(/Page \d+ of \d+/g, '').replace(/\s+/g, ' ').trim(), runs, pdf };
+    }
+
+    /** Each run as [text, font, x]. */
+    const at = (runs: Run[]): Array<[string, string, number]> => runs.map((run) => [run.str, run.font, +run.x.toFixed(2)]);
+
+    interface EmbeddedFont { name: string; bytes: number; glyphs: Array<{ char: string; inked: boolean; sameOutline: boolean }> }
+
+    /** Every embedded font program, and per ToUnicode entry whether its glyph has the vendored font's outline for that character. */
+    async function embeddedFonts(pdf: Uint8Array): Promise<EmbeddedFont[]> {
+      const doc = await PDFDocument.load(pdf);
+      const streamBytes = (ref: PDFObject | undefined): Uint8Array => {
+        const stream = doc.context.lookup(ref);
+        if (!(stream instanceof PDFRawStream)) throw new Error('expected a stream');
+        return decodePDFRawStream(stream).decode();
+      };
+      const fonts: EmbeddedFont[] = [];
+      for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+        if (!(obj instanceof PDFDict) || obj.get(PDFName.of('Subtype')) !== PDFName.of('Type0')) continue;
+        const name = obj.get(PDFName.of('BaseFont'))!.toString().slice(1).replace(/-\d+$/, '');
+        const cidFont = doc.context.lookup(doc.context.lookup(obj.get(PDFName.of('DescendantFonts')), PDFArray).get(0), PDFDict);
+        const descriptor = doc.context.lookup(cidFont.get(PDFName.of('FontDescriptor')), PDFDict);
+        const program = streamBytes(descriptor.get(PDFName.of('FontFile2')));
+        const cmap = new TextDecoder().decode(streamBytes(obj.get(PDFName.of('ToUnicode'))));
+        const subset = fontkit.create(program);
+        const vendored = fontkit.create(readFileSync(join(FONT_DIR, `${name}.ttf`)));
+        const glyphs = [...cmap.matchAll(/<([0-9A-F]+)> <([0-9A-F]+)>/g)].map(([, glyphId, utf16]) => {
+          const char = String.fromCharCode(...utf16!.match(/.{4}/g)!.map((unit) => parseInt(unit, 16)));
+          const outline = subset.getGlyph(parseInt(glyphId!, 16)).path.toSVG();
+          return { char, inked: outline !== '', sameOutline: outline === vendored.glyphForCodePoint(char.codePointAt(0)!).path.toSVG() };
+        });
+        fonts.push({ name, bytes: program.length, glyphs });
+      }
+      return fonts;
+    }
+
+    it('keeps the issue\'s Cyrillic, CJK and Latin Extended text in the body', async () => {
+      const { text, runs } = await drawn(`<p>${ISSUE}</p>`);
+      expect(text).toBe(ISSUE);
+      // Each run starts where the previous one ended (plus a 2.86 pt space): measured as drawn.
+      expect(at(runs)).toEqual([
+        ['ASCII Установка', 'NotoSans-Regular', 50], ['手順', 'NotoSansSC-Regular', 138.08], ['łść ğ', 'NotoSans-Regular', 162.94],
+      ]);
+    });
+
+    it('prints a non-Latin title on the cover page, centred', async () => {
+      const { runs } = await drawn('', { title: ISSUE });
+      const title = runs.filter((run) => run.page === 1 && !/\d{4}$/.test(run.str));
+      expect(title.map((run) => run.str).join(' ')).toBe(ISSUE);
+      expect(at(title)).toEqual([
+        ['ASCII Установка', 'NotoSans-Bold', 154.5], ['手順', 'NotoSansSC-Regular', 342.33], ['łść ğ', 'NotoSans-Bold', 392.05],
+      ]);
+      expect(title[0]!.x).toBeCloseTo(595.28 - (title.at(-1)!.x + title.at(-1)!.width));
+    });
+
+    it('wraps a cover title at the content width, not the page width', async () => {
+      // Two 16-letter A/V words fill 478.10 of 495.28 pt in Noto Sans Bold 22 pt. The closing `A`
+      // (15.22 pt) only fits on its own line at the content width; at any wrap width from 499.05 pt
+      // (the page width, or the page width minus one margin) it joins the third line, which then
+      // starts at x 48.12.
+      const word = 'AV'.repeat(8);
+      const title = `${Array(6).fill(word).join(' ')} A`;
+      const { runs } = await drawn('<p>body</p>', { title });
+      const lines = runs.filter((run) => run.page === 1 && /^[AV ]+$/.test(run.str));
+      expect(lines.map((run) => run.str)).toEqual([`${word} ${word}`, `${word} ${word}`, `${word} ${word}`, 'A']);
+      for (const run of lines) {
+        expect(run.x, run.str).toBeGreaterThanOrEqual(50 - EPS);
+        expect(run.x + run.width, run.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+        expect(run.x, `${run.str} is centred`).toBeCloseTo(595.28 - (run.x + run.width));
+      }
+    });
+
+    it('keeps non-Latin text in headings and list items', async () => {
+      const { text, runs } = await drawn('<h2>Установка 手順</h2><ul><li>Сервер 한국어</li></ul><ol><li>手順 ğ</li></ol>');
+      expect(text).toBe('Установка 手順 • Сервер 한국어 1. 手順 ğ');
+      expect(at(runs)).toEqual([
+        ['Установка', 'NotoSans-Bold', 50], ['手順', 'NotoSansSC-Regular', 151.07],
+        ['•', 'NotoSans-Bold', 54], ['Сервер', 'NotoSans-Regular', 70], ['한국어', 'NotoSansKR-Regular', 111.6],
+        ['1.', 'NotoSans-Regular', 54], ['手順', 'NotoSansSC-Regular', 70], ['ğ', 'NotoSans-Regular', 94.86],
+      ]);
+    });
+
+    it('labels an image with its non-Latin alt text instead of dropping the label', async () => {
+      // The label used to be drawn inside a try/catch that dropped it when the alt could not be encoded.
+      const { runs } = await drawn('<img alt="Установка 手順 😀"><img alt="Install">');
+      expect(at(runs)).toEqual([
+        ['[Image: Установка', 'NotoSans-Italic', 240.78], ['手順', 'NotoSansSC-Regular', 322.55], ['\uFFFD]', 'NotoSans-Italic', 342.89],
+        ['[Image: Install]', 'NotoSans-Italic', 267.53],
+      ]);
+      // Centred in the content width, measured across its fonts.
+      expect(runs[0]!.x - 50).toBeCloseTo(545.28 - (runs[2]!.x + runs[2]!.width));
+    });
+
+    it('draws a code block in Noto Sans Mono, with fallbacks for what it lacks', async () => {
+      const code = `${ISSUE} → ≤ ─ ✓`;
+      const { text, runs } = await drawn(`<pre>${code}</pre>`);
+      expect(text).toBe(code);
+      // 5.7 pt Mono cells from x 60; CJK and ✓ come from Noto Sans SC.
+      expect(at(runs)).toEqual([
+        ['ASCII', 'NotoSansMono-Regular', 60], ['Установка', 'NotoSansMono-Regular', 94.2], ['手順', 'NotoSansSC-Regular', 151.2],
+        ['łść ğ → ≤ ─', 'NotoSansMono-Regular', 175.9], ['✓', 'NotoSansSC-Regular', 244.3],
+      ]);
+    });
+
+    it('draws non-Latin table cells, and drops no cell text', async () => {
+      // Cells used to be drawn inside a try/catch that skipped what could not be encoded; it is gone,
+      // and a character no font covers is drawn as U+FFFD.
+      const { text, runs } = await drawn(
+        `<table><tr><th>Параметр</th><th>手順</th></tr><tr><td>${ISSUE}</td><td>ع😀✔</td></tr></table>`,
+      );
+      expect(text).toBe(`Параметр 手順 ${ISSUE} \uFFFD\uFFFD\uFFFD`);
+      expect(at(runs)).toEqual([
+        ['Параметр', 'NotoSans-Bold', 56], ['手順', 'NotoSansSC-Regular', 303.64],
+        ['ASCII Установка', 'NotoSans-Regular', 56], ['手順', 'NotoSansSC-Regular', 144.08], ['łść ğ', 'NotoSans-Regular', 168.94],
+        ['\uFFFD\uFFFD\uFFFD', 'NotoSans-Regular', 303.64],
+      ]);
+    });
+
+    it('draws a word no bundled font covers as U+FFFD, and never skips it', async () => {
+      // wrapText used to skip a word whose measurement threw; measuring now never throws, and each
+      // code point no bundled font covers is drawn as U+FFFD in the style's face.
+      const { text, runs } = await drawn(
+        '<h3>عربي</h3><p>Arabic عربي Hebrew עברית Thai ไทย emoji 😀 check ✔</p><table><tr><td>हिन्दी</td></tr></table>',
+      );
+      const fffd = (word: string): string => '\uFFFD'.repeat([...word].length);
+      expect(text).toBe(`${fffd('عربي')} Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check \uFFFD ${fffd('हिन्दी')}`);
+      expect(at(runs)).toEqual([
+        [fffd('عربي'), 'NotoSans-Bold', 50],
+        [`Arabic ${fffd('عربي')} Hebrew ${fffd('עברית')} Thai ${fffd('ไทย')} emoji \uFFFD check \uFFFD`, 'NotoSans-Regular', 50],
+        [fffd('हिन्दी'), 'NotoSans-Regular', 56],
+      ]);
+    });
+
+    it('draws nothing for controls and other invisible code points', async () => {
+      const { text } = await drawn('<p>soft\u00ADhyphen zero\u200Bwidth joiner\u200Dhere variation\uFE0F bom\uFEFF bell\u0007</p>');
+      expect(text).toBe('softhyphen zerowidth joinerhere variation bom bell');
+    });
+
+    it('keeps the symbols Noto Sans lacks, drawn by a fallback font', async () => {
+      const symbols = '→ ← ✓ ≤ ≥ ∑ ─ ■ □ — – … ‘’ “” •';
+      const { text, runs } = await drawn(`<p>${symbols}</p>`);
+      expect(text).toBe(symbols);
+      expect(at(runs)).toEqual([
+        ['→', 'NotoSansMono-Regular', 50], ['←', 'NotoSansMono-Regular', 59.46], ['✓', 'NotoSansSC-Regular', 68.92],
+        ['≤', 'NotoSansMono-Regular', 79.29], ['≥', 'NotoSansMono-Regular', 88.75], ['∑', 'NotoSansSC-Regular', 98.21],
+        ['─', 'NotoSansMono-Regular', 112.07], ['■', 'NotoSansMono-Regular', 121.53], ['□', 'NotoSansMono-Regular', 130.99],
+        ['— – … ‘’ “” •', 'NotoSans-Regular', 140.45],
+      ]);
+    });
+
+    it('measures each run in the font that draws it, so mixed-script lines wrap inside the margin', async () => {
+      // `手順手順手順手順` is 88 pt in Noto Sans SC; measured in Noto Sans (its 600-unit empty box per
+      // character) it would claim 52.8 pt, and four more words would join each line.
+      const words = Array.from({ length: 24 }, (_, i) => (i % 2 ? '手順手順手順手順' : 'Setup'));
+      const { text, runs } = await drawn(`<p>${words.join(' ')}</p>`);
+      expect(text).toBe(words.join(' '));
+      for (const run of runs) expect(run.x + run.width, run.str).toBeLessThanOrEqual(BODY_RIGHT + EPS);
+      const line = [50, 82.64, 173.5, 206.13, 296.99, 329.63, 420.49, 453.13];
+      expect(runs.map((run) => +run.x.toFixed(2))).toEqual([...line, ...line, ...line]);
+      expect(runs.map((run) => +run.y.toFixed(2))).toEqual([...Array(8).fill(781.89), ...Array(8).fill(765.89), ...Array(8).fill(749.89)]);
+    });
+
+    it('exports a blockquote whose text is entirely non-Latin, emoji or control characters', async () => {
+      const { text, runs } = await drawn('<blockquote>Установка</blockquote><blockquote>😀</blockquote><blockquote>\u0007</blockquote><p>after</p>');
+      expect(text).toBe('Установка \uFFFD after');
+      expect(at(runs)).toEqual([['Установка', 'NotoSans-Italic', 66], ['\uFFFD', 'NotoSans-Italic', 66], ['after', 'NotoSans-Regular', 50]]);
+    });
+
+    it('keeps a surrogate pair whole: one glyph, or one placeholder, per astral character', async () => {
+      // U+20087 is in Noto Sans SC; U+1F600 is in no bundled font.
+      const { text, runs } = await drawn('<p>ext-B 𠂇 emoji 😀</p><pre>ext-B 𠂇 emoji 😀</pre>');
+      expect(text).toBe('ext-B 𠂇 emoji \uFFFD ext-B 𠂇 emoji \uFFFD');
+      expect(at(runs.filter((run) => run.str.includes('𠂇')))).toEqual([['𠂇', 'NotoSansSC-Regular', 79.55], ['𠂇', 'NotoSansSC-Regular', 94.2]]);
+    });
+
+    it('keeps a surrogate pair whole at a code row\'s end', async () => {
+      // A code row ends after 120 code points on a tree without #1730's wrapping, and at 83 Mono
+      // cells with it. In the first line 117 zero-width spaces put U+20087 (Noto Sans SC) across the
+      // 120th UTF-16 unit without moving it off the page; in the second it ends the first wrapped row.
+      // Split into its two halves, it would draw two U+FFFD.
+      const code = `${'\u200B'.repeat(117)}xx\u{20087}\n${'x'.repeat(81)}\u{20087}xxx`;
+      const { text } = await drawn(`<pre>${code}</pre>`);
+      expect([...text.matchAll(/\u{20087}/gu)]).toHaveLength(2);
+      expect(text).not.toContain('\uFFFD');
+    });
+
+    it('separates words that only a newline separates, as HTML does', async () => {
+      const { runs } = await drawn(
+        '<h2>Getting\nStarted</h2><table><tr><td>first\nsecond</td></tr></table><blockquote>quoted\nlines</blockquote><div>bare\ntext</div>',
+        { title: 'Release\nnotes' },
+      );
+      const lines = runs.filter((run) => !/\d{4}$/.test(run.str));
+      expect(lines.map((run) => run.str)).toEqual(['Release notes', 'Getting Started', 'first second', 'quoted lines', 'bare text']);
+      expect(lines.slice(1).map((run) => +run.x.toFixed(2))).toEqual([50, 56, 66, 50]);
+    });
+
+    it('draws every character with the vendored font\'s outline, never an empty box', async () => {
+      const fixture = `${ISSUE} 한국어 → ✓ ∑ 😀`;
+      const { pdf } = await drawn(`<h1>${fixture}</h1><p>${fixture}</p><pre>${fixture}</pre><blockquote>${fixture}</blockquote>`, { title: fixture });
+      const glyphs = (await embeddedFonts(pdf)).flatMap((font) => font.glyphs.map((glyph) => ({ font: font.name, ...glyph })));
+      expect(glyphs.filter((glyph) => !glyph.sameOutline || (!glyph.inked && glyph.char.trim()))).toEqual([]);
+      const drawnChars = new Set(glyphs.map((glyph) => glyph.char));
+      expect([...new Set(`${fixture.replace(/\s|😀/gu, '')}\uFFFD`)].filter((char) => !drawnChars.has(char))).toEqual([]);
+    });
+
+    it('extracts look-alike characters that share a glyph upstream as written, each drawn with its outline', async () => {
+      // Upstream Noto Sans SC draws each of these pairs with one glyph: the wave dash 〜 and the
+      // fullwidth tilde ～, the Kangxi radicals ⽇ ⼿ and the ideographs 日 手, ① and ➀, ∕ and ／.
+      // pdf-lib's ToUnicode keeps the character first drawn with a glyph, so the second of a pair
+      // extracted as the first; tools/pdf-fonts/prepare.py gives each its own copy of the glyph.
+      const lines = ['10〜20時 と 10～20時', '⽇本 と 日本', '手 ⼿ ① ➀ ∕ ／'];
+      const { text, pdf } = await drawn(lines.map((line) => `<p>${line}</p>`).join(''));
+      expect(text).toBe(lines.join(' '));
+      const glyphs = (await embeddedFonts(pdf)).flatMap((font) => font.glyphs.map((glyph) => ({ font: font.name, ...glyph })));
+      expect(glyphs.filter((glyph) => !glyph.sameOutline || (!glyph.inked && glyph.char.trim()))).toEqual([]);
+    });
+
+    it('embeds each font as a subset, and Noto Sans SC and KR only for characters that need them', async () => {
+      const latin = await embeddedFonts((await drawn('<p>Hello</p>')).pdf);
+      const cjk = await embeddedFonts((await drawn('<p>手順 한국어</p>')).pdf);
+      const faces = ['NotoSans-Regular', 'NotoSans-Bold', 'NotoSans-Italic', 'NotoSansMono-Regular'];
+      expect(latin.map((font) => font.name)).toEqual(faces);
+      expect(cjk.map((font) => font.name)).toEqual([...faces, 'NotoSansSC-Regular', 'NotoSansKR-Regular']);
+      // A subset holds the glyphs drawn: under 1 % of the vendored file, which a batch export repeats per article.
+      for (const font of [...latin, ...cjk]) {
+        expect(font.bytes, font.name).toBeLessThan(readFileSync(join(FONT_DIR, `${font.name}.ttf`)).length / 100);
+      }
+    });
+
+    it('draws a glyph wider than its table column whole, on the cell\'s first line', async () => {
+      // U+2E3B THREE-EM DASH is 31.24 pt at 11 pt, wider than a 14-column cell's 23.38 pt text box:
+      // the only bundled glyph that is. It gets the cell's first line, unbroken, and extends past the box.
+      const row = ['<td>⸻</td>', ...Array.from({ length: 13 }, () => '<td></td>')].join('');
+      const { text, runs } = await drawn(`<table><tr>${row}</tr></table>`);
+      expect(text).toBe('⸻');
+      // First baseline: 781.89 page top - 4 table offset - 6 cell padding - 11 font size.
+      expect(runs.map((run) => [run.str, +run.x.toFixed(2), +run.y.toFixed(2), +run.width.toFixed(2)])).toEqual([['⸻', 56, 760.89, 31.24]]);
+    });
+
+    it('keeps sequential exports apart: a later document extracts as drawn', async () => {
+      // pdf-lib parses each embedded font per document. A parsed font shared across documents keeps
+      // the glyph objects an earlier subset created for accent components (the c of ć) without their
+      // code points, and a later document's plain c then extracts as a control character. A fresh
+      // module instance makes these the process's first exports, whatever ran before.
+      vi.resetModules();
+      const fresh = await import('./pdf-service.js');
+      const textOf = async (html: string): Promise<string> => {
+        const { text } = await extractText(await getDocumentProxy(new Uint8Array(await fresh.generatePdf(html, {}))), { mergePages: true });
+        return (text as string).replace(/Page \d+ of \d+/g, '').trim();
+      };
+      expect(await textOf('<p>ć ś ż ń ó ę ą</p>')).toBe('ć ś ż ń ó ę ą');
+      expect(await textOf('<p>arabic c s z n o e a</p>')).toBe('arabic c s z n o e a');
+    });
+
+    it('merges exports into one PDF that extracts every article, as the batch export does', async () => {
+      // routes/knowledge/pages-export.ts: one document per article, pages copied into one PDF.
+      const articles = [ISSUE, '한국어 문서 — Сервер', 'Plain ASCII → ✓'];
+      const merged = await PDFDocument.create();
+      for (const body of articles) {
+        const article = await PDFDocument.load(await generatePdf(`<p>${body}</p>`, { title: body }));
+        for (const page of await merged.copyPages(article, article.getPageIndices())) merged.addPage(page);
+      }
+      const { text } = await extractText(await getDocumentProxy(await merged.save()), { mergePages: true });
+      const all = (text as string).replace(/\s+/g, ' ');
+      for (const body of articles) expect(all.split(body)).toHaveLength(3); // each title and body
+    });
+
+    it('renders decomposed Latin and conjoining Hangul as composed glyphs', async () => {
+      // NFC first: e + U+0301, e + U+0323 + U+0302, u + U+0306 and the jamo U+1112 U+1161 U+11AB
+      // become é, ệ, ŭ and 한, which the fonts draw as single glyphs (pdf-lib positions no marks).
+      const { text, runs } = await drawn('<p>e\u0301 e\u0323\u0302 u\u0306 \u1112\u1161\u11AB</p>');
+      expect(text).toBe('é ệ ŭ 한');
+      expect(at(runs)).toEqual([['é ệ ŭ', 'NotoSans-Regular', 50], ['한', 'NotoSansKR-Regular', 77.79]]);
     });
   });
 });

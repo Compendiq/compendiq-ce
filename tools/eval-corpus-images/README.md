@@ -4,7 +4,7 @@ Builds `backend/src/domains/llm/eval/corpus-de-images/` from German Wikipedia:
 one Markdown page per article, the images it references, a manifest, an
 attribution file and a README.
 
-Python rather than TypeScript, and the one place in this repo that is: the job
+Python rather than TypeScript, like `tools/pdf-fonts/`: the job
 is image re-encoding, and Pillow does in four lines what the backend
 deliberately has no dependency for. `core/services/image-validator.ts` is
 dependency-free on purpose (`sharp` and `image-size` were both refused as
