@@ -1599,8 +1599,10 @@ a need for a partial one.
 run can leave stale — over what `embedPage` will actually embed: non-deleted,
 non-folder, `body_html` present, and at least `MIN_EMBEDDABLE_TEXT_CHARS` (20)
 of extracted text. That last filter matters: `embedPage` permanently settles
-shorter pages with zero embedding rows, so counting them would leave a corpus
-with a few structural stub pages "degraded" forever. It replaced a boolean
+shorter pages with zero embedding rows (since #1714 a page edited down to
+nothing to embed loses its chunks, averages and similarity edges in the
+settling transaction), so counting them would leave a corpus with a few
+structural stub pages "degraded" forever. It replaced a boolean
 EXISTS probe that flipped healthy the moment ONE visible page had an embedding
 row, so 1% coverage rendered identically to 100%. `/api/search` runs it once
 for semantic/hybrid modes, exposes `embeddingCoverage` + `degradedReason` on

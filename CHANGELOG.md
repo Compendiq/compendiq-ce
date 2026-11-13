@@ -53,6 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the import returned no labels without a warning. Inline `[a, b]` lists
   and scalar values behave as before. YAML comment rules apply: an unquoted
   `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
+- **Shortening an embedded page removes its old text from search and chat
+  (#1714):** when an edit leaves a page with nothing to embed (fewer than 20
+  characters of text, or no chunk left), the next embedding pass now deletes
+  the page's old chunks, clears its average vector (and the copies kept
+  during an embedding-model migration), removes its similarity links to
+  related pages in both directions and resets its embedded time, in the same
+  step that marks it as not embedded. Previously the deleted text stayed a
+  semantic and hybrid search hit, kept reaching chat answers as context, and
+  kept the page linked as related. An edit that lands while the pass is
+  settling the page is never wiped: the pass then changes nothing, and the
+  page is embedded again from its new content.
 - **Markdown import keeps task completion and list numbering (#1752):**
   importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
   `- [ ] todo`) as editor task lists with their checked state, and ordered
