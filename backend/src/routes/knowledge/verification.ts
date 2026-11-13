@@ -109,7 +109,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
         review_interval_days = $1,
         next_review_at = CASE
-          WHEN verified_at IS NOT NULL THEN verified_at + ($1 || ' days')::INTERVAL
+          WHEN verified_at IS NOT NULL THEN verified_at + ($1::int || ' days')::INTERVAL
           ELSE next_review_at
         END
        WHERE id = $2
