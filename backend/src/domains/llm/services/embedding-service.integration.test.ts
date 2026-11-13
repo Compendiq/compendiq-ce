@@ -370,28 +370,32 @@ describe.skipIf(!dbAvailable)('embedPage settle path clears derived vector state
     expect({ chunks: yAfter.chunks, avg: yAfter.avg }).toEqual({ chunks: neighbour.chunks, avg: neighbour.avg });
   });
 
-  it('rolls the whole settle back when its last statement fails, so the clearing is one transaction with the settle update', async () => {
-    const { x } = await seedEmbeddedPair();
-    await shrink(x);
-    const before = await derivedState(x);
-    // Failure injection: the edge DELETE is the settle's last statement, so
-    // the settle UPDATE and the chunk DELETE have already run when it raises.
-    await query(`CREATE FUNCTION test_1714_refuse_edge_delete() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN RAISE EXCEPTION 'injected edge-delete failure (#1714)'; END $$`);
-    await query(`CREATE TRIGGER test_1714_refuse_edge_delete BEFORE DELETE ON page_relationships
-      FOR EACH ROW EXECUTE FUNCTION test_1714_refuse_edge_delete()`);
-    try {
-      await expect(embedPage('user-1', x, 'Ops notes', 'DEV', SHORT_BODY))
-        .rejects.toThrow(/injected edge-delete failure/);
-    } finally {
-      await query('DROP TRIGGER IF EXISTS test_1714_refuse_edge_delete ON page_relationships');
-      await query('DROP FUNCTION IF EXISTS test_1714_refuse_edge_delete()');
-    }
+  it.each(['page_embeddings', 'page_relationships'] as const)(
+    'rolls the whole settle back when its %s DELETE fails, so the clearing is one transaction with the settle update',
+    async (table) => {
+      const { x } = await seedEmbeddedPair();
+      await shrink(x);
+      const before = await derivedState(x);
+      // Failure injection, once per DELETE: the settle UPDATE (and, for the
+      // edge DELETE, the chunk DELETE) have already run when it raises, so
+      // any statement that left the settle transaction shows up half-applied.
+      try {
+        await query(`CREATE OR REPLACE FUNCTION test_1714_refuse_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'injected % delete failure (#1714)', TG_TABLE_NAME; END $$`);
+        await query(`CREATE TRIGGER test_1714_refuse_delete BEFORE DELETE ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION test_1714_refuse_delete()`);
+        await expect(embedPage('user-1', x, 'Ops notes', 'DEV', SHORT_BODY))
+          .rejects.toThrow(`injected ${table} delete failure`);
+      } finally {
+        await query(`DROP TRIGGER IF EXISTS test_1714_refuse_delete ON ${table}`);
+        await query('DROP FUNCTION IF EXISTS test_1714_refuse_delete()');
+      }
 
-    // Nothing half-applied: rows, average, edges, embedded_at, the dirty flag
-    // and the status all roll back with the failing statement.
-    expect(await derivedState(x)).toEqual(before);
-  });
+      // Nothing half-applied: rows, average, edges, embedded_at, the dirty
+      // flag and the status all roll back with the failing statement.
+      expect(await derivedState(x)).toEqual(before);
+    },
+  );
 
   it('resets embedded_at', async () => {
     const x = await seedEmbeddedPage('Ops notes', DELETED_TEXT, 0);
