@@ -698,10 +698,10 @@ flowchart LR
   `chunk_tsv @@ q` hit, so "find the page called X" keeps the
   `rag_context_chars_per_page`-sized excerpt #1273 F9 gave it, while an
   OCR-only `INC-2203` now cites the description that contains the key.
-- **`/api/search?mode=keyword` is a separate SQL path and is unchanged**
-  (erratum #1617/Q2): an image-only page is findable by `mode=hybrid` and by
-  `/llm/ask` and is invisible in the default keyword box. Recorded asymmetry —
-  see `docs/runbooks/retrieval-eval.md`.
+- **`/api/search?mode=keyword` is a separate SQL path that reads no derived
+  chunks** (erratum #1617/Q2): an image-only page is findable by `mode=hybrid`
+  and by `/llm/ask` and is invisible in the default keyword box. Recorded
+  asymmetry — see `docs/runbooks/retrieval-eval.md`.
 - **Provenance is `metadata`, never position or text shape.**
   `derived-provenance.ts` is the only reader; `SearchResult.derived` carries
   `{ attachmentSource, attachmentKey, contentHash, analysisId, analysisVersion,

@@ -203,6 +203,14 @@ curl "http://localhost:3051/api/search?q=deployment&mode=hybrid" \
   -H "Authorization: Bearer <access-token>"
 ```
 
+In `mode=keyword`, `items` pages one deduplicated list of full-text matches and
+typo-tolerant title matches. No page holds more than `limit` items, each result
+appears on exactly one page, and `total` counts the whole list on every page
+(`totalPages` is `ceil(total / limit)`). A `page` past the last returns no items
+and the same `total`. `sort=relevance` lists full-text matches by text rank,
+then title-only matches by similarity; `sort=modified` and `sort=title` order
+both together. The page id breaks ties.
+
 Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.

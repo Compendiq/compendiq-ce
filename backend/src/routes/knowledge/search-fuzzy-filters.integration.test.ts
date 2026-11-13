@@ -2,12 +2,13 @@
  * #1740 — every fuzzy-title hit in keyword search satisfies every active
  * keyword filter, against a REAL PostgreSQL (all migrations).
  *
- * `GET /api/search?mode=keyword` runs two statements: the full-text leg and
- * the fuzzy-title (`pg_trgm`) leg, whose title-only hits are appended after
- * the full-text rows. The fuzzy statement used to carry only the visibility,
- * trash and AI-policy predicates, so a misspelt query with `spaceKey`,
- * `tags`, `author` or `dateFrom`/`dateTo` active still returned title matches
- * outside the filter. Both statements now bind the same filter predicates.
+ * `GET /api/search?mode=keyword` runs one statement (#1741) whose fuzzy-title
+ * (`pg_trgm`) leg is unioned with the full-text leg: title-only hits follow
+ * the full-text rows under relevance and interleave with them under
+ * modified/title. The fuzzy leg used to carry only the visibility, trash and
+ * AI-policy predicates, so a misspelt query with `spaceKey`, `tags`, `author`
+ * or `dateFrom`/`dateTo` active still returned title matches outside the
+ * filter. Both legs now bind the same filter predicates.
  *
  * Every fixture title is a fuzzy-ONLY hit for QUERY: the misspelling defeats
  * the full-text conjunction (asserted below, not assumed), so a row the

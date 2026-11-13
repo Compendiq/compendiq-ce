@@ -222,6 +222,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing the extraction; heading levels written in single quotes are honoured.
   Unclosed tags no longer make extraction time grow quadratically with the
   document's size.
+- **Keyword search pages typo-tolerant title matches correctly (#1741):** when
+  a keyword search also matched titles with a typo, those title matches were
+  added to every page of results: a page could hold up to twice the page size,
+  the same article showed up on several pages, the result count left the title
+  matches out, and a page past the last still listed them. Results now form one
+  list. Each article appears on exactly one page, no page exceeds the page
+  size, the count includes every match, and a page past the end is empty with
+  the same count. Sorting by relevance still lists full-text matches first,
+  then the title matches by similarity; sorting by date or title now orders
+  both together, and title matches show their author, date and labels.
 - **RTF `\uN` characters and `\ansicpg` bytes decode correctly (#1733):** a
   `\uN` Unicode character now replaces its fallback instead of appearing
   beside it (`Пр`, not `ПÏрð`), honouring `\ucN` and its group scope, and

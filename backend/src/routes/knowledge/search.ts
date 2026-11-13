@@ -533,12 +533,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // Exclude soft-deleted pages
     conditions.push('cp.deleted_at IS NULL');
 
-    // Optional filters — built ONCE and bound to BOTH keyword statements, the
-    // FTS data query and the fuzzy-title query (#1740). Each predicate takes
-    // the next `$n` after the shared $1..$3 and appends its value to `values`;
-    // both statements pass `values` as the head of their parameter list, so a
-    // `$n` names the same value in each and a fuzzy-title hit satisfies every
-    // active filter exactly as a full-text hit does.
+    // Optional filters — built ONCE and bound to BOTH keyword legs, the
+    // full-text leg and the fuzzy-title leg of the one keyword statement
+    // (#1740, #1741). Each predicate takes the next `$n` after the shared
+    // $1..$3 and appends its value to `values`, the head of that statement's
+    // parameters, so a fuzzy-title hit satisfies every active filter exactly
+    // as a full-text hit does.
     const filters: string[] = [];
     if (spaceKey) {
       filters.push(`cp.space_key = $${paramIndex}`);
@@ -588,27 +588,41 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
 
-    // Determine sort order
+    // Determine sort order: ONE order over the deduplicated union of both legs
+    // (#1741), ending in the page id so consecutive LIMIT/OFFSET pages never
+    // share or skip a row. `modified` and `title` interleave the legs.
+    // `relevance` keeps their precedence, because ts_rank and trigram
+    // similarity are not comparable scales: full-text hits by ts_rank first
+    // (`fuzzy` FALSE sorts before TRUE), then fuzzy-only title hits by
+    // similarity.
     let orderClause: string;
     switch (sort) {
       case 'modified':
-        orderClause = 'cp.last_modified_at DESC NULLS LAST';
+        orderClause = 'hits.last_modified_at DESC NULLS LAST, hits.id';
         break;
       case 'title':
-        orderClause = 'cp.title ASC';
+        orderClause = 'hits.title, hits.id';
         break;
       case 'relevance':
       default:
-        orderClause = 'rank DESC';
+        orderClause = 'hits.fuzzy, hits.rank DESC, hits.id';
         break;
     }
 
-    // Run FTS data query (with COUNT(*) OVER() to eliminate separate count query),
-    // trigram query, and facet query in parallel since they are independent.
-    const limitParamIndex = paramIndex;
-    const offsetParamIndex = paramIndex + 1;
+    // One keyword statement (#1741): Path A (full text) and Path B (fuzzy
+    // title via pg_trgm) are unioned first, and Path B drops every page Path A
+    // already holds. Only the union is ordered, offset and limited, so a page
+    // never exceeds `limit` and a page id lands on exactly one page.
+    // COUNT(*) OVER() counts the deduplicated union, which saves a separate
+    // count query. The legs carry only the keys the order needs; the page's
+    // rows then join back to `pages` for their display columns and snippet, so
+    // no body is buffered for the whole union and ts_headline runs for at most
+    // `limit` rows however deep the page. Runs in parallel with the facets.
+    const thresholdParamIndex = paramIndex;
+    const limitParamIndex = paramIndex + 1;
+    const offsetParamIndex = paramIndex + 2;
 
-    const dataQueryPromise = query<{
+    const runKeywordQuery = (pageLimit: number, pageOffset: number) => query<{
       id: number;
       confluence_id: string;
       source: PageSource;
@@ -627,64 +641,53 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_color: string | null;
       icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
+      `WITH fts AS (
+         SELECT cp.id, cp.title, cp.last_modified_at,
+                ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
+                FALSE AS fuzzy
+         FROM pages cp
+         WHERE ${whereClause}
+       ),
+       trgm AS (
+         SELECT cp.id, cp.title, cp.last_modified_at,
+                similarity(cp.title, $1) AS rank,
+                TRUE AS fuzzy
+         FROM pages cp
+         -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
+         -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
+         -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
+         -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() threshold check
+         -- stays exact without changing which rows match. The keyword filters are
+         -- extra conjuncts and the anti-join against fts sits above the index
+         -- scan: they narrow the % candidates, never replace the operator.
+         WHERE cp.title % $1
+           AND similarity(cp.title, $1) > $${thresholdParamIndex}
+           AND cp.title IS NOT NULL
+           AND ${visiblePagesPredicate(2, 3)}
+           AND cp.deleted_at IS NULL
+           ${filters.map((filter) => `AND ${filter}`).join(' ')}
+           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = cp.id)
+       ),
+       paged AS (
+         SELECT hits.*, COUNT(*) OVER() AS total_count
+         FROM (SELECT * FROM fts UNION ALL SELECT * FROM trgm) hits
+         ORDER BY ${orderClause}
+         LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+       )
+       SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
-              cp.baseline_id, cp.frozen_version,
-              ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
-              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
-                          'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
-              COUNT(*) OVER() AS total_count
-       FROM pages cp
-       WHERE ${whereClause}
-       ORDER BY ${orderClause}
-       LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
-      [...values, limit, offset],
+              cp.baseline_id, cp.frozen_version, hits.rank,
+              CASE WHEN hits.fuzzy THEN substring(cp.body_text, 1, 300)
+                   ELSE ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
+                                    'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>')
+              END AS snippet,
+              hits.total_count
+       FROM paged hits
+       JOIN pages cp ON cp.id = hits.id
+       ORDER BY ${orderClause}`,
+      [...values, TRGM_SIMILARITY_THRESHOLD, pageLimit, pageOffset],
     );
-
-    // Path B: Fuzzy title matching via pg_trgm (separate from FTS)
-    // Merges additional title-match results that the FTS query may have missed.
-    // Its parameters start with the FTS query's `values` — the same $1..$3 and
-    // the same filter `$n` (#1740) — so its threshold and limit take the next
-    // two indexes.
-    const trgmThresholdParamIndex = paramIndex;
-    const trgmLimitParamIndex = paramIndex + 1;
-    const trgmQueryPromise = query<{
-      id: number;
-      confluence_id: string;
-      source: PageSource;
-      baseline_id: string | null;
-      frozen_version: number | null;
-      title: string;
-      space_key: string;
-      body_text: string;
-      rank: number;
-      icon_kind: string | null;
-      icon_value: string | null;
-      icon_color: string | null;
-      icon_filled: boolean | null;
-    }>(
-      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key,
-              cp.baseline_id, cp.frozen_version,
-              substring(cp.body_text, 1, 300) AS body_text,
-              similarity(cp.title, $1) AS rank,
-              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
-       FROM pages cp
-       -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
-       -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
-       -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
-       -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() threshold check
-       -- stays exact without changing which rows match. The keyword filters are
-       -- extra conjuncts: they narrow the % candidates, never replace the operator.
-       WHERE cp.title % $1
-         AND similarity(cp.title, $1) > $${trgmThresholdParamIndex}
-         AND cp.title IS NOT NULL
-         AND ${visiblePagesPredicate(2, 3)}
-         AND cp.deleted_at IS NULL
-         ${filters.map((filter) => `AND ${filter}`).join(' ')}
-       ORDER BY rank DESC
-       LIMIT $${trgmLimitParamIndex}`,
-      [...values, TRGM_SIMILARITY_THRESHOLD, limit],
-    );
+    const dataQueryPromise = runKeywordQuery(limit, offset);
 
     // Facet aggregation — opt-in via includeFacets (default: true).
     // Skipping facets avoids 3 UNION ALL subqueries when the caller doesn't need them.
@@ -723,18 +726,26 @@ export async function searchRoutes(fastify: FastifyInstance) {
         )
       : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
 
-    // Execute all three queries in parallel
-    const [dataResult, trgmResult, facetResult] = await Promise.all([
+    // Execute both queries in parallel
+    const [dataResult, facetResult] = await Promise.all([
       dataQueryPromise,
-      trgmQueryPromise,
       facetQueryPromise,
     ]);
 
-    // Extract total from window function (available on every row, take from first)
-    const total = dataResult.rows.length > 0 ? parseInt(dataResult.rows[0]!.total_count, 10) : 0;
+    // `total` is the size of the deduplicated union: COUNT(*) OVER() carries it
+    // on every returned row. A page past the last returns no row to carry it,
+    // so it re-reads the count from the union's first row and stays empty.
+    let totalRow = dataResult.rows[0];
+    if (!totalRow && offset > 0) {
+      totalRow = (await runKeywordQuery(1, 0)).rows[0];
+    }
+    const total = totalRow ? parseInt(totalRow.total_count, 10) : 0;
+    const totalPages = Math.ceil(total / limit);
 
-    // Merge: start with FTS results (higher weight), add trgm-only hits
-    const ftsItems = dataResult.rows.map((row) => ({
+    // Every row maps to one item: the statement already deduplicated and paged
+    // the union, and each page row reads author, lastModifiedAt and labels from
+    // `pages` whichever leg found it.
+    const items = dataResult.rows.map((row) => ({
       id: row.id,
       confluenceId: row.confluence_id,
       source: row.source,
@@ -749,38 +760,13 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     }));
 
-    const ftsIds = new Set(ftsItems.map((r) => r.id));
-    for (const trgmRow of trgmResult.rows) {
-      if (!ftsIds.has(trgmRow.id)) {
-        ftsItems.push({
-          id: trgmRow.id,
-          confluenceId: trgmRow.confluence_id,
-          source: trgmRow.source,
-          ...freezeSummary(trgmRow),
-          title: trgmRow.title,
-          spaceKey: trgmRow.space_key,
-          author: null,
-          lastModifiedAt: null,
-          labels: [],
-          rank: trgmRow.rank,
-          snippet: trgmRow.body_text,
-          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value, trgmRow.icon_color, trgmRow.icon_filled),
-        });
-      }
-    }
-
-    // After merging trgm results, the actual item count may exceed the FTS-only
-    // total. Adjust so that `total` is never less than the items returned.
-    const adjustedTotal = Math.max(total, ftsItems.length);
-    const totalPages = Math.ceil(adjustedTotal / limit);
-
-    const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
+    const maxScore = items.length > 0 ? Math.max(...items.map((r) => r.rank)) : null;
     // A semantic/hybrid request downgraded here for zero coverage is the WORST
     // degradation state — during a re-embed window every hybrid search lands
     // on this line. Carry the measured signal onto the row (both fields are
     // null for a genuine keyword-mode request, whose probe never ran) or the
     // outage records as healthy user-chosen keyword searches.
-    recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword', {
+    recordSearchAnalytics(userId, q, items.length, maxScore, 'keyword', {
       degradedReason,
       embeddingCoverage,
       // #1284 — page search, no confidence basis computed. See the semantic
@@ -811,8 +797,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      items: ftsItems,
-      total: adjustedTotal,
+      items,
+      total,
       page,
       limit,
       totalPages,

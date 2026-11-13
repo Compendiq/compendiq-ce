@@ -195,7 +195,14 @@ describe.skipIf(!dbAvailable)('keyword search trigram query uses the GIN index (
     );
     expect(trgm, 'route should emit a fuzzy-title trigram query').toBeDefined();
     // The statement planned below is the FILTERED one: the filters narrow the
-    // `%` candidates as extra conjuncts and never replace the operator.
+    // `%` candidates as extra conjuncts and never replace the operator. Since
+    // #1741 it is one statement, so check the fuzzy-title leg itself: the
+    // full-text leg alone would satisfy a whole-statement match.
+    const legStart = trgm!.sql.indexOf('trgm AS (');
+    const legEnd = trgm!.sql.indexOf('paged AS (');
+    expect(legStart, 'the keyword statement should have a trgm leg').toBeGreaterThan(-1);
+    expect(legEnd).toBeGreaterThan(legStart);
+    const trgmLeg = trgm!.sql.slice(legStart, legEnd);
     for (const predicate of [
       /cp\.space_key = \$\d+/,
       /cp\.author = \$\d+/,
@@ -204,9 +211,9 @@ describe.skipIf(!dbAvailable)('keyword search trigram query uses the GIN index (
       /cp\.labels @> \$\d+::text\[\]/,
       /cp\.ai_policy = \$\d+/,
     ]) {
-      expect(trgm!.sql).toMatch(predicate);
+      expect(trgmLeg).toMatch(predicate);
     }
-    expect(trgm!.sql).toContain('cp.title % $1');
+    expect(trgmLeg).toContain('cp.title % $1');
 
     const plan = await explainWithOnlyTrgmIndex(trgm!.sql, trgm!.params);
     expect(plan).toContain('idx_pages_title_trgm');
@@ -228,5 +235,159 @@ describe.skipIf(!dbAvailable)('keyword search trigram query uses the GIN index (
       ['welcome'],
     );
     expect(sargable).toContain('idx_pages_title_trgm');
+  });
+
+  it('keeps the paged union sargable: its fuzzy-title leg plans on idx_pages_title_trgm (#1741)', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/search?q=welcome&mode=keyword&sort=title&page=2&limit=2',
+    });
+    expect(response.statusCode).toBe(200);
+
+    // The ONE keyword statement: both legs unioned, then ordered and paged.
+    const union = captured.find(
+      (c) => c.sql.includes('UNION ALL') && c.sql.includes('similarity(cp.title') && c.sql.includes('OFFSET'),
+    );
+    expect(union, 'route should page one statement over the full-text and fuzzy-title union').toBeDefined();
+    expect(union!.sql).toContain('cp.title % $1');
+
+    const plan = await explainWithOnlyTrgmIndex(union!.sql, union!.params);
+    expect(plan).toContain('idx_pages_title_trgm');
+  });
+
+  /**
+   * #1741 — keyword search pages ONE deduplicated union of its two legs:
+   * every page id on exactly one page, no page over `limit`, `total` = the
+   * union's size on every page (and past the last one), one order per sort.
+   *
+   * Fixture, beside the 200-page corpus (`quartzpurple` matches none of it):
+   * 12 full-text hits, two of which (`overlapA`, `overlapB`) are also fuzzy
+   * title hits the union must not repeat, and 3 fuzzy-only title hits. The
+   * union holds 15 pages; the two legs' raw sizes sum to 17. Ids grow in
+   * FIXTURE order. ts_rank grows with the `quartzpurple` count (3 > 2 > 1);
+   * similarity is typoA = typoC (0.79) > typoB (0.69).
+   */
+  describe('pagination over the deduplicated full-text and fuzzy-title union (#1741)', () => {
+    type Item = { id: number; author: string | null; lastModifiedAt: string | null; labels: string[]; snippet: string };
+    const FTS_ONE_HIT = ['Bravo', 'Charlie', 'Delta', 'Echo', 'Sierra', 'Tango', 'Uniform'];
+    const FIXTURE: Array<{
+      key: string; title: string; body: string; modified: string | null; author?: string; labels?: string[];
+    }> = [
+      { key: 'fts3', title: 'Alpha handbook', body: 'quartzpurple quartzpurple quartzpurple', modified: '2026-02-01' },
+      { key: 'overlapA', title: 'Quartzpurple', body: 'quartzpurple runbook', modified: '2025-11-01' },
+      { key: 'fts2', title: 'Romeo handbook', body: 'quartzpurple quartzpurple', modified: '2025-10-01' },
+      { key: 'overlapB', title: 'Quartzpurple guide', body: 'quartzpurple', modified: '2025-09-01' },
+      ...FTS_ONE_HIT.map((name, i) => ({
+        key: `fts1${name}`, title: `${name} note`, body: 'quartzpurple', modified: `2025-08-0${i + 1}`,
+      })),
+      { key: 'fts1Victor', title: 'Victor note', body: 'quartzpurple', modified: null },
+      // Fuzzy-only: no `quartzpurple` token, so only the trigram leg finds them.
+      { key: 'typoA', title: 'Quartzpurpl', body: 'typo in the title', modified: '2026-01-15', author: 'bob', labels: ['typo'] },
+      { key: 'typoB', title: 'Quartz purple', body: 'split title', modified: '2026-03-01' },
+      { key: 'typoC', title: 'quartzpurpl', body: 'another typo', modified: null },
+    ];
+    let ids: Record<string, number>;
+
+    beforeEach(async () => {
+      ids = {};
+      for (const row of FIXTURE) {
+        const res = await query<{ id: number }>(
+          `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html,
+                              inherit_perms, author, last_modified_at, labels)
+           VALUES ($1, 'confluence', 'DEV', $2, $3, '', '', TRUE, $4, $5, $6) RETURNING id`,
+          [`p1741-${row.key}`, row.title, row.body, row.author ?? 'alice',
+            row.modified && `${row.modified}T00:00:00Z`, row.labels ?? ['runbook']],
+        );
+        ids[row.key] = res.rows[0]!.id;
+      }
+    });
+
+    async function search(params: string) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/search?q=quartzpurple&mode=keyword&includeFacets=false&${params}`,
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const body = response.json<{ items: Item[]; total: number; totalPages: number }>();
+      return { items: body.items, ids: body.items.map((item) => item.id), total: body.total, totalPages: body.totalPages };
+    }
+
+    const firstThreePages = (params = '') =>
+      Promise.all([1, 2, 3].map((page) => search(`limit=5&page=${page}${params}`)));
+
+    it('puts every union id on exactly one page and never more than limit on a page', async () => {
+      const pages = await firstThreePages();
+      expect(pages.map((page) => page.ids.length)).toEqual([5, 5, 5]);
+      const seen = pages.flatMap((page) => page.ids);
+      expect(seen).toHaveLength(new Set(seen).size);
+      expect([...seen].sort((a, b) => a - b)).toEqual(Object.values(ids).sort((a, b) => a - b));
+    });
+
+    it('reports the deduplicated union size as total on every page', async () => {
+      const pages = await firstThreePages();
+      expect(pages.map(({ total, totalPages }) => ({ total, totalPages }))).toEqual(
+        Array.from({ length: 3 }, () => ({ total: 15, totalPages: 3 })),
+      );
+    });
+
+    it('returns an empty page past the last one with the same total', async () => {
+      const past = await search('limit=5&page=4');
+      expect({ ids: past.ids, total: past.total, totalPages: past.totalPages })
+        .toEqual({ ids: [], total: 15, totalPages: 3 });
+    });
+
+    it('orders relevance as full-text hits by ts_rank, then fuzzy-only hits by similarity, the page id breaking ties', async () => {
+      const pages = await firstThreePages();
+      expect(pages.flatMap((page) => page.ids)).toEqual([
+        'fts3', 'overlapA', 'fts2', 'overlapB',
+        ...FTS_ONE_HIT.map((name) => `fts1${name}`), 'fts1Victor',
+        'typoA', 'typoC', 'typoB',
+      ].map((key) => ids[key]));
+    });
+
+    // The fixture interleaves the legs: typoB is the newest page, typoA sits
+    // between fts3 and overlapA, and fts1Victor and typoC have no date (NULLS
+    // LAST, then id). The fuzzy titles likewise sort among the full-text ones.
+    it.each([
+      ['modified', 'last_modified_at DESC NULLS LAST, id'],
+      ['title', 'title, id'],
+    ])('sort=%s orders both legs together across pages', async (sort, order) => {
+      const pages = await firstThreePages(`&sort=${sort}`);
+      const expected = await query<{ id: number }>(
+        `SELECT id FROM pages WHERE id = ANY($1::int[]) ORDER BY ${order}`,
+        [Object.values(ids)],
+      );
+      const seen = pages.flatMap((page) => page.ids);
+      expect(seen).toEqual(expected.rows.map((row) => row.id));
+      // Interleaved, not a block at either end: some fuzzy-only hit sorts
+      // before a full-text hit, and some full-text hit before a fuzzy-only one.
+      const fuzzyOnly = seen.map((id) => [ids.typoA, ids.typoB, ids.typoC].includes(id));
+      expect(fuzzyOnly.indexOf(true)).toBeLessThan(fuzzyOnly.lastIndexOf(false));
+      expect(fuzzyOnly.indexOf(false)).toBeLessThan(fuzzyOnly.lastIndexOf(true));
+    });
+
+    it('gives every fuzzy-only hit its own author, lastModifiedAt and labels', async () => {
+      const { items } = await search('limit=20');
+      const stored = await query<{ id: number; author: string | null; last_modified_at: Date | null; labels: string[] }>(
+        'SELECT id, author, last_modified_at, labels FROM pages WHERE id = ANY($1::int[]) ORDER BY id',
+        [[ids.typoA, ids.typoB, ids.typoC]],
+      );
+      expect(stored.rows).toHaveLength(3);
+      for (const row of stored.rows) {
+        expect(items.find((item) => item.id === row.id)).toMatchObject({
+          author: row.author,
+          lastModifiedAt: row.last_modified_at ? row.last_modified_at.toISOString() : null,
+          labels: row.labels,
+        });
+      }
+      expect(items.find((item) => item.id === ids.typoA)).toMatchObject({
+        author: 'bob',
+        lastModifiedAt: '2026-01-15T00:00:00.000Z',
+        labels: ['typo'],
+        snippet: 'typo in the title',
+      });
+      // A full-text hit keeps its highlighted ts_headline snippet.
+      expect(items.find((item) => item.id === ids.fts3)!.snippet).toContain('<mark>quartzpurple</mark>');
+    });
   });
 });

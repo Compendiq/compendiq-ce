@@ -368,6 +368,19 @@ out of query keys and persistent browser storage.
 
 ## Library Search
 
+Keyword mode pages ONE statement (#1741). The full-text leg and the fuzzy-title
+(`pg_trgm`) leg are unioned first, the fuzzy leg dropping every page the
+full-text leg holds, and only the union is ordered, offset, limited and counted
+(`COUNT(*) OVER()`). `relevance` keeps full-text hits first by `ts_rank`, then
+fuzzy-only hits by similarity, because the two scales are not comparable;
+`modified` and `title` order both legs together; the page id breaks every tie.
+The legs carry only the order keys: the page's rows join back to `pages` for
+display columns and snippets, so no body is held for the whole union and
+`ts_headline` runs for at most `limit` rows. A page past the last re-reads the
+count from the union's first row, so it is empty with the same `total`. Never
+page or cap one leg on its own, and keep `cp.title % $1` the fuzzy leg's index
+condition.
+
 Search provenance comes from `pages.source`, never a space key, historical
 Confluence ID, or embedding metadata. Keep it consistent across retrieval
 modes and use it for source-sensitive bulk actions. Enter/ArrowDown may focus
@@ -380,6 +393,7 @@ not viewport width alone.
 In keyword mode the fuzzy-title (`pg_trgm`) leg applies the same space,
 author, date-range, tag and AI-policy predicates as the full-text leg
 (#1740): the route builds them once and binds the same parameter values to
-both statements, so every fuzzy hit satisfies every active filter. Both legs
-keep the visibility and trash predicates, and `cp.title % $1` stays the fuzzy
-leg's index condition. Facet counts are narrowed only by the AI-policy filter.
+both legs of the one keyword statement, so every fuzzy hit satisfies every
+active filter. Both legs keep the visibility and trash predicates, and
+`cp.title % $1` stays the fuzzy leg's index condition. Facet counts are
+narrowed only by the AI-policy filter.
