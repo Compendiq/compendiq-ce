@@ -1,24 +1,91 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { PDFDocument } from 'pdf-lib';
+import { toast } from 'sonner';
 import { EnterpriseContext } from '../../../shared/enterprise/enterprise-context';
 import type { EnterpriseContextValue } from '../../../shared/enterprise/types';
-import { AnalyticsPage } from './AnalyticsPage';
+import { setPdfRendererOverlay } from '../../../shared/lib/export-helpers';
+import { AnalyticsPage, type DashboardProps } from './AnalyticsPage';
+
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 // ── Mock lazy-loaded dashboards ────────────────────────────────────────────────
+// Each mock's PDF button calls `onExportPdf` the way its real dashboard does,
+// so the page's export handler runs against the real export-helpers.
 
 vi.mock('./KnowledgeHealthDashboard', () => ({
-  KnowledgeHealthDashboard: () => <div data-testid="knowledge-dashboard-mock">Knowledge Health</div>,
+  KnowledgeHealthDashboard: ({ onExportPdf }: DashboardProps) => (
+    <div data-testid="knowledge-dashboard-mock">
+      Knowledge Health
+      <button
+        type="button"
+        data-testid="mock-export-pdf"
+        onClick={() => onExportPdf(
+          [{ type: 'quality', bucket: '80-100', count: 4 }],
+          'Knowledge Health',
+          [{ label: 'Total pages', value: 4 }],
+        )}
+      >
+        PDF
+      </button>
+    </div>
+  ),
 }));
 vi.mock('./AiUsageDashboard', () => ({
-  AiUsageDashboard: () => <div data-testid="ai-usage-dashboard-mock">AI Usage</div>,
+  AiUsageDashboard: ({ onExportPdf }: DashboardProps) => (
+    <div data-testid="ai-usage-dashboard-mock">
+      AI Usage
+      <button
+        type="button"
+        data-testid="mock-export-pdf"
+        onClick={() => onExportPdf(
+          [{ type: 'requests', date: '2026-10-01', requests: 3, errors: 0 }],
+          'AI Usage',
+          [{ label: 'Error rate', value: '0.0', unit: '%' }],
+        )}
+      >
+        PDF
+      </button>
+    </div>
+  ),
 }));
 vi.mock('./SearchEffectivenessDashboard', () => ({
-  SearchEffectivenessDashboard: () => <div data-testid="search-dashboard-mock">Search</div>,
+  SearchEffectivenessDashboard: ({ onExportPdf }: DashboardProps) => (
+    <div data-testid="search-dashboard-mock">
+      Search
+      <button
+        type="button"
+        data-testid="mock-export-pdf"
+        onClick={() => onExportPdf(
+          [{ type: 'topQuery', query: 'vpn setup', count: 9 }],
+          'Search Effectiveness',
+          [{ label: 'Top query', value: 'vpn setup' }],
+        )}
+      >
+        PDF
+      </button>
+    </div>
+  ),
 }));
 vi.mock('./ContentGapsDashboard', () => ({
-  ContentGapsDashboard: () => <div data-testid="content-gaps-dashboard-mock">Content Gaps</div>,
+  ContentGapsDashboard: ({ onExportPdf }: DashboardProps) => (
+    <div data-testid="content-gaps-dashboard-mock">
+      Content Gaps
+      <button
+        type="button"
+        data-testid="mock-export-pdf"
+        onClick={() => onExportPdf(
+          [{ type: 'gap', query: 'sso login', occurrences: 2, avgMaxScore: 'N/A' }],
+          'Content Gaps',
+          [{ label: 'Content gaps', value: 1 }],
+        )}
+      >
+        PDF
+      </button>
+    </div>
+  ),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -140,5 +207,65 @@ describe('AnalyticsPage', () => {
     expect(await screen.findByTestId('ai-usage-dashboard-mock')).toBeInTheDocument();
     expect((screen.getByTestId('date-start') as HTMLInputElement).value).toBe('2026-01-01');
     expect((screen.getByTestId('date-end') as HTMLInputElement).value).toBe('2026-01-15');
+  });
+
+  describe('PDF export (#1732)', () => {
+    // [tab, title the dashboard passes, filename slug AnalyticsPage derives]
+    const DASHBOARDS = [
+      ['knowledge', 'Knowledge Health', 'knowledge-health'],
+      ['ai-usage', 'AI Usage', 'ai-usage'],
+      ['search', 'Search Effectiveness', 'search-effectiveness'],
+      ['content-gaps', 'Content Gaps', 'content-gaps'],
+    ] as const;
+
+    let blobs: Blob[];
+    let downloads: string[];
+
+    beforeEach(() => {
+      blobs = [];
+      downloads = [];
+      URL.createObjectURL = vi.fn((blob: Blob) => {
+        blobs.push(blob);
+        return 'blob:analytics-export';
+      }) as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn();
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    });
+
+    afterEach(() => {
+      setPdfRendererOverlay(null);
+    });
+
+    it.each(DASHBOARDS)('exports the %s date-range report through the CE renderer', async (tab, _title, slug) => {
+      renderWithProviders(undefined, [`/admin/analytics?tab=${tab}&from=2026-10-01&to=2026-10-27`]);
+
+      fireEvent.click(await screen.findByTestId('mock-export-pdf'));
+
+      await waitFor(() => expect(downloads).toEqual([`${slug}-2026-10-01-to-2026-10-27.pdf`]));
+      const doc = await PDFDocument.load(new Uint8Array(await blobs[0]!.arrayBuffer()));
+      expect(doc.getPageCount()).toBe(2);
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it.each(DASHBOARDS)('reports a failed %s export with an error toast and downloads nothing', async (tab, title) => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const failure = new Error('Renderer unavailable');
+      setPdfRendererOverlay(async () => {
+        throw failure;
+      });
+      renderWithProviders(undefined, [`/admin/analytics?tab=${tab}&from=2026-10-01&to=2026-10-27`]);
+
+      fireEvent.click(await screen.findByTestId('mock-export-pdf'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+        `Could not export the ${title} PDF`,
+        { description: 'Renderer unavailable' },
+      ));
+      expect(consoleError).toHaveBeenCalledWith('[AnalyticsPage] PDF export failed:', failure);
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(downloads).toEqual([]);
+    });
   });
 });

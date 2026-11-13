@@ -11,6 +11,29 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Confluence links live in the href (#1748).** The editor's Link mark keeps no
+`data-*` attribute, so `confluenceToHtml` writes an `ac:link` as
+`#confluence-page:<title>`, `#confluence-attachment:<filename>` or
+`#confluence-anchor:<anchor>`, percent-encoded, then `?` and the link's other
+`ac:*` / `ri:*` attributes, and `htmlToConfluence` rebuilds the `ac:link` from
+that href alone. Parse and build it only through `core/services/confluence-link.ts`
+(the converter, `link-extractor.ts` and the baseline manifest do); keep reading
+the pre-#1748 shape, the title or filename as written, as the fallback to the
+encoded reading. Deferred, unchanged by #1748 (the converters and Improve keep
+these links): the editor loses a link whose body is an image (a block node, so
+a save lifts it out of the paragraph) or inline code (StarterKit's Code mark
+excludes every other mark, so the Link mark leaves it; a fix changes the Code
+mark contract in both schemas), splits a link whose text mixes inline code with
+other text into two links around the code, and on a collaborative save splits a
+link around a line break (Yjs keeps marks on text only). Pinned by
+`content-converter.links.test.ts`.
+
+`body_text` is derived from `htmlToText` output on every write path (sync, saves, collab,
+imports, drafts, version text; Notion imports join parts with blank lines, restores copy
+stored text), so `htmlToText` must equal what the page shows: the HTML parser decodes
+entities once and nothing decodes again (#1735). Rows written before #1735 keep their double-decoded text until
+their next write; there is no backfill.
+
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header
@@ -26,6 +49,14 @@ share of the band; a header cell prints again in a later band only if its
 piece there would also repeat on a continuation page, so an oversized header
 cell prints once. A band in which no cell starts is skipped. Non-Latin font
 coverage is a separate limitation.
+
+PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Courier
+cells): the rest of a long line continues flush left on the next row, unmarked,
+and each row is placed and paginated like a source line. Tabs expand to four
+spaces before measuring; blank lines keep their row. Text is measured as drawn
+(pdf-lib applies no kerning), and a word wider than its line (URL, hash)
+breaks between characters in body text and table cells. This covers Latin-1
+text; other characters are still removed before measuring.
 
 Draw.io XML-only attachments remain editable `.drawio` sources, not fake
 `.png` files. Publish a preview only after validating PNG chunks, checksums
@@ -76,6 +107,20 @@ Read mode uses the draw.io schema renderer, not the editor-only React node view,
 so the admitted Edit Diagram callback remains reachable for source-only nodes.
 Remove its overlay when that callback is withdrawn (including a live freeze).
 
+**Emoticons round-trip (#1750).** `confluenceToHtml` turns each `ac:emoticon` into an
+empty `<span class="confluence-emoticon" data-emoticon-attrs="{…}" data-emoticon-label="✅"
+role="img" aria-label="tick">`: the JSON object holds every attribute in source order
+(`ac:name`, `ac:emoji-*`, any other; `<`/`>` written `\u003c`/`\u003e`); the label (an
+emoji, or Confluence's text form `:shortname:`/`(name)`) is drawn by
+`.confluence-emoticon::before`, so the span adds no text to `body_text`, embeddings,
+Markdown or #1751's task matching. `htmlToConfluence` writes exactly the carried
+attributes back, self-closed (`<ac:emoticon ac:name="tick" />`; `<`, `>`, tab, LF and CR in a
+value as character references). `confluenceEmoticon`
+(inline atom: `emoticonAttrs`, `label`, `name`) is in both TipTap schemas, rendered
+by `renderHTML` alone (no node view), never a tab stop. `span.confluence-emoticon` is in `MEDIA_SELECTOR`: AI Improve freezes it
+as one inline token, never a div, so a task holding one stays a task (#1752). A
+page synced before #1750 shows emoticons only after its body is re-derived.
+
 A pasted image is uploaded once. `planLocalImagesForConfluence` uploads every
 `img[src^="/api/attachments/"]` that has neither `data-confluence-filename` nor
 `data-confluence-image-source`, and gives it both (`attachment`): the shape
@@ -84,6 +129,26 @@ into `ri:attachment`. A collaborative Confluence Save copies those markers into
 the room's live and persisted Yjs document after its intent settles (#1764);
 otherwise the room's next 2 s persist drops them and every later Save uploads
 the image again.
+
+**A Confluence task keeps its id (#1751).** `ac:task-id` (canonical, at most
+2^63 − 1) rides in `data-task-id`, declared as `taskId` on `taskItem` in both
+TipTap schemas (`ConfluenceTaskItem`, registered by the editor and by read mode,
+whose copy is serialized with its schema; `keepOnSplit: false`). Every
+write-back over an existing page passes the stored `body_storage`: a task keeps
+the id it carries (of two carriers of one id, the one with the stored task's
+text), a task without one takes the id of a stored task with exactly its text,
+and any other task gets the next free number above every id in the page and its
+storage (deterministic: publishing a version restore re-derives the digest).
+Only on a page synced before #1751 (`legacyTasks`: its stored `body_html` holds
+tasks and none carries an id; for a collaborative Save, the room's
+`compendiq.meta` Y.Map lacks `confluenceTaskIds`) do the tasks left pair with
+the stored tasks left in order when they are as many. Draft publish stores the
+ids it wrote in the live body; like the image markers above, a collaborative
+Save sets them on the room's task items after its intent settles, in the
+transaction that also sets `confluenceTaskIds`. The task body is TaskItem's
+content `div`, never its checkbox `<label>`. AI Improve carries no ids (turndown
+writes `- [ ]`) and never pairs: only tasks with unchanged text get theirs back
+on apply.
 
 **`body_html` never contains a raw structured macro (#1438).**
 `confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
@@ -96,6 +161,27 @@ the lossless long-tail `confluence-macro-unknown` node. Native `panel` renders
 through the existing info-panel node but carries `data-macro-name="panel"` and
 arbitrary direct text parameters through the editor, so write-back emits
 `ac:name="panel"` rather than permanently coercing it to `info`.
+
+**Dedicated macro handlers keep every parameter (#1749).** `code`, `toc` and
+`status` keep canonical parameters in their own attributes (code `language`
+class + `data-title`, toc `data-<name>`, status `data-color` + text) and every
+other direct text parameter in `data-macro-params`. `codeBlock`, `mermaidBlock`
+(which claims a code macro whose language is mermaid), `confluenceToc` and
+`confluenceStatus` declare it as `macroParams` in both TipTap schemas, and so
+does read mode's code block, because a copy out of read mode is serialized with
+that schema. The parity test is one-way: it fails when the collab schema lacks
+an attribute the frontend declares; the frontend declarations are pinned by
+Editor.test.tsx, ArticleViewer.test.tsx and MermaidBlockExtension.test.tsx. The
+reverse pass skips a carried copy of a canonical name. The code language is the
+whole class token (`language-(\S+)`) in the converter, collab-schema.ts and
+TitledCodeBlock.ts. AI Improve keeps the frozen toc/status parameters and the
+code language, but not a code block's `data-title`/`data-macro-params`. Only
+`body_html` converted after #1749 holds the carriers: a page synced earlier gets
+them when its body is next re-derived from Confluence (an upstream change, or
+a re-sync: **Re-sync** on selected pages, **Pull from Confluence…** on a page,
+or Settings → Spaces & Sync → Sync schedule → **Force Re-sync All**, all calling
+`POST /api/pages/bulk/sync`; **Sync Now** is incremental and does not refresh
+unchanged pages). A save before that still drops them.
 
 **Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
 accessible native, relation and block-host ancestors omitted from Search without
@@ -156,6 +242,27 @@ parent and visibility the user chose. It replaces `POST /api/pages/import`, whic
 inserted the row itself under a hardcoded `space_key = '_standalone'`. Don't reintroduce
 a client-side Markdown→HTML path: `markdownToHtml` has no frontend counterpart.
 
+`markdownToHtml` renders GFM task items as `ul[data-type="taskList"] >
+li[data-type="taskItem"][data-checked]`, splitting a list that mixes task and
+plain items into runs (ordered plain runs keep `start`), for every caller —
+AI Improve Accept included (#1752). A task item holding a `<div>` (raw HTML, a
+draw.io fence, or on Improve Accept a placeholder whose original HTML is a div,
+which the route names via `protectedMedia`) stays plain with `[x]` / `[ ]` as
+text: TipTap's TaskItem parses only the first descendant `div`. Mentions,
+status lozenges, Jira links and images are inline and keep their tasks. The
+import sanitiser admits exactly `start`, `type`, `data-type`, `data-checked` and
+`data-diagram-name` (#1754) by name: never `ALLOW_DATA_ATTR: true`, never `<input>`.
+
+`data-diagram-name` is admitted by name and as URI-safe, so a
+` ```drawio ` fence keeps its identity into the editor and the Confluence write-back
+(#1754). A diagram name is text: consumers encode it (`encodeURIComponent`,
+`safeAttachmentPath`) and never use it as a URL. `htmlToMarkdown` writes a name-only
+placeholder's name raw into its fence, so the import drops a name with a line break or other
+control character, one that marked reads as a closing fence (three backticks, then only backticks
+or tildes), and an empty one (`htmlToConfluence` would write an empty `diagramName`). A fence's
+`data-drawio-source` and `data-drawio-xml` stay stripped — another page's attachment, and XML for
+the same-origin draw.io editor — and `ALLOW_DATA_ATTR` stays `false`.
+
 Its size limits (#1178) are a **ladder in two different units**, and every rung must clear
 the one below: nginx `client_max_body_size 44m` → the route's `bodyLimit` 8 MiB →
 `ImportMarkdownSchema`'s 1,000,000 **characters** → the client precheck in `NewPagePage`.
@@ -168,15 +275,33 @@ working on; `frontend/src/nginx-api-body-limit.test.ts` parses them out of the b
 fails if the edge drops below any of them.
 `parseFrontMatter` tolerates CRLF and a leading BOM because failing to match is **silent**:
 the `---` block renders as body and the import reports success with title and labels gone.
+It also reads YAML block lists (`tags:` then `  - ops` lines, quoted items, trailing `#`
+comments) as arrays — they used to import as no labels without a warning (#1753). Only a
+top-level (unindented) key opens a list, and items end at the first line that is not an item,
+blank or comment, so a list under another key never reaches `tags`/`labels`. YAML comment
+rules apply: `- #ops` is an empty item (write `- '#ops'`). A scalar `tags: ops` is still not a label.
+An indented key opens no list but is still read as a top-level key (pre-existing), so a nested
+`tags:` replaces a top-level `tags` list with `''`.
 
 **Uploaded documents** (#1131) enter through `core/services/document-extractor.ts`, behind
 `POST /api/llm/extract-document`: pdf (`unpdf`), docx (`mammoth` → `htmlToMarkdown`), odt
-(`content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
+(structural `content.xml` walk), rtf (control-word strip), md/txt (read directly). The format is decided
 by **magic-byte sniffing**, never the client's `Content-Type` — a mismatch against the claimed
 extension is a 415. Zip containers (docx/odt) are bounded by `ZIP_LIMITS` and, for docx,
 repacked stored before `mammoth` sees them, because mammoth's own inflater is unbounded.
+ODT is read by one linear pass over `content.xml` that tracks element depth — never a regex
+per element, which ended a paragraph at a nested note's `</text:p>` (#1734): a note or text
+box splits its paragraph in document order, at most 64 paragraphs are tracked open, and
+character references are decoded once (invalid code points become U+FFFD). It never loads
+or interprets a DTD and expands only the five XML entities and numeric references; do not
+swap in an XML/DOM parser that expands declared entities (jsdom's XML mode does).
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
+RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`
+fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
+when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949;
+per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
+whole with everything nested in them, and malformed input never throws.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
@@ -367,3 +492,19 @@ literal tests — `packages/contracts/src/schemas/llm.test.ts`,
 `mcp-docs/src/security/query-sanitizer.test.ts` and the running-sidecar cases
 in `mcp-docs/src/search-web-limits.test.ts`. Never widen one side alone
 (#1767).
+
+## Analytics PDF Export
+
+The analytics dashboards' PDF is built in the browser by
+`frontend/src/shared/lib/export-helpers.ts`, which loads `pdf-lib` on demand,
+unless an EE renderer is registered with `setPdfRendererOverlay` (it receives
+the rows and metadata unchanged). The CE renderer draws with pdf-lib's standard
+Helvetica fonts, which encode only WinAnsi (Windows-1252), so the cover prints
+the date range as `<start> to <end>` and every caller-supplied string (title,
+user name, instance URL, KPIs, column names, cells) passes through
+`createTextGuard`: NFC first, whitespace the font lacks becomes a space, any
+other character it lacks becomes `?`, and the cover then says so. Non-Latin
+analytics data (Cyrillic or CJK titles and queries) is therefore lossy in this
+PDF; the dashboards themselves show it intact, and the integrity hash still
+covers the original rows. A failed export downloads nothing and shows an error
+toast (see `docs/claude/ui-ux.md`) (#1732).

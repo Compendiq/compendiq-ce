@@ -5,7 +5,10 @@ import path from 'node:path';
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import type { JSONContent } from '@tiptap/core';
+import { generateJSON } from '@tiptap/html';
 import { query } from '../../core/db/postgres.js';
+import { collabExtensions } from '../../core/services/collab-schema.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 import { setRedisClient } from '../../core/services/redis-cache.js';
 import {
@@ -210,6 +213,38 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(response.statusCode, response.body).toBe(200);
       const saved = await readPage(pageId);
       expect(saved.body_html.split(`/api/attachments/${pageId}/q.png`).length - 1).toBe(1);
+    });
+
+    it('keeps a task holding a mention a task and a task holding a diagram plain in the stored body (#1752)', async () => {
+      // The route passes its protectMedia map to markdownToHtml as
+      // protectedMedia. Only a token whose original HTML holds a div keeps its
+      // task item plain: restoreMedia puts that div back inside the item, and
+      // TipTap's TaskItem would parse only the div, dropping the task's text and
+      // the diagram node itself.
+      const drawio = '<div class="confluence-drawio" data-diagram-name="Arch">'
+        + '<span class="drawio-preview-unavailable">Draw.io preview unavailable: Arch</span></div>';
+      const mention = '<span class="confluence-user-mention" data-userkey="abc123">@alice</span>';
+      const original = '<ul data-type="taskList">'
+        + `<li data-type="taskItem" data-checked="true">see ${drawio}</li>`
+        + `<li data-type="taskItem" data-checked="false">${mention} review the draft</li>`
+        + '</ul>';
+      const pageId = await seedPage(original);
+
+      const response = await apply(pageId, faithfulEcho(original));
+
+      expect(response.statusCode, response.body).toBe(200);
+      const saved = (await readPage(pageId)).body_html;
+      expect(saved).toContain(`<li>[x] see ${drawio}</li>`);
+      expect(saved).toContain(`<li data-type="taskItem" data-checked="false">${mention} review the draft</li>`);
+      // generateJSON is typed Record<string, any>; its output is TipTap document JSON.
+      const doc = generateJSON(saved, collabExtensions()) as JSONContent;
+      expect((doc.content ?? []).map((node) => [
+        node.type,
+        (node.content?.[0]?.content ?? []).map((child) => child.type),
+      ])).toEqual([
+        ['bulletList', ['paragraph', 'drawioDiagram']],
+        ['taskList', ['paragraph']],
+      ]);
     });
 
     it('keeps a constrained expand section in a table cell through the frozen-media path', async () => {

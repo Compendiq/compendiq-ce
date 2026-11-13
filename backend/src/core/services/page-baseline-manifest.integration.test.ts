@@ -32,6 +32,7 @@ import {
   retainBaselineManifest,
   verifyBaselineAttachments,
 } from './page-baseline-manifest.js';
+import { confluenceToHtml } from './content-converter.js';
 
 const dbAvailable = await isDbAvailable();
 const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
@@ -315,6 +316,22 @@ describe.skipIf(!dbAvailable)('page baseline manifest retained bytes', () => {
       expect(retainedStat.dev === sourceStat.dev && retainedStat.ino === sourceStat.ino).toBe(false);
     }
     expect(await verifyBaselineAttachments(baselineId, prepared.attachments)).toEqual({ valid: true, failures: [] });
+  });
+
+  it('retains the attachment a #1748 link names by its decoded filename (#1748)', async () => {
+    const storage = '<p><ac:link ac:anchor="Q3"><ri:attachment ri:filename="Q3 100% plan.pdf" />'
+      + '<ac:plain-text-link-body><![CDATA[the plan]]></ac:plain-text-link-body></ac:link></p>';
+    const pageId = await insertPage({
+      source: 'confluence',
+      confluenceId: '90190',
+      bodyStorage: storage,
+      bodyHtml: confluenceToHtml(storage, '90190'),
+    });
+    const bytes = Buffer.from('plan');
+    await writeStoredFile('90190', 'Q3 100% plan.pdf', bytes);
+    const prepared = await inspect(pageId);
+    expect(prepared.attachments.map((entry) => entry.filename)).toEqual(['Q3 100% plan.pdf']);
+    expect(prepared.totalBytes).toBe(bytes.length);
   });
 
   it('retains storage-only dependencies and preserves the four raw icon fields', async () => {
