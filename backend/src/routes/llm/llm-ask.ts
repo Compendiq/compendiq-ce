@@ -1074,9 +1074,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       //    fabricate (ADR-027 `:4323`): a derived chunk was found by the TEXT
       //    legs, and putting the page's text cosine on an image entry would
       //    feed `averageSourceSimilarity` the same number twice. `score` is
-      //    the PAGE's fused ordering value, which is what every other entry's
-      //    `score` already is. The legacy arm withheld its own cross-modal
-      //    cosine for the same reason, one band over (ADR-025 §8).
+      //    the carrying row's `score`, unchanged, which is what every other
+      //    entry's `score` already is; it is never the image's rank (image
+      //    entries follow the final result order, #1716). The legacy arm
+      //    withheld its own cross-modal cosine for the same reason, one band
+      //    over (ADR-025 §8).
       //  - APPENDED, after the web sources rather than beside their page.
       //    The model cites `[Source N]` from `buildRagContext`, whose
       //    numbering covers the retrieved pages; inserting entries in the

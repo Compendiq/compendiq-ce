@@ -1974,7 +1974,8 @@ describe('POST /api/llm/ask', () => {
         // found by the TEXT legs, and the page's own cosine is already on the
         // page entry beside this one (ADR-027 `:4323`).
         similarity: null,
-        // `score` is the PAGE's fused ordering value, like every other entry.
+        // `score` is the carrying row's `score`, unchanged, like every other
+        // entry's — never the image's rank (#1716).
         score: 0.0328,
         // ADR-027 D12's four provenance fields, and they travel TOGETHER —
         // `SourceSchema` rejects a subset and rejects any of them on a

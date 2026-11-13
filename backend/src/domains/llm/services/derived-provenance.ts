@@ -177,7 +177,10 @@ export interface DerivedImageSource {
   analysisVersion: number;
   /** Always null: there is no cross-modal score to fabricate (D12). */
   similarity: null;
-  /** The page's fused ordering value, like every other entry's `score`. */
+  /**
+   * The carrying row's `score`, unchanged, like every other entry's `score` —
+   * never this image's rank: image entries follow the final result order (#1716).
+   */
   score: number;
 }
 
