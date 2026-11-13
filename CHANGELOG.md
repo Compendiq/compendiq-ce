@@ -47,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Deep search pins only identifiers found in the user's own question (#1718):**
+  the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
+  deep search pins only what the #1107 detector finds in the question itself,
+  as single-query search does. An identifier such as `INC-2203` that appears
+  only in a paraphrase no longer pins its page ahead of the merged ranking.
+  That covers both an identifier the rewrite model added and one kept from a
+  question too long for the detector. Before, such a pinned head also made the
+  answer's retrieval confidence unmeasurable, which bypassed the confidence
+  gate. The original-query leg keeps the caller's pin setting. Identifier
+  queries the detector recognises still skip expansion and pin as before. The
+  identifier page can still appear in the results at its ordinary merged rank.
 - **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
   `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
   files included) now imports as page labels; previously the list was dropped
