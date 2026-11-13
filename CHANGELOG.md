@@ -84,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Now** is incremental and does not refresh unchanged pages). Saving it before
   then still drops them, and a page already written back without them stays
   without them.
+- **Answer images follow the final result order (#1716):** on `/llm/ask`, the
+  image citations (`kind: 'image'` sources) and the pictures shown to a
+  vision-capable chat model now follow the answer's final result order —
+  reranking and exact-identifier pins included — instead of the fused search
+  score. Before, a pinned page's picture could be cited last, and a page the
+  reranker moved to the top could lose its picture's only slot to a
+  lower-ranked page's. Image sources still carry `score` and a null
+  `similarity`.
 - **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
   fence in an imported `.md` file now reaches the editor as a diagram
   placeholder that carries its name, the created page keeps that name, and a

@@ -1891,8 +1891,9 @@ row (#1184), not here.
 
 **Selection is round-robin, not best-first.** Every page contributes its best
 image before any page contributes a second, ordered within a round by the
-carrying row's fused rank (or, on the legacy fallback, by the image's own
-cross-modal similarity). A flat sort over the flattened candidates would
+carrying row's position in the final result array — best final result order
+first (array position; reranking and identifier pins included), never by the
+row's `score` (#1716). A flat sort over the flattened candidates would
 let one gallery page take both slots at the default cap and hide the second
 page entirely — image COUNT beating image BREADTH, which is the head dilution
 `MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and #1106's best-chunk-only
@@ -2288,8 +2289,10 @@ the same shape:
 
 An **image source** (`kind: 'image'`, ADR-025 D8 / ADR-027 D12) is appended
 after the page and web entries, one per distinct `(pageId, attachmentSource,
-attachmentKey)` among the answer's top-K derived rows, best fused rank first
-and capped at `MAX_IMAGE_SOURCES` (4). It carries `attachmentUrl` (from
+attachmentKey)` among the answer's top-K derived rows, best final result
+order first (array position; reranking and identifier pins included) and
+capped at `MAX_IMAGE_SOURCES` (4); a picture two rows carry is cited once,
+from the earlier row (#1716). It carries `attachmentUrl` (from
 `buildPageImageUrl`, so `SourceThumbnail`, the `ATTACHMENT_URL_PATTERN` guard
 and the attachment sweep's persisted-URL walk keep working), `similarity:
 null` — there is no cross-modal score to fabricate, and the page's own cosine

@@ -4524,8 +4524,9 @@ entry and adds provenance to it.** On `/llm/ask` a page whose best hit is a
 derived chunk is cited as a page source exactly as today (its `chunkText` is
 the evidence the model saw). Additionally, for each distinct
 `(pageId, attachment_source, attachment_key)` among the answer's top-K
-derived rows — best fused rank first, capped at `MAX_IMAGE_SOURCES` (4) —
-one `kind: 'image'` entry is appended after the page and web entries, with
+derived rows — best final result order first (array position; reranking and
+identifier pins included), capped at `MAX_IMAGE_SOURCES` (4) — one
+`kind: 'image'` entry is appended after the page and web entries, with
 `similarity: null` (there is no cross-modal score to fabricate *(epic)*),
 `attachmentUrl` from `buildPageImageUrl` (so `SourceThumbnail`, the
 `ATTACHMENT_URL_PATTERN` guard and the attachment sweep's persisted-URL walk
@@ -4536,6 +4537,22 @@ together with `kind`/`attachmentUrl`, never singly; conversation replay
 re-applies visibility so a revoked page's entry is dropped, hash or no hash.
 A shared `contentHash` is provenance, never an authorization shortcut
 *(epic)*.
+
+*Amended, #1716 (maintainer decision, 2026-11-10 — final array order wins):*
+D12 first ordered the image citations by the carrying row's fused rank, and
+`distinctDerivedImages` sorted on that `score`. It broke `SearchResult`'s own
+contract — the array order is the pipeline's verdict, and consumers never
+re-sort by `score` — so a page the reranker moved up, or an identifier pin (a
+new pin carries `score: 0` and leads by position alone), could have its
+picture cited after, or instead of, a lower-ranked page's. The order is now
+the carrying row's position in the final result array (after fusion, the
+ranking prior, rerank, MMR, the pins and the deep-search merge), then
+`part`, `pageId` and `attachmentKey`; a picture two rows carry is cited once,
+from the earlier row. D11's answer-time pick ranks each round-robin round by
+the same position, so the cited picture and the picture the model is shown
+are still chosen by one rule. `score` stays on the entry, `similarity` stays
+null — no cross-modal score — and retrieval itself (`hybridSearch`, rerank,
+the pins, `fuseWithStableHead`, the `multiQuerySearch` merge) is unchanged.
 
 **D13 — The analysis worker adopts the #1612 batch pattern, one queue, one
 lease, a three-step batch of which only the last needs a model, and a
