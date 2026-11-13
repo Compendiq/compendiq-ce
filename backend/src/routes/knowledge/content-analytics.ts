@@ -169,6 +169,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
        FROM page_views pv
        JOIN pages cp ON cp.id = pv.page_id
        WHERE pv.viewed_at >= NOW() - ($1 || ' days')::INTERVAL
+         AND cp.deleted_at IS NULL
        GROUP BY pv.page_id, cp.title, cp.space_key, cp.confluence_id
        ORDER BY COUNT(*) DESC
        LIMIT $2`,
@@ -230,6 +231,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
          WHERE viewed_at >= NOW() - INTERVAL '30 days'
          GROUP BY page_id
        ) pv ON pv.page_id = cp.id
+       WHERE cp.deleted_at IS NULL
        ORDER BY
          COALESCE(fb.not_helpful_count, 0) DESC,
          cp.last_modified_at ASC NULLS FIRST
