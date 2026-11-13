@@ -136,6 +136,15 @@ fallback share the predicate; the cache identity includes visibility and is
 versioned when its shape changes. Filter-mode bulk selection uses the same
 visibility test. This is a filter, not a replacement for the access predicate.
 
+**Page date filters (#1738).** Page lists, search validation and filter-mode
+bulk boundaries share `PageDateFilterSchema` from contracts; do not add a
+second parser or normalize its string output. The exact supported profile and
+compatibility restrictions are in [API date filters](../API.md#page-date-filters).
+Keep caller visibility/trash predicates and raw inclusive timestamp bounds:
+date-only `dateTo` includes midnight itself, but excludes later that day in the
+PostgreSQL session TimeZone. Search validates dates before mode dispatch without
+adding date filtering to semantic/hybrid retrieval.
+
 Local-space and shared space lists remain uncached because their mutable space
 metadata and caller-visible page count/home page belong to independent
 invalidation domains.

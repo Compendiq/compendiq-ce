@@ -287,6 +287,30 @@ export const SearchResultItemSchema = z.object({
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
+/**
+ * PostgreSQL-safe calendar dates or qualified timestamps, kept as raw strings.
+ * Match microsecond precision and offset/year limits without changing bounds
+ * or cache identity; a date-only upper bound remains session-local midnight.
+ */
+export const PageDateFilterSchema = z.union([
+  z.string().date(),
+  z.string().datetime({ offset: true })
+    .regex(
+      /(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/,
+      'UTC offset must be between -15:59 and +15:59',
+    )
+    .refine(
+      (value) => !/\.\d{7}/.test(value),
+      'Use at most 6 fractional-second digits',
+    ),
+]).refine(
+  (value) => !value.startsWith('0000-'),
+  'Year must be between 0001 and 9999',
+).refine(
+  (value) => !/\s/.test(value),
+  'Date filters must not contain whitespace',
+);
+
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
@@ -301,8 +325,8 @@ export const PageListQuerySchema = z.object({
   visibility: PageVisibilityEnum.optional(),
   /** #283 — see SearchHybridQuerySchema.aiPolicy. Absent means no filter. */
   aiPolicy: AiPolicyFilterSchema.optional(),
-  dateFrom: z.string().optional(), // ISO date string
-  dateTo: z.string().optional(),   // ISO date string
+  dateFrom: PageDateFilterSchema.optional(),
+  dateTo: PageDateFilterSchema.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author', 'quality', 'relevance']).default('title'),

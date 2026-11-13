@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { MAX_TEST_WORKERS, workerIdFromEnv } from './test-worker-isolation.js';
+import { MAX_TEST_WORKERS, workerDatabaseName, workerIdFromEnv } from './test-worker-isolation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -22,8 +22,15 @@ describe('test-setup short-circuits production wall-clock timings', () => {
   });
 
   it('this worker has a pool slot so it is not sharing kb_creator_test', () => {
-    expect(workerIdFromEnv()).toBeGreaterThan(0);
-    expect(process.env.POSTGRES_URL).toMatch(/kb_creator_test_w\d+/);
+    const workerId = workerIdFromEnv();
+    expect(workerId).toBeGreaterThan(0);
+    if (process.env.TEST_DATABASE_NAMESPACE !== undefined) {
+      expect(workerId).toBe(1);
+    }
+    expect(new URL(process.env.POSTGRES_URL!).pathname).toBe(
+      `/${workerDatabaseName(workerId, process.env.TEST_DATABASE_NAMESPACE)}`,
+    );
+    expect(process.env.POSTGRES_TEST_URL).toBe(process.env.POSTGRES_URL);
   });
 });
 
