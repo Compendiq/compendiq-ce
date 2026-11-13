@@ -147,7 +147,8 @@ function frontendDocumentSpecs(): Spec[] {
   const table = parseNamedExtend(article, 'Table', 'table', 'node');
   const code = parseNamedExtend(titled, 'CodeBlockLowlight', 'codeBlock', 'node');
   const highlight = parseNamedExtend(article, 'Highlight', 'highlight', 'mark');
-  for (const extra of [image, table, code, highlight]) {
+  const taskItem = parseNamedExtend(article, 'TaskItem', 'taskItem', 'node');
+  for (const extra of [image, table, code, highlight, taskItem]) {
     if (extra) specs.push(extra);
   }
   return specs.filter((s) => !EDITOR_ONLY_EXTENSION_NAMES.has(s.name));
@@ -198,6 +199,11 @@ const GOLDEN: Array<{ name: string; html: string; expectTypes: string[] }> = [
     name: 'status',
     html: '<p><span class="confluence-status" data-color="green">DONE</span></p>',
     expectTypes: ['confluenceStatus'],
+  },
+  {
+    name: 'emoticon',
+    html: '<p>Done <span class="confluence-emoticon" data-emoticon-attrs=\'{"ac:name":"tick"}\' data-emoticon-label="✅" role="img" aria-label="tick"></span></p>',
+    expectTypes: ['confluenceEmoticon'],
   },
   {
     name: 'expand',
@@ -290,6 +296,11 @@ describe('collab schema parity (#1445)', () => {
         expect(html2).toContain('Draw.io preview unavailable: arch');
         expect(html2).toContain('class="drawio-preview-unavailable"');
         expect(html2).not.toContain('<img');
+      }
+      if (fixture.name === 'emoticon') {
+        expect(html2).toContain(
+          '<span class="confluence-emoticon" data-emoticon-attrs="{&quot;ac:name&quot;:&quot;tick&quot;}" data-emoticon-label="✅" role="img" aria-label="tick"></span>',
+        );
       }
       if (fixture.name === 'native-panel') {
         expect(html2).toContain('data-macro-name="panel"');

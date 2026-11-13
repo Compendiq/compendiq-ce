@@ -11,6 +11,7 @@ import {
   type PageWriteIntent,
 } from './page-write-admission.js';
 import { userCanAccessPage } from './rbac-service.js';
+import { CONFLUENCE_ATTACHMENT_HREF_PREFIX, parseConfluenceLinkHref } from './confluence-link.js';
 import {
   BASELINE_STORE_DIRNAME,
   attachmentsRootNow,
@@ -310,6 +311,23 @@ function decodeUrlSegment(value: string): string {
   }
 }
 
+/**
+ * The filename a `#confluence-attachment:` reference names in the page's own
+ * attachment namespace, else null. Since #1748 the filename is percent-encoded
+ * and may be followed by `?<params>`; a link whose params name another page or
+ * blog post as the attachment's container is that page's attachment, not this
+ * page's, so it is null. A reference written before #1748 decodes as before,
+ * unless it also parses as the grammar (a filename ending in a valid
+ * `?name=value` list): that one reads by the grammar, as the write-back does,
+ * and only renderBaselineBodyHtml falls back to its old decoding.
+ */
+function confluenceAttachmentFilename(value: string): string | null {
+  if (!value.startsWith(CONFLUENCE_ATTACHMENT_HREF_PREFIX)) return null;
+  const link = parseConfluenceLinkHref(value);
+  if (link?.kind === 'attachment' && !link.legacy) return link.container ? null : link.value;
+  return decodeUrlSegment(value.slice(CONFLUENCE_ATTACHMENT_HREF_PREFIX.length));
+}
+
 function mediaIdentity(store: BaselineAttachment['store'], pageKey: string, filename: string): string {
   const framed = encodeBaselineManifest([store, pageKey, filename]);
   return createHash('sha256').update(framed).digest('hex');
@@ -444,9 +462,8 @@ function collectMediaSources(page: PageRow): MediaSource[] {
       }
     }
     if (tagName === 'a') {
-      const href = element.getAttribute('href');
-      if (href?.startsWith('#confluence-attachment:')) {
-        const filename = decodeUrlSegment(href.slice('#confluence-attachment:'.length));
+      const filename = confluenceAttachmentFilename(element.getAttribute('href') ?? '');
+      if (filename !== null) {
         const pageKey = page.source === 'confluence' && page.confluence_id
           ? page.confluence_id
           : String(page.id);
@@ -461,8 +478,8 @@ function collectMediaSources(page: PageRow): MediaSource[] {
       if (raw === null) continue;
       for (const candidate of mediaAttributeValues(tagName, attribute, raw)) {
         if (isPinnedInlineMedia(candidate) || parseInternalAttachmentUrl(candidate)) continue;
-        if (candidate.startsWith('#confluence-attachment:')) {
-          const filename = decodeUrlSegment(candidate.slice('#confluence-attachment:'.length));
+        const filename = confluenceAttachmentFilename(candidate);
+        if (filename !== null) {
           const pageKey = page.source === 'confluence' && page.confluence_id
             ? page.confluence_id
             : String(page.id);
@@ -590,18 +607,26 @@ export function renderBaselineBodyHtml(
     return `/api/pages/${pageId}/baselines/${baselineId}/media/${identity}`;
   };
   const hashSource = (value: string): StoredMediaSource | null => {
-    if (!value.startsWith('#confluence-attachment:')) return null;
-    const filename = decodeUrlSegment(value.slice('#confluence-attachment:'.length));
-    const source = mediaSource('confluence', legacyAttachmentPageKey, filename);
-    const identity = mediaIdentity(source.store, source.pageKey, source.filename);
-    if (!inventory.has(identity)) {
-      throw new PageBaselineManifestError(
-        503,
-        'baseline_storage_unavailable',
-        'Frozen Confluence attachment reference is not retained for its original page',
-      );
+    if (!value.startsWith(CONFLUENCE_ATTACHMENT_HREF_PREFIX)) return null;
+    const filename = confluenceAttachmentFilename(value);
+    const source = filename === null ? null : mediaSource('confluence', legacyAttachmentPageKey, filename);
+    if (source && inventory.has(mediaIdentity(source.store, source.pageKey, source.filename))) return source;
+    // A baseline frozen before #1748 retained each reference by its old
+    // decoding, which differs from the #1748 reading only for a filename that
+    // also reads as the grammar (`x?body=plain`, say), so that decoding is the
+    // fallback before the reference counts as missing. Only a retained name
+    // becomes a source, so the decoding of a link to another page's
+    // attachment is never taken for an unsafe filename.
+    const legacy = decodeUrlSegment(value.slice(CONFLUENCE_ATTACHMENT_HREF_PREFIX.length));
+    if (legacy !== filename && inventory.has(mediaIdentity('confluence', legacyAttachmentPageKey, legacy))) {
+      return mediaSource('confluence', legacyAttachmentPageKey, legacy);
     }
-    return source;
+    if (source === null) return null;
+    throw new PageBaselineManifestError(
+      503,
+      'baseline_storage_unavailable',
+      'Frozen Confluence attachment reference is not retained for its original page',
+    );
   };
 
   for (const element of document.querySelectorAll('*')) {

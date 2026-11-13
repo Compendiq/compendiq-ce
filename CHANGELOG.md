@@ -47,6 +47,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
+  `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
+  files included) now imports as page labels; previously the list was dropped
+  and the import returned no labels without a warning. Inline `[a, b]` lists
+  and scalar values behave as before. YAML comment rules apply: an unquoted
+  `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
+- **Markdown import keeps task completion and list numbering (#1752):**
+  importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
+  `- [ ] todo`) as editor task lists with their checked state, and ordered
+  lists keep a start number other than 1 (`3. a` stays item 3). Previously
+  both were silently dropped. Applying an AI Improve result uses the same
+  conversion, so a page's task list now comes back as a task list —
+  assignee mentions, status lozenges, Jira links and images inside its tasks
+  included — instead of a bullet list with raw checkbox elements in the saved
+  body. A list mixing tasks and plain items becomes separate lists, a
+  numbered task list becomes an unnumbered task list (the editor has no
+  numbered tasks), and a task item that contains a diagram or other block
+  HTML stays a bullet with its `[x]` / `[ ]` as text, so nothing in it is
+  lost.
+- **Confluence code, table-of-contents and status macros keep all their
+  parameters (#1749):** saving a synced page (editor save, collaborative save,
+  draft publish, version restore) dropped every code-macro parameter except
+  the language — and cut `c#` to `c` and `objective-c` to `objective` — plus
+  the table-of-contents macro's `exclude`, `include`, `indent`, … and the
+  status macro's `subtle`. They now write back unchanged. A synced code
+  block's Confluence title shows in the editor and read mode; for a mermaid
+  block, the title and the other code-macro parameters are carried through
+  editor saves but not displayed. AI Improve keeps the table-of-contents and
+  status parameters and the code language; applying an Improve result still
+  drops a code block's title and display options (line numbers, collapse,
+  …). A page synced before this release regains the parameters only when its
+  body is next re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages). Saving it before
+  then still drops them, and a page already written back without them stays
+  without them.
+- **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
+  fence in an imported `.md` file now reaches the editor as a diagram
+  placeholder that carries its name, the created page keeps that name, and a
+  page created in a Confluence space names the diagram in its draw.io macro.
+  Previously the import stripped the name: the editor offered an empty
+  "Click to create a draw.io diagram" placeholder, and Confluence got the
+  generic name `diagram`. Once the page has the diagram's attachment, read
+  mode's **Edit Diagram** opens it by that name; the import itself creates no
+  attachment, and it still drops a fence's source location and inline XML. A
+  name that spans several lines or would close a code fence (backticks
+  followed only by backticks or tildes) is not imported, because it would
+  break the page's Markdown, and an empty name still imports as an unnamed
+  diagram.
+- **Confluence tasks keep their identity on save (#1751):** saving a synced
+  page (editor save, collaborative save, draft publish, version restore,
+  applying an AI Improve result) gave every task a new random `ac:task-id`,
+  so Confluence saw every task deleted and re-created on each save, and two
+  tasks could end up sharing an id (they then check and uncheck together). A
+  task now keeps its id. A new task gets the next free id, never the number
+  of a task deleted in the same save, and a task pasted with an id the page
+  already uses gets a new one while the page's own task keeps it. Applying an
+  AI Improve result keeps the id of a task whose text it left unchanged; a
+  reworded task gets a new id. A page synced before this release gets its ids
+  back from the stored Confluence copy on its next save: by task text, and
+  for the remaining tasks in order when as many remain on both sides (a task
+  typed in place of a deleted one then takes its id; otherwise an edited task
+  gets a new id). Saves no longer write the editor's checkbox markup into
+  each Confluence task body, and a body an earlier save wrote that way is
+  cleaned on its next save. Restoring a version of a Confluence page that has
+  tasks no longer fails with "Historical version … no longer matches the
+  durable restore intent" after Confluence has already accepted the restore.
+- **Confluence emoticons survive saving a synced page (#1750):** saving a page
+  synced from Confluence (editor save, collaborative save, draft publish,
+  version restore, AI Improve apply) deleted every emoticon — status ticks,
+  warnings, smileys and Confluence emoji — from the Confluence page. They now
+  write back unchanged, every attribute included (`ac:name` and the newer
+  `ac:emoji-shortname`, `ac:emoji-id` and `ac:emoji-fallback`). The editor
+  and read mode show each one as its emoji, or as Confluence's text form
+  (`(blue-star)`, `:face_exhaling:`) when there is no emoji; screen readers
+  announce it by name, and it is not a separate tab stop. A page synced
+  before this release shows its emoticons once its body is re-derived from
+  Confluence — an upstream change, or a re-sync: **Re-sync** on selected
+  pages, **Pull from Confluence…** on a page, or Settings → Spaces & Sync →
+  Sync schedule → **Force Re-sync All** (**Sync Now** is incremental and does
+  not refresh unchanged pages). Saving it before then still drops them.
+- **Confluence page, attachment and anchor links survive saving a synced page
+  (#1748):** saving a page synced from Confluence (editor save, collaborative
+  save, draft publish, version restore, AI Improve apply) wrote Confluence
+  page and attachment links back as dead `#confluence-page:…` /
+  `#confluence-attachment:…` anchors without their space, turned a link to
+  another page's attachment into a link to that page, and dropped links to
+  anchors. Links now write back as Confluence links: the page and its space,
+  the attachment and the page that owns it, the anchor, the link text with its
+  formatting, and their other attributes. A page synced before this release
+  keeps its link titles and filenames but not their space or anchor until its
+  body is re-derived from Confluence — an upstream change, or a re-sync:
+  **Re-sync** on selected pages, **Pull from Confluence…** on a page, or
+  Settings → Spaces & Sync → Sync schedule → **Force Re-sync All** (**Sync
+  Now** is incremental and does not refresh unchanged pages); saving it before
+  then writes a cross-space link back as a link in the page's own space.
+  Unchanged: clicking such a link inside Compendiq does not navigate; saving
+  from the editor still loses a link whose text is an image or inline code and
+  splits a link around inline code inside its text, and a collaborative save
+  splits a link around a line break inside it.
+- **Search text keeps escaped entity examples (#1735):** a page that shows a
+  literal entity such as `&lt;br&gt;`, `&amp;` or `&#60;` (typically in a code
+  block documenting HTML) now stores exactly that in its search text, instead
+  of decoding it a second time to `<br>`, `&` or `<`. Keyword search now
+  indexes what the page displays, so literal tag examples become findable by
+  their tag name, and visible URLs such as `?id=1&reg=eu` stay intact instead
+  of turning into `?id=1®=eu`. Result snippets are still rendered as HTML, so
+  an escaped example can show decoded once more in a snippet. Existing pages
+  pick up the corrected text the next time they are saved, or re-synced after
+  an edit in Confluence (or by a full sync); there is no backfill.
+- **ODT uploads keep the text after footnotes and text boxes (#1734):**
+  extracting an `.odt` lost the rest of any paragraph after an embedded
+  footnote, endnote or text box, glued the footnote number to the previous
+  word (`Before1Footnote`), and dropped the text between two ranged comments.
+  Notes and text boxes now appear where they sit — the paragraph's text before
+  them, their own lines, then the rest of the paragraph — without the footnote
+  number. Only paragraphs a list item holds directly get a bullet: a paragraph
+  after a nested list now does, a footnote's or table cell's paragraph inside a
+  list item no longer does. Character references are decoded once (`&#38;lt;`
+  stays `&lt;`) and references to invalid code points read as U+FFFD instead of
+  failing the extraction; heading levels written in single quotes are honoured.
+  Unclosed tags no longer make extraction time grow quadratically with the
+  document's size.
+- **RTF `\uN` characters and `\ansicpg` bytes decode correctly (#1733):** a
+  `\uN` Unicode character now replaces its fallback instead of appearing
+  beside it (`Пр`, not `ПÏрð`), honouring `\ucN` and its group scope, and
+  `\'hh` bytes decode in the document's `\ansicpgN` code page instead of as
+  Latin-1 — windows-1252 when none is declared, so `\'80` is `€` and the
+  `\'93`/`\'94` quotes survive. Japanese, Chinese and Korean double-byte pages
+  are included, Korean as full Windows cp949; bytes written in a font's own
+  `\fcharsetN` still decode in the document's code page. Font tables,
+  pictures (raw `\binN` data included), headers, footers and footnotes are
+  now dropped however deeply they nest, and an RTF whose font table or another
+  skipped group holds millions of entries no longer fails to extract.
 - **Long lines stay inside exported article PDFs (#1730):** code blocks no
   longer cut each line at 120 characters; a line wider than the code box (83
   characters) continues flush left on the next row, across page breaks, so no
@@ -343,6 +478,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output-token ceiling, analysis version pair, embedder and FTS configuration.
   A wrong, incomplete or reconfigured arm state is refused before any
   completion request instead of being answered under the `--arm` label.
+- **Analytics PDF export works with a date range (#1732):** the built-in
+  renderer printed the cover's date range with `→`, which its WinAnsi
+  Helvetica font cannot encode, so the PDF export of every analytics dashboard
+  failed before downloading and showed nothing. The cover now reads
+  `<start> to <end>`; characters the font cannot draw in titles, user names,
+  KPIs and table cells print as `?`, with a note on the cover, instead of
+  aborting the export; and a failed export shows an error toast naming the
+  report instead of failing silently.
 
 ## [0.9.2] - 2026-10-29
 
