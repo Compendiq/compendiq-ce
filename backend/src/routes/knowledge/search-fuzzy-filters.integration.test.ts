@@ -21,7 +21,6 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { query } from '../../core/db/postgres.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import type * as RbacService from '../../core/services/rbac-service.js';
-import { flushSearchAnalytics } from '../../domains/llm/services/rag-service.js';
 import { searchRoutes } from './search.js';
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -104,13 +103,11 @@ describe.skipIf(!dbAvailable)('keyword search: fuzzy-title hits honour every act
   });
 
   afterAll(async () => {
-    await flushSearchAnalytics();
     await app.close();
     await teardownTestDb();
   });
 
   beforeEach(async () => {
-    await flushSearchAnalytics();
     await truncateAllTables();
     // A plain user: the page-restriction arm of the visibility predicate applies.
     const user = await query<{ id: string }>(
