@@ -71,14 +71,30 @@ const ODT_MANIFEST = `<?xml version="1.0" encoding="UTF-8"?>
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>`;
 
+/** Shape switches for {@link buildOdt}; the defaults produce what writers emit. */
+interface OdtOptions {
+  /** `false` puts `bodyXml` straight into `<office:body>`, with no `<office:text>`. */
+  officeText?: boolean;
+  /** A `<!DOCTYPE …>` placed between the XML declaration and the root element. */
+  doctype?: string;
+  /** `false` ends content.xml right after `bodyXml`, as a truncated entry would. */
+  closed?: boolean;
+}
+
 /**
  * A minimal but genuine .odt. `bodyXml` is the inner content of
  * `<office:text>`; the `mimetype` entry is stored uncompressed as ODF requires.
  */
-export function buildOdt(bodyXml: string, extraEntries: Zippable = {}): Buffer {
-  const content = `<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">
-<office:body><office:text>${bodyXml}</office:text></office:body></office:document-content>`;
+export function buildOdt(
+  bodyXml: string,
+  extraEntries: Zippable = {},
+  { officeText = true, doctype = '', closed = true }: OdtOptions = {},
+): Buffer {
+  const [textOpen, textClose] = officeText ? ['<office:text>', '</office:text>'] : ['', ''];
+  const trailer = closed ? `${textClose}</office:body></office:document-content>` : '';
+  const content = `<?xml version="1.0" encoding="UTF-8"?>${doctype}
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.2">
+<office:body>${textOpen}${bodyXml}${trailer}`;
 
   return Buffer.from(zipSync({
     mimetype: [strToU8('application/vnd.oasis.opendocument.text'), { level: 0 }],
@@ -102,6 +118,23 @@ export function compressibleEntry(uncompressedBytes: number): Uint8Array {
 }
 
 /**
+ * Bytes that do not compress (xorshift32 noise, fixed seed). Padding an archive
+ * with them lowers its expansion ratio, so a large but legitimate test entry
+ * gets past the ratio check to the reader.
+ */
+export function incompressibleEntry(bytes: number): Uint8Array {
+  const noise = new Uint8Array(bytes);
+  let state = 0x9e3779b9;
+  for (let i = 0; i < bytes; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    noise[i] = state & 0xff;
+  }
+  return noise;
+}
+
+/**
  * Rewrites every declared uncompressed size in a zip — the shape of a bomb that
  * understates its payload so a size check waves it through.
  *
@@ -118,10 +151,10 @@ export function forgeUncompressedSizes(zip: Buffer, declared: number): Buffer {
   return forged;
 }
 
-/** An RTF document body wrapped in the header a real writer emits. */
-export function buildRtf(body: string): Buffer {
+/** An RTF document body wrapped in the header a real writer emits; `codePage` is its `\ansicpgN`. */
+export function buildRtf(body: string, codePage = 1252): Buffer {
   return Buffer.from(
-    '{\\rtf1\\ansi\\ansicpg1252\\deff0' +
+    `{\\rtf1\\ansi\\ansicpg${codePage}\\deff0` +
     '{\\fonttbl{\\f0\\fnil\\fcharset0 Calibri;}}' +
     '{\\colortbl ;\\red0\\green0\\blue0;}' +
     '{\\*\\generator Riched20 10.0.0;}' +

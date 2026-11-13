@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Node, mergeAttributes } from '@tiptap/core';
+import { Node } from '@tiptap/core';
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react';
 import { Eye, Code2, AlertTriangle } from 'lucide-react';
 import { MermaidDiagram } from '../diagrams/MermaidDiagram';
@@ -103,7 +103,9 @@ function MermaidBlockView({ node, updateAttributes, editor }: NodeViewProps) {
  * a React NodeView with diagram preview and source editing toggle.
  *
  * On serialization, outputs the same HTML structure so the content converter
- * can round-trip mermaid code through Confluence storage format.
+ * can round-trip mermaid code through Confluence storage format, including the
+ * code macro's title (`data-title`) and other parameters (`data-macro-params`)
+ * (#1749).
  */
 export const MermaidBlock = Node.create({
   name: 'mermaidBlock',
@@ -122,6 +124,16 @@ export const MermaidBlock = Node.create({
           const codeEl = element.querySelector('code');
           return codeEl?.textContent ?? '';
         },
+      },
+      // #1749: a code macro whose language is mermaid lands here, not in the
+      // code block, so it keeps the code block's title and parameter carrier.
+      title: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-title'),
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
       },
     };
   },
@@ -142,11 +154,10 @@ export const MermaidBlock = Node.create({
   },
 
   renderHTML({ node }) {
-    return [
-      'pre',
-      mergeAttributes({}),
-      ['code', { class: 'language-mermaid' }, node.attrs.code],
-    ];
+    const attrs: Record<string, string> = {};
+    if (node.attrs.title) attrs['data-title'] = node.attrs.title;
+    if (node.attrs.macroParams) attrs['data-macro-params'] = node.attrs.macroParams;
+    return ['pre', attrs, ['code', { class: 'language-mermaid' }, node.attrs.code]];
   },
 
   addNodeView() {

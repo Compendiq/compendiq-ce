@@ -485,6 +485,67 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(audit.rows[0]?.metadata.source).toBe('ai_improvement');
     });
 
+    it('keeps the Confluence id of a task whose text the improvement left unchanged (#1751)', async () => {
+      const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+      await setPageContent(
+        pageId,
+        '<p>Old body</p>',
+        5,
+        '<p>Old</p><ac:task-list><ac:task><ac:task-id>794464</ac:task-id>'
+        + '<ac:task-status>incomplete</ac:task-status><ac:task-body>Ship it</ac:task-body></ac:task></ac:task-list>',
+      );
+      await enableConfluence(true);
+      // htmlToMarkdown writes no task ids, so the improvement's tasks carry none
+      // (raw task markup here; with #1752 a GFM task list renders the same).
+      const improvedMarkdown = '## Improved\n\n<ul data-type="taskList">'
+        + '<li data-type="taskItem" data-checked="false">Ship it</li>'
+        + '<li data-type="taskItem" data-checked="false">Celebrate</li></ul>\n';
+      acceptNextConfluenceUpdate();
+
+      const response = await apply({ pageId: 'page-1', improvedMarkdown, version: 5 });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+      expect([...sent.body.storage.value.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]))
+        .toEqual(['794464', '794465']);
+    });
+
+    describe('tasks the improvement changed (#1751)', () => {
+      // htmlToMarkdown writes no task ids, so the improvement's tasks carry none
+      // (raw task markup here; with #1752 a GFM task list renders the same).
+      async function applyTasks(...texts: string[]): Promise<string[]> {
+        const pageId = await insertConfluencePage('page-1', 'Synced article', 'OPS');
+        await setPageContent(
+          pageId,
+          '<p>Old body</p>',
+          5,
+          '<p>Old</p><ac:task-list>'
+          + [[1, 'Buy milk'], [2, 'Call Bob'], [3, 'Book flights']].map(([id, text]) => `<ac:task><ac:task-id>${id}</ac:task-id>`
+            + `<ac:task-status>incomplete</ac:task-status><ac:task-body>${text}</ac:task-body></ac:task>`).join('')
+          + '</ac:task-list>',
+        );
+        await enableConfluence(true);
+        const improvedMarkdown = '## Improved\n\n<ul data-type="taskList">'
+          + texts.map((text) => `<li data-type="taskItem" data-checked="false">${text}</li>`).join('')
+          + '</ul>\n';
+        acceptNextConfluenceUpdate();
+
+        const response = await apply({ pageId: 'page-1', improvedMarkdown, version: 5 });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+        return [...sent.body.storage.value.matchAll(/<ac:task-id>([^<]*)<\/ac:task-id>/g)].map((match) => match[1]!);
+      }
+
+      it('gives a task the improvement reworded a new id (#1751)', async () => {
+        expect(await applyTasks('Buy milk', 'Phone Bob', 'Book flights')).toEqual(['1', '4', '3']);
+      });
+
+      it('never gives a task the improvement added the id of one it dropped (#1751)', async () => {
+        expect(await applyTasks('Buy milk', 'Book flights', 'Pack bags')).toEqual(['1', '3', '4']);
+      });
+    });
+
     it('publishes a successful sparse Confluence response without requiring recovery', async () => {
       const pageId = await insertConfluencePage('page-sparse', 'Sparse article', 'OPS');
       await setPageContent(pageId, '<p>Old body</p>', 5, '<p>Old storage</p>');
@@ -784,6 +845,42 @@ describe.skipIf(!dbAvailable || !redisAvailable)(
       expect(sent.body.storage.value).toContain('Runbook');
       expect(sent.body.storage.value).toContain('clarified step');
       expect((await readPage(pageId)).body_html).toContain('data-macro-name="expand"');
+    });
+
+    it('keeps Confluence page, attachment and anchor links through Apply (#1748); the model is not called', async () => {
+      // The accepted improvement stands in for the model's output: the page's
+      // own Markdown, as Improve sends it, with one word changed. Everything
+      // after it is the production Apply path (Markdown → HTML, media restore,
+      // layout recovery, htmlToConfluence, the Confluence PUT, whose HTTP alone
+      // is mocked). What a model does to a link's Markdown is not covered.
+      const storage = '<p>Intro</p>'
+        + '<p>See <ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS" />'
+        + '<ac:plain-text-link-body><![CDATA[see runbook]]></ac:plain-text-link-body></ac:link> and '
+        + '<ac:link ac:anchor="Restore"><ri:page ri:content-title="Runbook" ri:space-key="OPS" /></ac:link>.</p>'
+        + '<p>Jump to <ac:link ac:anchor="Restore"><ac:plain-text-link-body><![CDATA[restore]]></ac:plain-text-link-body></ac:link>'
+        + ' or get <ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" />'
+        + '</ri:attachment></ac:link>.</p>';
+      const pageId = await insertConfluencePage('page-links', 'Links article', 'OPS');
+      const bodyHtml = confluenceToHtml(storage, 'page-links', 'OPS');
+      await setPageContent(pageId, bodyHtml, 7, storage);
+      await enableConfluence(true);
+      acceptNextConfluenceUpdate();
+      const faithfulMarkdown = htmlToMarkdown(protectMedia(bodyHtml).html, { layoutTokens: true })
+        .replace('Intro', 'Introduction');
+
+      const response = await apply({ pageId: 'page-links', improvedMarkdown: faithfulMarkdown, version: 7 });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const sent = JSON.parse(String(lastConfluenceRequest?.options.body)) as { body: { storage: { value: string } } };
+      expect(sent.body.storage.value).toContain('Introduction');
+      expect(sent.body.storage.value.match(/<ac:link\b[\s\S]*?<\/ac:link>/g)).toEqual([
+        '<ac:link><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page>'
+        + '<ac:plain-text-link-body><![CDATA[see runbook]]></ac:plain-text-link-body></ac:link>',
+        '<ac:link ac:anchor="Restore"><ri:page ri:content-title="Runbook" ri:space-key="OPS"></ri:page></ac:link>',
+        '<ac:link ac:anchor="Restore"><ac:plain-text-link-body><![CDATA[restore]]></ac:plain-text-link-body></ac:link>',
+        '<ac:link><ri:attachment ri:filename="logo.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG"></ri:page>'
+        + '</ri:attachment></ac:link>',
+      ]);
     });
 
     it('rejects unrecoverable layout loss before any remote effect and keeps the page unchanged', async () => {

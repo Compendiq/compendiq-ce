@@ -19,7 +19,13 @@ import {
   CONFLUENCE_DISABLED_MESSAGE,
   pageWriteStaysLocal,
 } from '../../domains/confluence/services/standalone-mode.js';
-import { htmlToConfluence, confluenceToHtml, htmlToText } from '../../core/services/content-converter.js';
+import {
+  assignTaskIds,
+  confluenceToHtml,
+  hasOnlyUncarriedTasks,
+  htmlToConfluence,
+  htmlToText,
+} from '../../core/services/content-converter.js';
 import { materializeDrawioPreviews } from '../../core/services/drawio-previews.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
@@ -2413,10 +2419,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string; confluence_id: string | null; deleted_at: Date | null;
       page_type: string;
       content_revision: string; lifecycle_revision: string;
+      body_storage: string | null; body_html: string | null;
     }>(
       `SELECT id, version, space_key, source, created_by_user_id, visibility,
               confluence_id, deleted_at, page_type, content_revision::text,
-              lifecycle_revision::text
+              lifecycle_revision::text, body_storage, body_html
          FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
@@ -2748,7 +2755,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           admittedClient,
           request.log,
         );
-        const nextStorageBody = htmlToConfluence(uploadedBodyHtml);
+        const nextStorageBody = htmlToConfluence(uploadedBodyHtml, {
+          previousStorage: existingPage.body_storage,
+          legacyTasks: hasOnlyUncarriedTasks(existingPage.body_html),
+        });
         const currentVersion = existingPage.version ?? body.version ?? 1;
         const nextPage = await admittedClient.updatePage(
           existingPage.confluence_id!,
@@ -3483,6 +3493,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       lifecycleRevision: page.lifecycle_revision,
     };
     let publishedVisibility = page.visibility;
+    const remotePublicationRequired =
+      page.confluence_id !== null && !(await pageWriteStaysLocal(userId, page.source));
+    // #1751: publication keeps the draft's HTML rather than re-deriving it from
+    // the storage Confluence returns, so a remote publication stores the task
+    // ids it writes there.
+    const publishedHtml = remotePublicationRequired
+      ? assignTaskIds(page.draft_body_html, {
+        previousStorage: page.body_storage,
+        legacyTasks: hasOnlyUncarriedTasks(page.body_html),
+      }).html
+      : page.draft_body_html;
     const publishDraft = async (writeClient: PoolClient): Promise<void> => {
       const current = await loadAuthorizedContentWriteState(writeClient, page.id, userId, expectedRevision);
       await invalidateCollabDocAfterBodyWrite(page.id, writeClient);
@@ -3495,11 +3516,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       );
       await writeClient.query(
         `UPDATE pages SET
-          body_html = draft_body_html, body_text = draft_body_text,
+          body_html = $2, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1, embedding_dirty = TRUE,
           image_analysis_dirty = CASE
-            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
+            WHEN body_html IS DISTINCT FROM $2 THEN TRUE
             ELSE image_analysis_dirty
           END,
           embedding_status = 'not_embedded', embedded_at = NULL,
@@ -3509,12 +3530,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
           draft_updated_at = NULL, draft_updated_by = NULL
          WHERE id = $1`,
-        [page.id],
+        [page.id, publishedHtml],
       );
     };
 
-    const remotePublicationRequired =
-      page.confluence_id !== null && !(await pageWriteStaysLocal(userId, page.source));
     let publishIntent: PageWriteIntent | null = null;
     if (remotePublicationRequired) {
       const runtimeId = await getPageWriterRuntimeId();
@@ -3534,7 +3553,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             effectClass: 'remote',
             confluenceId: page.confluence_id,
             expectedVersion: page.version,
-            targetBodyHtmlSha256: createHash('sha256').update(page.draft_body_html!).digest('hex'),
+            targetBodyHtmlSha256: createHash('sha256').update(publishedHtml).digest('hex'),
           },
         });
         await writeClient.query('COMMIT');
@@ -3557,7 +3576,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       let storageBody: string;
       let admittedClient: ConfluenceClient;
       try {
-        storageBody = htmlToConfluence(page.draft_body_html!);
+        storageBody = htmlToConfluence(publishedHtml);
         admittedClient = await withPageWriteTransaction(
           [page.id],
           (writeClient) => loadCurrentConfluenceWriteClient(
