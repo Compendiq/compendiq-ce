@@ -26,11 +26,14 @@ import {
 } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import {
+  activeEmbeddingHolders,
   buildKnowledgeTestApp,
+  holdOtherEmbeddingLease,
   insertConfluencePage,
   insertLocalSpace,
   insertStandalonePage,
   insertUser,
+  OTHER_EMBEDDING_HOLDER,
 } from './pages.test-helpers.js';
 
 const available = await isDbAvailable() && await isRedisAvailable();
@@ -598,6 +601,144 @@ describe.skipIf(!available)('bulk page routes — real PostgreSQL and Redis', ()
         quality_retry_count: 0,
       },
     ]);
+  });
+
+  it('queues both sources of a mixed re-embed selection by primary key and reports a missing id as failed', async () => {
+    const synced = await seedConfluencePage('embed-synced', 'Synced');
+    const native = await insertStandalonePage('Native', 'private', actorId, 'LOCAL');
+    const unselected = await insertStandalonePage('Unselected', 'private', actorId, 'LOCAL');
+    await holdOtherEmbeddingLease(redis);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: ['embed-synced', String(native), 'missing-page'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      succeeded: 2,
+      failed: 1,
+      errors: ['Page missing-page not found'],
+    });
+    expect((await rowForPage(synced))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(native))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(unselected))?.embedding_dirty).toBe(false);
+    await expect
+      .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+      .toEqual([OTHER_EMBEDDING_HOLDER]);
+  });
+
+  it('queues every page a filter-mode re-embed resolves, standalone pages included', async () => {
+    const first = await insertStandalonePage('First', 'private', actorId, 'LOCAL');
+    const second = await insertStandalonePage('Second', 'shared', actorId, 'LOCAL');
+    const hidden = await insertStandalonePage('Hidden', 'private', otherUserId, 'LOCAL');
+    await holdOtherEmbeddingLease(redis);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: {
+        filter: { spaceKey: 'LOCAL', source: 'standalone' },
+        expectedCount: 2,
+        driftToleranceFraction: 0,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ succeeded: 2, failed: 0, errors: [] });
+    expect((await rowForPage(first))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(second))?.embedding_dirty).toBe(true);
+    expect((await rowForPage(hidden))?.embedding_dirty).toBe(false);
+    await expect
+      .poll(() => activeEmbeddingHolders(redis), { timeout: 5_000 })
+      .toEqual([OTHER_EMBEDDING_HOLDER]);
+  });
+
+  it('counts policy-blocked, folder and bodiless pages as queued for embedding, not as embedded', async () => {
+    const blocked = await insertStandalonePage('Blocked', 'private', actorId, 'LOCAL');
+    const folder = await insertStandalonePage('Folder', 'private', actorId, 'LOCAL');
+    const bodiless = await insertStandalonePage('Bodiless', 'private', actorId, 'LOCAL');
+    // `none`, not `all`: worker recovery un-parks an `all` row and would then
+    // embed it, which needs a provider this suite does not have.
+    await query(
+      `UPDATE pages
+          SET ai_policy = 'none', ai_policy_block_reason = 'policy_none',
+              embedding_status = 'policy_blocked'
+        WHERE id = $1`,
+      [blocked],
+    );
+    await query("UPDATE pages SET page_type = 'folder' WHERE id = $1", [folder]);
+    await query('UPDATE pages SET body_html = NULL WHERE id = $1', [bodiless]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: [blocked, folder, bodiless].map(String) },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // `succeeded` means marked dirty (queued), not embedded.
+    expect(response.json()).toEqual({ succeeded: 3, failed: 0, errors: [] });
+    // No lease is held, so the real worker runs to completion: it finds none
+    // of the three eligible and leaves them queued exactly as marked.
+    await expect
+      .poll(
+        async () =>
+          (await redis.exists('embedding:last_run_at')) === 1 &&
+          (await redis.exists(`embedding:lock:${actorId}`)) === 0,
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+    const rows = await query<{ id: number; embedding_dirty: boolean; embedding_status: string }>(
+      `SELECT id, embedding_dirty, embedding_status
+         FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+      [[blocked, folder, bodiless]],
+    );
+    expect(rows.rows).toEqual([
+      { id: blocked, embedding_dirty: true, embedding_status: 'policy_blocked' },
+      { id: folder, embedding_dirty: true, embedding_status: 'not_embedded' },
+      { id: bodiless, embedding_dirty: true, embedding_status: 'not_embedded' },
+    ]);
+    const embedded = await query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM page_embeddings WHERE page_id = ANY($1::int[])',
+      [[blocked, folder, bodiless]],
+    );
+    expect(embedded.rows[0]!.count).toBe('0');
+  });
+
+  it.each([
+    {
+      guard: 'the caller already has an embedding run',
+      arrange: async () => {
+        await redis.set(`embedding:lock:${actorId}`, 'running', { EX: 60 });
+      },
+      error: 'Embedding processing is already in progress for this user',
+    },
+    {
+      guard: 'a swapped shadow migration awaits validation',
+      arrange: async () => {
+        // SHADOW_MIGRATION_STATE_KEY; a renamed key fails this case loudly (200).
+        await query(
+          'INSERT INTO admin_settings (setting_key, setting_value) VALUES ($1, $2)',
+          ['embedding_shadow_migration', JSON.stringify({ status: 'swapped' })],
+        );
+      },
+      error: 'A shadow embedding migration has swapped',
+    },
+  ])('refuses re-embed with 409 before marking anything when $guard', async ({ arrange, error }) => {
+    const native = await insertStandalonePage('Guarded', 'private', actorId, 'LOCAL');
+    await arrange();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/embed',
+      payload: { ids: [String(native)] },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain(error);
+    expect((await rowForPage(native))?.embedding_dirty).toBe(false);
   });
 
   it('applies additive and replacement label semantics to real rows and records one audit event per request', async () => {
