@@ -712,76 +712,377 @@ function extractOdt(buffer: Buffer): ExtractedDocument {
 }
 
 /**
- * Placeholders used while stripping RTF. Private-use codepoints: no control
- * word can match them and no real document contains them.
+ * RTF destination groups whose payload is markup, not body text. Each is
+ * dropped whole, with everything nested inside it. Names come from the
+ * upload, so this and the tables below are a Set or Map rather than object
+ * literals: `\constructor` must not find `Object.prototype`.
  */
-const RTF_ESCAPED_BACKSLASH = '\uE000';
-const RTF_ESCAPED_BRACE_OPEN = '\uE001';
-const RTF_ESCAPED_BRACE_CLOSE = '\uE002';
+const RTF_DESTINATIONS: ReadonlySet<string> = new Set([
+  'fonttbl', 'colortbl', 'stylesheet', 'info', 'pict', 'object',
+  'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf', 'footnote',
+  'xmlnstbl', 'listtable', 'listoverridetable', 'rsidtbl', 'generator', 'datastore', 'themedata',
+  'colorschememapping', 'latentstyles',
+]);
+
+/** RTF's `\ansi` code page, read when `\ansicpgN` is absent or not listed below. */
+const RTF_DEFAULT_ENCODING = 'windows-1252';
 
 /**
- * RTF destination groups whose payload is markup, not body text. Everything
- * inside them is dropped whole rather than stripped word by word.
+ * `\ansicpgN` values `TextDecoder` can read: the Windows, DOS-Cyrillic and Mac
+ * pages of the RTF 1.9.1 code-page table, plus Windows' UTF-8 code page. Pages
+ * without a WHATWG label (437, 850, …) read as {@link RTF_DEFAULT_ENCODING}.
+ * 949 reads through {@link createCp949Decoder}.
  */
-const RTF_DESTINATIONS =
-  'fonttbl|colortbl|stylesheet|info|pict|object|header[lrf]?|footer[lrf]?|footnote|' +
-  'xmlnstbl|listtable|listoverridetable|rsidtbl|generator|datastore|themedata|' +
-  'colorschememapping|latentstyles';
+const RTF_CODE_PAGES: ReadonlyMap<number, string> = new Map([
+  [866, 'ibm866'],
+  [874, 'windows-874'],
+  [932, 'shift_jis'],
+  [936, 'gbk'],
+  [949, 'euc-kr'],
+  [950, 'big5'],
+  [1250, 'windows-1250'],
+  [1251, 'windows-1251'],
+  [1252, 'windows-1252'],
+  [1253, 'windows-1253'],
+  [1254, 'windows-1254'],
+  [1255, 'windows-1255'],
+  [1256, 'windows-1256'],
+  [1257, 'windows-1257'],
+  [1258, 'windows-1258'],
+  [10000, 'macintosh'],
+  [10007, 'x-mac-cyrillic'],
+  [65001, 'utf-8'],
+]);
+
+interface RtfByteDecoder {
+  decode(bytes: Uint8Array): string;
+}
+
+/** Byte-for-codepoint reading, for a runtime with no legacy decoders at all. */
+const RTF_LATIN1_DECODER: RtfByteDecoder = {
+  decode: (bytes) => Buffer.from(bytes).toString('latin1'),
+};
+
+/**
+ * Windows code page 949 (Korean). Node's `euc-kr` decoder is strict EUC-KR
+ * (KS X 1001): it misreads the 8,822 Hangul syllables cp949 adds, its UHC
+ * extension, and by taking their trail byte as a new lead it garbles the
+ * characters after them too. Those syllables are exactly the ones KS X 1001
+ * lacks, in code point order, so their table is derived from the strict
+ * decoder itself; the euro and registered signs are the two later Windows
+ * additions it also lacks. Unmapped pairs follow the WHATWG EUC-KR decoder:
+ * U+FFFD, and an ASCII trail byte is read again.
+ */
+function createCp949Decoder(eucKr: TextDecoder): RtfByteDecoder {
+  // The UTF-16 unit for `lead << 8 | trail`, or 0 where cp949 maps nothing.
+  const table = new Uint16Array(0x10000);
+  const ksHangul = new Set<number>();
+  const pair = new Uint8Array(2);
+  for (let lead = 0xa1; lead <= 0xfe; lead += 1) {
+    for (let trail = 0xa1; trail <= 0xfe; trail += 1) {
+      pair[0] = lead;
+      pair[1] = trail;
+      const char = eucKr.decode(pair);
+      const unit = char.charCodeAt(0);
+      if (char.length !== 1 || unit === 0xfffd) continue;
+      table[(lead << 8) | trail] = unit;
+      if (unit >= 0xac00 && unit <= 0xd7a3) ksHangul.add(unit);
+    }
+  }
+  table[0xa2e6] = 0x20ac;
+  table[0xa2e7] = 0x00ae;
+  // UHC slots: leads 0x81-0xC6 with trails 0x41-0x5A, 0x61-0x7A and 0x81-0xFE,
+  // stopping at 0xA0 from lead 0xA1 on, where KS X 1001 rows begin.
+  let syllable = 0xac00;
+  for (let lead = 0x81; lead <= 0xc6; lead += 1) {
+    const lastTrail = lead <= 0xa0 ? 0xfe : 0xa0;
+    for (let trail = 0x41; trail <= lastTrail; trail += 1) {
+      if ((trail > 0x5a && trail < 0x61) || (trail > 0x7a && trail < 0x81)) continue;
+      while (ksHangul.has(syllable)) syllable += 1;
+      if (syllable > 0xd7a3) break;
+      table[(lead << 8) | trail] = syllable;
+      syllable += 1;
+    }
+  }
+
+  return {
+    decode(bytes) {
+      const units = new Uint16Array(bytes.length);
+      let length = 0;
+      for (let i = 0; i < bytes.length; i += 1) {
+        const byte = bytes[i] ?? 0;
+        if (byte < 0x80) {
+          units[length] = byte;
+          length += 1;
+          continue;
+        }
+        const trail = bytes[i + 1];
+        const mapped = trail === undefined ? 0 : table[(byte << 8) | trail] ?? 0;
+        units[length] = mapped || 0xfffd;
+        length += 1;
+        // A mapped pair, or a lead byte with a non-ASCII trail, uses up the trail.
+        if (mapped !== 0 || (byte >= 0x81 && byte <= 0xfe && trail !== undefined && trail >= 0x80)) i += 1;
+      }
+      // `fromCharCode` takes code units as arguments, so convert in slices.
+      const parts: string[] = [];
+      for (let start = 0; start < length; start += 4096) {
+        parts.push(String.fromCharCode(...units.subarray(start, Math.min(start + 4096, length))));
+      }
+      return parts.join('');
+    },
+  };
+}
+
+/**
+ * A decoder for one code page. A Node built without full ICU lacks the legacy
+ * encodings, so this falls back to windows-1252 and then to Latin-1 rather
+ * than failing the upload. A decoded run is a fragment of the document, so a
+ * leading byte-order mark in it is content.
+ */
+function createRtfDecoder(encoding: string): RtfByteDecoder {
+  try {
+    const decoder = new TextDecoder(encoding, { ignoreBOM: true });
+    return encoding === 'euc-kr' ? createCp949Decoder(decoder) : decoder;
+  } catch {
+    return encoding === RTF_DEFAULT_ENCODING ? RTF_LATIN1_DECODER : createRtfDecoder(RTF_DEFAULT_ENCODING);
+  }
+}
+
+/** `{\name` or `{\*\name`: a group whose first word may name a destination. */
+const RTF_GROUP_START = /\{\\(?:\*\\)?([a-zA-Z]+)/y;
+/** A control word, its optional signed parameter and the one space that may end it. */
+const RTF_CONTROL_WORD = /\\([a-zA-Z]+)(-?\d+)? ?/y;
+/** `\'hh`: one byte in the document's code page. */
+const RTF_HEX_BYTE = /\\'[0-9a-fA-F]{2}/y;
+/** Plain text up to the next backslash, brace or source line break. */
+const RTF_TEXT_RUN = /[^\\{}\r\n]+/y;
+/** A run of source line breaks. */
+const RTF_LINE_BREAKS = /[\r\n]+/y;
+/** A raw byte outside ASCII: RTF escapes those, but some writers emit UTF-8. */
+const RTF_RAW_BYTE = /[\x80-\xff]/;
+
+/**
+ * Output pieces joined per batch. A string built by millions of tiny `+=`
+ * appends is a rope of millions of nodes, which outgrows the production heap
+ * on a 20 MiB upload; batches keep the output flat.
+ */
+const RTF_OUTPUT_BATCH = 4096;
+
+/** Control words that stand for whitespace. */
+const RTF_WORD_TEXT: ReadonlyMap<string, string> = new Map([
+  ['par', '\n'],
+  ['line', '\n'],
+  ['pard', '\n'],
+  ['tab', '\t'],
+]);
+
+/** Control symbols that stand for a character rather than a command. */
+const RTF_SYMBOL_TEXT: ReadonlyMap<string, string> = new Map([
+  ['~', ' '],
+  ['_', '-'],
+  ['\\', '\\'],
+  ['{', '{'],
+  ['}', '}'],
+]);
+
+/**
+ * Reads RTF token by token in one pass (RTF 1.9.1, "Conventions of an RTF
+ * Reader") and returns the text it carries, before whitespace clean-up.
+ * `rtf` holds the file's bytes, one per character, so `\binN` can skip
+ * exactly N of them; raw non-ASCII text is read as UTF-8, as before.
+ *
+ * - `\uN` writes UTF-16 unit N (a negative N counts from 65536) and then
+ *   skips its `\ucN` fallback: that many text characters, `\'hh` bytes,
+ *   control words or control symbols. A source line break is not counted and
+ *   a brace ends the skip. `\ucN` is group-scoped and defaults to 1. A control
+ *   word this reader acts on (`\uN`, `\ucN`, `\ansicpgN`, `\par`, `\line`,
+ *   `\pard`, `\tab`) can never be a fallback, so it ends the skip instead: a
+ *   writer that left the fallback out keeps its next character or break.
+ * - `\'hh` bytes collect into one run, decoded in the `\ansicpgN` code page
+ *   once other text is written, so double-byte pages decode. The character
+ *   written right after the run joins it, because a trail byte may be written
+ *   unescaped, and a source line break inside the run is ignored. Per-font
+ *   charsets (`\fcharsetN`) are not read: bytes in a font whose charset
+ *   differs from the document's decode wrongly, and on a double-byte page a
+ *   letter after such a byte can be swallowed as its trail byte.
+ * - `\binN` and the N raw bytes after it (one fallback unit) are skipped,
+ *   even inside a skipped group, so binary data never reads as markup.
+ * - Listed destination groups are skipped whole. Unbalanced braces are
+ *   tolerated, and nothing recurses or backtracks.
+ */
+function scanRtf(rtf: string): string {
+  // Joined batches of output, then the pieces of the batch being filled.
+  const output: string[] = [];
+  const pieces: string[] = [];
+  const write = (text: string): void => {
+    pieces.push(text);
+    if (pieces.length === RTF_OUTPUT_BATCH) {
+      output.push(pieces.join(''));
+      pieces.length = 0;
+    }
+  };
+
+  let depth = 0;
+  // 0, or the depth of the destination group being skipped.
+  let skippedDepth = 0;
+  let uc = 1;
+  // Each `\ucN` saves the count it replaced for its own group to restore, so
+  // braces that never change the count cost nothing.
+  const savedUc: Array<{ depth: number; uc: number }> = [];
+  // Fallback units still to drop after a `\uN`.
+  let skip = 0;
+  let encoding = RTF_DEFAULT_ENCODING;
+  const decoders = new Map<string, RtfByteDecoder>();
+  const bytes: number[] = [];
+
+  const flushBytes = (): void => {
+    if (bytes.length === 0) return;
+    let decoder = decoders.get(encoding);
+    if (decoder === undefined) {
+      decoder = createRtfDecoder(encoding);
+      decoders.set(encoding, decoder);
+    }
+    write(decoder.decode(Uint8Array.from(bytes)));
+    bytes.length = 0;
+  };
+  const writeText = (text: string): void => {
+    let rest = text;
+    if (bytes.length > 0 && rest.charCodeAt(0) < 0x80) {
+      bytes.push(rest.charCodeAt(0));
+      rest = rest.slice(1);
+    }
+    flushBytes();
+    write(rest);
+  };
+
+  let i = 0;
+  while (i < rtf.length) {
+    const char = rtf.charAt(i);
+
+    if (char === '{' || char === '}') {
+      flushBytes();
+      skip = 0;
+      if (char === '{') {
+        depth += 1;
+        RTF_GROUP_START.lastIndex = i;
+        const name = RTF_GROUP_START.exec(rtf)?.[1];
+        if (skippedDepth === 0 && name !== undefined && RTF_DESTINATIONS.has(name)) skippedDepth = depth;
+      } else if (depth > 0) {
+        const saved = savedUc.at(-1);
+        if (saved?.depth === depth) {
+          uc = saved.uc;
+          savedUc.pop();
+        }
+        if (skippedDepth === depth) skippedDepth = 0;
+        depth -= 1;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (char === '\r' || char === '\n') {
+      RTF_LINE_BREAKS.lastIndex = i;
+      RTF_LINE_BREAKS.test(rtf);
+      // Kept as line breaks, except inside a byte run, where a wrapped
+      // source line would split a double-byte character.
+      if (skippedDepth === 0 && bytes.length === 0) write(rtf.slice(i, RTF_LINE_BREAKS.lastIndex));
+      i = RTF_LINE_BREAKS.lastIndex;
+      continue;
+    }
+
+    if (char !== '\\') {
+      RTF_TEXT_RUN.lastIndex = i;
+      RTF_TEXT_RUN.test(rtf);
+      const end = RTF_TEXT_RUN.lastIndex;
+      if (skippedDepth === 0) {
+        const dropped = Math.min(skip, end - i);
+        skip -= dropped;
+        if (i + dropped < end) {
+          const text = rtf.slice(i + dropped, end);
+          writeText(RTF_RAW_BYTE.test(text) ? Buffer.from(text, 'latin1').toString('utf8') : text);
+        }
+      }
+      i = end;
+      continue;
+    }
+
+    RTF_CONTROL_WORD.lastIndex = i;
+    const word = RTF_CONTROL_WORD.exec(rtf);
+    if (word !== null) {
+      i = RTF_CONTROL_WORD.lastIndex;
+      const name = word[1] ?? '';
+      const param = word[2] === undefined ? undefined : Number(word[2]);
+      if (param !== undefined && name === 'bin') {
+        // Raw binary data, braces and backslashes included: skip it whole,
+        // even inside a skipped group. With its data it is one fallback unit.
+        i = Math.min(rtf.length, i + Math.max(0, param));
+        if (skippedDepth === 0 && skip > 0) skip -= 1;
+        continue;
+      }
+      if (skippedDepth > 0) continue;
+      const whitespace = RTF_WORD_TEXT.get(name);
+      if (param !== undefined && name === 'u') {
+        flushBytes();
+        write(String.fromCharCode(param < 0 ? param + 65536 : param));
+        skip = uc;
+      } else if (param !== undefined && name === 'uc') {
+        if (savedUc.at(-1)?.depth !== depth) savedUc.push({ depth, uc });
+        uc = Math.max(0, param);
+        skip = 0;
+      } else if (param !== undefined && name === 'ansicpg') {
+        flushBytes();
+        encoding = RTF_CODE_PAGES.get(param) ?? RTF_DEFAULT_ENCODING;
+        skip = 0;
+      } else if (whitespace !== undefined) {
+        writeText(whitespace);
+        skip = 0;
+      } else if (skip > 0) {
+        // Formatting writes nothing, but it is still one fallback unit.
+        skip -= 1;
+      }
+      continue;
+    }
+
+    RTF_HEX_BYTE.lastIndex = i;
+    if (RTF_HEX_BYTE.test(rtf)) {
+      i += 4;
+      if (skippedDepth > 0) continue;
+      if (skip > 0) skip -= 1;
+      else bytes.push(parseInt(rtf.slice(i - 2, i), 16));
+      continue;
+    }
+
+    // A control symbol: `\` and one character (none at the end of input).
+    const symbol = rtf.charAt(i + 1);
+    i += 2;
+    if (skippedDepth > 0) continue;
+    if (skip > 0) {
+      skip -= 1;
+      continue;
+    }
+    const text = RTF_SYMBOL_TEXT.get(symbol);
+    if (text !== undefined) writeText(text);
+  }
+
+  flushBytes();
+  output.push(pieces.join(''));
+  return output.join('');
+}
 
 /**
  * Flattens RTF markup to text.
  *
- * RTF is a control-word syntax rather than a markup language, so this strips
- * rather than parses: non-text destination groups are removed whole, the few
- * control words that mean whitespace become whitespace, escapes are decoded,
- * and every other control word disappears.
+ * `rtf` is the file's bytes, one per character (`buffer.toString('latin1')`).
+ * One linear pass reads the markup token by token ({@link scanRtf}): listed
+ * destination groups are dropped whole, each `\uN` character replaces its
+ * `\ucN` fallback, `\'hh` bytes decode in the `\ansicpgN` code page
+ * (windows-1252 when absent or unsupported), `\binN` data is skipped, the few
+ * control words that mean whitespace become whitespace, and every other
+ * control word disappears. Malformed input, unbalanced braces included, never
+ * throws.
  */
 export function rtfToText(rtf: string): string {
-  // `{\fonttbl ...}` and the ignorable form `{\*\generator ...}`. The inner
-  // `(?:\{...\}...)*` swallows one level of nesting per pass; the loop below
-  // unwinds any deeper nesting until the text stops shrinking.
-  const destination = new RegExp(
-    String.raw`\{\\(?:\*\\)?(?:` +
-    RTF_DESTINATIONS +
-    String.raw`)\b[^{}]*(?:\{[^{}]*\}[^{}]*)*\}`,
-    'g',
-  );
-  // The sentinels below must be unforgeable, so any pre-existing occurrence
-  // in the source is dropped first.
-  let text = rtf.replace(/[\uE000-\uE002]/g, '');
-  for (let pass = 0; pass < 5; pass += 1) {
-    const next = text.replace(destination, '');
-    if (next === text) break;
-    text = next;
-  }
-
-  text = text
-    // Escaped literals first, so the control-word sweep cannot eat them.
-    .replace(/\\\\/g, RTF_ESCAPED_BACKSLASH)
-    .replace(/\\\{/g, RTF_ESCAPED_BRACE_OPEN)
-    .replace(/\\\}/g, RTF_ESCAPED_BRACE_CLOSE)
-    // `\uN?` — the trailing `?` is the ANSI fallback character, discarded.
-    .replace(/\\u(-?\d+)\s?\??/g, (_m, code: string) => {
-      const point = Number(code);
-      return String.fromCharCode(point < 0 ? point + 65536 : point);
-    })
-    // `\'hh` — a raw byte, read as Latin-1 (the common RTF default).
-    .replace(/\\'([0-9a-fA-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
-    // Control symbols that stand for a character rather than a command.
-    .replace(/\\~/g, ' ')
-    .replace(/\\_/g, '-')
-    // Paragraph and line breaks.
-    .replace(/\\(?:par|line|pard)\b ?/g, '\n')
-    .replace(/\\tab\b ?/g, '\t')
-    // Everything else that is a control word or a control symbol.
-    .replace(/\\[a-zA-Z]+-?\d* ?/g, '')
-    .replace(/\\[^a-zA-Z]/g, '')
-    .replace(/[{}]/g, '')
-    .split(RTF_ESCAPED_BACKSLASH).join('\\')
-    .split(RTF_ESCAPED_BRACE_OPEN).join('{')
-    .split(RTF_ESCAPED_BRACE_CLOSE).join('}');
-
-  return text
+  return scanRtf(rtf)
     .split('\n')
     .map((line) => line.trim())
     .join('\n')
@@ -811,7 +1112,7 @@ export async function extractDocumentText(
     case 'odt':
       return extractOdt(buffer);
     case 'rtf':
-      return { format: 'rtf', text: rtfToText(buffer.toString('utf8')) };
+      return { format: 'rtf', text: rtfToText(buffer.toString('latin1')) };
     case 'md':
     case 'txt':
     case 'yaml':

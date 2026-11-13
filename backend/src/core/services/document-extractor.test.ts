@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildPreview,
   claimedFormatFromFilename,
@@ -23,9 +23,11 @@ import {
 } from './test-document-fixtures.js';
 
 /**
- * Nothing here is mocked. Every fixture is real bytes, so `unpdf`, `mammoth`
- * and `fflate` all run for real — a sniffing or zip-bomb assertion against a
- * mocked extractor would prove nothing.
+ * No extractor dependency is mocked. Every fixture is real bytes, so `unpdf`,
+ * `mammoth` and `fflate` all run for real — a sniffing or zip-bomb assertion
+ * against a mocked extractor would prove nothing. The one stub is the
+ * `TextDecoder` global in a single rtf test, standing in for a Node built
+ * without full ICU.
  */
 
 async function expectRejection(
@@ -510,6 +512,200 @@ describe('rtfToText', () => {
   it('drops nested destination groups whole', () => {
     const rtf = '{\\rtf1{\\fonttbl{\\f0\\fnil Calibri;}{\\f1\\fnil Arial;}}Body text.}';
     expect(rtfToText(rtf)).toBe('Body text.');
+  });
+
+  it('emits a Word-style \\u character once, skipping its \\\' hex fallback (#1733)', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg1251\\uc1 \\u1055\\'cf\\u1088\\'f0}")).toBe('Пр');
+  });
+
+  it('decodes \\\'80 as the euro sign under \\ansicpg1252', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg1252 Price: 5\\'80}")).toBe('Price: 5€');
+  });
+
+  it('reads \\\' hex bytes as windows-1252 unless a supported \\ansicpg is in force', () => {
+    // LibreOffice writes no \ansicpg at all.
+    expect(rtfToText("{\\rtf1\\ansi \\'93quoted\\'94 \\'96 caf\\'e9}")).toBe('“quoted” – café');
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg99999 \\'80}")).toBe('€');
+    // A code page applies from where it is declared.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg1251 \\'cf\\ansicpg1252 \\'cf}")).toBe('ПÏ');
+  });
+
+  it.each([
+    [866, "\\'8f", 'П'],
+    [874, "\\'a1", 'ก'],
+    // Double-byte pages: a trail byte may be escaped or written raw (`\'81B`).
+    [932, "\\'82\\'a0\\'81B\\'83\\'5c", 'あ。ソ'],
+    [936, "\\'c4\\'e3", '你'],
+    [949, "\\'b0\\'a1", '가'],
+    [950, "\\'a7A\\'a4\\'a4", '你中'],
+    [1250, "\\'8a", 'Š'],
+    [1251, "\\'cf", 'П'],
+    [1252, "\\'80", '€'],
+    [1253, "\\'c1", 'Α'],
+    [1254, "\\'d0", 'Ğ'],
+    [1255, "\\'e0", 'א'],
+    [1256, "\\'c7", 'ا'],
+    [1257, "\\'c0", 'Ą'],
+    [1258, "\\'d5", 'Ơ'],
+    [10000, "\\'8e", 'é'],
+    [10007, "\\'8f", 'П'],
+    [65001, "\\'c3\\'a9\\'e2\\'82\\'ac", 'é€'],
+  ])('decodes \\ansicpg%i bytes', (codePage, bytes, expected) => {
+    expect(rtfToText(`{\\rtf1\\ansi\\ansicpg${codePage} ${bytes}}`)).toBe(expected);
+  });
+
+  it('decodes \\ansicpg949 as Windows cp949, UHC syllables included', () => {
+    // 됬 and 뷁 are in cp949's UHC extension; strict EUC-KR misreads them and
+    // the characters after them.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'89\\'e7\\'b0\\'a1\\'b3\\'aa\\'b4\\'d9 \\'94\\'ee\\'b0\\'a1}"))
+      .toBe('됬가나다 뷁가');
+    // The first and last UHC syllables, and the two signs Windows added.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'81\\'41\\'c6\\'52\\'a2\\'e6\\'a2\\'e7}")).toBe('갂힣€®');
+    // An unmapped pair is U+FFFD, and an ASCII trail byte is read again.
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg949 \\'c7\\'41\\'80x}")).toBe('\uFFFDA\uFFFDx');
+  });
+
+  it('keeps a double-byte character whole across a wrapped source line', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg932 \\'82\r\n\\'a0\\'81\r\nB}")).toBe('あ。');
+  });
+
+  it('falls back to windows-1252, then Latin-1, when TextDecoder lacks a code page', () => {
+    const RealTextDecoder = globalThis.TextDecoder;
+    class OnlyWindows1252 extends RealTextDecoder {
+      constructor(...args: ConstructorParameters<typeof RealTextDecoder>) {
+        if (args[0] !== 'windows-1252') throw new RangeError(`Unsupported encoding: ${String(args[0])}`);
+        super(...args);
+      }
+    }
+    class NoLegacyEncodings {
+      constructor() {
+        throw new RangeError('No legacy encodings in this build');
+      }
+    }
+    const decodeWith = (decoder: unknown, rtf: string): string => {
+      vi.stubGlobal('TextDecoder', decoder);
+      try {
+        return rtfToText(rtf);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    };
+
+    expect(decodeWith(OnlyWindows1252, "{\\rtf1\\ansicpg1251 \\'cf\\'80}")).toBe('Ï€');
+    expect(decodeWith(NoLegacyEncodings, "{\\rtf1\\ansicpg1251 caf\\'e9 \\'80}")).toBe('café \u0080');
+  });
+
+  it('skips \\uc fallback units, across a wrapped line, until a brace ends them', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg932\\uc2 \\u12354\\'82\\'a0\\u12356\\'82\\'a2}")).toBe('あい');
+    expect(rtfToText('{\\rtf1\\uc3 \\u1055abcd}')).toBe('Пd');
+    // A source line break is not a fallback unit.
+    expect(rtfToText('{\\rtf1\\uc2 \\u1055\r\nabc}')).toBe('П\nc');
+    expect(rtfToText('{\\rtf1\\uc2 {\\u1055}x}')).toBe('Пx');
+  });
+
+  it('skips no fallback under \\uc0', () => {
+    // TextEdit's form: no fallback, so the trailing `?` is real text.
+    expect(rtfToText('{\\rtf1\\ansi\\uc0\\u1055 \\u1088 ?}')).toBe('Пр?');
+  });
+
+  it('counts a formatting control word or a control symbol as one fallback unit', () => {
+    expect(rtfToText('{\\rtf1\\ansi A\\u160\\~B}')).toBe('A\u00a0B');
+    expect(rtfToText('{\\rtf1\\ansi A\\u1055\\b B}')).toBe('AПB');
+  });
+
+  it('ends a pending fallback at a control word the reader acts on', () => {
+    // None of these can be an ANSI fallback, so a writer that left one out
+    // keeps its next character, paragraph mark, tab or \uc change.
+    expect(rtfToText("{\\rtf1 \\u1055\\u1088\\'f0}")).toBe('Пр');
+    expect(rtfToText('{\\rtf1 \\u-10179\\u-8704?}')).toBe('😀');
+    expect(rtfToText("{\\rtf1 \\u1055\\'cf\\par \\u1088\\par x\\u1080\\line y\\u1074\\tab z}"))
+      .toBe('П\nр\nxи\nyв\tz');
+    expect(rtfToText('{\\rtf1 \\u1055\\uc0\\u1088 x}')).toBe('Прx');
+  });
+
+  it('restores the enclosing \\uc count when a group closes', () => {
+    expect(rtfToText("{\\rtf1\\ansi\\ansicpg1251{\\uc0 \\u1055?}\\u1088\\'f0}")).toBe('П?р');
+    expect(
+      rtfToText("{\\rtf1\\ansi\\ansicpg1251{\\uc0 \\u1055?{\\uc2 \\u1088\\'f0\\'f0}\\u1080?}\\u1074\\'e2}"),
+    ).toBe('П?ри?в');
+    expect(rtfToText('{\\rtf1{\\uc0 \\u1055}\\u1088?}')).toBe('Пр');
+  });
+
+  it('reads negative \\u values as code points above 32767', () => {
+    // LibreOffice's form for 한국어, with an escaped `?` fallback.
+    expect(rtfToText("{\\rtf1\\ansi \\u-10916\\'3f\\u-21139\\'3f\\u-14924\\'3f}")).toBe('한국어');
+  });
+
+  it('joins a surrogate pair written as two \\u escapes', () => {
+    // LibreOffice's form, then Word's.
+    expect(rtfToText("{\\rtf1\\ansi Emoji \\uc0 \\u-10179\\uc1 \\u-8704\\'3f done}")).toBe('Emoji 😀 done');
+    expect(rtfToText('{\\rtf1\\ansi \\u-10179?\\u-8704?}')).toBe('😀');
+  });
+
+  it('keeps decoded bytes and private-use characters as literal text', () => {
+    expect(rtfToText("{\\rtf1\\ansi \\'5cpar \\'7bx\\'7d}")).toBe('\\par {x}');
+    // rtfToText reads the file's bytes, one per character.
+    expect(rtfToText(Buffer.from('{\\rtf1 a\uE000b}', 'utf8').toString('latin1'))).toBe('a\uE000b');
+  });
+
+  it('skips the bytes of a \\binN payload, braces included', () => {
+    expect(rtfToText('{\\rtf1 Before{\\pict\\wmetafile8\\bin4 {{{{}After text.}')).toBe('BeforeAfter text.');
+    // \binN and its data are one fallback unit.
+    expect(rtfToText('{\\rtf1 \\u1055\\bin2 xyz}')).toBe('Пz');
+    // A length past the end of the input stops there.
+    expect(rtfToText('{\\rtf1 a\\bin99999999 bc')).toBe('a');
+  });
+
+  it('keeps text in order across many small output pieces', () => {
+    // Two pieces per unit cross several output batches.
+    expect(rtfToText(`{\\rtf1 ${'a\\~'.repeat(10_000)}}`)).toBe('a '.repeat(10_000).trim());
+  });
+
+  it('never throws on unbalanced braces or other malformed input', () => {
+    expect(rtfToText("}}{\\rtf1\\ansi\\ansicpg1251 \\u1055\\'cf}}}\\u1088\\'f0{{{")).toBe('Пр');
+    expect(rtfToText('{\\rtf1{\\uc0 }}}\\u1055?')).toBe('П');
+    expect(rtfToText('{\\rtf1\\uc-1 \\u1055?}')).toBe('П?');
+    // A huge \uc drops text only until its group ends.
+    expect(rtfToText('{\\rtf1{\\uc99999999 \\u1055 eaten}kept}')).toBe('Пkept');
+    // A lead byte without its trail decodes to U+FFFD.
+    expect(rtfToText("{\\rtf1\\ansicpg932 \\'82}")).toBe('\uFFFD');
+    expect(rtfToText("{\\rtf1\\ansicpg932 x\\'82")).toBe('x\uFFFD');
+    expect(rtfToText('{\\rtf1 a\\constructor\\toString b\\')).toBe('ab');
+    expect(rtfToText(`${'{'.repeat(100_000)}x${'}'.repeat(100_000)}`)).toBe('x');
+  });
+
+  it('drops a listed destination group whole, with everything nested inside it', () => {
+    // Word nests \*\panose in each font and \*\picprop in each picture.
+    expect(rtfToText('{\\rtf1{\\fonttbl{\\f0\\froman{\\*\\panose 02020603050405020304}Times New Roman;}}Body}'))
+      .toBe('Body');
+    expect(rtfToText(
+      '{\\rtf1 Before{\\*\\shppict{\\pict{\\*\\picprop{\\sp{\\sn shapeType}{\\sv 75}}}\\pngblip 89504e47}} after}',
+    )).toBe('Before after');
+    // Escaped braces inside the group are text, not group boundaries.
+    expect(rtfToText("{\\rtf1{\\info{\\title a\\}b\\'7dc\\{d}}Body}")).toBe('Body');
+  });
+
+  it('skips a destination group of any size without throwing', () => {
+    const fonts = '{a}'.repeat(4_000_000);
+    expect(rtfToText(`{\\rtf1{\\fonttbl${fonts}}Body}`)).toBe('Body');
+    expect(rtfToText(`{\\rtf1{\\fonttbl${fonts}`)).toBe('');
+  });
+
+  it('extractDocumentText decodes a cp1251 Word document end to end (#1733)', async () => {
+    const cyrillic = buildRtf("\\uc1\\u1055\\'cf\\u1088\\'f0\\'e8\\'e2\\'e5\\'f2", 1251);
+    expect(await extractDocumentText(cyrillic, 'memo.rtf')).toEqual({ format: 'rtf', text: 'Привет' });
+    expect((await extractDocumentText(buildRtf("Total: 5\\'80"), 'memo.rtf')).text).toBe('Total: 5€');
+  });
+
+  it('extractDocumentText skips raw \\bin bytes exactly and still reads raw UTF-8 text', async () => {
+    // A binary payload with braces, a backslash and bytes that are not UTF-8.
+    const payload = Buffer.from([0x7b, 0xff, 0x5c, 0x7d, 0xc3, 0x28, 0x7b, 0x80]);
+    const rtf = Buffer.concat([
+      Buffer.from('{\\rtf1\\ansi Before{\\pict\\pngblip\\bin8 ', 'latin1'),
+      payload,
+      Buffer.from('}After café 日本}', 'utf8'),
+    ]);
+    expect(await extractDocumentText(rtf, 'image.rtf')).toEqual({ format: 'rtf', text: 'BeforeAfter café 日本' });
   });
 });
 

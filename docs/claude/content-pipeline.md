@@ -279,6 +279,11 @@ or interprets a DTD and expands only the five XML entities and numeric reference
 swap in an XML/DOM parser that expands declared entities (jsdom's XML mode does).
 ODT `text:s` honours `text:c` (default one), with combined expansion bounded by
 the existing entry limit; do not expand each run without a shared budget.
+RTF is one linear token scan over the file's bytes: `\uN` replaces its group-scoped `\ucN`
+fallback, `\'hh` bytes decode through `TextDecoder` in the `\ansicpgN` code page (windows-1252
+when absent or unsupported; 932/936/949/950 as double-byte runs, 949 as full Windows cp949;
+per-font `\fcharsetN` is not read), `\binN` data is skipped, listed destination groups drop
+whole with everything nested in them, and malformed input never throws.
 
 **Images as AI source material** (#1154) enter the same way but stay bytes, not text: they
 never join the Markdown/HTML pipeline above. `POST /api/llm/prepare-image` sniffs the format
