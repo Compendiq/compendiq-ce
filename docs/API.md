@@ -215,6 +215,10 @@ Every search item includes `source: "standalone" | "confluence"`, taken from
 the current page record in every search mode and fallback path. A named
 `spaceKey` or historical `confluenceId` does not determine provenance.
 
+In `mode=keyword`, `spaceKey`, `author`, `dateFrom`, `dateTo`, `tags` and
+`aiPolicy` apply to every returned item, including typo-tolerant title
+matches.
+
 ### Readiness Probe (for Kubernetes / Docker)
 
 ```bash

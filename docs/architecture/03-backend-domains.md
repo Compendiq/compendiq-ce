@@ -997,8 +997,9 @@ it consumes are #1615's and reach it through one import point:
   derived` reader (TOTAL and STRICT: a partial shape yields `undefined`, never
   a half-populated object, because D12 requires the four citation fields to
   travel together), the `(pageId, attachment_source, attachment_key)` dedup
-  and fused-rank ordering, and `buildDerivedImageSources` — the D12
-  `kind: 'image'` citations, whose one batched `pages` read supplies the three
+  and its final-result-order ordering (array position, #1716), and
+  `buildDerivedImageSources` — the D12 `kind: 'image'` citations, whose one
+  batched `pages` read supplies the three
   columns `buildPageImageUrl` needs and which soft-fails to no citations
   rather than 500 an answerable turn. It is the only reader of that metadata:
   neither the route nor the byte pick touches raw `metadata`, and nothing on
@@ -1025,7 +1026,8 @@ answer's rows came from into `image_url` parts on the user turn:
 dedupe, re-runs `validateImage` unforked and stops at a derived base64 budget.
 Since #1617 its candidates come from `SearchResult.derived` through
 `derived-provenance.ts` (ADR-027 D11) — so it imports no `ImageHit` and there
-is no per-image score to order by: the carrying row's fused rank decides, then
+is no per-image score to order by: the carrying row's position in the final
+result array decides (reranking and identifier pins included; #1716), then
 `part`. #1617's whole-set fallback to ADR-025's `imageHits` is **gone** (#1618 stage
 2 deleted it with the leg it read): a set with no derived provenance attaches
 no picture, and the module names no legacy hit type at all. **The vision gate is the

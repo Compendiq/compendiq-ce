@@ -183,6 +183,42 @@ describe.skipIf(!dbAvailable)('keyword search trigram query uses the GIN index (
     expect(plan).toContain('idx_pages_title_trgm');
   });
 
+  it('stays sargable with every keyword filter bound to the trigram query (#1740)', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/search?q=welcome&mode=keyword&spaceKey=DEV&author=alice&dateFrom=2020-01-01&dateTo=2030-12-31&tags=guide&aiPolicy=all',
+    });
+    expect(response.statusCode).toBe(200);
+
+    const trgm = captured.find(
+      (c) => c.sql.includes('similarity(cp.title') && c.sql.includes('FROM pages cp'),
+    );
+    expect(trgm, 'route should emit a fuzzy-title trigram query').toBeDefined();
+    // The statement planned below is the FILTERED one: the filters narrow the
+    // `%` candidates as extra conjuncts and never replace the operator. Since
+    // #1741 it is one statement, so check the fuzzy-title leg itself: the
+    // full-text leg alone would satisfy a whole-statement match.
+    const legStart = trgm!.sql.indexOf('trgm AS (');
+    const legEnd = trgm!.sql.indexOf('paged AS (');
+    expect(legStart, 'the keyword statement should have a trgm leg').toBeGreaterThan(-1);
+    expect(legEnd).toBeGreaterThan(legStart);
+    const trgmLeg = trgm!.sql.slice(legStart, legEnd);
+    for (const predicate of [
+      /cp\.space_key = \$\d+/,
+      /cp\.author = \$\d+/,
+      /cp\.last_modified_at >= \$\d+/,
+      /cp\.last_modified_at <= \$\d+/,
+      /cp\.labels @> \$\d+::text\[\]/,
+      /cp\.ai_policy = \$\d+/,
+    ]) {
+      expect(trgmLeg).toMatch(predicate);
+    }
+    expect(trgmLeg).toContain('cp.title % $1');
+
+    const plan = await explainWithOnlyTrgmIndex(trgm!.sql, trgm!.params);
+    expect(plan).toContain('idx_pages_title_trgm');
+  });
+
   it('documents the difference: the bare similarity() form cannot use the index', async () => {
     // Baseline: a function-only predicate is not sargable, so even with seq scans
     // disabled the planner does NOT use idx_pages_title_trgm. This is the

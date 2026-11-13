@@ -182,6 +182,16 @@ the full scan and candidate set. Missing, inaccessible, deleted, and
 caller-visible ambiguous identities return the same empty result; an
 inaccessible collision must not alter the answer.
 
+Bulk re-embed (`POST /pages/bulk/embed`) marks the resolved rows dirty by
+primary key, `id = ANY($1::int[]) AND deleted_at IS NULL` as bulk quality does,
+for BOTH sources: the embedding worker selects by `pages.id` with no source
+condition, and a standalone row may retain a historical Confluence ID, so
+marking by `confluence_id` is never correct. `succeeded` counts pages queued,
+not pages embedded — a policy-blocked, folder or bodiless page is marked and
+counted, and the worker skips it. Not-found and ambiguous ids, and a page
+trashed between resolution and marking, are counted under `failed`, so every
+resolved selection lands in exactly one of the two (#1745).
+
 A restore is refused with 409 `Restore "<title>" first` when the page's DIRECT
 parent is still in the trash AND is one the caller can actually restore — their
 own standalone row. Both halves matter. Direct, because the invariant is a
@@ -379,3 +389,11 @@ returns focus to the query without stealing focus from another control.
 Virtualization eviction is not result removal and must not move focus or scroll.
 Each filter has one visible Tab stop. Search controls adapt to pane width,
 not viewport width alone.
+
+In keyword mode the fuzzy-title (`pg_trgm`) leg applies the same space,
+author, date-range, tag and AI-policy predicates as the full-text leg
+(#1740): the route builds them once and binds the same parameter values to
+both legs of the one keyword statement, so every fuzzy hit satisfies every
+active filter. Both legs keep the visibility and trash predicates, and
+`cp.title % $1` stays the fuzzy leg's index condition. Facet counts are
+narrowed only by the AI-policy filter.

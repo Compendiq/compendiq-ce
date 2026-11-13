@@ -4235,24 +4235,33 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    // Embedding requires a confluence_id — standalone pages are skipped (their
-    // embeddings live separately).
-    const eligibleIds = resolved.rows
-      .filter((r) => r.confluenceId !== null)
-      .map((r) => r.confluenceId as string);
-
+    // Both sources embed: `processDirtyPages` selects dirty rows by `pages.id`
+    // with no source condition and `embedPage` keys on `pages.id`, so mark the
+    // resolved rows by primary key — never by `confluence_id`, which a
+    // standalone row may still carry from its synced past (#1745). `succeeded`
+    // counts rows queued (marked dirty), not rows embedded: a policy-blocked,
+    // folder or bodiless row is marked and counted, and the worker skips it.
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
     let succeeded = 0;
-    if (eligibleIds.length > 0) {
-      const result = await query<{ confluence_id: string }>(
+    if (resolved.rows.length > 0) {
+      const marked = await query<{ id: number }>(
         `UPDATE pages SET embedding_dirty = TRUE
-         WHERE confluence_id = ANY($1)
-         RETURNING confluence_id`,
-        [eligibleIds],
+          WHERE id = ANY($1::int[]) AND deleted_at IS NULL
+          RETURNING id`,
+        [resolved.rows.map((r) => r.id)],
       );
-      succeeded = result.rows.length;
+      succeeded = marked.rows.length;
+      // A row trashed or purged after the resolver read it gets the answer it
+      // would have got a moment earlier, so every resolved row lands in exactly
+      // one of `succeeded` and `failed`.
+      const markedIds = new Set(marked.rows.map((r) => r.id));
+      for (const row of resolved.rows) {
+        if (markedIds.has(row.id)) continue;
+        failed++;
+        errors.push(`Page ${row.source === 'standalone' ? row.id : (row.confluenceId ?? row.id)} not found`);
+      }
     }
-
-    const { errors, failed } = bulkResolutionFailures(resolved);
 
     // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
     if (succeeded > 0) {

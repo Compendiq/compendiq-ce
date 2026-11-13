@@ -482,9 +482,11 @@ export async function multiQuerySearch(
       ...paraphrases.map((p) =>
         // The caller's coverage reading travels to every leg (one corpus, one
         // probe); the caller's onRetrievalMeta does not — see above.
+        // Paraphrase legs never pin (#1718): see shouldExpandQuery.
         hybridSearch(userId, p, legTopK, precomputedCoverage, {
           ...legOpts,
           onRetrievalMeta: undefined,
+          pinIdentifiers: false,
         }),
       ),
     ]);

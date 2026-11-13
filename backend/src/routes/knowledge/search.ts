@@ -533,27 +533,33 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // Exclude soft-deleted pages
     conditions.push('cp.deleted_at IS NULL');
 
-    // Optional filters
+    // Optional filters — built ONCE and bound to BOTH keyword legs, the
+    // full-text leg and the fuzzy-title leg of the one keyword statement
+    // (#1740, #1741). Each predicate takes the next `$n` after the shared
+    // $1..$3 and appends its value to `values`, the head of that statement's
+    // parameters, so a fuzzy-title hit satisfies every active filter exactly
+    // as a full-text hit does.
+    const filters: string[] = [];
     if (spaceKey) {
-      conditions.push(`cp.space_key = $${paramIndex}`);
+      filters.push(`cp.space_key = $${paramIndex}`);
       values.push(spaceKey);
       paramIndex++;
     }
 
     if (author) {
-      conditions.push(`cp.author = $${paramIndex}`);
+      filters.push(`cp.author = $${paramIndex}`);
       values.push(author);
       paramIndex++;
     }
 
     if (dateFrom) {
-      conditions.push(`cp.last_modified_at >= $${paramIndex}`);
+      filters.push(`cp.last_modified_at >= $${paramIndex}`);
       values.push(dateFrom);
       paramIndex++;
     }
 
     if (dateTo) {
-      conditions.push(`cp.last_modified_at <= $${paramIndex}`);
+      filters.push(`cp.last_modified_at <= $${paramIndex}`);
       values.push(dateTo);
       paramIndex++;
     }
@@ -561,7 +567,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     if (tags) {
       const tagArray = tags.split(',').map((t) => t.trim()).filter(Boolean);
       if (tagArray.length > 0) {
-        conditions.push(`cp.labels @> $${paramIndex}::text[]`);
+        filters.push(`cp.labels @> $${paramIndex}::text[]`);
         values.push(tagArray);
         paramIndex++;
       }
@@ -573,12 +579,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // `none`/`local_only` page the caller may read — the policy restricts AI
     // use, not reading or finding.
     if (aiPolicy) {
-      conditions.push(`cp.ai_policy = $${paramIndex}`);
+      filters.push(`cp.ai_policy = $${paramIndex}`);
       values.push(aiPolicy);
       paramIndex++;
     }
 
-    const whereClause = conditions.join(' AND ');
+    const whereClause = [...conditions, ...filters].join(' AND ');
 
     // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
 
@@ -651,15 +657,15 @@ export async function searchRoutes(fastify: FastifyInstance) {
          -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
          -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
          -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() threshold check
-         -- stays exact without changing which rows match. The anti-join against
-         -- fts sits above that index scan and never replaces it.
+         -- stays exact without changing which rows match. The keyword filters are
+         -- extra conjuncts and the anti-join against fts sits above the index
+         -- scan: they narrow the % candidates, never replace the operator.
          WHERE cp.title % $1
            AND similarity(cp.title, $1) > $${thresholdParamIndex}
            AND cp.title IS NOT NULL
            AND ${visiblePagesPredicate(2, 3)}
            AND cp.deleted_at IS NULL
-           -- #283 AI-policy filter: the builder's last value, the same slot Path A binds.
-           ${aiPolicy ? `AND cp.ai_policy = $${values.length}` : ''}
+           ${filters.map((filter) => `AND ${filter}`).join(' ')}
            AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = cp.id)
        ),
        paged AS (

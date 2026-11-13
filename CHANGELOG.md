@@ -47,12 +47,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Deep search pins only identifiers found in the user's own question (#1718):**
+  the paraphrase legs of a deep search now pass `pinIdentifiers: false`, so
+  deep search pins only what the #1107 detector finds in the question itself,
+  as single-query search does. An identifier such as `INC-2203` that appears
+  only in a paraphrase no longer pins its page ahead of the merged ranking.
+  That covers both an identifier the rewrite model added and one kept from a
+  question too long for the detector. Before, such a pinned head also made the
+  answer's retrieval confidence unmeasurable, which bypassed the confidence
+  gate. The original-query leg keeps the caller's pin setting. Identifier
+  queries the detector recognises still skip expansion and pin as before. The
+  identifier page can still appear in the results at its ordinary merged rank.
 - **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
   `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
   files included) now imports as page labels; previously the list was dropped
   and the import returned no labels without a warning. Inline `[a, b]` lists
   and scalar values behave as before. YAML comment rules apply: an unquoted
   `- #ops` item is a comment and is skipped — quote it as `- '#ops'`.
+- **Shortening an embedded page removes its old text from search and chat
+  (#1714):** when an edit leaves a page with nothing to embed (fewer than 20
+  characters of text, or no chunk left), the next embedding pass now deletes
+  the page's old chunks, clears its average vector (and the copies kept
+  during an embedding-model migration), removes its similarity links to
+  related pages in both directions and resets its embedded time, in the same
+  step that marks it as not embedded. Previously the deleted text stayed a
+  semantic and hybrid search hit, kept reaching chat answers as context, and
+  kept the page linked as related. An edit that lands while the pass is
+  settling the page is never wiped: the pass then changes nothing, and the
+  page is embedded again from its new content.
 - **Markdown import keeps task completion and list numbering (#1752):**
   importing a `.md` file on New Page now loads GFM task lists (`- [x] done`,
   `- [ ] todo`) as editor task lists with their checked state, and ordered
@@ -84,6 +106,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Now** is incremental and does not refresh unchanged pages). Saving it before
   then still drops them, and a page already written back without them stays
   without them.
+- **Answer images follow the final result order (#1716):** on `/llm/ask`, the
+  image citations (`kind: 'image'` sources) and the pictures shown to a
+  vision-capable chat model now follow the answer's final result order —
+  reranking and exact-identifier pins included — instead of the fused search
+  score. Before, a pinned page's picture could be cited last, and a page the
+  reranker moved to the top could lose its picture's only slot to a
+  lower-ranked page's. Image sources still carry `score` and a null
+  `similarity`.
 - **Markdown import keeps draw.io diagram names (#1754):** a ```` ```drawio ````
   fence in an imported `.md` file now reaches the editor as a diagram
   placeholder that carries its name, the created page keeps that name, and a
@@ -97,6 +127,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed only by backticks or tildes) is not imported, because it would
   break the page's Markdown, and an empty name still imports as an unnamed
   diagram.
+- **Force-embed-tree embeds the local copy and skips trashed pages (#1717):**
+  `POST /api/embeddings/force-embed-tree` now uses Confluence only to find
+  the pages of the tree (the root page and its descendant listing) and embeds
+  each one from its live local copy, without fetching any page from
+  Confluence again. A page that was skipped because its Confluence body was
+  empty is now embedded from its local copy. A page whose local copy is in
+  the trash is skipped with `Page is in the trash, skipping`, and a
+  standalone page that still carries the page's former Confluence id is
+  reported as `Page not yet synced to local DB, skipping` instead of being
+  embedded. Every page now reports exactly one progress event, so
+  `completed` reaches `total` (pages with no new embeddings were not
+  counted, and pages without a cached body were reported twice). While the
+  user's embedding run or a global re-embed is in progress, the route
+  answers 409 instead of starting.
 - **Confluence tasks keep their identity on save (#1751):** saving a synced
   page (editor save, collaborative save, draft publish, version restore,
   applying an AI Improve result) gave every task a new random `ac:task-id`,
@@ -148,6 +192,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the editor still loses a link whose text is an image or inline code and
   splits a link around inline code inside its text, and a collaborative save
   splits a link around a line break inside it.
+- **Keyword search's typo-tolerant title matches respect the filters (#1740):**
+  with a space, author, date-range or tag filter active, keyword search still
+  returned title matches outside it — a misspelt query filtered to one space
+  listed pages from other spaces, and a tag filter that matched nothing still
+  returned them. These fuzzy title matches now apply every active filter, like
+  the full-text results (the AI-policy filter already applied). Searches without
+  filters return the same results as before, and facet counts are unchanged.
 - **Search text keeps escaped entity examples (#1735):** a page that shows a
   literal entity such as `&lt;br&gt;`, `&amp;` or `&#60;` (typically in a code
   block documenting HTML) now stores exactly that in its search text, instead
@@ -192,6 +243,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures (raw `\binN` data included), headers, footers and footnotes are
   now dropped however deeply they nest, and an RTF whose font table or another
   skipped group holds millions of entries no longer fails to extract.
+- **Bulk re-embed queues standalone pages (#1745):** *Re-embed* in the page
+  list's bulk bar and an article's *Index now* (*Re-embed for search* in the
+  article rail) now queue standalone pages for embedding; previously
+  `POST /api/pages/bulk/embed` marked only pages with a Confluence id, so a
+  selection of standalone pages without a Confluence id was answered with
+  `succeeded: 0, failed: 0` and not queued. Pages are now marked by their
+  internal id and every selected page is counted once: `succeeded` means
+  queued for the embedding worker, not embedded — policy-blocked, folder and
+  bodiless pages are queued and counted, and the worker skips them — while a
+  page that is not found, ambiguous, or moved to the trash before it could be
+  queued is counted under `failed`.
 - **Long lines stay inside exported article PDFs (#1730):** code blocks no
   longer cut each line at 120 characters; a line wider than the code box (83
   characters) continues flush left on the next row, across page breaks, so no

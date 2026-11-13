@@ -36,7 +36,7 @@ sequenceDiagram
         note right of BE: SKIPPED (never failed) for an exact-identifier query —<br/>#35;1107 pins those — for pasted error text, and for a paste<br/>over 1,000 chars#59; rag.expansion_skip_reason records which
         BE->>PROV: chat(resolveUsecase('chat')) — ONE call, 5s budget<br/>"rewrite this query 2 ways, same meaning"
         PROV-->>BE: 2 paraphrases (unusable reply = no expansion)
-        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases),<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
+        note right of BE: NOT a new ADR-021 use case#59; timeout / open breaker /<br/>unassigned provider / unparseable output all soft-fail to<br/>the ORIGINAL query alone — the ask never fails.<br/>Everything below then runs 3x (original + 2 paraphrases)<br/>— except the #35;1107 pin stage: paraphrase legs pass<br/>pinIdentifiers false (#35;1718), only the original may pin —<br/>each leg 20 wide with a 20-document rerank pool,<br/>merged by SUMMED weighted RRF (original 1.0, each<br/>paraphrase 0.6) — see "Multi-query expansion" below
     end
     BE->>PROV: resolveUsecase('chat') → { config, model } (#35;282 — BEFORE retrieval)
     BE->>PG: loadProviderMetadata(chat providerId)<br/>SELECT locality, locality_config_revision, config_revision, …
@@ -1599,8 +1599,10 @@ a need for a partial one.
 run can leave stale — over what `embedPage` will actually embed: non-deleted,
 non-folder, `body_html` present, and at least `MIN_EMBEDDABLE_TEXT_CHARS` (20)
 of extracted text. That last filter matters: `embedPage` permanently settles
-shorter pages with zero embedding rows, so counting them would leave a corpus
-with a few structural stub pages "degraded" forever. It replaced a boolean
+shorter pages with zero embedding rows (since #1714 a page edited down to
+nothing to embed loses its chunks, averages and similarity edges in the
+settling transaction), so counting them would leave a corpus with a few
+structural stub pages "degraded" forever. It replaced a boolean
 EXISTS probe that flipped healthy the moment ONE visible page had an embedding
 row, so 1% coverage rendered identically to 100%. `/api/search` runs it once
 for semantic/hybrid modes, exposes `embeddingCoverage` + `degradedReason` on
@@ -1891,8 +1893,9 @@ row (#1184), not here.
 
 **Selection is round-robin, not best-first.** Every page contributes its best
 image before any page contributes a second, ordered within a round by the
-carrying row's fused rank (or, on the legacy fallback, by the image's own
-cross-modal similarity). A flat sort over the flattened candidates would
+carrying row's position in the final result array — best final result order
+first (array position; reranking and identifier pins included), never by the
+row's `score` (#1716). A flat sort over the flattened candidates would
 let one gallery page take both slots at the default cap and hide the second
 page entirely — image COUNT beating image BREADTH, which is the head dilution
 `MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and #1106's best-chunk-only
@@ -2288,8 +2291,10 @@ the same shape:
 
 An **image source** (`kind: 'image'`, ADR-025 D8 / ADR-027 D12) is appended
 after the page and web entries, one per distinct `(pageId, attachmentSource,
-attachmentKey)` among the answer's top-K derived rows, best fused rank first
-and capped at `MAX_IMAGE_SOURCES` (4). It carries `attachmentUrl` (from
+attachmentKey)` among the answer's top-K derived rows, best final result
+order first (array position; reranking and identifier pins included) and
+capped at `MAX_IMAGE_SOURCES` (4); a picture two rows carry is cited once,
+from the earlier row (#1716). It carries `attachmentUrl` (from
 `buildPageImageUrl`, so `SourceThumbnail`, the `ATTACHMENT_URL_PATTERN` guard
 and the attachment sweep's persisted-URL walk keep working), `similarity:
 null` — there is no cross-modal score to fabricate, and the page's own cosine

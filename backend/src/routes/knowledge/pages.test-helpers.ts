@@ -81,6 +81,34 @@ export async function insertEmbeddings(pageId: number, chunks: number): Promise<
   }
 }
 
+// --- Embedding worker observation ---
+
+/** A live embedding lease held by another user for the length of a test. */
+export const OTHER_EMBEDDING_HOLDER = 'other-embedding-holder';
+const STALE_EMBEDDING_MARKER = 'stale-embedding-marker';
+
+/**
+ * Lets a test observe the real `processDirtyPages` run that a route fires,
+ * without letting it embed anything (no embedding provider exists in tests).
+ * Another user's live lease makes the worker back off at its cross-user
+ * interlock. The stale member — no lock key behind it — is scrubbed only by
+ * `listActiveEmbeddingLocks`, which a knowledge-route app reaches only through
+ * that interlock, so its disappearance proves the worker ran.
+ */
+export async function holdOtherEmbeddingLease(redis: RedisClientType): Promise<void> {
+  await redis.set(`embedding:lock:${OTHER_EMBEDDING_HOLDER}`, 'other-runtime', { EX: 60 });
+  await redis.sAdd('embedding:locks:active', [OTHER_EMBEDDING_HOLDER, STALE_EMBEDDING_MARKER]);
+}
+
+/**
+ * Sorted members of the active-lock set. After `holdOtherEmbeddingLease` it
+ * settles on `[OTHER_EMBEDDING_HOLDER]` only once a fired worker has scrubbed
+ * the stale marker and released its own lock; without a run it keeps both.
+ */
+export async function activeEmbeddingHolders(redis: RedisClientType): Promise<string[]> {
+  return (await redis.sMembers('embedding:locks:active')).sort();
+}
+
 // --- App bootstrap ---
 
 /**

@@ -85,7 +85,10 @@ export interface DerivedCarrier {
   pageId: number;
   pageTitle?: string;
   spaceKey?: string | null;
-  /** The row's fused ordering value — the only rank a derived image has. */
+  /**
+   * The row's `score`, copied onto the image unchanged and never sorted on:
+   * the row's position in the array is its rank (#1716).
+   */
   score?: number;
   derived?: DerivedProvenance;
 }
@@ -96,36 +99,45 @@ export interface DerivedImage {
   pageTitle: string;
   spaceKey: string | null;
   derived: DerivedProvenance;
-  /** The carrying row's `score` — a fused rank, never a cross-modal measure. */
+  /** The carrying row's `score`, unchanged — never the rank, never a cross-modal measure. */
   score: number;
+  /** The carrying row's index in the input array: the image's rank, lower first (#1716). */
+  position: number;
 }
 
 /**
  * The answer's derived rows reduced to DISTINCT `(pageId, attachment_source,
- * attachment_key)` images, best fused rank first (D12).
+ * attachment_key)` images, best final result order first (array position;
+ * reranking and identifier pins included) — ADR-027 D12 as amended by #1716.
  *
- * There is deliberately **no cross-modal score** to sort on (ADR-027
- * `:4318`): a derived chunk was found by the text legs, so the only ranking
- * quantity in hand is the row's own fused `score`. Ties fall back to `part`
- * (an earlier part is the head of the description the reranker saw), then to
- * the page id, then to `attachmentKey` — which is what makes the order TOTAL
- * and the citation list stable between two identical requests. The key is
- * needed because two DIFFERENT images of one page can tie on score and part
- * (review r1 finding 4): without it those two fall back to `Array#sort`
- * stability, i.e. row order, and the docstring's claim would be false.
+ * The array order is the pipeline's verdict (`SearchResult`'s contract in
+ * `rag-service.ts`): reranking, the ranking prior, MMR and the identifier
+ * pins all reorder rows whose fused `score` no longer describes that order,
+ * and a new pin carries `score: 0` at the head. So `score` is carried onto the
+ * image and never sorted on. There is still **no cross-modal score** (ADR-027
+ * D12): a derived chunk was found by the text legs, and its citation's
+ * `similarity` stays null.
+ *
+ * After the position come `part` (an earlier part is the head of the
+ * description the reranker saw), the page id and `attachmentKey`, retained so
+ * the comparator is total on its own keys. A row carries at most one
+ * `derived`, so two entries never share a position and those keys do not
+ * decide on today's input: the order is a pure function of `rows`, and two
+ * identical requests cite the same pictures in the same order.
  *
  * Dedup rather than distinct-by-construction because one image can legitimately
  * arrive twice: a multi-part serialization puts several chunks of the SAME
- * picture in the index, and both can survive into top-K on a wide fetch.
+ * picture in the index, and both can survive into top-K on a wide fetch. The
+ * EARLIER row is kept — its provenance and its `score`.
  */
 export function distinctDerivedImages(rows: readonly DerivedCarrier[]): DerivedImage[] {
   const out: DerivedImage[] = [];
   const seen = new Set<string>();
   const ordered = rows
-    .flatMap((r) => (r.derived ? [{ row: r, derived: r.derived }] : []))
+    .flatMap((row, position) => (row.derived ? [{ row, derived: row.derived, position }] : []))
     .sort((a, b) => {
-      const byScore = (b.row.score ?? 0) - (a.row.score ?? 0);
-      if (byScore !== 0) return byScore;
+      const byPosition = a.position - b.position;
+      if (byPosition !== 0) return byPosition;
       const byPart = a.derived.part - b.derived.part;
       if (byPart !== 0) return byPart;
       const byPage = a.row.pageId - b.row.pageId;
@@ -136,7 +148,7 @@ export function distinctDerivedImages(rows: readonly DerivedCarrier[]): DerivedI
           ? 1
           : 0;
     });
-  for (const { row, derived } of ordered) {
+  for (const { row, derived, position } of ordered) {
     const key = `${row.pageId}\u0000${derived.attachmentSource}\u0000${derived.attachmentKey}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -146,6 +158,7 @@ export function distinctDerivedImages(rows: readonly DerivedCarrier[]): DerivedI
       spaceKey: row.spaceKey ?? null,
       derived,
       score: row.score ?? 0,
+      position,
     });
   }
   return out;
@@ -164,7 +177,11 @@ export interface DerivedImageSource {
   analysisVersion: number;
   /** Always null: there is no cross-modal score to fabricate (D12). */
   similarity: null;
-  /** The page's fused ordering value, like every other entry's `score`. */
+  /**
+   * The carrying row's `score`, unchanged: the value the page entry built from
+   * that row carries too (web and external entries carry a constant `1`).
+   * Never this image's rank: image entries follow the final result order (#1716).
+   */
   score: number;
 }
 

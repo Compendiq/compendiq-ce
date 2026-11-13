@@ -452,6 +452,60 @@ describe('Search Routes', () => {
       expect(dataCall![1] as unknown[]).toContainEqual(['howto', 'architecture']);
     });
 
+    // #1740 — the keyword filters are built once and bound to BOTH keyword
+    // legs: the same predicate text and `$n` in the full-text and the
+    // fuzzy-title leg of the one keyword statement (#1741), over one head of
+    // parameter values. The statement's own tail follows that head: the
+    // similarity threshold, then limit and offset.
+    it('binds every active keyword filter to the fuzzy-title leg with the FTS numbering (#1740)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&spaceKey=DEV&author=Alice&dateFrom=2025-01-01&dateTo=2025-12-31&tags=howto,architecture&aiPolicy=none&limit=7&page=3',
+      });
+      expect(res.statusCode).toBe(200);
+
+      const [sql, params] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity(cp.title'),
+      ) as [string, unknown[]];
+      const head = ['test', ['TEST'], 'test-user-id', 'DEV', 'Alice', '2025-01-01', '2025-12-31', ['howto', 'architecture'], 'none'];
+      for (const predicate of [
+        'cp.space_key = $4',
+        'cp.author = $5',
+        'cp.last_modified_at >= $6',
+        'cp.last_modified_at <= $7',
+        'cp.labels @> $8::text[]',
+        'cp.ai_policy = $9',
+      ]) {
+        // Once in the full-text leg, once in the fuzzy-title leg.
+        expect(sql.split(predicate)).toHaveLength(3);
+      }
+      expect(params.slice(0, head.length)).toEqual(head);
+      expect(sql).toContain('similarity(cp.title, $1) > $10');
+      expect(sql).toContain('LIMIT $11 OFFSET $12');
+      expect(params.slice(head.length)).toEqual([0.3, 7, 14]);
+      // Narrowing only: the sargable operator, visibility and trash predicates stay.
+      expect(sql).toContain('cp.title % $1');
+      expect(sql).toContain('cp.space_key = ANY($2::text[])');
+      expect(sql).toContain('cp.deleted_at IS NULL');
+    });
+
+    // Regression guard (green before #1740 too): with no filter active the
+    // fuzzy-title statement keeps its original placeholders and values.
+    it('keeps the unfiltered fuzzy-title statement on threshold $4 and limit $5 (#1740)', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/search?q=test' });
+
+      const [trgmSql, trgmParams] = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity(cp.title'),
+      ) as [string, unknown[]];
+      expect(trgmParams).toEqual(['test', ['TEST'], 'test-user-id', 0.3, 10, 0]);
+      expect(trgmSql).toContain('similarity(cp.title, $1) > $4');
+      expect(trgmSql).toContain('LIMIT $5 OFFSET $6');
+    });
+
     it('should support sort by modified date', async () => {
       mockQueryFn.mockResolvedValue({ rows: [] });
 

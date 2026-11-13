@@ -975,15 +975,18 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // refusal paths above it never touch the cache at all.
     const docIds = searchResults.map((r) => r.confluenceId ?? `page:${r.pageId}`);
 
-    // `score` is the retrieval ORDERING value — an RRF fusion score from
+    // `score` is the retrieval ORDERING byproduct — an RRF fusion score from
     // hybridSearch, typically ~0.033, and since #1106's best-chunk-only
     // fusion rule that is also the CEILING (rrfWorstCase), invariant to the
     // fetch width, the rerank pool and the raw chunk window alike — never
-    // near what a similarity threshold expects. It is kept because it orders
-    // the array and is what
-    // any existing consumer of this frame reads; it must never be rendered or
-    // thresholded. `similarity` is the cosine, or null when the page was found
-    // only by keyword search and none was ever measured (#1117).
+    // near what a similarity threshold expects. Nothing here orders by it:
+    // `searchResults` arrives in the pipeline's final order (reranking and
+    // identifier pins included — a new pin from hybridSearch carries
+    // `score: 0`), and neither these sources nor the image entries below
+    // re-sort by it (#1716). It stays on the frame for existing consumers;
+    // it must never be rendered or thresholded. `similarity` is the cosine,
+    // or null when the page was found only by keyword search and none was
+    // ever measured (#1117).
     //
     // Note the two are separate FIELDS rather than one redefined field purely
     // for legibility. `sources` IS persisted per assistant turn since #1361 —
@@ -1074,15 +1077,19 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       //    fabricate (ADR-027 `:4323`): a derived chunk was found by the TEXT
       //    legs, and putting the page's text cosine on an image entry would
       //    feed `averageSourceSimilarity` the same number twice. `score` is
-      //    the PAGE's fused ordering value, which is what every other entry's
-      //    `score` already is. The legacy arm withheld its own cross-modal
-      //    cosine for the same reason, one band over (ADR-025 §8).
+      //    the carrying row's `score`, unchanged — the value the page entry
+      //    built from that row carries too (the web and external entries
+      //    above carry a constant `1`); it is never the image's rank (image
+      //    entries follow the final result order, #1716). The legacy arm
+      //    withheld its own cross-modal cosine for the same reason, one band
+      //    over (ADR-025 §8).
       //  - APPENDED, after the web sources rather than beside their page.
       //    The model cites `[Source N]` from `buildRagContext`, whose
       //    numbering covers the retrieved pages; inserting entries in the
       //    middle would renumber everything below them against an answer that
       //    was written before this array existed.
-      //  - Best fused rank first, deduped on the identity triple: a
+      //  - Final result order first (array position, reranking and identifier
+      //    pins included — #1716), deduped on the identity triple: a
       //    multi-part serialization puts several chunks of one picture in the
       //    index, and two of them in one top-K must not spend two of the four
       //    citation slots.
