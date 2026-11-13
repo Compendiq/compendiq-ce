@@ -445,7 +445,7 @@ other value went the other way and must stay there**: `TRGM_SIMILARITY_THRESHOLD
 in `routes/knowledge/search.ts` is FIXED at 0.3 because the fuzzy-title query is
 sargable only through pg_trgm's `%` operator, which compares against the
 `pg_trgm.similarity_threshold` GUC — so the constant must equal the GUC's
-default or the retained `similarity() > $4` stops being exact, and making it a
+default or the retained `similarity()` check stops being exact, and making it a
 knob means moving the GUC too (a `SET LOCAL` per search, i.e. a checked-out
 client where a pooled `query()` does now). Documented as deliberately fixed in
 its JSDoc, in ADMIN-GUIDE's Retrieval section and on the panel's Keyword index

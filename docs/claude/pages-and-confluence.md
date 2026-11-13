@@ -366,3 +366,10 @@ returns focus to the query without stealing focus from another control.
 Virtualization eviction is not result removal and must not move focus or scroll.
 Each filter has one visible Tab stop. Search controls adapt to pane width,
 not viewport width alone.
+
+In keyword mode the fuzzy-title (`pg_trgm`) leg applies the same space,
+author, date-range, tag and AI-policy predicates as the full-text leg
+(#1740): the route builds them once and binds the same parameter values to
+both statements, so every fuzzy hit satisfies every active filter. Both legs
+keep the visibility and trash predicates, and `cp.title % $1` stays the fuzzy
+leg's index condition. Facet counts are narrowed only by the AI-policy filter.

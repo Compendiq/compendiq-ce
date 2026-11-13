@@ -9,7 +9,7 @@
  * index. The fix adds the sargable `cp.title % $1` operator predicate (pg_trgm's
  * `%` uses the default 0.3 similarity threshold, matching TRGM_SIMILARITY_THRESHOLD),
  * which lets the planner choose a Bitmap Index Scan over idx_pages_title_trgm while
- * the retained `similarity() > $4` keeps the threshold check exact.
+ * the retained `similarity()` threshold predicate keeps the check exact.
  *
  * How this fails-before / passes-after: we drive a real keyword search request,
  * capture the exact SQL the route emits for the trigram query, then EXPLAIN it
@@ -180,6 +180,35 @@ describe.skipIf(!dbAvailable)('keyword search trigram query uses the GIN index (
     // index (Bitmap Index Scan). The old bare `similarity() > $4` form is not
     // sargable, so it can never drive the index — it stays a post-filter and the
     // plan falls back to a Seq Scan of every visible page.
+    expect(plan).toContain('idx_pages_title_trgm');
+  });
+
+  it('stays sargable with every keyword filter bound to the trigram query (#1740)', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/search?q=welcome&mode=keyword&spaceKey=DEV&author=alice&dateFrom=2020-01-01&dateTo=2030-12-31&tags=guide&aiPolicy=all',
+    });
+    expect(response.statusCode).toBe(200);
+
+    const trgm = captured.find(
+      (c) => c.sql.includes('similarity(cp.title') && c.sql.includes('FROM pages cp'),
+    );
+    expect(trgm, 'route should emit a fuzzy-title trigram query').toBeDefined();
+    // The statement planned below is the FILTERED one: the filters narrow the
+    // `%` candidates as extra conjuncts and never replace the operator.
+    for (const predicate of [
+      /cp\.space_key = \$\d+/,
+      /cp\.author = \$\d+/,
+      /cp\.last_modified_at >= \$\d+/,
+      /cp\.last_modified_at <= \$\d+/,
+      /cp\.labels @> \$\d+::text\[\]/,
+      /cp\.ai_policy = \$\d+/,
+    ]) {
+      expect(trgm!.sql).toMatch(predicate);
+    }
+    expect(trgm!.sql).toContain('cp.title % $1');
+
+    const plan = await explainWithOnlyTrgmIndex(trgm!.sql, trgm!.params);
     expect(plan).toContain('idx_pages_title_trgm');
   });
 

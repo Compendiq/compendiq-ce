@@ -41,14 +41,14 @@ import { toUserFacingEmbeddingError } from '../../domains/llm/services/embedding
  * `%` operator (`cp.title % $1`), which lets the planner use the GIN index
  * `idx_pages_title_trgm` instead of a Seq Scan (#928) — and `%` compares
  * against the GUC, not against this constant. So the retained
- * `similarity(...) > $4` predicate is exact only while the two agree.
+ * `similarity(...)` threshold predicate is exact only while the two agree.
  *
  * Making it configurable therefore means changing the GUC too, and the two
  * ways to do that both cost more than the knob is worth: `SET LOCAL` inside a
  * transaction turns a single pooled `query()` into a checked-out client per
  * search, and a session-level `SET` would leak the value to every other user
- * of that connection. Meanwhile `similarity() > $4` alone, with the `%` filter
- * removed, silently returns the Seq Scan the index exists to avoid.
+ * of that connection. Meanwhile the `similarity()` threshold alone, with the
+ * `%` filter removed, silently returns the Seq Scan the index exists to avoid.
  *
  * If a deployment genuinely needs a different threshold, the honest lever is
  * PostgreSQL's own: `ALTER DATABASE ... SET pg_trgm.similarity_threshold`,
@@ -533,27 +533,33 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // Exclude soft-deleted pages
     conditions.push('cp.deleted_at IS NULL');
 
-    // Optional filters
+    // Optional filters — built ONCE and bound to BOTH keyword statements, the
+    // FTS data query and the fuzzy-title query (#1740). Each predicate takes
+    // the next `$n` after the shared $1..$3 and appends its value to `values`;
+    // both statements pass `values` as the head of their parameter list, so a
+    // `$n` names the same value in each and a fuzzy-title hit satisfies every
+    // active filter exactly as a full-text hit does.
+    const filters: string[] = [];
     if (spaceKey) {
-      conditions.push(`cp.space_key = $${paramIndex}`);
+      filters.push(`cp.space_key = $${paramIndex}`);
       values.push(spaceKey);
       paramIndex++;
     }
 
     if (author) {
-      conditions.push(`cp.author = $${paramIndex}`);
+      filters.push(`cp.author = $${paramIndex}`);
       values.push(author);
       paramIndex++;
     }
 
     if (dateFrom) {
-      conditions.push(`cp.last_modified_at >= $${paramIndex}`);
+      filters.push(`cp.last_modified_at >= $${paramIndex}`);
       values.push(dateFrom);
       paramIndex++;
     }
 
     if (dateTo) {
-      conditions.push(`cp.last_modified_at <= $${paramIndex}`);
+      filters.push(`cp.last_modified_at <= $${paramIndex}`);
       values.push(dateTo);
       paramIndex++;
     }
@@ -561,7 +567,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     if (tags) {
       const tagArray = tags.split(',').map((t) => t.trim()).filter(Boolean);
       if (tagArray.length > 0) {
-        conditions.push(`cp.labels @> $${paramIndex}::text[]`);
+        filters.push(`cp.labels @> $${paramIndex}::text[]`);
         values.push(tagArray);
         paramIndex++;
       }
@@ -573,12 +579,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     // `none`/`local_only` page the caller may read — the policy restricts AI
     // use, not reading or finding.
     if (aiPolicy) {
-      conditions.push(`cp.ai_policy = $${paramIndex}`);
+      filters.push(`cp.ai_policy = $${paramIndex}`);
       values.push(aiPolicy);
       paramIndex++;
     }
 
-    const whereClause = conditions.join(' AND ');
+    const whereClause = [...conditions, ...filters].join(' AND ');
 
     // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
 
@@ -637,6 +643,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Path B: Fuzzy title matching via pg_trgm (separate from FTS)
     // Merges additional title-match results that the FTS query may have missed.
+    // Its parameters start with the FTS query's `values` — the same $1..$3 and
+    // the same filter `$n` (#1740) — so its threshold and limit take the next
+    // two indexes.
+    const trgmThresholdParamIndex = paramIndex;
+    const trgmLimitParamIndex = paramIndex + 1;
     const trgmQueryPromise = query<{
       id: number;
       confluence_id: string;
@@ -661,19 +672,18 @@ export async function searchRoutes(fastify: FastifyInstance) {
        -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
        -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
        -- Scan. The % operator uses pg_trgm's default 0.3 threshold, which matches
-       -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() > $4 keeps the
-       -- threshold check exact without changing which rows match.
+       -- TRGM_SIMILARITY_THRESHOLD, so the retained similarity() threshold check
+       -- stays exact without changing which rows match. The keyword filters are
+       -- extra conjuncts: they narrow the % candidates, never replace the operator.
        WHERE cp.title % $1
-         AND similarity(cp.title, $1) > $4
+         AND similarity(cp.title, $1) > $${trgmThresholdParamIndex}
          AND cp.title IS NOT NULL
          AND ${visiblePagesPredicate(2, 3)}
          AND cp.deleted_at IS NULL
-         ${aiPolicy ? 'AND cp.ai_policy = $6' : ''}
+         ${filters.map((filter) => `AND ${filter}`).join(' ')}
        ORDER BY rank DESC
-       LIMIT $5`,
-      aiPolicy
-        ? [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit, aiPolicy]
-        : [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
+       LIMIT $${trgmLimitParamIndex}`,
+      [...values, TRGM_SIMILARITY_THRESHOLD, limit],
     );
 
     // Facet aggregation — opt-in via includeFacets (default: true).

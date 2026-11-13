@@ -148,6 +148,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the editor still loses a link whose text is an image or inline code and
   splits a link around inline code inside its text, and a collaborative save
   splits a link around a line break inside it.
+- **Keyword search's typo-tolerant title matches respect the filters (#1740):**
+  with a space, author, date-range or tag filter active, keyword search still
+  returned title matches outside it — a misspelt query filtered to one space
+  listed pages from other spaces, and a tag filter that matched nothing still
+  returned them. These fuzzy title matches now apply every active filter, like
+  the full-text results (the AI-policy filter already applied). Searches without
+  filters return the same results as before, and facet counts are unchanged.
 - **Search text keeps escaped entity examples (#1735):** a page that shows a
   literal entity such as `&lt;br&gt;`, `&amp;` or `&#60;` (typically in a code
   block documenting HTML) now stores exactly that in its search text, instead
