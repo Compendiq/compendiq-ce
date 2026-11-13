@@ -41,6 +41,7 @@ import {
   type RelocatablePage,
 } from '../../domains/knowledge/services/page-relocate-service.js';
 import {
+  PagePrimaryKeySchema,
   RelocatePageSchema,
   RelocatePreviewQuerySchema,
   type RelocatePreview,
@@ -48,7 +49,7 @@ import {
 } from '@compendiq/contracts';
 import { z } from 'zod';
 
-const IdParamSchema = z.object({ id: z.coerce.number().int().positive() });
+const IdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 /** How many space principals the preview enumerates before truncating. */
 const MAX_LISTED_PRINCIPALS = 50;

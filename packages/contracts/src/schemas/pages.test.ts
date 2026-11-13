@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  BatchExportBodySchema,
   ConnectionEventSchema,
   PageConnectionsSchema,
   TrashItemSchema,
@@ -148,4 +149,88 @@ describe('ConnectionEventSchema', () => {
       group: 'linked',
     })).toThrow();
   });
+});
+
+describe('#1739 existing page-ID contract consumers', () => {
+  const accepted = [
+    { name: 'one-number', input: 1, value: 1 },
+    { name: 'max-number', input: 2_147_483_647, value: 2_147_483_647 },
+    { name: 'one-string', input: '1', value: 1 },
+    { name: 'max-string', input: '2147483647', value: 2_147_483_647 },
+    { name: 'padded-one', input: '0001', value: 1 },
+    { name: 'padded-max', input: '0002147483647', value: 2_147_483_647 },
+    { name: 'long-padded-one', input: `${'0'.repeat(256)}1`, value: 1 },
+    { name: 'long-padded-max', input: `${'0'.repeat(256)}2147483647`, value: 2_147_483_647 },
+  ];
+  const rejected: Array<{ name: string; input: unknown; batchRed?: boolean; clickRed?: boolean }> = [
+    { name: 'zero-number', input: 0 },
+    { name: 'zero-string', input: '0' },
+    { name: 'negative-number', input: -1 },
+    { name: 'negative-string', input: '-1' },
+    { name: 'overbound-number', input: 2_147_483_648, batchRed: true },
+    { name: 'overbound-string', input: '2147483648', batchRed: true, clickRed: true },
+    { name: 'unsafe-number', input: 9_007_199_254_740_992 },
+    { name: 'unsafe-string', input: '9007199254740993', clickRed: true },
+    { name: 'fraction-number', input: 1.5 },
+    { name: 'nan', input: NaN },
+    { name: 'positive-infinity', input: Infinity },
+    { name: 'negative-infinity', input: -Infinity },
+    { name: 'rounded-fraction-string', input: '2147483647.00000001', batchRed: true },
+    { name: 'decimal-string', input: '1.0', batchRed: true },
+    { name: 'exponent-string', input: '1e3', batchRed: true },
+    { name: 'hex-string', input: '0x10', batchRed: true },
+    { name: 'plus-sign', input: '+1', batchRed: true },
+    { name: 'surrounding-space', input: ' 1 ', batchRed: true },
+    { name: 'trailing-newline', input: '1\n', batchRed: true },
+    { name: 'alphabetic', input: 'abc' },
+    { name: 'empty', input: '' },
+    { name: 'unicode-digit', input: '١' },
+    { name: 'true', input: true, batchRed: true },
+    { name: 'false', input: false },
+    { name: 'null', input: null },
+    { name: 'object', input: {} },
+    { name: 'empty-array', input: [] },
+    { name: 'singleton-array', input: [1], batchRed: true },
+    { name: 'undefined', input: undefined },
+    { name: 'overbound-decimal', input: '2147483648.0', batchRed: true },
+    { name: 'negative-zero-string', input: '-0' },
+    { name: 'leading-tab', input: '\t1', batchRed: true },
+    { name: 'padded-zero', input: '000' },
+    { name: 'infinity-string', input: 'Infinity' },
+  ];
+
+  for (const entry of accepted) {
+    it(`#1739 CONTROL batch ${entry.name} keeps numeric output`, () => {
+      const parsed = BatchExportBodySchema.parse({ pageIds: [entry.input] });
+      expect(parsed.pageIds).toEqual([entry.value]);
+      expect(typeof parsed.pageIds[0]).toBe('number');
+    });
+    it(`#1739 CONTROL click ${entry.name} preserves canonical-string-only input`, () => {
+      const canonical = typeof entry.input === 'string' && entry.input === String(entry.value);
+      const parsed = ConnectionEventSchema.safeParse({
+        event: 'connection_click', visitId: '11111111-1111-4111-8111-111111111111',
+        targetPageId: entry.input, group: 'related',
+      });
+      expect(parsed.success).toBe(canonical);
+      if (parsed.success && parsed.data.event === 'connection_click') {
+        expect(parsed.data.targetPageId).toBe(entry.input);
+      }
+    });
+  }
+  for (const entry of rejected) {
+    it(`#1739 ${entry.batchRed ? 'RED' : 'CONTROL'} batch rejects ${entry.name}`, () => {
+      expect(BatchExportBodySchema.safeParse({ pageIds: [entry.input] }).success).toBe(false);
+    });
+    it(`#1739 ${entry.clickRed ? 'RED' : 'CONTROL'} click rejects ${entry.name}`, () => {
+      expect(ConnectionEventSchema.safeParse({
+        event: 'connection_click', visitId: '11111111-1111-4111-8111-111111111111',
+        targetPageId: entry.input, group: 'related',
+      }).success).toBe(false);
+    });
+  }
+  for (const invalid of [2_147_483_648, '2147483648']) {
+    it(`#1739 RED batch rejects the entire mixed list (${typeof invalid})`, () => {
+      expect(BatchExportBodySchema.safeParse({ pageIds: [1, invalid] }).success).toBe(false);
+    });
+  }
 });

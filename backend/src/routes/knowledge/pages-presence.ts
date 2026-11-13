@@ -15,6 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import {
   recordHeartbeat,
@@ -33,13 +34,13 @@ const HeartbeatBodySchema = z.object({ isEditing: z.boolean() });
  * integer pages.id used by `userCanAccessPage`. Returns null if not found.
  */
 async function resolvePageId(id: string): Promise<number | null> {
-  const isNumericId = /^\d+$/.test(id);
+  const primaryKey = toPageIdInt4(id);
   const result = await query<{ id: number }>(
     `SELECT id FROM pages
-     WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}
+     WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}
        AND deleted_at IS NULL
      LIMIT 1`,
-    [isNumericId ? parseInt(id, 10) : id],
+    [primaryKey ?? id],
   );
   return result.rows[0]?.id ?? null;
 }

@@ -113,6 +113,11 @@ Fastify 5 · pgvector (HNSW; `bge-m3` 1024-dim default, Qwen3-Embedding-4B 2560-
 2. **Zero default secrets** — `NODE_ENV=production` MUST fail to start if `JWT_SECRET` or `PAT_ENCRYPTION_KEY` is default or < 32 chars.
 3. **LLM safety** — sanitize user content before sending (prompt-injection guard in `core/utils/sanitize-llm-input.ts`); sanitize output before rendering.
 4. **Validation** — Zod schemas from `@compendiq/contracts` on every API boundary. Parameterized SQL only.
+   Page PK inputs use `PagePrimaryKeySchema`; legacy numeric-PK/Confluence routes
+   use `toPageIdInt4` without changing the raw Confluence arm. Preserve each
+   route's missing/denied response and existing ambiguity rules. Never int4-cap
+   Confluence resource IDs or `CreatePageSchema.parentId`; see *Page identifier
+   boundaries* in `docs/claude/pages-and-confluence.md`.
 5. **Auth** — `fastify.authenticate` on every protected route. Public exceptions: `/api/health`, `/api/auth/*`. Access and refresh JWTs share `JWT_SECRET` and issuer, so purpose lives in the signed `typ` header: access `at+jwt`, refresh `rt+jwt`. `verifyToken()` is the only bearer verifier (HTTP, collab socket, logout) and requires `at+jwt`; the refresh decoder requires `rt+jwt` plus `jti` + `family`, with no exception for unmarked tokens (#1683). A new token kind signed with `JWT_SECRET` needs its own `typ` and verifier.
 6. **Infra isolation** — Postgres / Redis / Ollama must not bind `0.0.0.0` in production. Use Docker internal networks.
 

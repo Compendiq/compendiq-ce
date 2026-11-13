@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   BulkUpdatePageAiPolicySchema,
   UpdatePageAiPolicySchema,
+  PagePrimaryKeySchema,
   type PageAiPolicyResponse,
 } from '@compendiq/contracts';
 import {
@@ -26,7 +27,7 @@ async function mutateWithSynchronization(userId: string, policy: Parameters<type
   return { result, synchronization: await synchronizePolicyLabels(userId, writes) };
 }
 
-const PageIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
+const PageIdParamSchema = z.object({ id: PagePrimaryKeySchema });
 
 function toResponse(row: { pageId: number; policy: string; revision: number }): PageAiPolicyResponse {
   return { pageId: row.pageId, aiPolicy: row.policy as PageAiPolicyResponse['aiPolicy'], aiPolicyRevision: row.revision };

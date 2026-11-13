@@ -7,6 +7,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { toPageIcon } from '../../core/services/page-icon.js';
+import { toPageIdInt4 } from '../../core/utils/page-id-text.js';
 import {
   activatePageIconImage,
   deletePageIconImage,
@@ -50,13 +51,13 @@ type PageIconRow = {
 };
 
 async function loadPage(id: string): Promise<PageIconRow | null> {
-  const isNumericId = /^\d+$/.test(id);
+  const primaryKey = toPageIdInt4(id);
   const result = await query<PageIconRow>(
     `SELECT id, source, confluence_id, created_by_user_id, visibility, space_key,
             deleted_at, inherit_perms, icon_kind, icon_value, icon_color, icon_filled,
             content_revision::text, lifecycle_revision::text
-       FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
-    [isNumericId ? parseInt(id, 10) : id],
+       FROM pages WHERE ${primaryKey !== null ? 'id = $1' : 'confluence_id = $1'}`,
+    [primaryKey ?? id],
   );
   return result.rows[0] ?? null;
 }

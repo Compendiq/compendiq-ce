@@ -19,7 +19,7 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import sensible from '@fastify/sensible';
 import { createClient, type RedisClientType } from 'redis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   PageLifecycleEventSchema,
   type PageLifecycleEvent,
@@ -34,6 +34,8 @@ import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
 import {
   initPresenceBus,
+  getActiveViewers,
+  recordHeartbeat,
 } from '../../core/services/presence-service.js';
 import {
   setRedisClient,
@@ -41,9 +43,11 @@ import {
 import { prefixedRedisChannel } from '../../core/utils/prefixed-redis-channel.js';
 import {
   insertStandalonePage,
+  insertConfluencePage,
   insertUser,
 } from './pages.test-helpers.js';
 import { pagesPresenceRoutes } from './pages-presence.js';
+import { grantSpaceRole } from './page-restriction.test-helpers.js';
 
 const [dbAvailable, redisAvailable] = await Promise.all([
   isDbAvailable(),
@@ -210,7 +214,7 @@ class RedisResponseBarrier {
   }
 }
 
-describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Redis', () => {
+describe('page presence lifecycle SSE — real PostgreSQL and Redis', () => {
   let app: FastifyInstance;
   let baseUrl: string;
   let barrier: RedisResponseBarrier;
@@ -219,7 +223,7 @@ describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Re
   let publisher: RedisClientType;
   let teardownPresence: () => Promise<void>;
 
-  async function openStream(pageId: number, userId: string): Promise<SseStream> {
+  async function openStream(pageId: string | number, userId: string): Promise<SseStream> {
     const frames: SseFrame[] = [];
     const controller = new AbortController();
     const response = await fetch(`${baseUrl}/api/pages/${pageId}/presence`, {
@@ -227,7 +231,10 @@ describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Re
       signal: controller.signal,
     });
     if (response.status !== 200 || !response.body) {
-      throw new Error(`SSE connection failed with ${response.status}`);
+      const body = await response.text();
+      controller.abort();
+      expect(response.status, body).toBe(200);
+      throw new Error('Readable presence response has no SSE body');
     }
 
     const done = (async () => {
@@ -278,6 +285,7 @@ describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Re
   }
 
   beforeAll(async () => {
+    expect(canRun, '#1739 requires real PostgreSQL and Redis, never a skip').toBe(true);
     await setupTestDb();
     barrier = await RedisResponseBarrier.start(redisUrl);
     presenceRedis = createClient({
@@ -517,4 +525,191 @@ describe.skipIf(!canRun)('page presence lifecycle SSE — real PostgreSQL and Re
       await control.close();
     }
   }, 15_000);
+
+  describe('#1739 presence identifier boundaries', () => {
+    const ownedKeys = new Set<string>();
+
+    afterEach(async () => {
+      if (ownedKeys.size > 0) await publisher.del([...ownedKeys]);
+      ownedKeys.clear();
+    });
+
+    async function arrange(raw: string, options: {
+      id?: number; hiddenTarget?: boolean; hiddenDecoy?: boolean;
+      missingTarget?: boolean; privateTarget?: boolean; privateDecoy?: boolean;
+    } = {}) {
+      const readerId = await insertUser(`id-presence-reader-${randomUUID()}`);
+      const otherId = await insertUser(`id-presence-other-${randomUUID()}`);
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source)
+         VALUES ('IDPRESENCE', 'Identifier presence', 'confluence')`,
+      );
+      await grantSpaceRole(readerId, 'IDPRESENCE');
+      const confluenceId = options.id === undefined ? raw : 'presence-pk-target';
+      let targetId = options.id ?? 0;
+      if (!options.missingTarget) {
+        if (options.id === undefined) {
+          targetId = await insertConfluencePage(confluenceId, 'Presence target', 'IDPRESENCE');
+        } else {
+          await query(
+            `INSERT INTO pages
+               (id, source, confluence_id, space_key, title, body_html, body_text,
+                visibility, created_by_user_id, inherit_perms)
+             VALUES ($1, $2, $3, 'IDPRESENCE', 'Presence target', '<p>target</p>',
+                     'target', $4, $5, $6)`,
+            [targetId, options.privateTarget ? 'standalone' : 'confluence',
+              options.privateTarget ? null : confluenceId,
+              options.privateTarget ? 'private' : 'shared', otherId, !options.hiddenTarget],
+          );
+        }
+        if (options.hiddenTarget) {
+          await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [targetId]);
+        }
+      }
+      const decoyRaw = options.id === undefined
+        ? raw === '3000000000' ? '0003000000000'
+          : raw === '0003000000000' ? '3000000000' : '9007199254740992'
+        : raw;
+      const decoyId = options.privateDecoy
+        ? await insertStandalonePage('Presence decoy', 'private', otherId, 'IDPRESENCE')
+        : await insertConfluencePage(decoyRaw, 'Presence decoy', 'IDPRESENCE');
+      if (options.privateDecoy) {
+        await query('UPDATE pages SET confluence_id = $2 WHERE id = $1', [decoyId, decoyRaw]);
+      }
+      if (options.hiddenDecoy) {
+        await query('UPDATE pages SET inherit_perms = FALSE WHERE id = $1', [decoyId]);
+      }
+      for (const key of [raw, String(targetId), decoyRaw]) {
+        ownedKeys.add(`presence:viewers:${key}`);
+        ownedKeys.add(`presence:editing:${key}`);
+      }
+      ownedKeys.add(`presence:meta:${readerId}`);
+      ownedKeys.add(`presence:meta:${otherId}`);
+      await recordHeartbeat(raw, readerId, false, { name: 'Identifier viewer', role: 'user' });
+      await recordHeartbeat(decoyRaw, otherId, true, { name: 'Decoy viewer', role: 'user' });
+      expect(await getActiveViewers(raw)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ userId: readerId, isEditing: false }),
+      ]));
+      expect(await getActiveViewers(decoyRaw)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ userId: otherId, isEditing: true }),
+      ]));
+      return { targetId, decoyId, readerId, otherId, decoyRaw };
+    }
+
+    async function assertSelected(raw: string, options: Parameters<typeof arrange>[1] = {}, spelling: 'raw' | 'canonical' | 'padded' = 'raw') {
+      const fixture = await arrange(raw, options);
+      const input = spelling === 'canonical' ? String(fixture.targetId)
+        : spelling === 'padded' ? `000${fixture.targetId}` : raw;
+      if (input !== raw) {
+        ownedKeys.add(`presence:viewers:${input}`);
+        ownedKeys.add(`presence:editing:${input}`);
+        await recordHeartbeat(input, fixture.readerId, false, { name: 'Identifier viewer', role: 'user' });
+      }
+      const beforeDecoy = await getActiveViewers(fixture.decoyRaw);
+      const canonical = await openStream(fixture.targetId, fixture.readerId);
+      let stream: SseStream | undefined;
+      try {
+        stream = await openStream(input, fixture.readerId);
+        const initial = stream.frames.find((frame) => frame.event === 'presence')?.data as { ts: number };
+        expect(initial).toEqual({
+          pageId: input, viewers: await getActiveViewers(input), ts: expect.any(Number),
+        });
+        expect(Number.isInteger(initial.ts)).toBe(true);
+        expect(initial.ts).toBeGreaterThan(0);
+        const decoyEvent: PageLifecycleEvent = {
+          type: 'page_lifecycle', pageId: fixture.decoyId, lifecycleRevision: '7',
+          isFrozen: true, baselineId: randomUUID(),
+        };
+        const targetEvent: PageLifecycleEvent = {
+          type: 'page_lifecycle', pageId: fixture.targetId, lifecycleRevision: '8',
+          isFrozen: true, baselineId: randomUUID(),
+        };
+        await publishLifecycle(decoyEvent);
+        await publishLifecycle(targetEvent);
+        await eventually(
+          () => lifecycleFrames(stream!).some((event) => event.baselineId === targetEvent.baselineId) &&
+            lifecycleFrames(canonical).some((event) => event.baselineId === targetEvent.baselineId),
+          'raw and canonical streams bind to the target PK',
+        );
+        expect(lifecycleFrames(stream)).toContainEqual(targetEvent);
+        expect(lifecycleFrames(stream)).not.toContainEqual(decoyEvent);
+        expect(await getActiveViewers(fixture.decoyRaw)).toEqual(beforeDecoy);
+      } finally {
+        await stream?.close();
+        await canonical.close();
+      }
+    }
+
+    async function assertDenied(raw: string, options: Parameters<typeof arrange>[1]) {
+      const fixture = await arrange(raw, options);
+      const before = await getActiveViewers(raw);
+      const response = await fetch(`${baseUrl}/api/pages/${raw}/presence`, {
+        headers: { authorization: `Bearer ${fixture.readerId}` },
+      });
+      const body = await response.text();
+      expect.soft(response.status, body).toBe(404);
+      expect(response.headers.get('content-type')).not.toContain('text/event-stream');
+      expect(body).not.toContain('Presence target');
+      expect(body).not.toContain('Presence decoy');
+      expect(await getActiveViewers(raw)).toEqual(before);
+    }
+
+    for (const raw of ['2147483648', '3000000000', '9007199254740993']) {
+      it(`#1739 RED R-L13 missing ${raw} is JSON404 before SSE`, async () => {
+        const readerId = await insertUser(`id-presence-missing-${randomUUID()}`);
+        const response = await fetch(`${baseUrl}/api/pages/${raw}/presence`, {
+          headers: { authorization: `Bearer ${readerId}` },
+        });
+        const body = await response.text();
+        expect.soft(response.status, body).toBe(404);
+        expect(response.headers.get('content-type')).not.toContain('text/event-stream');
+      });
+    }
+    for (const raw of ['3000000000', '0003000000000', '9007199254740993']) {
+      it(`#1739 RED L13 raw text ${raw} binds lifecycle to exact PK`, async () => {
+        await assertSelected(raw);
+      });
+      it(`#1739 RED L13 hidden raw text ${raw} retains concealment`, async () => {
+        await assertDenied(raw, { hiddenTarget: true });
+      });
+    }
+    for (const raw of ['2000000000', '0002000000000']) {
+      for (const hiddenDecoy of [false, true]) {
+        it(`#1739 CONTROL L13 collision ${raw} hidden-decoy=${hiddenDecoy} keeps PK precedence`, async () => {
+          await assertSelected(raw, { id: 2_000_000_000, hiddenDecoy });
+        });
+      }
+      it(`#1739 CONTROL L13 readable PK ${raw} ignores a private historical-text decoy`, async () => {
+        await assertSelected(raw, { id: 2_000_000_000, privateDecoy: true });
+      });
+      it(`#1739 CONTROL L13 private PK ${raw} never falls back to readable text`, async () => {
+        await assertDenied(raw, { id: 2_000_000_000, privateTarget: true });
+      });
+      it(`#1739 CONTROL L13 hidden PK ${raw} never falls back`, async () => {
+        await assertDenied(raw, { id: 2_000_000_000, hiddenTarget: true });
+      });
+      it(`#1739 CONTROL L13 absent PK ${raw} never falls back`, async () => {
+        await assertDenied(raw, { id: 2_000_000_000, missingTarget: true });
+      });
+    }
+    it('#1739 CONTROL L13 maximum int4 PK remains reachable', async () => {
+      await assertSelected('2147483647', { id: 2_147_483_647 });
+    });
+    it('#1739 CONTROL L13 ordinary opaque Confluence ID remains reachable', async () => {
+      await assertSelected('conf-id-control');
+    });
+    for (const spelling of ['canonical', 'padded'] as const) {
+      it(`#1739 CONTROL L13 ordinary ${spelling} PK binds the same lifecycle`, async () => {
+        await assertSelected('valid-presence-control', {}, spelling);
+      });
+    }
+    it('#1739 CONTROL L13 missing opaque ID retains JSON404', async () => {
+      const readerId = await insertUser(`id-presence-opaque-${randomUUID()}`);
+      const response = await fetch(`${baseUrl}/api/pages/unknown-opaque/presence`, {
+        headers: { authorization: `Bearer ${readerId}` },
+      });
+      expect(response.status).toBe(404);
+      await response.text();
+    });
+  });
 });

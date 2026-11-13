@@ -11,6 +11,7 @@ import {
   PageGovernancePolicyRequestSchema,
   PageGovernancePolicySchema,
   PageLifecycleMutationResponseSchema,
+  PagePrimaryKeySchema,
   UnfreezePageRequestSchema,
 } from '@compendiq/contracts';
 import {
@@ -28,7 +29,7 @@ import {
   unfreezePage,
 } from '../../core/services/page-baseline-service.js';
 
-const PageIdParamsSchema = z.object({ id: z.coerce.number().int().positive() }).strict();
+const PageIdParamsSchema = z.object({ id: PagePrimaryKeySchema }).strict();
 const BaselineParamsSchema = z.object({ baselineId: z.string().uuid() }).strict();
 const AttachmentParamsSchema = BaselineParamsSchema.extend({
   attachmentIdentity: z.string().regex(/^[0-9a-f]{64}$/),
