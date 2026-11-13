@@ -182,6 +182,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures (raw `\binN` data included), headers, footers and footnotes are
   now dropped however deeply they nest, and an RTF whose font table or another
   skipped group holds millions of entries no longer fails to extract.
+- **Long lines stay inside exported article PDFs (#1730):** code blocks no
+  longer cut each line at 120 characters; a line wider than the code box (83
+  characters) continues flush left on the next row, across page breaks, so no
+  character is cut at the box edge. Previously the tail was lost and even the
+  kept part ran past the right margin. A word wider than its line — a long URL
+  or hash — now breaks between characters in paragraphs, headings, lists and
+  table cells instead of running past the margin or into the next column, and
+  wrapped text is measured as drawn, so lines dense in kerned pairs such as
+  `AV` or `To` no longer overrun the margin, and a wrapped cover title is
+  centred by that width. Characters outside Latin-1 are still dropped from
+  PDFs (#1729).
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached
