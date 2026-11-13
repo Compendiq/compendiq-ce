@@ -37,8 +37,18 @@ their next write; there is no backfill.
 PDF tables split tall rows at wrapped-line boundaries across pages, retaining
 column positions and borders. A fitting first header row repeats on continuation
 pages only when it leaves room for at least one body line; an oversized header
-itself continues without repetition. Spanning cells and non-Latin font coverage
-are separate limitations.
+itself continues without repetition. Cells sit on a span-aware grid as wide as
+its widest row: thead, tbody, then tfoot rows, each row's own cells covering
+their `colspan` (missing, 0 or non-numeric count as 1). `rowspan` is ignored:
+cells of the rows below shift left. A spanning cell wraps at the combined width
+of its columns within each band, with no border inside it. Grids wider than 14
+columns print in bands of at most 14 equal columns (at least 35.38 pt, two
+glyphs wide), one below the other. A later band holds only the rows with a
+cell starting in it (a crossing cell repeats there), plus the header row's
+share of the band; a header cell prints again in a later band only if its
+piece there would also repeat on a continuation page, so an oversized header
+cell prints once. A band in which no cell starts is skipped. Non-Latin font
+coverage is a separate limitation.
 
 PDF code blocks wrap at the code box's inner width (475.28 pt, 83 Courier
 cells): the rest of a long line continues flush left on the next row, unmarked,

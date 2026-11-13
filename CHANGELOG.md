@@ -193,6 +193,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AV` or `To` no longer overrun the margin, and a wrapped cover title is
   centred by that width. Characters outside Latin-1 are still dropped from
   PDFs (#1729).
+- **Exported article PDFs keep every table cell (#1731):** a spanning header
+  such as `<th colspan="3">` no longer shrinks a table to one column and drops
+  every later cell of each row, and a row longer than the first no longer
+  loses its extra cells. Columns come from a span-aware grid as wide as the
+  widest row; a spanning cell wraps across its columns with no border through
+  it and still repeats as a header on continuation pages, and a `colspan` of
+  0, missing or non-numeric counts as 1 (`rowspan` is ignored: cells of the
+  rows below shift left). Footer (`<tfoot>`) rows are printed instead of
+  dropped, and a nested table no longer adds columns that print its text a
+  second time. Tables wider than 14 columns print in bands of at most 14
+  columns (15 columns become 8 + 7), one below the other, instead of
+  squeezing every column until its text runs over the borders; a later band
+  repeats the header where it fits and holds only the rows that have a cell
+  starting in it.
 - **MCP Docs and SearXNG admin settings are applied (#1769):** Settings →
   Integrations → MCP Docs **Cache TTL** is now sent with every sidecar fetch
   (`fetch_url` `cache_ttl`, 60–86400 s) and sets the Redis TTL of newly cached

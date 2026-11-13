@@ -534,52 +534,180 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
   ctx.y -= PARAGRAPH_SPACING;
 }
 
+/**
+ * The narrowest a table column may be (#1731): two em of text plus the cell
+ * padding. CONTENT_WIDTH holds 14 such columns — 35.38 pt, a 23.38 pt text box
+ * that fits any two Latin-1 glyphs (the widest, Helvetica `@`, is 11.17 pt) —
+ * so no word breaks one glyph per line; a wider grid prints in bands.
+ */
+const TABLE_MIN_COLUMN_WIDTH = 2 * FONT_SIZE_BODY + 2 * TABLE_CELL_PADDING;
+
+/** A cell on a table's logical grid: it covers columns [start, start + span). */
+interface GridCell { start: number; span: number; text: string }
+
+/** A table row on the logical grid: its own cells, left to right from column 0. */
+interface GridRow { isHeader: boolean; cells: GridCell[] }
+
+/** A row's slice of one band: a piece per cell or empty column, `column` counted from the band's left edge. */
+interface BandRow {
+  isHeader: boolean;
+  font: PDFFont;
+  pieces: Array<{ column: number; lines: string[] }>;
+  count: number;
+}
+
 function renderTable(ctx: RenderContext, el: Element): void {
-  const rows = Array.from(el.querySelectorAll(':scope > thead > tr, :scope > tbody > tr, :scope > tr'));
+  // thead rows, then tbody (and bare) rows, then tfoot rows; never a nested table's.
+  const rows = Array.from((el as HTMLTableElement).rows);
   if (rows.length === 0) return;
+  const { grid, width } = tableGrid(rows);
 
-  // Determine column count from first row
-  const firstRow = rows[0]!;
-  const firstCells = Array.from(firstRow.querySelectorAll('th, td'));
-  const colCount = firstCells.length || 1;
-  const colWidth = CONTENT_WIDTH / colCount;
+  // Narrow-column policy: no column is narrower than TABLE_MIN_COLUMN_WIDTH, so
+  // a grid of more than 14 columns prints as bands of whole columns, one below
+  // the other, all at the same column width.
+  const perBand = Math.ceil(width / Math.ceil(width / Math.floor(CONTENT_WIDTH / TABLE_MIN_COLUMN_WIDTH)));
+  const colWidth = CONTENT_WIDTH / perBand;
+  // The first band holds every row; a later band only the rows with a cell
+  // starting in it, and the header row's share of it: the header cells that
+  // reach into the band, each printed again only if its piece could repeat on
+  // a continuation page (repeatsAsHeader). Every cell prints in the band it
+  // starts in, so the work grows with the cells, not with bands × rows; a band
+  // in which no cell starts is skipped.
+  const startingRows = new Map<number, number[]>();
+  grid.forEach((row, r) => {
+    for (const cell of row.cells) {
+      const band = Math.floor(cell.start / perBand);
+      const rowsHere = startingRows.get(band);
+      if (!rowsHere) startingRows.set(band, [r]);
+      else if (rowsHere.at(-1) !== r) rowsHere.push(r);
+    }
+  });
+  const next = grid.map(() => 0); // per row: its first cell starting at or right of the band
+  // Header cells too tall to repeat print once, in the band they start in. A
+  // cell's later pieces are no wider (full bands, then its last piece), and
+  // wrapText gives a narrower width no fewer lines, so one check per cell holds.
+  const tooTall = new Set<GridCell>();
+  for (let from = 0; from < width; from += perBand) {
+    const starting = startingRows.get(from / perBand) ?? [];
+    if (from > 0 && starting.length === 0) continue;
+    const to = Math.min(from + perBand, width);
+    const candidates = from === 0 ? grid.keys() : new Set(grid[0]!.isHeader ? [0, ...starting] : starting);
+    const band: BandRow[] = [];
+    let header: BandRow | undefined;
+    for (const r of candidates) {
+      const row = grid[r]!;
+      let i = next[r]!;
+      while (i < row.cells.length && row.cells[i]!.start < from) i++;
+      next[r] = i;
+      const carried = i > 0 && row.cells[i - 1]!.start + row.cells[i - 1]!.span > from ? row.cells[i - 1] : undefined;
+      const startsHere = i < row.cells.length && row.cells[i]!.start < to;
+      if (from > 0 && r === 0 && row.isHeader && carried && !tooTall.has(carried)) {
+        const piece = sliceRow(ctx, row, i - 1, from, Math.min(carried.start + carried.span, to), colWidth);
+        if (!repeatsAsHeader(piece)) tooTall.add(carried);
+      }
+      // Only header cells are ever too tall: their piece here stays blank, and
+      // with no header cell starting here the header row has nothing to show.
+      const blank = carried !== undefined && tooTall.has(carried);
+      if (from > 0 && !startsHere && (!carried || blank)) continue;
+      const slice = sliceRow(ctx, row, carried ? i - 1 : i, from, to, colWidth, blank);
+      if (r === 0 && row.isHeader) header = slice;
+      band.push(slice);
+    }
+    renderTableBand(ctx, band, header, colWidth, (to - from) * colWidth);
+  }
+}
 
+/**
+ * The table's span-aware logical grid (#1731): each row's own cells, left to
+ * right from column 0, each covering `colSpan` columns (HTML rules: missing, 0
+ * or non-numeric → 1, at most 1000). The grid is as wide as its widest row; a
+ * shorter row ends in empty columns. rowspan is ignored, so the cells of a row
+ * below a rowspan cell shift left.
+ */
+function tableGrid(rows: HTMLTableRowElement[]): { grid: GridRow[]; width: number } {
+  let width = 1;
+  const grid = rows.map((row): GridRow => {
+    let column = 0;
+    const cells = Array.from(row.cells, (cell): GridCell => {
+      const placed = { start: column, span: cell.colSpan, text: cell.textContent?.trim() ?? '' };
+      column += cell.colSpan;
+      return placed;
+    });
+    width = Math.max(width, column);
+    return { isHeader: row.cells[0]?.tagName.toLowerCase() === 'th', cells };
+  });
+  return { grid, width };
+}
+
+/**
+ * A row's slice of columns [from, to): each cell from `first` on that reaches
+ * into them, clipped to the band and wrapped at its clipped width (a cell that
+ * crosses a band edge prints its text in each band its row prints in, unless
+ * `blankFirst` leaves that first piece empty), then an empty column for each
+ * column past the row's last cell.
+ */
+function sliceRow(
+  ctx: RenderContext, row: GridRow, first: number, from: number, to: number, colWidth: number, blankFirst = false,
+): BandRow {
+  const font = row.isHeader ? ctx.fontBold : ctx.font;
+  const pieces: BandRow['pieces'] = [];
+  let column = from;
+  for (let i = first; i < row.cells.length && row.cells[i]!.start < to; i++) {
+    const cell = row.cells[i]!;
+    const end = Math.min(cell.start + cell.span, to);
+    const width = (end - column) * colWidth - 2 * TABLE_CELL_PADDING;
+    const lines = i === first && blankFirst ? [] : wrapText(cell.text, font, FONT_SIZE_BODY, width);
+    pieces.push({ column: column - from, lines });
+    column = end;
+  }
+  for (; column < to; column++) pieces.push({ column: column - from, lines: [] });
+  return { isHeader: row.isHeader, font, pieces, count: Math.max(1, ...pieces.map((piece) => piece.lines.length)) };
+}
+
+/**
+ * Whether a header slice repeats — on a continuation page, or as the header
+ * row's share of a later band: only when a line of the row below still fits
+ * under it on a fresh page. A header cell too tall for that prints once, in
+ * the band it starts in.
+ */
+function repeatsAsHeader(header: BandRow): boolean {
+  const lineHeight = FONT_SIZE_BODY + 3;
+  const padding = TABLE_CELL_PADDING * 2;
+  return header.count * lineHeight + padding + lineHeight + padding <= PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+}
+
+/**
+ * Draws one band of a table, paginating like a whole table (#1845): rows stay
+ * together when they fit a fresh page, taller rows split between lines, and
+ * `header` (the band's slice of a first header row, `prepared[0]`) repeats on
+ * continuation pages when a body line still fits below it.
+ */
+function renderTableBand(
+  ctx: RenderContext, prepared: BandRow[], header: BandRow | undefined, colWidth: number, bandWidth: number,
+): void {
   ensureSpace(ctx, LINE_HEIGHT * 2);
   ctx.y -= 4;
 
-  const prepared = rows.map((row) => {
-    const cells = Array.from(row.querySelectorAll('th, td'));
-    const isHeader = cells[0]?.tagName.toLowerCase() === 'th';
-    const font = isHeader ? ctx.fontBold : ctx.font;
-    const lines = Array.from({ length: colCount }, (_, c) =>
-      wrapText(cells[c]?.textContent?.trim() ?? '', font, FONT_SIZE_BODY, colWidth - TABLE_CELL_PADDING * 2),
-    );
-    return { isHeader, font, lines, count: Math.max(1, ...lines.map((cell) => cell.length)) };
-  });
   const lineHeight = FONT_SIZE_BODY + 3;
   const padding = TABLE_CELL_PADDING * 2;
   const pageCapacity = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-  const header = prepared[0]?.isHeader ? prepared[0] : undefined;
-  // A repeated header must leave room for at least one line of the row.
-  const repeatHeader = header && header.count * lineHeight + padding + lineHeight + padding <= pageCapacity
-    ? header : undefined;
+  const repeatHeader = header && repeatsAsHeader(header) ? header : undefined;
 
-  const drawFragment = (row: typeof prepared[number], start: number, count: number): void => {
+  const drawFragment = (row: BandRow, start: number, count: number): void => {
     const height = count * lineHeight + padding;
     const top = ctx.y;
     const bottom = top - height;
     if (row.isHeader) {
       ctx.page.drawRectangle({
-        x: MARGIN_LEFT, y: bottom, width: CONTENT_WIDTH, height,
+        x: MARGIN_LEFT, y: bottom, width: bandWidth, height,
         color: COLOR_TABLE_HEADER_BG,
       });
     }
-    for (let c = 0; c < colCount; c++) {
-      const lines = row.lines[c]!;
-      for (let l = start; l < Math.min(start + count, lines.length); l++) {
+    for (const piece of row.pieces) {
+      for (let l = start; l < Math.min(start + count, piece.lines.length); l++) {
         try {
-          ctx.page.drawText(lines[l]!, {
-            x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
+          ctx.page.drawText(piece.lines[l]!, {
+            x: MARGIN_LEFT + piece.column * colWidth + TABLE_CELL_PADDING,
             y: ctx.y - TABLE_CELL_PADDING - FONT_SIZE_BODY - (l - start) * lineHeight,
             size: FONT_SIZE_BODY, font: row.font, color: COLOR_TEXT,
           });
@@ -590,12 +718,12 @@ function renderTable(ctx: RenderContext, el: Element): void {
     }
     for (const y of [top, bottom]) {
       ctx.page.drawLine({
-        start: { x: MARGIN_LEFT, y }, end: { x: MARGIN_LEFT + CONTENT_WIDTH, y },
+        start: { x: MARGIN_LEFT, y }, end: { x: MARGIN_LEFT + bandWidth, y },
         thickness: 0.5, color: COLOR_TABLE_BORDER,
       });
     }
-    for (let c = 0; c <= colCount; c++) {
-      const x = MARGIN_LEFT + c * colWidth;
+    // Vertical borders only along cell edges, so none crosses a spanning cell.
+    for (const x of [...row.pieces.map((piece) => MARGIN_LEFT + piece.column * colWidth), MARGIN_LEFT + bandWidth]) {
       ctx.page.drawLine({
         start: { x, y: top }, end: { x, y: bottom },
         thickness: 0.5, color: COLOR_TABLE_BORDER,
