@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate. The original-query leg keeps the caller's pin setting. Identifier
   queries the detector recognises still skip expansion and pin as before. The
   identifier page can still appear in the results at its ordinary merged rank.
+- **Page date filters fail validation before timestamp SQL (#1738):** list,
+  search and bulk filters share an exact Gregorian date/qualified-timestamp
+  profile and return400 for invalid or unsupported inputs. Previously parseable
+  spellings, including fractions longer than six digits, are now explicitly
+  unsupported rather than normalized. Raw strings and inclusive date-only
+  `dateTo` midnight semantics remain unchanged; see
+  [the API profile and compatibility note](docs/API.md#page-date-filters).
 - **Markdown import keeps block-list tags (#1753):** front-matter `tags:` or
   `labels:` written as a YAML block list (`- ops` lines, quoted items and CRLF
   files included) now imports as page labels; previously the list was dropped

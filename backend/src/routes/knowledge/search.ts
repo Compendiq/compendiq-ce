@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema, type AiPolicyFilter, type PageSource } from '@compendiq/contracts';
+import { PageDateFilterSchema, SearchHybridQuerySchema, type AiPolicyFilter, type PageSource } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 // Use the request-scoped memoised wrapper so the search route and downstream
 // rag-service calls resolve the readable-space set once per request. See
@@ -65,8 +65,8 @@ const TRGM_SIMILARITY_THRESHOLD = 0.3;
  */
 const SearchQuerySchema = SearchHybridQuerySchema.extend({
   author: z.string().optional(),
-  dateFrom: z.string().optional(),
-  dateTo: z.string().optional(),
+  dateFrom: PageDateFilterSchema.optional(),
+  dateTo: PageDateFilterSchema.optional(),
   tags: z.string().optional(),
   sort: z.enum(['relevance', 'modified', 'title']).default('relevance'),
   page: z.coerce.number().int().positive().default(1),
